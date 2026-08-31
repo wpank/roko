@@ -855,7 +855,7 @@ See `crates/roko-graph/src/` for details.
 | 83 | Dream consolidation deadlock (tokio spawn_blocking + nested block_on) | S |
 | 84 | Cascade router task category awareness (stages 2-3 ignore task_category) | M |
 | 85 | Plan generation TOML reliability (~50% first-attempt success rate) | S |
-| 86 | FAST hard-deadline interposition during awaited dispatch preparation/startup | M |
+| 286 | FAST hard-deadline interposition during awaited dispatch preparation/startup | M |
 
 ### P3 — Low / Phase 2+
 

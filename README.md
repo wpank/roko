@@ -559,6 +559,25 @@ Inbound webhooks use a separate `GITHUB_WEBHOOK_SECRET`. See the
 [GitHub integration guide](docs/v2/GITHUB-INTEGRATION.md) for least-privilege setup, MCP
 configuration, branch naming, CI validation, and troubleshooting.
 
+### Fast self-development lane (opt-in)
+
+For a small, well-scoped local plan, use the existing debug binary through the bounded FAST
+wrapper instead of `cargo run`:
+
+```bash
+./dev.sh fast plans/my-plan
+```
+
+Every FAST task must author exactly one `verify` command. The patching agent is instructed not to
+build or test; the runner owns that one check, preserves the warm target, runs headlessly with a
+bounded deadline, and writes a private evidence bundle under `.roko/runs/`. The gate fails closed
+when the task has zero or multiple verification commands.
+
+FAST is an interactive feedback lane, not release proof. Do not use it for migrations, auth,
+safety, persistence, payment, or other high-risk changes, and still run the contribution checks
+below before merging. See [Fast development](docs/v2/29-FAST-DEVELOPMENT.md) for the contract,
+security boundaries, and deferred work.
+
 ## CLI quick reference
 
 | Command | What it does |

@@ -161,6 +161,20 @@ cargo run -p roko-cli -- dashboard
 cargo run -p roko-cli -- status
 ```
 
+### Opt-in FAST self-development
+
+For an eligible small/local plan with a prebuilt `target/debug/roko`, prefer the bounded wrapper:
+
+```bash
+./dev.sh fast plans/<plan-directory>
+```
+
+Each FAST task must define exactly one authored `verify` command. FAST tells the provider to hand
+off after patching, keeps Cargo out of the provider session, skips critical-path warmup/cleanup,
+and captures a private evidence bundle. It is not appropriate for safety, auth, persistence,
+migration, payment, or other high-risk changes. FAST evidence does **not** replace the mandatory
+pre-commit checks in the Building section.
+
 ## CLI commands reference
 
 ### Core workflow

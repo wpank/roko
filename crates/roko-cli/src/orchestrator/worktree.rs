@@ -959,6 +959,63 @@ impl WorktreeManager {
         .await
     }
 
+    /// Force-remove a dirty checkout owned by the reflex replay namespace.
+    ///
+    /// Ordinary worktrees must use [`Self::remove`], which deliberately
+    /// preserves dirty state. A reflex replay is different: its dirty delta
+    /// is an ephemeral proof artifact that has already been fingerprinted and
+    /// gated. This method fails closed unless both the manager ID and tracked
+    /// branch have the exact runner-owned replay shape.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorktreeError::InvalidId`] for a non-replay identifier,
+    /// [`WorktreeError::ReattachRejected`] when the tracked handle is not the
+    /// exact replay checkout, or the same Git/I/O errors as [`Self::remove`].
+    pub async fn remove_reflex_replay(&self, id: &str) -> Result<(), WorktreeError> {
+        validate_reflex_replay_id(id)?;
+        let operation = Arc::clone(&self.operations).lock_owned().await;
+        let manager = self.clone();
+        let id = id.to_string();
+        await_owned_operation(operation, move |lifecycle| async move {
+            let repository_lock = manager.acquire_repository_mutation_lock()?;
+            let result = manager.remove_reflex_replay_locked(&id, &lifecycle).await;
+            retain_lock_if_cleanup_unproved(repository_lock, &lifecycle);
+            result
+        })
+        .await
+    }
+
+    async fn remove_reflex_replay_locked(
+        &self,
+        id: &str,
+        lifecycle: &OperationLifecycle,
+    ) -> Result<(), WorktreeError> {
+        let _ = self.clear_stale_locks_unlocked();
+        self.validate_git_policy(false).await?;
+        let handle = self
+            .active
+            .lock()
+            .get(id)
+            .cloned()
+            .ok_or_else(|| WorktreeError::NotFound(id.to_string()))?;
+        let expected_branch = format!("roko/reflex-replay/{id}");
+        if handle.branch != expected_branch || handle.path != self.path_for(id) {
+            return Err(WorktreeError::ReattachRejected {
+                id: id.to_string(),
+                reason: "tracked handle is not the exact owned reflex replay".to_string(),
+            });
+        }
+        if let Err(error) = self.git_remove(&handle.path, lifecycle).await {
+            if !handle.path.exists() {
+                self.active.lock().remove(id);
+            }
+            return Err(error);
+        }
+        self.active.lock().remove(id);
+        Ok(())
+    }
+
     async fn remove_locked(
         &self,
         id: &str,
@@ -3571,6 +3628,21 @@ fn validate_id(id: &str) -> Result<(), WorktreeError> {
     Ok(())
 }
 
+fn validate_reflex_replay_id(id: &str) -> Result<(), WorktreeError> {
+    validate_id(id)?;
+    let Some(suffix) = id.strip_prefix("reflex-") else {
+        return Err(WorktreeError::InvalidId(format!(
+            "id `{id}` is outside the reflex replay namespace"
+        )));
+    };
+    if suffix.len() != 32 || !suffix.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(WorktreeError::InvalidId(format!(
+            "id `{id}` is not an exact reflex replay identifier"
+        )));
+    }
+    Ok(())
+}
+
 /// Read the `gitdir:` pointer from a worktree's `.git` file.
 ///
 /// In a worktree `.git` is a regular file (not a directory) containing
@@ -5548,6 +5620,35 @@ mod tests {
             "do not delete\n"
         );
         assert_eq!(manager.get(&attempt.id), Some(attempt));
+    }
+
+    #[tokio::test]
+    async fn reflex_replay_removal_discards_only_exact_owned_dirty_checkout() {
+        let Some((_tmp, manager)) = make_manager() else {
+            return;
+        };
+        let id = "reflex-0123456789abcdef0123456789abcdef";
+        let branch = format!("roko/reflex-replay/{id}");
+        let replay = manager
+            .create(id, &branch)
+            .await
+            .expect("create reflex replay checkout");
+        std::fs::write(replay.path.join("reproduced.txt"), b"verified delta\n")
+            .expect("write replay delta");
+
+        manager
+            .remove_reflex_replay(id)
+            .await
+            .expect("force-remove owned dirty replay");
+
+        assert!(!replay.path.exists());
+        assert!(manager.get(id).is_none());
+        assert!(
+            manager
+                .remove_reflex_replay("attempt-0123456789abcdef0123456789abcdef")
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

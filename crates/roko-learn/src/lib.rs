@@ -145,6 +145,8 @@ pub mod provider_health;
 /// Provider/model pass-rate outcome telemetry for future routing bandits.
 pub mod provider_model_outcome;
 pub mod quality_judge;
+/// T0 reflex store — condition-action pairs learned from T2 episode promotions.
+pub mod reflex_store;
 pub mod regression;
 /// Lookahead and calibration shells around the shipped cascade router.
 pub mod routing_extras;

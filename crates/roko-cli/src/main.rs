@@ -227,7 +227,7 @@ COMMAND GROUPS:
   Agents:            agent (create, start, stop, chat, serve)
   Research:          research, think, note
   Knowledge:         knowledge (query, dream, custody, archive)
-  Learning:          learn (router, experiments, efficiency, tune)
+  Learning:          learn (router, experiments, efficiency, reflexes, tune)
   Jobs:              job
   Benchmarks:        bench
   Configuration:     tune, config (providers, models, subscriptions, plugins, secrets)
@@ -622,7 +622,7 @@ Examples:
     },
 
     // ── Learning & feedback ─────────────────────────────────────────
-    /// Inspect learning state: cascade router, experiments, efficiency, episodes, tuning.
+    /// Inspect learning state: routing, experiments, efficiency, episodes, reflexes, and tuning.
     Learn {
         #[command(subcommand)]
         cmd: LearnCmd,
@@ -1184,7 +1184,7 @@ enum KnowledgeCustodyCmd {
 
 #[derive(Debug, Subcommand)]
 enum LearnCmd {
-    /// Show all learning state (router, experiments, efficiency, episodes).
+    /// Show all learning state (router, experiments, efficiency, episodes, reflexes).
     All {
         /// Working directory (default: cwd).
         #[arg(long)]
@@ -1211,6 +1211,12 @@ enum LearnCmd {
     },
     /// Show episode summary.
     Episodes {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show T0 reflex rules (count, top five by hits, and recent demotions).
+    Reflexes {
         /// Working directory (default: cwd).
         #[arg(long)]
         workdir: Option<PathBuf>,
@@ -4212,6 +4218,27 @@ mod tests {
         assert!(cli.json);
         assert!(cli.quiet);
         assert!(cli.headless);
+    }
+
+    #[test]
+    fn cli_parses_learn_reflexes_workdir() {
+        let cli = Cli::try_parse_from([
+            "roko",
+            "learn",
+            "reflexes",
+            "--workdir",
+            "/tmp/reflex-project",
+        ])
+        .expect("parse learn reflexes");
+
+        assert!(matches!(
+            cli.command,
+            Some(Command::Learn {
+                cmd: LearnCmd::Reflexes {
+                    workdir: Some(ref workdir),
+                },
+            }) if workdir == std::path::Path::new("/tmp/reflex-project")
+        ));
     }
 
     #[test]

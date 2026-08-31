@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use crate::state_hub::{StateHub, StateHubSender};
 use anyhow::{Context, Result};
+use fs2::FileExt as _;
 use roko_core::RuntimeEvent;
 use roko_core::agent::{ModelSpec, ModelTier};
 use roko_core::config::GatesConfig;
@@ -67,6 +68,7 @@ use roko_agent::ViolationSeverity;
 use roko_agent::model_call_service::ProviderOutcomeRecorder as _;
 use roko_agent::safety::DispatchSafetyContext;
 use roko_agent::safety::contract::{AgentContract, ContractLoadMode};
+use roko_learn::efficiency::AgentEfficiencyEvent;
 use roko_learn::episode_logger::{EpisodeGateVerdict, EpisodeLogger};
 use roko_learn::error_pattern_store::{
     ErrorPatternStore, GateFailureObservation, GateFailureSource,
@@ -74,6 +76,9 @@ use roko_learn::error_pattern_store::{
 use roko_learn::playbook::PlaybookStore;
 use roko_learn::post_gate_reflection::{
     PostGateReflectionStore, ReflectionGateOutcome, ReflectionInput, ReflectionPromotionConfig,
+};
+use roko_learn::reflex_store::{
+    PromotionCandidate, ReflexAction, ReflexCondition, ReflexObservation, ReflexStore,
 };
 use roko_learn::section_outcome::{
     SECTION_OUTCOME_SCHEMA_VERSION, SectionOutcomeRecord, SectionOutcomeStatus, SectionOutcomeStore,
@@ -97,6 +102,7 @@ use super::merge::{MergeDispatch, MergeLaunch, MergeResolution, PlanMerger, Plan
 use super::output_sink::{PlanCompleteSummary, RunCompleteSummary, RunOutputSink, TaskCostSummary};
 use super::persist::{self, GateThresholds, PersistPaths};
 use super::plan_loader::Plan;
+use super::reflex::{self, PromotionTracker};
 use super::snapshot_writer::{
     SnapshotPayload, SnapshotWriter, serialize_inner_bounded, serialize_snapshot_bounded,
 };
@@ -607,6 +613,10 @@ async fn forward_agent_events(
 
 enum AgentRuntimeResource {
     Dispatching(TaskConcurrencyPermit),
+    Reflex {
+        handle: tokio::task::JoinHandle<bool>,
+        permit: TaskConcurrencyPermit,
+    },
     Cli {
         handle: AgentHandle,
         forwarder: tokio::task::JoinHandle<()>,
@@ -1145,8 +1155,36 @@ struct AgentSettlement {
     needs_provider_outcome_recording: bool,
 }
 
+fn t0_executor_failure_allows_provider_fallback(
+    settlement: Option<&AgentSettlement>,
+    post_dispatch_block: bool,
+    action: &ReflexAction,
+) -> bool {
+    !post_dispatch_block
+        && reflex::action_is_provably_read_only(action)
+        && settlement.is_some_and(|settlement| {
+            settlement.exit_code == Some(1)
+                && settlement.errors.is_empty()
+                && settlement.unconfirmed.is_none()
+        })
+}
+
 async fn settle_agent_resource(resource: AgentRuntimeResource) -> AgentSettlement {
     match resource {
+        AgentRuntimeResource::Reflex { handle, permit } => {
+            let (exit_code, errors) = match handle.await {
+                Ok(true) => (Some(0), Vec::new()),
+                Ok(false) => (Some(1), Vec::new()),
+                Err(error) => (None, vec![format!("reflex executor failed: {error}")]),
+            };
+            AgentSettlement {
+                exit_code,
+                errors,
+                unconfirmed: None,
+                permit: Some(permit),
+                needs_provider_outcome_recording: false,
+            }
+        }
         AgentRuntimeResource::Cli {
             handle,
             forwarder,
@@ -1554,12 +1592,327 @@ struct RunContext<'a> {
     task_knowledge_ids: &'a mut HashMap<String, Vec<String>>,
     /// E05-T08: Verdict publisher for emitting Kind::GateVerdict signals.
     verdict_publisher: &'a roko_gate::VerdictPublisher,
+    /// Run-wide cancellation propagated into unattended local tool calls.
+    cancel: &'a CancellationToken,
+    /// T0 rule store shared by dispatch and exact-attempt gate feedback.
+    reflex_store: &'a Arc<ReflexStore>,
+    /// Exact attempt -> fired T0 rule provenance.
+    fired_reflexes: &'a mut HashMap<TaskAttemptRef, FiredReflex>,
+    /// Attempts that already tried T0 and must fall back on execution failure.
+    reflex_attempted: &'a mut HashSet<TaskAttemptRef>,
+    /// Exact Premium/T2 attempt -> its pre-dispatch deterministic observation.
+    t2_observations: &'a mut HashMap<TaskAttemptRef, T2AttemptEvidence>,
+    /// Restart-safe identical-candidate counter.
+    promotion_tracker: &'a mut PromotionTracker,
+    /// Background best-effort learning persistence.
+    feedback_tasks: &'a mut tokio::task::JoinSet<()>,
     /// Passive event-oriented telemetry sink shared with gate and extension producers.
     telemetry_sink: &'a Arc<dyn TelemetryEventSink>,
     /// Injected GitHub boundary; live in configured runs and mockable in tests.
     github_ops: &'a Arc<dyn GitHubOps>,
     /// Ordered background worker that keeps GitHub I/O outside the select loop.
     github_workflow: &'a GitHubWorkflow,
+}
+
+#[derive(Debug, Clone)]
+struct FiredReflex {
+    rule_id: uuid::Uuid,
+    action: ReflexAction,
+    condition: ReflexCondition,
+}
+
+#[derive(Debug, Clone)]
+struct T2AttemptEvidence {
+    observation: ReflexObservation,
+    baseline_oid: String,
+}
+
+#[derive(Debug)]
+struct CandidateReplayCompletion {
+    attempt: TaskAttemptRef,
+    effect: EffectRef,
+    candidate: PromotionCandidate,
+    succeeded: bool,
+    detail: String,
+    expected_source_fingerprint: Option<(String, [u8; 32], bool)>,
+}
+
+struct PendingPromotionCandidate {
+    candidate: PromotionCandidate,
+    source_workdir: PathBuf,
+    expected_source_fingerprint: (String, [u8; 32], bool),
+}
+
+struct CandidateReplaySpec {
+    attempt: TaskAttemptRef,
+    candidate: PromotionCandidate,
+    source_workdir: PathBuf,
+    baseline_oid: String,
+    repo_root: PathBuf,
+    replay_root: PathBuf,
+    safety: Option<roko_agent::SafetyLayer>,
+    contract: AgentContract,
+    task: TaskDef,
+    timeout: Duration,
+    gates_config: GatesConfig,
+    complexity: PlanComplexity,
+    max_gate_rung: u32,
+    gate_sem: Arc<tokio::sync::Semaphore>,
+    target_crates: Vec<String>,
+    task_context: Option<gate_dispatch::GateTaskContext>,
+    main_target_dir: Option<PathBuf>,
+    allow_empty_delta: bool,
+    cancel: CancellationToken,
+}
+
+struct ReflexReplayLease(std::fs::File);
+
+impl Drop for ReflexReplayLease {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.0);
+    }
+}
+
+fn exact_reflex_replay_id(id: &str) -> bool {
+    id.strip_prefix("reflex-").is_some_and(|suffix| {
+        suffix.len() == 32 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
+    })
+}
+
+fn acquire_reflex_replay_lease(
+    repo_root: &Path,
+    replay_id: &str,
+) -> std::result::Result<ReflexReplayLease, String> {
+    if !exact_reflex_replay_id(replay_id) {
+        return Err("invalid reflex replay lease identifier".to_string());
+    }
+    let lock_root = repo_root
+        .join(".roko")
+        .join("learn")
+        .join("reflex-replay-locks");
+    std::fs::create_dir_all(&lock_root)
+        .map_err(|error| format!("create reflex replay lease directory: {error}"))?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(lock_root.join(format!("{replay_id}.lock")))
+        .map_err(|error| format!("open reflex replay lease: {error}"))?;
+    file.try_lock_exclusive()
+        .map_err(|error| format!("lock reflex replay lease: {error}"))?;
+    Ok(ReflexReplayLease(file))
+}
+
+#[derive(Clone)]
+struct RunnerToolCancel(CancellationToken);
+
+#[async_trait::async_trait]
+impl roko_core::tool::CancelToken for RunnerToolCancel {
+    fn is_cancelled(&self) -> bool {
+        self.0.is_cancelled()
+    }
+
+    async fn cancelled(&self) {
+        self.0.cancelled().await;
+    }
+}
+
+fn record_reflex_failure(
+    store: &ReflexStore,
+    tracker: &mut PromotionTracker,
+    fired: FiredReflex,
+    attempt: &TaskAttemptRef,
+    paths: &PersistPaths,
+    feedback_tasks: &mut tokio::task::JoinSet<()>,
+) {
+    if !store.record_gate_fail_for(fired.rule_id) {
+        return;
+    }
+    if let Err(error) = tracker.reset(&fired.condition, &fired.action) {
+        warn!(attempt = %attempt.key(), %error, "failed to persist reflex promotion reset");
+    }
+    let event = AgentEfficiencyEvent {
+        agent_id: format!("{}/{}", attempt.plan_id, attempt.task_id),
+        role: "reflex".to_string(),
+        backend: "t0-reflex".to_string(),
+        model: "t0-reflex".to_string(),
+        model_used: "t0-reflex".to_string(),
+        plan_id: attempt.plan_id.clone(),
+        task_id: attempt.task_id.clone(),
+        attempt_id: attempt.key(),
+        gate_passed: Some(false),
+        outcome: "reflex_demoted".to_string(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        ..AgentEfficiencyEvent::default()
+    };
+    let path = paths.efficiency_jsonl.clone();
+    feedback_tasks.spawn(async move {
+        let encoded = match serde_json::to_string(&event) {
+            Ok(encoded) => encoded,
+            Err(error) => {
+                warn!(%error, "failed to serialize reflex demotion event");
+                return;
+            }
+        };
+        let result = tokio::task::spawn_blocking(move || {
+            roko_fs::log_rotation::append_jsonl_line_sync(
+                &path,
+                encoded.as_bytes(),
+                roko_core::config::ResourcesConfig::default().log_rotation_max_mb,
+            )
+        })
+        .await;
+        match result {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => warn!(%error, "failed to append reflex demotion event"),
+            Err(error) => warn!(%error, "reflex demotion writer failed"),
+        }
+    });
+}
+
+fn explicit_command_only_task(task: &TaskDef, action: &ReflexAction) -> bool {
+    if !task.files.is_empty()
+        || task
+            .description
+            .as_deref()
+            .is_some_and(|description| !description.trim().is_empty())
+        || !task.acceptance.is_empty()
+        || task.context.is_some()
+    {
+        return false;
+    }
+    let requested = task.title.trim().to_ascii_lowercase();
+    let action = action.args.trim().to_ascii_lowercase();
+    requested == action || requested == format!("run {action}")
+}
+
+async fn run_candidate_replay(
+    spec: CandidateReplaySpec,
+) -> (bool, String, Option<(String, [u8; 32], bool)>) {
+    let replay_id = format!("reflex-{}", uuid::Uuid::new_v4().simple());
+    let replay_branch = format!("roko/reflex-replay/{replay_id}");
+    let _gate_permit = tokio::select! {
+        biased;
+        () = spec.cancel.cancelled() => {
+            return (false, "reflex replay cancelled before capacity acquisition".to_string(), None);
+        }
+        permit = Arc::clone(&spec.gate_sem).acquire_owned() => {
+            match permit {
+                Ok(permit) => permit,
+                Err(_) => return (false, "gate concurrency closed before reflex replay".to_string(), None),
+            }
+        }
+    };
+    let _lease = match acquire_reflex_replay_lease(&spec.repo_root, &replay_id) {
+        Ok(lease) => lease,
+        Err(error) => return (false, error, None),
+    };
+    let manager = WorktreeManager::new(WorktreeConfig {
+        repo_root: spec.repo_root.clone(),
+        base_branch: spec.baseline_oid.clone(),
+        worktrees_root: spec.replay_root,
+        max_live: None,
+        idle_ttl: Duration::from_secs(60),
+    });
+    let handle = match manager.create(&replay_id, &replay_branch).await {
+        Ok(handle) => handle,
+        Err(error) => {
+            return (
+                false,
+                format!("isolated reflex replay unavailable: {error}"),
+                None,
+            );
+        }
+    };
+
+    let replay_workdir = handle.path.clone();
+    let result: std::result::Result<(String, (String, [u8; 32], bool)), String> = async {
+        let (call, context, safety) = reflex::authorize_action(
+            &spec.candidate.action,
+            spec.safety.as_ref(),
+            spec.contract,
+            &spec.task,
+            &replay_workdir,
+            &spec.repo_root,
+            spec.timeout,
+            Some(Arc::new(RunnerToolCancel(spec.cancel))),
+        )?;
+        let (action_succeeded, action_output) = reflex::execute_action(call, context, safety).await;
+        if !action_succeeded {
+            return Err(format!("isolated reflex action failed: {action_output}"));
+        }
+
+        let source = gate_dispatch::reflex_input_fingerprint(spec.source_workdir.clone()).await?;
+        if source.0 != spec.baseline_oid {
+            return Err("Premium source worktree no longer matches its captured baseline".into());
+        }
+        let replay = gate_dispatch::reflex_input_fingerprint(replay_workdir.clone()).await?;
+        if replay.0 != spec.baseline_oid || replay.1 != source.1 || replay.2 != source.2 {
+            return Err(
+                "isolated reflex action did not reproduce the Premium attempt's exact delta".into(),
+            );
+        }
+        if !source.2 && !spec.allow_empty_delta {
+            return Err(
+                "empty reflex replay is only valid for an explicit command-only task".into(),
+            );
+        }
+
+        let mut gates_config = spec.gates_config;
+        gates_config.cargo_fix_enabled = false;
+        let rung = spec.max_gate_rung;
+        let completion = gate_dispatch::run_gate_once(
+            new_gate_effect(spec.attempt.clone(), GateCompletionKind::Gate, rung),
+            spec.attempt.plan_id.clone(),
+            spec.attempt.task_id.clone(),
+            rung,
+            replay_workdir.clone(),
+            gates_config.clone(),
+            spec.complexity,
+            spec.task.verify.clone(),
+            None,
+            spec.timeout.as_secs().max(1),
+            spec.target_crates.clone(),
+            None,
+            spec.task_context.clone(),
+            None,
+            spec.main_target_dir.clone(),
+        )
+        .await;
+        if !completion.passed {
+            return Err(format!(
+                "isolated reflex replay gate rung {rung} failed: {}",
+                completion.output
+            ));
+        }
+        let source_after = gate_dispatch::reflex_input_fingerprint(spec.source_workdir).await?;
+        let replay_after = gate_dispatch::reflex_input_fingerprint(replay_workdir.clone()).await?;
+        if source_after != source || replay_after != replay {
+            return Err("source or replay delta changed while the replay gate was running".into());
+        }
+        Ok((action_output, source))
+    }
+    .await;
+
+    let cleanup = manager.remove_reflex_replay(&replay_id).await;
+    if cleanup.is_ok() {
+        let branch_ref = format!("refs/heads/{replay_branch}");
+        let _ = tokio::process::Command::new("git")
+            .args(["update-ref", "-d", &branch_ref])
+            .current_dir(&spec.repo_root)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .await;
+    }
+    match (result, cleanup) {
+        (Ok((output, fingerprint)), Ok(())) => (true, output, Some(fingerprint)),
+        (Err(error), _) => (false, error, None),
+        (Ok(_), Err(error)) => (
+            false,
+            format!("reflex replay cleanup failed: {error}"),
+            None,
+        ),
+    }
 }
 
 fn default_runner_worktree_manager(workdir: &Path) -> WorktreeManager {
@@ -1574,6 +1927,79 @@ fn default_runner_worktree_manager_with_ttl(workdir: &Path, idle_ttl_secs: u64) 
         max_live: None,
         idle_ttl: Duration::from_secs(idle_ttl_secs),
     })
+}
+
+fn cleanup_stale_reflex_replay_branches(workdir: &Path) {
+    let worktrees_root = workdir.join(".roko").join("worktrees");
+    if let Ok(entries) = std::fs::read_dir(&worktrees_root) {
+        for entry in entries.flatten() {
+            let Some(replay_id) = entry.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            if !entry.path().is_dir() || !exact_reflex_replay_id(&replay_id) {
+                continue;
+            }
+            // The lease is held for the entire live replay. An exclusive
+            // acquisition proves this exact UUID checkout is crash-left, not
+            // owned by a concurrent runner.
+            let Ok(_lease) = acquire_reflex_replay_lease(workdir, &replay_id) else {
+                continue;
+            };
+            let path = worktrees_root.join(&replay_id);
+            let output = std::process::Command::new("git")
+                .args(["worktree", "remove", "--force"])
+                .arg(&path)
+                .current_dir(workdir)
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .output();
+            match output {
+                Ok(output) if output.status.success() => {
+                    info!(replay_id, "reclaimed stale reflex replay worktree");
+                }
+                Ok(output) => warn!(
+                    replay_id,
+                    stderr = %String::from_utf8_lossy(&output.stderr).trim(),
+                    "failed to reclaim stale reflex replay worktree"
+                ),
+                Err(error) => warn!(replay_id, %error, "failed to invoke stale replay cleanup"),
+            }
+        }
+    }
+    let _ = std::process::Command::new("git")
+        .args(["worktree", "prune", "--expire=now"])
+        .current_dir(workdir)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output();
+
+    let output = match std::process::Command::new("git")
+        .args([
+            "for-each-ref",
+            "--format=%(refname:short)",
+            "refs/heads/roko/reflex-replay/",
+        ])
+        .current_dir(workdir)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+    {
+        Ok(output) if output.status.success() => output,
+        _ => return,
+    };
+    for branch in String::from_utf8_lossy(&output.stdout).lines() {
+        let Some(replay_id) = branch.strip_prefix("roko/reflex-replay/") else {
+            continue;
+        };
+        if !exact_reflex_replay_id(replay_id) {
+            continue;
+        }
+        // `git branch -D` refuses a branch checked out by another live
+        // worktree, so concurrent runners remain protected while crash-left
+        // replay refs are reclaimed after normal orphan-worktree maintenance.
+        let _ = std::process::Command::new("git")
+            .args(["branch", "-D", branch])
+            .current_dir(workdir)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output();
+    }
 }
 
 fn publish_resource_metric(config: &RunConfig, name: &'static str, value: u64) {
@@ -1852,6 +2278,12 @@ pub async fn run(
         ..Default::default()
     };
     let paths = PersistPaths::from_workdir(&config.workdir)?;
+    let learn_dir = config.layout.learn_dir();
+    if let Err(error) = std::fs::create_dir_all(&learn_dir) {
+        warn!(path = %learn_dir.display(), %error, "failed to initialize reflex learning directory");
+    }
+    let reflex_store = Arc::new(ReflexStore::open(learn_dir.join("reflexes.jsonl")));
+    let mut promotion_tracker = PromotionTracker::open(learn_dir.join("reflex-candidates.jsonl"));
     let cleaned = persist::clean_stale_staging_files(
         paths
             .state_snapshot_json
@@ -1887,6 +2319,7 @@ pub async fn run(
     // all three best-effort steps.
     let resources_cfg = config.roko_config.as_deref().map(|c| &c.resources);
     run_pre_plan_resource_maintenance(&config.layout, &config.workdir, resources_cfg).await;
+    cleanup_stale_reflex_replay_branches(&config.workdir);
 
     // ── Pre-run GC ───────────────────────────────────────────────────────
     //
@@ -2229,6 +2662,8 @@ pub async fn run(
 
     // Channels.
     let (agent_tx, mut agent_rx) = mpsc::channel::<RoutedAgentEvent>(256);
+    let (candidate_replay_tx, mut candidate_replay_rx) =
+        mpsc::channel::<CandidateReplayCompletion>(config.max_concurrent_tasks.max(1));
     // Dynamic gate channel buffer: max_concurrent_tasks * 7 rungs, clamped to [32, 256].
     let gate_buffer = (config.max_concurrent_tasks * 7).max(32).min(256);
     let (gate_tx, mut gate_rx) = mpsc::channel::<GateCompletion>(gate_buffer);
@@ -2491,6 +2926,11 @@ pub async fn run(
     let mut legacy_gate_attempts: HashMap<String, TaskAttemptRef> = HashMap::new();
     let mut preflight_attempted: HashSet<TaskAttemptRef> = HashSet::new();
     let mut baseline_gate_failures: HashMap<TaskAttemptRef, Vec<String>> = HashMap::new();
+    let mut fired_reflexes: HashMap<TaskAttemptRef, FiredReflex> = HashMap::new();
+    let mut reflex_attempted: HashSet<TaskAttemptRef> = HashSet::new();
+    let mut t2_observations: HashMap<TaskAttemptRef, T2AttemptEvidence> = HashMap::new();
+    let mut pending_promotion_candidates: HashMap<TaskAttemptRef, PendingPromotionCandidate> =
+        HashMap::new();
     let mut feedback_tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
 
     // Per-task trace IDs for the observability trace sink. Each
@@ -2786,6 +3226,19 @@ pub async fn run(
                         Instant::now(),
                     );
                     restore_task_runtime(&mut state, &task_runtime_states, &attempt);
+                    if let Some(fired) = fired_reflexes.remove(&attempt) {
+                        record_reflex_failure(
+                            reflex_store.as_ref(),
+                            &mut promotion_tracker,
+                            fired,
+                            &attempt,
+                            &paths,
+                            &mut feedback_tasks,
+                        );
+                    }
+                    pending_promotion_candidates.remove(&attempt);
+                    t2_observations.remove(&attempt);
+                    reflex_attempted.remove(&attempt);
                     let phase_durations = runtime_task_phase_durations(
                         &task_runtime_states,
                         &attempt,
@@ -2873,6 +3326,7 @@ pub async fn run(
                 restore_task_runtime(&mut state, &task_runtime_states, &event_attempt);
                 let turn_completed_before_event = state.agent_turn_completed;
                 let mut turn_error = terminal_failure.is_some();
+                let mut post_dispatch_block = false;
 
                 // Bridge calls record synchronously at the provider-call
                 // boundary. CLI subprocesses cross a different boundary, so
@@ -2896,6 +3350,7 @@ pub async fn run(
 
                 handle_agent_event(&event, &mut state, &tui, sink);
                 let usage_committed = is_turn_done
+                    && !fired_reflexes.contains_key(&event_attempt)
                     && state.record_task_attempt_usage(
                         &event_attempt.plan_id,
                         &event_attempt.task_id,
@@ -3148,6 +3603,9 @@ pub async fn run(
                                 violation.message,
                             );
                         }
+                        if has_block {
+                            post_dispatch_block = true;
+                        }
                         if has_block && !turn_error {
                             // Promote to a turn error so the task fails
                             // instead of proceeding to gating.
@@ -3167,6 +3625,84 @@ pub async fn run(
                     let plan_id = state.plan_id.clone();
                     if !plan_id.is_empty() {
                         if turn_error {
+                            t2_observations.remove(&event_attempt);
+                            pending_promotion_candidates.remove(&event_attempt);
+                            if let Some(fired) = fired_reflexes.remove(&event_attempt) {
+                                let allow_provider_fallback =
+                                    t0_executor_failure_allows_provider_fallback(
+                                        settlement.as_ref(),
+                                        post_dispatch_block,
+                                        &fired.action,
+                                    );
+                                record_reflex_failure(
+                                    reflex_store.as_ref(),
+                                    &mut promotion_tracker,
+                                    fired,
+                                    &event_attempt,
+                                    &paths,
+                                    &mut feedback_tasks,
+                                );
+                                t2_observations.remove(&event_attempt);
+                                pending_promotion_candidates.remove(&event_attempt);
+                                if allow_provider_fallback
+                                    && let Some((mut claim, _)) = owned_agent_failure_claim.take()
+                                {
+                                    let resource = claim.replace_resource(
+                                        AgentRuntimeResource::AwaitingGate { permit: None },
+                                    );
+                                    let permit = match resource {
+                                        AgentRuntimeResource::AwaitingGate {
+                                            permit: Some(permit),
+                                        } => Some(permit),
+                                        other => {
+                                            claim.replace_resource(other);
+                                            None
+                                        }
+                                    };
+                                    if let Some(permit) = permit {
+                                        let previous_gate_output = state.gate_output.clone();
+                                        claim.replace_resource(
+                                            AgentRuntimeResource::Dispatching(permit),
+                                        );
+                                        attempt_ownership
+                                            .transition_claim(
+                                                claim,
+                                                AttemptPhase::Dispatching,
+                                                EffectRef(0),
+                                            )
+                                            .expect("failed T0 action must retain fallback capacity");
+                                        task_runtime_states.remove(&event_attempt.key());
+                                        state.reset_for_task(&event_plan_id, &event_task_id);
+                                        state.gate_output = previous_gate_output;
+                                        state.set_iteration(
+                                            &event_plan_id,
+                                            &event_task_id,
+                                            event_attempt.attempt,
+                                        );
+                                        capture_task_runtime(
+                                            &mut task_runtime_states,
+                                            &state,
+                                            &event_plan_id,
+                                            &event_task_id,
+                                        );
+                                        warn!(
+                                            attempt = %event_attempt.key(),
+                                            "T0 action failed; retained exact attempt for provider fallback"
+                                        );
+                                        save_snapshot(
+                                            config,
+                                            &executor,
+                                            &paths,
+                                            &mut state,
+                                            &merge_queue,
+                                            &gate_thresholds,
+                                            &snapshot_writer,
+                                        );
+                                        continue;
+                                    }
+                                    owned_agent_failure_claim = Some((claim, event_effect));
+                                }
+                            }
                             let message = terminal_failure.clone().or_else(|| agent_failure_message(&state.agent_output))
                                 .unwrap_or_else(|| "agent reported an error result".to_string());
                             fire_on_error_hook(config, &message, "agent_turn", &tui, &state.plan_id, &state.current_task).await;
@@ -3197,12 +3733,100 @@ pub async fn run(
                                 task_runtime_states.remove(&event_attempt.key());
                             }
                         } else {
-                            queue_pending_gate_task(
-                                &mut pending_gate_tasks,
-                                &event_plan_id,
-                                &event_task_id,
-                            );
-                            apply_agent_completion(&mut executor, &plan_id, &tui);
+                            let mut replay_started = false;
+                            if let Some(evidence) = t2_observations.remove(&event_attempt) {
+                                let episode_id = format!(
+                                    "{}:{}",
+                                    state.run_id(),
+                                    event_attempt.key()
+                                );
+                                if let Some(candidate) = reflex::candidate_from_output(
+                                    &state.agent_output,
+                                    &episode_id,
+                                    &evidence.observation,
+                                ) {
+                                    let task = task_index
+                                        .get(&event_plan_id)
+                                        .and_then(|tasks| tasks.get(&event_task_id))
+                                        .cloned();
+                                    let source_workdir =
+                                        tracked_attempt_workdir(&worktrees, &event_attempt);
+                                    if let (Some(task), Some(source_workdir)) =
+                                        (task, source_workdir)
+                                    {
+                                        let allow_empty_delta =
+                                            explicit_command_only_task(&task, &candidate.action);
+                                        let role = task.role.as_deref().unwrap_or("implementer");
+                                        let replay_spec = CandidateReplaySpec {
+                                            attempt: event_attempt.clone(),
+                                            candidate: candidate.clone(),
+                                            source_workdir,
+                                            baseline_oid: evidence.baseline_oid,
+                                            repo_root: config.workdir.clone(),
+                                            replay_root: config
+                                                .workdir
+                                                .join(".roko")
+                                                .join("worktrees"),
+                                            safety: config.safety_layer.clone(),
+                                            contract: effective_agent_contract(role, &task),
+                                            timeout: gate_timeout(config, config.max_gate_rung),
+                                            gates_config: gates_config_for_run(config),
+                                            complexity: gate_plan_complexity_for_task(Some(&task)),
+                                            max_gate_rung: config.max_gate_rung,
+                                            gate_sem: Arc::clone(&gate_sem),
+                                            target_crates: task_target_crates(Some(&task)),
+                                            task_context:
+                                                gate_dispatch::GateTaskContext::from_task_def(
+                                                    &event_plan_id,
+                                                    Some(&task),
+                                                ),
+                                            main_target_dir: Some(
+                                                config.workdir.join("target"),
+                                            ),
+                                            allow_empty_delta,
+                                            cancel: cancel.clone(),
+                                            task,
+                                        };
+                                        let replay_tx = candidate_replay_tx.clone();
+                                        let replay_attempt = event_attempt.clone();
+                                        tokio::spawn(async move {
+                                            let (
+                                                succeeded,
+                                                detail,
+                                                expected_source_fingerprint,
+                                            ) = match tokio::spawn(run_candidate_replay(replay_spec))
+                                                .await
+                                            {
+                                                Ok(completion) => completion,
+                                                Err(error) => (
+                                                    false,
+                                                    format!("reflex replay worker failed: {error}"),
+                                                    None,
+                                                ),
+                                            };
+                                            let _ = replay_tx
+                                                .send(CandidateReplayCompletion {
+                                                    attempt: replay_attempt,
+                                                    effect: event_effect,
+                                                    candidate,
+                                                    succeeded,
+                                                    detail,
+                                                    expected_source_fingerprint,
+                                                })
+                                                .await;
+                                        });
+                                        replay_started = true;
+                                    }
+                                }
+                            }
+                            if !replay_started {
+                                queue_pending_gate_task(
+                                    &mut pending_gate_tasks,
+                                    &event_plan_id,
+                                    &event_task_id,
+                                );
+                                apply_agent_completion(&mut executor, &plan_id, &tui);
+                            }
                         }
                         save_snapshot(config, &executor, &paths, &mut state, &merge_queue, &gate_thresholds, &snapshot_writer);
                     }
@@ -3302,6 +3926,61 @@ pub async fn run(
 
                     save_snapshot(config, &executor, &paths, &mut state, &merge_queue, &gate_thresholds, &snapshot_writer);
                 }
+            }
+
+            // ─── Branch 1b: isolated Premium reflex replay ─────────
+            Some(replay) = candidate_replay_rx.recv() => {
+                if !attempt_ownership.event_is_eligible(
+                    &replay.attempt,
+                    AttemptPhase::AwaitingGate,
+                    replay.effect,
+                ) {
+                    debug!(attempt = %replay.attempt.key(), "dropping stale reflex replay result");
+                    pending_promotion_candidates.remove(&replay.attempt);
+                    continue;
+                }
+                restore_task_runtime(&mut state, &task_runtime_states, &replay.attempt);
+                if replay.succeeded
+                    && let Some(expected_source_fingerprint) = replay.expected_source_fingerprint
+                {
+                    let source_workdir = tracked_attempt_workdir(&worktrees, &replay.attempt);
+                    if let Some(source_workdir) = source_workdir {
+                        pending_promotion_candidates.insert(
+                            replay.attempt.clone(),
+                            PendingPromotionCandidate {
+                                candidate: replay.candidate,
+                                source_workdir,
+                                expected_source_fingerprint,
+                            },
+                        );
+                    }
+                    info!(
+                        attempt = %replay.attempt.key(),
+                        "isolated reflex replay reproduced source delta and passed gates"
+                    );
+                } else {
+                    let detail = replay.detail.chars().take(512).collect::<String>();
+                    debug!(
+                        attempt = %replay.attempt.key(),
+                        %detail,
+                        "reflex promotion candidate skipped"
+                    );
+                }
+                queue_pending_gate_task(
+                    &mut pending_gate_tasks,
+                    &replay.attempt.plan_id,
+                    &replay.attempt.task_id,
+                );
+                apply_agent_completion(&mut executor, &replay.attempt.plan_id, &tui);
+                save_snapshot(
+                    config,
+                    &executor,
+                    &paths,
+                    &mut state,
+                    &merge_queue,
+                    &gate_thresholds,
+                    &snapshot_writer,
+                );
             }
 
             // ─── Branch 2: Verify completions ─────────────────────────
@@ -3989,6 +4668,64 @@ pub async fn run(
                         &snapshot_writer,
                     );
                     continue;
+                }
+
+                if completion.kind == GateCompletionKind::Gate {
+                    if !completion.passed {
+                        if let Some(fired) = fired_reflexes.remove(&completion_attempt) {
+                            record_reflex_failure(
+                                reflex_store.as_ref(),
+                                &mut promotion_tracker,
+                                fired,
+                                &completion_attempt,
+                                &paths,
+                                &mut feedback_tasks,
+                            );
+                        }
+                        pending_promotion_candidates.remove(&completion_attempt);
+                        t2_observations.remove(&completion_attempt);
+                        reflex_attempted.remove(&completion_attempt);
+                    } else if completion.rung >= config.max_gate_rung {
+                        if let Some(fired) = fired_reflexes.remove(&completion_attempt) {
+                            reflex_store.record_gate_pass_for(fired.rule_id);
+                        }
+                        if let Some(pending) =
+                            pending_promotion_candidates.remove(&completion_attempt)
+                        {
+                            let source_fingerprint = gate_dispatch::reflex_input_fingerprint(
+                                pending.source_workdir.clone(),
+                            )
+                            .await;
+                            if source_fingerprint.as_ref()
+                                == Ok(&pending.expected_source_fingerprint)
+                            {
+                                match promotion_tracker.record_success(&pending.candidate) {
+                                    Ok(fires) => {
+                                        if reflex_store.try_promote(&pending.candidate, fires) {
+                                            info!(
+                                                attempt = %completion_attempt.key(),
+                                                fires,
+                                                action = %pending.candidate.action.args,
+                                                "promoted replay-proven Premium decision to T0 reflex"
+                                            );
+                                        }
+                                    }
+                                    Err(error) => warn!(
+                                        attempt = %completion_attempt.key(),
+                                        %error,
+                                        "failed to persist reflex promotion evidence"
+                                    ),
+                                }
+                            } else {
+                                warn!(
+                                    attempt = %completion_attempt.key(),
+                                    "source delta changed after replay proof; promotion skipped"
+                                );
+                            }
+                        }
+                        t2_observations.remove(&completion_attempt);
+                        reflex_attempted.remove(&completion_attempt);
+                    }
                 }
 
                 if completion.passed && completion.rung < config.max_gate_rung {
@@ -4988,6 +5725,13 @@ pub async fn run(
                         playbook_store: &playbook_store,
                         task_knowledge_ids: &mut task_knowledge_ids,
                         verdict_publisher: &verdict_publisher,
+                        cancel: &cancel,
+                        reflex_store: &reflex_store,
+                        fired_reflexes: &mut fired_reflexes,
+                        reflex_attempted: &mut reflex_attempted,
+                        t2_observations: &mut t2_observations,
+                        promotion_tracker: &mut promotion_tracker,
+                        feedback_tasks: &mut feedback_tasks,
                         telemetry_sink: &telemetry_sink,
                         github_ops: &github_ops,
                         github_workflow: &github_workflow,
@@ -8948,6 +9692,28 @@ fn retain_preflight_after_capacity<T>(
     Some(permit)
 }
 
+fn exact_dispatch_continuation<R>(
+    ownership: &AttemptOwnership<R>,
+    plan_id: &str,
+) -> Option<TaskAttemptRef> {
+    ownership.attempts().into_iter().find(|attempt| {
+        attempt.plan_id == plan_id
+            && ownership.event_is_eligible(attempt, AttemptPhase::Dispatching, EffectRef(0))
+    })
+}
+
+fn resolved_attempt_ref(
+    plan_id: &str,
+    task_id: &str,
+    plan_iteration: u32,
+    continuation: Option<&TaskAttemptRef>,
+) -> TaskAttemptRef {
+    continuation
+        .filter(|attempt| attempt.plan_id == plan_id && attempt.task_id == task_id)
+        .cloned()
+        .unwrap_or_else(|| TaskAttemptRef::new(plan_id, task_id, plan_iteration))
+}
+
 async fn dispatch_action(
     action: &ExecutorAction,
     ctx: &mut RunContext<'_>,
@@ -9112,15 +9878,23 @@ async fn dispatch_action(
 
             // Resolve sentinel task names ("next", "fix", etc.) to actual task IDs
             // by walking the plan's DAG and finding the first ready task.
-            let resolved_task = if task == "next" || task == "fix" || task == "regen-verify" {
+            let is_task_sentinel = task == "next" || task == "fix" || task == "regen-verify";
+            let exact_continuation = is_task_sentinel
+                .then(|| exact_dispatch_continuation(ctx.attempt_ownership, plan_id))
+                .flatten();
+            let resolved_task = if is_task_sentinel {
                 let completed = ctx.state.plan_completed_tasks(plan_id);
                 let completed_plans = completed_plan_ids(ctx.executor, ctx.task_index);
                 let plan_tasks = task_refs_for_plan(ctx.task_index, plan_id);
-                let next_ready_task = {
-                    let task_dag = &*ctx.task_dag;
-                    task_dag.next_ready_task(plan_id, &plan_tasks, completed, &completed_plans)
-                };
-                next_ready_task.map(|task| task.id.clone())
+                exact_continuation.as_ref().map_or_else(
+                    || {
+                        let task_dag = &*ctx.task_dag;
+                        task_dag
+                            .next_ready_task(plan_id, &plan_tasks, completed, &completed_plans)
+                            .map(|task| task.id.clone())
+                    },
+                    |attempt| Some(attempt.task_id.clone()),
+                )
             } else if matches!(task.as_str(), "review" | "doc-revision" | "docs" | "enrich") {
                 if ctx.state.current_task.is_empty() {
                     ctx.task_index
@@ -9233,12 +10007,18 @@ async fn dispatch_action(
                 }
             };
 
-            let attempt_num = ctx
+            let plan_iteration = ctx
                 .executor
                 .plan_state(plan_id)
                 .map(|state| state.iteration)
                 .unwrap_or(1);
-            let attempt_ref = TaskAttemptRef::new(plan_id.clone(), task_id.clone(), attempt_num);
+            let attempt_ref = resolved_attempt_ref(
+                plan_id,
+                &task_id,
+                plan_iteration,
+                exact_continuation.as_ref(),
+            );
+            let attempt_num = attempt_ref.attempt;
             let continuing_preflight = ctx.attempt_ownership.event_is_eligible(
                 &attempt_ref,
                 AttemptPhase::Dispatching,
@@ -9843,6 +10623,259 @@ async fn dispatch_action(
                 }
             }
 
+            let task_observation = reflex::observation_for_task(task_def, &previous_gate_output);
+            let reflex_may_match = !ctx.reflex_attempted.contains(&attempt_ref)
+                && ctx.reflex_store.has_match(&task_observation);
+            // Reserve the global/plan slot before mutating match counters, but
+            // defer the DAG running transition until the action has passed
+            // authorization. Failed/malformed rules therefore fall through to
+            // the original late provider admission path without leaving DAG
+            // state running across provider-resolution early returns.
+            let mut reflex_capacity = None;
+            if reflex_may_match && !continuing_preflight {
+                let Some(permit) = ctx.task_capacity.try_acquire(plan_id) else {
+                    debug!(
+                        plan_id,
+                        task_id, "capacity unavailable for matching T0 reflex — delaying dispatch"
+                    );
+                    return ActionDispatchOutcome::Noop;
+                };
+                reflex_capacity = Some(permit);
+            }
+            if reflex_may_match {
+                if let Some(matched) = ctx
+                    .reflex_store
+                    .match_observation_with_id(&task_observation)
+                {
+                    let condition = Some(matched.condition.clone());
+                    let effective_contract = effective_agent_contract(role, task_def);
+                    let authorized = condition.as_ref().and_then(|_| {
+                        reflex::authorize_action(
+                            &matched.action,
+                            ctx.config.safety_layer.as_ref(),
+                            effective_contract,
+                            task_def,
+                            &plan_workdir,
+                            &ctx.config.workdir,
+                            agent_dispatch_timeout(ctx.config),
+                            Some(Arc::new(RunnerToolCancel(ctx.cancel.clone()))),
+                        )
+                        .map_err(|error| {
+                            warn!(
+                                attempt = %attempt_ref.key(),
+                                rule_id = %matched.rule_id,
+                                %error,
+                                "T0 reflex rejected; falling back to provider"
+                            );
+                        })
+                        .ok()
+                    });
+                    ctx.reflex_attempted.insert(attempt_ref.clone());
+                    if condition.is_some() && authorized.is_some() {
+                        if !continuing_preflight {
+                            if is_dag_task_spawn && !ctx.task_dag.mark_running(plan_id, &task_id) {
+                                debug!(
+                                    plan_id,
+                                    task_id, "matching T0 task is already running in DAG"
+                                );
+                                return ActionDispatchOutcome::Noop;
+                            }
+                            task_permit = reflex_capacity.take();
+                        }
+                        let condition = condition
+                            .clone()
+                            .expect("checked T0 rule condition must be present");
+                        let (call, tool_context, safety) =
+                            authorized.expect("checked T0 authorization must be present");
+                        let agent_id = format!("{plan_id}/{task_id}");
+                        let agent_effect = EffectRef((u64::from(attempt_num) << 32) | 0x00ff_ff00);
+                        let mut dispatch_claim = if continuing_preflight {
+                            ctx.attempt_ownership
+                                .claim_phase(&attempt_ref, AttemptPhase::Dispatching, EffectRef(0))
+                                .expect("failed preflight continuation must remain claimable")
+                        } else {
+                            ctx.attempt_ownership
+                                .insert(
+                                    attempt_ref.clone(),
+                                    AttemptOwner::new(AttemptPhase::Dispatching, agent_effect),
+                                    AgentRuntimeResource::Dispatching(
+                                        task_permit
+                                            .take()
+                                            .expect("T0 dispatch must own task capacity"),
+                                    ),
+                                )
+                                .expect("checked T0 dispatch owner must be unique");
+                            ctx.attempt_ownership
+                                .claim_phase(&attempt_ref, AttemptPhase::Dispatching, agent_effect)
+                                .expect("new T0 dispatch ownership must be claimable")
+                        };
+                        let run_id = ctx.state.run_id().to_string();
+                        ctx.sink.task_started(
+                            plan_id,
+                            &task_id,
+                            role,
+                            &task_def.title,
+                            attempt_num,
+                        );
+                        emit_runner_event(
+                            ctx.paths,
+                            ctx.state,
+                            ctx.tui,
+                            ctx.config,
+                            RunnerEvent::task_attempt_started(
+                                &run_id,
+                                attempt_ref.clone(),
+                                &task_def.title,
+                            ),
+                        );
+                        emit_runner_event(
+                            ctx.paths,
+                            ctx.state,
+                            ctx.tui,
+                            ctx.config,
+                            RunnerEvent::agent_dispatch_started(
+                                &run_id,
+                                attempt_ref.clone(),
+                                &agent_id,
+                                role,
+                                "t0-reflex",
+                            ),
+                        );
+
+                        let routed_tx = ctx.agent_tx.clone();
+                        let routed_attempt = attempt_ref.clone();
+                        let routed_agent_id = agent_id.clone();
+                        let action = matched.action.clone();
+                        let handle = tokio::spawn(async move {
+                            let send = |event| {
+                                routed_tx.send(RoutedAgentEvent::for_attempt(
+                                    routed_attempt.clone(),
+                                    agent_effect,
+                                    routed_agent_id.clone(),
+                                    event,
+                                ))
+                            };
+                            if send(AgentEvent::Started {
+                                agent_id: routed_agent_id.clone(),
+                                provider: "t0-reflex".to_string(),
+                                model: "t0-reflex".to_string(),
+                                pid: None,
+                            })
+                            .await
+                            .is_err()
+                            {
+                                return false;
+                            }
+                            let _ = send(AgentEvent::ToolCall {
+                                id: "t0-reflex".to_string(),
+                                name: action.tool.clone(),
+                            })
+                            .await;
+                            let (succeeded, output) =
+                                reflex::execute_action(call, tool_context, safety).await;
+                            let bounded_output = output.chars().take(16_384).collect::<String>();
+                            let _ = send(AgentEvent::ToolOutput {
+                                id: "t0-reflex".to_string(),
+                                output: bounded_output.clone(),
+                            })
+                            .await;
+                            if !succeeded {
+                                let _ = send(AgentEvent::Error {
+                                    message: bounded_output,
+                                })
+                                .await;
+                            }
+                            let _ = send(AgentEvent::TurnCompleted {
+                                session_id: None,
+                                total_cost_usd: Some(0.0),
+                                num_turns: Some(0),
+                                is_error: !succeeded,
+                            })
+                            .await;
+                            succeeded
+                        });
+
+                        let AgentRuntimeResource::Dispatching(permit) = dispatch_claim
+                            .replace_resource(AgentRuntimeResource::AwaitingGate { permit: None })
+                        else {
+                            unreachable!("T0 dispatch claim must own capacity")
+                        };
+                        dispatch_claim.set_agent(agent_id.clone(), None);
+                        dispatch_claim
+                            .replace_resource(AgentRuntimeResource::Reflex { handle, permit });
+                        ctx.attempt_ownership
+                            .transition_claim(dispatch_claim, AttemptPhase::Agent, agent_effect)
+                            .expect("T0 dispatch must retain exact ownership");
+                        ctx.fired_reflexes.insert(
+                            attempt_ref.clone(),
+                            FiredReflex {
+                                rule_id: matched.rule_id,
+                                action: matched.action,
+                                condition,
+                            },
+                        );
+                        ctx.state.agent_active = true;
+                        transition_task_runtime(
+                            ctx.task_runtime_states,
+                            &attempt_ref,
+                            TaskTimingPhase::Agent,
+                            Instant::now(),
+                        );
+                        capture_task_runtime(ctx.task_runtime_states, ctx.state, plan_id, &task_id);
+                        emit_runner_event(
+                            ctx.paths,
+                            ctx.state,
+                            ctx.tui,
+                            ctx.config,
+                            RunnerEvent::agent_dispatch_completed(
+                                &run_id,
+                                attempt_ref.clone(),
+                                &agent_id,
+                                AgentDispatchOutcome::Spawned,
+                                Some("t0-reflex".to_string()),
+                                None,
+                                None,
+                            ),
+                        );
+                        ctx.tui.agent_spawned(
+                            &agent_id,
+                            plan_id,
+                            &task_id,
+                            attempt_ref.attempt,
+                            role,
+                            "t0-reflex",
+                        );
+                        ctx.tui
+                            .task_started(plan_id, &task_id, &task_def.title, "reflex");
+                        return ActionDispatchOutcome::AgentStarted {
+                            plan_id: plan_id.clone(),
+                            task_id,
+                        };
+                    }
+
+                    let fired = FiredReflex {
+                        rule_id: matched.rule_id,
+                        action: matched.action,
+                        condition: condition.unwrap_or(ReflexCondition {
+                            tool: None,
+                            args_pattern: None,
+                            context: task_observation.context.clone(),
+                            message_type: Some("task".to_string()),
+                            file_ext: None,
+                        }),
+                    };
+                    record_reflex_failure(
+                        ctx.reflex_store,
+                        ctx.promotion_tracker,
+                        fired,
+                        &attempt_ref,
+                        ctx.paths,
+                        ctx.feedback_tasks,
+                    );
+                }
+            }
+            drop(reflex_capacity);
+
             ctx.state.total_agent_calls += 1;
             ctx.state.task_agent_calls += 1;
 
@@ -10222,6 +11255,10 @@ async fn dispatch_action(
             ctx.tui
                 .model_selected(plan_id, &task_id, &requested_model, &selected_source);
             let mut system_prompt = dispatch_plan.prompt.system_prompt;
+            if configured_model_tier(ctx.config, &requested_model) == ModelTier::Premium {
+                system_prompt.push_str("\n\n");
+                system_prompt.push_str(reflex::CANDIDATE_PROMPT);
+            }
             if let Some(section) = format_when_then_playbooks(&matched_playbooks) {
                 system_prompt.push_str("\n\n");
                 system_prompt.push_str(&section);
@@ -10455,7 +11492,44 @@ async fn dispatch_action(
                 }
             };
 
-            if !continuing_preflight {
+            let actual_model = match &dispatch {
+                ResolvedAgentRuntime::Cli { model, .. }
+                | ResolvedAgentRuntime::Bridge { model, .. } => model,
+            };
+            if configured_model_tier(ctx.config, actual_model) == ModelTier::Premium {
+                match std::process::Command::new("git")
+                    .args(["rev-parse", "--verify", "HEAD^{commit}"])
+                    .current_dir(&plan_workdir)
+                    .env("GIT_TERMINAL_PROMPT", "0")
+                    .output()
+                {
+                    Ok(output) if output.status.success() => {
+                        let baseline_oid =
+                            String::from_utf8_lossy(&output.stdout).trim().to_string();
+                        if !baseline_oid.is_empty() {
+                            ctx.t2_observations.insert(
+                                attempt_ref.clone(),
+                                T2AttemptEvidence {
+                                    observation: task_observation.clone(),
+                                    baseline_oid,
+                                },
+                            );
+                        }
+                    }
+                    Ok(output) => warn!(
+                        attempt = %attempt_ref.key(),
+                        stderr = %String::from_utf8_lossy(&output.stderr).trim(),
+                        "Premium reflex baseline capture failed; promotion disabled"
+                    ),
+                    Err(error) => warn!(
+                        attempt = %attempt_ref.key(),
+                        %error,
+                        "Premium reflex baseline capture failed; promotion disabled"
+                    ),
+                }
+            }
+
+            if !continuing_preflight && task_permit.is_none() {
                 let Some(permit) = begin_task_capacity(ctx, plan_id, &task_id, is_dag_task_spawn)
                 else {
                     prompt_experiment_guard.keep_prepared();
@@ -14048,6 +15122,25 @@ async fn cancel_exact_attempt(
     );
     let mut retained_permit;
     match resource {
+        AgentRuntimeResource::Reflex { handle, permit } => {
+            handle.abort();
+            let mut errors = Vec::new();
+            unexpected_cancel_join("T0 reflex", handle.await.map(|_| ()), &mut errors);
+            if !errors.is_empty() {
+                restore_failed_cancellation(
+                    ownership,
+                    claim,
+                    AgentRuntimeResource::CleanupFailed {
+                        permit: Some(permit),
+                        gate_effect: None,
+                        errors: errors.clone(),
+                        pending_terminal: None,
+                    },
+                );
+                return record_cancellation_failure(attempt, errors, state, paths, tui, config);
+            }
+            retained_permit = Some(permit);
+        }
         AgentRuntimeResource::Cli {
             handle,
             forwarder,
@@ -17010,6 +18103,280 @@ async fn compute_target_dir_size_bytes(target_dir: &Path) -> u64 {
 mod tests {
     use super::*;
     use crate::task_parser::TasksFile;
+    use tempfile::TempDir;
+
+    #[test]
+    fn retained_dispatch_continuation_keeps_exact_attempt_across_plan_rollover() {
+        let retained = TaskAttemptRef::new("plan", "task", 3);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                retained.clone(),
+                AttemptOwner::new(AttemptPhase::Dispatching, EffectRef(0)),
+                (),
+            )
+            .expect("insert retained continuation");
+
+        let continuation =
+            exact_dispatch_continuation(&ownership, "plan").expect("exact continuation");
+        let resolved = resolved_attempt_ref("plan", "task", 4, Some(&continuation));
+
+        assert_eq!(resolved, retained);
+        assert_eq!(resolved.attempt, 3);
+    }
+
+    #[test]
+    fn t0_same_attempt_fallback_requires_plain_read_only_executor_failure() {
+        let confirmed_failure = AgentSettlement {
+            exit_code: Some(1),
+            errors: Vec::new(),
+            unconfirmed: None,
+            permit: None,
+            needs_provider_outcome_recording: false,
+        };
+        let action = |args: &str| ReflexAction {
+            tool: "bash".to_string(),
+            args: args.to_string(),
+        };
+
+        assert!(t0_executor_failure_allows_provider_fallback(
+            Some(&confirmed_failure),
+            false,
+            &action("rg missing src")
+        ));
+        assert!(!t0_executor_failure_allows_provider_fallback(
+            Some(&confirmed_failure),
+            false,
+            &action("cargo test --offline")
+        ));
+        assert!(!t0_executor_failure_allows_provider_fallback(
+            Some(&confirmed_failure),
+            false,
+            &action("git status")
+        ));
+        assert!(!t0_executor_failure_allows_provider_fallback(
+            Some(&confirmed_failure),
+            true,
+            &action("rg missing src")
+        ));
+
+        let join_failure = AgentSettlement {
+            exit_code: None,
+            errors: vec!["worker join failed".to_string()],
+            unconfirmed: None,
+            permit: None,
+            needs_provider_outcome_recording: false,
+        };
+        assert!(!t0_executor_failure_allows_provider_fallback(
+            Some(&join_failure),
+            false,
+            &action("rg missing src")
+        ));
+    }
+
+    fn replay_git(workdir: &Path, args: &[&str]) -> std::process::Output {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(workdir)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .expect("run replay fixture git command")
+    }
+
+    struct ReplayFixture {
+        _repo: TempDir,
+        repo_root: PathBuf,
+        source_workdir: PathBuf,
+        baseline_oid: String,
+        task: TaskDef,
+    }
+
+    async fn replay_fixture() -> ReplayFixture {
+        let repo = TempDir::new().expect("temporary replay fixture");
+        let repo_root = repo.path().to_path_buf();
+        assert!(replay_git(&repo_root, &["init"]).status.success());
+        assert!(
+            replay_git(
+                &repo_root,
+                &["config", "user.email", "roko@example.invalid"]
+            )
+            .status
+            .success()
+        );
+        assert!(
+            replay_git(&repo_root, &["config", "user.name", "Roko Test"])
+                .status
+                .success()
+        );
+        std::fs::create_dir_all(repo_root.join("src")).expect("create source directory");
+        std::fs::write(
+            repo_root.join("Cargo.toml"),
+            "[package]\nname='reflex-replay-fixture'\nversion='0.1.0'\nedition='2024'\n",
+        )
+        .expect("write replay Cargo.toml");
+        std::fs::write(
+            repo_root.join("src/lib.rs"),
+            "pub fn answer() -> u8 { 42 }\n",
+        )
+        .expect("write replay crate");
+        std::fs::write(
+            repo_root.join("build.rs"),
+            "fn main() { std::fs::write(\"generated.txt\", b\"generated\\n\").expect(\"generate\"); }\n",
+        )
+        .expect("write deterministic replay build script");
+        std::fs::write(repo_root.join(".gitignore"), "/target\n").expect("write replay gitignore");
+        let lock = std::process::Command::new("cargo")
+            .args(["generate-lockfile", "--offline"])
+            .current_dir(&repo_root)
+            .output()
+            .expect("generate replay lockfile");
+        assert!(
+            lock.status.success(),
+            "lockfile generation failed: {lock:?}"
+        );
+        assert!(replay_git(&repo_root, &["add", "."]).status.success());
+        assert!(
+            replay_git(&repo_root, &["commit", "-m", "fixture"])
+                .status
+                .success()
+        );
+        let baseline = replay_git(&repo_root, &["rev-parse", "HEAD"]);
+        assert!(baseline.status.success());
+        let baseline_oid = String::from_utf8_lossy(&baseline.stdout).trim().to_string();
+        let source_manager = WorktreeManager::new(WorktreeConfig {
+            repo_root: repo_root.clone(),
+            base_branch: baseline_oid.clone(),
+            worktrees_root: repo_root.join(".roko/source-worktrees"),
+            max_live: None,
+            idle_ttl: Duration::from_secs(60),
+        });
+        let source = source_manager
+            .create("source", "roko/test/reflex-source")
+            .await
+            .expect("create Premium source fixture");
+        let source_test = std::process::Command::new("cargo")
+            .args(["test", "--offline"])
+            .current_dir(&source.path)
+            .output()
+            .expect("materialize Premium source delta");
+        assert!(
+            source_test.status.success(),
+            "source cargo test failed: {source_test:?}"
+        );
+        assert!(source.path.join("generated.txt").is_file());
+        let task = serde_json::from_value(serde_json::json!({
+            "id": "verify",
+            "title": "run cargo test",
+            "allowed_tools": ["bash"],
+            "timeout_secs": 120
+        }))
+        .expect("replay task definition");
+        ReplayFixture {
+            _repo: repo,
+            repo_root,
+            source_workdir: source.path,
+            baseline_oid,
+            task,
+        }
+    }
+
+    fn replay_spec(fixture: &ReplayFixture, action: &str) -> CandidateReplaySpec {
+        CandidateReplaySpec {
+            attempt: TaskAttemptRef::new("plan", "verify", 1),
+            candidate: PromotionCandidate {
+                episode_id: "run:plan:verify:1".to_string(),
+                condition: ReflexCondition::default(),
+                action: ReflexAction {
+                    tool: "bash".to_string(),
+                    args: action.to_string(),
+                },
+            },
+            source_workdir: fixture.source_workdir.clone(),
+            baseline_oid: fixture.baseline_oid.clone(),
+            repo_root: fixture.repo_root.clone(),
+            replay_root: fixture.repo_root.join(".roko/worktrees"),
+            safety: None,
+            contract: AgentContract::permissive("implementer"),
+            task: fixture.task.clone(),
+            timeout: Duration::from_secs(120),
+            gates_config: GatesConfig::default(),
+            complexity: PlanComplexity::Trivial,
+            max_gate_rung: 0,
+            gate_sem: Arc::new(tokio::sync::Semaphore::new(1)),
+            target_crates: Vec::new(),
+            task_context: None,
+            main_target_dir: None,
+            allow_empty_delta: false,
+            cancel: CancellationToken::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn candidate_replay_reproduces_nonempty_delta_and_cleans_dirty_checkout() {
+        let fixture = replay_fixture().await;
+        let (succeeded, detail, fingerprint) =
+            run_candidate_replay(replay_spec(&fixture, "cargo test --offline")).await;
+        assert!(succeeded, "replay failed: {detail}");
+        assert!(fingerprint.is_some());
+        let replay_root = fixture.repo_root.join(".roko/worktrees");
+        assert!(
+            std::fs::read_dir(&replay_root)
+                .map(|entries| {
+                    entries.flatten().all(|entry| {
+                        !entry
+                            .file_name()
+                            .to_str()
+                            .is_some_and(exact_reflex_replay_id)
+                    })
+                })
+                .unwrap_or(true),
+            "successful dirty replay checkout must be removed"
+        );
+        let refs = replay_git(
+            &fixture.repo_root,
+            &["for-each-ref", "refs/heads/roko/reflex-replay/"],
+        );
+        assert!(refs.status.success());
+        assert!(
+            refs.stdout.is_empty(),
+            "successful replay ref must be removed"
+        );
+    }
+
+    #[tokio::test]
+    async fn candidate_replay_rejects_action_that_does_not_reproduce_source_delta() {
+        let fixture = replay_fixture().await;
+        let (succeeded, detail, fingerprint) =
+            run_candidate_replay(replay_spec(&fixture, "pwd")).await;
+        assert!(!succeeded);
+        assert!(fingerprint.is_none());
+        assert!(
+            detail.contains("did not reproduce"),
+            "unexpected detail: {detail}"
+        );
+    }
+
+    #[test]
+    fn empty_delta_replay_requires_strict_command_only_intent() {
+        let action = ReflexAction {
+            tool: "bash".to_string(),
+            args: "cargo test".to_string(),
+        };
+        let mut exact: TaskDef = serde_json::from_value(serde_json::json!({
+            "id": "verify",
+            "title": "run cargo test"
+        }))
+        .expect("command-only task");
+        assert!(explicit_command_only_task(&exact, &action));
+
+        exact.title = "Do not run cargo test".to_string();
+        assert!(!explicit_command_only_task(&exact, &action));
+        exact.title = "run cargo test".to_string();
+        exact
+            .acceptance
+            .push("implement the feature first".to_string());
+        assert!(!explicit_command_only_task(&exact, &action));
+    }
 
     #[test]
     fn section_outcome_preserves_scoped_prompt_experiment_attribution() {
@@ -18037,6 +19404,16 @@ slug = "fixture-model"
         let mut playbooks = HashMap::new();
         let playbook_store = PlaybookStore::new(config.layout.playbooks_dir());
         let mut knowledge_ids = HashMap::new();
+        let reflex_store = Arc::new(ReflexStore::open(
+            dir.path().join(".roko/learn/reflexes.jsonl"),
+        ));
+        let mut fired_reflexes = HashMap::new();
+        let mut reflex_attempted = HashSet::new();
+        let mut t2_observations = HashMap::new();
+        let mut promotion_tracker =
+            PromotionTracker::open(dir.path().join(".roko/learn/reflex-candidates.jsonl"));
+        let mut feedback_tasks = tokio::task::JoinSet::new();
+        let cancel = CancellationToken::new();
         let task_capacity = TaskCapacity::new(1, [("plan", 1)]);
         let mut disk_budget =
             DiskBudgetTracker::new(&roko_core::config::ResourcesConfig::default());
@@ -18078,6 +19455,13 @@ slug = "fixture-model"
             playbook_store: &playbook_store,
             task_knowledge_ids: &mut knowledge_ids,
             verdict_publisher: &test_verdict_publisher,
+            cancel: &cancel,
+            reflex_store: &reflex_store,
+            fired_reflexes: &mut fired_reflexes,
+            reflex_attempted: &mut reflex_attempted,
+            t2_observations: &mut t2_observations,
+            promotion_tracker: &mut promotion_tracker,
+            feedback_tasks: &mut feedback_tasks,
             telemetry_sink: &telemetry_sink,
             github_ops: &github_ops,
             github_workflow: &github_workflow,
@@ -18125,6 +19509,251 @@ slug = "fixture-model"
         assert_eq!(timing.gate_ms, 0);
         assert_eq!(timing.total_ms(), timing.dispatch_ms + timing.cleanup_ms);
         assert!(!runtimes.contains_key(&TaskAttemptRef::new("plan", "task", 2).key()));
+    }
+
+    #[tokio::test]
+    async fn matching_t0_reflex_dispatch_bypasses_provider_and_token_counters() {
+        fn git(workdir: &Path, args: &[&str]) {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(workdir)
+                .output()
+                .expect("run git fixture command");
+            assert!(output.status.success(), "git {args:?} failed");
+        }
+
+        let dir = tempfile::tempdir().expect("temp repository");
+        git(dir.path(), &["init"]);
+        git(
+            dir.path(),
+            &["config", "user.email", "roko@example.invalid"],
+        );
+        git(dir.path(), &["config", "user.name", "Roko Test"]);
+        std::fs::write(dir.path().join("README.md"), "fixture\n")
+            .expect("write repository fixture");
+        git(dir.path(), &["add", "."]);
+        git(dir.path(), &["commit", "-m", "initial"]);
+
+        let parsed = TasksFile::parse_str(
+            r#"
+[meta]
+plan = "plan"
+total = 1
+status = "ready"
+
+[[task]]
+id = "task"
+title = "report the isolated worktree"
+status = "ready"
+tier = "focused"
+role = "implementer"
+depends_on = []
+files = []
+verify = []
+allowed_tools = ["bash"]
+"#,
+        )
+        .expect("parse T0 task");
+        let task = parsed.tasks[0].clone();
+        let task_index = HashMap::from([(
+            "plan".to_string(),
+            HashMap::from([("task".to_string(), task.clone())]),
+        )]);
+
+        let missing_cli = dir.path().join("provider-must-not-run");
+        let roko_config = roko_core::config::RokoConfig::from_toml(&format!(
+            r#"
+[agent]
+default_model = "fixture-model"
+command = "{}"
+
+[providers.fixture-cli]
+kind = "claude_cli"
+command = "{}"
+
+[models.fixture-model]
+provider = "fixture-cli"
+slug = "fixture-model"
+"#,
+            missing_cli.display(),
+            missing_cli.display(),
+        ))
+        .expect("parse missing-provider config");
+        let config = RunConfig::from_roko_config(
+            dir.path().to_path_buf(),
+            dir.path().join("plan.md"),
+            roko_config,
+        );
+        let prompt_cache = Arc::new(PromptCache::load(dir.path()));
+        let factory = SharedAgentFactory::new(
+            config.roko_config.clone().expect("runner config"),
+            None,
+            config.cascade_router.clone(),
+            Some(Arc::clone(&prompt_cache)),
+        )
+        .await;
+
+        let reflex_store = Arc::new(ReflexStore::open(
+            dir.path().join(".roko/learn/reflexes.jsonl"),
+        ));
+        let observation = reflex::observation_for_task(&task, "");
+        let candidate = PromotionCandidate {
+            episode_id: "seed".to_string(),
+            condition: ReflexCondition {
+                tool: None,
+                args_pattern: None,
+                context: observation.context.clone(),
+                message_type: Some("task".to_string()),
+                file_ext: None,
+            },
+            action: ReflexAction {
+                tool: "bash".to_string(),
+                args: "pwd".to_string(),
+            },
+        };
+        assert!(reflex_store.try_promote(&candidate, 3));
+
+        let mut executor = ParallelExecutor::new(ExecutorConfig::default());
+        executor.add_plan(OrcPlanState::new("plan"));
+        executor
+            .apply_event("plan", &ExecutorEvent::Start)
+            .expect("start plan");
+        executor
+            .apply_event("plan", &ExecutorEvent::EnrichmentDone)
+            .expect("enter implementing");
+        let mut task_dag = TaskDag::new(DagConfig::default());
+        let mut state = RunState::new(1);
+        let mut runtimes = HashMap::new();
+        let paths = PersistPaths::from_workdir(dir.path()).expect("persist paths");
+        let state_hub = StateHub::default_capacity();
+        let tui = TuiBridge::new(state_hub.sender());
+        let sink = crate::runner::output_sink::NoopSink;
+        let worktrees = default_runner_worktree_manager(dir.path());
+        let merge_queue = MergeQueue::new();
+        let thresholds = GateThresholds::default();
+        let writer = SnapshotWriter::new(2);
+        let (agent_tx, mut agent_rx) = mpsc::channel(16);
+        let (gate_tx, _gate_rx) = mpsc::channel(8);
+        let mut ownership = AttemptOwnership::default();
+        let mut pending = HashMap::new();
+        let mut legacy = HashMap::new();
+        let mut preflight = HashSet::new();
+        let mut baseline_gate_failures = HashMap::new();
+        let mut diagnostics = HashMap::new();
+        let mut playbooks = HashMap::new();
+        let playbook_store = PlaybookStore::new(config.layout.playbooks_dir());
+        let mut knowledge_ids = HashMap::new();
+        let mut fired_reflexes = HashMap::new();
+        let mut reflex_attempted = HashSet::new();
+        let mut t2_observations = HashMap::new();
+        let mut promotion_tracker =
+            PromotionTracker::open(dir.path().join(".roko/learn/reflex-candidates.jsonl"));
+        let mut feedback_tasks = tokio::task::JoinSet::new();
+        let cancel = CancellationToken::new();
+        let task_capacity = TaskCapacity::new(1, [("plan", 1)]);
+        let mut disk_budget =
+            DiskBudgetTracker::new(&roko_core::config::ResourcesConfig::default());
+        let verdict_publisher = roko_gate::VerdictPublisher::new(Arc::new(|_pulse| {}));
+        let telemetry_sink: Arc<dyn TelemetryEventSink> =
+            Arc::new(StateHubTelemetrySink::new(state_hub.sender()));
+        let github_ops: Arc<dyn GitHubOps> = Arc::new(NoOpGitHubOps);
+        let github_workflow = GitHubWorkflow::start(Default::default(), false);
+
+        let outcome = {
+            let mut ctx = RunContext {
+                executor: &mut executor,
+                task_dag: &mut task_dag,
+                task_index: &task_index,
+                skip_enrichment: &HashMap::new(),
+                config: &config,
+                sink: &sink,
+                tui: &tui,
+                state: &mut state,
+                attempt_ownership: &mut ownership,
+                pending_gate_tasks: &mut pending,
+                agent_tx: &agent_tx,
+                gate_tx: &gate_tx,
+                fatal_tx: agent_tx.clone(),
+                paths: &paths,
+                merge_queue: &merge_queue,
+                worktrees: &worktrees,
+                gate_thresholds: &thresholds,
+                snapshot_writer: &writer,
+                prompt_cache: &prompt_cache,
+                factory: &factory,
+                task_capacity: &task_capacity,
+                disk_budget: &mut disk_budget,
+                gate_sem: Arc::new(tokio::sync::Semaphore::new(1)),
+                task_runtime_states: &mut runtimes,
+                legacy_gate_attempts: &mut legacy,
+                preflight_attempted: &mut preflight,
+                baseline_gate_failures: &mut baseline_gate_failures,
+                section_diagnostics: &mut diagnostics,
+                task_playbook_ids: &mut playbooks,
+                playbook_store: &playbook_store,
+                task_knowledge_ids: &mut knowledge_ids,
+                verdict_publisher: &verdict_publisher,
+                cancel: &cancel,
+                reflex_store: &reflex_store,
+                fired_reflexes: &mut fired_reflexes,
+                reflex_attempted: &mut reflex_attempted,
+                t2_observations: &mut t2_observations,
+                promotion_tracker: &mut promotion_tracker,
+                feedback_tasks: &mut feedback_tasks,
+                telemetry_sink: &telemetry_sink,
+                github_ops: &github_ops,
+                github_workflow: &github_workflow,
+            };
+            dispatch_action(
+                &ExecutorAction::SpawnAgent {
+                    plan_id: "plan".to_string(),
+                    role: AgentRole::Implementer,
+                    task: "task".to_string(),
+                },
+                &mut ctx,
+            )
+            .await
+        };
+
+        assert!(matches!(
+            outcome,
+            ActionDispatchOutcome::AgentStarted { .. }
+        ));
+        assert_eq!(state.total_agent_calls, 0);
+        assert_eq!(state.task_agent_calls, 0);
+        assert_eq!(state.tokens_in, 0);
+        assert_eq!(state.tokens_out, 0);
+        assert_eq!(state.cost_usd, 0.0);
+        assert!(
+            !missing_cli.exists(),
+            "provider executable must remain untouched"
+        );
+
+        let mut saw_started = false;
+        let mut saw_tool_output = false;
+        let mut saw_completed = false;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(routed) = agent_rx.recv().await {
+                if let RoutedAgentEvent::Agent { event, .. } = routed {
+                    match event {
+                        AgentEvent::Started { provider, .. } => {
+                            saw_started = provider == "t0-reflex";
+                        }
+                        AgentEvent::ToolOutput { output, .. } => {
+                            saw_tool_output = output.contains(".roko/worktrees");
+                        }
+                        AgentEvent::TurnCompleted { is_error, .. } => {
+                            saw_completed = !is_error;
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        })
+        .await
+        .expect("T0 reflex event sequence");
+        assert!(saw_started && saw_tool_output && saw_completed);
     }
 
     #[test]
@@ -23669,5 +25298,55 @@ mod tests_disk_budget_tracker {
                 .collect::<Vec<_>>(),
             vec![0, 1, 1, 2, 1, 0]
         );
+    }
+
+    #[tokio::test]
+    async fn stale_reflex_replay_cleanup_preserves_live_lease_then_reclaims_dirty_checkout() {
+        let repo = TempDir::new().expect("temporary replay repository");
+        git(repo.path(), &["init"]);
+        git(
+            repo.path(),
+            &["config", "user.email", "roko@example.invalid"],
+        );
+        git(repo.path(), &["config", "user.name", "Roko Test"]);
+        std::fs::write(repo.path().join("README.md"), "fixture\n").expect("write replay fixture");
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "-m", "initial"]);
+
+        let manager = WorktreeManager::new(WorktreeConfig {
+            repo_root: repo.path().to_path_buf(),
+            base_branch: "HEAD".into(),
+            worktrees_root: repo.path().join(".roko/worktrees"),
+            max_live: None,
+            idle_ttl: Duration::from_secs(60),
+        });
+        let id = "reflex-fedcba9876543210fedcba9876543210";
+        let replay = manager
+            .create(id, &format!("roko/reflex-replay/{id}"))
+            .await
+            .expect("create stale replay fixture");
+        std::fs::write(replay.path.join("dirty.txt"), "replayed change\n")
+            .expect("write dirty replay delta");
+        let live_lease = acquire_reflex_replay_lease(repo.path(), id).expect("live replay lease");
+
+        cleanup_stale_reflex_replay_branches(repo.path());
+        assert!(
+            replay.path.exists(),
+            "a live replay lease must be preserved"
+        );
+
+        drop(live_lease);
+        cleanup_stale_reflex_replay_branches(repo.path());
+        assert!(!replay.path.exists(), "stale dirty replay must be removed");
+        let branch = std::process::Command::new("git")
+            .args([
+                "show-ref",
+                "--verify",
+                &format!("refs/heads/{}", replay.branch),
+            ])
+            .current_dir(repo.path())
+            .output()
+            .expect("inspect stale replay branch");
+        assert!(!branch.status.success(), "stale replay ref must be removed");
     }
 }

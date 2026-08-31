@@ -198,10 +198,15 @@ fn convert_agent(m: &MoriConfig) -> AgentConfig {
 fn convert_gates(m: &MoriConfig) -> GatesConfig {
     let d = GatesConfig::default();
     GatesConfig {
+        mode: d.mode,
         clippy_enabled: m.clippy_enabled.unwrap_or(d.clippy_enabled),
         skip_tests: m.skip_tests.unwrap_or(d.skip_tests),
         max_iterations: m.max_iterations.unwrap_or(d.max_iterations),
         cargo_fix_enabled: d.cargo_fix_enabled,
+        impact_timeout_ms: d.impact_timeout_ms,
+        impact_max_reverse_dependents: d.impact_max_reverse_dependents,
+        impact_max_targets: d.impact_max_targets,
+        compile_concurrency: d.compile_concurrency,
         domain_gates: HashMap::new(),
         custom_rungs: Vec::new(),
     }

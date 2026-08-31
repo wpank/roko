@@ -41,6 +41,7 @@ pub mod extension_registry;
 pub mod gate_dispatch;
 pub mod github_workflow;
 pub mod inline_output;
+pub mod impact_analysis;
 pub mod merge;
 pub mod output_sink;
 pub mod persist;

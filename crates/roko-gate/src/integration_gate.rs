@@ -326,6 +326,13 @@ async fn run_build_test(
     for arg in build.scoped_test_args(target_crates) {
         cmd.arg(arg);
     }
+    if build == BuildSystem::Cargo
+        && let Some(profile) = payload
+            .as_ref()
+            .and_then(|payload| payload.cargo_profile.as_deref())
+    {
+        cmd.args(["--profile", profile]);
+    }
     // Append `-- <pattern>` (or build-system equivalent).
     match build {
         BuildSystem::Go => {

@@ -1,11 +1,11 @@
 # 29 — FAST Development
 
-> **Status**: P0 IMPLEMENTED, OPT-IN, EXPERIMENTAL
+> **Status**: P0 + IMPACT-AWARE P1 IMPLEMENTED, OPT-IN, EXPERIMENTAL
 >
 > **Landed**: 2026-08-31 in `a58bdbacbf80d72583edd628354ddb2750a8b822`
 >
 > **Purpose**: Shorten Roko self-development feedback loops while retaining one explicit,
-> bounded verification command and a private evidence record.
+> bounded, impact-aware verification and a private evidence record.
 
 FAST is an operator lane for small, well-scoped implementation tasks. It is not the release lane
 and does not establish that the workspace is globally green.
@@ -62,12 +62,13 @@ work cannot turn a warm target into lock contention.
 ## Required Task Contract
 
 Every task must author exactly one `[[task.verify]]` entry. Zero or multiple entries fail closed.
-Use the narrowest command that proves the changed behavior:
+The authored command should prove behavior; the runner owns compilation and adds the narrowest
+Cargo checks proven by the actual diff:
 
 ```toml
 [[task.verify]]
-phase = "structural"
-command = "cargo check -p roko-core --lib"
+phase = "test"
+command = "cargo test -p roko-core --lib -- config::gates::tests::"
 ```
 
 A focused test, syntax check, or deterministic assertion is also valid when it is the appropriate
@@ -75,9 +76,15 @@ proof. Avoid `cargo test --workspace`, workspace clippy, or another broad comman
 those erase the latency benefit and belong in CI or release verification.
 
 The patching agent is instructed not to run Cargo, tests, clippy, npm, builds, or servers. The
-runner executes the one authored verification command. With `ROKO_TASK_VERIFY_ONLY=1`, the normal
-canonical gate pipeline is skipped; FAST therefore depends on the plan author choosing a meaningful
-command.
+runner executes the authored proof and selects Cargo checks from changed package targets. Exact
+library, binary, integration-test, example, and benchmark roots are recognized, including target
+`required-features`. Shared modules widen to the package's targets. Public/re-export/trait/serde
+contract edits add bounded transitive reverse dependents from `cargo metadata`; ambiguity,
+metadata timeout, workspace build inputs, or cap overflow widens to the full gate.
+
+Gate breadth is explicit under `[gates]`: `none`, `structural`, `focused`, or `full`. Normal mode
+defaults to `full`; `./dev.sh fast` exports `ROKO_GATE_MODE=focused`. Invalid environment values
+fail closed to `full`.
 
 ---
 
@@ -109,7 +116,8 @@ FAST runtime also skips or defers:
 - pre-plan log rotation, stale-target cleanup, and filesystem GC;
 - post-plan log rotation, stale-target cleanup, and filesystem GC;
 - per-task target cleanup, preserving warm incremental artifacts;
-- the canonical gate pipeline when task-owned verification is enabled;
+- the broad canonical gate pipeline when focused impact analysis proves a narrower scope;
+- runner-owned Cargo auto-fix mutation/recompile passes;
 - TUI approval, endpoint probing, browser/TUI screenshots, frontend builds, and agent-started
   servers.
 
@@ -196,7 +204,7 @@ Use the normal runner plus release/CI verification when:
 
 - preparing a release, security sign-off, migration, or broad refactor;
 - correctness requires multiple independent verification commands;
-- a change spans ambiguous Cargo targets or needs reverse-dependency coverage;
+- a high-impact change exceeds the configured reverse-dependent/target caps;
 - endpoint behavior, browser output, or TUI screenshots are acceptance evidence;
 - the agent must compile or run a server interactively to discover the implementation;
 - `target/debug/roko` is missing or does not contain the implementation being exercised;
@@ -222,6 +230,17 @@ Completed for P0:
 - [x] Evidence includes run-scoped status/log collection, safe GET discovery, process inventory,
   optional CLI/text/PNG hooks, metrics, scoring, deterministic debrief, and strict validation.
 - [x] FAST records disk/swap/target resource admission and fails closed under severe disk pressure.
+- [x] Gate breadth is explicit and normal mode remains full by default.
+- [x] Focused gates detect changed lib/bin/test/example/bench targets with required features.
+- [x] Public/high-impact diffs compile bounded transitive reverse-dependent packages.
+- [x] One per-repository compile owner records lock wait, cache mode, command, and duration spans.
+- [x] Runner-owned Cargo gates explicitly select `--profile dev-fast` when that profile exists and
+  set `SKIP_FRONTEND_BUILD=1` in their subprocess environment.
+- [x] Single-module and integration-target Cargo test commands are scoped conservatively.
+- [x] Unchanged pre-existing failures are filtered only by stable structured evidence identity.
+- [x] Planned-vs-actual file misses and impact decisions are emitted as structured logs.
+- [x] Nextest `fast`, `slow`, and `live` profiles are defined; credentialed provider tests remain
+  behind the existing `roko-agent/integration` feature.
 
 Verification completed for the landed P0 change:
 
@@ -237,7 +256,7 @@ Verification completed for the landed P0 change:
 Deferred improvements:
 
 - [ ] Benchmark representative FAST plans and track escaped-regression rates.
-- [ ] Select changed crates plus reverse dependencies and run broad checks asynchronously.
+- [x] Select changed Cargo targets plus bounded reverse dependencies.
 - [ ] Add typed timeout-diff salvage to the normal gate lifecycle.
 - [ ] Deduplicate semantically equivalent verification hidden behind arbitrary shell wrappers.
 - [x] Discover safe GET endpoints and collect optional browser/TUI evidence without making probes

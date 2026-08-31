@@ -82,6 +82,8 @@ pub struct PromptContext {
     pub acceptance_criteria: Vec<String>,
     /// `task.verify` shell commands.
     pub verify_commands: Vec<String>,
+    /// Declared-scope impact warning included before implementation.
+    pub impact_context: String,
     /// Optional structured gate feedback for retry prompts.
     pub gate_feedback: Option<GateFeedback>,
     /// Attempt number (0 = first, > 0 = retry).
@@ -116,6 +118,7 @@ impl PromptContext {
         let prd_excerpt = load_prd_excerpt(&ctx.workdir, &ctx.plan_id);
         let workspace_context = generate_workspace_context(&ctx.workdir);
         let cfactor_context = generate_cfactor_context(&ctx.workdir);
+        let impact_context = declared_impact_context(task);
         tracing::debug!(
             plan_id = %ctx.plan_id,
             workspace_map_bytes = workspace_map.len(),
@@ -136,6 +139,7 @@ impl PromptContext {
                 .iter()
                 .map(|step| step.command.clone())
                 .collect(),
+            impact_context,
             gate_feedback: ctx.gate_feedback.clone(),
             attempt: ctx.attempt,
             prompt_experiment: ctx.prompt_experiment.clone(),
@@ -147,6 +151,39 @@ impl PromptContext {
             cfactor_context,
         }
     }
+}
+
+fn declared_impact_context(task: &TaskDef) -> String {
+    let description = format!(
+        "{} {}",
+        task.title,
+        task.description.as_deref().unwrap_or_default()
+    )
+    .to_ascii_lowercase();
+    let high_impact_terms = [
+        "public", "signature", "struct field", "enum", "trait", "serialize", "serde",
+        "schema", "re-export", "reexport", "api contract",
+    ];
+    let high_impact = !task
+        .context
+        .as_ref()
+        .map_or(true, |context| context.symbols.is_empty())
+        || high_impact_terms
+            .iter()
+            .any(|term| description.contains(term))
+        || task.files.iter().any(|file| file.ends_with("Cargo.toml"));
+    if !high_impact {
+        return "Impact policy: keep the edit private/local when possible; report any newly discovered consumer outside the planned file list.".into();
+    }
+    let files = task
+        .files
+        .iter()
+        .map(|file| format!("`{file}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "Impact policy: this task may change a public, trait, re-export, or serialized contract. Before editing, search every workspace call site/constructor/implementation and report newly discovered consumers. The authorized planned scope is: {files}. Do not silently edit files outside it; surface omissions for plan repair. The runner will compile bounded reverse dependents."
+    )
 }
 
 // ─── PromptContext enrichment helpers ──────────────────────────────────
@@ -941,6 +978,10 @@ fn build_runner_context(task: &TaskDef, ctx: &PromptContext) -> String {
         parts.push(format!("# Verify\nAfter editing, run:\n{list}"));
     }
 
+    if !ctx.impact_context.is_empty() {
+        parts.push(format!("# Change impact\n{}", ctx.impact_context));
+    }
+
     if let Some(allowlist) = task.allowed_tools.as_ref().filter(|l| !l.is_empty()) {
         let joined = allowlist
             .iter()
@@ -1485,6 +1526,7 @@ impl PromptAssembler {
                 || !context.symbols.is_empty()
                 || !context.anti_patterns.is_empty()
                 || !context.prior_failures.is_empty()
+                || context.impact_acknowledgement.is_some()
             {
                 user_prompt.push_str("\n## Task Context\n");
                 for file in &context.read_files {
@@ -1513,6 +1555,11 @@ impl PromptAssembler {
                 for failure in &context.prior_failures {
                     user_prompt.push_str("- Prior failure: ");
                     user_prompt.push_str(failure);
+                    user_prompt.push('\n');
+                }
+                if let Some(reason) = context.impact_acknowledgement.as_deref() {
+                    user_prompt.push_str("- Reviewed impact-scope acknowledgement: ");
+                    user_prompt.push_str(reason);
                     user_prompt.push('\n');
                 }
             }
@@ -2977,6 +3024,7 @@ mod tests {
             files_in_scope: vec!["src/lib.rs".into()],
             acceptance_criteria: vec!["compiles".into()],
             verify_commands: vec!["cargo test".into()],
+            impact_context: "Impact policy: inspect consumers.".into(),
             gate_feedback: None,
             attempt: 0,
             prompt_experiment: None,

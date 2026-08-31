@@ -48,15 +48,99 @@ pub fn run_preflight_checks(
     plans_dir: &Path,
     workdir: &Path,
 ) -> Vec<PreflightCheck> {
-    let mut checks = Vec::with_capacity(7);
+    let mut checks = Vec::with_capacity(8);
     checks.push(check_config(config, workdir));
     checks.push(check_credentials(config, workdir));
     checks.push(check_disk_space(workdir));
     checks.push(check_git_state(workdir));
     checks.push(check_plans_dir(plans_dir));
+    checks.push(check_declared_change_impact(plans_dir));
     checks.push(check_rust_toolchain());
     checks.push(check_stale_lock(workdir));
     checks
+}
+
+fn check_declared_change_impact(plans_dir: &Path) -> PreflightCheck {
+    let mut manifests = Vec::new();
+    if plans_dir.join("tasks.toml").is_file() {
+        manifests.push(plans_dir.join("tasks.toml"));
+    } else if let Ok(entries) = std::fs::read_dir(plans_dir) {
+        manifests.extend(
+            entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path().join("tasks.toml"))
+                .filter(|path| path.is_file()),
+        );
+    }
+    manifests.sort();
+    let mut diagnostics = Vec::new();
+    for manifest in manifests {
+        let Ok(tasks) = crate::task_parser::TasksFile::parse(&manifest) else {
+            continue;
+        };
+        for task in tasks.tasks {
+            let text = format!(
+                "{} {}",
+                task.title,
+                task.description.as_deref().unwrap_or_default()
+            )
+            .to_ascii_lowercase();
+            let likely_contract = [
+                "public", "signature", "struct field", "enum", "trait", "serde", "schema",
+                "re-export", "reexport", "api contract",
+            ]
+            .iter()
+            .any(|term| text.contains(term));
+            if !likely_contract {
+                continue;
+            }
+            let acknowledged = task.context.as_ref().is_some_and(|context| {
+                context
+                    .impact_acknowledgement
+                    .as_deref()
+                    .is_some_and(|reason| !reason.trim().is_empty())
+            });
+            if acknowledged {
+                continue;
+            }
+            let symbols_missing = task
+                .context
+                .as_ref()
+                .is_none_or(|context| context.symbols.is_empty());
+            if symbols_missing {
+                diagnostics.push(format!(
+                    "{}:{} declares a likely public/serialized contract change but no context.symbols; list changed symbols and known consumers",
+                    tasks.meta.plan, task.id
+                ));
+            }
+            if task.files.len() <= 1 {
+                diagnostics.push(format!(
+                    "{}:{} declares a likely cross-crate change with only {} planned file; confirm callers/re-exports or acknowledge the staged scope",
+                    tasks.meta.plan,
+                    task.id,
+                    task.files.len()
+                ));
+            }
+        }
+    }
+    if diagnostics.is_empty() {
+        PreflightCheck {
+            name: "impact",
+            status: PreflightStatus::Pass,
+            message: "declared high-impact task scopes are explicit".into(),
+        }
+    } else {
+        let omitted = diagnostics.len().saturating_sub(3);
+        let mut message = diagnostics.into_iter().take(3).collect::<Vec<_>>().join("; ");
+        if omitted > 0 {
+            message.push_str(&format!("; and {omitted} more"));
+        }
+        PreflightCheck {
+            name: "impact",
+            status: PreflightStatus::Warn,
+            message,
+        }
+    }
 }
 
 /// Print the preflight results in doctor-style format.

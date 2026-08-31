@@ -188,6 +188,25 @@ wave hierarchy widget (#125), plan DAG (#117), queue manifest (#116), push-mode 
 
 ## Architectural Gaps
 
+### Impact analysis uses conservative syntax and Cargo graph evidence -- PARTIAL
+
+Focused verification now maps actual diffs to Cargo lib/bin/test/example/bench targets, honors
+required features, widens shared modules, and compiles bounded transitive reverse dependents for
+public/re-export/trait/serde contract edits. The pre-dispatch prompt and plan preflight surface
+likely public-impact scope omissions, with an explicit reviewed acknowledgement that does not
+expand write authority. This is conservative text/Cargo-graph analysis, not a complete semantic
+`roko-index` reference query: macro-generated public APIs, non-Rust schema consumers, and symbol-
+level call-site enumeration can still require a full lane or operator review. Subsystem:
+runner verification and plan impact analysis.
+
+### FAST baseline filtering requires reproducible structured evidence -- INTENTIONAL BOUNDARY
+
+Preflight failures are filtered only when the post-edit gate has the same normalized structured
+failure evidence (excluding duration). When FAST skips preflight, a failing focused Cargo test is
+rerun once in a bounded detached baseline worktree. Environment-dependent, non-Cargo, unstructured,
+or non-reproducible failures are not waived. This prevents a broad gate name or exit code from
+hiding a genuine regression. Subsystem: gate attribution and retry policy.
+
 ### event_loop.rs is a ~23.1K-line god object -- OPEN
 
 `crates/roko-cli/src/runner/event_loop.rs` (23,074 lines at this audit). Extraction has begun:

@@ -1611,7 +1611,7 @@ struct RunContext<'a> {
     task_runtime_states: &'a mut HashMap<String, TaskRuntimeState>,
     legacy_gate_attempts: &'a mut HashMap<String, TaskAttemptRef>,
     preflight_attempted: &'a mut HashSet<TaskAttemptRef>,
-    baseline_gate_failures: &'a mut HashMap<TaskAttemptRef, Vec<String>>,
+    baseline_gate_failures: &'a mut HashMap<TaskAttemptRef, Vec<GateVerdictSummary>>,
     /// Prompt section diagnostics per attempt key — populated at dispatch,
     /// consumed on gate completion to build SectionOutcomeRecords.
     section_diagnostics: &'a mut HashMap<String, PromptDiagnostics>,
@@ -2979,7 +2979,8 @@ pub async fn run_with_tui_commands(
     let mut task_runtime_states: HashMap<String, TaskRuntimeState> = HashMap::new();
     let mut legacy_gate_attempts: HashMap<String, TaskAttemptRef> = HashMap::new();
     let mut preflight_attempted: HashSet<TaskAttemptRef> = HashSet::new();
-    let mut baseline_gate_failures: HashMap<TaskAttemptRef, Vec<String>> = HashMap::new();
+    let mut baseline_gate_failures: HashMap<TaskAttemptRef, Vec<GateVerdictSummary>> =
+        HashMap::new();
     let mut fired_reflexes: HashMap<TaskAttemptRef, FiredReflex> = HashMap::new();
     let mut reflex_attempted: HashSet<TaskAttemptRef> = HashSet::new();
     let mut t2_observations: HashMap<TaskAttemptRef, T2AttemptEvidence> = HashMap::new();
@@ -4341,7 +4342,7 @@ pub async fn run_with_tui_commands(
                         .verdicts
                         .iter()
                         .filter(|verdict| !verdict.passed)
-                        .map(|verdict| verdict.gate_name.trim_start_matches("baseline:").into())
+                        .cloned()
                         .collect();
                     baseline_gate_failures.insert(completion_attempt.clone(), failures);
                     if !completion.passed {

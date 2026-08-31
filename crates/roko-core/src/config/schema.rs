@@ -768,6 +768,33 @@ impl RokoConfig {
         if let Some(v) = env_fn("ROKO_CLIPPY") {
             self.gates.clippy_enabled = parse_bool_env(&v);
         }
+        if let Some(v) = env_fn("ROKO_GATE_MODE") {
+            self.gates.mode = match v.trim().to_ascii_lowercase().as_str() {
+                "none" => GateMode::None,
+                "structural" => GateMode::Structural,
+                "focused" => GateMode::Focused,
+                "full" => GateMode::Full,
+                // Invalid breadth must never silently weaken verification.
+                _ => {
+                    tracing::warn!(
+                        env = "ROKO_GATE_MODE",
+                        value = %v,
+                        "unknown gate mode; failing closed to full"
+                    );
+                    GateMode::Full
+                }
+            };
+        }
+        if let Some(v) = env_fn("ROKO_COMPILE_CONCURRENCY") {
+            match v.parse::<usize>() {
+                Ok(value) if value > 0 => self.gates.compile_concurrency = value,
+                _ => tracing::warn!(
+                    env = "ROKO_COMPILE_CONCURRENCY",
+                    value = %v,
+                    "compile concurrency must be a positive integer; using configured value"
+                ),
+            }
+        }
 
         if provider_override.is_some() || model_slug_override.is_some() {
             let default_model = self.agent.default_model.trim();
@@ -1169,9 +1196,18 @@ impl RokoConfig {
     fn write_example_gates(out: &mut String, c: &Self) {
         let _ = writeln!(out, "# -- Verification gates --");
         let _ = writeln!(out, "[gates]");
+        let _ = writeln!(out, "mode = \"{}\"", c.gates.mode);
         let _ = writeln!(out, "clippy_enabled = {}", c.gates.clippy_enabled);
         let _ = writeln!(out, "skip_tests = {}", c.gates.skip_tests);
-        let _ = writeln!(out, "max_iterations = {}\n", c.gates.max_iterations);
+        let _ = writeln!(out, "max_iterations = {}", c.gates.max_iterations);
+        let _ = writeln!(out, "impact_timeout_ms = {}", c.gates.impact_timeout_ms);
+        let _ = writeln!(
+            out,
+            "impact_max_reverse_dependents = {}",
+            c.gates.impact_max_reverse_dependents
+        );
+        let _ = writeln!(out, "impact_max_targets = {}", c.gates.impact_max_targets);
+        let _ = writeln!(out, "compile_concurrency = {}\n", c.gates.compile_concurrency);
     }
     fn write_example_routing(out: &mut String, c: &Self) {
         let _ = writeln!(out, "# -- Model routing --");

@@ -138,6 +138,11 @@ impl Verify for ClippyGate {
             for arg in &base[..idx] {
                 cmd.arg(arg);
             }
+            if self.build_system == BuildSystem::Cargo
+                && let Some(profile) = payload.cargo_profile.as_deref()
+            {
+                cmd.args(["--profile", profile]);
+            }
             for arg in &self.extra_args {
                 cmd.arg(arg);
             }
@@ -147,6 +152,11 @@ impl Verify for ClippyGate {
         } else {
             for arg in &base {
                 cmd.arg(arg);
+            }
+            if self.build_system == BuildSystem::Cargo
+                && let Some(profile) = payload.cargo_profile.as_deref()
+            {
+                cmd.args(["--profile", profile]);
             }
             for arg in &self.extra_args {
                 cmd.arg(arg);

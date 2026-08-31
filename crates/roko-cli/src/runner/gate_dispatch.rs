@@ -1,16 +1,16 @@
 //! Verify dispatch — runs gate rungs as background tokio tasks and sends
 //! results through a channel.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Instant;
 
 use futures::FutureExt;
-use roko_core::config::{GateRungConfig, GatesConfig};
+use roko_core::config::{GateMode, GateRungConfig, GatesConfig};
 use roko_core::{
     Body, Kind, LensScope, ObservableEvent, Provenance, Signal, SignalBuilder, TelemetryEventSink,
     Verdict, Verify,
@@ -26,9 +26,10 @@ use roko_gate::verdict_publisher::VerdictPublisher;
 use roko_gate::{GatePayload, PlanComplexity, ShellGate};
 use sha2::{Digest, Sha256};
 use tokio::sync::{Semaphore, mpsc, oneshot};
+use tokio::process::Command;
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, timeout};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::gate_runner::FsGeneratedArtifactStore;
 use crate::task_parser::VerifyStep;
@@ -37,6 +38,7 @@ use super::types::{
     GateCompletion, GateCompletionKind, GateEffectRef, GateVerdictSummary, RunnerFailureKind,
     TaskAttemptRef,
 };
+use super::{impact_analysis, impact_analysis::ImpactReport};
 
 /// Sentinel rung value for plan-level verification (not a per-task rung).
 pub const RUNG_PLAN_VERIFY: u32 = 1000;
@@ -83,6 +85,8 @@ pub struct GateTaskContext {
     pub task_description: Option<String>,
     /// Task title fallback when description is absent.
     pub task_title: String,
+    /// File scope authorized by the plan, compared with the actual diff.
+    pub planned_files: Vec<String>,
 }
 
 impl GateTaskContext {
@@ -105,6 +109,7 @@ impl GateTaskContext {
             acceptance: td.acceptance.clone(),
             task_description: td.description.clone(),
             task_title: td.title.clone(),
+            planned_files: td.files.clone(),
         })
     }
 }
@@ -137,6 +142,149 @@ fn fast_task_verify_contract_error(
             "FAST task-owned verification requires exactly one authored verify step; found {authored_verify_count}"
         )
     })
+}
+
+fn effective_gate_mode(configured: GateMode, fast_mode: bool, task_verify_only: bool) -> GateMode {
+    // Backward-compatible fail-safe for callers of the original FAST switch.
+    // The supported wrapper now sets `ROKO_GATE_MODE=focused` explicitly.
+    if fast_mode && task_verify_only && configured == GateMode::Full {
+        GateMode::Focused
+    } else {
+        configured
+    }
+}
+
+fn command_uses_cargo(command: &str) -> bool {
+    cargo_command_fingerprint(command).is_some()
+        || command
+            .split(|character: char| character.is_ascii_whitespace() || ";&|()".contains(character))
+            .any(|token| token == "cargo")
+}
+
+#[derive(Default)]
+struct CompileCoordinatorRegistry {
+    repositories: HashMap<PathBuf, Weak<Semaphore>>,
+    workdir_keys: HashMap<PathBuf, PathBuf>,
+}
+
+type CompileCoordinators = Mutex<CompileCoordinatorRegistry>;
+
+async fn compile_coordinator(workdir: &Path, permits: usize) -> Arc<Semaphore> {
+    static COORDINATORS: OnceLock<CompileCoordinators> = OnceLock::new();
+    let coordinators =
+        COORDINATORS.get_or_init(|| Mutex::new(CompileCoordinatorRegistry::default()));
+    let workdir_key = workdir.to_path_buf();
+    {
+        let coordinators = coordinators.lock().unwrap_or_else(|poison| poison.into_inner());
+        if let Some(repository) = coordinators.workdir_keys.get(&workdir_key)
+            && let Some(existing) = coordinators
+                .repositories
+                .get(repository)
+                .and_then(Weak::upgrade)
+        {
+            return existing;
+        }
+    }
+
+    let common_dir = timeout(
+        Duration::from_secs(2),
+        Command::new("git")
+            .args(["rev-parse", "--git-common-dir"])
+            .current_dir(workdir)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .ok()
+    .and_then(Result::ok)
+    .filter(|output| output.status.success())
+    .and_then(|output| String::from_utf8(output.stdout).ok())
+    .map(|path| {
+        let path = PathBuf::from(path.trim());
+        if path.is_absolute() {
+            path
+        } else {
+            workdir.join(path)
+        }
+    })
+    .unwrap_or_else(|| workdir.to_path_buf());
+    let repository = tokio::fs::canonicalize(&common_dir)
+        .await
+        .unwrap_or(common_dir);
+
+    let mut coordinators = coordinators.lock().unwrap_or_else(|poison| poison.into_inner());
+    coordinators
+        .workdir_keys
+        .insert(workdir_key, repository.clone());
+    if let Some(existing) = coordinators
+        .repositories
+        .get(&repository)
+        .and_then(Weak::upgrade)
+    {
+        return existing;
+    }
+    coordinators
+        .repositories
+        .retain(|_, coordinator| coordinator.strong_count() > 0);
+    let coordinator = Arc::new(Semaphore::new(permits.max(1)));
+    coordinators
+        .repositories
+        .insert(repository, Arc::downgrade(&coordinator));
+    coordinator
+}
+
+async fn acquire_compile_ownership(
+    workdir: &Path,
+    permits: usize,
+    max_wait: Duration,
+    plan_id: &str,
+    task_id: &str,
+    command: &str,
+) -> Result<tokio::sync::OwnedSemaphorePermit, String> {
+    let started = Instant::now();
+    let coordinator = compile_coordinator(workdir, permits).await;
+    let permit = timeout(max_wait, coordinator.acquire_owned())
+        .await
+        .map_err(|_| format!("compile ownership timed out for `{command}`"))?
+        .map_err(|_| "compile ownership semaphore closed".to_string())?;
+    info!(
+        plan_id,
+        task_id,
+        command,
+        wait_ms = elapsed_millis(started),
+        compile_concurrency = permits.max(1),
+        "compile ownership acquired"
+    );
+    Ok(permit)
+}
+
+fn elapsed_millis(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+fn cargo_cache_counts(verdict: &Verdict) -> (u64, u64) {
+    verdict
+        .detail
+        .as_deref()
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|message| message.get("reason").and_then(serde_json::Value::as_str)
+            == Some("compiler-artifact"))
+        .fold((0_u64, 0_u64), |(hits, misses), message| {
+            if message
+                .get("fresh")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+            {
+                (hits.saturating_add(1), misses)
+            } else {
+                (hits, misses.saturating_add(1))
+            }
+        })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -433,6 +581,46 @@ fn simple_command_tokens(command: &str) -> Option<Vec<&str>> {
     Some(command.split_ascii_whitespace().collect())
 }
 
+/// Add an explicit Cargo profile to a simple runner-owned gate command.
+///
+/// Environment variables such as `CARGO_PROFILE_DEV_*` only configure a
+/// profile; Cargo does not select that profile unless the command includes
+/// `--profile`. Shell composition and quoted commands are intentionally left
+/// untouched because rewriting them safely requires a shell parser.
+fn cargo_command_with_profile(command: &str, profile: &str) -> Option<String> {
+    let tokens = simple_command_tokens(command)?;
+    if tokens.first().copied() != Some("cargo")
+        || !matches!(tokens.get(1).copied(), Some("check" | "clippy" | "test"))
+    {
+        return None;
+    }
+    if tokens.iter().any(|token| {
+        *token == "--profile" || token.strip_prefix("--profile=").is_some()
+    }) {
+        return Some(command.trim().to_string());
+    }
+
+    let mut selected = tokens.into_iter().map(str::to_string).collect::<Vec<_>>();
+    let insertion = selected
+        .iter()
+        .position(|token| token == "--")
+        .unwrap_or(selected.len());
+    selected.splice(
+        insertion..insertion,
+        ["--profile".to_string(), profile.to_string()],
+    );
+    Some(selected.join(" "))
+}
+
+fn cargo_profile_available(workdir: &Path, profile: &str) -> bool {
+    std::fs::read_to_string(workdir.join("Cargo.toml"))
+        .ok()
+        .and_then(|manifest| toml::from_str::<toml::Value>(&manifest).ok())
+        .and_then(|manifest| manifest.get("profile").cloned())
+        .and_then(|profiles| profiles.get(profile).cloned())
+        .is_some_and(|profile| profile.is_table())
+}
+
 /// Normalize simple Cargo verification commands while deliberately rejecting
 /// shell composition.  Only presentation/cache flags are ignored; flags that
 /// can change what is compiled remain part of the fingerprint.
@@ -632,11 +820,126 @@ fn deduplicate_verify_steps(
     retained
 }
 
+fn scoped_test_command(
+    workdir: &Path,
+    command: &str,
+    report: &ImpactReport,
+) -> Option<String> {
+    let target = report.one_target()?;
+    let tokens = simple_command_tokens(command)?;
+    if tokens.get(1).copied() != Some("test")
+        || tokens.contains(&"--")
+        || tokens.iter().any(|token| {
+            matches!(
+                *token,
+                "--lib" | "--bin" | "--test" | "--example" | "--bench" | "--all-targets"
+            ) || token.starts_with("--bin=")
+                || token.starts_with("--test=")
+                || token.starts_with("--example=")
+                || token.starts_with("--bench=")
+        })
+    {
+        return None;
+    }
+    let selected_package = tokens.windows(2).find_map(|pair| {
+        matches!(pair[0], "-p" | "--package").then_some(pair[1])
+    });
+    if selected_package != Some(target.package.as_str()) {
+        return None;
+    }
+
+    match &target.selector {
+        impact_analysis::CargoTargetSelector::Test(name) => {
+            Some(format!("{} --test {name}", command.trim()))
+        }
+        impact_analysis::CargoTargetSelector::Lib => {
+            let changed = report
+                .changed_files
+                .iter()
+                .filter(|path| path.ends_with(".rs"))
+                .collect::<Vec<_>>();
+            let path = changed.as_slice().first().copied()?;
+            if changed.len() != 1 {
+                return None;
+            }
+            let source = std::fs::read_to_string(workdir.join(path)).ok()?;
+            if !source.contains("#[test]") && !source.contains("mod tests") {
+                return None;
+            }
+            let module = path
+                .split("/src/")
+                .nth(1)?
+                .strip_suffix(".rs")?
+                .trim_end_matches("/mod")
+                .replace('/', "::");
+            if module.is_empty() || matches!(module.as_str(), "lib" | "main") {
+                return None;
+            }
+            Some(format!("{} --lib -- {module}::", command.trim()))
+        }
+        _ => None,
+    }
+}
+
+fn scope_authored_verify_steps(
+    workdir: &Path,
+    task_id: &str,
+    steps: Vec<VerifyStep>,
+    report: &ImpactReport,
+) -> Vec<VerifyStep> {
+    steps
+        .into_iter()
+        .map(|mut step| {
+            if let Some(scoped) = scoped_test_command(workdir, &step.command, report) {
+                info!(
+                    task_id,
+                    original_command = %step.command,
+                    scoped_command = %scoped,
+                    "focused gate scoped authored Cargo test"
+                );
+                step.command = scoped;
+            }
+            step
+        })
+        .collect()
+}
+
+fn focused_verify_steps(
+    report: &ImpactReport,
+    task_id: &str,
+    authored: Vec<VerifyStep>,
+    timeout_secs: u64,
+    cargo_profile: Option<&str>,
+) -> Vec<VerifyStep> {
+    let commands = report
+        .focused_commands()
+        .into_iter()
+        .map(|command| {
+            cargo_profile
+                .and_then(|profile| cargo_command_with_profile(&command, profile))
+                .unwrap_or(command)
+        })
+        .collect::<Vec<_>>();
+    let authored = deduplicate_verify_steps(task_id, authored, &commands);
+    let mut selected = commands
+        .into_iter()
+        .map(|command| VerifyStep {
+            phase: "impact-compile".into(),
+            command,
+            fail_msg: Some("impact-selected Cargo check failed".into()),
+            timeout_ms: timeout_secs.max(1).saturating_mul(1_000),
+        })
+        .collect::<Vec<_>>();
+    selected.extend(authored);
+    selected
+}
+
 fn with_targeted_compile_rung(
     gates_config: &GatesConfig,
     complexity: PlanComplexity,
     targeted: Option<&TargetedCargoCheck>,
     timeout_secs: u64,
+    cargo_profile: Option<&str>,
 ) -> GatesConfig {
     let Some(targeted) = targeted else {
         return gates_config.clone();
@@ -649,7 +952,9 @@ fn with_targeted_compile_rung(
         .into_iter()
         .map(|name| GateRungConfig {
             command: if name == "compile" {
-                targeted.command.clone()
+                cargo_profile
+                    .and_then(|profile| cargo_command_with_profile(&targeted.command, profile))
+                    .unwrap_or_else(|| targeted.command.clone())
             } else {
                 String::new()
             },
@@ -822,16 +1127,80 @@ fn raw_gate_name(name: &str) -> &str {
         .or_else(|| name.strip_prefix("unattributed:"))
         .unwrap_or(name)
 }
+
+fn normalized_failure_fingerprint(digest: Option<&str>) -> Option<String> {
+    fn remove_volatile(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(object) => {
+                object.remove("duration_ms");
+                for child in object.values_mut() {
+                    remove_volatile(child);
+                }
+            }
+            serde_json::Value::Array(array) => {
+                for child in array {
+                    remove_volatile(child);
+                }
+            }
+            _ => {}
+        }
+    }
+    let digest = digest?.trim();
+    if digest.is_empty() {
+        return None;
+    }
+    let mut value = serde_json::from_str::<serde_json::Value>(digest).ok()?;
+    remove_volatile(&mut value);
+    serde_json::to_string(&value).ok()
+}
+
+fn filter_preexisting_failures(
+    task_id: &str,
+    verdicts: &mut [Verdict],
+    baseline: Option<&[GateVerdictSummary]>,
+) {
+    let Some(baseline) = baseline else {
+        return;
+    };
+    for verdict in verdicts
+        .iter_mut()
+        .filter(|verdict| !verdict.passed && !verdict.skipped)
+    {
+        let current_name = raw_gate_name(&verdict.gate);
+        let current_fingerprint = normalized_failure_fingerprint(verdict.error_digest.as_deref());
+        let unchanged = baseline.iter().any(|prior| {
+            !prior.passed
+                && raw_gate_name(&prior.gate_name) == current_name
+                && current_fingerprint.is_some()
+                && current_fingerprint
+                    == normalized_failure_fingerprint(prior.error_digest.as_deref())
+        });
+        if unchanged {
+            let original = verdict.gate.clone();
+            verdict.passed = true;
+            verdict.gate = format!("pre-existing-filtered:{original}");
+            verdict.reason = "unchanged pre-existing verification failure filtered".into();
+            info!(
+                task_id,
+                gate = %original,
+                "filtered unchanged pre-existing gate failure"
+            );
+        }
+    }
+}
+
 fn gate_failure_input(
     kind: GateCompletionKind,
     before: &GateInputSnapshot,
-    baseline_failed_gates: Option<&[String]>,
+    baseline_failed_gates: Option<&[GateVerdictSummary]>,
     gate: &str,
 ) -> &'static str {
     match (kind, before.2, baseline_failed_gates) {
         (GateCompletionKind::Preflight, _, _) | (GateCompletionKind::Gate, false, _) => "baseline",
         (GateCompletionKind::Gate, true, Some(failures))
-            if failures.iter().any(|name| name == raw_gate_name(gate)) =>
+            if failures
+                .iter()
+                .any(|failure| raw_gate_name(&failure.gate_name) == raw_gate_name(gate)) =>
         {
             "baseline+owned"
         }
@@ -856,7 +1225,7 @@ pub fn spawn_gate(
     gates_config: GatesConfig,
     complexity: PlanComplexity,
     verify_steps: Vec<VerifyStep>,
-    baseline_failed_gates: Option<Vec<String>>,
+    baseline_failed_gates: Option<Vec<GateVerdictSummary>>,
     timeout_secs: u64,
     gate_tx: mpsc::Sender<GateCompletion>,
     gate_sem: Arc<Semaphore>,
@@ -1011,6 +1380,16 @@ pub async fn attempt_auto_fix(
 
     let command_str = format!("{program} {}", args.join(" "));
 
+    let _compile_permit = acquire_compile_ownership(
+        workdir,
+        1,
+        Duration::from_secs(300),
+        "auto-fix",
+        gate_name,
+        &command_str,
+    )
+    .await?;
+
     info!(
         gate = %gate_name,
         command = %command_str,
@@ -1075,7 +1454,7 @@ pub async fn run_gate_once(
     gates_config: GatesConfig,
     complexity: PlanComplexity,
     verify_steps: Vec<VerifyStep>,
-    baseline_failed_gates: Option<Vec<String>>,
+    baseline_failed_gates: Option<Vec<GateVerdictSummary>>,
     timeout_secs: u64,
     target_crates: Vec<String>,
     verdict_publisher: Option<VerdictPublisher>,
@@ -1084,14 +1463,6 @@ pub async fn run_gate_once(
     main_target_dir: Option<PathBuf>,
 ) -> GateCompletion {
     let start = Instant::now();
-    let signal = gate_signal(
-        &plan_id,
-        &task_id,
-        rung,
-        &workdir,
-        &target_crates,
-        main_target_dir.as_deref(),
-    );
     let ctx = roko_core::Context::now();
     let limit = Duration::from_secs(timeout_secs.max(1));
 
@@ -1104,17 +1475,107 @@ pub async fn run_gate_once(
         "gate rung starting"
     );
 
-    // E05-T04: Compute the labels of the canonical rungs that were selected
-    // for this gate run BEFORE building the pipeline, so we can thread them
-    // through the GateCompletion for callers.
-    let selected_rungs = GatePipelineBuilder::selected_rung_labels(&gates_config, complexity);
-
     let fast_mode = fast_mode_enabled();
+    let cargo_profile =
+        (fast_mode && cargo_profile_available(&workdir, "dev-fast")).then_some("dev-fast");
     let task_verify_only = task_verify_only_enabled();
-    let task_verify_contract_error =
+    let mut task_verify_contract_error =
         fast_task_verify_contract_error(fast_mode, task_verify_only, verify_steps.len());
-    let targeted_check = (!task_verify_only && !gates_config.has_custom_rungs())
-        .then(|| targeted_cargo_check(&workdir, &target_crates))
+    let configured_mode = effective_gate_mode(gates_config.mode, fast_mode, task_verify_only);
+    let planned_files = task_context
+        .as_ref()
+        .map(|context| context.planned_files.as_slice())
+        .unwrap_or_default();
+    let mut impact_report = if configured_mode == GateMode::Focused {
+        let impact_limit = Duration::from_millis(gates_config.impact_timeout_ms.max(100));
+        Some(
+            match timeout(
+                impact_limit,
+                impact_analysis::analyze(&workdir, planned_files, &gates_config),
+            )
+            .await
+            {
+                Ok(report) => report,
+                Err(_) => ImpactReport {
+                    fallback_reason: Some(format!(
+                        "impact analysis exceeded {} ms; full verification required",
+                        gates_config.impact_timeout_ms.max(100)
+                    )),
+                    analysis_ms: gates_config.impact_timeout_ms.max(100),
+                    ..ImpactReport::default()
+                },
+            },
+        )
+    } else {
+        None
+    };
+    if gates_config.has_custom_rungs()
+        && let Some(report) = impact_report.as_mut()
+    {
+        report.fallback_reason = Some(
+            "custom required gate rungs cannot be replaced by focused inference; full verification required"
+                .into(),
+        );
+    }
+    let focused_fallback = impact_report
+        .as_ref()
+        .is_some_and(|report| report.fallback_reason.is_some());
+    let gate_mode = if focused_fallback {
+        GateMode::Full
+    } else if impact_report
+        .as_ref()
+        .is_some_and(ImpactReport::is_structural_only)
+    {
+        GateMode::Structural
+    } else {
+        configured_mode
+    };
+    if let Some(report) = impact_report.as_ref() {
+        info!(
+            plan_id = %plan_id,
+            task_id = %task_id,
+            configured_mode = %configured_mode,
+            effective_mode = %gate_mode,
+            high_impact = report.high_impact,
+            high_impact_reasons = ?report.high_impact_reasons,
+            reverse_dependents = ?report.reverse_dependents,
+            unplanned_changes = ?report.unplanned_changes,
+            fallback_reason = ?report.fallback_reason,
+            analysis_ms = report.analysis_ms,
+            "gate impact policy selected"
+        );
+    } else {
+        info!(
+            plan_id = %plan_id,
+            task_id = %task_id,
+            configured_mode = %configured_mode,
+            effective_mode = %gate_mode,
+            "gate mode selected"
+        );
+    }
+
+    // A focused-analysis failure must not retain a producer-only payload from
+    // the optimistic lane. Empty Cargo scope restores the historical
+    // workspace-wide canonical gates and makes the fallback genuinely full.
+    let gate_target_crates = if focused_fallback {
+        Vec::new()
+    } else {
+        target_crates.clone()
+    };
+    let signal = gate_signal(
+        &plan_id,
+        &task_id,
+        rung,
+        &workdir,
+        &gate_target_crates,
+        main_target_dir.as_deref(),
+    );
+
+    let execute_pipeline = gate_mode == GateMode::Full && (!task_verify_only || focused_fallback);
+    let targeted_check = (execute_pipeline
+        && !focused_fallback
+        && !gates_config.has_custom_rungs())
+        .then(|| targeted_cargo_check(&workdir, &gate_target_crates))
         .flatten();
     if let Some(targeted) = targeted_check.as_ref() {
         info!(
@@ -1126,27 +1587,134 @@ pub async fn run_gate_once(
             "FAST mode selected target-aware canonical compile"
         );
     }
-    let canonical_commands = if task_verify_only {
+    let mut canonical_commands = if !execute_pipeline {
         Vec::new()
     } else {
         canonical_verify_commands(
             &gates_config,
             complexity,
-            &target_crates,
+            &gate_target_crates,
             targeted_check.as_ref(),
         )
     };
-    let verify_steps = if fast_mode {
+    if !gates_config.has_custom_rungs()
+        && let Some(profile) = cargo_profile
+    {
+        canonical_commands = canonical_commands
+            .into_iter()
+            .map(|command| {
+                cargo_command_with_profile(&command, profile).unwrap_or(command)
+            })
+            .collect();
+    }
+    let verify_steps = if let Some(profile) = cargo_profile {
+        verify_steps
+            .into_iter()
+            .map(|mut step| {
+                if let Some(command) = cargo_command_with_profile(&step.command, profile) {
+                    step.command = command;
+                }
+                step
+            })
+            .collect()
+    } else {
+        verify_steps
+    };
+    let authored_verify_steps = if fast_mode {
         deduplicate_verify_steps(&task_id, verify_steps, &canonical_commands)
     } else {
         verify_steps
     };
+    let verify_steps = match gate_mode {
+        GateMode::None => Vec::new(),
+        GateMode::Structural => authored_verify_steps
+            .into_iter()
+            .filter(|step| {
+                matches!(
+                    step.phase.trim().to_ascii_lowercase().as_str(),
+                    "structural" | "format" | "parse" | "diff"
+                )
+            })
+            .collect(),
+        GateMode::Focused => {
+            let report = impact_report
+                .as_ref()
+                .expect("focused gate mode must have an impact report");
+            let authored = scope_authored_verify_steps(
+                &workdir,
+                &task_id,
+                authored_verify_steps,
+                report,
+            );
+            focused_verify_steps(report, &task_id, authored, timeout_secs, cargo_profile)
+        }
+        GateMode::Full => authored_verify_steps,
+    };
+    if task_verify_contract_error.is_none()
+        && fast_mode
+        && gate_mode == GateMode::Structural
+        && verify_steps.is_empty()
+    {
+        task_verify_contract_error = Some(
+            "FAST structural mode selected no structural/format/parse/diff verification; fail closed"
+                .into(),
+        );
+    }
     let gates_config = with_targeted_compile_rung(
         &gates_config,
         complexity,
         targeted_check.as_ref(),
         timeout_secs,
+        cargo_profile,
     );
+    let selected_rungs = match gate_mode {
+        GateMode::None => Vec::new(),
+        GateMode::Structural => vec!["structural".to_string()],
+        GateMode::Focused => {
+            let mut labels = Vec::new();
+            if verify_steps.iter().any(|step| step.phase == "impact-compile") {
+                labels.push("impact-compile".to_string());
+            }
+            if verify_steps.iter().any(|step| step.phase != "impact-compile") {
+                labels.push("task-verify".to_string());
+            }
+            labels
+        }
+        GateMode::Full => GatePipelineBuilder::selected_rung_labels(&gates_config, complexity),
+    };
+    let canonical_uses_cargo = canonical_commands
+        .iter()
+        .any(|command| command_uses_cargo(command))
+        || (roko_gate::BuildSystem::detect(&workdir) == roko_gate::BuildSystem::Cargo
+            && selected_rungs.iter().any(|rung| {
+                matches!(
+                    rung.as_str(),
+                    "compile"
+                        | "build"
+                        | "check"
+                        | "lint"
+                        | "clippy"
+                        | "test"
+                        | "tests"
+                        | "generated-test"
+                        | "generated-tests"
+                        | "gen-test"
+                        | "property-test"
+                        | "property-tests"
+                        | "prop-test"
+                        | "integration"
+                        | "integration-test"
+                )
+            }));
+    let baseline_verify_steps = (gate_mode == GateMode::Focused)
+        .then(|| {
+            verify_steps
+                .iter()
+                .filter(|step| step.phase != "impact-compile")
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
 
     // E45-T02: Clone verify_steps so we can use them for the auto-fix retry
     // pass if the first run fails and cargo fix is applicable.
@@ -1162,36 +1730,108 @@ pub async fn run_gate_once(
             )];
         }
 
-        let inputs = build_rung_execution_inputs(&target_crates, task_context.as_ref());
-        let config = build_rung_execution_config(
-            &workdir_for_run,
-            timeout_secs,
-            &verify_steps,
-            verdict_publisher.clone(),
-        );
-        let pipeline = if gates_config.has_custom_rungs() && targeted_check.is_none() {
-            GatePipelineBuilder::from_config(&gates_config, complexity)
-        } else {
-            GatePipelineBuilder::from_config_with_execution(
-                &gates_config,
-                complexity,
-                inputs,
-                config,
+        let mut verdicts = Vec::new();
+        if execute_pipeline {
+            let inputs = build_rung_execution_inputs(&gate_target_crates, task_context.as_ref());
+            let config = build_rung_execution_config(
+                &workdir_for_run,
+                timeout_secs,
+                &verify_steps,
+                verdict_publisher.clone(),
+            );
+            let pipeline = if gates_config.has_custom_rungs() && targeted_check.is_none() {
+                GatePipelineBuilder::from_config(&gates_config, complexity)
+            } else {
+                GatePipelineBuilder::from_config_with_execution(
+                    &gates_config,
+                    complexity,
+                    inputs,
+                    config,
+                )
+            };
+            let command = canonical_commands.join(" && ");
+            let compile_permit = if canonical_uses_cargo {
+                match acquire_compile_ownership(
+                    &workdir_for_run,
+                    gates_config.compile_concurrency,
+                    limit,
+                    &plan_id,
+                    &task_id,
+                    &command,
+                )
+                .await
+                {
+                    Ok(permit) => Some(permit),
+                    Err(error) => {
+                        return vec![proof_failure!(
+                            "compile-ownership",
+                            error,
+                            "canonical compile ownership unavailable",
+                        )];
+                    }
+                }
+            } else {
+                None
+            };
+            let pipeline_started = Instant::now();
+            let pipeline_verdict = pipeline.verify(&signal, &ctx).await;
+            let (cache_hits, cache_misses) = cargo_cache_counts(&pipeline_verdict);
+            verdicts.push(pipeline_verdict);
+            drop(compile_permit);
+            info!(
+                plan_id = %plan_id,
+                task_id = %task_id,
+                command = %command,
+                elapsed_ms = elapsed_millis(pipeline_started),
+                cache_hits,
+                cache_misses,
+                cache_mode = if main_target_dir.is_some() {
+                    "shared-target"
+                } else {
+                    "worktree-target"
+                },
+                "canonical gate command span complete"
+            );
+        }
+        verdicts.extend(
+            run_verify_steps(
+                &signal,
+                &ctx,
+                &plan_id,
+                &task_id,
+                verify_steps,
+                gates_config.compile_concurrency,
             )
-        };
-
-        let mut verdicts = if task_verify_only {
-            Vec::new()
-        } else {
-            vec![pipeline.verify(&signal, &ctx).await]
-        };
-        verdicts.extend(run_verify_steps(&signal, &ctx, &task_id, verify_steps).await);
+            .await,
+        );
         verdicts
     };
 
     let checked = async {
         let before = gate_input_snapshot(workdir.clone()).await?;
         let mut verdicts = run.await;
+        let lazy_baseline = if baseline_failed_gates.is_none()
+            && gate_mode == GateMode::Focused
+            && verdicts.iter().any(|verdict| {
+                !verdict.passed
+                    && !verdict.skipped
+                    && verdict.gate.starts_with(&format!("task-verify:{task_id}:"))
+            })
+        {
+            run_focused_baseline_verify(
+                &workdir,
+                &plan_id,
+                &task_id,
+                rung,
+                baseline_verify_steps,
+                &gate_target_crates,
+                main_target_dir.as_deref(),
+                gates_config.compile_concurrency,
+            )
+            .await
+        } else {
+            None
+        };
         let after = gate_input_snapshot(workdir.clone()).await?;
 
         // E45-T02: If the first run produced any failures, attempt cargo auto-fix
@@ -1199,7 +1839,11 @@ pub async fn run_gate_once(
         // once and replace the verdicts so the caller sees a pass instead.
         // Gated on `gates_config.cargo_fix_enabled` (default: true).
         let first_run_failed = verdicts.iter().any(|v| !v.passed && !v.skipped);
-        if first_run_failed && before == after && gates_config.cargo_fix_enabled {
+        if first_run_failed
+            && before == after
+            && gates_config.cargo_fix_enabled
+            && !fast_mode
+        {
             let first_output = render_output(&verdicts);
             // Find the first failing gate name to drive the fix heuristic.
             let failing_gate = verdicts
@@ -1211,32 +1855,67 @@ pub async fn run_gate_once(
                 Ok(mut outcome) if outcome.fix_applied => {
                     // Fix applied — rerun the pipeline with a fresh snapshot pair.
                     let before_retry = gate_input_snapshot(workdir.clone()).await?;
-                    let inputs_retry =
-                        build_rung_execution_inputs(&target_crates, task_context.as_ref());
-                    let config_retry = build_rung_execution_config(
-                        &workdir,
-                        timeout_secs,
-                        &verify_steps_for_retry,
-                        verdict_publisher.clone(),
-                    );
-                    let pipeline_retry =
-                        if gates_config.has_custom_rungs() && targeted_check.is_none() {
-                            GatePipelineBuilder::from_config(&gates_config, complexity)
-                        } else {
-                            GatePipelineBuilder::from_config_with_execution(
-                                &gates_config,
-                                complexity,
-                                inputs_retry,
-                                config_retry,
+                    let mut retry_verdicts = Vec::new();
+                    if execute_pipeline {
+                        let inputs_retry =
+                            build_rung_execution_inputs(&gate_target_crates, task_context.as_ref());
+                        let config_retry = build_rung_execution_config(
+                            &workdir,
+                            timeout_secs,
+                            &verify_steps_for_retry,
+                            verdict_publisher.clone(),
+                        );
+                        let pipeline_retry =
+                            if gates_config.has_custom_rungs() && targeted_check.is_none() {
+                                GatePipelineBuilder::from_config(&gates_config, complexity)
+                            } else {
+                                GatePipelineBuilder::from_config_with_execution(
+                                    &gates_config,
+                                    complexity,
+                                    inputs_retry,
+                                    config_retry,
+                                )
+                            };
+                        let command = canonical_commands.join(" && ");
+                        let compile_permit = if canonical_uses_cargo {
+                            match acquire_compile_ownership(
+                                &workdir,
+                                gates_config.compile_concurrency,
+                                limit,
+                                &plan_id,
+                                &task_id,
+                                &command,
                             )
+                            .await
+                            {
+                                Ok(permit) => Some(permit),
+                                Err(error) => {
+                                    retry_verdicts.push(proof_failure!(
+                                        "compile-ownership",
+                                        error,
+                                        "retry compile ownership unavailable",
+                                    ));
+                                    None
+                                }
+                            }
+                        } else {
+                            None
                         };
-                    let mut retry_verdicts = if task_verify_only {
-                        Vec::new()
-                    } else {
-                        vec![pipeline_retry.verify(&signal, &ctx).await]
-                    };
+                        if retry_verdicts.is_empty() {
+                            retry_verdicts.push(pipeline_retry.verify(&signal, &ctx).await);
+                        }
+                        drop(compile_permit);
+                    }
                     retry_verdicts.extend(
-                        run_verify_steps(&signal, &ctx, &task_id, verify_steps_for_retry).await,
+                        run_verify_steps(
+                            &signal,
+                            &ctx,
+                            &plan_id,
+                            &task_id,
+                            verify_steps_for_retry,
+                            gates_config.compile_concurrency,
+                        )
+                        .await,
                     );
                     let after_retry = gate_input_snapshot(workdir.clone()).await?;
                     if before_retry == after_retry {
@@ -1258,10 +1937,10 @@ pub async fn run_gate_once(
             }
         }
 
-        Ok::<_, String>((before, after, verdicts))
+        Ok::<_, String>((before, after, verdicts, lazy_baseline))
     };
-    let (input_before, mut verdicts) = match timeout(limit, checked).await {
-        Ok(Ok((before, after, mut verdicts))) => {
+    let (input_before, mut verdicts, lazy_baseline) = match timeout(limit, checked).await {
+        Ok(Ok((before, after, mut verdicts, lazy_baseline))) => {
             if before != after {
                 verdicts.push(proof_failure!(
                     "unattributed:immutable-input",
@@ -1272,7 +1951,7 @@ pub async fn run_gate_once(
                     "gate input mutation invalidates attribution",
                 ));
             }
-            (Some(before), verdicts)
+            (Some(before), verdicts, lazy_baseline)
         }
         Ok(Err(error)) => (
             None,
@@ -1281,6 +1960,7 @@ pub async fn run_gate_once(
                 format!("could not prove immutable gate input: {error}"),
                 "gate input identity unavailable",
             )],
+            None,
         ),
         Err(_) => (
             None,
@@ -1289,8 +1969,17 @@ pub async fn run_gate_once(
                 format!("gate timed out after {timeout_secs}s"),
                 format!("timeout: gate rung {rung} exceeded {timeout_secs}s"),
             )],
+            None,
         ),
     };
+    let baseline_evidence = baseline_failed_gates
+        .as_deref()
+        .or(lazy_baseline.as_deref());
+    filter_preexisting_failures(
+        &task_id,
+        &mut verdicts,
+        baseline_evidence,
+    );
     if let Some(before) = input_before.as_ref() {
         for verdict in verdicts
             .iter_mut()
@@ -1299,7 +1988,7 @@ pub async fn run_gate_once(
             let input = gate_failure_input(
                 effect.kind,
                 before,
-                baseline_failed_gates.as_deref(),
+                baseline_evidence,
                 &verdict.gate,
             );
             verdict.gate = format!("{input}:{}", verdict.gate);
@@ -1458,7 +2147,9 @@ pub fn spawn_plan_verify(
                         &[], // plan-level verify runs workspace-wide
                         main_target_dir.as_deref(),
                     );
-                    all.extend(run_verify_steps(&signal, &ctx, &task_id, steps).await);
+                    all.extend(
+                        run_verify_steps(&signal, &ctx, &plan_id_for_run, &task_id, steps, 1).await,
+                    );
                 }
                 if accepted_input_snapshot(workdir_for_run, &expected_oid).await != Ok(before) {
                     all.push(Verdict::fail(
@@ -1720,6 +2411,15 @@ fn gate_signal(
         // when multiple agents run gate checks concurrently (#206).
         .with_env("CARGO_BUILD_JOBS", cargo_build_jobs());
 
+    if fast_mode_enabled() {
+        // Tauri's build script otherwise invokes a frontend build from Cargo,
+        // duplicating work that the evidence owner runs explicitly.
+        payload = payload.with_env("SKIP_FRONTEND_BUILD", "1");
+        if cargo_profile_available(workdir, "dev-fast") {
+            payload = payload.with_cargo_profile("dev-fast");
+        }
+    }
+
     // Shared FAST-mode targets rely on Cargo's incremental artifacts. Rust
     // incremental crates are not sccache-cacheable, and combining the two was
     // producing wrapper overhead with zero hits. Keep the existing sccache
@@ -1768,28 +2468,248 @@ fn sanitize_gate_env_segment(value: &str) -> String {
 async fn run_verify_steps(
     signal: &Signal,
     ctx: &roko_core::Context,
+    plan_id: &str,
     task_id: &str,
     verify_steps: Vec<VerifyStep>,
+    compile_concurrency: usize,
 ) -> Vec<Verdict> {
+    let payload = signal.body.as_json::<GatePayload>().ok();
+    let workdir = payload
+        .as_ref()
+        .map(|payload| payload.working_dir.as_path())
+        .unwrap_or_else(|| Path::new("."));
     let mut verdicts = Vec::new();
     for (i, step) in verify_steps.iter().enumerate() {
+        let mut effective_step = step.clone();
+        if let Some(profile) = payload
+            .as_ref()
+            .and_then(|payload| payload.cargo_profile.as_deref())
+            && let Some(command) = cargo_command_with_profile(&step.command, profile)
+        {
+            effective_step.command = command;
+        }
         let step_start = Instant::now();
-        let gate = verify_step_gate(task_id, step);
+        let compile_permit = if command_uses_cargo(&effective_step.command) {
+            match acquire_compile_ownership(
+                workdir,
+                compile_concurrency,
+                Duration::from_millis(effective_step.timeout_ms.max(1)),
+                plan_id,
+                task_id,
+                &effective_step.command,
+            )
+            .await
+            {
+                Ok(permit) => Some(permit),
+                Err(error) => {
+                    verdicts.push(
+                        Verdict::fail(format!("task-verify:{task_id}:compile-ownership"), error)
+                            .with_error_digest("compile ownership unavailable"),
+                    );
+                    break;
+                }
+            }
+        } else {
+            None
+        };
+        let gate = verify_step_gate(task_id, &effective_step);
         let verdict = gate.verify(signal, ctx).await;
+        let (cache_hits, cache_misses) = cargo_cache_counts(&verdict);
+        drop(compile_permit);
         info!(
+            plan_id,
             task_id = %task_id,
             step = i + 1,
             total_steps = verify_steps.len(),
-            phase = %step.phase,
-            command = %step.command,
-            timeout_ms = step.timeout_ms,
+            phase = %effective_step.phase,
+            command = %effective_step.command,
+            timeout_ms = effective_step.timeout_ms,
             passed = verdict.passed,
-            elapsed_ms = step_start.elapsed().as_millis() as u64,
+            elapsed_ms = elapsed_millis(step_start),
+            cache_mode = if payload.as_ref().is_some_and(|payload| payload.target_dir.is_some()) {
+                "shared-target"
+            } else {
+                "worktree-target"
+            },
+            cache_hits,
+            cache_misses,
             "verify step completed"
         );
         verdicts.push(verdict);
     }
     verdicts
+}
+
+async fn run_focused_baseline_verify(
+    workdir: &Path,
+    plan_id: &str,
+    task_id: &str,
+    rung: u32,
+    steps: Vec<VerifyStep>,
+    target_crates: &[String],
+    main_target_dir: Option<&Path>,
+    compile_concurrency: usize,
+) -> Option<Vec<GateVerdictSummary>> {
+    let steps = steps
+        .into_iter()
+        .filter(|step| {
+            cargo_command_fingerprint(&step.command)
+                .is_some_and(|fingerprint| fingerprint.action == "test")
+        })
+        .collect::<Vec<_>>();
+    if steps.is_empty() {
+        return None;
+    }
+    let parent = tempfile::Builder::new()
+        .prefix("roko-gate-baseline-")
+        .tempdir()
+        .ok()?;
+    let mut baseline_guard = RegisteredBaselineWorktree::new(workdir, parent);
+    let baseline = baseline_guard.checkout.clone();
+    // `git worktree add` can be interrupted after registration but before a
+    // successful exit. Arm cleanup before spawning so timeout/cancellation
+    // cannot leave a stale Git worktree record behind.
+    baseline_guard.cleanup_required = true;
+    let add = timeout(
+        Duration::from_secs(10),
+        Command::new("git")
+            .args(["worktree", "add", "--detach"])
+            .arg(&baseline)
+            .arg("HEAD")
+            .current_dir(workdir)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    if !add.status.success() {
+        return None;
+    }
+
+    let signal = gate_signal(
+        plan_id,
+        task_id,
+        rung,
+        &baseline,
+        target_crates,
+        main_target_dir,
+    );
+    let ctx = roko_core::Context::now();
+    let verdicts = run_verify_steps(
+        &signal,
+        &ctx,
+        plan_id,
+        task_id,
+        steps,
+        compile_concurrency,
+    )
+    .await;
+    let removal = timeout(
+        Duration::from_secs(10),
+        Command::new("git")
+            .args(["worktree", "remove", "--force"])
+            .arg(&baseline)
+            .current_dir(workdir)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await;
+    if matches!(removal, Ok(Ok(ref output)) if output.status.success()) {
+        baseline_guard.cleanup_required = false;
+    } else {
+        warn!(path = %baseline.display(), "failed to remove temporary baseline worktree cleanly");
+    }
+    Some(
+        verdicts
+            .into_iter()
+            .map(|verdict| GateVerdictSummary {
+                gate_name: verdict.gate,
+                passed: verdict.passed,
+                skipped: verdict.skipped,
+                summary: verdict.reason,
+                error_digest: verdict.error_digest,
+                failure_kind: None,
+                rung_index: None,
+            })
+            .collect(),
+    )
+}
+
+/// Cancellation-safe owner for a temporary registered Git worktree.
+///
+/// The normal path uses bounded async cleanup above. Drop is only a fallback
+/// for timeout, cancellation, panic, or a failed async removal. If Git refuses
+/// the fallback removal, the checkout is preserved rather than recursively
+/// deleted while Git may still consider it registered.
+struct RegisteredBaselineWorktree {
+    repository: PathBuf,
+    checkout: PathBuf,
+    parent: Option<tempfile::TempDir>,
+    cleanup_required: bool,
+}
+
+impl RegisteredBaselineWorktree {
+    fn new(repository: &Path, parent: tempfile::TempDir) -> Self {
+        let checkout = parent.path().join("checkout");
+        Self {
+            repository: repository.to_path_buf(),
+            checkout,
+            parent: Some(parent),
+            cleanup_required: false,
+        }
+    }
+}
+
+impl Drop for RegisteredBaselineWorktree {
+    fn drop(&mut self) {
+        if !self.cleanup_required {
+            return;
+        }
+        let removed = std::process::Command::new("git")
+            .args(["worktree", "remove", "--force"])
+            .arg(&self.checkout)
+            .current_dir(&self.repository)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+        if removed {
+            return;
+        }
+
+        if self.checkout.exists() {
+            if let Some(parent) = self.parent.take() {
+                let retained = parent.keep();
+                warn!(
+                    path = %retained.display(),
+                    "preserving temporary baseline worktree after cleanup failure"
+                );
+            }
+        } else {
+            // The checkout may have disappeared during a partially completed
+            // add/remove. Prune only stale administrative records before the
+            // TempDir owner removes its now-unregistered parent.
+            let _ = std::process::Command::new("git")
+                .args(["worktree", "prune", "--expire", "now"])
+                .current_dir(&self.repository)
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+    }
 }
 
 fn verify_step_gate(task_id: &str, step: &VerifyStep) -> ShellGate {
@@ -1909,6 +2829,27 @@ mod tests {
             canonical,
             cargo_command_fingerprint("cargo check -p roko-cli --lib")
         );
+    }
+
+    #[test]
+    fn fast_profile_is_inserted_before_tool_arguments() {
+        assert_eq!(
+            cargo_command_with_profile(
+                "cargo clippy -p roko-cli -- -D warnings",
+                "dev-fast"
+            )
+            .as_deref(),
+            Some("cargo clippy -p roko-cli --profile dev-fast -- -D warnings")
+        );
+        assert_eq!(
+            cargo_command_with_profile(
+                "cargo test -p roko-cli --profile custom",
+                "dev-fast"
+            )
+            .as_deref(),
+            Some("cargo test -p roko-cli --profile custom")
+        );
+        assert!(cargo_command_with_profile("cargo test && echo done", "dev-fast").is_none());
     }
 
     fn verify_step(command: &str) -> VerifyStep {
@@ -2510,7 +3451,7 @@ path = "src/shared.rs"
             timeout_ms: 10_000,
         };
 
-        let verdicts = run_verify_steps(&signal, &ctx, "T01", vec![step]).await;
+        let verdicts = run_verify_steps(&signal, &ctx, "plan", "T01", vec![step], 1).await;
 
         assert_eq!(verdicts.first().map(|verdict| verdict.passed), Some(false));
     }
@@ -2527,7 +3468,7 @@ path = "src/shared.rs"
             timeout_ms: 10_000,
         };
 
-        let verdicts = run_verify_steps(&signal, &ctx, "T01", vec![step]).await;
+        let verdicts = run_verify_steps(&signal, &ctx, "plan", "T01", vec![step], 1).await;
 
         assert_eq!(verdicts.first().map(|verdict| verdict.passed), Some(true));
     }
@@ -2624,7 +3565,7 @@ path = "src/shared.rs"
     }
 
     #[tokio::test]
-    async fn failure_reproduced_on_baseline_retains_both_identities() {
+    async fn unchanged_preexisting_failure_is_filtered() {
         let dir = git_repo();
         let step = VerifyStep {
             phase: "test".into(),
@@ -2654,7 +3595,7 @@ path = "src/shared.rs"
             .verdicts
             .iter()
             .filter(|verdict| !verdict.passed)
-            .map(|verdict| raw_gate_name(&verdict.gate_name).to_string())
+            .cloned()
             .collect();
         std::fs::write(dir.path().join("candidate.txt"), b"owned\n").unwrap();
         let candidate = run_gate_once(
@@ -2675,8 +3616,9 @@ path = "src/shared.rs"
             None,
         )
         .await;
+        assert!(candidate.passed);
         assert!(candidate.verdicts.iter().any(|verdict| {
-            !verdict.passed && verdict.gate_name.starts_with("baseline+owned:")
+            verdict.passed && verdict.gate_name.starts_with("pre-existing-filtered:")
         }));
     }
 

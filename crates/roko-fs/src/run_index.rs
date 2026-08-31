@@ -6,7 +6,7 @@
 //! identifiers in directory listings or permitting traversal.
 
 use std::fmt::Write as _;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -68,119 +68,153 @@ pub fn run_index_path(global_log: &Path, run_id: &str) -> Result<PathBuf, &'stat
 /// or file symlink. The global log's parent must already be a real directory.
 pub fn open_run_index_append(global_log: &Path, run_id: &str) -> io::Result<(PathBuf, File)> {
     let path = run_index_path(global_log, run_id).map_err(io::Error::other)?;
-    let parent = prepare_index_parent(global_log, &path, true)?;
-    reject_index_file_if_present(&path, &parent)?;
-    let mut options = OpenOptions::new();
-    options.create(true).append(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.custom_flags(libc::O_NOFOLLOW);
-    }
-    let file = options.open(&path)?;
-    let metadata = file.metadata()?;
-    if !metadata.is_file() {
-        return Err(io::Error::other(format!(
-            "run index is not a regular file: {}",
-            path.display()
-        )));
-    }
+    let file = open_index_file(global_log, &path, true)?;
     Ok((path, file))
 }
 
 /// Open an existing derived run index without following directory/file
 /// symlinks. `NotFound` remains distinguishable to callers.
 pub fn open_existing_run_index(path: &Path) -> io::Result<File> {
-    let parent = path
+    let index_dir = path
         .parent()
         .ok_or_else(|| io::Error::other("run index has no parent"))?;
-    let parent_metadata = std::fs::symlink_metadata(parent)?;
-    if parent_metadata.file_type().is_symlink() || !parent_metadata.is_dir() {
-        return Err(io::Error::other(format!(
-            "run index parent must be a real directory: {}",
-            parent.display()
-        )));
-    }
-    let canonical_parent = std::fs::canonicalize(parent)?;
-    reject_index_file_if_present(path, &canonical_parent)?;
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.custom_flags(libc::O_NOFOLLOW);
-    }
-    let file = options.open(path)?;
-    if !file.metadata()?.is_file() {
-        return Err(io::Error::other(format!(
-            "run index is not a regular file: {}",
-            path.display()
-        )));
-    }
-    Ok(file)
+    let global_parent = index_dir
+        .parent()
+        .ok_or_else(|| io::Error::other("run index directory has no parent"))?;
+    open_index_file(&global_parent.join("index-source.jsonl"), path, false)
 }
 
-fn prepare_index_parent(global_log: &Path, path: &Path, create: bool) -> io::Result<PathBuf> {
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn open_index_file(global_log: &Path, path: &Path, create: bool) -> io::Result<File> {
     let global_parent = global_log
         .parent()
         .ok_or_else(|| io::Error::other("global log has no parent"))?;
-    let metadata = std::fs::symlink_metadata(global_parent)?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(io::Error::other(format!(
-            "global log parent must be a real directory: {}",
-            global_parent.display()
-        )));
+    let index_dir = path
+        .parent()
+        .ok_or_else(|| io::Error::other("run index has no parent"))?;
+    if index_dir.parent() != Some(global_parent) {
+        return Err(io::Error::other("run index is not beside its global log"));
     }
-    let canonical_global_parent = std::fs::canonicalize(global_parent)?;
+    let directory_name = index_dir
+        .file_name()
+        .ok_or_else(|| io::Error::other("run index directory has no name"))?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| io::Error::other("run index has no filename"))?;
+    let root_fd = rustix::fs::open(
+        global_parent,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(io::Error::from)?;
+    validate_secure_directory(&root_fd, "global log directory")?;
+    if create {
+        match rustix::fs::mkdirat(
+            &root_fd,
+            directory_name,
+            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR | rustix::fs::Mode::XUSR,
+        ) {
+            Ok(()) | Err(rustix::io::Errno::EXIST) => {}
+            Err(error) => return Err(io::Error::from(error)),
+        }
+    }
+    let index_fd = rustix::fs::openat(
+        &root_fd,
+        directory_name,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(io::Error::from)?;
+    validate_secure_directory(&index_fd, "run index directory")?;
+    let flags = if create {
+        rustix::fs::OFlags::WRONLY
+            | rustix::fs::OFlags::CREATE
+            | rustix::fs::OFlags::APPEND
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC
+    } else {
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC
+    };
+    let fd = rustix::fs::openat(
+        &index_fd,
+        file_name,
+        flags,
+        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+    )
+    .map_err(io::Error::from)?;
+    validate_secure_regular_file(&fd, "run index")?;
+    Ok(File::from(fd))
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn validate_secure_directory(fd: &std::os::fd::OwnedFd, label: &str) -> io::Result<()> {
+    let stat = rustix::fs::fstat(fd).map_err(io::Error::from)?;
+    if rustix::fs::FileType::from_raw_mode(stat.st_mode) != rustix::fs::FileType::Directory
+        || stat.st_uid as u32 != rustix::process::geteuid().as_raw()
+        || (stat.st_mode as u32) & 0o022 != 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("{label} must be user-owned and not group/world writable"),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn validate_secure_regular_file(fd: &std::os::fd::OwnedFd, label: &str) -> io::Result<()> {
+    let stat = rustix::fs::fstat(fd).map_err(io::Error::from)?;
+    if rustix::fs::FileType::from_raw_mode(stat.st_mode) != rustix::fs::FileType::RegularFile
+        || stat.st_uid as u32 != rustix::process::geteuid().as_raw()
+        || stat.st_nlink != 1
+        || (stat.st_mode as u32) & 0o022 != 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "{label} must be a single-link, user-owned regular file without group/world write access"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn open_index_file(_global_log: &Path, path: &Path, create: bool) -> io::Result<File> {
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::other("run index has no parent"))?;
-    match std::fs::symlink_metadata(parent) {
-        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
-            return Err(io::Error::other(format!(
-                "run index parent must be a real directory: {}",
-                parent.display()
-            )));
+    if create {
+        match std::fs::create_dir(parent) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
         }
-        Ok(_) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound && create => {
-            std::fs::create_dir(parent)?;
-        }
-        Err(error) => return Err(error),
     }
-    let canonical_parent = std::fs::canonicalize(parent)?;
-    if canonical_parent == canonical_global_parent
-        || !canonical_parent.starts_with(&canonical_global_parent)
+    let metadata = std::fs::symlink_metadata(parent)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(io::Error::other("run index parent must be a real directory"));
+    }
+    if let Ok(metadata) = std::fs::symlink_metadata(path)
+        && (metadata.file_type().is_symlink() || !metadata.is_file())
     {
-        return Err(io::Error::other(format!(
-            "run index parent escapes global log directory: {}",
-            parent.display()
-        )));
+        return Err(io::Error::other("run index must be a real regular file"));
     }
-    Ok(canonical_parent)
-}
-
-fn reject_index_file_if_present(path: &Path, canonical_parent: &Path) -> io::Result<()> {
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
-            return Err(io::Error::other(format!(
-                "run index must be a real regular file: {}",
-                path.display()
-            )));
-        }
-        Ok(_) => {
-            let canonical = std::fs::canonicalize(path)?;
-            if canonical.parent() != Some(canonical_parent) {
-                return Err(io::Error::other(format!(
-                    "run index escapes expected directory: {}",
-                    path.display()
-                )));
-            }
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
+    let mut options = std::fs::OpenOptions::new();
+    options.read(!create).create(create).append(create);
+    let file = options.open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::other("run index must be a regular file"));
     }
-    Ok(())
+    Ok(file)
 }
 
 #[cfg(test)]

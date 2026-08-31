@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic cold/warm scorecard runner for Roko development lanes.
+"""Deterministic cold/warm scorecards and bounded history for Roko development lanes.
 
 The runner is intentionally an orchestrator, not another benchmark workload.  It
 checks out the same immutable commit for every sample, gives each cold sample a
@@ -16,12 +16,14 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import hashlib
+import io
 import json
 import math
 import os
 import pathlib
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -34,6 +36,10 @@ SCHEMA_VERSION = 1
 DEFAULT_MANIFEST = pathlib.Path("benchmarks/dev-audit/manifest.json")
 DEFAULT_BASELINES = pathlib.Path("benchmarks/dev-audit/manual-baselines.json")
 DEFAULT_OUTPUT_ROOT = pathlib.Path(".roko/benchmarks")
+DEFAULT_HISTORY_FILENAME = "history.json"
+DEFAULT_HISTORY_MARKDOWN_FILENAME = "HISTORY.md"
+HISTORY_COMPARISON_METRICS = ("p50", "p95")
+SESSION_DIR_RE = re.compile(r"^\d{8}T\d{6}Z-[0-9a-f]{8}$")
 SECRET_RE = re.compile(
     r"(?:api[_-]?key|authorization|bearer|credential|password|private[_-]?key|secret|token)",
     re.IGNORECASE,
@@ -70,6 +76,10 @@ PHASE_ALIASES = {
 
 class BenchmarkError(RuntimeError):
     """A user-actionable benchmark configuration or admission error."""
+
+
+class HistoryLimitError(BenchmarkError):
+    """A history scan stopped before producing a potentially biased partial view."""
 
 
 def utc_now() -> str:
@@ -966,6 +976,832 @@ def summarize_session(
     return scorecard
 
 
+def is_number(value: Any) -> bool:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except (OverflowError, TypeError):
+        return False
+
+
+def percentage(numerator: int | float, denominator: int | float) -> float | None:
+    if denominator <= 0:
+        return None
+    return round(float(numerator) / float(denominator) * 100.0, 4)
+
+
+def valid_history_label(value: Any, *, max_length: int = 128) -> bool:
+    return (
+        isinstance(value, str)
+        and 0 < len(value) <= max_length
+        and "\n" not in value
+        and "\r" not in value
+        and "\x00" not in value
+    )
+
+
+def bounded_history_bytes(path: pathlib.Path, budget: dict[str, Any]) -> bytes:
+    """Read one direct, regular artifact without exceeding the history budget."""
+
+    if time.monotonic() > budget["deadline"]:
+        raise HistoryLimitError("history scan exceeded --deadline-seconds")
+    try:
+        metadata = path.lstat()
+    except OSError as error:
+        raise BenchmarkError(f"cannot inspect {path.name}: {error}") from error
+    if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        raise BenchmarkError(f"{path.name} is not a direct regular file")
+    if metadata.st_size > budget["max_file_bytes"]:
+        raise BenchmarkError(
+            f"{path.name} is {metadata.st_size} bytes, above the "
+            f"{budget['max_file_bytes']}-byte per-file limit"
+        )
+    if metadata.st_size > budget["remaining_bytes"]:
+        raise HistoryLimitError("history artifacts exceed --max-total-mib")
+
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = -1
+    try:
+        descriptor = os.open(path, flags)
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode):
+            raise BenchmarkError(f"{path.name} changed type while being opened")
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = -1
+            raw = stream.read(budget["max_file_bytes"] + 1)
+    except OSError as error:
+        raise BenchmarkError(f"cannot read {path.name}: {error}") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+    if len(raw) > budget["max_file_bytes"]:
+        raise BenchmarkError(f"{path.name} grew beyond the per-file limit while read")
+    if time.monotonic() > budget["deadline"]:
+        raise HistoryLimitError("history scan exceeded --deadline-seconds")
+    if len(raw) > budget["remaining_bytes"]:
+        raise HistoryLimitError("history artifacts exceed --max-total-mib")
+    budget["remaining_bytes"] -= len(raw)
+    budget["bytes_read"] += len(raw)
+    budget["files_read"] += 1
+    return raw
+
+
+def bounded_history_json(
+    path: pathlib.Path, budget: dict[str, Any]
+) -> dict[str, Any]:
+    raw = bounded_history_bytes(path, budget)
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError) as error:
+        raise BenchmarkError(f"invalid JSON in {path.name}: {error}") from error
+    if time.monotonic() > budget["deadline"]:
+        raise HistoryLimitError("history scan exceeded --deadline-seconds")
+    if not isinstance(value, dict):
+        raise BenchmarkError(f"{path.name} must contain a JSON object")
+    return value
+
+
+def bounded_history_jsonl(
+    path: pathlib.Path, budget: dict[str, Any], *, max_rows: int
+) -> list[dict[str, Any]]:
+    raw = bounded_history_bytes(path, budget)
+    try:
+        text_value = raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise BenchmarkError(f"invalid UTF-8 in {path.name}: {error}") from error
+    rows: list[dict[str, Any]] = []
+    try:
+        for number, line in enumerate(io.StringIO(text_value), start=1):
+            if time.monotonic() > budget["deadline"]:
+                raise HistoryLimitError("history scan exceeded --deadline-seconds")
+            if not line.strip():
+                continue
+            if len(rows) >= max_rows:
+                raise BenchmarkError(
+                    f"{path.name} has more than --max-rows-per-session rows"
+                )
+            value = json.loads(line)
+            if not isinstance(value, dict):
+                raise BenchmarkError(f"{path.name}:{number}: row must be an object")
+            rows.append(value)
+    except (ValueError, RecursionError) as error:
+        raise BenchmarkError(f"invalid JSONL in {path.name}: {error}") from error
+    return rows
+
+
+def direct_artifact_exists(path: pathlib.Path) -> bool:
+    try:
+        path.lstat()
+        return True
+    except OSError:
+        return False
+
+
+def discover_history_sessions(
+    root: pathlib.Path,
+    *,
+    max_root_entries: int,
+    max_sessions: int,
+    deadline: float,
+) -> tuple[list[pathlib.Path], dict[str, int]]:
+    try:
+        root_metadata = root.lstat()
+    except OSError as error:
+        raise BenchmarkError(f"cannot inspect benchmark root {root}: {error}") from error
+    if not stat.S_ISDIR(root_metadata.st_mode) or stat.S_ISLNK(root_metadata.st_mode):
+        raise BenchmarkError(f"benchmark root must be a real directory: {root}")
+
+    candidates: list[pathlib.Path] = []
+    entry_count = 0
+    try:
+        with os.scandir(root) as entries:
+            for entry in entries:
+                if time.monotonic() > deadline:
+                    raise HistoryLimitError("history scan exceeded --deadline-seconds")
+                if entry.name in {
+                    DEFAULT_HISTORY_FILENAME,
+                    DEFAULT_HISTORY_MARKDOWN_FILENAME,
+                }:
+                    continue
+                entry_count += 1
+                if entry_count > max_root_entries:
+                    raise HistoryLimitError(
+                        "benchmark root exceeds --max-root-entries; refusing a "
+                        "filesystem-order-dependent partial scan"
+                    )
+                if entry.is_symlink() or not entry.is_dir(follow_symlinks=False):
+                    continue
+                candidate = root / entry.name
+                if SESSION_DIR_RE.fullmatch(entry.name) or any(
+                    direct_artifact_exists(candidate / name)
+                    for name in ("session.json", "scorecard.json", "runs.jsonl")
+                ):
+                    candidates.append(candidate)
+    except OSError as error:
+        raise BenchmarkError(f"cannot enumerate benchmark root {root}: {error}") from error
+
+    ordered = sorted(candidates, key=lambda path: path.name)
+    selected = ordered[-max_sessions:]
+    return selected, {
+        "root_entries": entry_count,
+        "sessions_discovered": len(ordered),
+        "sessions_selected": len(selected),
+        "sessions_omitted_oldest": len(ordered) - len(selected),
+    }
+
+
+def history_group_from_rows(
+    lane_id: str,
+    fixture_id: str,
+    cache: str,
+    rows: Sequence[dict[str, Any]],
+) -> dict[str, Any]:
+    states: defaultdict[str, int] = defaultdict(int)
+    valid_true = 0
+    valid_false = 0
+    valid_missing = 0
+    total_values: list[int | float] = []
+    bundles_present = 0
+    for row in rows:
+        state_value = row.get("state")
+        state = state_value if valid_history_label(state_value, max_length=64) else "missing"
+        states[state] += 1
+        validity = row.get("valid")
+        if validity is True:
+            valid_true += 1
+        elif validity is False:
+            valid_false += 1
+        else:
+            valid_missing += 1
+        metrics = row.get("metrics")
+        total = metrics.get("total_ms") if isinstance(metrics, dict) else None
+        if is_number(total):
+            total_values.append(total)
+        if isinstance(row.get("bundle"), str) and row["bundle"]:
+            bundles_present += 1
+
+    runs = len(rows)
+    succeeded = states.get("succeeded", 0)
+    timeouts = states.get("timed_out", 0) + states.get("timeout", 0)
+    return {
+        "lane_id": lane_id,
+        "fixture_id": fixture_id,
+        "cache": cache,
+        "source_quality": "raw_measured_rows",
+        "runs": runs,
+        "succeeded": succeeded,
+        "non_succeeded": runs - succeeded,
+        "timeouts": timeouts,
+        "valid_true": valid_true,
+        "valid_false": valid_false,
+        "valid_missing": valid_missing,
+        "success_rate_percent": percentage(succeeded, runs),
+        "non_success_rate_percent": percentage(runs - succeeded, runs),
+        "timeout_rate_percent": percentage(timeouts, runs),
+        "valid_rate_percent": percentage(valid_true, runs),
+        "total_ms": {
+            "observed": len(total_values),
+            "missing": runs - len(total_values),
+            "p50": percentile(total_values, 0.50),
+            "p95": percentile(total_values, 0.95),
+            "min": min(total_values) if total_values else None,
+            "max": max(total_values) if total_values else None,
+        },
+        "states": dict(sorted(states.items())),
+        "bundles_present": bundles_present,
+    }
+
+
+def history_groups_from_rows(
+    rows: Any, *, max_rows: int, max_groups: int
+) -> tuple[list[dict[str, Any]], dict[str, Any], list[str]]:
+    if not isinstance(rows, list):
+        raise BenchmarkError("scorecard rows must be an array")
+    if len(rows) > max_rows:
+        raise BenchmarkError(
+            f"measured row source has {len(rows)} rows, above --max-rows-per-session"
+        )
+
+    grouped: defaultdict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    rejected = 0
+    measured_rows: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            rejected += 1
+            continue
+        if row.get("measured") is not True or row.get("historical") is True:
+            continue
+        identity = (row.get("lane_id"), row.get("fixture_id"), row.get("cache"))
+        if not all(valid_history_label(value) for value in identity):
+            rejected += 1
+            continue
+        key = (identity[0], identity[1], identity[2])
+        grouped[key].append(row)
+        measured_rows.append(row)
+    if len(grouped) > max_groups:
+        raise BenchmarkError(
+            f"measured row source has {len(grouped)} groups, above --max-groups-per-session"
+        )
+
+    groups = [
+        history_group_from_rows(lane, fixture, cache, selected)
+        for (lane, fixture, cache), selected in sorted(grouped.items())
+    ]
+    totals = history_group_from_rows("*", "*", "*", measured_rows)
+    issues = [f"rejected {rejected} malformed measured row(s)"] if rejected else []
+    return groups, totals, issues
+
+
+def non_negative_int(value: Any, default: int = 0) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else default
+
+
+def history_groups_from_scorecard(
+    groups_value: Any, *, max_rows: int, max_groups: int
+) -> tuple[list[dict[str, Any]], dict[str, Any], list[str]]:
+    if not isinstance(groups_value, list):
+        raise BenchmarkError("scorecard groups must be an array")
+    if len(groups_value) > max_groups:
+        raise BenchmarkError(
+            f"scorecard has {len(groups_value)} groups, above --max-groups-per-session"
+        )
+    groups: list[dict[str, Any]] = []
+    rejected = 0
+    for value in groups_value:
+        if not isinstance(value, dict) or value.get("historical") is True:
+            if not isinstance(value, dict):
+                rejected += 1
+            continue
+        identity = (value.get("lane_id"), value.get("fixture_id"), value.get("cache"))
+        if not all(valid_history_label(item) for item in identity):
+            rejected += 1
+            continue
+        runs = non_negative_int(value.get("runs"))
+        succeeded = min(runs, non_negative_int(value.get("succeeded")))
+        valid_true = min(runs, non_negative_int(value.get("valid")))
+        timeouts = min(runs, non_negative_int(value.get("timeouts")))
+        latency = value.get("latency_ms")
+        total = latency.get("total_ms", {}) if isinstance(latency, dict) else {}
+        total = total if isinstance(total, dict) else {}
+        observed = min(runs, non_negative_int(total.get("observed")))
+        groups.append(
+            {
+                "lane_id": identity[0],
+                "fixture_id": identity[1],
+                "cache": identity[2],
+                "source_quality": "aggregate_scorecard_without_raw_rows",
+                "runs": runs,
+                "succeeded": succeeded,
+                "non_succeeded": runs - succeeded,
+                "timeouts": timeouts,
+                "valid_true": valid_true,
+                "valid_false": None,
+                "valid_missing": None,
+                "success_rate_percent": percentage(succeeded, runs),
+                "non_success_rate_percent": percentage(runs - succeeded, runs),
+                "timeout_rate_percent": percentage(timeouts, runs),
+                "valid_rate_percent": percentage(valid_true, runs),
+                "total_ms": {
+                    "observed": observed,
+                    "missing": max(0, runs - observed),
+                    "p50": total.get("p50") if is_number(total.get("p50")) else None,
+                    "p95": total.get("p95") if is_number(total.get("p95")) else None,
+                    "min": total.get("min") if is_number(total.get("min")) else None,
+                    "max": total.get("max") if is_number(total.get("max")) else None,
+                },
+                "states": None,
+                "bundles_present": sum(
+                    isinstance(item, str) and bool(item)
+                    for item in value.get("bundles", [])
+                )
+                if isinstance(value.get("bundles"), list)
+                else None,
+            }
+        )
+    groups.sort(key=lambda group: (group["lane_id"], group["fixture_id"], group["cache"]))
+    total_runs = sum(group["runs"] for group in groups)
+    if total_runs > max_rows:
+        raise BenchmarkError(
+            f"scorecard groups claim {total_runs} runs, above --max-rows-per-session"
+        )
+    total_succeeded = sum(group["succeeded"] for group in groups)
+    total_timeouts = sum(group["timeouts"] for group in groups)
+    total_valid = sum(group["valid_true"] for group in groups)
+    totals = {
+        "lane_id": "*",
+        "fixture_id": "*",
+        "cache": "*",
+        "source_quality": "aggregate_scorecard_without_raw_rows",
+        "runs": total_runs,
+        "succeeded": total_succeeded,
+        "non_succeeded": total_runs - total_succeeded,
+        "timeouts": total_timeouts,
+        "valid_true": total_valid,
+        "valid_false": None,
+        "valid_missing": None,
+        "success_rate_percent": percentage(total_succeeded, total_runs),
+        "non_success_rate_percent": percentage(total_runs - total_succeeded, total_runs),
+        "timeout_rate_percent": percentage(total_timeouts, total_runs),
+        "valid_rate_percent": percentage(total_valid, total_runs),
+        "total_ms": {
+            "observed": 0,
+            "missing": total_runs,
+            "p50": None,
+            "p95": None,
+            "min": None,
+            "max": None,
+        },
+        "states": None,
+        "bundles_present": None,
+    }
+    issues = [f"rejected {rejected} malformed scorecard group(s)"] if rejected else []
+    issues.append("raw measured rows unavailable; aggregate validity cannot distinguish false from missing")
+    return groups, totals, issues
+
+
+def load_history_session(
+    session: pathlib.Path,
+    budget: dict[str, Any],
+    *,
+    max_rows: int,
+    max_groups: int,
+) -> dict[str, Any]:
+    if time.monotonic() > budget["deadline"]:
+        raise HistoryLimitError("history scan exceeded --deadline-seconds")
+    initial_bytes = budget["bytes_read"]
+    initial_files = budget["files_read"]
+    issues: list[str] = []
+    metadata: dict[str, Any] = {}
+    if direct_artifact_exists(session / "session.json"):
+        try:
+            metadata = bounded_history_json(session / "session.json", budget)
+        except HistoryLimitError:
+            raise
+        except BenchmarkError as error:
+            issues.append(str(error))
+    else:
+        issues.append("session.json is missing")
+
+    groups: list[dict[str, Any]] = []
+    totals = history_group_from_rows("*", "*", "*", [])
+    source: str | None = None
+    scorecard = session / "scorecard.json"
+    if direct_artifact_exists(scorecard):
+        try:
+            value = bounded_history_json(scorecard, budget)
+            if value.get("schema_version") != SCHEMA_VERSION:
+                raise BenchmarkError("scorecard.json has an unsupported schema_version")
+            if isinstance(value.get("rows"), list):
+                groups, totals, source_issues = history_groups_from_rows(
+                    value["rows"], max_rows=max_rows, max_groups=max_groups
+                )
+                source = "scorecard.json:rows"
+            else:
+                groups, totals, source_issues = history_groups_from_scorecard(
+                    value.get("groups"), max_rows=max_rows, max_groups=max_groups
+                )
+                source = "scorecard.json:groups"
+            issues.extend(source_issues)
+        except HistoryLimitError:
+            raise
+        except BenchmarkError as error:
+            issues.append(str(error))
+
+    if source is not None and not groups:
+        issues.append(f"{source} contained no measured groups; tried runs.jsonl")
+    if source is None or not groups:
+        runs_path = session / "runs.jsonl"
+        if direct_artifact_exists(runs_path):
+            try:
+                rows_value = bounded_history_jsonl(
+                    runs_path, budget, max_rows=max_rows
+                )
+                groups, totals, source_issues = history_groups_from_rows(
+                    rows_value, max_rows=max_rows, max_groups=max_groups
+                )
+                source = "runs.jsonl"
+                issues.extend(source_issues)
+            except HistoryLimitError:
+                raise
+            except BenchmarkError as error:
+                issues.append(str(error))
+        elif source is None:
+            issues.append("neither a usable scorecard.json nor runs.jsonl is available")
+
+    status = "ok"
+    if not groups:
+        status = "incomplete" if source is not None else "unreadable"
+    elif issues:
+        status = "degraded"
+    created = metadata.get("created_utc")
+    base_sha = metadata.get("base_sha")
+    return {
+        "session_id": session.name,
+        "created_utc": created if valid_history_label(created, max_length=64) else None,
+        "base_sha": base_sha if valid_history_label(base_sha) else None,
+        "status": status,
+        "source": source,
+        "issues": issues,
+        "artifact_files_read": budget["files_read"] - initial_files,
+        "artifact_bytes_read": budget["bytes_read"] - initial_bytes,
+        "totals": totals,
+        "groups": groups,
+    }
+
+
+def group_key(group: dict[str, Any]) -> tuple[str, str, str]:
+    return (group["lane_id"], group["fixture_id"], group["cache"])
+
+
+def regression_percent(candidate: int | float, baseline: int | float) -> float | None:
+    if baseline <= 0:
+        return None
+    return round((float(candidate) - float(baseline)) / float(baseline) * 100.0, 4)
+
+
+def build_history_comparison(
+    candidate: dict[str, Any] | None,
+    baseline: dict[str, Any] | None,
+    thresholds: dict[str, int | float],
+    *,
+    baseline_explicit: bool,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "candidate_session": candidate and candidate["session_id"],
+        "baseline_session": baseline and baseline["session_id"],
+        "selection": "explicit_baseline" if baseline_explicit else "previous_session",
+        "status": "inconclusive",
+        "alerts": [],
+        "inconclusive_reasons": [],
+        "groups": [],
+        "summary": {
+            "groups": 0,
+            "passed": 0,
+            "regressed": 0,
+            "inconclusive": 0,
+            "alerts": 0,
+        },
+    }
+    if candidate is None:
+        result["inconclusive_reasons"].append("no candidate session exists")
+        return result
+    if baseline is None:
+        result["inconclusive_reasons"].append("no baseline/previous session exists")
+        return result
+    if candidate["status"] in {"incomplete", "unreadable"}:
+        result["inconclusive_reasons"].append(
+            f"candidate session is {candidate['status']}"
+        )
+    if baseline["status"] in {"incomplete", "unreadable"}:
+        result["inconclusive_reasons"].append(
+            f"baseline session is {baseline['status']}"
+        )
+
+    candidate_groups = {group_key(group): group for group in candidate["groups"]}
+    baseline_groups = {group_key(group): group for group in baseline["groups"]}
+    keys = sorted(set(candidate_groups) | set(baseline_groups))
+    for key in keys:
+        current = candidate_groups.get(key)
+        reference = baseline_groups.get(key)
+        item: dict[str, Any] = {
+            "lane_id": key[0],
+            "fixture_id": key[1],
+            "cache": key[2],
+            "status": "inconclusive",
+            "baseline_runs": reference and reference["runs"],
+            "candidate_runs": current and current["runs"],
+            "metrics": {},
+            "alerts": [],
+            "inconclusive_reasons": [],
+        }
+        if current is None:
+            item["inconclusive_reasons"].append("candidate group is missing")
+        elif reference is None:
+            item["inconclusive_reasons"].append("baseline group is missing")
+        elif (
+            current["runs"] < thresholds["min_samples"]
+            or reference["runs"] < thresholds["min_samples"]
+        ):
+            item["inconclusive_reasons"].append(
+                f"fewer than {thresholds['min_samples']} samples in candidate or baseline"
+            )
+        else:
+            for percentile_name in HISTORY_COMPARISON_METRICS:
+                candidate_value = current["total_ms"][percentile_name]
+                baseline_value = reference["total_ms"][percentile_name]
+                limit = thresholds[f"max_{percentile_name}_regression_percent"]
+                change = (
+                    regression_percent(candidate_value, baseline_value)
+                    if is_number(candidate_value) and is_number(baseline_value)
+                    else None
+                )
+                item["metrics"][f"total_ms.{percentile_name}"] = {
+                    "baseline": baseline_value,
+                    "candidate": candidate_value,
+                    "change_percent": change,
+                    "max_regression_percent": limit,
+                }
+                if change is None:
+                    item["inconclusive_reasons"].append(
+                        f"total_ms.{percentile_name} is missing or has a zero baseline"
+                    )
+                elif change > limit:
+                    item["alerts"].append(
+                        {
+                            "metric": f"total_ms.{percentile_name}",
+                            "baseline": baseline_value,
+                            "candidate": candidate_value,
+                            "change": change,
+                            "limit": limit,
+                            "unit": "percent",
+                        }
+                    )
+
+            rate_checks = (
+                (
+                    "non_success_rate_percent",
+                    "increase",
+                    "max_non_success_rate_increase_points",
+                ),
+                ("timeout_rate_percent", "increase", "max_timeout_rate_increase_points"),
+                ("valid_rate_percent", "drop", "max_valid_rate_drop_points"),
+            )
+            for metric, direction, threshold_name in rate_checks:
+                candidate_value = current[metric]
+                baseline_value = reference[metric]
+                limit = thresholds[threshold_name]
+                delta = None
+                if is_number(candidate_value) and is_number(baseline_value):
+                    delta = round(
+                        float(candidate_value) - float(baseline_value)
+                        if direction == "increase"
+                        else float(baseline_value) - float(candidate_value),
+                        4,
+                    )
+                item["metrics"][metric] = {
+                    "baseline": baseline_value,
+                    "candidate": candidate_value,
+                    f"{direction}_points": delta,
+                    f"max_{direction}_points": limit,
+                }
+                if delta is None:
+                    item["inconclusive_reasons"].append(f"{metric} is missing")
+                elif delta > limit:
+                    item["alerts"].append(
+                        {
+                            "metric": metric,
+                            "baseline": baseline_value,
+                            "candidate": candidate_value,
+                            "change": delta,
+                            "limit": limit,
+                            "unit": "percentage_points",
+                        }
+                    )
+
+        if item["alerts"]:
+            item["status"] = "regressed"
+        elif item["inconclusive_reasons"]:
+            item["status"] = "inconclusive"
+        else:
+            item["status"] = "passed"
+        for alert in item["alerts"]:
+            result["alerts"].append(
+                {
+                    "lane_id": key[0],
+                    "fixture_id": key[1],
+                    "cache": key[2],
+                    **alert,
+                }
+            )
+        result["groups"].append(item)
+
+    inconclusive_groups = sum(group["status"] == "inconclusive" for group in result["groups"])
+    if result["alerts"]:
+        result["status"] = "regressed"
+    elif result["inconclusive_reasons"] or inconclusive_groups or not result["groups"]:
+        result["status"] = "inconclusive"
+    else:
+        result["status"] = "passed"
+    result["summary"] = {
+        "groups": len(result["groups"]),
+        "passed": sum(group["status"] == "passed" for group in result["groups"]),
+        "regressed": sum(group["status"] == "regressed" for group in result["groups"]),
+        "inconclusive": inconclusive_groups,
+        "alerts": len(result["alerts"]),
+    }
+    return result
+
+
+def build_history_series(sessions: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    series: defaultdict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    for session in sessions:
+        for group in session["groups"]:
+            series[group_key(group)].append(
+                {
+                    "session_id": session["session_id"],
+                    "base_sha": session["base_sha"],
+                    "runs": group["runs"],
+                    "succeeded": group["succeeded"],
+                    "valid_true": group["valid_true"],
+                    "non_success_rate_percent": group["non_success_rate_percent"],
+                    "valid_rate_percent": group["valid_rate_percent"],
+                    "p50_total_ms": group["total_ms"]["p50"],
+                    "p95_total_ms": group["total_ms"]["p95"],
+                }
+            )
+    return [
+        {
+            "lane_id": key[0],
+            "fixture_id": key[1],
+            "cache": key[2],
+            "points": points,
+        }
+        for key, points in sorted(series.items())
+    ]
+
+
+def markdown_cell(value: Any) -> str:
+    if value is None:
+        return "—"
+    return str(value).replace("|", "\\|").replace("\n", " ")
+
+
+def signed(value: Any, suffix: str = "") -> str:
+    if not is_number(value):
+        return "—"
+    return f"{float(value):+.2f}{suffix}"
+
+
+def render_history(history: dict[str, Any]) -> str:
+    comparison = history["comparison"]
+    lines = [
+        "# Development benchmark history",
+        "",
+        f"Input fingerprint: `{history['input_fingerprint_sha256']}`",
+        "",
+        "Sessions are ordered by deterministic session directory name. Failures, timeouts, "
+        "missing validity, and missing latency remain visible; no value is imputed.",
+        "",
+        "## Session dashboard",
+        "",
+        "| Session | Created | Base | Status | Runs | Success | Valid | p50 total | p95 total | Issues |",
+        "|---|---|---|---|---:|---:|---:|---:|---:|---:|",
+    ]
+    for session in history["sessions"]:
+        totals = session["totals"]
+        lines.append(
+            "| {session} | {created} | {base} | {status} | {runs} | {success} | {valid} | "
+            "{p50} | {p95} | {issues} |".format(
+                session=markdown_cell(session["session_id"]),
+                created=markdown_cell(session["created_utc"]),
+                base=markdown_cell(session["base_sha"][:12] if session["base_sha"] else None),
+                status=session["status"],
+                runs=totals["runs"],
+                success=markdown_cell(totals["success_rate_percent"]),
+                valid=markdown_cell(totals["valid_rate_percent"]),
+                p50=markdown_cell(totals["total_ms"]["p50"]),
+                p95=markdown_cell(totals["total_ms"]["p95"]),
+                issues=len(session["issues"]),
+            )
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Latest comparison",
+            "",
+            f"Status: **{comparison['status']}**. Candidate "
+            f"`{comparison['candidate_session'] or 'none'}` versus "
+            f"`{comparison['baseline_session'] or 'none'}`.",
+            "",
+            "| Lane | Fixture | Cache | Runs base/current | p50 change | p95 change | "
+            "Non-success Δ | Valid drop | Verdict |",
+            "|---|---|---:|---:|---:|---:|---:|---:|---|",
+        ]
+    )
+    for group in comparison["groups"]:
+        metrics = group["metrics"]
+        lines.append(
+            "| {lane} | {fixture} | {cache} | {baseline}/{candidate} | {p50} | {p95} | "
+            "{failure} | {valid} | {status} |".format(
+                lane=markdown_cell(group["lane_id"]),
+                fixture=markdown_cell(group["fixture_id"]),
+                cache=markdown_cell(group["cache"]),
+                baseline=markdown_cell(group["baseline_runs"]),
+                candidate=markdown_cell(group["candidate_runs"]),
+                p50=signed(metrics.get("total_ms.p50", {}).get("change_percent"), "%"),
+                p95=signed(metrics.get("total_ms.p95", {}).get("change_percent"), "%"),
+                failure=signed(
+                    metrics.get("non_success_rate_percent", {}).get("increase_points"), "pp"
+                ),
+                valid=signed(metrics.get("valid_rate_percent", {}).get("drop_points"), "pp"),
+                status=group["status"],
+            )
+        )
+
+    lines.extend(["", "## Regression alerts", ""])
+    if comparison["alerts"]:
+        for alert in comparison["alerts"]:
+            unit = "%" if alert["unit"] == "percent" else " percentage points"
+            lines.append(
+                "- `{lane}/{fixture}/{cache}` {metric}: {change:+.4g}{unit} "
+                "(limit {limit:g}{unit}).".format(
+                    lane=alert["lane_id"],
+                    fixture=alert["fixture_id"],
+                    cache=alert["cache"],
+                    metric=alert["metric"],
+                    change=alert["change"],
+                    limit=alert["limit"],
+                    unit=unit,
+                )
+            )
+    else:
+        lines.append("- No configured threshold was breached.")
+
+    inconclusive = [
+        f"comparison: {reason}" for reason in comparison["inconclusive_reasons"]
+    ]
+    for group in comparison["groups"]:
+        inconclusive.extend(
+            f"{group['lane_id']}/{group['fixture_id']}/{group['cache']}: {reason}"
+            for reason in group["inconclusive_reasons"]
+        )
+    lines.extend(["", "## Missing or inconclusive evidence", ""])
+    if inconclusive:
+        lines.extend(f"- {reason}" for reason in inconclusive)
+    else:
+        lines.append("- None.")
+    for session in history["sessions"]:
+        lines.extend(
+            f"- `{session['session_id']}`: {issue}" for issue in session["issues"]
+        )
+
+    thresholds = history["policy"]["thresholds"]
+    limits = history["policy"]["limits"]
+    lines.extend(
+        [
+            "",
+            "## Policy and bounds",
+            "",
+            f"- Minimum samples per compared group: {thresholds['min_samples']}",
+            f"- Maximum p50/p95 regressions: {thresholds['max_p50_regression_percent']}% / "
+            f"{thresholds['max_p95_regression_percent']}%",
+            f"- Maximum non-success/timeout increases: "
+            f"{thresholds['max_non_success_rate_increase_points']}pp / "
+            f"{thresholds['max_timeout_rate_increase_points']}pp",
+            f"- Maximum validated-rate drop: {thresholds['max_valid_rate_drop_points']}pp",
+            f"- Scan bounds: {limits['max_sessions']} sessions, "
+            f"{limits['max_root_entries']} root entries, {limits['max_rows_per_session']} rows/session, "
+            f"{limits['max_groups_per_session']} groups/session, {limits['max_file_bytes']} bytes/file, "
+            f"{limits['max_total_bytes']} bytes total, {limits['deadline_seconds']} seconds.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def sample_specs(
     lanes: list[dict[str, Any]],
     fixtures: list[dict[str, Any]],
@@ -1500,9 +2336,216 @@ def summarize_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def positive_int_argument(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be an integer") from error
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be greater than zero")
+    return parsed
+
+
+def positive_float_argument(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be a number") from error
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a finite number greater than zero")
+    return parsed
+
+
+def non_negative_float_argument(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be a number") from error
+    if not math.isfinite(parsed) or parsed < 0:
+        raise argparse.ArgumentTypeError("must be a finite number at least zero")
+    return parsed
+
+
+def validate_session_selector(value: str, flag: str) -> str:
+    if (
+        not value
+        or value in {".", ".."}
+        or len(value) > 255
+        or pathlib.PurePath(value).name != value
+        or "/" in value
+        or "\\" in value
+    ):
+        raise BenchmarkError(f"{flag} must be one direct session directory name")
+    return value
+
+
+def absolute_from_primary(path: pathlib.Path, primary: pathlib.Path) -> pathlib.Path:
+    expanded = path.expanduser()
+    if not expanded.is_absolute():
+        expanded = primary / expanded
+    return pathlib.Path(os.path.abspath(expanded))
+
+
+def history_command(args: argparse.Namespace) -> int:
+    _, primary = discover_repo(pathlib.Path.cwd())
+    history_root = absolute_from_primary(args.root, primary)
+    started = time.monotonic()
+    deadline = started + args.deadline_seconds
+    session_paths, discovery = discover_history_sessions(
+        history_root,
+        max_root_entries=args.max_root_entries,
+        max_sessions=args.max_sessions,
+        deadline=deadline,
+    )
+    max_file_bytes = round(args.max_file_mib * 1024 * 1024)
+    max_total_bytes = round(args.max_total_mib * 1024 * 1024)
+    budget: dict[str, Any] = {
+        "deadline": deadline,
+        "max_file_bytes": max_file_bytes,
+        "remaining_bytes": max_total_bytes,
+        "bytes_read": 0,
+        "files_read": 0,
+    }
+    sessions = [
+        load_history_session(
+            path,
+            budget,
+            max_rows=args.max_rows_per_session,
+            max_groups=args.max_groups_per_session,
+        )
+        for path in session_paths
+    ]
+    by_id = {session["session_id"]: session for session in sessions}
+    ordered_ids = [session["session_id"] for session in sessions]
+
+    candidate_id = (
+        validate_session_selector(args.candidate_session, "--candidate-session")
+        if args.candidate_session is not None
+        else ordered_ids[-1]
+        if ordered_ids
+        else None
+    )
+    if candidate_id is not None and candidate_id not in by_id:
+        raise BenchmarkError(
+            f"candidate session {candidate_id!r} is not in the newest "
+            f"{args.max_sessions} selected sessions; increase --max-sessions"
+        )
+    candidate = by_id.get(candidate_id) if candidate_id is not None else None
+    candidate_index = ordered_ids.index(candidate_id) if candidate_id is not None else -1
+
+    baseline_id: str | None = None
+    if args.baseline_session is not None:
+        baseline_id = validate_session_selector(args.baseline_session, "--baseline-session")
+        if baseline_id not in by_id:
+            raise BenchmarkError(
+                f"baseline session {baseline_id!r} is not in the newest "
+                f"{args.max_sessions} selected sessions; increase --max-sessions"
+            )
+        if candidate_id == baseline_id:
+            raise BenchmarkError("candidate and baseline sessions must differ")
+        if ordered_ids.index(baseline_id) >= candidate_index:
+            raise BenchmarkError("--baseline-session must sort before the candidate session")
+    elif candidate_index > 0:
+        baseline_id = ordered_ids[candidate_index - 1]
+    baseline = by_id.get(baseline_id) if baseline_id is not None else None
+
+    thresholds: dict[str, int | float] = {
+        "min_samples": args.min_samples,
+        "max_p50_regression_percent": args.max_p50_regression_percent,
+        "max_p95_regression_percent": args.max_p95_regression_percent,
+        "max_non_success_rate_increase_points": args.max_non_success_rate_increase_points,
+        "max_timeout_rate_increase_points": args.max_timeout_rate_increase_points,
+        "max_valid_rate_drop_points": args.max_valid_rate_drop_points,
+    }
+    comparison = build_history_comparison(
+        candidate,
+        baseline,
+        thresholds,
+        baseline_explicit=args.baseline_session is not None,
+    )
+    limits = {
+        "max_sessions": args.max_sessions,
+        "max_root_entries": args.max_root_entries,
+        "max_rows_per_session": args.max_rows_per_session,
+        "max_groups_per_session": args.max_groups_per_session,
+        "max_file_bytes": max_file_bytes,
+        "max_total_bytes": max_total_bytes,
+        "deadline_seconds": args.deadline_seconds,
+        "files_read": budget["files_read"],
+        "bytes_read": budget["bytes_read"],
+    }
+    fingerprint_value = {
+        "sessions": sessions,
+        "thresholds": thresholds,
+        "candidate_session": candidate_id,
+        "baseline_session": baseline_id,
+    }
+    input_fingerprint = hashlib.sha256(
+        json.dumps(
+            fingerprint_value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+    ).hexdigest()
+    history = {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "roko.dev-benchmark-history",
+        "root": str(history_root),
+        "input_fingerprint_sha256": input_fingerprint,
+        "latest_session_created_utc": sessions[-1]["created_utc"] if sessions else None,
+        "policy": {
+            "ordering": "ascending direct session directory name; newest bounded suffix retained",
+            "failures_and_timeouts": "retained; every non-succeeded row affects the non-success rate",
+            "missing_metrics": "reported as inconclusive; never imputed",
+            "exit": "regression exits 1 unless --report-only; inconclusive exits 1 only with --fail-on-inconclusive",
+            "thresholds": thresholds,
+            "limits": limits,
+        },
+        "discovery": discovery,
+        "sessions": sessions,
+        "series": build_history_series(sessions),
+        "comparison": comparison,
+    }
+
+    output_dir = absolute_from_primary(args.output_dir, primary) if args.output_dir else history_root
+    if output_dir.exists() or output_dir.is_symlink():
+        try:
+            output_metadata = output_dir.lstat()
+        except OSError as error:
+            raise BenchmarkError(f"cannot inspect output directory {output_dir}: {error}") from error
+        if not stat.S_ISDIR(output_metadata.st_mode) or stat.S_ISLNK(output_metadata.st_mode):
+            raise BenchmarkError(f"history output directory must be a real directory: {output_dir}")
+    else:
+        private_mkdir(output_dir)
+    json_output = output_dir / DEFAULT_HISTORY_FILENAME
+    markdown_output = output_dir / DEFAULT_HISTORY_MARKDOWN_FILENAME
+    write_json(json_output, history)
+    write_text(markdown_output, render_history(history))
+    print(
+        json.dumps(
+            {
+                "status": comparison["status"],
+                "alerts": len(comparison["alerts"]),
+                "inconclusive_groups": comparison.get("summary", {}).get("inconclusive", 0),
+                "json": str(json_output),
+                "markdown": str(markdown_output),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    if args.report_only:
+        return 0
+    if comparison["status"] == "regressed":
+        return 1
+    if args.fail_on_inconclusive and comparison["status"] == "inconclusive":
+        return 1
+    return 0
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
-        description="Run or summarize fixed-SHA Roko cold/warm development benchmarks."
+        description=(
+            "Run, summarize, or compare fixed-SHA Roko cold/warm development benchmarks."
+        )
     )
     subparsers = result.add_subparsers(dest="command", required=True)
     listing = subparsers.add_parser("list", help="list lanes and representative fixtures")
@@ -1550,6 +2593,63 @@ def parser() -> argparse.ArgumentParser:
     summarize.add_argument("session", type=pathlib.Path)
     summarize.add_argument("--baseline", type=pathlib.Path, action="append", default=[])
     summarize.set_defaults(func=summarize_command)
+
+    history = subparsers.add_parser(
+        "history",
+        help="build a bounded historical dashboard and enforce regression thresholds",
+    )
+    history.add_argument("--root", type=pathlib.Path, default=DEFAULT_OUTPUT_ROOT)
+    history.add_argument(
+        "--output-dir",
+        type=pathlib.Path,
+        help="write history.json and HISTORY.md here (default: benchmark root)",
+    )
+    history.add_argument("--candidate-session")
+    history.add_argument("--baseline-session")
+    history.add_argument("--max-sessions", type=positive_int_argument, default=100)
+    history.add_argument("--max-root-entries", type=positive_int_argument, default=2_000)
+    history.add_argument("--max-rows-per-session", type=positive_int_argument, default=2_000)
+    history.add_argument("--max-groups-per-session", type=positive_int_argument, default=256)
+    history.add_argument("--max-file-mib", type=positive_float_argument, default=32.0)
+    history.add_argument("--max-total-mib", type=positive_float_argument, default=256.0)
+    history.add_argument("--deadline-seconds", type=positive_float_argument, default=10.0)
+    history.add_argument("--min-samples", type=positive_int_argument, default=3)
+    history.add_argument(
+        "--max-p50-regression-percent",
+        type=non_negative_float_argument,
+        default=15.0,
+    )
+    history.add_argument(
+        "--max-p95-regression-percent",
+        type=non_negative_float_argument,
+        default=20.0,
+    )
+    history.add_argument(
+        "--max-non-success-rate-increase-points",
+        type=non_negative_float_argument,
+        default=5.0,
+    )
+    history.add_argument(
+        "--max-timeout-rate-increase-points",
+        type=non_negative_float_argument,
+        default=5.0,
+    )
+    history.add_argument(
+        "--max-valid-rate-drop-points",
+        type=non_negative_float_argument,
+        default=5.0,
+    )
+    history.add_argument(
+        "--fail-on-inconclusive",
+        action="store_true",
+        help="also exit 1 when the latest comparison lacks sufficient evidence",
+    )
+    history.add_argument(
+        "--report-only",
+        action="store_true",
+        help="always exit zero after writing the dashboard",
+    )
+    history.set_defaults(func=history_command)
     return result
 
 

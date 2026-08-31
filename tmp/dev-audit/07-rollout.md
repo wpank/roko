@@ -100,7 +100,8 @@ Acceptance:
 - [x] In-memory global learning/router updates.
 - [x] Size/age/revision-aware cache status and dry-run-first pruning, protected by active leases and
   kept outside dispatch; warm targets remain available outside explicit cleanup.
-- [ ] Historical benchmark dashboard with regression alerts.
+- [x] Bounded deterministic benchmark history dashboard with previous/fixed-baseline regression
+  alerts; representative samples and promotion decisions remain open.
 - [x] Explicit bounded offline repair for global events created before per-run indexes.
 
 ## Existing backlog mapping

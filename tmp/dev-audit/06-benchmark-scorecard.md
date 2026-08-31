@@ -14,11 +14,18 @@ targets, evidence bundles, and raw/p50/p95 output. It retains failures/timeouts 
 manufactures missing cold/warm or manual evidence. Historical P0 smokes and the coordinator's
 pending final batch are mechanics/release evidence, not promotion data.
 
+The same runner now exposes `history`, which scans a bounded newest-session suffix and emits
+deterministic JSON/Markdown series plus newest-versus-previous (or fixed-baseline) regression
+alerts. Tooling completion still is not performance evidence: an alert-free empty, incomplete, or
+undersampled comparison is explicitly inconclusive.
+
 - [x] Create an opt-in FAST command and bounded evidence wrapper.
 - [x] Preserve the pictured-run baseline and define fixtures/fields/targets.
 - [x] Implement deterministic bundle scoring with failure/timeout retention and p50/p95 output.
 - [x] Implement fixed-SHA stock/FAST/manual orchestration, cold/warm cache isolation, resource/cost
   admission, and safe cleanup that never deletes shared targets.
+- [x] Implement the bounded historical dashboard and configurable p50/p95, non-success, timeout,
+  and validated-rate regression alerts with nonzero CI exit behavior.
 - [ ] Run five cold and five warm repetitions for each selected fixture and comparison lane.
 - [ ] Import real manual Codex/Claude samples; do not substitute placeholders for absent runs.
 - [ ] Publish raw bundle links and p50/p95 results.
@@ -62,6 +69,12 @@ The executable manifest and full operator contract are tracked under `benchmarks
 Start with `python3 scripts/dev_benchmark.py list` or a no-execution
 `python3 scripts/dev_benchmark.py run --dry-run --base <commit>`, then admit paid/network lanes
 only with the explicit network flag and worst-case cost ceiling documented there.
+
+After each retained session, run `./dev.sh benchmark history`. It writes
+`.roko/benchmarks/history.json` and `HISTORY.md`, compares the newest session to its immediate
+predecessor by default, and exits 1 when a configured threshold is breached. Promotion should pin
+the reviewed reference with `--baseline-session`; use `--fail-on-inconclusive` when CI must also
+reject missing groups, missing latency, or fewer than the configured minimum samples.
 
 ## Scorecard fields
 

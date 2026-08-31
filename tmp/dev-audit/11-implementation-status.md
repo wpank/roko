@@ -141,6 +141,15 @@ workspace/writer/cache/repair leases.
   cost ceiling.
 - [x] Raw rows, bundles, admission decisions, p50/p95 scorecards, failures, timeouts, and missing
   measurements are retained instead of being silently discarded.
+- [x] `./dev.sh benchmark history` adds bounded deterministic JSON/Markdown history, prefers raw
+  measured scorecard rows with a bounded `runs.jsonl` fallback, and emits explicit
+  newest-versus-previous or fixed-baseline regression alerts.
+- [x] History scanning caps root entries, sessions, per-session rows/groups, artifact and aggregate
+  bytes, and elapsed time. Over-limit enumeration fails closed instead of publishing a biased
+  partial view.
+- [x] p50/p95 latency, non-success, timeout, and validated-rate thresholds are configurable; a
+  breach exits 1 by default, while missing and undersampled comparisons remain visibly
+  inconclusive and can be made fatal separately.
 - [ ] Execute the representative matrix and import real manual Claude/Codex samples; tooling
   presence is not benchmark evidence.
 

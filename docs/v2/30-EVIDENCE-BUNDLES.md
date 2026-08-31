@@ -154,5 +154,11 @@ record so final validation stays deterministic.
   [`benchmarks/dev-audit`](../../benchmarks/dev-audit/README.md) creates representative cold/warm
   matrices on linked worktrees and reuses this collector; neither command claims promotion evidence
   until the matrix, escaped regressions, and full-CI baseline have been reviewed.
+- `./dev.sh benchmark history` builds deterministic JSON/Markdown series from a bounded newest
+  suffix of those sessions. It compares the newest session with the previous session or an explicit
+  reviewed baseline, returns nonzero for configured latency/correctness regressions, and exposes
+  missing or undersampled data as inconclusive. Root entries, sessions, rows, groups, bytes, and
+  scan time are capped; exceeding a global scan bound fails closed instead of emitting a biased
+  partial dashboard.
 - The collector does not authorize code scope or mutate an endpoint. Plan/task policy remains the
   source of allowed paths and verification intent.

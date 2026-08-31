@@ -96,6 +96,37 @@ guesses an installed CLI or silently grants it network access. Copy the manifest
 argv adapter, and select it with `--manifest`; or import rows shaped like
 `manual-baselines.json` through `--baseline`.
 
+## Historical dashboard and regression alerts
+
+Refresh the deterministic dashboard after a benchmark session:
+
+```bash
+./dev.sh benchmark history
+```
+
+This scans only direct, real session directories below `.roko/benchmarks`, keeps the newest 100,
+and writes `.roko/benchmarks/history.json` plus `.roko/benchmarks/HISTORY.md`. The JSON includes
+session rollups, per-lane/fixture/cache series, the exact policy, every missing/unreadable-session
+issue, and the latest comparison. `scorecard.json` raw measured rows are preferred; a bounded
+`runs.jsonl` fallback is used when the scorecard is absent or unusable. Imported historical rows
+and warmups are not re-counted as session samples.
+
+By default the newest selected session is compared with the immediately previous session. Pin an
+older reviewed baseline with `--baseline-session <session-id>` or select a candidate with
+`--candidate-session <session-id>`. The default policy requires three samples in both groups and
+alerts above a 15% p50 regression, 20% p95 regression, 5 percentage-point non-success or timeout
+increase, or 5-point validated-rate drop. Every threshold has an explicit CLI flag. A breached
+threshold exits 1 after writing both dashboards, which makes the command directly usable in CI;
+`--report-only` suppresses that exit, while `--fail-on-inconclusive` also fails missing/undersampled
+comparisons.
+
+The scan fails closed rather than publish a filesystem-order-dependent partial history when its
+root-entry, total-byte, or deadline bound is exceeded. Defaults are 2,000 root entries, 100
+sessions, 2,000 rows and 256 groups per session, 32 MiB per artifact, 256 MiB total, and 10 seconds.
+Increase a named cap deliberately when retained history outgrows it. Failed and timed-out rows stay
+in the non-success distribution, missing validity remains counted and visible, and absent latency
+is reported as inconclusive rather than zero or silently discarded.
+
 ## Current status
 
 - [x] Deterministic fixed-SHA cold/warm runner and representative fixture manifest.
@@ -103,6 +134,8 @@ argv adapter, and select it with `--manifest`; or import rows shaped like
 - [x] Offline Cargo behavior, explicit provider authorization/cost budget, projected disk reserve,
   bounded targets, and ownership-checked disposable cold caches.
 - [x] Historical pictured-run facts are retained without pretending they are a complete sample.
+- [x] Bounded deterministic historical JSON/Markdown dashboard with previous/fixed-baseline
+  regression alerts and CI exit semantics.
 - [ ] Run five cold and five warm repetitions for every promoted fixture/lane.
 - [ ] Import five manual Codex and Claude samples per selected fixture/cache.
 - [ ] Record escaped regressions and full-CI pass-rate baseline before FAST promotion.

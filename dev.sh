@@ -2153,7 +2153,7 @@ COMMANDS
   evidence-validate <bundle>               Strict JSONL/terminal/secret/size bundle validation
   feedback [--run-id ID]                   Show a deterministic run debrief (latest by default)
   score [bundle|run-id...]                 Aggregate p50/p95 evidence scorecard metrics
-  benchmark list|run|summarize             Fixed-SHA cold/warm development scorecards
+  benchmark list|run|summarize|history     Fixed-SHA scorecards + bounded regression dashboard
   pipeline <name> [options] (p)             Run demo pipeline end-to-end in ephemeral workspace
   clean-workspaces [--confirm]             List/remove pipeline workspaces
   mirage                                   Start mirage-rs in mainnet fork mode (:8545)
@@ -2184,6 +2184,7 @@ EXAMPLES
   ./dev.sh feedback --run-id <run-id>                  Read facts and next action for one run
   ./dev.sh score --bundle-root .roko/runs              Aggregate all captured runs
   ./dev.sh benchmark run --dry-run --base HEAD          Preview the benchmark matrix safely
+  ./dev.sh benchmark history                            Refresh history; exit 1 on regressions
   ./dev.sh cache prune                                  Preview safe cache reclamation
   ./dev.sh cache prune --apply --target-budget-gb 64    Apply a reviewed plan
   ./dev.sh pipeline prd                                Run PRD pipeline (default model)

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Run one command with a deadline and preserve a small, run-scoped evidence bundle.
 
-This deliberately does not build anything, clean anything, or probe endpoints.  It is
-the generic capture layer used by ``./dev.sh fast`` and may also be used directly via
-``./dev.sh run-evidence``.
+This deliberately does not build or clean anything. It is the generic capture layer
+used by ``./dev.sh fast`` and may also be used directly via ``./dev.sh run-evidence``;
+safe GET probes and explicit screenshot/CLI hooks are opt-in.
 """
 
 from __future__ import annotations

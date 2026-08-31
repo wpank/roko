@@ -27,6 +27,13 @@ fn main() {
         return;
     }
 
+    // Release/Docker automation builds the SPA explicitly before Cargo. Reuse
+    // that immutable output instead of invoking npm a second time from a Rust
+    // build script.
+    if demo_app.join("dist/index.html").is_file() {
+        return;
+    }
+
     // Ordinary debug/check builds must never install packages or invoke the
     // frontend toolchain. Production release builds retain the embedded SPA,
     // and developers can explicitly request the same work with

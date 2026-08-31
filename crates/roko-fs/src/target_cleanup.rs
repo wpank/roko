@@ -336,7 +336,13 @@ pub async fn cleanup_workspace_caches(
 /// This compatibility function no longer destroys the target produced by the
 /// task that just completed. Fresh targets are retained for subsequent tasks.
 pub async fn cargo_clean(workdir: &Path) -> std::io::Result<()> {
-    if std::env::var("ROKO_EXPLICIT_CARGO_CLEAN").ok().as_deref() != Some("1") {
+    let explicitly_enabled = std::env::var("ROKO_EXPLICIT_CARGO_CLEAN").is_ok_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    });
+    if !explicitly_enabled {
         tracing::debug!(
             workdir = %workdir.display(),
             "preserving warm target; set ROKO_EXPLICIT_CARGO_CLEAN=1 for an explicit cold clean"

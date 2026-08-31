@@ -15048,18 +15048,19 @@ async fn run_pre_plan_resource_maintenance(
     run_gc_if_needed(layout, resources.gc_on_plan_start).await;
 }
 
-/// Remove a completed task worktree's build artifacts after its final gate
-/// passed and durable task terminalization succeeded.
-///
-/// Calls are awaited deliberately: `roko_fs::cargo_clean` serializes Cargo
-/// cleanup globally, preventing concurrent worktree cleans from contending on
-/// Cargo locks. The operation is policy-gated and non-fatal.
+/// Perform an explicitly requested cold cleanup after durable terminalization.
+/// Warm artifacts are the default in every lane; routine lifecycle cleanup is
+/// handled by the size/age/revision-aware cache command outside the hot path.
 async fn clean_task_target_after_gate(
     resources: Option<&roko_core::config::ResourcesConfig>,
     task_workdir: Option<&Path>,
 ) {
     if env_flag_enabled("ROKO_FAST_MODE") {
         debug!("ROKO_FAST_MODE enabled — preserving task build artifacts for reuse");
+        return;
+    }
+    if !env_flag_enabled("ROKO_EXPLICIT_CARGO_CLEAN") {
+        debug!("preserving warm task target; cold cleanup was not explicitly requested");
         return;
     }
     let enabled = resources
@@ -15084,7 +15085,7 @@ async fn clean_task_target_after_gate(
     match roko_fs::cargo_clean(task_workdir).await {
         Ok(()) => info!(
             workdir = %task_workdir.display(),
-            "between-task cargo clean completed after final gate pass"
+            "explicit between-task cargo clean completed after final gate pass"
         ),
         Err(err) => warn!(
             workdir = %task_workdir.display(),

@@ -184,7 +184,7 @@ cmd_fast() {
         collect_screenshots=true
         evidence_args+=(--collect-roko-screenshots)
         ;;
-      --require-status-sample|--require-cli-smoke-pass|--require-endpoints-pass|--require-screenshots|--allow-remote-endpoints|--no-openapi|--allow-low-disk)
+      --require-status-sample|--require-cli-smoke-pass|--require-endpoints-pass|--require-screenshots|--allow-remote-endpoints|--no-openapi|--no-default-endpoints|--allow-low-disk)
         evidence_args+=("$1")
         ;;
       --help|-h) show_fast_help=true ;;
@@ -230,6 +230,7 @@ Wrapper options:
   --max-tasks <n>         Concurrent tasks (default: 1; explicit override)
   --endpoint-base <url>    Collect bounded, redirect-free GET evidence (loopback by default)
   --endpoint <path>        Add a safe GET path (repeatable)
+  --no-default-endpoints   Collect only explicit --endpoint paths
   --cli-smoke NAME=CMD     Run a bounded, shell-free CLI proof after the plan (repeatable)
   --text-snapshot NAME=CMD Capture command stdout as a text screenshot (repeatable)
   --png-hook NAME=CMD      Optional browser hook; CMD writes PNG to {output}

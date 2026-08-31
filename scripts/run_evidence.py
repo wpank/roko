@@ -1434,6 +1434,7 @@ def collect_endpoints(
     *,
     timeout: float,
     discover_openapi: bool,
+    include_default_paths: bool,
     allow_remote: bool,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
@@ -1444,6 +1445,7 @@ def collect_endpoints(
         "evidence_run_id": bundle.name,
         "run_id": run_id,
         "plan_id": plan_id,
+        "default_paths_enabled": include_default_paths,
         "openapi": None,
         "results": [],
         "skipped_reason": None,
@@ -1460,7 +1462,7 @@ def collect_endpoints(
         return result
     result["base_url"] = base
     opener = urllib.request.build_opener(NoRedirectHandler())
-    paths = list(DEFAULT_SAFE_GET_PATHS)
+    paths = list(DEFAULT_SAFE_GET_PATHS) if include_default_paths else []
     paths.extend(extra_paths)
     if discover_openapi:
         openapi_started_utc = utc_now()
@@ -2485,6 +2487,11 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     )
     parser.add_argument("--no-openapi", action="store_true", help="disable same-origin OpenAPI GET discovery")
     parser.add_argument(
+        "--no-default-endpoints",
+        action="store_true",
+        help="collect only explicit --endpoint paths (default safe GET paths remain enabled otherwise)",
+    )
+    parser.add_argument(
         "--allow-remote-endpoints",
         action="store_true",
         help="allow the explicit endpoint base to be non-loopback (no credentials are forwarded)",
@@ -2675,6 +2682,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "append_logs": [str(path) for path in sorted(log_baselines, key=str)],
             "endpoint_base": args.endpoint_base,
             "endpoint_get_only": True,
+            "endpoint_default_paths": not args.no_default_endpoints,
             "cli_smoke_hooks": [raw.split("=", 1)[0] for raw in args.cli_smoke],
             "text_snapshot_hooks": [raw.split("=", 1)[0] for raw in args.text_snapshot],
             "png_hooks": [raw.split("=", 1)[0] for raw in args.png_hook],
@@ -2951,6 +2959,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.endpoint,
         timeout=args.endpoint_timeout,
         discover_openapi=not args.no_openapi,
+        include_default_paths=not args.no_default_endpoints,
         allow_remote=args.allow_remote_endpoints,
     )
     smoke_results = run_cli_smokes(

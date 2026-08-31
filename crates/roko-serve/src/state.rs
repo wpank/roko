@@ -1229,7 +1229,7 @@ impl AppState {
     /// startup. This state is intentionally independent from hot-reloaded
     /// configuration because neither the bound socket nor installed middleware
     /// changes when `roko.toml` is reloaded.
-    pub(crate) fn configure_listener_security(&self, bind: &str, auth_enabled: bool) {
+    pub fn configure_listener_security(&self, bind: &str, auth_enabled: bool) {
         self.listener_security.configure(bind, auth_enabled);
     }
 

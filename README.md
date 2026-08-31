@@ -571,12 +571,20 @@ wrapper instead of `cargo run`:
 Every FAST task must author exactly one `verify` command. The patching agent is instructed not to
 build or test; the runner owns that one check, preserves the warm target, runs headlessly with a
 bounded deadline, and writes a private evidence bundle under `.roko/runs/`. The gate fails closed
-when the task has zero or multiple verification commands.
+when the task has zero or multiple verification commands. FAST also serializes compile ownership
+and rejects severe disk pressure before launch unless the operator records an explicit override.
+
+```bash
+./dev.sh feedback --run-id <run-id>             # deterministic factual debrief
+./dev.sh evidence-validate .roko/runs/<run-id>  # strict terminal/JSONL/secret/size checks
+./dev.sh score --bundle-root .roko/runs         # p50/p95 across captured runs
+```
 
 FAST is an interactive feedback lane, not release proof. Do not use it for migrations, auth,
 safety, persistence, payment, or other high-risk changes, and still run the contribution checks
 below before merging. See [Fast development](docs/v2/29-FAST-DEVELOPMENT.md) for the contract,
-security boundaries, and deferred work.
+security boundaries, and deferred work, and [run evidence bundles](docs/v2/30-EVIDENCE-BUNDLES.md)
+for optional safe GET, CLI, text, and browser proof collection.
 
 ## CLI quick reference
 

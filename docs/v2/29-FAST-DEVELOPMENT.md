@@ -46,10 +46,16 @@ Defaults are:
 | Agent dispatch, task-attempt, and agent-silence cap | 90 seconds |
 | Retries | 0 |
 | Concurrent tasks | 1 |
+| Gate mode | `focused` |
+| Compile concurrency | 1 |
 | Evidence root | `.roko/runs/` |
 
 `--max-tasks` and `--max-retries` can override their defaults, but doing so can reintroduce
 compiler contention or repeated provider latency.
+
+The wrapper exports `ROKO_GATE_MODE=focused` and `ROKO_COMPILE_CONCURRENCY=1`. The first selects the
+impact-focused verification policy; the second serializes compiler ownership so parallel agent
+work cannot turn a warm target into lock contention.
 
 ---
 
@@ -117,7 +123,31 @@ mutating native options. Eligible worktree cleanup and terminal-state persistenc
 `./dev.sh fast` delegates capture to `./dev.sh run-evidence`. Each run gets a private directory with
 mode `0700`; created files use mode `0600`. It records the redacted command, an allowlisted
 environment snapshot, timings, terminal status, machine/cache metadata, structured events, Git
-state, and before/after tracked diffs. Output remains live while it is captured.
+state, and before/after tracked diffs. Output remains live while it is captured. The full collector
+also samples fresh runner status, filters newly appended JSONL by the observed runner ID, inventories
+the process group, calculates metrics and a score, writes a deterministic debrief, and validates the
+portable bundle. See [Evidence bundles](30-EVIDENCE-BUNDLES.md).
+
+Behavior probes stay opt-in:
+
+```bash
+./dev.sh fast \
+  --endpoint-base http://127.0.0.1:6677 \
+  --cli-smoke 'status=target/debug/roko status --json' \
+  --text-snapshot 'dashboard=target/debug/roko dashboard --text' \
+  plans/my-plan
+```
+
+Endpoint discovery issues only bounded GET requests, follows no redirects, and permits loopback
+hosts by default. `--screenshots` enables Roko's text collector; `--png-hook` integrates an
+operator-selected browser command using its `{output}` placeholder. None of these hooks is enabled
+or required implicitly. FAST does always require its structured event log to contain exactly one
+run start and exactly one run terminal.
+
+FAST also performs resource admission before launching Roko. It records filesystem capacity,
+swap/memory state, and a two-second-bounded Cargo target size measurement. The default lane rejects
+less than 5 GiB or 3% free space. `--allow-low-disk` is the explicit, evidenced escape hatch; the
+equivalent automation variable is `ROKO_EVIDENCE_ALLOW_LOW_DISK=1`.
 
 The main bounds are:
 
@@ -189,6 +219,9 @@ Completed for P0:
 - [x] Fresh worktrees support `SKIP_FRONTEND_BUILD=1` through a tracked fallback page.
 - [x] Evidence capture is private, redacted, process-group bounded, and size bounded.
 - [x] Timed-out attempt state settles before bounded evidence export.
+- [x] Evidence includes run-scoped status/log collection, safe GET discovery, process inventory,
+  optional CLI/text/PNG hooks, metrics, scoring, deterministic debrief, and strict validation.
+- [x] FAST records disk/swap/target resource admission and fails closed under severe disk pressure.
 
 Verification completed for the landed P0 change:
 
@@ -207,4 +240,5 @@ Deferred improvements:
 - [ ] Select changed crates plus reverse dependencies and run broad checks asynchronously.
 - [ ] Add typed timeout-diff salvage to the normal gate lifecycle.
 - [ ] Deduplicate semantically equivalent verification hidden behind arbitrary shell wrappers.
-- [ ] Discover endpoints and collect browser/TUI screenshots in evidence bundles.
+- [x] Discover safe GET endpoints and collect optional browser/TUI evidence without making probes
+  part of the default FAST path.

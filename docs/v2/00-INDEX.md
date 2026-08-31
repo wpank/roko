@@ -247,6 +247,7 @@ CaMeL capability-tagged IFC on Extensions. Nayebi 5-head lexicographic corrigibi
 | **[27](27-ORCHESTRATOR.md)** | Orchestrator | Plan runner v2 (event-driven). Mori parity: structured review, auto-fix, error sharing, reflection loop, context scoping, warm spawn. |
 | **[28](28-ROADMAP.md)** | Roadmap | Phased delivery. Implementation priorities. Phase dependencies. Current state reconciliation. |
 | **[29](29-FAST-DEVELOPMENT.md)** | FAST Development | Opt-in bounded self-development lane: task-owned verification, deadlines, evidence, trust boundaries, validation status, and deferred work. |
+| **[30](30-EVIDENCE-BUNDLES.md)** | Run Evidence Bundles | Run-scoped status/log capture, safe GET and optional visual hooks, metrics, scorecards, deterministic debriefs, and strict portable-bundle validation. |
 
 ---
 
@@ -372,7 +373,7 @@ CaMeL capability-tagged IFC on Extensions. Nayebi 5-head lexicographic corrigibi
 15–18. Telemetry, Security, Auth, Payments.
 
 ### Everything else
-19–29. Config, Surfaces, Marketplace, Registries, Arenas, DeFi, Deployment, Cross-Cuts, Orchestrator, Roadmap, FAST Development.
+19–30. Config, Surfaces, Marketplace, Registries, Arenas, DeFi, Deployment, Cross-Cuts, Orchestrator, Roadmap, FAST Development, Run Evidence Bundles.
 
 ---
 

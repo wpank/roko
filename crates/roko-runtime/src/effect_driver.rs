@@ -19,6 +19,7 @@ pub use roko_core::foundation::{
 use roko_core::foundation::{
     CachePolicy, EventConsumer, FeedbackEvent, FeedbackSink, GateConfig, GateRunner, GateVerdict,
     ModelCaller, PromptAssembler, PromptSpec, ShellGateCommand, TokenBudget,
+    with_event_persist_publish_order,
 };
 
 /// Fallible result type used by the effect driver.
@@ -541,14 +542,16 @@ impl EffectDriver {
 
     /// Emit a runtime event directly.
     pub fn emit(&self, event: RuntimeEvent) {
-        let mut cursor = None;
-        for consumer in &self.event_consumers {
-            let consumed_cursor = consumer.consume_with_cursor(&event);
-            if cursor.is_none() {
-                cursor = consumed_cursor;
+        with_event_persist_publish_order(|| {
+            let mut cursor = None;
+            for consumer in &self.event_consumers {
+                let consumed_cursor = consumer.consume_with_cursor(&event);
+                if cursor.is_none() {
+                    cursor = consumed_cursor;
+                }
             }
-        }
-        emit_runtime_event_with_cursor(event, cursor);
+            emit_runtime_event_with_cursor(event, cursor);
+        });
     }
 
     async fn record_gate_verdict(&self, verdict: &GateVerdict) {

@@ -677,6 +677,21 @@ pub trait EventConsumer: Send + Sync {
     }
 }
 
+static EVENT_PERSIST_PUBLISH_ORDER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Serialize the durable append and matching live publication across all
+/// in-process RuntimeEvent producers.
+///
+/// The durable per-run cursor is monotonic only when publication observes the
+/// same order. Keeping this boundary dependency-neutral lets model, workflow,
+/// effect, and HTTP-ingest producers share one ordering primitive.
+pub fn with_event_persist_publish_order<T>(operation: impl FnOnce() -> T) -> T {
+    let _order = EVENT_PERSIST_PUBLISH_ORDER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    operation()
+}
+
 // -- EffectExecutor --
 
 /// A side-effect the workflow engine needs to execute.
@@ -845,6 +860,39 @@ impl AffectPolicy for NoOpAffectPolicy {
 mod tests {
     use super::*;
     use futures_util::StreamExt;
+
+    #[test]
+    fn persist_publish_boundary_prevents_cursor_overtaking() {
+        let steps = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (a_entered_tx, a_entered_rx) = std::sync::mpsc::channel();
+        let (b_attempted_tx, b_attempted_rx) = std::sync::mpsc::channel();
+        let a_steps = std::sync::Arc::clone(&steps);
+        let a = std::thread::spawn(move || {
+            with_event_persist_publish_order(|| {
+                a_steps.lock().unwrap().push("a:persist");
+                a_entered_tx.send(()).unwrap();
+                b_attempted_rx.recv().unwrap();
+                a_steps.lock().unwrap().push("a:publish");
+            });
+        });
+
+        a_entered_rx.recv().unwrap();
+        let b_steps = std::sync::Arc::clone(&steps);
+        let b = std::thread::spawn(move || {
+            b_attempted_tx.send(()).unwrap();
+            with_event_persist_publish_order(|| {
+                b_steps.lock().unwrap().push("b:persist");
+                b_steps.lock().unwrap().push("b:publish");
+            });
+        });
+
+        a.join().unwrap();
+        b.join().unwrap();
+        assert_eq!(
+            *steps.lock().unwrap(),
+            ["a:persist", "a:publish", "b:persist", "b:publish"]
+        );
+    }
 
     fn tiny_png() -> ModelInputImage {
         ModelInputImage::new("image/png", "iVBORw0KGgo=")

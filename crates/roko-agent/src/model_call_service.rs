@@ -15,7 +15,7 @@ use roko_core::config::schema::RokoConfig;
 use roko_core::foundation::{
     CachePolicy, ChatMessage, FeedbackEvent, FeedbackSink, GatewayError, MessageRole,
     ModelCallRequest, ModelCallResponse, ModelCaller, ModelInputBlock, ModelInputMessage,
-    TokenBudget, TokenUsage, validate_model_input_messages,
+    TokenBudget, TokenUsage, validate_model_input_messages, with_event_persist_publish_order,
 };
 use roko_core::{
     Body, Context, EventConsumer, Kind, Result, RokoError, RuntimeEvent, Signal, ToolCallSummary,
@@ -516,10 +516,12 @@ impl ModelCallService {
     }
 
     fn emit(&self, event: RuntimeEvent) {
-        let cursor = self.emit_with_cursor(&event);
-        if let Some(observer) = &self.inference_observer {
-            observer.on_runtime_event_with_cursor(&event, cursor);
-        }
+        with_event_persist_publish_order(|| {
+            let cursor = self.emit_with_cursor(&event);
+            if let Some(observer) = &self.inference_observer {
+                observer.on_runtime_event_with_cursor(&event, cursor);
+            }
+        });
     }
 
     fn emit_with_cursor(&self, event: &RuntimeEvent) -> Option<u64> {
@@ -548,17 +550,19 @@ impl ModelCallService {
             agent_id: agent_id.to_string(),
             auto_routed,
         };
-        let cursor = self.emit_with_cursor(&event);
-        if let Some(observer) = &self.inference_observer {
-            observer.on_start_with_cursor(
-                run_id,
-                request_id,
-                model,
-                agent_id,
-                auto_routed,
-                cursor,
-            );
-        }
+        with_event_persist_publish_order(|| {
+            let cursor = self.emit_with_cursor(&event);
+            if let Some(observer) = &self.inference_observer {
+                observer.on_start_with_cursor(
+                    run_id,
+                    request_id,
+                    model,
+                    agent_id,
+                    auto_routed,
+                    cursor,
+                );
+            }
+        });
     }
 
     fn inference_completed(
@@ -580,20 +584,22 @@ impl ModelCallService {
             cost_usd: usage.cost_usd,
             duration_ms,
         };
-        let cursor = self.emit_with_cursor(&event);
-        if let Some(observer) = &self.inference_observer {
-            observer.on_complete_with_cursor(
-                run_id,
-                request_id,
-                model,
-                agent_id,
-                usage.input_tokens,
-                usage.output_tokens,
-                usage.cost_usd,
-                duration_ms,
-                cursor,
-            );
-        }
+        with_event_persist_publish_order(|| {
+            let cursor = self.emit_with_cursor(&event);
+            if let Some(observer) = &self.inference_observer {
+                observer.on_complete_with_cursor(
+                    run_id,
+                    request_id,
+                    model,
+                    agent_id,
+                    usage.input_tokens,
+                    usage.output_tokens,
+                    usage.cost_usd,
+                    duration_ms,
+                    cursor,
+                );
+            }
+        });
     }
 
     fn inference_failed(
@@ -611,12 +617,14 @@ impl ModelCallService {
             agent_id: agent_id.to_string(),
             error: error.to_string(),
         };
-        let cursor = self.emit_with_cursor(&event);
-        if let Some(observer) = &self.inference_observer {
-            observer.on_error_with_cursor(
-                run_id, request_id, model, agent_id, error, cursor,
-            );
-        }
+        with_event_persist_publish_order(|| {
+            let cursor = self.emit_with_cursor(&event);
+            if let Some(observer) = &self.inference_observer {
+                observer.on_error_with_cursor(
+                    run_id, request_id, model, agent_id, error, cursor,
+                );
+            }
+        });
     }
 
     fn emit_agent_trace_events(

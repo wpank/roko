@@ -11,7 +11,10 @@ use tracing::warn;
 
 use chrono::{DateTime, Utc};
 use roko_core::RuntimeEvent;
-use roko_core::foundation::{EventConsumer, FeedbackEvent, ModelInputMessage, ShellGateCommand};
+use roko_core::foundation::{
+    EventConsumer, FeedbackEvent, ModelInputMessage, ShellGateCommand,
+    with_event_persist_publish_order,
+};
 use roko_core::runtime_event::RuntimeEventEnvelope;
 use serde::{Deserialize, Serialize};
 
@@ -542,15 +545,17 @@ impl WorkflowEngine {
     }
 
     fn emit(&self, event: RuntimeEvent) -> u64 {
-        let mut cursor = None;
-        for consumer in &self.consumers {
-            let consumed_cursor = consumer.consume_with_cursor(&event);
-            if cursor.is_none() {
-                cursor = consumed_cursor;
+        with_event_persist_publish_order(|| {
+            let mut cursor = None;
+            for consumer in &self.consumers {
+                let consumed_cursor = consumer.consume_with_cursor(&event);
+                if cursor.is_none() {
+                    cursor = consumed_cursor;
+                }
             }
-        }
 
-        emit_runtime_event_with_cursor(event, cursor)
+            emit_runtime_event_with_cursor(event, cursor)
+        })
     }
 
     fn emit_phase_transition(&self, run_id: &str, from: &str, to: &str) {

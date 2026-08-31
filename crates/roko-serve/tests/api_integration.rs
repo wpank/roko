@@ -645,6 +645,7 @@ async fn stable_projection_frames_include_version_and_explicit_missing_state() {
         .state_hub
         .publish(roko_core::DashboardEvent::PlanStarted {
             plan_id: "plan-1".into(),
+            tasks_total: 0,
         });
     state
         .state_hub
@@ -661,6 +662,7 @@ async fn stable_projection_frames_include_version_and_explicit_missing_state() {
             task_id: "work-a".into(),
             gate: "compile".into(),
             passed: false,
+            output_text: None,
         });
 
     let (status, plan) = get_json(&app, "/api/projections/plan_state?filter=plan:plan-1").await;
@@ -743,6 +745,7 @@ async fn orchestrator_events_reach_websocket_via_bridge() {
         task_id: "task-A".to_string(),
         gate: "compile".to_string(),
         passed: true,
+        output_text: None,
     });
 
     // The bridge converts it to ServerEvent::GateResult → WS client sees it.
@@ -785,6 +788,7 @@ async fn bridge_converts_multiple_event_types() {
     // 1. PlanStarted
     sender.publish(roko_core::DashboardEvent::PlanStarted {
         plan_id: "plan-bridge".to_string(),
+        tasks_total: 0,
     });
     let ev: serde_json::Value =
         serde_json::from_str(&next_ws_text(&mut socket).await).expect("parse plan_started");

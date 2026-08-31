@@ -1271,6 +1271,14 @@ pub struct TuiState {
     /// Recent failing verdicts surfaced beside the trend grid.
     pub gate_recent_failures: Vec<roko_core::FailureEntry>,
 
+    // -- gate output --
+    /// Streaming gate output lines from rung executions (bounded).
+    pub gate_output_lines: VecDeque<String>,
+    /// Currently running gate rung: (rung_name, started_at). `None` when idle.
+    pub current_gate_rung: Option<(String, Instant)>,
+    /// Gate output scroll offset. 0 = auto-tail (follow latest output).
+    pub gate_output_scroll: usize,
+
     // -- affect state --
     /// Latest Daimon affect state from the runner.
     pub affect: Option<roko_core::AffectSnapshot>,
@@ -1599,6 +1607,10 @@ impl Default for TuiState {
             experiment_winners: Vec::new(),
             gate_trends: HashMap::new(),
             gate_recent_failures: Vec::new(),
+
+            gate_output_lines: VecDeque::new(),
+            current_gate_rung: None,
+            gate_output_scroll: 0,
 
             affect: None,
 
@@ -3324,6 +3336,11 @@ impl TuiState {
                     p95: b.p95,
                 })
                 .collect();
+        }
+
+        // --- Gate output lines from snapshot ---
+        if !snap.gate_output_lines.is_empty() {
+            self.gate_output_lines = snap.gate_output_lines.clone();
         }
 
         self.refresh_cached_unified_log();

@@ -290,6 +290,14 @@ fn render_output_panel(
     focused: bool,
     theme: &Theme,
 ) {
+    // When a gate is running or has recent output, show the gate output widget
+    // instead of normal agent output.
+    if widgets::gate_output::should_show(&tui_state.current_gate_rung, &tui_state.gate_output_lines)
+    {
+        widgets::gate_output::render_gate_output(frame, area, tui_state, theme);
+        return;
+    }
+
     let border = if focused {
         Theme::focused_border_style()
     } else {

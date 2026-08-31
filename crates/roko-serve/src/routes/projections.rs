@@ -747,6 +747,7 @@ mod tests {
             .state_hub
             .publish(roko_core::DashboardEvent::PlanStarted {
                 plan_id: "release-flow".into(),
+                tasks_total: 0,
             });
         state
             .state_hub

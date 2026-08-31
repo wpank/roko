@@ -278,6 +278,7 @@ mod tests {
         for plan_id in ["plan-0", "plan-1"] {
             hub.publish(roko_core::DashboardEvent::PlanStarted {
                 plan_id: plan_id.into(),
+                tasks_total: 0,
             });
         }
 
@@ -304,6 +305,7 @@ mod tests {
         for index in 0..3 {
             hub.publish(roko_core::DashboardEvent::PlanStarted {
                 plan_id: format!("plan-{index}"),
+                tasks_total: 0,
             });
         }
 
@@ -326,6 +328,7 @@ mod tests {
         for index in 0..=MAX_REPLAY_EVENTS {
             hub.publish(roko_core::DashboardEvent::PlanStarted {
                 plan_id: format!("plan-{index}"),
+                tasks_total: 0,
             });
         }
 

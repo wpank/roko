@@ -1474,13 +1474,33 @@ async fn generate_plan_from_prd_with_outcome(
                     );
                 }
 
-                validate_and_fix_generated_plan(
+                let validated = validate_and_fix_generated_plan(
                     toml_content,
                     slug,
                     &resolved.config.models,
                     resolved.config.agent.model.as_deref(),
                 )
-                .map_err(|e| format!("{e:#}"))
+                .map_err(|e| format!("{e:#}"))?;
+                let parsed = TasksFile::parse_str(&validated).map_err(|error| {
+                    format!("generated plan failed runtime parsing after repair: {error:#}")
+                })?;
+                let policy = crate::plan_policy::PlanExecutionPolicy::generated(
+                    template_kind.max_task_count(),
+                );
+                let policy_issues = crate::plan_policy::validate_plan_budgets(&parsed, policy);
+                if policy_issues.is_empty() {
+                    Ok(validated)
+                } else {
+                    Err(format!(
+                        "generated plan violates the `{}` structural budget:\n{}",
+                        template_kind.label(),
+                        policy_issues
+                            .iter()
+                            .map(|issue| format!("  - {issue}"))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    ))
+                }
             };
 
         // First attempt uses the output we already have.
@@ -2670,39 +2690,24 @@ fn validate_and_fix_generated_plan(
                             .unwrap_or_default();
 
                         if role == "implementer" && !files.is_empty() {
-                            let mut auto_verify = Vec::new();
-
                             // Infer crate name from file paths for compile check
                             let crate_name = infer_crate_from_paths(&files);
                             let compile_cmd = match &crate_name {
                                 Some(c) => format!("cargo check -p {c}"),
                                 None => "cargo check --workspace".to_string(),
                             };
-                            auto_verify.push(make_verify_entry(
+                            let auto_verify = vec![make_verify_entry(
                                 "compile",
                                 &compile_cmd,
                                 &format!(
                                     "{} must compile",
                                     crate_name.as_deref().unwrap_or("workspace"),
                                 ),
-                            ));
-
-                            // Add structural grep for expected symbols from title
-                            if let Some(title) = task.get("title").and_then(toml::Value::as_str) {
-                                let structural_cmd = build_structural_verify_cmd(title, &files);
-                                if let Some(cmd) = structural_cmd {
-                                    auto_verify.push(make_verify_entry(
-                                        "structural",
-                                        &cmd,
-                                        "Expected symbols must exist in source",
-                                    ));
-                                }
-                            }
+                            )];
 
                             task.insert("verify".to_string(), toml::Value::Array(auto_verify));
                             eprintln!(
-                                "info: {task_id_label}: auto-added verify entries \
-                                 (compile + structural)"
+                                "info: {task_id_label}: auto-added one focused compile verify"
                             );
                         }
                     }
@@ -2785,37 +2790,6 @@ fn make_verify_entry(phase: &str, command: &str, fail_msg: &str) -> toml::Value 
         toml::Value::String(fail_msg.to_string()),
     );
     toml::Value::Table(table)
-}
-
-/// Build a structural verify command that greps for expected symbols.
-/// Extracts likely function/struct names from the task title and greps
-/// the first file in the list for them.
-fn build_structural_verify_cmd(title: &str, files: &[String]) -> Option<String> {
-    let target_file = files.first()?;
-    // Extract words that look like identifiers (snake_case or CamelCase)
-    let candidates: Vec<&str> = title
-        .split_whitespace()
-        .filter(|w| {
-            w.len() >= 4
-                && w.chars().all(|c| c.is_alphanumeric() || c == '_')
-                && w.chars().next().is_some_and(|c| c.is_alphabetic())
-                // Skip common non-symbol words
-                && !matches!(
-                    w.to_lowercase().as_str(),
-                    "with" | "from" | "into" | "that" | "this" | "pass" | "when"
-                        | "does" | "make" | "have" | "task" | "file" | "test"
-                        | "only" | "also" | "each" | "them" | "should" | "implement"
-                        | "create" | "update" | "remove" | "validate" | "generate"
-                )
-        })
-        .take(2)
-        .collect();
-    if candidates.is_empty() {
-        return None;
-    }
-    // Build a grep -q 'sym1\|sym2' file command
-    let pattern = candidates.join("\\|");
-    Some(format!("grep -q '{pattern}' {target_file}"))
 }
 
 /// Slugify a title.

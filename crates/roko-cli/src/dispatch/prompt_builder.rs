@@ -113,12 +113,30 @@ impl PromptContext {
     /// Construct a `PromptContext` from runner inputs.
     #[must_use]
     pub fn from_task(task: &TaskDef, ctx: &DispatchContext) -> Self {
-        let workspace_map = generate_workspace_map(&ctx.workdir);
-        let tasks_toml = load_tasks_toml(&ctx.workdir, &ctx.plan_id);
+        let execution_policy = crate::plan_policy::PlanExecutionPolicy::for_environment();
+        let bounded_context_only = execution_policy.bounded_context_only;
+        let workspace_map = if bounded_context_only {
+            String::new()
+        } else {
+            generate_workspace_map(&ctx.workdir)
+        };
+        let tasks_toml = if bounded_context_only {
+            String::new()
+        } else {
+            load_tasks_toml(&ctx.workdir, &ctx.plan_id)
+        };
         let prd_excerpt = load_prd_excerpt(&ctx.workdir, &ctx.plan_id);
-        let workspace_context = generate_workspace_context(&ctx.workdir);
-        let cfactor_context = generate_cfactor_context(&ctx.workdir);
-        let impact_context = declared_impact_context(task);
+        let workspace_context = if bounded_context_only {
+            String::new()
+        } else {
+            generate_workspace_context(&ctx.workdir)
+        };
+        let cfactor_context = if bounded_context_only {
+            String::new()
+        } else {
+            generate_cfactor_context(&ctx.workdir)
+        };
+        let impact_context = declared_impact_context(task, bounded_context_only);
         tracing::debug!(
             plan_id = %ctx.plan_id,
             workspace_map_bytes = workspace_map.len(),
@@ -153,7 +171,7 @@ impl PromptContext {
     }
 }
 
-fn declared_impact_context(task: &TaskDef) -> String {
+fn declared_impact_context(task: &TaskDef, bounded_context_only: bool) -> String {
     let description = format!(
         "{} {}",
         task.title,
@@ -181,9 +199,15 @@ fn declared_impact_context(task: &TaskDef) -> String {
         .map(|file| format!("`{file}`"))
         .collect::<Vec<_>>()
         .join(", ");
-    format!(
-        "Impact policy: this task may change a public, trait, re-export, or serialized contract. Before editing, search every workspace call site/constructor/implementation and report newly discovered consumers. The authorized planned scope is: {files}. Do not silently edit files outside it; surface omissions for plan repair. The runner will compile bounded reverse dependents."
-    )
+    if bounded_context_only {
+        format!(
+            "Impact policy: this task may change a public, trait, re-export, or serialized contract. Exact declared symbols and source snippets are supplied below. Do not broad-search in FAST mode. The authorized planned scope is: {files}. If the supplied consumers are insufficient, stop and surface the omission for plan repair. The runner's post-diff impact analyzer remains the safety net."
+        )
+    } else {
+        format!(
+            "Impact policy: this task may change a public, trait, re-export, or serialized contract. Start with the supplied exact symbols and snippets. If they reveal an unresolved consumer, perform at most one repository-scoped exact-symbol search capped at 20 matches. Never search home/session history, other worktrees, unreachable Git objects, or the web. The authorized planned scope is: {files}. Surface omissions for plan repair; the runner will analyze the final diff."
+        )
+    }
 }
 
 // ─── PromptContext enrichment helpers ──────────────────────────────────
@@ -310,13 +334,14 @@ fn load_tasks_toml(workdir: &Path, plan_id: &str) -> String {
 ///
 /// Searches:
 /// 1. `{workdir}/.roko/prd/published/{plan_id}.md`
-/// 2. `{workdir}/.roko/prd/draft/{plan_id}.md`
+/// 2. `{workdir}/.roko/prd/drafts/{plan_id}.md`
 ///
 /// Returns an empty string when neither exists.
 fn load_prd_excerpt(workdir: &Path, plan_id: &str) -> String {
     let prd_base = workdir.join(".roko").join("prd");
     let candidates = [
         prd_base.join("published").join(format!("{plan_id}.md")),
+        prd_base.join("drafts").join(format!("{plan_id}.md")),
         prd_base.join("draft").join(format!("{plan_id}.md")),
     ];
     for path in &candidates {
@@ -945,8 +970,21 @@ fn parse_role_label(role: &str) -> AgentRole {
 /// workspace context, and C-factor context into a single markdown block. This
 /// block is passed to [`TaskContext::with_context`] so the canonical 9-layer
 /// builder includes it in the "Relevant Context" section.
-fn build_runner_context(task: &TaskDef, ctx: &PromptContext) -> String {
+fn build_runner_context(
+    task: &TaskDef,
+    ctx: &PromptContext,
+) -> Result<String, RunnerDispatchError> {
     let mut parts: Vec<String> = Vec::new();
+
+    let declared_context = crate::plan_policy::render_declared_context(
+        task,
+        &ctx.workdir,
+        crate::plan_policy::PlanExecutionPolicy::for_environment(),
+    )
+    .map_err(RunnerDispatchError::PreValidationFailed)?;
+    if !declared_context.is_empty() {
+        parts.push(declared_context);
+    }
 
     if !ctx.files_in_scope.is_empty() {
         let list = ctx
@@ -1035,7 +1073,7 @@ fn build_runner_context(task: &TaskDef, ctx: &PromptContext) -> String {
         parts.push(ctx.cfactor_context.clone());
     }
 
-    parts.join("\n\n")
+    Ok(parts.join("\n\n"))
 }
 
 /// The file name for the persisted attention bidders store under `.roko/learn/`.
@@ -1345,7 +1383,7 @@ impl PromptAssembler {
         // Rich runner context (files, acceptance, verify, allowed tools,
         // gate feedback, dep outputs, PRD, workspace map, etc.) injected
         // into the canonical "Relevant Context" section.
-        let runner_context = build_runner_context(task, ctx);
+        let runner_context = build_runner_context(task, ctx)?;
 
         // Build TaskContext with runner-specific context block.
         let task_context = {
@@ -3035,7 +3073,7 @@ mod tests {
             workspace_context: String::new(),
             cfactor_context: String::new(),
         };
-        let ctx_str = build_runner_context(&t, &pctx);
+        let ctx_str = build_runner_context(&t, &pctx).expect("runner context");
         assert!(ctx_str.contains("# Files in scope"));
         assert!(ctx_str.contains("# Acceptance criteria"));
         assert!(ctx_str.contains("# Verify"));

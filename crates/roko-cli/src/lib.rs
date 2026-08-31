@@ -104,6 +104,7 @@ pub mod output_format;
 pub mod pipe;
 pub mod plan;
 pub mod plan_generate;
+pub mod plan_policy;
 pub mod prd;
 pub mod prd_prompt;
 pub mod projection;

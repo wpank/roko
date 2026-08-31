@@ -145,6 +145,24 @@ fn validate_plans_dir_impl(
                 plan.diagnostics.extend(ref_diagnostics);
             }
 
+            if let Ok(tasks_file) = roko_cli::task_parser::TasksFile::parse(&tasks_path) {
+                let plan_dir = tasks_path.parent().unwrap_or(dir);
+                for issue in roko_cli::plan_policy::validate_plan_context(
+                    &tasks_file,
+                    workdir,
+                    plan_dir,
+                    roko_cli::plan_policy::PlanExecutionPolicy::for_environment(),
+                ) {
+                    plan.diagnostics.push(Diagnostic {
+                        severity: Severity::Error,
+                        rule_id: issue.code.to_string(),
+                        plan_id: Some(plan.plan_id.clone()),
+                        task_id: issue.task_id,
+                        message: issue.message,
+                    });
+                }
+            }
+
             let existing_crates = collect_workspace_package_names(workdir, "crates");
             if !existing_crates.is_empty()
                 && let Ok(content) = std::fs::read_to_string(&tasks_path)

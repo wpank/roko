@@ -234,6 +234,40 @@ impl CliProtocol {
     pub const fn supports_system_prompt_flag(self) -> bool {
         matches!(self, Self::ClaudeStreamJson)
     }
+
+    /// Whether the provider accepts a binding native turn/session limit.
+    pub const fn supports_native_turn_limit(self) -> bool {
+        matches!(self, Self::ClaudeStreamJson | Self::GeminiStreamJson)
+    }
+}
+
+/// How the requested turn limit is enforced by the selected CLI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CliTurnLimitEnforcement {
+    /// The limit is passed through a provider-owned binding setting.
+    Native,
+    /// The CLI exposes no binding turn-count setting. Runner wall-clock
+    /// deadlines still apply, but must not be reported as a native turn cap.
+    Unsupported,
+}
+
+/// Serialized receipt describing the requested and effective turn policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CliTurnLimitReceipt {
+    pub requested_max_turns: u32,
+    pub effective_max_turns: Option<u32>,
+    pub enforcement: CliTurnLimitEnforcement,
+}
+
+impl Default for CliTurnLimitReceipt {
+    fn default() -> Self {
+        Self {
+            requested_max_turns: 0,
+            effective_max_turns: None,
+            enforcement: CliTurnLimitEnforcement::Unsupported,
+        }
+    }
 }
 
 /// Human-readable CLI provider metadata.
@@ -522,12 +556,25 @@ impl CliProviderConfig {
         // rather than hard-failing, since many safety contracts include tool
         // denials that are irrelevant to codex's tool surface.
         if request.allowed_tools.is_some() || !request.disallowed_tools.is_empty() {
+            if env_flag_enabled("ROKO_REQUIRE_BINDING_TOOL_POLICY") {
+                return Err(DispatchV2Error::ToolPolicyUnsupported {
+                    provider_id: self.descriptor.provider_id.clone(),
+                    protocol: self.descriptor.protocol,
+                });
+            }
             tracing::warn!(
                 provider_id = %self.descriptor.provider_id,
                 allowed_tools = ?request.allowed_tools,
                 disallowed_tools = ?request.disallowed_tools,
                 "codex CLI cannot enforce tool policy; proceeding without enforcement"
             );
+        }
+        if env_flag_enabled("ROKO_REQUIRE_NATIVE_TURN_LIMIT") {
+            return Err(DispatchV2Error::TurnLimitUnsupported {
+                provider_id: self.descriptor.provider_id.clone(),
+                protocol: self.descriptor.protocol,
+                requested_max_turns: request.max_turns,
+            });
         }
         let mut args = vec!["exec".to_string()];
         args.extend(self.provider_args.clone());
@@ -540,6 +587,22 @@ impl CliProviderConfig {
         args.push("--skip-git-repo-check".to_string());
         args.push("--color".to_string());
         args.push("never".to_string());
+
+        if env_flag_enabled("ROKO_FAST_MODE") {
+            // Codex has no native general tool allowlist or turn-count flag.
+            // Disable avoidable expansion surfaces that do have binding config
+            // switches; the runner's hard wall-clock deadline remains the
+            // authoritative bound for the opaque process.
+            for setting in [
+                "tools.web_search=false",
+                "history.persistence=\"none\"",
+                "features.multi_agent=false",
+                "sandbox_workspace_write.network_access=false",
+            ] {
+                args.push("--config".to_string());
+                args.push(setting.to_string());
+            }
+        }
 
         if request.dangerously_skip_permissions {
             args.push("--dangerously-bypass-approvals-and-sandbox".to_string());
@@ -789,7 +852,9 @@ pub struct CliDispatchRequest {
     /// Tool names the agent must not invoke, translated into native policy.
     ///
     /// Claude and Gemini support this binding restriction. Codex has no
-    /// equivalent built-in-tool flag and rejects such requests fail-closed.
+    /// equivalent built-in-tool flag: ordinary runs record a degradation and
+    /// rely on its sandbox, while `ROKO_REQUIRE_BINDING_TOOL_POLICY=1` rejects
+    /// the dispatch fail-closed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disallowed_tools: Vec<String>,
     /// Contract-scoped bridge for local plugin handlers, when the runner has
@@ -1026,6 +1091,9 @@ pub struct CliInvocation {
     pub model: String,
     /// Agent id associated with this invocation.
     pub agent_id: String,
+    /// Truthful receipt for the provider's native turn-limit capability.
+    #[serde(default)]
+    pub turn_limit: CliTurnLimitReceipt,
     /// OS resource limits to install before spawning the CLI.
     pub resource_limits: Option<ResourceLimits>,
     /// Provider configuration that must exist for the subprocess lifetime.
@@ -1099,6 +1167,19 @@ impl CliInvocation {
             event_provider: provider.descriptor.event_provider.clone(),
             model: request.model.clone(),
             agent_id: request.agent_id.clone(),
+            turn_limit: if provider.descriptor.protocol.supports_native_turn_limit() {
+                CliTurnLimitReceipt {
+                    requested_max_turns: request.max_turns,
+                    effective_max_turns: Some(request.max_turns),
+                    enforcement: CliTurnLimitEnforcement::Native,
+                }
+            } else {
+                CliTurnLimitReceipt {
+                    requested_max_turns: request.max_turns,
+                    effective_max_turns: None,
+                    enforcement: CliTurnLimitEnforcement::Unsupported,
+                }
+            },
             resource_limits: provider.resource_limits.clone(),
             ephemeral_config: None,
         }
@@ -2093,6 +2174,11 @@ pub enum DispatchV2Error {
         provider_id: String,
         protocol: CliProtocol,
     },
+    TurnLimitUnsupported {
+        provider_id: String,
+        protocol: CliProtocol,
+        requested_max_turns: u32,
+    },
     McpConfigUnsupported {
         provider_id: String,
         protocol: CliProtocol,
@@ -2149,6 +2235,14 @@ impl fmt::Display for DispatchV2Error {
                 f,
                 "provider `{provider_id}` ({protocol:?}) cannot enforce the requested tool policy"
             ),
+            Self::TurnLimitUnsupported {
+                provider_id,
+                protocol,
+                requested_max_turns,
+            } => write!(
+                f,
+                "provider `{provider_id}` ({protocol:?}) cannot natively enforce the requested {requested_max_turns}-turn limit"
+            ),
             Self::McpConfigUnsupported {
                 provider_id,
                 protocol,
@@ -2179,6 +2273,15 @@ impl fmt::Display for DispatchV2Error {
 }
 
 impl Error for DispatchV2Error {}
+
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
 
 #[cfg(test)]
 mod tests {
@@ -2395,6 +2498,11 @@ mod tests {
 
         let invocation = provider.build_invocation(&request).unwrap();
         assert_eq!(invocation.protocol, CliProtocol::CodexExecJson);
+        assert_eq!(
+            invocation.turn_limit.enforcement,
+            CliTurnLimitEnforcement::Unsupported
+        );
+        assert_eq!(invocation.turn_limit.effective_max_turns, None);
         assert!(invocation.args.iter().any(|arg| arg == "--model"));
         assert_eq!(invocation.stdin, "system\n\n---\n\nimplement it");
     }
@@ -2424,6 +2532,11 @@ mod tests {
         };
 
         let invocation = provider.build_invocation(&request).unwrap();
+        assert_eq!(
+            invocation.turn_limit.enforcement,
+            CliTurnLimitEnforcement::Native
+        );
+        assert_eq!(invocation.turn_limit.effective_max_turns, Some(50));
         let tools_index = invocation
             .args
             .iter()

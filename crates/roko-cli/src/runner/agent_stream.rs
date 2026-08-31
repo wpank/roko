@@ -25,6 +25,8 @@ use crate::dispatch_v2::{
 
 use super::types::{AgentEvent, RunConfig};
 
+const FAST_AGENT_TURN_LIMIT: u32 = 6;
+
 /// Configuration for spawning a single agent.
 #[derive(Debug, Clone)]
 pub struct AgentSpawnConfig {
@@ -302,12 +304,13 @@ pub async fn spawn_agent(
         .cli_provider
         .clone()
         .unwrap_or_else(|| CliProviderConfig::from_legacy_runner_program(config.program.clone()));
+    let max_turns = effective_agent_turn_limit(config.max_turns);
     let invocation = provider.build_invocation(&CliDispatchRequest {
         prompt: config.prompt.clone(),
         system_prompt: config.system_prompt.clone(),
         model: config.model.clone(),
         workdir: config.workdir.clone(),
-        max_turns: config.max_turns,
+        max_turns,
         effort: config.effort.clone(),
         dangerously_skip_permissions: config.dangerously_skip_permissions,
         mcp_config: config.mcp_config.clone(),
@@ -318,6 +321,19 @@ pub async fn spawn_agent(
         disallowed_tools: config.disallowed_tools.clone(),
         plugin_mcp: config.plugin_mcp.clone(),
     })?;
+    if invocation.turn_limit.effective_max_turns.is_some() {
+        debug!(
+            provider = %invocation.event_provider,
+            requested_max_turns = invocation.turn_limit.requested_max_turns,
+            "provider will enforce the native turn limit"
+        );
+    } else {
+        warn!(
+            provider = %invocation.event_provider,
+            requested_max_turns = invocation.turn_limit.requested_max_turns,
+            "provider has no native turn limit; runner wall-clock deadline is the binding bound"
+        );
+    }
 
     let mut ephemeral_config_dir = None;
     let ephemeral_config_env = if let Some(config) = &invocation.ephemeral_config {
@@ -448,6 +464,28 @@ pub async fn spawn_agent(
         reader_task: Some(reader_task),
         stderr_reader_task,
         _ephemeral_config_dir: ephemeral_config_dir,
+    })
+}
+
+fn effective_agent_turn_limit(configured: u32) -> u32 {
+    let configured = configured.max(1);
+    if !env_flag_enabled("ROKO_FAST_MODE") {
+        return configured;
+    }
+    let fast_limit = std::env::var("ROKO_FAST_MAX_AGENT_TURNS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .filter(|limit| *limit > 0)
+        .unwrap_or(FAST_AGENT_TURN_LIMIT);
+    configured.min(fast_limit)
+}
+
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
     })
 }
 

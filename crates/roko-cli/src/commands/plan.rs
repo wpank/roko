@@ -1360,8 +1360,9 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     let task_prompt = format!(
                         "Read the notes below and generate an implementation plan directory \
                          under .roko/plans/{slug}/. \
-                         Search the codebase first to understand what exists. \
-                         Create plan.md and tasks.toml files with tier, model_hint, context \
+                         Use the supplied bounded context; allow at most one repository-rooted \
+                         exact-symbol query capped at 20 matches when a fact is missing. \
+                         Create plan.md and tasks.toml files with tier and context \
                          (read_files with line ranges), mcp_servers (per-task MCP server names), \
                          and verify steps (executable shell commands). \
                          Use the cheapest model tier for each task.\n\n{combined}"
@@ -1461,8 +1462,9 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
 
             let task_prompt = format!(
                 "Read the source below and generate implementation plan directories under .roko/plans/. \
-                 Search the codebase first to understand what exists. \
-                 Create plan.md and tasks.toml files with tier, model_hint, context (read_files with line ranges), \
+                 Use the supplied bounded context; allow at most one repository-rooted exact-symbol query \
+                 capped at 20 matches when a fact is missing. \
+                 Create plan.md and tasks.toml files with tier and context (read_files with line ranges), \
                  mcp_servers (per-task MCP server names), and verify steps (executable shell commands). \
                  Use the cheapest model tier for each task.\n\n{source_text}{context_block}"
             );
@@ -1495,6 +1497,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
 
             // Validate all tasks.toml files written by the agent under .roko/plans/.
             // Check all files and collect all errors before reporting.
+            let mut final_exit_code = exit_code;
             if exit_code == EXIT_SUCCESS {
                 let plans_output_dir = workdir.join(".roko").join("plans");
                 if plans_output_dir.is_dir() {
@@ -1506,12 +1509,37 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                         if !tasks_path.is_file() {
                             continue;
                         }
-                        if let Err(err) = roko_cli::task_parser::TasksFile::parse(&tasks_path) {
-                            eprintln!(
-                                "warning: invalid tasks.toml at {}: {err:#}",
-                                tasks_path.display()
-                            );
-                            validation_failed = true;
+                        match roko_cli::task_parser::TasksFile::parse(&tasks_path) {
+                            Ok(tasks) => {
+                                let policy = roko_cli::plan_policy::PlanExecutionPolicy::generated(
+                                    roko_cli::plan_policy::DEFAULT_GENERATED_TASK_LIMIT,
+                                );
+                                let issues = roko_cli::plan_policy::validate_plan_context(
+                                    &tasks,
+                                    &workdir,
+                                    &entry.path(),
+                                    policy,
+                                );
+                                if !issues.is_empty() {
+                                    eprintln!(
+                                        "warning: generated plan at {} violates its execution contract:\n{}",
+                                        tasks_path.display(),
+                                        issues
+                                            .iter()
+                                            .map(|issue| format!("  - {issue}"))
+                                            .collect::<Vec<_>>()
+                                            .join("\n")
+                                    );
+                                    validation_failed = true;
+                                }
+                            }
+                            Err(err) => {
+                                eprintln!(
+                                    "warning: invalid tasks.toml at {}: {err:#}",
+                                    tasks_path.display()
+                                );
+                                validation_failed = true;
+                            }
                         }
                     }
                     if validation_failed {
@@ -1519,11 +1547,12 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                             "plan generate: one or more generated tasks.toml files failed \
                              TOML validation (see warnings above)"
                         );
+                        final_exit_code = 1;
                     }
                 }
             }
 
-            Ok(exit_code)
+            Ok(final_exit_code)
         }
         PlanCmd::Regenerate { plan_dir, dry_run } => {
             use roko_cli::agent_config::load_gateway_env;
@@ -1563,9 +1592,10 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 );
                 let task_prompt = format!(
                     "Regenerate the plan at {} from the source PRD above. \
-                     Rewrite tasks.toml in place with full modern metadata: tier, model_hint, \
+                     Rewrite tasks.toml in place with full modern metadata: tier, \
                      max_loc, files, allowed_tools, denied_tools, mcp_servers, depends_on, \
-                     [task.context], and [[task.verify]]. Preserve the status of any task that \
+                     [task.context], and exactly one focused [[task.verify]] per task. Never set \
+                     model_hint. Preserve the status of any task that \
                      is already marked done in the existing file. Do not create new plan \
                      directories.\n\n## Existing tasks.toml\n\n```toml\n{existing}\n```\
                      {pre_validation_context}",
@@ -1587,9 +1617,10 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 roko_cli::plan_generate::build_generation_prompt(&workdir, &source_content, "prd");
             let task_prompt = format!(
                 "Regenerate the plan at {} from the source PRD above. \
-                 Rewrite tasks.toml in place with full modern metadata: tier, model_hint, \
+                 Rewrite tasks.toml in place with full modern metadata: tier, \
                  max_loc, files, allowed_tools, denied_tools, mcp_servers, depends_on, \
-                 [task.context], and [[task.verify]]. Preserve the status of any task that \
+                 [task.context], and exactly one focused [[task.verify]] per task. Never set \
+                 model_hint. Preserve the status of any task that \
                  is already marked done in the existing file. Do not create new plan \
                  directories.\n\n## Existing tasks.toml\n\n```toml\n{existing}\n```\
                  {pre_validation_context}",
@@ -1646,6 +1677,27 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
 
             let merged =
                 preserve_completed_task_status(existing_tasks.as_ref(), regenerated, &plan_dir);
+            let policy = roko_cli::plan_policy::PlanExecutionPolicy::generated(
+                roko_cli::plan_policy::DEFAULT_GENERATED_TASK_LIMIT,
+            );
+            let policy_issues = roko_cli::plan_policy::validate_plan_context(
+                &merged,
+                &workdir,
+                &plan_dir,
+                policy,
+            );
+            if !policy_issues.is_empty() {
+                std::fs::write(&tasks_path, &existing)
+                    .with_context(|| format!("restore {}", tasks_path.display()))?;
+                anyhow::bail!(
+                    "regenerated tasks.toml violates the bounded execution contract:\n{}",
+                    policy_issues
+                        .iter()
+                        .map(|issue| format!("  - {issue}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                );
+            }
             let rendered =
                 toml::to_string_pretty(&merged).context("serialize regenerated tasks.toml")?;
             if let Err(err) = std::fs::write(&tasks_path, rendered) {

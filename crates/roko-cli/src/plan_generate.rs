@@ -332,13 +332,14 @@ Always omit the `model_hint` field entirely. The task `tier` field (mechanical/f
 
 ## Before generating tasks, you MUST:
 
-1. Search the codebase to understand what exists:
-   `grep -rn 'TypeName' crates/ --include='*.rs' | grep -v target/ | head -20`
+1. Use the bounded repository map, exact matches, and source excerpts supplied in this prompt.
+   Do not scan session history, other worktrees, unreachable Git objects, home directories, or
+   the web. If one fact is still missing, run at most one repository-rooted exact-symbol query
+   capped at 20 results; otherwise report that the source needs more context.
 
-2. Read the specific files you're generating tasks for — understand the current code.
+2. Read only the specific files needed for the cohesive outcome and record exact line ranges.
 
-3. Check if the feature already exists (partially or fully):
-   `grep -rn 'feature_keyword' crates/ --include='*.rs' | grep -v target/`
+3. Check the supplied exact matches for an existing or partial implementation before planning.
 
 4. For each task, verify the context files actually exist:
    `test -f crates/roko-core/src/types.rs && echo "exists" || echo "MISSING"`
@@ -386,24 +387,28 @@ The example below uses multiple tasks only to illustrate dependency syntax. For 
 change where one implementer can safely own the response type, route, and exact test, emit one
 integrative task instead. Cohesion and one verification owner override mechanical file-count splits.
 
-A realistic 3-task plan for "Add health check endpoint to roko-serve":
+A realistic cohesive plan for "Add health check endpoint to roko-serve":
 
 ```toml
 [meta]
 plan = "add-health-check"
-total = 3
+total = 1
 done = 0
 status = "ready"
 max_parallel = 1
 
 [[task]]
 id = "T1"
-title = "Define HealthStatus response type"
-description = "Add a HealthStatus struct with uptime, version, and db_connected fields to the serve types module."
+title = "Implement and prove GET /health"
+description = "Add the response type and handler, register GET /health, and add one exact API integration test as one observable endpoint outcome."
 status = "ready"
-tier = "mechanical"
-max_loc = 15
-files = ["crates/roko-serve/src/types.rs"]
+tier = "integrative"
+max_loc = 150
+files = [
+    "crates/roko-serve/src/routes/health.rs",
+    "crates/roko-serve/src/routes/mod.rs",
+    "crates/roko-serve/tests/api_integration.rs",
+]
 allowed_tools = ["read_file", "write_file", "grep"]
 denied_tools = []
 depends_on = []
@@ -411,65 +416,20 @@ role = "implementer"
 
 [task.context]
 read_files = [
-    { path = "crates/roko-serve/src/types.rs", lines = "1-40", why = "Find existing response types to follow conventions." },
+    { path = "crates/roko-serve/src/routes/providers.rs", lines = "1-80", why = "Follow the existing JSON response and handler conventions." },
+    { path = "crates/roko-serve/src/routes/mod.rs", lines = "270-340", why = "Exact build_router registration seam." },
+    { path = "crates/roko-serve/tests/api_integration.rs", lines = "60-180", why = "Reuse the bounded test_app and GET helper pattern." },
 ]
-symbols = ["AppState — shared state struct to reference for db_connected"]
+symbols = [
+    "build_router — existing route registration function",
+    "test_app — existing integration test fixture",
+]
 anti_patterns = ["Do NOT add new dependencies. Use only std and existing crate types."]
 
 [[task.verify]]
-phase = "compile"
-command = "cargo check -p roko-serve"
-
-[[task]]
-id = "T2"
-title = "Implement GET /health handler"
-description = "Add an async handler that returns HealthStatus as JSON, wired to the router."
-status = "ready"
-tier = "focused"
-max_loc = 35
-files = ["crates/roko-serve/src/routes/health.rs", "crates/roko-serve/src/routes/mod.rs"]
-allowed_tools = ["read_file", "write_file", "grep"]
-denied_tools = []
-depends_on = ["T1"]
-role = "implementer"
-
-[task.context]
-read_files = [
-    { path = "crates/roko-serve/src/routes/mod.rs", lines = "1-30", why = "Understand router setup to add new route." },
-    { path = "crates/roko-serve/src/types.rs", lines = "1-40", why = "Import HealthStatus type." },
-]
-symbols = ["router() — function where routes are registered"]
-anti_patterns = ["Do NOT modify types.rs. Only add the handler and route registration."]
-
-[[task.verify]]
-phase = "compile"
-command = "cargo check -p roko-serve"
-
-[[task]]
-id = "T3"
-title = "Add integration test for /health endpoint"
-description = "Write a test that starts the server and verifies GET /health returns 200 with valid JSON."
-status = "ready"
-tier = "focused"
-max_loc = 40
-files = ["crates/roko-serve/tests/health_check.rs"]
-allowed_tools = ["read_file", "write_file", "grep"]
-denied_tools = []
-depends_on = ["T2"]
-role = "implementer"
-
-[task.context]
-read_files = [
-    { path = "crates/roko-serve/tests/", lines = "1-50", why = "Follow existing test patterns." },
-    { path = "crates/roko-serve/src/routes/health.rs", lines = "1-40", why = "Know what the handler returns." },
-]
-symbols = ["TestClient — test helper if one exists"]
-anti_patterns = ["Do NOT modify production code. Only add the test file."]
-
-[[task.verify]]
 phase = "test"
-command = "cargo test -p roko-serve --test health_check"
-fail_msg = "Integration test failed or not found"
+command = "cargo test -p roko-serve --test api_integration health_endpoint"
+fail_msg = "The exact health endpoint integration test failed or was not found"
 ```
 "#;
 
@@ -562,7 +522,7 @@ mod template_tests {
 /// Build a prompt for regenerating an existing plan in place (§11).
 ///
 /// Strips the existing tasks to just `id`/`title`/`depends_on` and asks the
-/// agent to fill in `tier`, `model_hint`, `read_files`, `verify`, `context`,
+/// agent to fill in `tier`, `read_files`, `verify`, `context`,
 /// and `max_loc`.
 #[must_use]
 pub fn build_regeneration_prompt(workdir: &Path, existing_tasks_toml: &str) -> String {
@@ -872,7 +832,8 @@ pub fn build_backlog_generation_prompt(workdir: &Path, spec: &BacklogSpec, slug:
 pub fn build_backlog_task_prompt(spec: &BacklogSpec, slug: &str) -> String {
     let mut prompt = format!(
         "Read the backlog spec below and generate an implementation plan. \
-         Search the codebase first to understand what exists. \
+         Use the supplied bounded backlog/file context first; if one fact is absent, run at most \
+         one repository-rooted exact-symbol query capped at 20 matches. \
          Write the plan to plans/{slug}/tasks.toml (create the directory). \
          Create plan.md and tasks.toml files with tier, context (read_files with line ranges), \
          mcp_servers (per-task MCP server names), and verify steps (executable shell commands). \

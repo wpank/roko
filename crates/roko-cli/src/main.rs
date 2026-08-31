@@ -180,7 +180,10 @@ pub(crate) enum RunIndexCmd {
         /// Maximum aggregate complete JSONL records inspected.
         #[arg(long, default_value_t = 1_000_000)]
         max_records: u64,
-        /// Hard wall-clock budget for discovery, validation, and staging.
+        /// Maximum number of distinct per-run index files staged.
+        #[arg(long, default_value_t = 4_096)]
+        max_indexes: usize,
+        /// Hard wall-clock budget before the bounded atomic replacement phase.
         #[arg(long, default_value_t = 120)]
         deadline_secs: u64,
     },

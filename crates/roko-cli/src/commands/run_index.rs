@@ -17,6 +17,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const MAX_JSONL_RECORD_BYTES: usize = 256 * 1024;
 const MAX_OPEN_STAGING_WRITERS: usize = 32;
+const MAX_DISCOVERY_ENTRIES: usize = 8_192;
 
 #[derive(Debug, Serialize)]
 struct RepairReport {
@@ -28,6 +29,7 @@ struct RepairReport {
     truncation_reason: Option<&'static str>,
     max_bytes: u64,
     max_records: u64,
+    max_indexes: usize,
     deadline_secs: u64,
     bytes_scanned: u64,
     records_seen: u64,
@@ -54,6 +56,7 @@ struct SourceReport {
 struct RepairLimits {
     max_bytes: u64,
     max_records: u64,
+    max_indexes: usize,
     deadline: Instant,
 }
 
@@ -97,6 +100,7 @@ pub(crate) async fn cmd_run_index(cli: &Cli, cmd: RunIndexCmd) -> Result<i32> {
         workdir,
         max_bytes,
         max_records,
+        max_indexes,
         deadline_secs,
     } = cmd;
     if max_bytes == 0 {
@@ -105,13 +109,23 @@ pub(crate) async fn cmd_run_index(cli: &Cli, cmd: RunIndexCmd) -> Result<i32> {
     if max_records == 0 {
         bail!("--max-records must be greater than zero");
     }
+    if max_indexes == 0 {
+        bail!("--max-indexes must be greater than zero");
+    }
     if deadline_secs == 0 {
         bail!("--deadline-secs must be greater than zero");
     }
 
     let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
     let report = tokio::task::spawn_blocking(move || {
-        repair_indexes(&workdir, apply, max_bytes, max_records, deadline_secs)
+        repair_indexes(
+            &workdir,
+            apply,
+            max_bytes,
+            max_records,
+            max_indexes,
+            deadline_secs,
+        )
     })
     .await
     .context("run-index repair worker panicked")??;
@@ -133,6 +147,7 @@ fn repair_indexes(
     apply: bool,
     max_bytes: u64,
     max_records: u64,
+    max_indexes: usize,
     deadline_secs: u64,
 ) -> Result<RepairReport> {
     let workdir = workdir
@@ -147,25 +162,34 @@ fn repair_indexes(
         bail!("workspace state directory escapes the selected workspace");
     }
 
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(deadline_secs))
+        .context("--deadline-secs is too large")?;
+
     // Holding these locks makes the scan/replacement a genuinely offline
     // operation. Dry runs only inspect already-existing locks and never create
     // maintenance state; apply creates and holds the full lock set.
     let _locks = RepairLocks::acquire(&roko_canonical, apply)?;
     let runner_live = roko_canonical.join("events.jsonl");
     let runtime_live = roko_canonical.join("runtime-events.jsonl");
+    let mut scan = ScanState::default();
+    let mut inspected_entries = 0usize;
     let mut inputs = Vec::new();
-    inputs.extend(discover_generations(&runner_live, "runner")?);
-    inputs.extend(discover_generations(&runtime_live, "runtime")?);
-
-    let deadline = Instant::now()
-        .checked_add(Duration::from_secs(deadline_secs))
-        .context("--deadline-secs is too large")?;
+    for (live, kind) in [(&runner_live, "runner"), (&runtime_live, "runtime")] {
+        let (discovered, truncation) =
+            discover_generations(live, kind, deadline, &mut inspected_entries)?;
+        inputs.extend(discovered);
+        if let Some(reason) = truncation {
+            mark_truncated(&mut scan, reason);
+            break;
+        }
+    }
     let limits = RepairLimits {
         max_bytes,
         max_records,
+        max_indexes,
         deadline,
     };
-    let mut scan = ScanState::default();
     let mut planned = BTreeSet::new();
     let mut staging = apply.then(|| StagingSet::new(roko_canonical.clone()));
 
@@ -185,11 +209,16 @@ fn repair_indexes(
 
     let mut files_replaced = 0;
     let applied = if apply && !scan.truncated {
-        files_replaced = staging
+        let staging = staging
             .as_mut()
-            .expect("staging exists when apply is true")
-            .commit()?;
-        true
+            .context("staging is unavailable for apply")?;
+        if staging.prepare_commit(deadline)? {
+            files_replaced = staging.commit_prepared()?;
+            true
+        } else {
+            mark_truncated(&mut scan, "deadline");
+            false
+        }
     } else {
         false
     };
@@ -209,6 +238,7 @@ fn repair_indexes(
         truncation_reason: scan.truncation_reason,
         max_bytes,
         max_records,
+        max_indexes,
         deadline_secs,
         bytes_scanned: scan.bytes_scanned,
         records_seen: scan.records_seen,
@@ -232,7 +262,12 @@ struct InputGeneration {
     path: PathBuf,
 }
 
-fn discover_generations(live_path: &Path, kind: &'static str) -> Result<Vec<InputGeneration>> {
+fn discover_generations(
+    live_path: &Path,
+    kind: &'static str,
+    deadline: Instant,
+    inspected_entries: &mut usize,
+) -> Result<(Vec<InputGeneration>, Option<&'static str>)> {
     let Some(parent) = live_path.parent() else {
         bail!("global log has no parent: {}", live_path.display());
     };
@@ -241,9 +276,19 @@ fn discover_generations(live_path: &Path, kind: &'static str) -> Result<Vec<Inpu
         .and_then(|value| value.to_str())
         .context("global log has no UTF-8 stem")?;
     let mut paths = Vec::new();
+    let mut truncation = None;
     for entry in std::fs::read_dir(parent)
         .with_context(|| format!("read global log directory {}", parent.display()))?
     {
+        if Instant::now() >= deadline {
+            truncation = Some("deadline");
+            break;
+        }
+        if *inspected_entries >= MAX_DISCOVERY_ENTRIES {
+            truncation = Some("discovery_entries");
+            break;
+        }
+        *inspected_entries += 1;
         let entry = entry?;
         let name = entry.file_name();
         let Some(name) = name.to_str() else {
@@ -264,7 +309,7 @@ fn discover_generations(live_path: &Path, kind: &'static str) -> Result<Vec<Inpu
     if live_path.exists() {
         paths.push(live_path.to_path_buf());
     }
-    paths
+    let inputs = paths
         .into_iter()
         .map(|path| {
             reject_regular_file_inside(&path, parent)?;
@@ -274,7 +319,8 @@ fn discover_generations(live_path: &Path, kind: &'static str) -> Result<Vec<Inpu
                 path,
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    Ok((inputs, truncation))
 }
 
 fn timestamp_like(value: &str) -> bool {
@@ -371,6 +417,10 @@ fn scan_source(
                 let final_path = roko_fs::run_index::run_index_path(&input.live_path, run_id)
                     .map_err(anyhow::Error::msg)?;
                 ensure_index_path(&final_path, roko_dir)?;
+                if !planned.contains(&final_path) && planned.len() >= limits.max_indexes {
+                    mark_truncated(scan, "max_indexes");
+                    break;
+                }
                 planned.insert(final_path.clone());
                 if let Some(staging) = staging.as_deref_mut() {
                     staging.append(final_path, &raw)?;
@@ -610,12 +660,18 @@ impl StagingSet {
         Ok(())
     }
 
-    fn commit(&mut self) -> Result<usize> {
+    fn prepare_commit(&mut self, deadline: Instant) -> Result<bool> {
         let paths = self.files.keys().cloned().collect::<Vec<_>>();
         for path in &paths {
+            if Instant::now() >= deadline {
+                return Ok(false);
+            }
             self.close_writer(path)?;
         }
         for staged in self.files.values() {
+            if Instant::now() >= deadline {
+                return Ok(false);
+            }
             File::open(&staged.temp_path)?.sync_all()?;
             ensure_index_path(&staged.final_path, &self.roko_dir)?;
             if staged.final_path.exists() {
@@ -624,6 +680,12 @@ impl StagingSet {
                     staged.final_path.parent().context("run index parent")?,
                 )?;
             }
+        }
+        Ok(Instant::now() < deadline)
+    }
+
+    fn commit_prepared(&mut self) -> Result<usize> {
+        for staged in self.files.values() {
             std::fs::rename(&staged.temp_path, &staged.final_path).with_context(|| {
                 format!(
                     "atomically replace {} from {}",
@@ -783,7 +845,10 @@ fn print_report(report: &RepairReport) {
     println!("  bytes scanned:      {} / {}", report.bytes_scanned, report.max_bytes);
     println!("  records inspected:  {} / {}", report.records_seen, report.max_records);
     println!("  accepted records:   {}", report.records_indexed);
-    println!("  distinct indexes:   {}", report.distinct_indexes);
+    println!(
+        "  distinct indexes:   {} / {}",
+        report.distinct_indexes, report.max_indexes
+    );
     println!(
         "  rejected records:   {} malformed, {} partial, {} oversized, {} missing id, {} invalid id, {} cross-run",
         report.malformed_records,
@@ -836,7 +901,7 @@ mod tests {
             b"{\"type\":\"run.started\",\"run_id\":\"old-run\"}\n",
         )
         .unwrap();
-        let report = repair_indexes(workspace.path(), true, 8, 100, 10).unwrap();
+        let report = repair_indexes(workspace.path(), true, 8, 100, 100, 10).unwrap();
         assert!(report.truncated);
         assert!(!report.applied);
         let index = roko_fs::run_index::run_index_path(
@@ -861,7 +926,8 @@ mod tests {
             ),
         )
         .unwrap();
-        let report = repair_indexes(workspace.path(), true, 1_000_000, 100, 10).unwrap();
+        let report =
+            repair_indexes(workspace.path(), true, 1_000_000, 100, 100, 10).unwrap();
         assert!(report.applied);
         assert_eq!(report.records_indexed, 1);
         assert_eq!(report.malformed_records, 1);
@@ -876,6 +942,25 @@ mod tests {
     }
 
     #[test]
+    fn distinct_index_limit_fails_closed_without_replacement() {
+        let workspace = tempfile::tempdir().unwrap();
+        let roko = workspace.path().join(".roko");
+        std::fs::create_dir_all(roko.join("runtime")).unwrap();
+        std::fs::write(
+            roko.join("events.jsonl"),
+            b"{\"run_id\":\"run-1\"}\n{\"run_id\":\"run-2\"}\n",
+        )
+        .unwrap();
+
+        let report = repair_indexes(workspace.path(), true, 1_000_000, 100, 1, 10).unwrap();
+
+        assert!(report.truncated);
+        assert_eq!(report.truncation_reason, Some("max_indexes"));
+        assert!(!report.applied);
+        assert_eq!(report.distinct_indexes, 1);
+    }
+
+    #[test]
     fn active_workspace_lock_refuses_apply() {
         let workspace = tempfile::tempdir().unwrap();
         let runtime = workspace.path().join(".roko/runtime");
@@ -887,7 +972,7 @@ mod tests {
             .open(runtime.join("roko.lock"))
             .unwrap();
         lock.lock_exclusive().unwrap();
-        let error = repair_indexes(workspace.path(), true, 1_000, 100, 10)
+        let error = repair_indexes(workspace.path(), true, 1_000, 100, 100, 10)
             .expect_err("active writer lock must refuse repair");
         assert!(error.to_string().contains("active writer or GC lock"));
         lock.unlock().unwrap();
@@ -908,7 +993,7 @@ mod tests {
         )
         .unwrap();
         symlink(outside.path(), roko.join("events-by-run")).unwrap();
-        let error = repair_indexes(workspace.path(), true, 1_000, 100, 10)
+        let error = repair_indexes(workspace.path(), true, 1_000, 100, 100, 10)
             .expect_err("symlinked output must fail closed");
         assert!(error.to_string().contains("symlink"));
         assert!(std::fs::read_dir(outside.path()).unwrap().next().is_none());

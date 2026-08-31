@@ -7,7 +7,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::convert::Infallible;
-use std::fs::File;
 use std::io::{BufRead, BufReader, Read as _, Seek, SeekFrom};
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
@@ -42,6 +41,7 @@ const MAX_SCREENSHOTS: usize = 64;
 const MAX_LOG_PREVIEW_CHARS: usize = 4_096;
 const MAX_SSE_REPLAY: usize = 256;
 const MAX_DASHBOARD_RUNS: usize = 128;
+const MAX_DASHBOARD_INDEX_ENTRIES: usize = 512;
 const MAX_DASHBOARD_SCAN_BYTES_PER_RUN: u64 = 256 * 1024;
 const MAX_DASHBOARD_TOTAL_SCAN_BYTES: u64 = 8 * 1024 * 1024;
 
@@ -759,6 +759,7 @@ fn source_path(state: &AppState, run_id: &str, source: EventSource) -> Option<Pa
 fn discover_indexed_runs(state: &AppState) -> (Vec<Value>, bool, u64) {
     let mut summaries = BTreeMap::<String, Value>::new();
     let mut scanned_bytes = 0u64;
+    let mut inspected_entries = 0usize;
     let mut truncated = false;
     // Runtime summaries preserve workflow/template detail. Runner indexes are
     // the fallback for self-hosted plan runs that did not use HTTP ingest.
@@ -769,16 +770,27 @@ fn discover_indexed_runs(state: &AppState) -> (Vec<Value>, bool, u64) {
         let Some(dir) = sample.parent() else {
             continue;
         };
+        let Ok(metadata) = std::fs::symlink_metadata(dir) else {
+            continue;
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            continue;
+        }
         let Ok(entries) = std::fs::read_dir(dir) else {
             continue;
         };
-        for entry in entries.flatten() {
+        for entry in entries {
+            inspected_entries = inspected_entries.saturating_add(1);
             if summaries.len() >= MAX_DASHBOARD_RUNS
+                || inspected_entries > MAX_DASHBOARD_INDEX_ENTRIES
                 || scanned_bytes >= MAX_DASHBOARD_TOTAL_SCAN_BYTES
             {
                 truncated = true;
                 break;
             }
+            let Ok(entry) = entry else {
+                continue;
+            };
             let path = entry.path();
             let Ok(metadata) = std::fs::symlink_metadata(&path) else {
                 continue;
@@ -792,11 +804,20 @@ fn discover_indexed_runs(state: &AppState) -> (Vec<Value>, bool, u64) {
             let budget = MAX_DASHBOARD_SCAN_BYTES_PER_RUN.min(
                 MAX_DASHBOARD_TOTAL_SCAN_BYTES.saturating_sub(scanned_bytes),
             );
-            let Some(run_id) = discover_run_id(&path, budget) else {
+            let (run_id, discovery_bytes) = discover_run_id(&path, budget);
+            scanned_bytes = scanned_bytes.saturating_add(discovery_bytes);
+            let Some(run_id) = run_id else {
                 continue;
             };
             if summaries.contains_key(&run_id) {
                 continue;
+            }
+            let page_budget = budget
+                .saturating_sub(discovery_bytes)
+                .min(MAX_DASHBOARD_TOTAL_SCAN_BYTES.saturating_sub(scanned_bytes));
+            if page_budget == 0 {
+                truncated = true;
+                break;
             }
             let Ok(page) = read_index_page(
                 &path,
@@ -804,7 +825,7 @@ fn discover_indexed_runs(state: &AppState) -> (Vec<Value>, bool, u64) {
                 source,
                 0,
                 MAX_DETAIL_EVENTS,
-                budget,
+                page_budget,
                 &BTreeSet::new(),
                 state.scrubber.as_ref(),
             ) else {
@@ -845,18 +866,23 @@ fn discover_indexed_runs(state: &AppState) -> (Vec<Value>, bool, u64) {
     (summaries.into_values().collect(), truncated, scanned_bytes)
 }
 
-fn discover_run_id(path: &FsPath, max_bytes: u64) -> Option<String> {
-    let file = File::open(path).ok()?;
+fn discover_run_id(path: &FsPath, max_bytes: u64) -> (Option<String>, u64) {
+    let Ok(file) = roko_fs::run_index::open_existing_run_index(path) else {
+        return (None, 0);
+    };
     let mut reader = BufReader::new(file);
     let mut scanned = 0u64;
     let mut line = String::new();
     while scanned < max_bytes {
         line.clear();
-        let bytes = reader
+        let bytes = match reader
             .by_ref()
             .take(max_bytes.saturating_sub(scanned).min((MAX_LINE_BYTES + 1) as u64))
             .read_line(&mut line)
-            .ok()?;
+        {
+            Ok(bytes) => bytes,
+            Err(_) => return (None, max_bytes),
+        };
         if bytes == 0 {
             break;
         }
@@ -867,14 +893,14 @@ fn discover_run_id(path: &FsPath, max_bytes: u64) -> Option<String> {
         let Ok(value) = serde_json::from_str::<Value>(line.trim_end()) else {
             continue;
         };
-        let Some(run_id) = embedded_run_id(&value) else {
+        let Some(run_id) = validated_embedded_run_id(&value) else {
             continue;
         };
         if validate_id(run_id, "run id").is_ok() {
-            return Some(run_id.to_string());
+            return (Some(run_id.to_string()), scanned);
         }
     }
-    None
+    (None, scanned)
 }
 
 fn current_phase(events: &[IndexedEvent]) -> Option<String> {
@@ -959,7 +985,7 @@ fn read_for_run_filtered(
         let Some(path) = source_path(state, run_id, *source) else {
             continue;
         };
-        if path.is_file() {
+        if roko_fs::run_index::open_existing_run_index(&path).is_ok() {
             return read_index_page_filtered(
                 &path,
                 run_id,
@@ -1012,7 +1038,8 @@ fn read_index_page_filtered(
     scrubber: &LogScrubber,
     include: &dyn Fn(&Value) -> bool,
 ) -> Result<IndexedPage, ApiError> {
-    let mut file = File::open(path).map_err(|error| ApiError::internal(error.to_string()))?;
+    let mut file = roko_fs::run_index::open_existing_run_index(path)
+        .map_err(|error| ApiError::internal(error.to_string()))?;
     let file_len = file
         .metadata()
         .map_err(|error| ApiError::internal(error.to_string()))?
@@ -1078,7 +1105,7 @@ fn read_index_page_filtered(
             }
             continue;
         };
-        if embedded_run_id(&value) != Some(run_id) {
+        if validated_embedded_run_id(&value) != Some(run_id) {
             quarantined += 1;
             if quarantined > MAX_MALFORMED_RECORDS {
                 return Err(ApiError::unprocessable_entity(
@@ -1174,7 +1201,7 @@ fn run_is_known_on_disk(state: &AppState, run_id: &str) -> bool {
     [EventSource::Runner, EventSource::Runtime]
         .into_iter()
         .filter_map(|source| source_path(state, run_id, source))
-        .any(|path| path.is_file())
+        .any(|path| roko_fs::run_index::open_existing_run_index(&path).is_ok())
         || find_bundle_dir(state, run_id).is_some()
 }
 
@@ -1191,12 +1218,19 @@ fn detail_page(state: &AppState, run_id: &str) -> Result<IndexedPage, ApiError> 
     .ok_or_else(|| ApiError::not_found(format!("run '{run_id}' has no event index")))
 }
 
-fn embedded_run_id(value: &Value) -> Option<&str> {
-    value
-        .get("run_id")
-        .and_then(Value::as_str)
-        .or_else(|| value.get("event")?.get("run_id")?.as_str())
-        .or_else(|| value.get("payload")?.get("data")?.get("run_id")?.as_str())
+fn validated_embedded_run_id(value: &Value) -> Option<&str> {
+    let run_id = value.get("run_id")?.as_str()?;
+    roko_fs::run_index::validate_scoped_id(run_id).ok()?;
+    for pointer in ["/event/run_id", "/payload/data/run_id"] {
+        if let Some(nested) = value.pointer(pointer) {
+            let nested = nested.as_str()?;
+            roko_fs::run_index::validate_scoped_id(nested).ok()?;
+            if nested != run_id {
+                return None;
+            }
+        }
+    }
+    Some(run_id)
 }
 
 fn event_type(value: &Value) -> Option<&str> {
@@ -1711,7 +1745,7 @@ mod tests {
         let path = dir.path().join("run.jsonl");
         std::fs::write(
             &path,
-            "{bad}\n{\"type\":\"run.started\",\"run_id\":\"other\"}\n{\"type\":\"run.started\",\"run_id\":\"r1\"}\n",
+            "{bad}\n{\"type\":\"run.started\",\"run_id\":\"other\"}\n{\"type\":\"run.started\",\"run_id\":\"r1\",\"event\":{\"run_id\":\"other\"}}\n{\"type\":\"run.started\",\"run_id\":\"r1\"}\n",
         )
         .unwrap();
         let page = read_index_page(
@@ -1726,7 +1760,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(page.events.len(), 1);
-        assert_eq!(page.quarantined_records, 2);
+        assert_eq!(page.quarantined_records, 3);
     }
 
     #[test]

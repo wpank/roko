@@ -241,6 +241,21 @@ pub async fn analyze(
         }
     }
     report.producer_packages = producers.into_iter().collect();
+    // Line-based public-item detection cannot see enum variants, trait methods,
+    // or public struct fields whose changed lines do not repeat the enclosing
+    // `pub` declaration. Any library-target edit can therefore alter a
+    // downstream contract even when the hunk itself looks private. Keep FAST
+    // correct by compiling bounded reverse dependents for library changes;
+    // bin/test/example/bench-only edits retain the narrower path.
+    if targets
+        .iter()
+        .any(|target| target.selector == CargoTargetSelector::Lib)
+    {
+        report.high_impact = true;
+        report.high_impact_reasons.push(
+            "library source changed; downstream contract impact cannot be ruled out".to_string(),
+        );
+    }
     if targets.len() > config.impact_max_targets.max(1) {
         report.fallback_reason = Some(format!(
             "{} impacted Cargo targets exceed configured cap {}",
@@ -858,6 +873,20 @@ mod tests {
         assert_eq!(
             target.check_command(),
             "cargo check -p demo --bench speed --features bench-support --message-format=json"
+        );
+    }
+
+    #[test]
+    fn library_selector_is_treated_as_a_downstream_contract_boundary() {
+        let targets = [ImpactedTarget {
+            package: "producer".into(),
+            selector: CargoTargetSelector::Lib,
+            required_features: Vec::new(),
+        }];
+        assert!(
+            targets
+                .iter()
+                .any(|target| target.selector == CargoTargetSelector::Lib)
         );
     }
 

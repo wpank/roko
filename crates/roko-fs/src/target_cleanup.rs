@@ -264,12 +264,17 @@ pub async fn cleanup_workspace_caches(
     let root = root.to_path_buf();
     tokio::task::spawn_blocking(move || {
         let root = canonical_real_dir(&root)?;
+        let roko_dir = prepare_roko_dir(&root, apply)?;
         if policy.current_revision.is_none() {
             policy.current_revision = git_stdout(&root, &["rev-parse", "--verify", "HEAD"]);
         }
 
         let _gc_lock = if apply {
-            Some(acquire_gc_lock(&root)?)
+            Some(acquire_gc_lock(
+                roko_dir
+                    .as_deref()
+                    .ok_or_else(|| std::io::Error::other("missing workspace state directory"))?,
+            )?)
         } else {
             None
         };
@@ -279,7 +284,7 @@ pub async fn cleanup_workspace_caches(
             return Ok(report);
         }
 
-        let allowed_roots = allowed_cleanup_roots(&root)?;
+        let allowed_roots = allowed_cleanup_roots(&root, roko_dir.as_deref())?;
         let candidates = report.candidates.clone();
         for candidate in candidates {
             if candidate_owner_active(&root, &candidate) {
@@ -700,13 +705,44 @@ fn insert_worktree_target(
     });
 }
 
-fn allowed_cleanup_roots(root: &Path) -> std::io::Result<Vec<PathBuf>> {
+fn allowed_cleanup_roots(
+    root: &Path,
+    roko_dir: Option<&Path>,
+) -> std::io::Result<Vec<PathBuf>> {
     let mut allowed = discover_worktree_targets(root)?
         .into_iter()
         .map(|entry| entry.checkout)
         .collect::<Vec<_>>();
-    allowed.push(root.join(".roko"));
+    if let Some(roko_dir) = roko_dir {
+        allowed.push(roko_dir.to_path_buf());
+    }
     Ok(allowed)
+}
+
+fn prepare_roko_dir(root: &Path, create: bool) -> std::io::Result<Option<PathBuf>> {
+    let roko_dir = root.join(".roko");
+    match std::fs::symlink_metadata(&roko_dir) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            return Err(std::io::Error::other(format!(
+                "workspace state must be a real directory: {}",
+                roko_dir.display()
+            )));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && create => {
+            std::fs::create_dir(&roko_dir)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    }
+    let canonical = canonical_real_dir(&roko_dir)?;
+    if canonical == root || !canonical.starts_with(root) {
+        return Err(std::io::Error::other(format!(
+            "workspace state escapes cleanup root: {}",
+            roko_dir.display()
+        )));
+    }
+    Ok(Some(canonical))
 }
 
 fn real_child_dirs(path: &Path) -> std::io::Result<Vec<PathBuf>> {
@@ -764,11 +800,10 @@ fn validate_removal_path(path: &Path, allowed_roots: &[PathBuf]) -> std::io::Res
         )));
     }
     let canonical = std::fs::canonicalize(path)?;
-    if !allowed_roots.iter().any(|root| {
-        std::fs::canonicalize(root)
-            .ok()
-            .is_some_and(|root| canonical.starts_with(root) && canonical != root)
-    }) {
+    if !allowed_roots
+        .iter()
+        .any(|root| canonical.starts_with(root) && canonical != *root)
+    {
         return Err(std::io::Error::other(format!(
             "cleanup candidate escapes allowed roots: {}",
             path.display()
@@ -852,6 +887,17 @@ fn archive_name_has_timestamp(stem: &str, name: &str) -> bool {
 }
 
 fn try_lock_existing(path: &Path) -> std::io::Result<Option<File>> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            return Err(std::io::Error::other(format!(
+                "refusing non-regular lock file: {}",
+                path.display()
+            )));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
     let file = match OpenOptions::new().read(true).write(true).open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => OpenOptions::new()
@@ -883,10 +929,26 @@ fn workspace_is_active(checkout: &Path) -> bool {
     }
 }
 
-fn acquire_gc_lock(root: &Path) -> std::io::Result<File> {
-    let runtime = root.join(".roko/runtime");
-    std::fs::create_dir_all(&runtime)?;
-    try_lock_existing(&runtime.join("cache-gc.lock"))?.ok_or_else(|| {
+fn acquire_gc_lock(roko_dir: &Path) -> std::io::Result<File> {
+    let runtime = roko_dir.join("runtime");
+    match std::fs::symlink_metadata(&runtime) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            return Err(std::io::Error::other(format!(
+                "runtime state must be a real directory: {}",
+                runtime.display()
+            )));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir(&runtime)?;
+        }
+        Err(error) => return Err(error),
+    }
+    let canonical_runtime = canonical_real_dir(&runtime)?;
+    if !canonical_runtime.starts_with(roko_dir) || canonical_runtime == roko_dir {
+        return Err(std::io::Error::other("runtime state escapes workspace state"));
+    }
+    try_lock_existing(&canonical_runtime.join("cache-gc.lock"))?.ok_or_else(|| {
         std::io::Error::other("another cache cleanup pass is already active")
     })
 }
@@ -1061,6 +1123,24 @@ mod tests {
             .unwrap();
 
         assert!(report.candidates.is_empty());
+        assert!(outside.path().join("important").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn workspace_state_symlink_is_rejected_before_scan_or_apply() {
+        use std::os::unix::fs::symlink;
+        let root = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        std::fs::create_dir(root.path().join(".git")).unwrap();
+        std::fs::write(outside.path().join("important"), b"keep").unwrap();
+        symlink(outside.path(), root.path().join(".roko")).unwrap();
+
+        let error = cleanup_workspace_caches(root.path(), policy(), true)
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("workspace state must be a real directory"));
         assert!(outside.path().join("important").exists());
     }
 

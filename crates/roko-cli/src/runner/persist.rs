@@ -3,7 +3,7 @@
 //! All writes use write-to-tmp-then-rename for crash safety.
 
 use std::collections::HashMap;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -543,15 +543,9 @@ fn append_buffered_run_index(
         cache.writers.clear();
     }
     if !cache.writers.contains_key(&run_path) {
-        if let Some(parent) = run_path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("creating run index directory {}", parent.display()))?;
-        }
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&run_path)
+        let (opened_path, file) = roko_fs::run_index::open_run_index_append(global_path, run_id)
             .with_context(|| format!("opening run index {}", run_path.display()))?;
+        debug_assert_eq!(opened_path, run_path);
         cache.writers.insert(
             run_path.clone(),
             BufWriter::with_capacity(RUN_INDEX_BUFFER_BYTES, file),

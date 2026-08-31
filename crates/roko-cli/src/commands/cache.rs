@@ -3,7 +3,7 @@
 use crate::{CacheCmd, Cli, EXIT_FAILURE, EXIT_SUCCESS, resolve_workdir};
 use anyhow::{Context as _, Result};
 use roko_fs::{CacheCleanupPolicy, CacheCleanupReport, cleanup_workspace_caches};
-use std::path::PathBuf;
+use std::path::Path;
 use std::time::Duration;
 
 const MIB: u64 = 1024 * 1024;
@@ -60,7 +60,7 @@ pub(crate) async fn cmd_cache(cli: &Cli, cmd: CacheCmd) -> Result<i32> {
     })
 }
 
-fn print_report(workdir: &PathBuf, report: &CacheCleanupReport) {
+fn print_report(workdir: &Path, report: &CacheCleanupReport) {
     println!("cache lifecycle: {}", workdir.display());
     println!("  target artifacts: {}", human_bytes(report.target_bytes));
     println!("  run evidence:     {}", human_bytes(report.evidence_bytes));

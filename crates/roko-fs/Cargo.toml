@@ -28,6 +28,7 @@ sysinfo = { workspace = true }
 tracing = { workspace = true }
 fs2 = "0.4"
 sha2 = { workspace = true }
+libc = "0.2"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }

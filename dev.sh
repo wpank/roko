@@ -104,14 +104,21 @@ cmd_score() {
   python3 scripts/run_evidence.py score "$@"
 }
 
+cmd_benchmark() {
+  command -v python3 >/dev/null 2>&1 || die "python3 is required for benchmark"
+  python3 scripts/dev_benchmark.py "$@"
+}
+
 # Read-only by default. This delegates to the prebuilt CLI and never invokes
 # Cargo itself, so cache inspection cannot trigger a build.
 cmd_cache() {
   local roko_bin
   if [ -x "$ROKO_BIN" ]; then
     roko_bin="$ROKO_BIN"
+  elif [ -x "./target/release/roko" ]; then
+    roko_bin="./target/release/roko"
   else
-    roko_bin=$(resolve_roko)
+    die "A repo-local target/debug/roko or target/release/roko is required for cache commands"
   fi
   "$roko_bin" cache "$@"
 }
@@ -2146,6 +2153,7 @@ COMMANDS
   evidence-validate <bundle>               Strict JSONL/terminal/secret/size bundle validation
   feedback [--run-id ID]                   Show a deterministic run debrief (latest by default)
   score [bundle|run-id...]                 Aggregate p50/p95 evidence scorecard metrics
+  benchmark list|run|summarize             Fixed-SHA cold/warm development scorecards
   pipeline <name> [options] (p)             Run demo pipeline end-to-end in ephemeral workspace
   clean-workspaces [--confirm]             List/remove pipeline workspaces
   mirage                                   Start mirage-rs in mainnet fork mode (:8545)
@@ -2175,6 +2183,7 @@ EXAMPLES
   ./dev.sh evidence-validate .roko/runs/<run-id>       Validate one portable bundle
   ./dev.sh feedback --run-id <run-id>                  Read facts and next action for one run
   ./dev.sh score --bundle-root .roko/runs              Aggregate all captured runs
+  ./dev.sh benchmark run --dry-run --base HEAD          Preview the benchmark matrix safely
   ./dev.sh cache prune                                  Preview safe cache reclamation
   ./dev.sh cache prune --apply --target-budget-gb 64    Apply a reviewed plan
   ./dev.sh pipeline prd                                Run PRD pipeline (default model)
@@ -2212,6 +2221,7 @@ case "$cmd" in
   evidence-validate)       cmd_evidence_validate "$@" ;;
   feedback)                cmd_feedback "$@" ;;
   score)                   cmd_score "$@" ;;
+  benchmark|bench-dev)     cmd_benchmark "$@" ;;
   pipeline|p)              cmd_pipeline "$@" ;;
   clean-workspaces)        cmd_clean_workspaces "$@" ;;
   mirage)                  cmd_mirage ;;

@@ -17,6 +17,12 @@ and an explicit `--max-cost-usd` ceiling. Commands are argv arrays rather than s
 runner also caps repetitions, per-command deadline, total deadline envelope, run count, free disk,
 session size, and individual cache size.
 
+The final integration smoke listed four configured lanes and dry-planned 140 measured runs without
+executing providers or builds; admission correctly required explicit network authorization and a
+cost ceiling. A synthetic two-session history fixture with three samples per session and p50
+moving from 100 ms to 200 ms exited 1, marked the comparison regressed, emitted two alerts, and
+wrote both JSON and Markdown. These results verify orchestration/alert mechanics only.
+
 ## Run a narrow trial, then the matrix
 
 Start with one fixture and one repetition:
@@ -136,6 +142,8 @@ is reported as inconclusive rather than zero or silently discarded.
 - [x] Historical pictured-run facts are retained without pretending they are a complete sample.
 - [x] Bounded deterministic historical JSON/Markdown dashboard with previous/fixed-baseline
   regression alerts and CI exit semantics.
+- [x] Smoke the four-lane manifest/no-execution 140-run matrix plan and the history regression exit
+  path with a deterministic synthetic two-session fixture.
 - [ ] Run five cold and five warm repetitions for every promoted fixture/lane.
 - [ ] Import five manual Codex and Claude samples per selected fixture/cache.
 - [ ] Record escaped regressions and full-CI pass-rate baseline before FAST promotion.

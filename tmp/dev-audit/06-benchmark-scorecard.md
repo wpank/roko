@@ -11,8 +11,11 @@ The P0 implementation is merged at `a58bdbacb`. Commit `d1b94b139` adds determin
 scorecard orchestration in `scripts/dev_benchmark.py`, but the representative matrix has not yet
 been run. The runner uses detached worktrees, isolated cold targets, bounded lane-local warm
 targets, evidence bundles, and raw/p50/p95 output. It retains failures/timeouts and never
-manufactures missing cold/warm or manual evidence. Historical P0 smokes and the coordinator's
-pending final batch are mechanics/release evidence, not promotion data.
+manufactures missing cold/warm or manual evidence. Historical P0 smokes and the coordinator's final
+integration checkpoint are mechanics/release evidence, not promotion data. That checkpoint
+enumerated four lanes, dry-planned 140 measured runs without executing them, correctly required
+network/cost admission, and proved the history alert path with a synthetic three-sample-per-session
+100 ms to 200 ms p50 regression (exit 1, two alerts, JSON and Markdown written).
 
 The same runner now exposes `history`, which scans a bounded newest-session suffix and emits
 deterministic JSON/Markdown series plus newest-versus-previous (or fixed-baseline) regression
@@ -26,6 +29,7 @@ undersampled comparison is explicitly inconclusive.
   admission, and safe cleanup that never deletes shared targets.
 - [x] Implement the bounded historical dashboard and configurable p50/p95, non-success, timeout,
   and validated-rate regression alerts with nonzero CI exit behavior.
+- [x] Smoke the no-execution matrix planner and deterministic history regression exit path.
 - [ ] Run five cold and five warm repetitions for each selected fixture and comparison lane.
 - [ ] Import real manual Codex/Claude samples; do not substitute placeholders for absent runs.
 - [ ] Publish raw bundle links and p50/p95 results.

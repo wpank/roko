@@ -1,13 +1,15 @@
 # 215 — HTTP Run-Scoped Event and Gate Query Endpoints
 
-> **Status: SOURCE-DONE FOR NEW RUNS AND EXPLICIT HISTORICAL REPAIR** (2026-08-31,
+> **Status: SOURCE-DONE; LOOPBACK API/CURSOR/SSE CHECKPOINT VERIFIED** (2026-08-31,
 > `5f689d66e` + `85c052fc9`). The
 > implementation uses the safer run-resource surface under `/api/runs/{run_id}` rather than the
 > draft global `/api/events?run_id=` shape. It provides bounded detail, cursor events, SSE,
 > tasks/attempts, gates, scrubbed logs, metrics, artifact/screenshot inventories, and bundle
 > metadata. Requests/startup deliberately do not rebuild pre-index history. The separate
 > dry-run-first `roko run-index repair` command scans recognized live/rotated sources under one
-> aggregate budget and replaces indexes atomically only after a complete scan.
+> aggregate budget and replaces indexes atomically only after a complete scan. The no-default
+> serve check, disposable repair fixture, loopback run-resource endpoints, cursor traversal, and
+> bounded SSE replay have passed. A real plan-to-JSONL cross-check remains open.
 
 **Priority**: P2 — events are only accessible by reading JSONL files directly; no HTTP query capability for run-scoped or filtered event access
 **Size**: M (2-3 days)
@@ -70,13 +72,17 @@ Once #212 lands (run_id in all persisted events), run-scoped queries become poss
 
 ## Verification Checklist
 
-- [ ] `cargo build -p roko-serve` compiles on the final integrated tree — final batch pending.
-- [ ] `cargo test -p roko-serve` passes, including new endpoint tests — final batch pending.
-- [ ] Manual: start `roko serve`, run a plan, then query `/api/runs/{run_id}/events`.
-- [ ] Manual: query `/api/runs/{run_id}/gates` and the run-filtered SSE route.
+- [x] `cargo check -p roko-serve --no-default-features --locked -j1` passes on the integrated tree.
+- [ ] `cargo test -p roko-serve` passes, including new endpoint tests, in the release/full-CI lane.
+- [x] Manual: start `roko serve` against a bounded fixture and query status, run detail, events,
+      tasks, gates, and metrics; health/readiness and every selected run endpoint returned `200`.
+- [x] Manual: traverse event cursor positions `0` to `40` to `123` and replay bounded run-filtered
+      SSE.
+- [ ] Run a real plan and cross-check its API records against its direct JSONL/index records.
 - [ ] Manual: query filtered event types/sources and attempt grouping.
-- [ ] Response matches JSONL file contents when cross-checked
-- [ ] Manual: exercise `run-index repair` dry-run/apply and prove HTTP/startup never invokes it.
+- [x] Manual: exercise `run-index repair` dry-run/apply with valid, malformed, invalid-ID, and
+      cross-run records.
+- [ ] Prove HTTP/startup never invokes repair and add truncation/active-lock refusal cases.
 
 ## Files to Modify
 

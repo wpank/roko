@@ -1,12 +1,15 @@
 # 228 — Dogfood Session Evidence Bundle
 
-> **Status: SOURCE-IMPLEMENTED AS THE DEVELOPMENT HARNESS** (2026-08-31, `bba2f8858`).
+> **Status: SOURCE-IMPLEMENTED; STRICT LOOPBACK/CLI BUNDLE SMOKE VERIFIED** (2026-08-31,
+> `bba2f8858` + `25aaca597`).
 > `run-evidence`, `evidence-validate`, `feedback`, and `score` provide a private schema-v2 bundle
 > with fresh run-scoped status/log slicing, safe GET/OpenAPI collection, opt-in CLI/text/PNG proof,
 > process/resource/Git evidence, metrics, scoring, deterministic debrief, and strict validation.
 > The fixed-SHA scorecard runner (`d1b94b139`) now composes these bundles across isolated cold/warm
-> lanes. Final success/failure/timeout/cancellation/live-screenshot fixtures and representative
-> benchmark repetitions remain evidence work, not missing harness or benchmark-orchestration code.
+> lanes. A strict explicit-only fixture passed all eight loopback endpoints plus its CLI hook with
+> no validation errors, warnings, or secret hits, and green feedback/score output. Final real-plan,
+> failure/timeout/cancellation/live-screenshot fixtures and representative benchmark repetitions
+> remain evidence work, not missing harness or benchmark-orchestration code.
 
 **Priority**: P1 — self-hosting failures are expensive to reproduce, and today's evidence is assembled manually across terminal logs, runner state, HTTP responses, screenshots, and Git worktrees
 **Size**: M (2–3 days)
@@ -92,6 +95,8 @@ Stage 0 subset now present:
 
 ## Verification Checklist
 
+- [x] Run and validate a strict explicit-only endpoint/CLI bundle: 8/8 loopback GETs and the CLI
+      hook passed, validation found no errors/warnings/secret hits, and feedback/score were green.
 - [ ] Run a one-task successful plan and validate the resulting bundle.
 - [ ] Run a mock agent that exits before its first event; verify the bundle records `lost_effect` or
       equivalent terminal evidence and includes the diagnosis.

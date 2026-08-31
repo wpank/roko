@@ -1,12 +1,13 @@
 # 230 — Feature-Gate Chain/Alloy from the Default CLI Build
 
-> **Status: SOURCE-IMPLEMENTED / FINAL COMPILE AND BENCHMARK EVIDENCE OPEN** (2026-08-31,
+> **Status: SOURCE-IMPLEMENTED / BUILD GRAPH VERIFIED, REAL BENCHMARK EVIDENCE OPEN** (2026-08-31,
 > `88c724744` + `6af235c0f`). The default development graph is lean; full provider/chain/ACP/
 > embedded-frontend behavior is selected explicitly by release, Docker, CI, and dedicated targets.
 > Fixed-SHA cold/warm automation is source-complete in `d1b94b139`, and the protected cache lane
-> (`97f897200` + `8c82c5b1b`) avoids erasing warm dependencies outside explicit cleanup. Final
-> lean/full compile commands and representative before/after repetitions have not yet run on the
-> rebased integration.
+> (`97f897200` + `8c82c5b1b`) avoids erasing warm dependencies outside explicit cleanup. The final
+> checkpoint verified the lean dependency tree, no-default serve check, explicit Alloy/ACP CLI
+> check, and current default CLI build. Representative before/after repetitions, the complete
+> all-feature test matrix, and release jobs remain open.
 
 **Priority**: P2 — repeated dogfood cold builds took 10–14 minutes and the default CLI still enables Alloy's full dependency graph
 **Size**: M (2–3 days)
@@ -49,10 +50,11 @@ the full chain stack.
 
 ## Acceptance Criteria
 
-- [x] Default manifests select the lean graph without Alloy provider/full-feature crates; final
-  `cargo build -p roko-cli` proof is pending.
-- [x] Explicit full/chain features retain the full source wiring; final full-feature compile/runtime
-  proof is pending.
+- [x] Default manifests select the lean graph; `cargo tree -p roko-cli` excludes
+  `alloy-provider`, `alloy-network`, and `alloy-rpc-client`, and the current CLI binary builds.
+- [x] Explicit Alloy/ACP CLI wiring compiles with
+  `cargo check -p roko-cli --features alloy-backend,acp --locked -j1`; full runtime proof remains
+  part of the release lane.
 - [x] `roko serve` has an explicit feature choice; chain-disabled builds return a typed `501` diagnostic for
    chain-only routes/surfaces.
 - [x] Dedicated release/Docker/CI definitions request the appropriate full features; their final
@@ -63,7 +65,9 @@ the full chain stack.
 ## Verification Checklist
 
 - [ ] Use a fresh target directory and capture `cargo build -p roko-cli --timings` before changes.
-- [ ] Verify `cargo tree -p roko-cli` for the default build no longer includes Alloy provider/full.
+- [x] Verify `cargo tree -p roko-cli` for the default build no longer includes Alloy
+      provider/network/RPC-client crates.
+- [x] Check the explicit Alloy/ACP CLI feature graph and the no-default serve graph.
 - [ ] Run default CLI plan validation, plan dry-run, status, doctor, and screenshot smoke tests.
 - [ ] Run chain route/command tests with `--features chain,alloy-backend`.
 - [ ] Run `cargo test --workspace --all-features` and lean-default CI jobs.

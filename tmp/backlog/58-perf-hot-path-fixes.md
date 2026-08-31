@@ -1,11 +1,12 @@
 # 58 — Performance Hot-Path Fixes
 
-> **Status: SOURCE-IMPLEMENTED / FINAL VERIFICATION PENDING** (2026-08-31,
+> **Status: SOURCE-IMPLEMENTED / FINAL RELEASE LANE OPEN** (2026-08-31,
 > `88c724744`). All four hot-path changes are present in the dev-audit integration. The later
 > cache lane (`97f897200` + `8c82c5b1b`) keeps cleanup off dispatch and retains warm targets unless
-> explicitly pruned; the fixed-SHA runner (`d1b94b139`) can measure the result. This docs lane did
-> not compile, test, or run the scorecard; the coordinator's final batch and real repetitions remain
-> the verification authority.
+> explicitly pruned; the fixed-SHA runner (`d1b94b139`) can measure the result. The final checkpoint
+> passed the complete `roko-cli` library harness and strict workspace no-dependency clippy before
+> the final small compatibility/evidence/lifecycle delta. The complete all-target workspace run and
+> real benchmark repetitions remain the verification authority.
 
 **Priority**: P2 — four concrete latency regressions, each verified in production code
 **Size**: M (2-3 days)
@@ -148,8 +149,11 @@ The `.git` existence check is synchronous but is a single `stat` syscall and is 
 - [x] `ModelCallService.config` and `ProviderCallCell.config` are `Arc<RokoConfig>` and
       `config_for_model` pointer-clones the `Arc`.
 - [x] `count_changed_files` returns `0` before forking Git when `workdir/.git` is absent.
-- [ ] `cargo test --workspace` passes with zero failures — final batch pending.
-- [ ] `cargo clippy --workspace --no-deps -- -D warnings` is clean — final batch pending.
+- [ ] `cargo test --workspace` passes with zero failures — the interactive all-target run was
+      intentionally stopped during the large integration-binary compile matrix and remains open.
+- [x] `cargo clippy --locked --workspace --no-deps -j1 -- -D warnings` passed for the integrated
+      hot-path code before the final unrelated small delta; final incremental lint is tracked in
+      `tmp/dev-audit/11-implementation-status.md`.
 
 ## Verification Checklist
 
@@ -158,11 +162,11 @@ The `.git` existence check is synchronous but is a single `stat` syscall and is 
 - [x] Route global cascade outcomes through the in-memory router; per-repo paths retain disk fallback.
 - [ ] Confirm `record_template_dispatch_feedback` still works correctly (existing code path, not changed)
 - [x] Change `ModelCallService.config` and `ProviderCallCell.config` to `Arc<RokoConfig>`.
-- [ ] Run `cargo test -p roko-agent` and confirm no regressions — final batch pending.
+- [ ] Run `cargo test -p roko-agent` and confirm no regressions in the release/full-CI lane.
 - [ ] Add/run a subprocess-observing non-Git fixture for `count_changed_files`; the source fast path
       is present, but the original checklist asked for runtime proof.
-- [ ] Run `cargo test --workspace`
-- [ ] Run `cargo clippy --workspace --no-deps -- -D warnings`
+- [ ] Run the complete workspace all-target/full-CI lane.
+- [x] Run strict workspace no-dependency clippy for the integrated hot-path implementation.
 
 ## Files to Modify
 

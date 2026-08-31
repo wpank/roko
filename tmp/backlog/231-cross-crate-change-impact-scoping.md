@@ -7,7 +7,9 @@
 > symbol-level `roko-index` consumer oracle for macro-generated APIs and non-Rust schemas remains
 > open; ambiguity safely widens/escalates. The fixed-SHA scorecard runner (`d1b94b139`) can now
 > measure scoped versus full lanes, but the real latency and escaped-regression fixtures are still
-> pending.
+> pending. The final checkpoint built the integrated CLI and passed its complete library harness;
+> this proves the implemented path compiles/tests at library scope, not the still-open public-
+> contract impact fixtures below.
 
 **Priority**: P1 — incomplete file scope caused expensive retry loops and manual repair after public type changes
 **Size**: M (2–3 days)
@@ -53,8 +55,8 @@ call sites must also change and which reverse dependents must compile?”
    crates before agent dispatch.
 - [x] High-impact plans with a likely incomplete `files` list receive an actionable validation diagnostic.
 - [x] Private implementation-only edits remain target-scoped rather than automatically workspace-wide.
-- [x] Reverse-dependent compile gates are source-implemented with one shared compile owner; final
-  runtime proof is pending.
+- [x] Reverse-dependent compile gates are source-implemented with one shared compile owner and the
+  integrated CLI/library checkpoint is green; the dedicated runtime impact fixture is pending.
 - [x] The agent prompt contains the impact report and planned-vs-actual files are recorded.
 - [x] False positives can be acknowledged explicitly without disabling the analysis globally.
 

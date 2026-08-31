@@ -1,6 +1,7 @@
 # 29 — FAST Development
 
-> **Status**: P0 + IMPACT-AWARE P1 IMPLEMENTED, OPT-IN, EXPERIMENTAL
+> **Status**: P0 + IMPACT-AWARE P1 IMPLEMENTED; BUILD/LIBRARY CHECKPOINT VERIFIED; OPT-IN,
+> EXPERIMENTAL
 >
 > **Landed**: 2026-08-31 in `a58bdbacbf80d72583edd628354ddb2750a8b822`
 >
@@ -301,6 +302,21 @@ The automation is implemented; the representative five-cold/five-warm matrix, im
 Codex/Claude samples, escaped-regression audit, and full-CI baseline are still required before FAST
 promotion.
 
+The final integration checkpoint verified that the default CLI dependency tree excludes the Alloy
+provider/network/RPC-client graph, the no-default serve graph checks, the explicit Alloy/ACP CLI
+graph checks, the current CLI binary builds, and the `roko-cli` library harness completes with
+2,301 passed, zero failed, and one ignored test. Strict workspace no-dependency clippy also passed
+before the final small compatibility/evidence/lifecycle delta. Loopback run
+detail/events/tasks/gates/metrics,
+opaque cursor pagination, bounded SSE replay, and a strict eight-endpoint/CLI evidence bundle were
+then exercised successfully. The incremental lint rerun is tracked in the authoritative
+[`tmp/dev-audit/11-implementation-status.md`](../../tmp/dev-audit/11-implementation-status.md).
+
+The workspace all-target test command is deliberately not marked green: the interactive attempt
+was stopped while compiling its large integration-binary matrix after many earlier suites passed.
+That work, escaped-regression measurement, and full CI stay in the release/promotion lane rather
+than silently expanding the five-minute feedback loop.
+
 ---
 
 ## When Not to Use FAST
@@ -355,6 +371,13 @@ Completed for P0:
   nonblocking workspace/Cargo/log leases; target pressure retains compiled dependencies.
 - [x] Fixed-SHA, worktree-isolated cold/warm benchmark automation emits raw evidence plus p50/p95
   current-vs-FAST/manual scorecards without deleting shared caches.
+- [x] Verify the lean dependency tree, no-default serve and explicit Alloy/ACP graphs, current CLI
+  build, complete CLI library harness, and strict no-dependency clippy checkpoint.
+- [x] Verify the loopback run API, cursor/SSE behavior, and a strict explicit-endpoint evidence
+  bundle with passing CLI hook, validation, feedback, and score.
+- [ ] Complete the final incremental format/clippy over the small post-checkpoint delta.
+- [ ] Complete the workspace all-target/full-CI release lane; the stopped interactive compilation
+  is not a passing test result.
 - [ ] Five cold and five warm representative samples, manual baselines, escaped regressions, and
   full-CI comparison have been collected and approved.
 

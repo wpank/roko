@@ -21,9 +21,9 @@ Two states are deliberately separate:
   final integrated tree.
 
 The user requested that compilation, tests, clippy, and integration runs happen once at the end.
-Accordingly, the implementation boxes below are checked while the final-batch evidence and
-benchmark boxes remain open until those commands produce artifacts. A checked implementation box
-must not be read as a claim that the final tree is globally green.
+That batch has now produced the concrete checkpoint below. A checked implementation box must not
+be read as a claim that the workspace all-target release lane or representative paid benchmark
+matrix is globally green; those intentionally remain separate and open.
 
 ## Implemented in the integration snapshot
 
@@ -153,19 +153,62 @@ workspace/writer/cache/repair leases.
 - [ ] Execute the representative matrix and import real manual Claude/Codex samples; tooling
   presence is not benchmark evidence.
 
+## Final verification checkpoint
+
+The following results were produced from the integrated branch before the final rebase/merge. A
+small delta after the strict clippy checkpoint adds a backward-compatible default for the legacy
+`[agent].command` field, replaces empty test-model placeholders, adds explicit-only evidence
+endpoint selection, and closes a final lifecycle ownership edge. The incremental format/clippy
+rerun remains listed below instead of being implied.
+
+- [x] Shell/Python/JSON syntax and command-help checks completed for the development wrappers,
+  evidence tooling, benchmark tooling, and checked-in manifests.
+- [x] The default `roko-cli` dependency tree excludes `alloy-provider`, `alloy-network`, and
+  `alloy-rpc-client`.
+- [x] `cargo check -p roko-serve --no-default-features --locked -j1` passed.
+- [x] `cargo check -p roko-cli --features alloy-backend,acp --locked -j1` passed.
+- [x] `cargo build -p roko-cli --bin roko --locked -j1` produced the current CLI binary. The
+  checked-in configuration also starts parsing without requiring the retired legacy agent command.
+- [x] The latest `roko-cli` library harness completed with 2,301 passed, zero failed, and one
+  ignored test.
+- [x] `cargo clippy --locked --workspace --no-deps -j1 -- -D warnings` passed before the small
+  post-checkpoint delta above; only the repository's two existing allowed unknown-lint warnings
+  were emitted.
+- [x] `roko layer-check` passed after replacing four empty test-only model placeholders with an
+  explicit `test-model` value.
+- [x] A disposable cache fixture planned four stale incremental deletions, reclaimed the same four
+  entries/16 KiB under `--apply`, retained the newest eight partitions, and preserved compiled
+  dependencies.
+- [x] A bounded run-index dry-run/apply fixture indexed three valid records into two hashed run
+  directories and rejected malformed, invalid-ID, and cross-run records. Truncation and active-lock
+  refusal remain part of the release fixture matrix.
+- [x] Benchmark inspection reported four lanes; its no-execution dry-run planned 140 measured runs
+  and correctly required explicit network/cost admission. Synthetic two-session history produced
+  the expected nonzero regression result and two alerts for a 100 ms to 200 ms p50 change.
+- [x] The loopback serve fixture returned `200` for health, readiness, status, run detail, events,
+  tasks, gates, and metrics. Event cursor pages advanced `0` to `40` to `123`, and bounded
+  run-filtered SSE replay completed.
+- [x] A strict evidence smoke used the explicit-only endpoint policy added in `25aaca597`: all
+  eight selected GET endpoints and the CLI hook passed, validation reported no errors, warnings,
+  or secret hits, and both deterministic feedback and score output were green.
+- [ ] `cargo test --workspace` is not a recorded pass. It ran many earlier suites successfully but
+  was intentionally stopped while compiling the large remaining integration-test binary matrix;
+  the complete all-target/full-CI lane stays open rather than blocking the interactive loop.
+
 ## Final evidence still required
 
 - [ ] Rebase the complete integration on the latest `origin/main` and resolve other active-agent
   changes without dropping work.
-- [ ] Run the single final formatting, syntax, lean/full compile, focused test, clippy, API smoke,
-  evidence-validator, and regression batch selected by the coordinator.
+- [ ] Run the final incremental formatting/clippy check over the small post-checkpoint delta.
 - [ ] Publish the exact final-batch commands, results, and any allowed residual failures.
 - [ ] Run real representative benchmark repetitions: at least five cold and five warm samples per
   selected fixture/lane, retain failures/timeouts, and publish p50/p95 plus bundle links.
-- [ ] Exercise `roko run-index repair` in bounded dry-run/apply fixtures, including truncation,
-  malformed/cross-run records, and active-lock refusal.
-- [ ] Exercise cache status/prune against protected active data and disposable stale fixtures,
-  confirming the dry-run/apply plans and reclaimed-byte accounting agree.
+- [x] Exercise `roko run-index repair` in a bounded disposable dry-run/apply fixture with valid,
+  malformed, invalid-ID, and cross-run records.
+- [ ] Add explicit truncation and active-lock-refusal cases to the run-index release fixture.
+- [x] Exercise cache status/prune against disposable stale incremental data, confirming the
+  dry-run/apply plan and reclaimed-byte accounting agree while newest entries/dependencies remain.
+- [ ] Add an active-workspace/Cargo-owner refusal fixture to the cache release lane.
 - [ ] Measure escaped regressions and full-CI baseline before promoting FAST or auto-merge.
 
 ## Explicit residuals

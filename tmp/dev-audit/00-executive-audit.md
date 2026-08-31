@@ -53,8 +53,9 @@ plus structural verification only.
 
 ## The highest-leverage fixes
 
-Status in expanded integration snapshot `52d5f4df4` (implementation complete; final batched
-verification and merge still pending):
+Status in expanded integration snapshot `52d5f4df4` (implementation complete; the later
+build/library/API/evidence checkpoint and remaining release/benchmark work are reconciled in
+[11-implementation-status.md](11-implementation-status.md)):
 
 - [x] Admission before preparation. Task capacity and exact attempt ownership are reserved before
   worktree loading, routing, prompt assembly, hooks, or actual-launch counters.

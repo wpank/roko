@@ -210,8 +210,10 @@ Status in the expanded integration:
 - [x] Bound conductor Restart/Fail pre-cancel settlement and fail closed with degraded ownership
   evidence when process absence cannot be proved.
 
-Representative runtime fixtures and the coordinator's final compile/test/clippy/smoke batch remain
-unchecked; source implementation is not a claim that those commands passed.
+The final build/library/API/evidence checkpoint is recorded in
+[11-implementation-status.md](11-implementation-status.md). Representative timeout/kill-point
+fixtures, the workspace all-target/full-CI lane, and real benchmark repetitions remain unchecked;
+source implementation is not a claim that those residual commands passed.
 
 The original high-impact-subset estimate was approximately 4–6 working days. The remaining
 estimates below describe the broader audit and are planning estimates, not completed work:

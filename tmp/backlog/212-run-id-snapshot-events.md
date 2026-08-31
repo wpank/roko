@@ -1,12 +1,15 @@
 # 212 — Stamp run_id into Snapshots and All Persisted Events
 
-> **Status: SOURCE-DONE FOR THE AUTHORITATIVE RUNNER-V2 PATH AND OFFLINE REPAIR** (2026-08-31;
+> **Status: SOURCE-DONE; CLI/REPAIR CHECKPOINT VERIFIED, LIVE-RUN PROOF OPEN** (2026-08-31;
 > PR #73, expanded by `5f689d66e` + `85c052fc9`). The implementation chose a stronger direct field
 > contract: every `RunnerEvent`
 > variant owns `run_id` and exposes `RunnerEvent::run_id()`, while `RunStateSnapshot` owns the same
 > identity. New records are additionally projected into hashed per-run indexes. The original plan
 > below to add a second JSON wrapper and mutate the legacy `ExecutorSnapshot` was superseded; it
-> would duplicate identity and force an unnecessary file-format migration.
+> would duplicate identity and force an unnecessary file-format migration. The final checkpoint
+> built the current CLI, passed its 2,301-test library harness, and exercised bounded repair
+> dry-run/apply with valid, malformed, invalid-ID, and cross-run records. A real two-run identity
+> fixture plus truncation/active-lock refusal remain open.
 
 **Priority**: P2 — events from multiple runs are indistinguishable and snapshots cannot be correlated with events without a run_id
 **Size**: XS (2-4 hours)
@@ -62,13 +65,15 @@ This is a prerequisite for #215 (HTTP run-scoped event queries).
 
 ## Verification Checklist
 
-- [ ] `cargo build -p roko-cli` compiles on the final integrated tree — final batch pending.
-- [ ] `cargo test -p roko-cli` passes, including existing snapshot and resume tests — final batch pending.
+- [x] `cargo build -p roko-cli --bin roko --locked -j1` compiles the current integrated CLI.
+- [x] The latest `roko-cli` library harness passed 2,301 tests with zero failures and one ignored.
+      The complete integration-binary/all-target lane remains open.
 - [ ] Manual: run a plan, inspect `.roko/events.jsonl` and its per-run index — every line has the
       expected direct `run_id` field.
 - [ ] Manual: run a second plan, inspect events — the two runs have different `run_id` values
-- [ ] Manual: exercise offline repair dry-run/apply, truncation, malformed/cross-run records, and
-      active-lock refusal against disposable historical fixtures.
+- [x] Manual: exercise offline repair dry-run/apply with valid, malformed, invalid-ID, and cross-run
+      records against a disposable historical fixture.
+- [ ] Manual: add explicit truncation and active-lock-refusal repair cases.
 - [x] No envelope migration is required because the implementation kept the direct event schema;
       pre-index historical repair is tracked separately.
 

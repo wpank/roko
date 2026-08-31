@@ -6,7 +6,9 @@
 > pre-cancel settlement is bounded and fail-closed; safe timeout diffs enter ordinary safety/gate
 > ownership under a durable content fingerprint; terminal projections preserve degraded cleanup
 > truth. Fixed-SHA benchmark automation is source-complete in `d1b94b139`; final
-> hung-hook/startup/restart fixtures and representative repetitions remain pending.
+> hung-hook/startup/restart fixtures and representative repetitions remain pending. The integrated
+> CLI build and 2,301-test library harness passed; neither substitutes for the open kill-point
+> matrix below.
 
 **Priority**: P1 — a slow awaited dispatch-preparation or provider-startup path can outlive the
 FAST execution budget before the event loop gets another chance to settle the run

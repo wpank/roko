@@ -3,7 +3,8 @@
 ## P0: fix before tuning models or deleting tests
 
 Implementation status through the post-integration commits reconciled in
-[11-implementation-status.md](11-implementation-status.md) (final batched verification pending):
+[11-implementation-status.md](11-implementation-status.md) (build/library/API/evidence checkpoint
+recorded; dedicated kill-point, full-CI, and benchmark evidence remains open):
 
 - [x] Reserve capacity and exact-attempt ownership before dispatch preparation; count only actual
   launches.
@@ -18,7 +19,7 @@ Implementation status through the post-integration commits reconciled in
   deterministic pre-edit/reflex broker remains separate work.
 - [x] Re-enter the normal gate lifecycle with a safe, immutable-fingerprinted timed-out diff.
 - [x] Converge terminal TUI/dashboard/status/ledger/PID projections and distinguish current from
-  cumulative usage. Real final-tree fixtures remain part of the final batch.
+  cumulative usage. Dedicated kill-point/timeout fixtures remain part of the release lane.
 
 ### 1. Admission happens too late
 

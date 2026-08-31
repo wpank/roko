@@ -8,9 +8,13 @@ design contract, with current status annotations distinguishing later source imp
 runtime proof; no production settings, gates, or tests were changed while the baseline evidence
 was collected. The approved P0 implementation was merged to `main` in `a58bdbacb`.
 The expanded implementation is source-complete through the post-integration cache, offline-index,
-and benchmark-tooling commits listed in document 11, but its single final verification/rebase/merge
-batch and real benchmark repetitions are still pending. Document 11 is the authoritative
-implemented-versus-verified ledger for that expanded work.
+and benchmark-tooling commits listed in document 11. Its final verification checkpoint now covers
+the lean/default and explicit-feature build graphs, the complete `roko-cli` library harness, strict
+workspace no-dependency clippy before the final small compatibility/evidence/lifecycle delta,
+loopback run APIs, a strict evidence bundle, and disposable cache, index-repair, and benchmark
+history fixtures. The
+final incremental lint/rebase/merge step and real benchmark repetitions remain open. Document 11
+is the authoritative implemented-versus-verified ledger for that expanded work.
 
 ## Bottom line
 
@@ -106,9 +110,10 @@ The narrow P0 batch is on `main` at `a58bdbacb`. Start it with:
 ```
 
 FAST remains opt-in. Each task must author exactly one verification command; the runner fails
-closed otherwise. The expanded integration adds the features below, but the final tree still must
-complete its one batched release verification before merge. Benchmark the fixtures in
-[06-benchmark-scorecard.md](06-benchmark-scorecard.md) before changing the default.
+closed otherwise. The expanded integration adds the features below. Its verified checkpoint and
+the intentionally open all-target/full-CI and paid benchmark work are recorded separately in
+document 11. Benchmark the fixtures in [06-benchmark-scorecard.md](06-benchmark-scorecard.md)
+before changing the default.
 
 Current status:
 
@@ -128,7 +133,18 @@ Current status:
 - [x] Bounded explicit offline repair for pre-index history without HTTP/startup global scans.
 - [x] Fixed-SHA cold/warm benchmark automation with bounded targets, evidence bundles, and p50/p95
   scorecards.
-- [ ] Run the coordinator's final compile/test/clippy/smoke batch on the rebased integration.
+- [x] Verify the lean default dependency graph, no-default serve build, explicit
+  Alloy/ACP-enabled CLI build, current CLI binary, complete `roko-cli` library harness, strict
+  workspace no-dependency clippy checkpoint, layer boundaries, and disposable cache/index/history
+  fixtures.
+- [x] Verify loopback health/readiness/status plus run detail/events/tasks/gates/metrics, opaque
+  cursor pagination, bounded SSE replay, and a strict 8/8-endpoint evidence bundle with CLI,
+  feedback, and score evidence.
+- [ ] Complete the final incremental format/clippy over the small post-checkpoint delta, then rebase
+  and merge the integration.
+- [ ] Complete the workspace all-target/full-CI release lane. The interactive `cargo test
+  --workspace` attempt was intentionally stopped while it was compiling the large integration-
+  binary matrix; it is not recorded as a pass.
 - [ ] Run the representative cold/warm scorecard and evaluate promotion criteria.
 - [ ] Add a Codex operation-level broker for restrictive built-in operation policy.
 - [ ] Promote FAST or enable auto-merge; both remain explicitly deferred policy decisions.

@@ -1,6 +1,6 @@
 # 30 — Run Evidence Bundles
 
-> **Status**: IMPLEMENTED AS A DEVELOPMENT HARNESS
+> **Status**: IMPLEMENTED AND STRICT LOOPBACK SMOKE VERIFIED AS A DEVELOPMENT HARNESS
 >
 > **Scope**: Private, bounded evidence for FAST/self-hosting runs and arbitrary local commands.
 > It does not make endpoint, browser, or screenshot probes mandatory unless the operator requests
@@ -28,6 +28,23 @@ Add behavior evidence without a shell wrapper:
   --png-hook 'web=tools/capture-page --url http://127.0.0.1:5173 --output {output}' \
   -- ./target/debug/roko plan run plans/example --no-tui --log-file {bundle}/events.jsonl
 ```
+
+When the verification contract names an exact endpoint set, suppress the collector's standard
+safe GET seed list and collect only the repeated explicit paths:
+
+```bash
+./dev.sh run-evidence \
+  --endpoint-base http://127.0.0.1:6677 \
+  --no-default-endpoints \
+  --endpoint /health \
+  --endpoint /ready \
+  --require-endpoints-pass \
+  -- ./target/debug/roko status --json
+```
+
+Without `--no-default-endpoints`, the standard safe GET paths remain enabled alongside explicit
+`--endpoint` values. The option changes endpoint selection only; GET-only, loopback, redirect,
+response-size, timeout, and validation bounds still apply.
 
 Hooks use `NAME=COMMAND` syntax and are split as argv, not evaluated by a shell. Available
 placeholders are `{bundle}`, `{run_id}`, and, for PNG hooks, `{output}`. The hook executable is an
@@ -162,3 +179,15 @@ record so final validation stays deterministic.
   partial dashboard.
 - The collector does not authorize code scope or mutate an endpoint. Plan/task policy remains the
   source of allowed paths and verification intent.
+
+## Integrated smoke checkpoint
+
+The final integration fixture returned `200` from loopback health, readiness, status, run detail,
+events, tasks, gates, and metrics. Event pagination advanced through opaque cursor positions `0`,
+`40`, and `123`, and bounded run-filtered SSE replay completed.
+
+The evidence wrapper then used `--no-default-endpoints` to make those eight selected paths the
+complete endpoint contract. All eight requests and the explicit CLI smoke passed; strict
+validation found no errors, warnings, or secret hits; and `feedback` plus `score` both reported
+green. This proves the collector and seeded loopback fixture, not a representative provider run,
+browser screenshot, paid benchmark matrix, or full-CI release lane.

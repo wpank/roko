@@ -2,9 +2,12 @@
 
 Status through the post-integration cache, offline-index, and benchmark-tooling commits listed in
 [11-implementation-status.md](11-implementation-status.md): Stage 0, Stage 1, and most source work
-in Stages 2–3 are implemented as an opt-in FAST lane. Unchecked items are intentionally deferred or
-require final runtime/benchmark evidence; source completion must not be inferred to mean the
-rebased tree has passed its final batch.
+in Stages 2–3 are implemented as an opt-in FAST lane. The lean/explicit-feature build graphs,
+current CLI build, complete CLI library harness, strict no-dependency clippy checkpoint, and
+loopback run API/strict evidence, and disposable cache/index/history fixtures are verified.
+Unchecked items require the final incremental lint/rebase, dedicated runtime fixtures, real
+benchmark samples, or the release/full-CI lane; source completion must not be inferred to mean
+those are green.
 
 ## Stage 0: reversible experiment
 

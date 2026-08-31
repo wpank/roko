@@ -82,9 +82,9 @@ impl PlanTemplateKind {
     #[must_use]
     pub(crate) const fn max_task_count(self) -> usize {
         match self {
-            Self::Default => 20,
-            Self::Compact => 12,
-            Self::Strict => 8,
+            Self::Default => 8,
+            Self::Compact => 4,
+            Self::Strict => 12,
         }
     }
 }
@@ -104,7 +104,7 @@ pub(crate) fn render_plan_template_guidance(template: PlanTemplateKind) -> Strin
     let _ = writeln!(out, "- max task count: {}", template.max_task_count());
     let _ = writeln!(
         out,
-        "- Keep the plan within this budget unless the PRD explicitly requires more tasks."
+        "- This is a ceiling, not a target. Prefer the fewest cohesive tasks that preserve safe ownership."
     );
     out
 }
@@ -205,9 +205,9 @@ You are a task decomposition engine for software projects. Your job is to take a
 
 ## Core principles
 
-1. **Surgical scope**: Each task touches 1-2 files, changes ≤50 lines. If a change requires more, split it.
+1. **Cohesive scope**: One observable outcome that shares context, files, and verification belongs in one task. Select the correct tier (up to its LOC budget); do not split types, wiring, tests, and docs into separate serial microtasks merely to stay under 50 lines. Split only at a genuine ownership, dependency, security, or independently-verifiable boundary.
 2. **Precise context**: For each task, specify EXACTLY which files and line ranges to read. Not "read the crate" — "read lines 40-80 of src/lib.rs".
-3. **Executable verification**: Every acceptance criterion is a shell command that exits 0 on success, 1 on failure. No subjective criteria.
+3. **Single-owner executable verification**: Give each task exactly one focused command that proves its observable outcome. Combine structural assertions into that command when necessary. Do not repeat equivalent compile/test/clippy commands across tasks; the runner and release lane own broader validation.
 4. **Dependency ordering**: Types before implementations. Implementations before wiring. Wiring before tests.
 5. **Model hints**: NEVER set `model_hint`. The runtime selects the right model based on the task `tier`. Hardcoded model names break across providers.
 
@@ -260,19 +260,9 @@ anti_patterns = [
     "Do NOT create new files. Modify crates/roko-core/src/types.rs only.",
 ]
 
-# EXECUTABLE VERIFICATION
-[[task.verify]]
-phase = "structural"
-command = "grep -q 'pub struct FundingRate' crates/roko-core/src/types.rs"
-fail_msg = "FundingRate struct not found"
-
 [[task.verify]]
 phase = "compile"
 command = "cargo check -p roko-core"
-
-[[task.verify]]
-phase = "test"
-command = "cargo test -p roko-core"
 
 [[task]]
 id = "T2"
@@ -302,15 +292,8 @@ anti_patterns = [
 ]
 
 [[task.verify]]
-phase = "structural"
-command = "grep -q 'FundingRate' crates/roko-cli/src/commands/status.rs"
-fail_msg = "FundingRate not referenced in status command"
-[[task.verify]]
 phase = "compile"
 command = "cargo check -p roko-cli"
-[[task.verify]]
-phase = "test"
-command = "cargo test -p roko-cli"
 ```
 
 ## Role selection
@@ -370,7 +353,7 @@ Detect the project language and use the right commands:
 
 ## Verify steps by role
 
-- **implementer/architect**: MUST have at least 1 structural check + 1 compile check (e.g. `cargo check`)
+- **implementer/architect**: MUST have exactly one focused verify step. Use a target-aware compile for ordinary Rust edits, an exact test for behavioral logic, or one shell command that combines a structural assertion with the selected check.
 - **researcher/strategist**: MUST have only structural checks (e.g. `test -f path/to/output.md`, `grep -q ...`). Do NOT add compile/test verify steps — researcher tasks do not modify code.
 - **scribe/quick-reviewer**: structural checks only (verify docs exist, verify reviewed files haven't changed)
 
@@ -380,7 +363,7 @@ Before finalizing, verify your tasks against:
 - [ ] `meta.plan` matches the PRD slug exactly (e.g. slug "add-funding-rate" → `plan = "add-funding-rate"`)
 - [ ] `meta.max_parallel` is 1 unless tasks are truly independent (shared files = not independent)
 - [ ] Every task has ≤ max_loc lines of change for its tier
-- [ ] Implementer/architect tasks have at least 1 structural + 1 compile verify step
+- [ ] Every task has exactly one focused verify step and no semantic duplicate exists elsewhere in the plan
 - [ ] Researcher/strategist tasks have ONLY structural verify steps (no cargo check, no cargo test)
 - [ ] No task requires reading more than 3 files
 - [ ] Anti-patterns are specific (not generic "be careful")
@@ -398,6 +381,10 @@ Before finalizing, verify your tasks against:
 7. Researcher tasks that only READ files should still list specific file paths they will inspect.
 
 ## Complete Example (end-to-end)
+
+The example below uses multiple tasks only to illustrate dependency syntax. For a normal endpoint
+change where one implementer can safely own the response type, route, and exact test, emit one
+integrative task instead. Cohesion and one verification owner override mechanical file-count splits.
 
 A realistic 3-task plan for "Add health check endpoint to roko-serve":
 
@@ -430,11 +417,6 @@ symbols = ["AppState — shared state struct to reference for db_connected"]
 anti_patterns = ["Do NOT add new dependencies. Use only std and existing crate types."]
 
 [[task.verify]]
-phase = "structural"
-command = "grep -q 'pub struct HealthStatus' crates/roko-serve/src/types.rs"
-fail_msg = "HealthStatus struct not found"
-
-[[task.verify]]
 phase = "compile"
 command = "cargo check -p roko-serve"
 
@@ -460,17 +442,8 @@ symbols = ["router() — function where routes are registered"]
 anti_patterns = ["Do NOT modify types.rs. Only add the handler and route registration."]
 
 [[task.verify]]
-phase = "structural"
-command = "grep -q 'health' crates/roko-serve/src/routes/mod.rs"
-fail_msg = "Health route not registered"
-
-[[task.verify]]
 phase = "compile"
 command = "cargo check -p roko-serve"
-
-[[task.verify]]
-phase = "test"
-command = "cargo test -p roko-serve"
 
 [[task]]
 id = "T3"
@@ -564,7 +537,7 @@ mod template_tests {
         assert_eq!(template.label(), "default");
         assert_eq!(template.default_model_tier(), "focused");
         assert_eq!(template.gate_strictness(), "standard");
-        assert_eq!(template.max_task_count(), 20);
+        assert_eq!(template.max_task_count(), 8);
     }
 
     #[test]
@@ -573,7 +546,7 @@ mod template_tests {
         assert_eq!(template.label(), "strict");
         assert_eq!(template.default_model_tier(), "integrative");
         assert_eq!(template.gate_strictness(), "strict");
-        assert_eq!(template.max_task_count(), 8);
+        assert_eq!(template.max_task_count(), 12);
     }
 
     #[test]
@@ -582,7 +555,7 @@ mod template_tests {
         assert!(guidance.contains("name: compact"));
         assert!(guidance.contains("default model tier: mechanical"));
         assert!(guidance.contains("gate strictness: standard"));
-        assert!(guidance.contains("max task count: 12"));
+        assert!(guidance.contains("max task count: 4"));
     }
 }
 
@@ -606,7 +579,7 @@ pub fn build_regeneration_prompt(workdir: &Path, existing_tasks_toml: &str) -> S
          - `max_loc` (estimated lines of change)\n\
          - `allowed_tools`, `denied_tools`, and `mcp_servers` (per-task tool/MCP constraints)\n\
          - `[task.context]` with read_files, symbols, anti_patterns\n\
-         - `[[task.verify]]` with at least compile + test checks\n\
+         - exactly one focused `[[task.verify]]` command per task\n\
          Do NOT set `model_hint` — the runtime selects models automatically from the task tier.\n\n\
          ## Existing tasks.toml:\n\n```toml\n{existing_tasks_toml}\n```"
     );

@@ -6,6 +6,8 @@
 //!
 //! If the endpoint is unreachable the tests will fail, not silently skip.
 
+#![cfg(feature = "alloy-backend")]
+
 use std::sync::Arc;
 
 use serde_json::json;

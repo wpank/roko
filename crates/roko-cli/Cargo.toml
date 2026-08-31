@@ -11,6 +11,18 @@ default-run = "roko"
 [lints]
 workspace = true
 
+[features]
+default = ["chain"]
+# Backend-neutral chain tools remain cheap and are available in the shipping
+# CLI. Real RPC/provider support is an explicit build choice.
+chain = ["roko-serve/chain"]
+acp = ["dep:roko-acp"]
+alloy-backend = [
+    "chain",
+    "roko-chain/alloy-backend",
+    "roko-serve/alloy-backend",
+]
+
 [[bin]]
 name = "roko"
 path = "src/main.rs"
@@ -18,6 +30,11 @@ path = "src/main.rs"
 [[bin]]
 name = "layer_check"
 path = "../../scripts/layer_check.rs"
+
+[[test]]
+name = "chain_integration"
+path = "tests/chain_integration.rs"
+required-features = ["alloy-backend"]
 
 [dependencies]
 roko-core = { path = "../roko-core" }
@@ -37,8 +54,8 @@ roko-runtime = { path = "../roko-runtime" }
 roko-serve = { path = "../roko-serve" }
 roko-index = { path = "../roko-index" }
 roko-graph = { path = "../roko-graph" }
-roko-chain = { path = "../roko-chain", features = ["alloy-backend"] }
-roko-acp = { path = "../roko-acp" }
+roko-chain = { path = "../roko-chain" }
+roko-acp = { path = "../roko-acp", optional = true }
 roko-mcp-github = { path = "../roko-mcp-github" }
 
 clap = { workspace = true, features = ["derive"] }

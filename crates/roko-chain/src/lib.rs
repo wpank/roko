@@ -48,6 +48,8 @@ pub mod agent_registry;
 pub mod alloy_impl;
 /// Arena definitions, lifecycle registry, leaderboards, and prize escrow.
 pub mod arena;
+/// Backend-independent chain observation records and bounded live state.
+pub mod chain_state;
 /// Poll-based block watcher for streaming chain data via event bus.
 #[cfg(feature = "alloy-backend")]
 pub mod block_watcher;

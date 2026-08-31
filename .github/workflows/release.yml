@@ -75,7 +75,7 @@ jobs:
       - name: Build release binary
         run: |
           cargo build --release --target ${{ matrix.target }} \
-            -p roko-cli -p roko-mcp-code
+            -p roko-cli -p roko-mcp-code --features roko-cli/alloy-backend,roko-cli/acp
 
       - name: Package artifacts
         run: |

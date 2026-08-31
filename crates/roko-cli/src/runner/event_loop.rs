@@ -2927,14 +2927,24 @@ pub async fn run_with_tui_commands(
     // feedback. A degraded projection does not rewrite task truth and will be
     // retried on the next startup.
     let prompt_experiment_store = config.layout.learn_dir().join("experiments.json");
-    match super::prompt_experiments::reconcile_terminal_events(
-        &paths.events_jsonl,
-        &prompt_experiment_store,
-        state.run_id(),
-    )
-    .await
-    {
-        Ok(report) => {
+    let prompt_reconciliation = if env_flag_enabled("ROKO_FAST_MODE") {
+        info!(
+            "ROKO_FAST_MODE enabled — deferring historical prompt-experiment reconciliation"
+        );
+        None
+    } else {
+        Some(
+            super::prompt_experiments::reconcile_terminal_events(
+                &paths.events_jsonl,
+                &prompt_experiment_store,
+                state.run_id(),
+            )
+            .await,
+        )
+    };
+    match prompt_reconciliation {
+        None => {}
+        Some(Ok(report)) => {
             if report.settled_attempts > 0
                 || report.attempts_without_assignments > 0
                 || !report.conflicting_attempts.is_empty()
@@ -2956,7 +2966,7 @@ pub async fn run_with_tui_commands(
                 );
             }
         }
-        Err(error) => warn!(
+        Some(Err(error)) => warn!(
             path = %prompt_experiment_store.display(),
             %error,
             "prompt-experiment reconciliation degraded; preserving evidence for retry"
@@ -7787,7 +7797,13 @@ fn append_agent_event(paths: &PersistPaths, event: &AgentEvent, state: &RunState
         "event": agent_event_json(event),
     });
 
-    if let Err(err) = persist::append_jsonl(&paths.events_jsonl, &payload) {
+    let append = if matches!(event, AgentEvent::MessageDelta { .. } | AgentEvent::ToolOutput { .. })
+    {
+        persist::append_jsonl_relaxed(&paths.events_jsonl, &payload)
+    } else {
+        persist::append_jsonl(&paths.events_jsonl, &payload)
+    };
+    if let Err(err) = append {
         warn!(error = %err, "failed to append runner event");
     }
 }

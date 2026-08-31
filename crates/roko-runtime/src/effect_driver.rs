@@ -706,6 +706,13 @@ fn floor_char_boundary(s: &str, max: usize) -> usize {
 /// Returns 0 on any error (git not available, not a repo, etc.) -- this is a best-effort
 /// enrichment, not a gate.
 async fn count_changed_files(workdir: &std::path::Path) -> u32 {
+    // Avoid paying for a subprocess in non-repository effects. A worktree's
+    // `.git` may be either a directory or a gitfile, so existence is the
+    // correct inexpensive predicate here.
+    if !workdir.join(".git").exists() {
+        return 0;
+    }
+
     let result = tokio::process::Command::new("git")
         .args(["diff", "--name-only", "HEAD"])
         .current_dir(workdir)

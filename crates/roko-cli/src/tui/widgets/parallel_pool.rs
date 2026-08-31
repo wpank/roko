@@ -67,19 +67,15 @@ pub(crate) fn render_parallel_pool(
                 "-".to_string()
             };
             let status = agent.status;
-            let ctx_limit = agent.context_limit.max(1);
-            let ctx_ratio = (agent.input_tokens as f64 / ctx_limit as f64).clamp(0.0, 1.0);
-
             Row::new(vec![
                 Cell::from(truncate(&agent.id, 12)),
                 Cell::from(truncate(&agent.role, 10)),
                 Cell::from(truncate(&agent.model, 12)),
                 Cell::from(truncate(&current_task, 18)),
                 Cell::from(render_status_label(status, theme)),
-                Cell::from(render_context_gauge(
+                Cell::from(render_cumulative_usage(
                     agent.input_tokens,
-                    ctx_limit,
-                    ctx_ratio,
+                    agent.output_tokens,
                     theme,
                 )),
             ])
@@ -105,7 +101,7 @@ pub(crate) fn render_parallel_pool(
             Cell::from("model"),
             Cell::from("task"),
             Cell::from("progress"),
-            Cell::from("context"),
+            Cell::from("cumulative usage"),
         ])
         .style(
             Style::default()
@@ -134,32 +130,21 @@ fn render_status_label(status: AgentStatus, theme: &Theme) -> Line<'static> {
     )])
 }
 
-fn render_context_gauge(
+fn render_cumulative_usage(
     input_tokens: u64,
-    context_limit: u64,
-    ctx_ratio: f64,
+    output_tokens: u64,
     theme: &Theme,
 ) -> Line<'static> {
-    let gauge_width = 6usize;
-    let filled = (ctx_ratio * gauge_width as f64).round() as usize;
-    let empty = gauge_width.saturating_sub(filled);
-    let fill_color = if ctx_ratio >= 0.8 {
-        theme.danger
-    } else if ctx_ratio >= 0.5 {
-        theme.warning
-    } else {
-        theme.accent
-    };
-
-    let label = format!("{}k/{}k", input_tokens / 1000, context_limit.max(1) / 1000);
-
     Line::from(vec![
+        Span::styled("in ", Style::default().fg(theme.muted)),
         Span::styled(
-            "\u{2588}".repeat(filled),
-            Style::default().fg(fill_color).add_modifier(Modifier::BOLD),
+            format!("{}k", input_tokens / 1000),
+            Style::default().fg(theme.foreground),
         ),
-        Span::styled("\u{2500}".repeat(empty), Style::default().fg(theme.muted)),
-        Span::styled(" ", Style::default()),
-        Span::styled(label, Style::default().fg(theme.foreground)),
+        Span::styled(" out ", Style::default().fg(theme.muted)),
+        Span::styled(
+            format!("{}k", output_tokens / 1000),
+            Style::default().fg(theme.foreground),
+        ),
     ])
 }

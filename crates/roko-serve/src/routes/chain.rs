@@ -47,7 +47,7 @@ pub fn routes() -> Router<Arc<AppState>> {
 /// `GET /api/chain/agents` — read on-chain agent count and liveness info.
 async fn chain_agents(State(state): State<Arc<AppState>>) -> Result<Json<Value>, ApiError> {
     let client = state
-        .chain_client
+        .alloy_chain_client
         .as_ref()
         .ok_or_else(|| ApiError::bad_request("chain client not configured"))?;
 
@@ -79,7 +79,7 @@ async fn chain_agents(State(state): State<Arc<AppState>>) -> Result<Json<Value>,
 /// `GET /api/chain/bounties` — read on-chain bounty/job info.
 async fn chain_bounties(State(state): State<Arc<AppState>>) -> Result<Json<Value>, ApiError> {
     let client = state
-        .chain_client
+        .alloy_chain_client
         .as_ref()
         .ok_or_else(|| ApiError::bad_request("chain client not configured"))?;
 
@@ -127,7 +127,7 @@ async fn chain_bounties(State(state): State<Arc<AppState>>) -> Result<Json<Value
 /// `GET /api/chain/status` — basic chain connectivity check.
 async fn chain_status(State(state): State<Arc<AppState>>) -> Result<Json<Value>, ApiError> {
     let client = state
-        .chain_client
+        .alloy_chain_client
         .as_ref()
         .ok_or_else(|| ApiError::bad_request("chain client not configured"))?;
 

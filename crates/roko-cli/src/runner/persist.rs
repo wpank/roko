@@ -440,6 +440,18 @@ pub fn append_jsonl(path: &Path, value: &impl Serialize) -> Result<()> {
     Ok(())
 }
 
+/// Append replayable high-frequency JSONL without an fsync per record.
+/// Durable lifecycle/usage/terminal events must continue to use
+/// [`append_jsonl`].
+pub fn append_jsonl_relaxed(path: &Path, value: &impl Serialize) -> Result<()> {
+    let mut line = serde_json::to_string(value).context("serializing JSONL value")?;
+    line.push('\n');
+    let max_mb = roko_core::config::ResourcesConfig::default().log_rotation_max_mb;
+    roko_fs::log_rotation::append_jsonl_line_relaxed_sync(path, line.as_bytes(), max_mb)
+        .with_context(|| format!("appending relaxed record to {}", path.display()))?;
+    Ok(())
+}
+
 /// Append a normalized runner lifecycle event to the durable JSONL log.
 pub fn append_runner_event(paths: &PersistPaths, event: &RunnerEvent) -> Result<()> {
     append_jsonl(&paths.events_jsonl, event)

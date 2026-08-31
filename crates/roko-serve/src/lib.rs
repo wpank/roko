@@ -2433,12 +2433,13 @@ async fn run_cold_archival_tick(
 /// Polls the chain for new blocks, transactions, and contract events, then
 /// publishes them to the event bus and updates `state.chain` ring buffers.
 /// Returns a no-op handle if no chain client is configured.
+#[cfg(feature = "alloy-backend")]
 fn start_block_watcher(state: Arc<AppState>) -> JoinHandle<()> {
     use roko_chain::block_watcher::BlockWatcher;
     use std::sync::atomic::Ordering;
     use std::time::Duration;
 
-    let Some(client) = state.chain_client.as_ref() else {
+    let Some(client) = state.alloy_chain_client.as_ref() else {
         return tokio::spawn(async {});
     };
 
@@ -2497,8 +2498,13 @@ fn start_block_watcher(state: Arc<AppState>) -> JoinHandle<()> {
     })
 }
 
+#[cfg(not(feature = "alloy-backend"))]
+fn start_block_watcher(_state: Arc<AppState>) -> JoinHandle<()> {
+    tokio::spawn(async {})
+}
+
 fn publish_chain_watcher_payload(state: &Arc<AppState>, topic: &str, payload: serde_json::Value) {
-    use roko_chain::block_watcher::{
+    use roko_chain::chain_state::{
         BlockInfo, ChainReorgInfo, ContractEventInfo, RawLogInfo, TxInfo,
     };
     match topic {

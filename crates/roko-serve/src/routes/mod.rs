@@ -9,6 +9,10 @@ mod aggregator;
 pub(crate) mod arenas;
 pub(crate) mod auth;
 mod bench;
+#[cfg(feature = "alloy-backend")]
+mod chain;
+#[cfg(not(feature = "alloy-backend"))]
+#[path = "chain_disabled.rs"]
 mod chain;
 pub(crate) mod config;
 mod connectors;

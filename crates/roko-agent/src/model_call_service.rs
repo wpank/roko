@@ -82,7 +82,7 @@ pub struct ModelCallService {
     /// Default model to use when request doesn't specify one.
     default_model: String,
     /// Provider/model configuration used by `create_agent_for_model`.
-    config: RokoConfig,
+    config: Arc<RokoConfig>,
     /// Optional pricing table for calculating cost from raw token usage.
     cost_table: CostTable,
     /// Optional event consumers for runtime observability.
@@ -158,7 +158,7 @@ impl ModelCallService {
     pub fn new(default_model: String) -> Self {
         Self {
             default_model,
-            config: RokoConfig::default(),
+            config: Arc::new(RokoConfig::default()),
             cost_table: CostTable::default(),
             event_consumers: Vec::new(),
             inference_observer: None,
@@ -189,7 +189,7 @@ impl ModelCallService {
     #[must_use]
     pub fn with_config(mut self, config: RokoConfig) -> Self {
         self.fallback_models = configured_fallback_models(&config, &self.default_model);
-        self.config = config;
+        self.config = Arc::new(config);
         self
     }
 
@@ -468,8 +468,8 @@ impl ModelCallService {
         }
     }
 
-    fn config_for_model(&self, _model: &str) -> RokoConfig {
-        self.config.clone()
+    fn config_for_model(&self, _model: &str) -> Arc<RokoConfig> {
+        Arc::clone(&self.config)
     }
 
     fn build_agent_options(
@@ -1801,7 +1801,7 @@ fn similarity(a: &str, b: &str) -> f64 {
 
 /// Encapsulates a single provider execution attempt with fallback support.
 struct ProviderCallCell {
-    config: RokoConfig,
+    config: Arc<RokoConfig>,
     cost_table: CostTable,
     /// Optional shared rate limiter acquired before every live LLM request.
     rate_limiter: Option<Arc<ProviderRateLimiter>>,
@@ -1816,7 +1816,7 @@ struct ProviderCallCell {
 
 impl ProviderCallCell {
     fn new(
-        config: RokoConfig,
+        config: Arc<RokoConfig>,
         cost_table: CostTable,
         rate_limiter: Option<Arc<ProviderRateLimiter>>,
         provider_outcome_recorder: Option<Arc<dyn ProviderOutcomeRecorder>>,

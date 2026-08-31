@@ -84,6 +84,37 @@ pub fn append_jsonl_line_sync(
     Ok(rotation)
 }
 
+/// Append a non-milestone JSONL record without forcing an immediate disk
+/// synchronization.
+///
+/// The advisory lock and rotation boundary are identical to
+/// [`append_jsonl_line_sync`], so records cannot cross generations. The bytes
+/// are written to the kernel before the file closes, but a sudden power loss
+/// may drop the most recent relaxed records. Use this only for replayable,
+/// high-frequency output deltas; lifecycle, usage, gate, and terminal records
+/// must use the durable function above.
+pub fn append_jsonl_line_relaxed_sync(
+    path: &Path,
+    line: &[u8],
+    max_mb: u64,
+) -> std::io::Result<Option<RotationResult>> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let _lock = lock_jsonl(path)?;
+    let rotation = rotate_if_needed_unlocked(path, max_mb)?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    file.write_all(line)?;
+    if !line.ends_with(b"\n") {
+        file.write_all(b"\n")?;
+    }
+    Ok(rotation)
+}
+
 /// Atomically retain only the newest `max_lines` complete records in a live
 /// JSONL file while holding the canonical append/rotation lock.
 ///

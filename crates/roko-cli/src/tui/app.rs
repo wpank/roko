@@ -142,8 +142,9 @@ pub struct App {
     agent_stream_server_url: String,
     /// Optional bearer token for authenticated websocket handshakes.
     agent_stream_auth_token: Option<String>,
-    /// Last user input time for adaptive frame rate.
-    last_input: Instant,
+    /// Configured redraw/poll cadence. Connected sessions no longer force a
+    /// hard-coded 60/20 FPS loop while idle.
+    refresh_rate: Duration,
     /// Last known terminal size used for hit-testing.
     terminal_size: (u16, u16),
     /// Flag set by sync methods to request an async refresh on next loop
@@ -510,6 +511,26 @@ fn tui_log_dispatch(workdir: &Path) -> Result<tracing::Dispatch> {
     Ok(tracing::Dispatch::new(subscriber))
 }
 
+fn configured_tui_refresh_rate(workdir: &Path) -> Duration {
+    const DEFAULT_MS: u64 = 250;
+    const MIN_MS: u64 = 50;
+    const MAX_MS: u64 = 5_000;
+
+    let configured = std::fs::read_to_string(workdir.join("roko.toml"))
+        .ok()
+        .and_then(|contents| contents.parse::<toml::Value>().ok())
+        .and_then(|value| {
+            value
+                .get("tui")
+                .and_then(|tui| tui.get("refresh_rate_ms"))
+                .and_then(toml::Value::as_integer)
+        })
+        .and_then(|value| u64::try_from(value).ok())
+        .unwrap_or(DEFAULT_MS)
+        .clamp(MIN_MS, MAX_MS);
+    Duration::from_millis(configured)
+}
+
 /// Run the interactive dashboard event loop (async variant).
 pub async fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> Result<()> {
     // Populate verdicts aggregator on first async entry.
@@ -518,7 +539,7 @@ pub async fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut Ap
 
     loop {
         terminal.draw(|f| app.draw(f))?;
-        if crossterm::event::poll(Duration::from_millis(250))? {
+        if crossterm::event::poll(app.refresh_rate)? {
             match crossterm::event::read()? {
                 crossterm::event::Event::Key(key) => app.handle_key(key),
                 crossterm::event::Event::Mouse(mouse) => app.handle_mouse(mouse),
@@ -578,6 +599,7 @@ impl App {
         replay_disk_snapshots: bool,
     ) -> Self {
         let workdir = root.as_ref().to_path_buf();
+        let refresh_rate = configured_tui_refresh_rate(&workdir);
         let terminal_size = size().unwrap_or((80, 24));
         let mut scaffold = DashboardScaffold::new_in(&workdir);
         if let Some(page) = initial_page {
@@ -634,7 +656,7 @@ impl App {
             agent_stream_clients: HashMap::new(),
             agent_stream_server_url: resolve_agent_stream_server_url(),
             agent_stream_auth_token: resolve_agent_stream_auth_token(),
-            last_input: Instant::now(),
+            refresh_rate,
             terminal_size,
             pending_refresh: false,
             last_snapshot_hash: None,
@@ -823,7 +845,7 @@ impl App {
     }
 
     fn main_loop(&mut self, terminal: &mut TuiTerminal) -> Result<()> {
-        let mut events = EventHandler::new(Duration::from_millis(16)); // ~60fps
+        let mut events = EventHandler::new(self.refresh_rate);
         let log_dispatch = tracing::dispatcher::get_default(|dispatch| dispatch.clone());
 
         // ---------------------------------------------------------------
@@ -851,7 +873,9 @@ impl App {
         // ---------------------------------------------------------------
         // Start debounced `.roko/` watcher with polling fallback
         // ---------------------------------------------------------------
-        self.fs_watch = Some(fs_watch::watch_roko_dir_with_fallback(&self.workdir));
+        if self._state_hub.is_none() || self.replay_disk_snapshots {
+            self.fs_watch = Some(fs_watch::watch_roko_dir_with_fallback(&self.workdir));
+        }
 
         // ---------------------------------------------------------------
         // Prime git data once via background thread, then refresh only
@@ -886,6 +910,7 @@ impl App {
         terminal
             .draw(|frame| self.draw(frame))
             .context("initial TUI draw")?;
+        let mut last_draw = Instant::now();
 
         // ---------------------------------------------------------------
         // Event loop
@@ -896,10 +921,22 @@ impl App {
                 break;
             }
 
+            let snapshot_changed = self
+                .snapshot_rx
+                .as_ref()
+                .is_some_and(|rx| rx.has_changed().unwrap_or(false));
+            let sys_changed = self
+                .sys_rx
+                .as_ref()
+                .is_some_and(|rx| rx.has_changed().unwrap_or(false));
+            let approval_pending = self
+                .approval_rx
+                .as_ref()
+                .is_some_and(|rx| !rx.is_empty());
             self.drain_snapshot_channel();
+            let mut redraw = snapshot_changed || sys_changed || approval_pending;
             match events.next().context("poll TUI event")? {
                 Event::Key(key) => {
-                    self.last_input = Instant::now();
                     self.handle_key(key);
                     // Handle deferred refresh requests from dispatch_action.
                     if self.pending_refresh {
@@ -912,17 +949,26 @@ impl App {
                     terminal
                         .draw(|frame| self.draw(frame))
                         .context("TUI redraw after key")?;
+                    last_draw = Instant::now();
                     continue;
                 }
                 Event::Mouse(mouse) => {
-                    self.last_input = Instant::now();
                     self.handle_mouse(mouse);
+                    redraw = true;
                 }
                 Event::Resize(width, height) => {
                     self.terminal_size = (width, height);
+                    redraw = true;
                 }
                 Event::Tick => {
-                    self.tui_state.atmosphere.tick();
+                    let animated = self.tui_state.agents.iter().any(|agent| agent.active)
+                        || self.tui_state.plans.iter().any(|plan| plan.active)
+                        || self.has_modal()
+                        || !self.notifications.is_empty();
+                    if animated {
+                        self.tui_state.atmosphere.tick();
+                        redraw = true;
+                    }
                     self.drain_snapshot_channel();
                     self.drain_approval_requests();
                     self.drain_background_channels();
@@ -930,28 +976,24 @@ impl App {
                     if self.pending_refresh {
                         self.pending_refresh = false;
                         self.refresh_snapshot();
+                        redraw = true;
                     }
+                    let notification_count = self.notifications.len();
                     self.expire_notifications();
+                    redraw |= notification_count != self.notifications.len();
                 }
             }
 
-            // Adaptive frame rate: slow the poll interval when idle so the
-            // process sleeps longer between ticks, saving CPU.  20 fps is
-            // still fast enough for data-driven updates while agents run.
-            let idle_tick = Duration::from_millis(50); // 20 fps
-            let active_tick = Duration::from_millis(16); // ~60 fps
-            let desired = if self.last_input.elapsed() > Duration::from_secs(5) {
-                idle_tick
-            } else {
-                active_tick
-            };
-            if events.tick_rate() != desired {
-                events.set_tick_rate(desired);
+            // A connected, terminal run can now remain open for postmortem
+            // navigation without redrawing continuously. Keep a low-frequency
+            // standalone refresh as a fallback for disk-backed dashboards.
+            redraw |= self._state_hub.is_none() && last_draw.elapsed() >= Duration::from_secs(1);
+            if redraw {
+                terminal
+                    .draw(|frame| self.draw(frame))
+                    .context("TUI redraw")?;
+                last_draw = Instant::now();
             }
-
-            terminal
-                .draw(|frame| self.draw(frame))
-                .context("TUI redraw")?;
         }
 
         Ok(())

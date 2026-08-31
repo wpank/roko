@@ -7,6 +7,7 @@ use std::process::Command;
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(roko_frontend_fallback)");
     println!("cargo:rerun-if-env-changed=SKIP_FRONTEND_BUILD");
+    println!("cargo:rerun-if-env-changed=ROKO_BUILD_FRONTEND");
     println!("cargo:rerun-if-changed=../../demo/demo-app/src");
     println!("cargo:rerun-if-changed=../../demo/demo-app/index.html");
     println!("cargo:rerun-if-changed=../../demo/demo-app/package.json");
@@ -26,9 +27,15 @@ fn main() {
         return;
     }
 
-    // Explicitly skipping Node is primarily for quick Rust-only checks in a
-    // fresh worktree, where the ignored dist/ directory does not exist yet.
-    if env::var("SKIP_FRONTEND_BUILD").is_ok() {
+    // Ordinary debug/check builds must never install packages or invoke the
+    // frontend toolchain. Production release builds retain the embedded SPA,
+    // and developers can explicitly request the same work with
+    // ROKO_BUILD_FRONTEND=1.
+    let force_build = env::var("ROKO_BUILD_FRONTEND")
+        .ok()
+        .is_some_and(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"));
+    let release_build = env::var("PROFILE").is_ok_and(|profile| profile == "release");
+    if env::var("SKIP_FRONTEND_BUILD").is_ok() || (!release_build && !force_build) {
         println!("cargo:rustc-cfg=roko_frontend_fallback");
         return;
     }
@@ -40,8 +47,21 @@ fn main() {
             .current_dir(&demo_app)
             .status();
 
-        if let Err(e) = status {
-            println!("cargo:warning=npm install failed (is Node.js installed?): {e}");
+        let installed = match status {
+            Ok(status) if status.success() => true,
+            Ok(status) => {
+                println!("cargo:warning=npm install exited with {status}; embedding fallback UI");
+                false
+            }
+            Err(error) => {
+                println!(
+                    "cargo:warning=npm install failed (is Node.js installed?): {error}; embedding fallback UI"
+                );
+                false
+            }
+        };
+        if !installed {
+            println!("cargo:rustc-cfg=roko_frontend_fallback");
             return;
         }
     }
@@ -56,9 +76,11 @@ fn main() {
         Ok(s) if s.success() => {}
         Ok(s) => {
             println!("cargo:warning=npm run build exited with {s}");
+            println!("cargo:rustc-cfg=roko_frontend_fallback");
         }
         Err(e) => {
             println!("cargo:warning=npm run build failed: {e}");
+            println!("cargo:rustc-cfg=roko_frontend_fallback");
         }
     }
 }

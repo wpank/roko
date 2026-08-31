@@ -2667,6 +2667,17 @@ async fn record_cascade_router_outcome_with_layout(
     let path = repo_layout
         .map(RokoLayout::cascade_router_path)
         .unwrap_or_else(|| RokoLayout::for_project(&state.workdir).cascade_router_path());
+    if path == state.layout.cascade_router_path() {
+        let router_guard = state.cascade_router.read().await;
+        if let Some(router) = router_guard.as_ref() {
+            if router.record_confidence_outcome(&template.model, success) {
+                router
+                    .save(&path)
+                    .with_context(|| format!("save {}", path.display()))?;
+            }
+            return Ok(());
+        }
+    }
     record_cascade_router_observation_at(&path, model_slugs, &template.model, success)?;
     Ok(())
 }

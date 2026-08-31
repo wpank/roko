@@ -280,3 +280,16 @@ split-debuginfo = "unpacked"
 
 [profile.dev.package."*"]
 opt-level = 2
+
+# Opt-in profile for latency-sensitive local checks. It deliberately favors
+# compiler throughput and small artifacts over debugger fidelity; release and
+# ordinary `dev` behavior remain unchanged until benchmark evidence justifies
+# making this the default.
+[profile.dev-fast]
+inherits = "dev"
+debug = 0
+opt-level = 0
+split-debuginfo = "off"
+
+[profile.dev-fast.package."*"]
+opt-level = 0

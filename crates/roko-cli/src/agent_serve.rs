@@ -353,6 +353,7 @@ impl AgentServeRuntimeConfig {
                             "relay config captured for later hook-up"
                         );
                     }
+                    #[cfg(feature = "alloy-backend")]
                     if let Some(chain) = &startup.chain
                         && let Some(url) = &chain.rpc_url
                     {
@@ -370,6 +371,19 @@ impl AgentServeRuntimeConfig {
                                 warn!(error = %e, "chain rpc_url set but client failed");
                             }
                         }
+                    }
+                    #[cfg(not(feature = "alloy-backend"))]
+                    if startup
+                        .chain
+                        .as_ref()
+                        .and_then(|chain| chain.rpc_url.as_ref())
+                        .is_some()
+                    {
+                        warn!(
+                            agent_id = %startup.agent_id,
+                            "chain RPC requested, but this roko build omits `alloy-backend`; \
+                             rebuild with `--features alloy-backend`"
+                        );
                     }
                     Ok(())
                 }

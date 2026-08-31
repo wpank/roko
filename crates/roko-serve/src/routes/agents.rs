@@ -21,9 +21,12 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use validator::Validate;
 
+#[cfg(feature = "alloy-backend")]
 use alloy::primitives::{Address, FixedBytes};
+#[cfg(feature = "alloy-backend")]
 use alloy::sol;
 
+#[cfg(feature = "alloy-backend")]
 use roko_chain::alloy_impl::AlloyChainWallet;
 use roko_core::HeartbeatPayload;
 use roko_core::config::schema::{ModelProfile, RokoConfig};
@@ -513,6 +516,7 @@ async fn register_agent(
         .await;
 
     // Dual-write: non-blocking on-chain registration when chain wallet is configured.
+    #[cfg(feature = "alloy-backend")]
     if let Some(wallet) = state.chain_wallet.as_ref() {
         let wallet = Arc::clone(wallet);
         let config = state.load_roko_config();
@@ -542,6 +546,7 @@ async fn register_agent(
 }
 
 // Minimal sol! binding for on-chain agent registration.
+#[cfg(feature = "alloy-backend")]
 sol! {
     #[sol(rpc)]
     contract OnChainAgentRegistry {
@@ -550,6 +555,7 @@ sol! {
 }
 
 /// Non-blocking on-chain agent registration via alloy.
+#[cfg(feature = "alloy-backend")]
 async fn chain_register_agent(
     wallet: &AlloyChainWallet,
     registry_addr: &str,
@@ -705,6 +711,7 @@ async fn create_agent(
         .await;
 
     // Dual-write: non-blocking on-chain registration when chain wallet is configured.
+    #[cfg(feature = "alloy-backend")]
     if let Some(wallet) = state.chain_wallet.as_ref() {
         let wallet = Arc::clone(wallet);
         let config = state.load_roko_config();

@@ -2514,6 +2514,7 @@ fn main() {
     // ACP mode uses stdio for JSON-RPC, so we MUST NOT install any
     // tracing subscriber that writes to stdout.  Fork into its own
     // Tokio runtime here, before the CLI subscriber is initialised.
+    #[cfg(feature = "acp")]
     if let Some(Command::Acp {
         ref workdir,
         ref profile,
@@ -2549,6 +2550,13 @@ fn main() {
             }
         });
         std::process::exit(code);
+    }
+    #[cfg(not(feature = "acp"))]
+    if matches!(cli.command, Some(Command::Acp { .. })) {
+        eprintln!(
+            "error: ACP support is not included in this build; rebuild roko with `--features acp`"
+        );
+        std::process::exit(EXIT_FAILURE);
     }
 
     // ── TUI mode detection ─────────────────────────────────────────
@@ -3128,6 +3136,8 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             global_config,
             log_file,
         } => {
+            #[cfg(feature = "acp")]
+            {
             let acp_config = roko_acp::AcpConfig {
                 workdir,
                 profile,
@@ -3137,6 +3147,14 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             };
             roko_acp::run_acp_server(acp_config).await?;
             Ok(EXIT_SUCCESS)
+            }
+            #[cfg(not(feature = "acp"))]
+            {
+                let _ = (workdir, profile, config, global_config, log_file);
+                anyhow::bail!(
+                    "ACP support is not included in this build; rebuild roko with `--features acp`"
+                )
+            }
         }
         Command::Daemon { cmd } => commands::server::cmd_daemon(cli, cmd).await,
         Command::Deploy { cmd } => commands::server::cmd_deploy(cli, cmd).await,

@@ -7798,12 +7798,22 @@ fn append_agent_event(paths: &PersistPaths, event: &AgentEvent, state: &RunState
         "event": agent_event_json(event),
     });
 
-    let append = if matches!(event, AgentEvent::MessageDelta { .. } | AgentEvent::ToolOutput { .. })
-    {
-        persist::append_jsonl_relaxed(&paths.events_jsonl, &payload)
-    } else {
-        persist::append_jsonl(&paths.events_jsonl, &payload)
-    };
+    let relaxed = matches!(event, AgentEvent::MessageDelta { .. } | AgentEvent::ToolOutput { .. });
+    let flush_index = matches!(
+        event,
+        AgentEvent::TurnCompleted { .. } | AgentEvent::Error { .. } | AgentEvent::Exited { .. }
+    );
+    let append = persist::append_run_scoped_event(
+        paths,
+        state.run_id(),
+        &payload,
+        if relaxed {
+            persist::EventDurability::Relaxed
+        } else {
+            persist::EventDurability::Durable
+        },
+        flush_index,
+    );
     if let Err(err) = append {
         warn!(error = %err, "failed to append runner event");
     }

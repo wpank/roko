@@ -3,9 +3,10 @@
 //! All writes use write-to-tmp-then-rename for crash safety.
 
 use std::collections::HashMap;
-use std::fs::{self, OpenOptions};
-use std::io::{Read, Write};
+use std::fs::{self, File, OpenOptions};
+use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use crate::orchestrator::{ExecutorSnapshot, OrchestratorSnapshot, PlanRevisionRequest};
 use anyhow::{Context, Result};
@@ -426,8 +427,7 @@ fn is_pid_alive(pid: u32) -> bool {
 
 /// Append a JSON line to a JSONL file.
 pub fn append_jsonl(path: &Path, value: &impl Serialize) -> Result<()> {
-    let mut line = serde_json::to_string(value).context("serializing JSONL value")?;
-    line.push('\n');
+    let line = serialized_jsonl(value)?;
 
     // Use the canonical E47 append/rotation boundary. This coordinates with
     // StateHub compaction and lifecycle rotation through the sibling advisory
@@ -435,7 +435,7 @@ pub fn append_jsonl(path: &Path, value: &impl Serialize) -> Result<()> {
     // config overrides are also applied by the plan lifecycle; this per-append
     // safety valve uses the one canonical ResourcesConfig default.
     let max_mb = roko_core::config::ResourcesConfig::default().log_rotation_max_mb;
-    roko_fs::log_rotation::append_jsonl_line_sync(path, line.as_bytes(), max_mb)
+    roko_fs::log_rotation::append_jsonl_line_sync(path, &line, max_mb)
         .with_context(|| format!("appending to {}", path.display()))?;
     Ok(())
 }
@@ -444,17 +444,151 @@ pub fn append_jsonl(path: &Path, value: &impl Serialize) -> Result<()> {
 /// Durable lifecycle/usage/terminal events must continue to use
 /// [`append_jsonl`].
 pub fn append_jsonl_relaxed(path: &Path, value: &impl Serialize) -> Result<()> {
-    let mut line = serde_json::to_string(value).context("serializing JSONL value")?;
-    line.push('\n');
+    let line = serialized_jsonl(value)?;
     let max_mb = roko_core::config::ResourcesConfig::default().log_rotation_max_mb;
-    roko_fs::log_rotation::append_jsonl_line_relaxed_sync(path, line.as_bytes(), max_mb)
+    roko_fs::log_rotation::append_jsonl_line_relaxed_sync(path, &line, max_mb)
         .with_context(|| format!("appending relaxed record to {}", path.display()))?;
+    Ok(())
+}
+
+fn serialized_jsonl(value: &impl Serialize) -> Result<Vec<u8>> {
+    let mut line = serde_json::to_vec(value).context("serializing JSONL value")?;
+    line.push(b'\n');
+    Ok(line)
+}
+
+/// Durability class used by the authoritative global runner event log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventDurability {
+    /// Flush and sync the global record at the canonical rotation boundary.
+    Durable,
+    /// Append without an immediate data sync for replayable output deltas.
+    Relaxed,
+}
+
+const MAX_RUN_INDEX_WRITERS: usize = 32;
+const RUN_INDEX_BUFFER_BYTES: usize = 64 * 1024;
+
+#[derive(Default)]
+struct RunIndexWriterCache {
+    writers: HashMap<PathBuf, BufWriter<File>>,
+}
+
+fn run_index_writers() -> &'static Mutex<RunIndexWriterCache> {
+    static CACHE: OnceLock<Mutex<RunIndexWriterCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(RunIndexWriterCache::default()))
+}
+
+/// Append one runner-owned event to the authoritative global log and its
+/// derived per-run read index.
+///
+/// The global append retains the caller's existing durability class. The
+/// derived append reuses a bounded 64 KiB buffered writer and is non-fatal, so
+/// streaming agent deltas do not acquire a second rotation lock/open/flush on
+/// every chunk. Callers request an index flush only at lifecycle boundaries.
+pub fn append_run_scoped_event(
+    paths: &PersistPaths,
+    run_id: &str,
+    value: &impl Serialize,
+    durability: EventDurability,
+    flush_index: bool,
+) -> Result<()> {
+    let line = serialized_jsonl(value)?;
+    let max_mb = roko_core::config::ResourcesConfig::default().log_rotation_max_mb;
+    match durability {
+        EventDurability::Durable => {
+            roko_fs::log_rotation::append_jsonl_line_sync(&paths.events_jsonl, &line, max_mb)
+                .with_context(|| format!("appending to {}", paths.events_jsonl.display()))?;
+        }
+        EventDurability::Relaxed => {
+            roko_fs::log_rotation::append_jsonl_line_relaxed_sync(
+                &paths.events_jsonl,
+                &line,
+                max_mb,
+            )
+            .with_context(|| {
+                format!(
+                    "appending relaxed record to {}",
+                    paths.events_jsonl.display()
+                )
+            })?;
+        }
+    }
+
+    if let Err(error) = append_buffered_run_index(&paths.events_jsonl, run_id, &line, flush_index) {
+        tracing::warn!(
+            %run_id,
+            %error,
+            "failed to append buffered derived per-run event index",
+        );
+    }
+    Ok(())
+}
+
+fn append_buffered_run_index(
+    global_path: &Path,
+    run_id: &str,
+    line: &[u8],
+    flush: bool,
+) -> Result<()> {
+    let run_path = roko_fs::run_index::run_index_path(global_path, run_id)
+        .map_err(anyhow::Error::msg)?;
+    let mut cache = run_index_writers()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !cache.writers.contains_key(&run_path) && cache.writers.len() >= MAX_RUN_INDEX_WRITERS {
+        for writer in cache.writers.values_mut() {
+            let _ = writer.flush();
+        }
+        cache.writers.clear();
+    }
+    if !cache.writers.contains_key(&run_path) {
+        if let Some(parent) = run_path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("creating run index directory {}", parent.display()))?;
+        }
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&run_path)
+            .with_context(|| format!("opening run index {}", run_path.display()))?;
+        cache.writers.insert(
+            run_path.clone(),
+            BufWriter::with_capacity(RUN_INDEX_BUFFER_BYTES, file),
+        );
+    }
+    if let Some(writer) = cache.writers.get_mut(&run_path) {
+        writer
+            .write_all(line)
+            .with_context(|| format!("buffering run index {}", run_path.display()))?;
+        if flush {
+            writer
+                .flush()
+                .with_context(|| format!("flushing run index {}", run_path.display()))?;
+        }
+    }
     Ok(())
 }
 
 /// Append a normalized runner lifecycle event to the durable JSONL log.
 pub fn append_runner_event(paths: &PersistPaths, event: &RunnerEvent) -> Result<()> {
-    append_jsonl(&paths.events_jsonl, event)
+    let flush_index = event.is_scheduler_milestone()
+        || matches!(
+            event,
+            RunnerEvent::RunCompleted { .. }
+                | RunnerEvent::AgentCompleted { .. }
+                | RunnerEvent::TimeoutRecorded { .. }
+                | RunnerEvent::RunPaused { .. }
+                | RunnerEvent::BatchPause { .. }
+                | RunnerEvent::PlanCancelled { .. }
+        );
+    append_run_scoped_event(
+        paths,
+        event.run_id(),
+        event,
+        EventDurability::Durable,
+        flush_index,
+    )
 }
 
 /// Save the executor snapshot atomically.

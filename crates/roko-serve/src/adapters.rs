@@ -19,6 +19,12 @@ pub struct SseEvent {
     pub kind: String,
     /// Run ID.
     pub run_id: String,
+    /// Exact next-byte cursor in the durable per-run index when the producer
+    /// persisted and flushed before publication. In-process producers that do
+    /// not own that boundary leave this absent; clients then retain their last
+    /// durable cursor and recover the event from indexed replay after flush.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<u64>,
     /// Event-specific data.
     pub data: serde_json::Value,
 }
@@ -97,6 +103,27 @@ impl SseAdapter {
 
     pub fn consume_envelope(&self, envelope: &RuntimeEventEnvelope) {
         self.consume(&envelope.payload);
+    }
+
+    /// Publish an event with an exact durable per-run byte cursor.
+    pub fn consume_with_cursor(&self, event: &RuntimeEvent, cursor: Option<u64>) {
+        self.publish(event, cursor);
+    }
+
+    fn publish(&self, event: &RuntimeEvent, cursor: Option<u64>) {
+        let mut sse_event = Self::to_sse_event(event);
+        sse_event.cursor = cursor;
+        // Non-blocking: if no subscribers exist, the event is dropped.
+        let _ = self.sender.send(sse_event);
+
+        let consumer = self
+            .state_hub_consumer
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(consumer) = consumer {
+            consumer.consume(event);
+        }
     }
 
     /// Convert a RuntimeEvent to an SseEvent.
@@ -499,6 +526,7 @@ impl SseAdapter {
         SseEvent {
             kind: kind.to_string(),
             run_id: run_id.to_string(),
+            cursor: None,
             data,
         }
     }
@@ -512,18 +540,7 @@ pub fn sse_event_consumer(adapter: &Arc<SseAdapter>) -> Arc<dyn EventConsumer> {
 
 impl EventConsumer for SseAdapter {
     fn consume(&self, event: &RuntimeEvent) {
-        let sse_event = Self::to_sse_event(event);
-        // Non-blocking: if no subscribers exist, the event is dropped.
-        let _ = self.sender.send(sse_event);
-
-        let consumer = self
-            .state_hub_consumer
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        if let Some(consumer) = consumer {
-            consumer.consume(event);
-        }
+        self.publish(event, None);
     }
 }
 

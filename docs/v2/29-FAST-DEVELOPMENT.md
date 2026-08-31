@@ -136,6 +136,12 @@ also samples fresh runner status, filters newly appended JSONL by the observed r
 the process group, calculates metrics and a score, writes a deterministic debrief, and validates the
 portable bundle. See [Evidence bundles](30-EVIDENCE-BUNDLES.md).
 
+While `roko serve` is available, new runs are also queryable without opening the global JSONL:
+`GET /api/runs/{run_id}` discovers bounded links for events, tasks/attempts, gates, scrubbed logs,
+metrics, artifacts, screenshots, and the bundle manifest. Event pagination uses the returned opaque
+byte cursor, and `/api/runs/{run_id}/events/stream` provides run-filtered SSE. These GET-only routes
+require a loopback bind or enabled API authentication and never serve arbitrary artifact content.
+
 Behavior probes stay opt-in:
 
 ```bash

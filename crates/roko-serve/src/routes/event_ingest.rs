@@ -2,6 +2,7 @@
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use axum::Router;
 use axum::extract::{ConnectInfo, State};
@@ -13,6 +14,12 @@ use roko_core::foundation::EventConsumer;
 use crate::error::ApiError;
 use crate::extract::ApiJson;
 use crate::state::AppState;
+
+// The global runtime logger already serializes its authoritative append. Keep
+// the corresponding derived-index cursor and live publication in that same
+// observable order: otherwise producer B could publish before producer A even
+// when A owns the earlier byte cursor.
+static INGEST_PERSIST_PUBLISH: Mutex<()> = Mutex::new(());
 
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -87,8 +94,19 @@ fn ensure_ingest_allowed(
 }
 
 fn consume_runtime_event(state: &AppState, event: &RuntimeEvent) {
-    state.sse_adapter.consume(event);
-    state.runtime_event_logger.consume(event);
+    // Persist (including the derived run index) before publishing live. A
+    // run-scoped SSE subscriber can then use the index byte length as a stable
+    // reconnect cursor and suppress subscribe/read race duplicates.
+    let _order = INGEST_PERSIST_PUBLISH
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let cursor = if state.sse_adapter.subscriber_count() > 0 {
+        state.runtime_event_logger.consume_with_run_cursor(event)
+    } else {
+        state.runtime_event_logger.consume(event);
+        None
+    };
+    state.sse_adapter.consume_with_cursor(event, cursor);
 }
 
 fn ip_matches(allowed: &str, remote_ip: IpAddr) -> bool {

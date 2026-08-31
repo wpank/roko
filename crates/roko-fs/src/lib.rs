@@ -39,6 +39,7 @@ pub mod file_substrate;
 pub mod gc;
 pub mod layout;
 pub mod log_rotation;
+pub mod run_index;
 pub mod metrics;
 pub mod observability;
 pub mod pointer;

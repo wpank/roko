@@ -45,6 +45,7 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         (name = "status", description = "Health, metrics, and dashboard endpoints"),
         (name = "plans", description = "Plan CRUD and execution"),
         (name = "run", description = "Single prompt execution endpoints"),
+        (name = "run-observability", description = "Bounded read-only run evidence and event indexes"),
         (name = "templates", description = "Template CRUD and deploy endpoints"),
         (name = "deployments", description = "Cloud deployment endpoints"),
         (name = "agents", description = "Agent registration and lifecycle endpoints"),
@@ -76,6 +77,17 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         generate_plan,
         start_run,
         run_status,
+        run_observability_detail,
+        run_observability_events,
+        run_observability_event_stream,
+        run_observability_tasks,
+        run_observability_attempts,
+        run_observability_gates,
+        run_observability_logs,
+        run_observability_metrics,
+        run_observability_artifacts,
+        run_observability_screenshots,
+        run_observability_bundle,
         list_templates,
         create_template,
         get_template,
@@ -315,6 +327,82 @@ doc_post_value!(generate_plan, "/plans/generate", "plans");
 
 doc_post_value!(start_run, "/run", "run");
 doc_get_param!(run_status, "/run/{id}/status", "run", "id");
+doc_get_param!(
+    run_observability_detail,
+    "/runs/{run_id}",
+    "run-observability",
+    "run_id"
+);
+doc_get_param!(
+    run_observability_events,
+    "/runs/{run_id}/events",
+    "run-observability",
+    "run_id"
+);
+doc_get_param!(
+    run_observability_event_stream,
+    "/runs/{run_id}/events/stream",
+    "run-observability",
+    "run_id"
+);
+doc_get_param!(
+    run_observability_tasks,
+    "/runs/{run_id}/tasks",
+    "run-observability",
+    "run_id"
+);
+#[utoipa::path(
+    get,
+    path = "/runs/{run_id}/tasks/{task_id}/attempts",
+    tag = "run-observability",
+    params(
+        ("run_id" = String, Path, description = "Validated run identifier"),
+        ("task_id" = String, Path, description = "Validated task identifier")
+    ),
+    responses(
+        (status = 200, description = "Bounded attempt events", body = Value),
+        (status = 400, description = "Invalid identifier", body = ApiErrorResponse),
+        (status = 403, description = "Requires loopback or authentication", body = ApiErrorResponse),
+        (status = 404, description = "Run or task not found", body = ApiErrorResponse)
+    )
+)]
+fn run_observability_attempts() {}
+doc_get_param!(
+    run_observability_gates,
+    "/runs/{run_id}/gates",
+    "run-observability",
+    "run_id"
+);
+doc_get_param!(
+    run_observability_logs,
+    "/runs/{run_id}/logs",
+    "run-observability",
+    "run_id"
+);
+doc_get_param!(
+    run_observability_metrics,
+    "/runs/{run_id}/metrics",
+    "run-observability",
+    "run_id"
+);
+doc_get_param!(
+    run_observability_artifacts,
+    "/runs/{run_id}/artifacts",
+    "run-observability",
+    "run_id"
+);
+doc_get_param!(
+    run_observability_screenshots,
+    "/runs/{run_id}/screenshots",
+    "run-observability",
+    "run_id"
+);
+doc_get_param!(
+    run_observability_bundle,
+    "/runs/{run_id}/bundle",
+    "run-observability",
+    "run_id"
+);
 
 doc_get!(list_templates, "/templates", "templates");
 doc_post_value!(create_template, "/templates", "templates");

@@ -207,6 +207,24 @@ rerun once in a bounded detached baseline worktree. Environment-dependent, non-C
 or non-reproducible failures are not waived. This prevents a broad gate name or exit code from
 hiding a genuine regression. Subsystem: gate attribution and retry policy.
 
+### Run-scoped observability and evidence queries -- IMPLEMENTED FOR NEW RUNS
+
+Runner lifecycle events and canonical workflow events now project into hashed per-run JSONL indexes
+without adding a second durable fsync to the runner hot path. The authenticated/loopback-only API
+provides bounded detail, cursor-paginated/filterable events, task attempts, gates, scrubbed logs,
+metrics, artifact and screenshot inventories, evidence-bundle manifests, and run-filtered SSE.
+Dashboard run listing and shared-run creation no longer replay the global runtime log on request.
+Run/task IDs are grammar-validated and hashed before path selection; malformed, oversized, or
+cross-run records fail safe; symlinks, traversal, arbitrary artifact downloads, and unsafe remote
+unauthenticated access are rejected. OpenAPI and the API reference enumerate the surface.
+
+The indexes are derived best-effort state: runner lifecycle and streamed agent-output records share
+a bounded buffered writer and flush at task/gate/terminal boundaries; runtime records buffer until
+the same boundaries or a selected-run read. Failures do not invalidate the global authoritative
+lifecycle terminal. Pre-index historical global records are deliberately not scanned
+or repaired by HTTP requests or server startup. An explicit bounded offline index-repair command is
+still a residual if historical runs must become queryable.
+
 ### event_loop.rs is a ~23.1K-line god object -- OPEN
 
 `crates/roko-cli/src/runner/event_loop.rs` (23,074 lines at this audit). Extraction has begun:

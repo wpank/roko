@@ -1488,6 +1488,37 @@ pub enum RunnerEvent {
 }
 
 impl RunnerEvent {
+    /// Run identifier shared by every durable runner lifecycle event.
+    pub fn run_id(&self) -> &str {
+        match self {
+            Self::ResumeMarker { run_id, .. }
+            | Self::RunStarted { run_id, .. }
+            | Self::RunCompleted { run_id, .. }
+            | Self::PlanStarted { run_id, .. }
+            | Self::PlanCompleted { run_id, .. }
+            | Self::TaskAttemptStarted { run_id, .. }
+            | Self::TaskAttemptCompleted { run_id, .. }
+            | Self::TaskAttemptCancellationRequested { run_id, .. }
+            | Self::TaskAttemptCancellationFailed { run_id, .. }
+            | Self::TimeoutRecorded { run_id, .. }
+            | Self::AgentDispatchStarted { run_id, .. }
+            | Self::AgentDispatchCompleted { run_id, .. }
+            | Self::AgentCompleted { run_id, .. }
+            | Self::GateDispatchStarted { run_id, .. }
+            | Self::GateCompleted { run_id, .. }
+            | Self::PromptAssembled { run_id, .. }
+            | Self::MergeBackendCompleted { run_id, .. }
+            | Self::RetryDecision { run_id, .. }
+            | Self::BudgetExceeded { run_id, .. }
+            | Self::RunPaused { run_id, .. }
+            | Self::RunResumed { run_id, .. }
+            | Self::BatchPause { run_id, .. }
+            | Self::BatchResume { run_id, .. }
+            | Self::PlanCancelled { run_id, .. }
+            | Self::ConductorIntervention { run_id, .. } => run_id,
+        }
+    }
+
     /// Whether durable persistence of this event proves scheduler progress.
     pub const fn is_scheduler_milestone(&self) -> bool {
         matches!(

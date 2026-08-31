@@ -1299,9 +1299,11 @@ impl DashboardSnapshot {
                     .filter(|task| task.plan_id == *plan_id)
                     .count();
                 if let Some(plan) = self.plans.get_mut(plan_id) {
-                    if plan.tasks_total == 0 {
-                        plan.tasks_total = observed_tasks;
-                    }
+                    // `PlanStarted` is authoritative when it supplied a
+                    // nonzero total. For legacy/partial streams that started
+                    // at zero, unique observed tasks provide a monotonic lower
+                    // bound without double-counting repeated starts.
+                    plan.tasks_total = plan.tasks_total.max(observed_tasks);
                 }
                 // Note: current_task / current_plan are now set directly from
                 // the structured fields in AgentSpawned, so we don't need the
@@ -3651,6 +3653,36 @@ mod tests {
         assert_eq!(snap.stats.plans_active, 0);
         assert_eq!(snap.stats.plans_completed, 1);
         assert!(!snap.plans["p1"].active);
+    }
+
+    #[test]
+    fn task_started_preserves_known_total_and_grows_unknown_total() {
+        let mut snap = DashboardSnapshot::default();
+        snap.apply(&DashboardEvent::PlanStarted {
+            plan_id: "known".into(),
+            tasks_total: 7,
+        });
+        snap.apply(&DashboardEvent::TaskStarted {
+            plan_id: "known".into(),
+            task_id: "t1".into(),
+            title: "First".into(),
+            phase: "compose".into(),
+        });
+        assert_eq!(snap.plans["known"].tasks_total, 7);
+
+        snap.apply(&DashboardEvent::PlanStarted {
+            plan_id: "unknown".into(),
+            tasks_total: 0,
+        });
+        for task_id in ["t1", "t2"] {
+            snap.apply(&DashboardEvent::TaskStarted {
+                plan_id: "unknown".into(),
+                task_id: task_id.into(),
+                title: task_id.into(),
+                phase: "compose".into(),
+            });
+        }
+        assert_eq!(snap.plans["unknown"].tasks_total, 2);
     }
 
     #[test]

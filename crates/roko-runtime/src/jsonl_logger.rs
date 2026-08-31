@@ -163,7 +163,13 @@ impl JsonlLogger {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(ref mut w) = *writer {
             w.write_all(json.as_bytes())?;
-            w.flush()?;
+            // High-frequency deltas remain buffered. Lifecycle, gate,
+            // failure, and cursor-bearing publications flush both the global
+            // authority and the derived index, so terminal truth stays
+            // observable without a syscall on every streamed token chunk.
+            if require_run_cursor || runtime_index_flush_boundary(event) {
+                w.flush()?;
+            }
         }
         drop(writer);
 

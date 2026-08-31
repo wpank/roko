@@ -1484,7 +1484,7 @@ async fn generate_plan_from_prd_with_outcome(
                 let parsed = TasksFile::parse_str(&validated).map_err(|error| {
                     format!("generated plan failed runtime parsing after repair: {error:#}")
                 })?;
-                let policy = crate::plan_policy::PlanExecutionPolicy::generated(
+                let policy = crate::plan_policy::PlanExecutionPolicy::generated_for_environment(
                     template_kind.max_task_count(),
                 );
                 let policy_issues = crate::plan_policy::validate_plan_budgets(&parsed, policy);
@@ -1787,11 +1787,14 @@ async fn generate_plan_from_prd_with_outcome(
         }
 
         let (task_count, estimated_complexity) = generated_plan_stats(&generated_changed)?;
-        if task_count > template_kind.max_task_count() {
+        let max_tasks = crate::plan_policy::effective_generated_task_limit(
+            template_kind.max_task_count(),
+        );
+        if task_count > max_tasks {
             eprintln!(
                 "⚠️  Generated {task_count} tasks, which exceeds the `{}` template budget of {}",
                 template_kind.label(),
-                template_kind.max_task_count()
+                max_tasks
             );
         }
 

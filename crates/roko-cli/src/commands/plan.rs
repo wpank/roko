@@ -1511,7 +1511,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                         }
                         match roko_cli::task_parser::TasksFile::parse(&tasks_path) {
                             Ok(tasks) => {
-                                let policy = roko_cli::plan_policy::PlanExecutionPolicy::generated(
+                                let policy = roko_cli::plan_policy::PlanExecutionPolicy::generated_for_environment(
                                     roko_cli::plan_policy::DEFAULT_GENERATED_TASK_LIMIT,
                                 );
                                 let issues = roko_cli::plan_policy::validate_plan_context(
@@ -1677,7 +1677,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
 
             let merged =
                 preserve_completed_task_status(existing_tasks.as_ref(), regenerated, &plan_dir);
-            let policy = roko_cli::plan_policy::PlanExecutionPolicy::generated(
+            let policy = roko_cli::plan_policy::PlanExecutionPolicy::generated_for_environment(
                 roko_cli::plan_policy::DEFAULT_GENERATED_TASK_LIMIT,
             );
             let policy_issues = roko_cli::plan_policy::validate_plan_context(

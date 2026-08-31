@@ -116,6 +116,15 @@ impl PlanExecutionPolicy {
         }
     }
 
+    /// Generated-plan budget aligned with the lane that will execute it.
+    /// Without this clamp a FAST generation could spend a full strategist
+    /// turn producing eight tasks that the four-task execution policy then
+    /// rejects before dispatch.
+    #[must_use]
+    pub fn generated_for_environment(max_tasks: usize) -> Self {
+        Self::generated(effective_generated_task_limit(max_tasks))
+    }
+
     /// Resolve the execution lane without exposing environment reads across
     /// the rest of prompt assembly and plan loading.
     #[must_use]
@@ -125,6 +134,16 @@ impl PlanExecutionPolicy {
         } else {
             Self::normal()
         }
+    }
+}
+
+/// Effective generator ceiling for the current execution lane.
+#[must_use]
+pub fn effective_generated_task_limit(max_tasks: usize) -> usize {
+    if env_flag_enabled("ROKO_FAST_MODE") {
+        max_tasks.min(FAST_MAX_TASKS)
+    } else {
+        max_tasks
     }
 }
 

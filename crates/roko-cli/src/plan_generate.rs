@@ -101,7 +101,8 @@ pub(crate) fn render_plan_template_guidance(template: PlanTemplateKind) -> Strin
         template.default_model_tier()
     );
     let _ = writeln!(out, "- gate strictness: {}", template.gate_strictness());
-    let _ = writeln!(out, "- max task count: {}", template.max_task_count());
+    let max_tasks = crate::plan_policy::effective_generated_task_limit(template.max_task_count());
+    let _ = writeln!(out, "- max task count: {max_tasks}");
     let _ = writeln!(
         out,
         "- This is a ceiling, not a target. Prefer the fewest cohesive tasks that preserve safe ownership."

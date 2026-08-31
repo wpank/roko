@@ -819,6 +819,10 @@ fn discover_indexed_runs(state: &AppState) -> (Vec<Value>, bool, u64) {
                 truncated = true;
                 break;
             }
+            // Reserve the whole bounded read up front. A malformed page may
+            // return no detailed byte count, but it must still consume the
+            // aggregate request budget rather than enabling another read.
+            scanned_bytes = scanned_bytes.saturating_add(page_budget);
             let Ok(page) = read_index_page(
                 &path,
                 &run_id,
@@ -831,7 +835,9 @@ fn discover_indexed_runs(state: &AppState) -> (Vec<Value>, bool, u64) {
             ) else {
                 continue;
             };
-            scanned_bytes = scanned_bytes.saturating_add(page.scanned_bytes);
+            scanned_bytes = scanned_bytes
+                .saturating_sub(page_budget)
+                .saturating_add(page.scanned_bytes);
             let aggregate = summarize_events(&page.events);
             let template = page.events.iter().find_map(|item| {
                 (event_type(&item.value) == Some("workflow_started"))

@@ -256,6 +256,53 @@ remain patch-only and the runner should own all compilation.
 
 ---
 
+## Representative Benchmark Runner
+
+The opt-in lane now has a deterministic scorecard orchestrator. It reuses the evidence bundle
+collector and existing plan fixtures; it does not edit the operator's main worktree:
+
+```bash
+# No execution, provider call, build, or cache mutation.
+python3 scripts/dev_benchmark.py list
+python3 scripts/dev_benchmark.py run --dry-run --base <commit>
+
+# Begin with a deliberately narrow paid trial.
+python3 scripts/dev_benchmark.py run \
+  --base <commit> \
+  --roko-bin /path/to/roko-built-from-that-commit \
+  --binary-base <commit> \
+  --fixture enum-config \
+  --repetitions 1 \
+  --allow-network \
+  --max-cost-usd 3
+```
+
+Every measured repetition is a detached linked worktree at the exact same resolved commit. The
+runner also refuses to guess that a primary-worktree binary matches that revision: stock lanes need
+`--roko-bin` plus a matching, recorded `--binary-base`, unless the operator deliberately marks the
+session unverified. Cold samples receive unique, initially absent benchmark-owned Cargo targets;
+after evidence finalization and process-group settlement they are safely disposed by default. Warm
+samples reuse one bounded, separately seeded target per lane. The runner never calls `cargo clean`,
+never removes a shared target, and forces Cargo offline. `--keep-targets` and `--keep-worktrees` are
+explicit diagnostic retention controls.
+
+Provider execution is locked until the operator supplies both `--allow-network` and an explicit
+worst-case cost ceiling. Run count, per-run deadline, total deadline envelope, free disk, session
+size, and individual cache size are bounded too. Execution is serial to avoid contaminating Cargo
+lock and provider latency measurements.
+
+Each private `.roko/benchmarks/<session>/` contains raw rows, every evidence bundle, admission and
+worktree decisions, `scorecard.json`, and `SCORECARD.md`. Nearest-rank p50/p95 retains failures and
+timeouts at observed duration, reports missing fields, excludes labeled warmups, and compares
+current Roko/manual references with FAST without inventing absent manual samples. See
+[`benchmarks/dev-audit/README.md`](../../benchmarks/dev-audit/README.md) for the complete contract.
+
+The automation is implemented; the representative five-cold/five-warm matrix, imported manual
+Codex/Claude samples, escaped-regression audit, and full-CI baseline are still required before FAST
+promotion.
+
+---
+
 ## When Not to Use FAST
 
 Use the normal runner plus release/CI verification when:
@@ -306,6 +353,10 @@ Completed for P0:
 - [x] Terminal dashboard/status/PID projections converge without losing unconfirmed cleanup truth.
 - [x] Cache status/pruning is size-, age-, and revision-aware, dry-run first, and protected by
   nonblocking workspace/Cargo/log leases; target pressure retains compiled dependencies.
+- [x] Fixed-SHA, worktree-isolated cold/warm benchmark automation emits raw evidence plus p50/p95
+  current-vs-FAST/manual scorecards without deleting shared caches.
+- [ ] Five cold and five warm representative samples, manual baselines, escaped regressions, and
+  full-CI comparison have been collected and approved.
 
 Verification completed for the landed P0 change:
 

@@ -150,7 +150,9 @@ record so final validation stays deterministic.
   emits provider usage, and the harness does not invent missing internal command spans.
 - Browser automation is intentionally adapter-based; install and select the browser tool that fits
   the changed UI rather than adding one heavyweight mandatory dependency.
-- The score command aggregates existing bundles. It does not automatically create cold/warm
-  benchmark fixtures or claim promotion evidence.
+- The score command aggregates arbitrary existing bundles. The separate fixed-SHA orchestrator in
+  [`benchmarks/dev-audit`](../../benchmarks/dev-audit/README.md) creates representative cold/warm
+  matrices on linked worktrees and reuses this collector; neither command claims promotion evidence
+  until the matrix, escaped regressions, and full-CI baseline have been reviewed.
 - The collector does not authorize code scope or mutate an endpoint. Plan/task policy remains the
   source of allowed paths and verification intent.

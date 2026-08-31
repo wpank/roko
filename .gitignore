@@ -92,6 +92,7 @@ CLAUDE.md
 scripts/*
 !scripts/layer_check.rs
 !scripts/run_evidence.py
+!scripts/dev_benchmark.py
 
 # Docker volumes (local dev overlays) ----------------------------------------
 docker/.env

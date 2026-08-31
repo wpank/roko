@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "lanes": [
+    {
+      "id": "current-roko",
+      "status": "one incomplete pictured-run baseline is recorded"
+    },
+    {
+      "id": "roko-fast",
+      "status": "awaiting representative scorecard runs"
+    },
+    {
+      "id": "manual-codex",
+      "status": "awaiting operator-imported samples"
+    },
+    {
+      "id": "manual-claude",
+      "status": "awaiting operator-imported samples"
+    }
+  ],
+  "rows": [
+    {
+      "lane_id": "current-roko",
+      "fixture_id": "doctor-network-v2-pictured",
+      "cache": "unknown",
+      "repetition": 1,
+      "source": "tmp/dev-audit/01-baseline-evidence.md",
+      "state": "timed_out",
+      "valid": false,
+      "metrics": {
+        "startup_ms": 44000,
+        "agent_ms": 368600,
+        "gate_ms": 107900,
+        "terminal_timeout_ms": 600000
+      },
+      "provider": {
+        "actual_launches": 2,
+        "reported_calls": 1109
+      },
+      "correctness": {
+        "completed_tasks": 1,
+        "planned_tasks": 7,
+        "terminal_projection_consistent": false
+      }
+    }
+  ]
+}

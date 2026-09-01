@@ -11,6 +11,8 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
+use roko_learn::efficiency::AgentEfficiencyEvent;
+
 use crate::tui::dashboard::Theme;
 use crate::tui::state::TuiState;
 
@@ -80,34 +82,9 @@ pub fn render_cost_by_model_table(
         return;
     }
 
-    // Aggregate efficiency events by model.
-    let mut models: BTreeMap<String, ModelCostEntry> = BTreeMap::new();
-    for event in &tui_state.efficiency_events {
-        // Only count final-turn events for task-level stats.
-        if !event.is_final_turn {
-            continue;
-        }
-        let model_key = if event.model.is_empty() {
-            "(unknown)".to_string()
-        } else {
-            event.model.clone()
-        };
-        let entry = models.entry(model_key).or_default();
-        if entry.provider.is_empty() && !event.backend.is_empty() {
-            entry.provider.clone_from(&event.backend);
-        }
-        entry.tasks += 1;
-        if event.gate_passed == Some(true) {
-            entry.passed += 1;
-        }
-        let dur = if event.wall_time_ms > 0 {
-            event.wall_time_ms
-        } else {
-            event.duration_ms
-        };
-        entry.total_duration_ms += dur;
-        entry.total_cost_usd += event.cost_usd;
-    }
+    // Aggregate efficiency events by model. `is_final_turn` is deliberately
+    // NOT used as a filter — see `aggregate_model_costs` for the dedup rules.
+    let mut models = aggregate_model_costs(&tui_state.efficiency_events);
 
     // When efficiency events are empty (live/connected mode), fall back to
     // the per-agent data in TuiState which is populated from the snapshot
@@ -308,6 +285,85 @@ pub fn render_cost_by_model_table(
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Aggregate efficiency events into per-model cost entries.
+///
+/// `is_final_turn` means "final turn of a task attempt" and is deliberately
+/// NOT used as a filter: the runner-v2 subscriber wrote every turn row with
+/// `is_final_turn: false`, so filtering on it dropped all live data and the
+/// widget rendered "no efficiency data" (audit #4). Turn rows carry per-turn
+/// usage/cost that never overlaps between turns, so cost and duration are
+/// summed over every row that carries real usage data.
+///
+/// To avoid counting each turn of a multi-turn attempt as a separate task,
+/// rows are deduped to task level by (plan_id, task_id, model): turns and
+/// retries of one task merge into a single task that counts as passed if any
+/// of its rows passed the gate. Rows without a task_id cannot be grouped
+/// reliably, so each counts as its own task (legacy one-row-per-task shape).
+fn aggregate_model_costs(events: &[AgentEfficiencyEvent]) -> BTreeMap<String, ModelCostEntry> {
+    #[derive(Default)]
+    struct TaskGroup {
+        model: String,
+        backend: String,
+        passed: bool,
+        duration_ms: u64,
+        cost_usd: f64,
+    }
+
+    let mut groups: BTreeMap<String, TaskGroup> = BTreeMap::new();
+    for (idx, event) in events.iter().enumerate() {
+        // Rows with no usage, cost, or duration carry no displayable data.
+        let has_real_data = event.total_tokens() > 0
+            || event.cost_usd > 0.0
+            || event.wall_time_ms > 0
+            || event.duration_ms > 0;
+        if !has_real_data {
+            continue;
+        }
+        let dur = if event.wall_time_ms > 0 {
+            event.wall_time_ms
+        } else {
+            event.duration_ms
+        };
+        let key = if event.task_id.is_empty() {
+            // Ungroupable row: keep it as its own task.
+            format!("\u{1}row-{idx}")
+        } else {
+            format!(
+                "{}\u{1}{}\u{1}{}",
+                event.plan_id, event.task_id, event.model
+            )
+        };
+        let group = groups.entry(key).or_default();
+        if group.model.is_empty() {
+            group.model.clone_from(&event.model);
+            group.backend.clone_from(&event.backend);
+        }
+        group.passed |= event.gate_passed == Some(true);
+        group.duration_ms += dur;
+        group.cost_usd += event.cost_usd;
+    }
+
+    let mut models: BTreeMap<String, ModelCostEntry> = BTreeMap::new();
+    for group in groups.into_values() {
+        let model_key = if group.model.is_empty() {
+            "(unknown)".to_string()
+        } else {
+            group.model
+        };
+        let entry = models.entry(model_key).or_default();
+        if entry.provider.is_empty() && !group.backend.is_empty() {
+            entry.provider = group.backend;
+        }
+        entry.tasks += 1;
+        if group.passed {
+            entry.passed += 1;
+        }
+        entry.total_duration_ms += group.duration_ms;
+        entry.total_cost_usd += group.cost_usd;
+    }
+    models
+}
+
 fn truncate_model(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
         s.to_string()
@@ -362,6 +418,43 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
+    fn rendered_text(terminal: &Terminal<TestBackend>) -> String {
+        let buffer = terminal.backend().buffer();
+        let width = buffer.area.width as usize;
+        buffer
+            .content
+            .chunks(width)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// A row shaped exactly like the live runner-v2 writer produces today
+    /// (`roko-learn/src/event_subscriber.rs`): one row per turn carrying
+    /// per-turn usage, with `is_final_turn: false`.
+    fn live_turn_event(
+        backend: &str,
+        model: &str,
+        task_id: &str,
+        turn: u32,
+        cost_usd: f64,
+    ) -> AgentEfficiencyEvent {
+        let mut event = AgentEfficiencyEvent::default_event();
+        event.backend = backend.into();
+        event.model = model.into();
+        event.plan_id = "plan-1".into();
+        event.task_id = task_id.into();
+        event.attempt_id = format!("attempt-{task_id}:{turn}");
+        event.turn_number = turn;
+        event.iteration = turn;
+        event.is_final_turn = false;
+        event.input_tokens = 1_500;
+        event.output_tokens = 300;
+        event.cost_usd = cost_usd;
+        event.wall_time_ms = 4_000;
+        event
+    }
+
     #[test]
     fn cost_by_model_renders_without_panic() {
         let backend = TestBackend::new(100, 15);
@@ -387,19 +480,19 @@ mod tests {
         let mut event = roko_learn::efficiency::AgentEfficiencyEvent::default_event();
         event.model = "claude-sonnet-4-20250514".into();
         event.backend = "anthropic-api".into();
+        event.task_id = "t1".into();
         event.cost_usd = 0.05;
         event.wall_time_ms = 12_000;
         event.gate_passed = Some(true);
-        event.is_final_turn = true;
         state.efficiency_events.push(event);
 
         let mut event2 = roko_learn::efficiency::AgentEfficiencyEvent::default_event();
         event2.model = "gpt-4o".into();
         event2.backend = "openai".into();
+        event2.task_id = "t2".into();
         event2.cost_usd = 0.03;
         event2.wall_time_ms = 8_000;
         event2.gate_passed = Some(false);
-        event2.is_final_turn = true;
         state.efficiency_events.push(event2);
 
         terminal
@@ -408,6 +501,93 @@ mod tests {
                 render_cost_by_model_table(frame, area, &state, &theme);
             })
             .unwrap();
+    }
+
+    /// Audit #4/#28: rows with `is_final_turn: false` (every live runner-v2
+    /// row today, including codex/glm models) must render, not be dropped.
+    #[test]
+    fn cost_by_model_renders_live_runner_v2_rows() {
+        let backend = TestBackend::new(100, 15);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = Theme::dark();
+        let mut state = TuiState::new();
+
+        state
+            .efficiency_events
+            .push(live_turn_event("codex-cli", "gpt-5.6-sol", "t1", 0, 0.04));
+        state
+            .efficiency_events
+            .push(live_turn_event("zai", "glm-5.1", "t2", 0, 0.0));
+        state.efficiency_events.push(live_turn_event(
+            "claude-cli",
+            "claude-sonnet-4-6",
+            "t3",
+            0,
+            0.05,
+        ));
+
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_cost_by_model_table(frame, area, &state, &theme);
+            })
+            .unwrap();
+
+        let text = rendered_text(&terminal);
+        assert!(
+            !text.contains("no efficiency data"),
+            "live rows must render:\n{text}"
+        );
+        assert!(text.contains("gpt-5.6-sol"), "codex row missing:\n{text}");
+        assert!(text.contains("glm-5.1"), "glm row missing:\n{text}");
+        assert!(
+            text.contains("claude-sonnet-4-6"),
+            "sonnet row missing:\n{text}"
+        );
+    }
+
+    /// Multi-turn attempts (one row per turn) count once as a task while
+    /// their per-turn cost/duration sum.
+    #[test]
+    fn cost_by_model_dedupes_multi_turn_attempts() {
+        let events = vec![
+            live_turn_event("codex-cli", "gpt-5.6-sol", "t1", 0, 0.02),
+            live_turn_event("codex-cli", "gpt-5.6-sol", "t1", 1, 0.03),
+            live_turn_event("codex-cli", "gpt-5.6-sol", "t2", 0, 0.01),
+        ];
+        let models = aggregate_model_costs(&events);
+        let entry = models.get("gpt-5.6-sol").expect("model row");
+        assert_eq!(entry.tasks, 2, "turns of one attempt merge into one task");
+        assert!(
+            (entry.total_cost_usd - 0.06).abs() < 1e-9,
+            "per-turn cost is summed, not deduped"
+        );
+        assert_eq!(entry.total_duration_ms, 12_000);
+    }
+
+    /// Fixed-producer shape: intermediate turns `false`, gate-final turn
+    /// `true`. Same dedup must hold and the gate verdict lands on the task.
+    #[test]
+    fn cost_by_model_dedupes_with_gate_final_turn() {
+        let mut final_turn = live_turn_event("claude-cli", "claude-sonnet-4-6", "t1", 1, 0.02);
+        final_turn.is_final_turn = true;
+        final_turn.gate_passed = Some(true);
+        let events = vec![
+            live_turn_event("claude-cli", "claude-sonnet-4-6", "t1", 0, 0.03),
+            final_turn,
+        ];
+        let models = aggregate_model_costs(&events);
+        let entry = models.get("claude-sonnet-4-6").expect("model row");
+        assert_eq!(entry.tasks, 1);
+        assert_eq!(entry.passed, 1);
+        assert!((entry.total_cost_usd - 0.05).abs() < 1e-9);
+    }
+
+    /// Rows with no usage, cost, or duration carry no displayable data.
+    #[test]
+    fn cost_by_model_skips_empty_rows() {
+        let events = vec![AgentEfficiencyEvent::default_event()];
+        assert!(aggregate_model_costs(&events).is_empty());
     }
 
     #[test]

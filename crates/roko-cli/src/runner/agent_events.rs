@@ -58,7 +58,13 @@ pub(crate) fn handle_agent_event(
 
         AgentEvent::SystemInit { session_id, model } => {
             state.agent_active = true;
-            state.agent_model = model.clone();
+            // Defensive: some providers (e.g. codex) emit init events that
+            // carry no model. Never let an empty model overwrite the slug
+            // recorded by `AgentEvent::Started` — an empty model gets
+            // episodes dropped downstream and blanks the TUI.
+            if !model.is_empty() {
+                state.agent_model = model.clone();
+            }
             state.session_id = Some(session_id.clone());
             debug!(model = %model, session_id = %session_id, "agent initialized");
         }
@@ -588,6 +594,58 @@ mod tests {
         state.current_task = "T1".to_string();
         let id2 = agent_id_for_state(&state);
         assert_eq!(id2, "plan/with/slashes/T1");
+    }
+
+    // Codex regression: a `SystemInit` with an empty model must not wipe the
+    // model slug recorded by `Started` (empty models get episodes dropped and
+    // blank the TUI). A non-empty init model still wins.
+    #[test]
+    fn system_init_with_empty_model_preserves_started_model() {
+        let (_hub, tui) = noop_bridge();
+        let mut state = make_state("plan", "T1");
+        let sink = NoopSink;
+
+        handle_agent_event(
+            &AgentEvent::Started {
+                agent_id: "plan/T1".to_string(),
+                provider: "codex-cli".to_string(),
+                model: "gpt-5.6-sol".to_string(),
+                pid: Some(42),
+            },
+            &mut state,
+            &tui,
+            &sink,
+        );
+        assert_eq!(state.agent_model, "gpt-5.6-sol");
+
+        handle_agent_event(
+            &AgentEvent::SystemInit {
+                session_id: "thread-1".to_string(),
+                model: String::new(),
+            },
+            &mut state,
+            &tui,
+            &sink,
+        );
+        assert_eq!(
+            state.agent_model, "gpt-5.6-sol",
+            "empty SystemInit model must not overwrite the Started model"
+        );
+        assert_eq!(state.session_id.as_deref(), Some("thread-1"));
+
+        handle_agent_event(
+            &AgentEvent::SystemInit {
+                session_id: "thread-1".to_string(),
+                model: "gpt-5.6-sol-mini".to_string(),
+            },
+            &mut state,
+            &tui,
+            &sink,
+        );
+        assert_eq!(
+            state.agent_model, "gpt-5.6-sol-mini",
+            "a non-empty SystemInit model still updates state"
+        );
     }
 
     // T2 / SH04-T05: token usage accumulates in state without double-counting.

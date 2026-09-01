@@ -372,6 +372,8 @@ pub enum TuiAction {
     ConfigCommitEdit,
     ConfigCancelEdit,
     ConfigSave,
+    /// Re-parse `roko.toml` into the config editor cache immediately.
+    ConfigReload,
 
     // -- force / reset --
     ForceAdvance,
@@ -767,8 +769,8 @@ fn handle_global_key(key: KeyEvent, active_tab: Tab) -> Option<TuiAction> {
         KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             Some(TuiAction::RequestConfirm(ConfirmAction::GitReconcile))
         }
-        // F8 / u: queue overview
-        KeyCode::F(8) | KeyCode::Char('u') => Some(TuiAction::ShowQueueOverview),
+        // u: queue overview (F8 switches to the Marketplace tab, not this).
+        KeyCode::Char('u') => Some(TuiAction::ShowQueueOverview),
         KeyCode::Tab => Some(TuiAction::FocusNext),
         KeyCode::BackTab => Some(TuiAction::FocusPrev),
         _ => Option::None,
@@ -980,6 +982,8 @@ fn handle_config_key(key: KeyEvent) -> TuiAction {
         KeyCode::Left | KeyCode::Char('h') => TuiAction::ConfigCycleLeft,
         KeyCode::Right | KeyCode::Char('l') => TuiAction::ConfigCycleRight,
         KeyCode::Enter | KeyCode::Char(' ') => TuiAction::ConfigToggle,
+        // Plain r reloads roko.toml (advertised as `r:reload` in the status bar).
+        KeyCode::Char('r') => TuiAction::ConfigReload,
         _ => TuiAction::None,
     }
 }

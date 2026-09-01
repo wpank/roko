@@ -10,13 +10,13 @@ use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Cell, Paragraph, Row, Table, Wrap};
+use roko_core::config::model_registry::{BuiltinModel, builtin_model};
 
 use super::ViewState;
 use crate::tui::config_meta::{
     self, ConfigFieldKind, ConfigItem, ConfigSource, format_count, truncate,
 };
 use crate::tui::dashboard::{DashboardData, Theme};
-use crate::tui::input::FocusZone;
 use crate::tui::state::TuiState;
 
 /// Render the full config editor view.
@@ -40,20 +40,11 @@ pub fn render(
         }
         _ => {}
     }
-    let focused = matches!(tui_state.focus, FocusZone::RightPanel);
-    let border_style = if focused {
-        Theme::focused_border_style()
-    } else {
-        theme.accent()
-    };
-    let title_style = if focused {
-        Theme::focused_title_style()
-    } else {
-        theme.accent()
-    };
+    // The Config tab only ever focuses ConfigKeys/ConfigValues, so the block
+    // always uses the accent style (no separate focused-border state).
     let block = Block::bordered()
-        .title(Span::styled(" Config ", title_style))
-        .border_style(border_style);
+        .title(Span::styled(" Config ", theme.accent()))
+        .border_style(theme.accent());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -520,7 +511,9 @@ fn render_provider_health(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiStat
     let mut providers: std::collections::BTreeMap<String, (u64, u64, u64)> =
         std::collections::BTreeMap::new();
     for event in &tui_state.efficiency_events {
-        let entry = providers.entry(infer_provider(&event.model)).or_default();
+        let entry = providers
+            .entry(infer_provider(&event.backend, &event.model))
+            .or_default();
         entry.0 += 1; // total calls
         if event.output_tokens > 0 {
             entry.1 += 1; // successes
@@ -677,10 +670,20 @@ fn render_model_comparison(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiSta
     frame.render_widget(table, inner);
 }
 
-fn infer_provider(model: &str) -> String {
+/// Provider attribution for an efficiency event: prefer the recorded backend
+/// (what actually ran the turn, e.g. `codex-cli`), then the built-in model
+/// registry, then legacy slug substrings for unregistered models.
+fn infer_provider(backend: &str, model: &str) -> String {
+    let backend = backend.trim();
+    if !backend.is_empty() {
+        return backend.to_ascii_lowercase();
+    }
     let trimmed = model.trim();
     if trimmed.is_empty() {
         return "unknown".to_string();
+    }
+    if let Some(builtin) = builtin_model(trimmed) {
+        return builtin.provider_kind.label().to_string();
     }
     let lower = trimmed.to_ascii_lowercase();
     if lower.contains("claude") || lower.contains("anthropic") {
@@ -696,7 +699,13 @@ fn infer_provider(model: &str) -> String {
     }
 }
 
+/// Tier label for a model slug. Registry-known models are classified from
+/// their recorded capabilities; unregistered slugs fall back to substring
+/// heuristics.
 fn infer_tier(model: &str) -> String {
+    if let Some(builtin) = builtin_model(model.trim()) {
+        return registry_tier(builtin).to_string();
+    }
     let lower = model.to_ascii_lowercase();
     if lower.contains("haiku") || lower.contains("mini") || lower.contains("small") {
         "fast".to_string()
@@ -704,6 +713,19 @@ fn infer_tier(model: &str) -> String {
         "deep".to_string()
     } else {
         "std".to_string()
+    }
+}
+
+/// Capability-based tier for a registry model: reasoning-capable models with
+/// a large output ceiling are `deep`; lightweight non-reasoning models are
+/// `fast`; everything else is `std`.
+const fn registry_tier(model: &BuiltinModel) -> &'static str {
+    if model.supports_thinking && model.max_output >= 32_000 {
+        "deep"
+    } else if !model.supports_thinking && model.max_output <= 8_192 {
+        "fast"
+    } else {
+        "std"
     }
 }
 
@@ -716,5 +738,44 @@ fn provider_health_status(rate: f64, total: u64, theme: &Theme) -> (&'static str
         ("degraded", theme.warning())
     } else {
         ("unhealthy", theme.danger())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn infer_provider_prefers_event_backend() {
+        // Codex runs must not be bucketed as "openai" from the gpt-* slug.
+        assert_eq!(infer_provider("codex-cli", "gpt-5.6-sol"), "codex-cli");
+        assert_eq!(infer_provider("zai", "glm-5.1"), "zai");
+    }
+
+    #[test]
+    fn infer_provider_falls_back_to_registry_then_substrings() {
+        assert_eq!(infer_provider("", "claude-opus-4-6"), "anthropic_api");
+        assert_eq!(infer_provider("", "sonar"), "perplexity_api");
+        assert_eq!(infer_provider("", "glm-5.1"), "glm-5.1");
+        assert_eq!(infer_provider("", ""), "unknown");
+    }
+
+    #[test]
+    fn infer_tier_uses_registry_capabilities() {
+        assert_eq!(infer_tier("claude-haiku-4-5"), "fast");
+        assert_eq!(infer_tier("claude-sonnet-4-6"), "std");
+        assert_eq!(infer_tier("claude-opus-4-6"), "deep");
+        // codex-mini is reasoning-capable with a mid output ceiling.
+        assert_eq!(infer_tier("codex-mini"), "std");
+        assert_eq!(infer_tier("o3"), "deep");
+        // Aliases resolve through the registry before classification.
+        assert_eq!(infer_tier("haiku"), "fast");
+    }
+
+    #[test]
+    fn infer_tier_falls_back_to_substrings_for_unregistered() {
+        assert_eq!(infer_tier("glm-5.1"), "std");
+        assert_eq!(infer_tier("some-mini-thing"), "fast");
+        assert_eq!(infer_tier("custom-pro-model"), "deep");
     }
 }

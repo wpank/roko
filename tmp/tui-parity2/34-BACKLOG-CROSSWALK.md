@@ -96,6 +96,17 @@ Therefore:
 
 ## Immediate closure order
 
+### Mori workflow parity overlay
+
+The visual/TUI parity work must not imply that Roko has Mori’s complete operator workflow. The
+source-based comparison in [`37-MORI-WORKFLOW-PARITY-AUDIT.md`](37-MORI-WORKFLOW-PARITY-AUDIT.md)
+records the distinction: Roko has queue-manifest parsing and inspection, but `plan run` does not
+yet consume `.roko/queue.toml`; wave grouping is not milestone sequencing; and Runner-v2/GraphEngine
+have different workspace and run-queue guarantees. Parallel execution is only Mori-like when
+attempt worktrees, serialized merge, conflict evidence, crash/resume, and durable completion are
+proven together. The owning backlog items are #116, #117, #140, #138/#284/#326, #179, #249, and
+#272. This overlay is intentionally a workflow acceptance boundary, not another “queue widget” claim.
+
 1. Finish #233's acknowledged, run-scoped command contract; make retry/repair/reverify/skip/cancel
    operational before advertising them.
 2. Add a true gate-line producer and exact rung transitions for #234.

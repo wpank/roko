@@ -11,6 +11,11 @@
 > dry-run/apply with valid, malformed, invalid-ID, and cross-run records. A real two-run identity
 > fixture plus truncation/active-lock refusal remain open.
 
+> **Status update (2026-09-01):** Run-index repair fixtures now cover truncation (partial records
+> at EOF are counted without poisoning the scan) and active-lock refusal (concurrent repair and
+> active event-log writer locks both fail closed). The live two-run identity fixture remains the
+> terminal proof.
+
 **Status**: Verification only; do not rebuild the source implementation unless the checklist's current-source/live proof fails
 **Priority**: P2 — events from multiple runs are indistinguishable and snapshots cannot be correlated with events without a run_id
 **Size**: XS (2-4 hours)

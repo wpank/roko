@@ -10,6 +10,13 @@
 > all-feature test matrix, and release jobs remain open.
 
 **Status**: Verification/proof completion only; source and build-graph changes are implemented, while the packet's benchmark/matrix evidence must close before #338
+
+> **Status update (2026-09-01):** Cache lifecycle release fixtures (Cargo lock prevents incremental
+> pruning, Cargo lock prevents orphan target pruning) have been added to
+> `roko-fs/src/target_cleanup.rs`. Benchmark evidence collection is scriptable via
+> `scripts/run_benchmark_evidence.sh`. Before/after cold/warm measurements remain the terminal
+> verification authority.
+
 **Priority**: P2 — repeated dogfood cold builds took 10–14 minutes and the default CLI still enables Alloy's full dependency graph
 **Size**: M (2–3 days)
 **Wave**: 6

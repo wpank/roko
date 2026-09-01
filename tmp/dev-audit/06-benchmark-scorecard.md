@@ -35,6 +35,50 @@ undersampled comparison is explicitly inconclusive.
 - [ ] Publish raw bundle links and p50/p95 results.
 - [ ] Measure escaped regressions and full-CI baseline before promoting FAST.
 
+## How to collect benchmark evidence
+
+### Quick start
+
+```bash
+# 1. Build the current CLI binary
+cargo build -p roko-cli --bin roko --locked
+
+# 2. Preview the benchmark matrix (dry-run, safe by default)
+./scripts/run_benchmark_evidence.sh
+
+# 3. Execute with real measurements (requires explicit opt-in)
+BENCHMARK_EXECUTE=1 ./scripts/run_benchmark_evidence.sh
+
+# 4. Review the p50/p95 scorecards
+./dev.sh benchmark history
+
+# 5. Inspect individual session bundles in .roko/benchmarks/
+```
+
+### Default matrix
+
+| Parameter | Default | Override |
+|---|---|---|
+| Repetitions | 5 cold + 5 warm per fixture | `REPETITIONS=3` |
+| Lanes | current-roko, roko-fast | `LANES="current-roko"` |
+| Max cost | $0.00 (no paid network) | `MAX_COST_USD=1.00 --allow-network` |
+| Base SHA | Current HEAD | `BASE_SHA=abc1234` |
+
+### Narrowing the matrix
+
+For iterative development, run a single lane with fewer repetitions:
+```bash
+REPETITIONS=2 LANES="current-roko" CACHES="warm" BENCHMARK_EXECUTE=1 ./scripts/run_benchmark_evidence.sh
+```
+
+### Underlying tools
+
+| Tool | Entry point | Purpose |
+|---|---|---|
+| `scripts/dev_benchmark.py` | Direct | Benchmark orchestration with isolation |
+| `./dev.sh benchmark` | Wrapper | History dashboard and regression alerts |
+| `scripts/run_benchmark_evidence.sh` | Wrapper | Dev-audit evidence collection |
+
 ## Baseline from pictured run
 
 | Metric | Baseline |
@@ -195,3 +239,72 @@ Publish p50, p95, cold/warm split, and raw bundle links. Never average away:
 - missing evidence
 
 A timeout is its full deadline, not a discarded outlier.
+
+## How to collect benchmark evidence
+
+```bash
+# 1. Build the current CLI binary
+cargo build -p roko-cli --bin roko --locked
+
+# 2. Preview the benchmark matrix (dry-run, safe by default)
+./scripts/run_benchmark_evidence.sh
+
+# 3. Execute with real measurements (requires explicit opt-in)
+BENCHMARK_EXECUTE=1 ./scripts/run_benchmark_evidence.sh
+
+# 4. Review the p50/p95 scorecards
+./dev.sh benchmark history
+```
+
+| Parameter | Default | Override |
+|---|---|---|
+| Repetitions | 5 cold + 5 warm per fixture | `REPETITIONS=3` |
+| Lanes | current-roko, roko-fast | `LANES="current-roko"` |
+| Max cost | $0.00 (no paid network) | `MAX_COST_USD=1.00` |
+| Base SHA | Current HEAD | `BASE_SHA=abc1234` |
+
+For a narrowed matrix: `REPETITIONS=2 LANES="current-roko" CACHES="warm" BENCHMARK_EXECUTE=1 ./scripts/run_benchmark_evidence.sh`
+
+## How to collect benchmark evidence
+
+### Quick start
+
+```bash
+# 1. Build the current CLI binary
+cargo build -p roko-cli --bin roko --locked
+
+# 2. Preview the benchmark matrix (dry-run, safe by default)
+./scripts/run_benchmark_evidence.sh
+
+# 3. Execute with real measurements (requires explicit opt-in)
+BENCHMARK_EXECUTE=1 ./scripts/run_benchmark_evidence.sh
+
+# 4. Review the p50/p95 scorecards
+./dev.sh benchmark history
+
+# 5. Inspect individual session bundles in .roko/benchmarks/
+```
+
+### Default matrix
+
+| Parameter | Default | Override |
+|---|---|---|
+| Repetitions | 5 cold + 5 warm per fixture | `REPETITIONS=3` |
+| Lanes | current-roko, roko-fast | `LANES="current-roko"` |
+| Max cost | $0.00 (no paid network) | `MAX_COST_USD=1.00` |
+| Base SHA | Current HEAD | `BASE_SHA=abc1234` |
+
+### Narrowing the matrix
+
+For iterative development, run a single lane with fewer repetitions:
+```bash
+REPETITIONS=2 LANES="current-roko" CACHES="warm" BENCHMARK_EXECUTE=1 ./scripts/run_benchmark_evidence.sh
+```
+
+### Underlying tools
+
+| Tool | Entry point | Purpose |
+|---|---|---|
+| `scripts/dev_benchmark.py` | Direct | Benchmark orchestration with isolation |
+| `./dev.sh benchmark` | Wrapper | History dashboard and regression alerts |
+| `scripts/run_benchmark_evidence.sh` | Wrapper | Dev-audit evidence collection |

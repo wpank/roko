@@ -7,6 +7,12 @@
 > passed the complete `roko-cli` library harness and strict workspace no-dependency clippy before
 > the final small compatibility/evidence/lifecycle delta. The complete all-target workspace run and
 > real benchmark repetitions remain the verification authority.
+>
+> **Status update (2026-09-01):** All four hot-path fixes are source-complete and verified through
+> the roko-cli library harness (2,301 tests passed). Benchmark evidence collection tooling is now
+> available via `scripts/run_benchmark_evidence.sh`; representative cold/warm repetitions remain
+> the final verification authority. Cache lifecycle release fixtures (active-workspace/Cargo-owner
+> refusal) have been added to `roko-fs/src/target_cleanup.rs`.
 
 **Priority**: P2 — four concrete latency regressions, each verified in production code
 **Size**: M (2-3 days)

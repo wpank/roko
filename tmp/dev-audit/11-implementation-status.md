@@ -214,10 +214,10 @@ That delta subsequently passed the production-path check and targeted strict lin
   selected fixture/lane, retain failures/timeouts, and publish p50/p95 plus bundle links.
 - [x] Exercise `roko run-index repair` in a bounded disposable dry-run/apply fixture with valid,
   malformed, invalid-ID, and cross-run records.
-- [ ] Add explicit truncation and active-lock-refusal cases to the run-index release fixture.
+- [x] Add explicit truncation and active-lock-refusal cases to the run-index release fixture. Added three tests covering truncated records, concurrent repair lease, and event log writer lock.
 - [x] Exercise cache status/prune against disposable stale incremental data, confirming the
   dry-run/apply plan and reclaimed-byte accounting agree while newest entries/dependencies remain.
-- [ ] Add an active-workspace/Cargo-owner refusal fixture to the cache release lane.
+- [x] Add an active-workspace/Cargo-owner refusal fixture to the cache release lane. Added two tests: Cargo lock prevents incremental pruning and Cargo lock prevents orphan target pruning.
 - [ ] Measure escaped regressions and full-CI baseline before promoting FAST or auto-merge.
 
 ## Explicit residuals
@@ -389,3 +389,24 @@ treat stub 200 responses the same as genuine 501 responses when scoring.
 | FAST promotion policy | Deferred | Deferred | No change |
 | Blanket dead_code allow | Not in dev-audit scope | New context from CLI/engine audits | Affects compile-time accuracy |
 | Runner-v2 decomposition | Not in dev-audit scope | Engine audit produced 13-wave plan | Future migration needed for FAST |
+
+### Closure batch (2026-09-01)
+
+The following verification gaps from the original dev-audit have been closed with focused test
+fixtures:
+
+- **Run-index release fixtures**: truncation (partial record at EOF), concurrent repair lease
+  refusal, and event log writer lock refusal.
+- **Cache release fixtures**: active Cargo lock prevents incremental pruning, active Cargo lock
+  prevents orphan target pruning.
+- **Cross-crate impact fixtures**: public struct field change reports reverse dependents, private
+  body edit produces no cross-crate signal, re-export and serde consumer both detected.
+- **FAST deadline kill-point matrix**: dispatch deadline expiry, preparation budget exhaustion,
+  settlement headroom, FAST policy clamping, duplicate launch prevention, cancellation resource
+  release, lifecycle ownership transitions.
+- **Benchmark evidence**: `scripts/run_benchmark_evidence.sh` provides scriptable cold/warm
+  repetition collection with dry-run-first safety.
+
+Remaining open items are policy or runtime-only decisions that cannot be closed by source
+changes alone: full workspace all-target/full-CI test pass, representative benchmark
+repetitions, Codex operation-level broker, and FAST promotion/auto-merge policy.

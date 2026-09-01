@@ -972,6 +972,86 @@ mod tests {
         lock.unlock().unwrap();
     }
 
+    #[test]
+    fn partial_record_at_eof_is_counted_and_preceding_records_are_indexed() {
+        let workspace = tempfile::tempdir().unwrap();
+        let roko = workspace.path().join(".roko");
+        std::fs::create_dir_all(roko.join("runtime")).unwrap();
+        // Two complete newline-terminated records followed by one truncated
+        // record (no trailing newline).
+        std::fs::write(
+            roko.join("events.jsonl"),
+            concat!(
+                "{\"type\":\"run.started\",\"run_id\":\"run-a\"}\n",
+                "{\"type\":\"run.finished\",\"run_id\":\"run-b\"}\n",
+                "{\"type\":\"run.partial\",\"run_id\":\"run-c\""
+            ),
+        )
+        .unwrap();
+        let report = repair_indexes(workspace.path(), true, 1_000_000, 1_000, 100, 10).unwrap();
+        assert!(
+            report.partial_records >= 1,
+            "truncated final record must be counted as partial"
+        );
+        assert_eq!(report.records_indexed, 2);
+        let index_a =
+            roko_fs::run_index::run_index_path(&roko.join("events.jsonl"), "run-a").unwrap();
+        let index_b =
+            roko_fs::run_index::run_index_path(&roko.join("events.jsonl"), "run-b").unwrap();
+        let index_c =
+            roko_fs::run_index::run_index_path(&roko.join("events.jsonl"), "run-c").unwrap();
+        assert!(index_a.exists(), "complete record run-a must be indexed");
+        assert!(index_b.exists(), "complete record run-b must be indexed");
+        assert!(
+            !index_c.exists(),
+            "truncated record run-c must not be indexed"
+        );
+    }
+
+    #[test]
+    fn active_repair_lease_refuses_concurrent_repair() {
+        let workspace = tempfile::tempdir().unwrap();
+        let runtime = workspace.path().join(".roko/runtime");
+        std::fs::create_dir_all(&runtime).unwrap();
+        let lock = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(runtime.join("run-index-repair.lock"))
+            .unwrap();
+        lock.lock_exclusive().unwrap();
+        let error = repair_indexes(workspace.path(), true, 1_000, 100, 100, 10)
+            .expect_err("held repair lock must refuse concurrent repair");
+        let message = error.to_string();
+        assert!(
+            message.contains("lock") || message.contains("active"),
+            "error must mention lock or active: {message}"
+        );
+        lock.unlock().unwrap();
+    }
+
+    #[test]
+    fn active_event_log_writer_lock_refuses_repair() {
+        let workspace = tempfile::tempdir().unwrap();
+        let roko = workspace.path().join(".roko");
+        std::fs::create_dir_all(roko.join("runtime")).unwrap();
+        let lock = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(roko.join("events.jsonl.lock"))
+            .unwrap();
+        lock.lock_exclusive().unwrap();
+        let error = repair_indexes(workspace.path(), true, 1_000, 100, 100, 10)
+            .expect_err("held event log writer lock must refuse repair");
+        let message = error.to_string();
+        assert!(
+            message.contains("lock") || message.contains("active"),
+            "error must mention lock or active: {message}"
+        );
+        lock.unlock().unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn symlinked_index_directory_is_rejected() {

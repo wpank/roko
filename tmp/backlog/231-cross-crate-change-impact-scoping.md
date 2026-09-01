@@ -93,6 +93,12 @@ implementation landed in `d43dd45cd` ("feat(gates): add impact-aware fast verifi
 a subsequent hardening pass in `38f79a5ca` ("fix: finalize development speed integration").
 No new code has landed since 2026-08-31.
 
+**Verification fixtures (2026-09-01):** Verification fixtures added to
+`crates/roko-cli/src/runner/impact_analysis.rs`: public struct field change reports reverse
+dependents, private helper body edit produces no cross-crate signal, re-exported enum variant
+and serde consumer are both detected. The `classify_diff_lines` helper has been extracted for
+testability. Full cross-crate transitivity and runtime impact fixtures remain open.
+
 ### Verified current state
 
 `crates/roko-cli/src/runner/impact_analysis.rs` (907 lines) implements:

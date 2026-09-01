@@ -9,6 +9,13 @@
 > hung-hook/startup/restart fixtures and representative repetitions remain pending. The integrated
 > CLI build and 2,301-test library harness passed; neither substitutes for the open kill-point
 > matrix below.
+>
+> **Status update (2026-09-01):** Kill-point matrix test fixtures added to
+> `crates/roko-cli/src/runner/deadlines.rs` and `attempt_ownership.rs`: dispatch deadline expiry,
+> preparation budget exhaustion, settlement headroom, FAST policy clamping, duplicate launch
+> prevention, cancellation resource release, agent→gate lifecycle ownership, and full
+> dispatching→agent→gate single-owner verification. The five verification checklist items now
+> have focused unit tests.
 
 **Status**: Verification only; the source implementation is present and the final kill-point matrix remains the terminal evidence
 **Priority**: P1 — a slow awaited dispatch-preparation or provider-startup path can outlive the

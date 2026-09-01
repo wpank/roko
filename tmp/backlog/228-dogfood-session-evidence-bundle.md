@@ -11,6 +11,12 @@
 > failure/timeout/cancellation/live-screenshot fixtures and representative benchmark repetitions
 > remain evidence work, not missing harness or benchmark-orchestration code.
 
+> **Status update (2026-09-01):** Benchmark evidence collection is now scriptable via
+> `scripts/run_benchmark_evidence.sh` (safe by default, requires BENCHMARK_EXECUTE=1). The
+> evidence harness, validation, scoring, and benchmark orchestration are source-complete.
+> Representative live-session bundles with failure/timeout/cancellation fixtures remain the
+> terminal proof.
+
 **Priority**: P1 — self-hosting failures are expensive to reproduce, and today's evidence is assembled manually across terminal logs, runner state, HTTP responses, screenshots, and Git worktrees
 **Size**: M (2–3 days)
 **Wave**: 3

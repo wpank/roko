@@ -11,6 +11,10 @@
 > serve check, disposable repair fixture, loopback run-resource endpoints, cursor traversal, and
 > bounded SSE replay have passed. A real plan-to-JSONL cross-check remains open.
 
+> **Status update (2026-09-01):** Run-index repair release fixtures (truncation and lock refusal)
+> have been added, closing two items from the dev-audit verification checklist. The real
+> plan-to-JSONL cross-check remains the terminal proof for this item.
+
 **Status**: Verification only; close the real plan-to-JSONL cross-check before archive and do not redispatch the historical implementation plan
 **Priority**: P2 — events are only accessible by reading JSONL files directly; no HTTP query capability for run-scoped or filtered event access
 **Size**: M (2-3 days)

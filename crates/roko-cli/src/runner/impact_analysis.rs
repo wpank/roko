@@ -696,6 +696,49 @@ fn targets_for_path(workdir: &Path, changed: &str, package: &Package) -> Vec<Imp
     candidates
 }
 
+/// Classify a single stripped code line (no `+`/`-` prefix) as a public-item
+/// change, a contract change, or both.
+///
+/// Returns `(public, contract)`.
+fn classify_code_line(code: &str) -> (bool, bool) {
+    let public = code.starts_with("pub ")
+        && !code.starts_with("pub(crate)")
+        && !code.starts_with("pub(super)")
+        && !code.starts_with("pub(self)");
+    let contract = code.starts_with("pub use ")
+        || code.starts_with("impl ")
+        || code.starts_with("#[serde")
+        || code.contains("derive(Serialize")
+        || code.contains("derive(Deserialize")
+        || code.starts_with("#[repr(")
+        || code.starts_with("#[macro_export]");
+    (public, contract)
+}
+
+/// Classify unified-diff text into public-surface-change reason strings.
+///
+/// Each hunk line starting with `+` or `-` (excluding `+++`/`---` headers) is
+/// inspected for public item signatures and contract annotations. Returns the
+/// deduplicated reason set in sorted order.
+pub fn classify_diff_lines(diff_text: &str) -> Vec<String> {
+    let mut reasons = BTreeSet::new();
+    for line in diff_text.lines().filter(|line| {
+        (line.starts_with('+') || line.starts_with('-'))
+            && !line.starts_with("+++")
+            && !line.starts_with("---")
+    }) {
+        let code = line[1..].trim_start();
+        let (public, contract) = classify_code_line(code);
+        if public {
+            reasons.insert("public Rust item/signature changed".to_string());
+        }
+        if contract {
+            reasons.insert("trait, re-export, or serialized contract changed".to_string());
+        }
+    }
+    reasons.into_iter().collect()
+}
+
 async fn public_surface_reasons(
     workdir: &Path,
     changed_files: &[String],
@@ -757,32 +800,7 @@ async fn public_surface_reasons(
             text.push_str(line);
         }
     }
-    let mut reasons = BTreeSet::new();
-    for line in text.lines().filter(|line| {
-        (line.starts_with('+') || line.starts_with('-'))
-            && !line.starts_with("+++")
-            && !line.starts_with("---")
-    }) {
-        let code = line[1..].trim_start();
-        let public = code.starts_with("pub ")
-            && !code.starts_with("pub(crate)")
-            && !code.starts_with("pub(super)")
-            && !code.starts_with("pub(self)");
-        let contract = code.starts_with("pub use ")
-            || code.starts_with("impl ")
-            || code.starts_with("#[serde")
-            || code.contains("derive(Serialize")
-            || code.contains("derive(Deserialize")
-            || code.starts_with("#[repr(")
-            || code.starts_with("#[macro_export]");
-        if public {
-            reasons.insert("public Rust item/signature changed".to_string());
-        }
-        if contract {
-            reasons.insert("trait, re-export, or serialized contract changed".to_string());
-        }
-    }
-    Ok(reasons.into_iter().collect())
+    Ok(classify_diff_lines(&text))
 }
 
 fn reverse_dependents(
@@ -903,5 +921,194 @@ mod tests {
         assert!(parse_git_paths(b"src/a.rs\n", "git").is_err());
         assert!(parse_git_paths(b"../outside.rs\0", "git").is_err());
         assert!(parse_git_paths(b"src\\ambiguous.rs\0", "git").is_err());
+    }
+
+    #[test]
+    fn public_struct_field_change_reports_reverse_dependents() {
+        // A diff that changes a public struct field from `bool` to `Option<bool>`
+        // must be classified as a public surface change. The diff format mirrors
+        // `git diff --unified=0` output.
+        let diff = "\
+diff --git a/crates/roko-core/src/config.rs b/crates/roko-core/src/config.rs
+--- a/crates/roko-core/src/config.rs
++++ b/crates/roko-core/src/config.rs
+@@ -42,1 +42,1 @@
+-    pub enabled: bool,
++    pub enabled: Option<bool>,
+";
+        let reasons = classify_diff_lines(diff);
+        assert!(
+            reasons
+                .iter()
+                .any(|r| r.contains("public Rust item/signature")),
+            "expected public-item reason in {reasons:?}"
+        );
+
+        // Verify that `reverse_dependents` traverses a mock graph and returns
+        // multiple downstream crates when a producer library is marked.
+        let metadata: cargo_metadata::Metadata = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "workspace_root": "/mock",
+            "target_directory": "/mock/target",
+            "workspace_members": [
+                "producer 0.1.0 (path+file:///mock/crates/producer)",
+                "consumer-a 0.1.0 (path+file:///mock/crates/consumer-a)",
+                "consumer-b 0.1.0 (path+file:///mock/crates/consumer-b)"
+            ],
+            "packages": [
+                {
+                    "name": "producer",
+                    "version": "0.1.0",
+                    "id": "producer 0.1.0 (path+file:///mock/crates/producer)",
+                    "manifest_path": "/mock/crates/producer/Cargo.toml",
+                    "targets": [],
+                    "features": {},
+                    "dependencies": []
+                },
+                {
+                    "name": "consumer-a",
+                    "version": "0.1.0",
+                    "id": "consumer-a 0.1.0 (path+file:///mock/crates/consumer-a)",
+                    "manifest_path": "/mock/crates/consumer-a/Cargo.toml",
+                    "targets": [],
+                    "features": {},
+                    "dependencies": []
+                },
+                {
+                    "name": "consumer-b",
+                    "version": "0.1.0",
+                    "id": "consumer-b 0.1.0 (path+file:///mock/crates/consumer-b)",
+                    "manifest_path": "/mock/crates/consumer-b/Cargo.toml",
+                    "targets": [],
+                    "features": {},
+                    "dependencies": []
+                }
+            ],
+            "resolve": {
+                "root": null,
+                "nodes": [
+                    {
+                        "id": "producer 0.1.0 (path+file:///mock/crates/producer)",
+                        "dependencies": [],
+                        "deps": [],
+                        "features": []
+                    },
+                    {
+                        "id": "consumer-a 0.1.0 (path+file:///mock/crates/consumer-a)",
+                        "dependencies": [
+                            "producer 0.1.0 (path+file:///mock/crates/producer)"
+                        ],
+                        "deps": [],
+                        "features": []
+                    },
+                    {
+                        "id": "consumer-b 0.1.0 (path+file:///mock/crates/consumer-b)",
+                        "dependencies": [
+                            "producer 0.1.0 (path+file:///mock/crates/producer)"
+                        ],
+                        "deps": [],
+                        "features": []
+                    }
+                ]
+            }
+        }))
+        .expect("mock metadata should deserialize");
+
+        let (dependents, overflow) =
+            reverse_dependents(&metadata, &["producer".to_string()], 10);
+        assert!(
+            dependents.len() >= 2,
+            "expected at least 2 reverse dependents, got {dependents:?}"
+        );
+        assert!(dependents.contains(&"consumer-a".to_string()));
+        assert!(dependents.contains(&"consumer-b".to_string()));
+        assert!(!overflow, "should not overflow with cap of 10");
+    }
+
+    #[test]
+    fn private_helper_body_edit_no_cross_crate_signal() {
+        // Private function body edits, `pub(crate)`, `pub(super)`, and
+        // `pub(self)` changes must NOT produce any public-surface reasons.
+        let diff = "\
+diff --git a/crates/roko-cli/src/runner/helpers.rs b/crates/roko-cli/src/runner/helpers.rs
+--- a/crates/roko-cli/src/runner/helpers.rs
++++ b/crates/roko-cli/src/runner/helpers.rs
+@@ -10,3 +10,5 @@
+-fn private_helper() {
+-    let x = 1;
+-}
++fn private_helper() {
++    let x = 2;
++    let y = x + 1;
++    tracing::info!(y, \"updated\");
++}
+@@ -20,1 +22,1 @@
+-    pub(crate) fn internal_tool(&self) -> bool {
++    pub(crate) fn internal_tool(&self) -> Option<bool> {
+@@ -30,1 +32,1 @@
+-    pub(super) fn parent_visible(&self) -> u32 {
++    pub(super) fn parent_visible(&self) -> u64 {
+@@ -40,1 +42,1 @@
+-    pub(self) fn module_private(&self) -> &str {
++    pub(self) fn module_private(&self) -> String {
+";
+        let reasons = classify_diff_lines(diff);
+        assert!(
+            reasons.is_empty(),
+            "private/pub(crate)/pub(super)/pub(self) edits must produce zero surface signals, got {reasons:?}"
+        );
+    }
+
+    #[test]
+    fn reexport_and_serde_consumer_detected() {
+        // `pub use` re-exports must trigger contract-change classification.
+        let reexport_diff = "\
+diff --git a/crates/roko-core/src/lib.rs b/crates/roko-core/src/lib.rs
+--- a/crates/roko-core/src/lib.rs
++++ b/crates/roko-core/src/lib.rs
+@@ -5,0 +6,1 @@
++pub use crate::config::NewExport;
+";
+        let reasons = classify_diff_lines(reexport_diff);
+        assert!(
+            reasons
+                .iter()
+                .any(|r| r.contains("re-export") || r.contains("contract")),
+            "pub use re-export must trigger contract classification, got {reasons:?}"
+        );
+        // `pub use` also starts with `pub ` (non-restricted), so the
+        // public-item signal should fire too.
+        assert!(
+            reasons
+                .iter()
+                .any(|r| r.contains("public Rust item/signature")),
+            "pub use should also count as a public item change, got {reasons:?}"
+        );
+
+        // `derive(Deserialize)` and `#[serde` annotations on added lines.
+        let serde_diff = "\
+diff --git a/crates/roko-core/src/types.rs b/crates/roko-core/src/types.rs
+--- a/crates/roko-core/src/types.rs
++++ b/crates/roko-core/src/types.rs
+@@ -10,0 +11,2 @@
++#[derive(Debug, Clone, Deserialize)]
++#[serde(rename_all = \"camelCase\")]
+";
+        let serde_reasons = classify_diff_lines(serde_diff);
+        assert!(
+            serde_reasons
+                .iter()
+                .any(|r| r.contains("contract")),
+            "derive(Deserialize) must trigger contract classification, got {serde_reasons:?}"
+        );
+
+        // Verify both derive(Deserialize) and #[serde are detected from the
+        // same diff (both lines independently match the contract heuristic).
+        // One reason string covers both since they map to the same bucket.
+        assert_eq!(
+            serde_reasons.len(),
+            1,
+            "both serde annotations should collapse to a single contract reason, got {serde_reasons:?}"
+        );
     }
 }

@@ -74,6 +74,7 @@ comparison. See `36-OPEN-GAPS.md`.
 | 34 | `34-BACKLOG-CROSSWALK.md` | Acceptance-criterion crosswalk for UX/TUI/workflow backlog | Evidence |
 | 35 | `35-IMPLEMENTED-FOLLOWUPS.md` | Bounded source fixes completed during this audit | Result |
 | 36 | `36-OPEN-GAPS.md` | Prioritized remaining implementation and live-fixture queue | Plan |
+| 37 | `37-MORI-WORKFLOW-PARITY-AUDIT.md` | Mori/Bardo workflow parity: queue, DAG, parallelism, worktrees, merge, recovery | P0/P1 |
 | — | `evidence/README.md` | Checked-in all-tab full-frame text capture matrix | Evidence |
 
 ---

@@ -96,6 +96,7 @@ scripts/*
 !scripts/layer_check.rs
 !scripts/run_evidence.py
 !scripts/dev_benchmark.py
+!scripts/run_benchmark_evidence.sh
 
 # Docker volumes (local dev overlays) ----------------------------------------
 docker/.env

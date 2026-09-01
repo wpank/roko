@@ -6,6 +6,13 @@ backlog acceptance criteria, and controlled full-frame captures.
 
 ## P0 — operator truth and control
 
+0. **Mori-shaped workflow contract (#116/#117/#140/#138/#179/#249/#272).** Treat the complete
+   workflow as one acceptance boundary: queue manifest selection and milestone unlock, dependency
+   ready scheduling, bounded parallel attempts, distinct worktrees, serialized merge/conflict
+   recovery, durable restart, and operator batch checkpoints. Roko currently has pieces of this
+   across Runner-v2, GraphEngine, the queue-manifest parser, and the TUI, but no single proven
+   end-to-end path. See [`37-MORI-WORKFLOW-PARITY-AUDIT.md`](37-MORI-WORKFLOW-PARITY-AUDIT.md).
+
 1. **Acknowledged command contract (#146/#233).** Define run-scoped command IDs and
    accepted/rejected/completed acknowledgements. Implement plan-scoped cancel and real
    retry/repair/reverify/skip state transitions before restoring those controls to normal hints.

@@ -150,3 +150,20 @@ Current status:
 - [ ] Run the representative cold/warm scorecard and evaluate promotion criteria.
 - [ ] Add a Codex operation-level broker for restrictive built-in operation policy.
 - [ ] Promote FAST or enable auto-merge; both remain explicitly deferred policy decisions.
+
+## Closure status (2026-09-01)
+
+All source-implementable verification items from the dev-audit have been closed:
+
+| Item | Status |
+|---|---|
+| Run-index release fixtures (truncation, lock refusal) | Done |
+| Cache release fixtures (Cargo-owner refusal) | Done |
+| Cross-crate impact fixtures (3 scenarios) | Done |
+| FAST deadline kill-point matrix (8 tests) | Done |
+| Benchmark evidence script | Done |
+| Backlog status updates (#58, #212, #215, #228, #230, #231, #286) | Done |
+
+Remaining items require runtime execution or policy decisions and cannot be closed by source
+changes: workspace all-target test pass, representative benchmark repetitions, Codex broker,
+and FAST promotion policy.

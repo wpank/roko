@@ -624,6 +624,7 @@ impl App {
         tui_state.update_from_snapshot(&data);
         tui_state.workdir = workdir.clone();
         tui_state.run_started = Some(Instant::now());
+        tui_state.refresh_mcp_config_view();
 
         let mut app = Self {
             workdir,
@@ -726,6 +727,28 @@ impl App {
         app
     }
 
+    /// Build a headless app from one materialized dashboard snapshot.
+    ///
+    /// Screenshot and evidence tooling uses this constructor so it exercises
+    /// the exact same `App::draw` path as the interactive TUI without needing
+    /// a long-lived watch receiver.
+    #[must_use]
+    pub fn new_with_dashboard_snapshot(
+        root: impl AsRef<Path>,
+        snapshot: &roko_core::DashboardSnapshot,
+    ) -> Self {
+        let mut app = Self::new_with_page_inner(root, None, None, false);
+        apply_dashboard_snapshot(
+            &mut app.tui_state,
+            &mut app.notifications,
+            &mut app.last_snapshot_error_marker,
+            &mut app.last_seen_gate_count,
+            &mut app.last_seen_plan_phases,
+            snapshot,
+        );
+        app
+    }
+
     /// Configure this app to exit when the provided shutdown signal arrives.
     #[must_use]
     pub fn with_shutdown_receiver(mut self, shutdown_rx: std_mpsc::Receiver<()>) -> Self {
@@ -766,9 +789,28 @@ impl App {
     /// Creates a [`TestBackend`] of the given dimensions, renders each tab
     /// in sequence, and extracts the buffer contents as plain text.
     pub fn render_all_tabs_to_text(&mut self, width: u16, height: u16) -> Vec<(Tab, String)> {
+        self.render_tabs_to_text(width, height, &Tab::ALL)
+    }
+
+    /// Render the requested tabs through the complete application frame.
+    ///
+    /// This includes the global header, warning bar, footer, layout chrome,
+    /// active effects, and view contents. Callers must validate non-zero
+    /// dimensions before invoking this helper.
+    pub fn render_tabs_to_text(
+        &mut self,
+        width: u16,
+        height: u16,
+        tabs: &[Tab],
+    ) -> Vec<(Tab, String)> {
         use ratatui::backend::TestBackend;
 
-        Tab::ALL
+        if width == 0 || height == 0 {
+            return Vec::new();
+        }
+
+        let previous_tab = self.tui_state.active_tab;
+        let rendered = tabs
             .iter()
             .map(|&tab| {
                 self.tui_state.active_tab = tab;
@@ -791,7 +833,9 @@ impl App {
                     .join("\n");
                 (tab, text)
             })
-            .collect()
+            .collect();
+        self.tui_state.active_tab = previous_tab;
+        rendered
     }
 
     /// Install a live process supervisor used for per-agent process metrics.
@@ -1014,16 +1058,28 @@ impl App {
         // Responsive outer margin on large terminals
         let content_area = super::layout::responsive_outer_margin(full_area);
 
-        // Main layout: header (1) + warning (0-1) + wave (0-1) + content + footer (1)
+        // Main layout: header + warning + wave + optional sub-view bar +
+        // content + footer. Dashboard and Agents already render their own
+        // purpose-built internal navigation bars.
         let has_waves = !self.tui_state.execution_waves.is_empty();
         let wave_row_height = if has_waves { 1 } else { 0 };
         let warning_height = super::widgets::header_bar::warning_bar_height(&self.tui_state);
+        let subview_height = u16::from(matches!(
+            self.tui_state.active_tab,
+            Tab::Logs
+                | Tab::Config
+                | Tab::Inspect
+                | Tab::Marketplace
+                | Tab::Atelier
+                | Tab::Learning
+        ));
         let main_layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(1),               // Mori-style header bar
                 Constraint::Length(warning_height),  // Warning bar (0 when no warnings)
                 Constraint::Length(wave_row_height), // Wave indicator row (hidden when idle)
+                Constraint::Length(subview_height),  // Reachable Alt+number sub-views
                 Constraint::Min(0),                  // Content area
                 Constraint::Length(1),               // Status footer
             ])
@@ -1046,10 +1102,15 @@ impl App {
             );
         }
 
+        if subview_height > 0 {
+            self.render_subview_bar(frame, main_layout[3], &theme);
+        }
+
         // Content: dispatch to active tab view
-        // Layout: [0]=header [1]=warning [2]=wave [3]=content [4]=footer
-        let content_idx = 3;
-        let footer_idx = 4;
+        // Layout: [0]=header [1]=warning [2]=wave [3]=subview
+        //         [4]=content [5]=footer
+        let content_idx = 4;
+        let footer_idx = 5;
         let (content_area, input_area) = self.split_content_area(main_layout[content_idx]);
 
         self.clamp_scroll_state_to_view();
@@ -1074,7 +1135,7 @@ impl App {
         // Visual effects are part of the scene, never a layer above controls.
         // Apply them after ordinary widgets (so they can respect occupied
         // cells) but before modal dimming and modal content.
-        if self.fx_config.screen_postfx || self.fx_config.nerv_viz || self.fx_config.particles {
+        if self.fx_config.screen_postfx {
             let buf = frame.buffer_mut();
             super::postfx_pipeline::apply_pipeline(
                 self.tui_state.active_tab as usize,
@@ -1180,8 +1241,8 @@ impl App {
                     )
                 {
                     self.tui_state.selected_agent = self.tui_state.selected_agent.saturating_sub(1);
-                } else if self.tui_state.selected_plan_idx > 0 {
-                    self.tui_state.selected_plan_idx -= 1;
+                } else {
+                    self.move_selected_plan(-1);
                 }
             }
             TuiAction::SelectPlanDown => {
@@ -1196,10 +1257,7 @@ impl App {
                         self.tui_state.selected_agent += 1;
                     }
                 } else {
-                    let max = self.tui_state.plans.len().saturating_sub(1);
-                    if self.tui_state.selected_plan_idx < max {
-                        self.tui_state.selected_plan_idx += 1;
-                    }
+                    self.move_selected_plan(1);
                 }
             }
             TuiAction::TaskPickerUp => {
@@ -1283,9 +1341,11 @@ impl App {
             }
             TuiAction::ToggleLogFilter(level) => {
                 self.tui_state.toggle_log_filter_level(level);
+                self.refresh_log_search_matches();
             }
             TuiAction::ShowAllLogFilters => {
                 self.tui_state.show_all_log_filter_levels();
+                self.refresh_log_search_matches();
             }
             TuiAction::ScrollAgentUp => {
                 let delta = i32::from(self.scroll_accel.tick(-1));
@@ -1557,6 +1617,17 @@ impl App {
             }
             TuiAction::TogglePause => {
                 self.tui_state.is_paused = !self.tui_state.is_paused;
+                if let Some(tx) = &self.tui_command_tx {
+                    let command = if self.tui_state.is_paused {
+                        crate::runner::TuiCommand::Pause
+                    } else {
+                        crate::runner::TuiCommand::Resume
+                    };
+                    // The UI remains responsive even if the runner has already
+                    // shut down; a connected runner receives the transition on
+                    // its bounded in-process command channel.
+                    let _ = tx.try_send(command);
+                }
             }
             TuiAction::SwitchAgentTab(idx) => {
                 if idx == usize::MAX {
@@ -1670,12 +1741,11 @@ impl App {
                 } else if self.tui_state.input_mode == InputMode::LogSearch {
                     self.tui_state.log_search.pattern.push(c);
                     self.tui_state.log_search.recompile();
-                    self.tui_state
-                        .log_search
-                        .update_matches(&self.tui_state.cached_unified_log);
+                    self.refresh_log_search_matches();
                 } else if self.tui_state.input_mode == InputMode::PlanFilter {
                     self.tui_state.plan_tree_filter.pattern.push(c);
                     self.tui_state.plan_tree_filter.reparse();
+                    self.normalize_selected_plan_for_filter();
                 }
             }
             TuiAction::InputBackspace => {
@@ -1690,12 +1760,11 @@ impl App {
                 } else if self.tui_state.input_mode == InputMode::LogSearch {
                     self.tui_state.log_search.pattern.pop();
                     self.tui_state.log_search.recompile();
-                    self.tui_state
-                        .log_search
-                        .update_matches(&self.tui_state.cached_unified_log);
+                    self.refresh_log_search_matches();
                 } else if self.tui_state.input_mode == InputMode::PlanFilter {
                     self.tui_state.plan_tree_filter.pattern.pop();
                     self.tui_state.plan_tree_filter.reparse();
+                    self.normalize_selected_plan_for_filter();
                 }
             }
             TuiAction::StartFilter => {
@@ -2059,9 +2128,18 @@ impl App {
                 // based on which tab is active. The sub_tab in ViewState
                 // is derived from these fields via current_view_state().
                 let tab = self.tui_state.active_tab;
-                let max = views::SubView::for_tab(tab).len();
+                // Dashboard owns eight purpose-built detail panels.  It does
+                // not use the older four-item generic SubView list.
+                let max = if tab == Tab::Dashboard {
+                    8
+                } else {
+                    views::SubView::for_tab(tab).len()
+                };
                 if idx < max {
                     self.tui_state.set_sub_tab_for(tab, idx);
+                    if tab == Tab::Logs {
+                        self.refresh_log_search_matches();
+                    }
                 }
             }
             TuiAction::SubmitJob => {
@@ -2085,25 +2163,14 @@ impl App {
             }
             TuiAction::NextLogMatch => {
                 self.tui_state.log_search.next_match();
-                // Scroll to current match
-                if let Some(&line_idx) = self
-                    .tui_state
-                    .log_search
-                    .match_indices
-                    .get(self.tui_state.log_search.current_match)
-                {
+                if let Some(line_idx) = self.current_log_match_display_index() {
                     self.tui_state.log_scroll = line_idx;
                     self.tui_state.log_auto_tail = false;
                 }
             }
             TuiAction::PrevLogMatch => {
                 self.tui_state.log_search.prev_match();
-                if let Some(&line_idx) = self
-                    .tui_state
-                    .log_search
-                    .match_indices
-                    .get(self.tui_state.log_search.current_match)
-                {
+                if let Some(line_idx) = self.current_log_match_display_index() {
                     self.tui_state.log_scroll = line_idx;
                     self.tui_state.log_auto_tail = false;
                 }
@@ -2114,6 +2181,7 @@ impl App {
                     SearchMode::Highlight => SearchMode::Filter,
                     SearchMode::Filter => SearchMode::Highlight,
                 };
+                self.refresh_log_search_matches();
             }
 
             // -- Plan tree filter (#219) --
@@ -2122,6 +2190,7 @@ impl App {
                 self.tui_state.plan_tree_filter.active = true;
                 self.tui_state.plan_tree_filter.pattern.clear();
                 self.tui_state.plan_tree_filter.reparse();
+                self.normalize_selected_plan_for_filter();
             }
             TuiAction::AcceptPlanFilter => {
                 self.tui_state.input_mode = InputMode::Normal;
@@ -2130,6 +2199,7 @@ impl App {
             TuiAction::CancelPlanFilter => {
                 self.tui_state.input_mode = InputMode::Normal;
                 self.tui_state.plan_tree_filter.clear();
+                self.normalize_selected_plan_for_filter();
             }
 
             // -- Recovery keybindings (#119) --
@@ -2344,6 +2414,73 @@ impl App {
             .plans
             .get(self.tui_state.selected_plan_idx)
             .map(|plan| plan.id.clone())
+    }
+
+    fn visible_plan_indices(&self) -> Vec<usize> {
+        let filter = &self.tui_state.plan_tree_filter;
+        let filtering = filter.active && !filter.pattern.is_empty();
+        self.tui_state
+            .plans
+            .iter()
+            .enumerate()
+            .filter_map(|(index, plan)| {
+                (!filtering || filter.matches_plan_or_tasks(plan)).then_some(index)
+            })
+            .collect()
+    }
+
+    fn normalize_selected_plan_for_filter(&mut self) {
+        let visible = self.visible_plan_indices();
+        if visible.is_empty() {
+            return;
+        }
+        if !visible.contains(&self.tui_state.selected_plan_idx) {
+            self.tui_state.selected_plan_idx = visible[0];
+            self.tui_state.plan_scroll_offset = 0;
+        }
+    }
+
+    fn move_selected_plan(&mut self, direction: i8) {
+        let visible = self.visible_plan_indices();
+        if visible.is_empty() {
+            return;
+        }
+        let current = visible
+            .iter()
+            .position(|index| *index == self.tui_state.selected_plan_idx)
+            .unwrap_or(0);
+        let next = if direction < 0 {
+            current.saturating_sub(1)
+        } else {
+            current.saturating_add(1).min(visible.len() - 1)
+        };
+        self.tui_state.selected_plan_idx = visible[next];
+    }
+
+    fn refresh_log_search_matches(&mut self) {
+        let signals_only = self.tui_state.sub_tab_for(Tab::Logs) == 1;
+        let entries = self
+            .tui_state
+            .unified_log_entries()
+            .iter()
+            .filter(|entry| self.tui_state.log_level_visible(entry.level.filter_level()))
+            .filter(|entry| {
+                !signals_only
+                    || entry.source.starts_with("signal:")
+                    || entry.source.starts_with("episode:")
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        self.tui_state.log_search.update_matches(&entries);
+    }
+
+    fn current_log_match_display_index(&self) -> Option<usize> {
+        let search = &self.tui_state.log_search;
+        if search.mode == super::state::SearchMode::Filter {
+            (search.match_count > 0).then_some(search.current_match)
+        } else {
+            search.match_indices.get(search.current_match).copied()
+        }
     }
 
     fn current_git_branch(&self) -> String {
@@ -2887,6 +3024,29 @@ impl App {
         super::widgets::header_bar::render_header_bar(frame, area, &self.tui_state);
     }
 
+    fn render_subview_bar(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
+        let tab = self.tui_state.active_tab;
+        let active = self.tui_state.sub_tab_for(tab);
+        let mut spans = vec![Span::styled(" ", Theme::block_style())];
+        for (index, subview) in views::SubView::for_tab(tab).iter().enumerate() {
+            let style = if index == active {
+                theme
+                    .selection()
+                    .add_modifier(ratatui::style::Modifier::BOLD)
+            } else {
+                theme.muted()
+            };
+            spans.push(Span::styled(
+                format!(" Alt+{}:{} ", index + 1, subview.label()),
+                style,
+            ));
+        }
+        frame.render_widget(
+            Paragraph::new(Line::from(spans)).style(Theme::block_style()),
+            area,
+        );
+    }
+
     fn render_status_footer(&self, frame: &mut Frame<'_>, area: Rect, _theme: &Theme) {
         // Use the Mori-ported status_bar widget with context-sensitive hints
         super::widgets::status_bar::render_status_bar(frame, area, &self.tui_state);
@@ -2956,6 +3116,9 @@ impl App {
         if self.tui_state.config_needs_refresh() {
             self.tui_state.invalidate_config_cache();
         }
+        if self.tui_state.mcp_config_needs_refresh() {
+            self.tui_state.refresh_mcp_config_view();
+        }
         self.last_refresh = Instant::now();
         self.clamp_signal_selection();
         self.clamp_gate_failure_selection();
@@ -2987,6 +3150,9 @@ impl App {
         // Refresh cached config items on the 5-second cadence (P3.2).
         if self.tui_state.config_needs_refresh() {
             self.tui_state.invalidate_config_cache();
+        }
+        if self.tui_state.mcp_config_needs_refresh() {
+            self.tui_state.refresh_mcp_config_view();
         }
         self.last_refresh = Instant::now();
         self.clamp_signal_selection();
@@ -3215,7 +3381,7 @@ impl App {
             Tab::Dashboard => ViewState {
                 scroll: self.tui_state.agent_scroll.unwrap_or(0) as u16,
                 selected: self.tui_state.selected_plan_idx,
-                sub_tab: self.tui_state.plan_detail_tab,
+                sub_tab: self.tui_state.sub_tab_for(Tab::Dashboard),
                 secondary_selected: 0,
                 auto_tail: self.tui_state.agent_scroll.is_none(),
                 search_query: self.tui_state.filter.clone(),
@@ -3239,7 +3405,7 @@ impl App {
             Tab::Git => ViewState {
                 scroll: self.tui_state.diff_scroll.min(u16::MAX as usize) as u16,
                 selected: self.tui_state.git_branch_cursor,
-                sub_tab: 0,
+                sub_tab: self.tui_state.sub_tab_for(Tab::Git),
                 secondary_selected: 0,
                 auto_tail: false,
                 search_query: self.tui_state.filter.clone(),
@@ -3247,7 +3413,7 @@ impl App {
             Tab::Logs => ViewState {
                 scroll: self.tui_state.log_scroll.min(u16::MAX as usize) as u16,
                 selected: 0,
-                sub_tab: 0,
+                sub_tab: self.tui_state.sub_tab_for(Tab::Logs),
                 secondary_selected: 0,
                 auto_tail: self.tui_state.log_auto_tail,
                 search_query: self.tui_state.filter.clone(),
@@ -4155,6 +4321,27 @@ mod tests {
     }
 
     #[test]
+    fn pause_toggle_notifies_connected_runner() {
+        let dir = tempdir().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(2);
+        let mut app = App::new(dir.path()).with_tui_command_tx(tx);
+
+        app.dispatch_action(TuiAction::TogglePause);
+        assert!(app.tui_state.is_paused);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(crate::runner::TuiCommand::Pause)
+        ));
+
+        app.dispatch_action(TuiAction::TogglePause);
+        assert!(!app.tui_state.is_paused);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(crate::runner::TuiCommand::Resume)
+        ));
+    }
+
+    #[test]
     fn app_new_connected_installs_snapshot_receiver() {
         let dir = tempdir().unwrap();
         let hub = crate::state_hub::shared_state_hub();
@@ -4975,7 +5162,7 @@ mod tests {
     }
 
     #[test]
-    fn effects_action_cycles_presets_and_persists_without_touching_screen_postfx() {
+    fn effects_action_cycles_presets_and_keeps_master_switch_honest() {
         use super::super::effects_config::EffectsPreset;
 
         let dir = tempdir().unwrap();
@@ -4993,7 +5180,7 @@ mod tests {
         assert_eq!(app.fx_config.preset, EffectsPreset::Minimal);
         assert!(app.fx_config.screen_postfx);
         assert!(!app.fx_config.nerv_viz);
-        assert!(app.fx_config.particles);
+        assert!(!app.fx_config.particles);
 
         app.dispatch_action(TuiAction::CycleEffectsPreset);
         assert_eq!(app.fx_config.preset, EffectsPreset::Full);
@@ -5003,7 +5190,7 @@ mod tests {
 
         app.dispatch_action(TuiAction::CycleEffectsPreset);
         assert_eq!(app.fx_config.preset, EffectsPreset::Off);
-        assert!(app.fx_config.screen_postfx);
+        assert!(!app.fx_config.screen_postfx);
         assert!(!app.fx_config.nerv_viz);
         assert!(!app.fx_config.particles);
 
@@ -5011,7 +5198,7 @@ mod tests {
         assert_eq!(app.fx_config.preset, EffectsPreset::Minimal);
         assert!(app.fx_config.screen_postfx);
         assert!(!app.fx_config.nerv_viz);
-        assert!(app.fx_config.particles);
+        assert!(!app.fx_config.particles);
 
         let saved = std::fs::read_to_string(dir.path().join("roko.toml")).unwrap();
         assert!(saved.contains("preset = \"minimal\""));
@@ -5213,6 +5400,19 @@ mod tests {
         app.dispatch_action(TuiAction::SwitchSubView(1));
         assert_eq!(app.tui_state.marketplace_sub_tab, 1);
         assert_eq!(app.tui_state.inspect_sub_tab, 3);
+
+        app.tui_state.active_tab = Tab::Logs;
+        app.dispatch_action(TuiAction::SwitchSubView(2));
+        assert_eq!(app.tui_state.logs_sub_tab, 2);
+
+        app.tui_state.active_tab = Tab::Learning;
+        app.dispatch_action(TuiAction::SwitchSubView(1));
+        assert_eq!(app.tui_state.learning_sub_tab, 1);
+
+        app.tui_state.active_tab = Tab::Dashboard;
+        app.dispatch_action(TuiAction::SwitchSubView(7));
+        assert_eq!(app.tui_state.dashboard_sub_tab, 7);
+        assert_eq!(app.tui_state.plan_detail_tab, 0);
     }
 
     #[test]
@@ -5285,6 +5485,49 @@ mod tests {
         assert!(app.tui_state.filter_text.is_empty());
         assert!(app.tui_state.filter.is_empty());
         assert!(!app.tui_state.filter_active);
+    }
+
+    #[test]
+    fn plan_filter_navigation_keeps_actual_plan_identity() {
+        let dir = tempdir().unwrap();
+        let mut app = App::new(dir.path());
+        app.tui_state.active_tab = Tab::Plans;
+        app.tui_state.plans = vec![
+            PlanEntry {
+                id: "hidden-a".to_string(),
+                name: "Hidden A".to_string(),
+                ..PlanEntry::default()
+            },
+            PlanEntry {
+                id: "visible-one".to_string(),
+                name: "Visible One".to_string(),
+                ..PlanEntry::default()
+            },
+            PlanEntry {
+                id: "hidden-b".to_string(),
+                name: "Hidden B".to_string(),
+                ..PlanEntry::default()
+            },
+            PlanEntry {
+                id: "visible-two".to_string(),
+                name: "Visible Two".to_string(),
+                ..PlanEntry::default()
+            },
+        ];
+
+        app.dispatch_action(TuiAction::StartPlanFilter);
+        for c in "visible".chars() {
+            app.dispatch_action(TuiAction::InputChar(c));
+        }
+        assert_eq!(app.tui_state.selected_plan_idx, 1);
+
+        app.dispatch_action(TuiAction::SelectPlanDown);
+        assert_eq!(app.tui_state.selected_plan_idx, 3);
+        app.dispatch_action(TuiAction::ShowPlanDetail);
+        assert!(matches!(
+            app.tui_state.active_modal,
+            Some(ModalState::PlanDetail { ref plan_id }) if plan_id == "visible-two"
+        ));
     }
 
     #[test]

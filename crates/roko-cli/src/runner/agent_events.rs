@@ -19,6 +19,10 @@ use super::types::{AgentEvent, StderrSeverity};
 /// trimmed to keep the tail (most recent output), which is what replan
 /// context and diagnostics need.
 const MAX_AGENT_OUTPUT: usize = 32_768;
+/// Tool transcripts projected into the live dashboard are bounded separately
+/// from the runner's durable evidence so a single compiler dump cannot flood
+/// the watch snapshot or make rendering unresponsive.
+const MAX_TUI_TOOL_OUTPUT: usize = 8_192;
 
 /// Process a single agent event, updating state and publishing to TUI.
 ///
@@ -81,19 +85,35 @@ pub(crate) fn handle_agent_event(
             let marker = format!("\n[tool: {name}]\n");
             state.agent_output.push_str(&marker);
 
+            let agent_id = agent_id_for_state(state);
+            let attempt = state.iteration_for(plan_id, task_id);
+            tui.agent_output(&agent_id, plan_id, task_id, attempt, &marker);
+
             sink.tool_call(plan_id, task_id, id, name);
         }
 
         AgentEvent::ToolOutput { id, output } => {
             // Truncate tool output in the accumulated buffer.
             let limit = roko_core::defaults::DEFAULT_TOOL_OUTPUT_TRUNCATE_AT;
-            let truncated = if output.len() > limit {
-                &output[..limit]
-            } else {
-                output.as_str()
-            };
+            let (truncated, state_was_truncated) = bounded_utf8(output, limit);
             state.agent_output.push_str(truncated);
+            if state_was_truncated {
+                state
+                    .agent_output
+                    .push_str("\n[...tool output truncated...]\n");
+            }
             state.agent_output.push('\n');
+
+            let (visible, visible_was_truncated) = bounded_utf8(output, MAX_TUI_TOOL_OUTPUT);
+            let mut dashboard_output = visible.to_string();
+            if visible_was_truncated {
+                dashboard_output.push_str("\n[...tool output truncated for TUI...]\n");
+            } else if !dashboard_output.ends_with('\n') {
+                dashboard_output.push('\n');
+            }
+            let agent_id = agent_id_for_state(state);
+            let attempt = state.iteration_for(plan_id, task_id);
+            tui.agent_output(&agent_id, plan_id, task_id, attempt, &dashboard_output);
 
             sink.tool_output(plan_id, task_id, id, output);
         }
@@ -203,6 +223,17 @@ pub(crate) fn handle_agent_event(
             debug!(exit_code = ?exit_code, task = %state.current_task, "agent process exited");
         }
     }
+}
+
+fn bounded_utf8(input: &str, max_bytes: usize) -> (&str, bool) {
+    if input.len() <= max_bytes {
+        return (input, false);
+    }
+    let mut boundary = max_bytes.min(input.len());
+    while boundary > 0 && !input.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    (&input[..boundary], true)
 }
 
 /// Derive an agent identifier from the current state.
@@ -418,6 +449,14 @@ mod tests {
         let (hub, tui) = noop_bridge();
         let mut state = make_state("plan-alpha", "T42");
         let sink = NoopSink;
+        tui.agent_spawned(
+            "plan-alpha/T42",
+            "plan-alpha",
+            "T42",
+            1,
+            "implementer",
+            "test-model",
+        );
 
         handle_agent_event(
             &AgentEvent::MessageDelta {
@@ -429,17 +468,61 @@ mod tests {
         );
 
         let snap = hub.snapshot().borrow().clone();
-        // The agent output is stored in the snapshot keyed by agent_id derived
-        // from plan_id + "/" + task_id.
+        // The agent output is stored in the snapshot under the structured
+        // current task supplied by AgentSpawned.
         let agent_key = "plan-alpha/T42";
-        assert!(
-            snap.agents.contains_key(agent_key) || state.agent_output.contains("hello world"),
-            "output must be attributed to plan-alpha/T42 or buffered in state"
+        assert!(snap.agents.contains_key(agent_key));
+        assert_eq!(
+            snap.task_outputs
+                .get("T42")
+                .and_then(|lines| lines.back())
+                .map(String::as_str),
+            Some("hello world")
         );
         assert!(
             state.agent_output.contains("hello world"),
             "agent_output in RunState must accumulate the delta"
         );
+    }
+
+    #[test]
+    fn tool_activity_is_projected_to_connected_dashboard_with_a_bound() {
+        let (hub, tui) = noop_bridge();
+        let mut state = make_state("plan-alpha", "T42");
+        let sink = NoopSink;
+        tui.agent_spawned(
+            "plan-alpha/T42",
+            "plan-alpha",
+            "T42",
+            1,
+            "implementer",
+            "test-model",
+        );
+
+        handle_agent_event(
+            &AgentEvent::ToolCall {
+                id: "tool-1".to_string(),
+                name: "cargo check".to_string(),
+            },
+            &mut state,
+            &tui,
+            &sink,
+        );
+        handle_agent_event(
+            &AgentEvent::ToolOutput {
+                id: "tool-1".to_string(),
+                output: "x".repeat(MAX_TUI_TOOL_OUTPUT + 100),
+            },
+            &mut state,
+            &tui,
+            &sink,
+        );
+
+        let snap = hub.snapshot().borrow().clone();
+        let lines = snap.task_outputs.get("T42").expect("task output ring");
+        assert!(lines.iter().any(|line| line.contains("tool: cargo check")));
+        assert!(lines.iter().any(|line| line.contains("truncated for TUI")));
+        assert!(snap.agents["plan-alpha/T42"].output_bytes <= MAX_TUI_TOOL_OUTPUT + 256);
     }
 
     // T1 / SH04-T01: structured attribution via agent_id_for_state never depends

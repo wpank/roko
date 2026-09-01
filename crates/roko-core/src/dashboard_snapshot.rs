@@ -519,6 +519,15 @@ pub struct GateVerdictView {
     pub ts_millis: u64,
 }
 
+/// Gate pipeline currently executing for the live dashboard.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActiveGateRung {
+    pub plan_id: String,
+    pub task_id: String,
+    pub rung_name: String,
+    pub started_at_ms: u64,
+}
+
 /// Context required to project a canonical [`foundation::GateVerdict`] into
 /// the dashboard ring-view.
 pub struct GateVerdictContext {
@@ -1109,6 +1118,9 @@ pub struct DashboardSnapshot {
     /// Gate output lines from rung executions (bounded to 500).
     #[serde(default)]
     pub gate_output_lines: VecDeque<String>,
+    /// Gate pipeline currently in progress, cleared on the next verdict.
+    #[serde(default)]
+    pub active_gate_rung: Option<ActiveGateRung>,
     /// Rolling ring of recent token counts from efficiency events (bounded to 120).
     #[serde(default)]
     pub token_event_ring: VecDeque<u64>,
@@ -1449,8 +1461,20 @@ impl DashboardSnapshot {
                 task_id,
                 gate,
                 passed,
-                ..
+                output_text,
             } => {
+                self.active_gate_rung = None;
+                if let Some(output) = output_text {
+                    self.gate_output_lines.clear();
+                    let lines = output
+                        .lines()
+                        .rev()
+                        .take(MAX_GATE_OUTPUT_LINES)
+                        .collect::<Vec<_>>();
+                    for line in lines.into_iter().rev() {
+                        self.gate_output_lines.push_back(line.to_string());
+                    }
+                }
                 if *passed {
                     self.stats.gates_passed += 1;
                 } else {
@@ -1725,6 +1749,15 @@ impl DashboardSnapshot {
                 task_id,
                 rung_name,
             } => {
+                // Output belongs to the active rung. Do not display the
+                // previous rung's tail while a new verification is running.
+                self.gate_output_lines.clear();
+                self.active_gate_rung = Some(ActiveGateRung {
+                    plan_id: plan_id.clone(),
+                    task_id: task_id.clone(),
+                    rung_name: rung_name.clone(),
+                    started_at_ms: ts,
+                });
                 self.push_event_log(
                     ts,
                     "gate_rung_started".to_string(),
@@ -3811,6 +3844,45 @@ mod tests {
         }
         assert_eq!(snap.gates.len(), MAX_GATES);
         assert_eq!(snap.stats.gates_passed, 300);
+    }
+
+    #[test]
+    fn active_gate_rung_and_output_follow_gate_lifecycle() {
+        let mut snap = DashboardSnapshot::default();
+        snap.apply_with_ts(
+            &DashboardEvent::GateRungStarted {
+                plan_id: "plan-a".into(),
+                task_id: "task-1".into(),
+                rung_name: "compile, test".into(),
+            },
+            1_000,
+        );
+        assert_eq!(
+            snap.active_gate_rung
+                .as_ref()
+                .map(|rung| (rung.rung_name.as_str(), rung.started_at_ms)),
+            Some(("compile, test", 1_000))
+        );
+
+        snap.apply(&DashboardEvent::GateOutputLine {
+            plan_id: "plan-a".into(),
+            task_id: "task-1".into(),
+            gate: "compile".into(),
+            line: "Checking roko-core".into(),
+        });
+        assert_eq!(
+            snap.gate_output_lines.back().map(String::as_str),
+            Some("Checking roko-core")
+        );
+
+        snap.apply(&DashboardEvent::GateResult {
+            plan_id: "plan-a".into(),
+            task_id: "task-1".into(),
+            gate: "compile".into(),
+            passed: true,
+            output_text: Some("Checking roko-core".into()),
+        });
+        assert!(snap.active_gate_rung.is_none());
     }
 
     #[test]

@@ -131,12 +131,24 @@ impl TuiBridge {
 
     /// A gate verdict.
     pub fn gate_result(&self, plan_id: &str, task_id: &str, gate: &str, passed: bool) {
+        self.gate_result_with_output(plan_id, task_id, gate, passed, None);
+    }
+
+    /// A gate verdict with its captured output.
+    pub fn gate_result_with_output(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+        gate: &str,
+        passed: bool,
+        output_text: Option<&str>,
+    ) {
         self.sender.publish(DashboardEvent::GateResult {
             plan_id: plan_id.to_string(),
             task_id: task_id.to_string(),
             gate: gate.to_string(),
             passed,
-            output_text: None,
+            output_text: output_text.map(str::to_string),
         });
     }
 
@@ -192,6 +204,18 @@ impl TuiBridge {
     /// Error event.
     pub fn error(&self, message: &str) {
         self.sender.publish(DashboardEvent::Error {
+            message: message.to_string(),
+        });
+    }
+
+    /// Publish a lightweight runner status line before the full lifecycle
+    /// event stream is available (for example during cache warmup).
+    pub fn status(&self, event_type: &str, message: &str) {
+        self.sender.publish(DashboardEvent::EventLogEntry {
+            timestamp_ms: timestamp_now_ms(),
+            event_type: event_type.to_string(),
+            plan_id: String::new(),
+            task_id: String::new(),
             message: message.to_string(),
         });
     }

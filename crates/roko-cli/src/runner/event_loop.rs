@@ -2855,10 +2855,22 @@ pub async fn run_with_tui_commands(
         }))
     };
 
+    // Establish the dashboard bridge before any potentially long startup
+    // work. Approval-mode output uses a NoopSink, so StateHub is the only
+    // visible progress channel during cache warming and factory setup.
+    let tui = TuiBridge::new(state_hub.sender());
+
     // -- Warm cargo cache -------------------------------------------------------
     // Run `cargo check --workspace` once before the main loop so that
     // subsequent per-task compile gates are incremental (2-5s vs 30-120s).
     if config.warm_cache && !env_flag_enabled("ROKO_FAST_MODE") {
+        for plan in &plans {
+            tui.plan_started(&plan.id, plan.tasks.tasks.len());
+        }
+        tui.status(
+            "startup.cache_warm.started",
+            "warming Cargo workspace cache; this may take a few minutes on a cold build",
+        );
         sink.warm_cache_started();
         let warm_start = std::time::Instant::now();
         let warm_result = tokio::process::Command::new("cargo")
@@ -2873,6 +2885,13 @@ pub async fn run_with_tui_commands(
             Ok(status) if status.success() => {
                 info!(warm_ms, "cargo cache warmed successfully");
                 sink.warm_cache_completed(warm_ms);
+                tui.status(
+                    "startup.cache_warm.completed",
+                    &format!(
+                        "Cargo workspace cache ready in {:.1}s",
+                        warm_ms as f64 / 1_000.0
+                    ),
+                );
             }
             Ok(status) => {
                 warn!(
@@ -2880,9 +2899,20 @@ pub async fn run_with_tui_commands(
                     exit_code = status.code().unwrap_or(-1),
                     "cargo cache warm failed (non-fatal)"
                 );
+                tui.status(
+                    "startup.cache_warm.warning",
+                    &format!(
+                        "Cargo cache warmup exited {}; continuing",
+                        status.code().unwrap_or(-1)
+                    ),
+                );
             }
             Err(e) => {
                 warn!(warm_ms, error = %e, "cargo cache warm failed (non-fatal)");
+                tui.status(
+                    "startup.cache_warm.warning",
+                    &format!("Cargo cache warmup could not start: {e}; continuing"),
+                );
             }
         }
     } else if config.warm_cache {
@@ -2965,7 +2995,6 @@ pub async fn run_with_tui_commands(
     );
 
     // State and TUI bridge.
-    let tui = TuiBridge::new(state_hub.sender());
     let mut state = RunState::new(total_tasks);
     let mut dream_completion_pending = false;
 
@@ -4679,12 +4708,27 @@ pub async fn run_with_tui_commands(
                     }
                 }
 
-                for v in &completion.verdicts {
-                    tui.gate_result(
+                let gate_label = completion
+                    .verdicts
+                    .first()
+                    .map_or("gate", |verdict| verdict.gate_name.as_str());
+                let gate_lines = completion.output.lines().rev().take(500).collect::<Vec<_>>();
+                for line in gate_lines.into_iter().rev() {
+                    tui.gate_output_line(
+                        &completion.plan_id,
+                        &completion.task_id,
+                        gate_label,
+                        line,
+                    );
+                }
+
+                for (verdict_index, v) in completion.verdicts.iter().enumerate() {
+                    tui.gate_result_with_output(
                         &completion.plan_id,
                         &completion.task_id,
                         &v.gate_name,
                         v.passed,
+                        (verdict_index == 0).then_some(completion.output.as_str()),
                     );
 
                     // Emit gate verdict metric.
@@ -5958,7 +6002,14 @@ pub async fn run_with_tui_commands(
                         debug!(count = evicted.len(), "warm_pool: evicted stale agents");
                     }
                 }
-                let actions = executor.tick();
+                // Pausing is a scheduling barrier: in-flight agents and gates
+                // may still settle, but no new executor actions are dispatched
+                // until a resume command is observed.
+                let actions = if control_paused {
+                    Vec::new()
+                } else {
+                    executor.tick()
+                };
                 for action in actions {
                     let t_dispatch = Instant::now();
                     let action_label = match &action {

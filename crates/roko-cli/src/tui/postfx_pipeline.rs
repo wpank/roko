@@ -24,31 +24,32 @@ pub fn apply_pipeline(
     fx: &EffectsConfig,
     state: &TuiState,
 ) {
-    let show_state_vfx = matches!(tab_idx, 0 | 1 | 2) && (fx.nerv_viz || fx.particles);
-    if !fx.screen_postfx && !show_state_vfx {
+    // `screen_postfx` is the master switch. Operators need one reliable way
+    // to recover a clean, readable frame even when the selected preset has
+    // state visualization or particles enabled.
+    if !fx.screen_postfx {
         return;
     }
+    let show_state_vfx = matches!(tab_idx, 0 | 1 | 2) && (fx.nerv_viz || fx.particles);
 
-    if fx.screen_postfx {
-        match tab_idx {
-            0 | 1 | 2 => {
-                self_glow(area, buf, 200, 0.12);
-            }
-            _ => {}
+    match tab_idx {
+        0 | 1 | 2 => {
+            self_glow(area, buf, 200, 0.12);
         }
+        _ => {}
+    }
 
-        if fx.bloom_enabled {
-            postfx::bloom(area, buf, 220, 1, fx.bloom_intensity);
-        }
+    if fx.bloom_enabled {
+        postfx::bloom(area, buf, 220, 1, fx.bloom_intensity);
+    }
 
-        if fx.shadows_enabled {
-            postfx::drop_shadow(buf, area);
-        }
+    if fx.shadows_enabled {
+        postfx::drop_shadow(buf, area);
+    }
 
-        if fx.vfx_enabled {
-            postfx::ambient_orbs(area, buf, elapsed, 3, 40);
-            postfx::dream_atmosphere(area, buf, elapsed, frame);
-        }
+    if fx.vfx_enabled {
+        postfx::ambient_orbs(area, buf, elapsed, 3, 40);
+        postfx::dream_atmosphere(area, buf, elapsed, frame);
     }
 
     if show_state_vfx {

@@ -477,7 +477,7 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
     // ── 8. F-key strip (right-aligned) ────────────────────────────────
     use super::super::tabs::Tab;
 
-    let fkey_items: Vec<(&str, Color, &str, Tab)> = vec![
+    let all_fkey_items: Vec<(&str, Color, &str, Tab)> = vec![
         (" F1", Theme::ROSE, "dash", Tab::Dashboard),
         (" F2", Theme::BONE_DIM, "plans", Tab::Plans),
         (" F3", Theme::SAGE, "agents", Tab::Agents),
@@ -487,10 +487,31 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         (" F7", Theme::BONE_DIM, "inspect", Tab::Inspect),
         (" F8", Theme::SAGE, "market", Tab::Marketplace),
         (" F9", Theme::DREAM, "atelier", Tab::Atelier),
+        (" F10", Theme::BONE_DIM, "learn", Tab::Learning),
     ];
 
-    // Compute badge counts for each tab (only shown on inactive tabs).
+    // Keep the operational metrics legible instead of reserving a tab strip
+    // wider than the terminal. Compact headers show the active destination;
+    // medium headers add the four highest-frequency views.
     let current_tab = state.active_tab;
+    let fkey_items = if area.width >= 150 {
+        all_fkey_items
+    } else if area.width >= 95 {
+        all_fkey_items
+            .into_iter()
+            .filter(|(_, _, _, tab)| {
+                *tab == current_tab
+                    || matches!(tab, Tab::Dashboard | Tab::Plans | Tab::Agents | Tab::Logs)
+            })
+            .collect()
+    } else {
+        all_fkey_items
+            .into_iter()
+            .filter(|(_, _, _, tab)| *tab == current_tab)
+            .collect()
+    };
+
+    // Compute badge counts for each tab (only shown on inactive tabs).
     let badges: Vec<usize> = fkey_items
         .iter()
         .map(|(_, _, _, tab)| {

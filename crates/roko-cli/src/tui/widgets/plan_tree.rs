@@ -98,10 +98,15 @@ pub fn render_plan_tree(frame: &mut Frame<'_>, area: Rect, state: &TuiState, foc
     let filter_active = is_filter_active(state);
     let filtered_plan_indices = filtered_plan_indices(state);
     let filtered_total = filtered_plan_indices.len();
-    let selected_plan_idx = clamped_selected_plan_idx(state.selected_plan_idx, filtered_total);
-    let selected_plan_id = filtered_plan_indices
-        .get(selected_plan_idx)
-        .and_then(|&idx| state.plans.get(idx))
+    let selected_plan_id = state
+        .plans
+        .get(state.selected_plan_idx)
+        .filter(|plan| matches_filter(plan, state))
+        .or_else(|| {
+            filtered_plan_indices
+                .first()
+                .and_then(|&idx| state.plans.get(idx))
+        })
         .map(|plan| plan.id.as_str());
     let filtered_suffix = if filter_active {
         format!(", {filtered_total}/{total} filtered")
@@ -800,19 +805,11 @@ fn filtered_plan_indices(state: &TuiState) -> Vec<usize> {
         .collect()
 }
 
-fn clamped_selected_plan_idx(selected_plan_idx: usize, filtered_total: usize) -> usize {
-    if filtered_total == 0 {
-        0
-    } else {
-        selected_plan_idx.min(filtered_total - 1)
-    }
-}
-
 fn matches_filter(plan: &PlanEntry, state: &TuiState) -> bool {
     if !is_filter_active(state) {
         return true;
     }
-    state.plan_tree_filter.matches_plan(plan)
+    state.plan_tree_filter.matches_plan_or_tasks(plan)
 }
 
 fn compact_progress_glyphs(width: usize, fill_pct: f64) -> String {

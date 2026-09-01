@@ -24,6 +24,7 @@ use super::input::{ConfirmAction, FocusZone, InputMode, LogFilterLevel};
 use super::modals::ModalState;
 use super::segment::{CachedRender, output_byte_len, render_cached_output};
 use super::tabs::Tab;
+use crate::config::Config;
 use crate::plan::{PlanSummary, plans_dir};
 use crate::task_parser::{TaskDef, TasksFile};
 
@@ -40,6 +41,18 @@ pub struct PendingApproval {
     pub description: String,
     /// The raw command or tool call.
     pub command: String,
+}
+
+/// Cached MCP configuration used by the dashboard's MCP panel.
+///
+/// Keeping this in `TuiState` ensures rendering remains a pure in-memory
+/// operation; filesystem parsing happens on the normal refresh cadence.
+#[derive(Debug, Clone, Default)]
+pub struct McpConfigView {
+    pub configured_path: Option<PathBuf>,
+    pub resolved_path: Option<PathBuf>,
+    pub config: Option<roko_agent::mcp::McpConfig>,
+    pub error: Option<String>,
 }
 
 /// Canonical status for an agent.
@@ -1305,6 +1318,14 @@ pub struct TuiState {
     pub selected_agent: usize,
     /// Selected agent sub-tab index.
     pub selected_agent_tab: usize,
+    /// Selected Dashboard detail panel index.
+    pub dashboard_sub_tab: usize,
+    /// Selected Git tab sub-view index.
+    pub git_sub_tab: usize,
+    /// Selected Logs tab sub-view index.
+    pub logs_sub_tab: usize,
+    /// Selected Learning tab sub-view index.
+    pub learning_sub_tab: usize,
     /// Selected Config tab sub-view index.
     pub config_sub_tab: usize,
     /// Selected Inspect tab sub-view index.
@@ -1580,6 +1601,12 @@ pub struct TuiState {
     /// Timestamp of the last inspect data refresh.
     pub inspect_last_refresh: Option<Instant>,
 
+    // -- MCP config cache (P3.1) --
+    /// Cached MCP configuration for the Dashboard MCP panel.
+    pub mcp_config_view: McpConfigView,
+    /// Timestamp of the last MCP configuration refresh.
+    pub mcp_config_refreshed_at: Option<Instant>,
+
     cpu_pct_smoothed: SmoothedValue,
     token_rate_smoothed: SmoothedValue,
     cost_rate_smoothed: SmoothedValue,
@@ -1626,6 +1653,10 @@ impl Default for TuiState {
             selected_plan_idx: 0,
             selected_agent: 0,
             selected_agent_tab: 0,
+            dashboard_sub_tab: 0,
+            git_sub_tab: 0,
+            logs_sub_tab: 0,
+            learning_sub_tab: 0,
             config_sub_tab: 0,
             inspect_sub_tab: 0,
             marketplace_sub_tab: 0,
@@ -1705,6 +1736,9 @@ impl Default for TuiState {
 
             inspect_data: InspectData::default(),
             inspect_last_refresh: None,
+
+            mcp_config_view: McpConfigView::default(),
+            mcp_config_refreshed_at: None,
 
             agent_pane_group: 0,
 
@@ -2232,6 +2266,60 @@ impl TuiState {
         self.inspect_last_refresh = Some(Instant::now());
     }
 
+    /// Whether the cached MCP configuration should be refreshed.
+    #[must_use]
+    pub fn mcp_config_needs_refresh(&self) -> bool {
+        const MCP_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+        self.mcp_config_refreshed_at
+            .is_none_or(|refreshed| refreshed.elapsed() >= MCP_REFRESH_INTERVAL)
+    }
+
+    /// Refresh the dashboard MCP configuration cache from disk.
+    pub fn refresh_mcp_config_view(&mut self) {
+        let config_path = self.workdir.join("roko.toml");
+        self.mcp_config_view = match Config::from_file(&config_path) {
+            Ok(config) => {
+                let Some(configured_path) = config.agent.mcp_config else {
+                    self.mcp_config_view = McpConfigView::default();
+                    self.mcp_config_refreshed_at = Some(Instant::now());
+                    return;
+                };
+                let resolved_path = if configured_path.is_absolute() {
+                    configured_path.clone()
+                } else {
+                    self.workdir.join(&configured_path)
+                };
+                if !resolved_path.is_file() {
+                    McpConfigView {
+                        configured_path: Some(configured_path),
+                        resolved_path: Some(resolved_path),
+                        ..McpConfigView::default()
+                    }
+                } else {
+                    match roko_agent::mcp::McpConfig::load(&resolved_path) {
+                        Ok(config) => McpConfigView {
+                            configured_path: Some(configured_path),
+                            resolved_path: Some(resolved_path),
+                            config: Some(config),
+                            error: None,
+                        },
+                        Err(error) => McpConfigView {
+                            configured_path: Some(configured_path),
+                            resolved_path: Some(resolved_path),
+                            config: None,
+                            error: Some(error.to_string()),
+                        },
+                    }
+                }
+            }
+            Err(error) => McpConfigView {
+                error: Some(format!("failed to load roko.toml: {error}")),
+                ..McpConfigView::default()
+            },
+        };
+        self.mcp_config_refreshed_at = Some(Instant::now());
+    }
+
     // -- aggregate queries (used by header_bar, status_bar, etc.) -----------
 
     /// Return (done, total) task counts summed across all plans.
@@ -2369,26 +2457,32 @@ impl TuiState {
     #[must_use]
     pub fn sub_tab_for(&self, tab: Tab) -> usize {
         match tab {
-            Tab::Dashboard | Tab::Plans => self.plan_detail_tab,
+            Tab::Dashboard => self.dashboard_sub_tab,
+            Tab::Plans => self.plan_detail_tab,
             Tab::Agents => self.selected_agent_tab,
+            Tab::Git => self.git_sub_tab,
+            Tab::Logs => self.logs_sub_tab,
             Tab::Config => self.config_sub_tab,
             Tab::Inspect => self.inspect_sub_tab,
             Tab::Marketplace => self.marketplace_sub_tab,
             Tab::Atelier => self.atelier_sub_tab,
-            Tab::Git | Tab::Logs | Tab::Learning => 0,
+            Tab::Learning => self.learning_sub_tab,
         }
     }
 
     /// Store the active sub-view index for a tab.
     pub fn set_sub_tab_for(&mut self, tab: Tab, idx: usize) {
         match tab {
-            Tab::Dashboard | Tab::Plans => self.plan_detail_tab = idx,
+            Tab::Dashboard => self.dashboard_sub_tab = idx,
+            Tab::Plans => self.plan_detail_tab = idx,
             Tab::Agents => self.selected_agent_tab = idx,
+            Tab::Git => self.git_sub_tab = idx,
+            Tab::Logs => self.logs_sub_tab = idx,
             Tab::Config => self.config_sub_tab = idx,
             Tab::Inspect => self.inspect_sub_tab = idx,
             Tab::Marketplace => self.marketplace_sub_tab = idx,
             Tab::Atelier => self.atelier_sub_tab = idx,
-            Tab::Git | Tab::Logs | Tab::Learning => {}
+            Tab::Learning => self.learning_sub_tab = idx,
         }
     }
 
@@ -3141,6 +3235,13 @@ impl TuiState {
                 },
             })
             .collect();
+        self.current_gate_rung = snap.active_gate_rung.as_ref().map(|rung| {
+            let elapsed_ms = current_epoch_ms().saturating_sub(rung.started_at_ms);
+            let started_at = Instant::now()
+                .checked_sub(Duration::from_millis(elapsed_ms))
+                .unwrap_or_else(Instant::now);
+            (rung.rung_name.clone(), started_at)
+        });
         self.diagnoses = snap.diagnoses.iter().cloned().collect();
         self.experiment_winners = snap.experiment_winners.clone();
         self.gate_trends = snap.gate_trends.clone();
@@ -3389,9 +3490,10 @@ impl TuiState {
         }
 
         // --- Gate output lines from snapshot ---
-        if !snap.gate_output_lines.is_empty() {
-            self.gate_output_lines = snap.gate_output_lines.clone();
-        }
+        // The connected snapshot is authoritative. Replacing with an empty
+        // ring is important when a new rung starts, otherwise the previous
+        // gate's output leaks into the active panel.
+        self.gate_output_lines = snap.gate_output_lines.clone();
 
         self.refresh_cached_unified_log();
     }
@@ -4607,6 +4709,10 @@ fn episode_to_phase_name(episode: &roko_learn::episode_logger::Episode) -> Strin
     String::new()
 }
 
+fn current_epoch_ms() -> u64 {
+    Utc::now().timestamp_millis().max(0) as u64
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -5567,6 +5673,7 @@ tier = "focused"
             inbox_pending_count: 0,
             affect: None,
             gate_output_lines: Default::default(),
+            active_gate_rung: None,
             token_event_ring: Default::default(),
             stats: Default::default(),
         };

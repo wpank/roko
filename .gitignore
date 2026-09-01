@@ -87,6 +87,8 @@ demo/.runtime/
 !/tmp/tui-parity/audits/
 /tmp/tui-parity/audits/*
 !/tmp/tui-parity/audits/post-merge-live-audit-2026-08-31.md
+!/tmp/tui-parity2/
+!/tmp/tui-parity2/**
 
 # Temporary / work-in-progress (will be refined later) ----------------------
 CLAUDE.md

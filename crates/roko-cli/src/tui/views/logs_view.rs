@@ -194,12 +194,19 @@ fn render_with_entries(
         .bg(Theme::DREAM);
 
     // Current match index for extra emphasis (selection highlight on n/N target).
-    let current_match_filtered_idx: Option<usize> =
-        if search.active && !search.match_indices.is_empty() {
-            search.match_indices.get(search.current_match).copied()
+    let current_match_filtered_idx = if search.active && !search.match_indices.is_empty() {
+        if search.mode == SearchMode::Filter {
+            Some(
+                search
+                    .current_match
+                    .min(filtered_entries.len().saturating_sub(1)),
+            )
         } else {
-            None
-        };
+            search.match_indices.get(search.current_match).copied()
+        }
+    } else {
+        None
+    };
 
     let lines: Vec<Line<'_>> = filtered_entries
         .iter()

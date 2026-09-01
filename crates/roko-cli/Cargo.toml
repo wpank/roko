@@ -70,6 +70,7 @@ serde_json = { workspace = true }
 serde_yaml_ng = { workspace = true }
 semver = "1"
 toml = { workspace = true }
+toml_edit = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }

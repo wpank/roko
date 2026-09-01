@@ -14,7 +14,6 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Sparkline, Table, Wrap};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use roko_core::dashboard_snapshot::{
@@ -22,7 +21,6 @@ use roko_core::dashboard_snapshot::{
 };
 
 use super::ViewState;
-use crate::config::Config;
 use crate::tui::Tab;
 use crate::tui::ansi::parse_ansi_line;
 use crate::tui::dashboard::{DashboardData, GateFailureRow, GateSummaryRow, Theme};
@@ -58,12 +56,6 @@ pub(crate) fn render(
     view_state: &ViewState,
     theme: &Theme,
 ) {
-    // Sub-view 4: Affect panel (full-area, replaces the default dashboard layout).
-    if view_state.active_sub_view(Tab::Dashboard) == super::SubView::AffectView {
-        super::affect_view::render(frame, area, data, tui_state, view_state, theme);
-        return;
-    }
-
     // Only show the left panel when plans are actively running.
     let has_active_plans = tui_state.plans.iter().any(|p| p.active);
     if has_active_plans {
@@ -820,7 +812,7 @@ fn render_sub_mcp(
 
     let eff = &tui_state.efficiency_summary;
     let model_usage = aggregate_model_usage(&tui_state.efficiency_events);
-    let mcp_config = load_mcp_config_view(&tui_state.workdir);
+    let mcp_config = &tui_state.mcp_config_view;
     let total_trials: u64 = tui_state
         .cascade_router
         .confidence_stats
@@ -2003,14 +1995,6 @@ fn format_uptime(uptime_secs: f64) -> String {
 // ===========================================================================
 
 #[derive(Debug, Clone, Default)]
-struct McpConfigView {
-    configured_path: Option<PathBuf>,
-    resolved_path: Option<PathBuf>,
-    config: Option<roko_agent::mcp::McpConfig>,
-    error: Option<String>,
-}
-
-#[derive(Debug, Clone, Default)]
 struct ModelUsageAggregate {
     turns: usize,
     input_tokens: u64,
@@ -2023,54 +2007,6 @@ fn section_header(title: &str, theme: &Theme) -> Line<'static> {
         title.to_string(),
         theme.accent().add_modifier(Modifier::BOLD),
     ))
-}
-
-fn load_mcp_config_view(root: &Path) -> McpConfigView {
-    let config_path = root.join("roko.toml");
-    let config = match Config::from_file(&config_path) {
-        Ok(config) => config,
-        Err(error) => {
-            return McpConfigView {
-                error: Some(format!("failed to load roko.toml: {error}")),
-                ..McpConfigView::default()
-            };
-        }
-    };
-
-    let Some(configured_path) = config.agent.mcp_config else {
-        return McpConfigView::default();
-    };
-    let resolved_path = resolve_mcp_config_path(root, &configured_path);
-    if !resolved_path.is_file() {
-        return McpConfigView {
-            configured_path: Some(configured_path),
-            resolved_path: Some(resolved_path),
-            ..McpConfigView::default()
-        };
-    }
-
-    match roko_agent::mcp::McpConfig::load(&resolved_path) {
-        Ok(config) => McpConfigView {
-            configured_path: Some(configured_path),
-            resolved_path: Some(resolved_path),
-            config: Some(config),
-            error: None,
-        },
-        Err(error) => McpConfigView {
-            configured_path: Some(configured_path),
-            resolved_path: Some(resolved_path),
-            config: None,
-            error: Some(error.to_string()),
-        },
-    }
-}
-
-fn resolve_mcp_config_path(root: &Path, configured_path: &Path) -> PathBuf {
-    if configured_path.is_absolute() {
-        configured_path.to_path_buf()
-    } else {
-        root.join(configured_path)
-    }
 }
 
 fn render_mcp_command(server: &roko_agent::mcp::McpServerConfig) -> String {
@@ -2251,15 +2187,16 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut tui_state = TuiState::default();
         tui_state.gate_results_page = data.gate_results_page.clone();
+        let view_state = ViewState {
+            sub_tab: 3,
+            ..ViewState::default()
+        };
         let theme = Theme::dark();
 
-        // Render the gate sub-panel directly: the top-level `render`
-        // intercepts sub_tab 3 as AffectView (SubView overlap), so we
-        // call render_sub_gate to exercise the Verify panel in isolation.
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_sub_gate(frame, area, data, &tui_state, false, &theme);
+                render(frame, area, data, &tui_state, &view_state, &theme);
             })
             .unwrap();
         rendered_text(&terminal)

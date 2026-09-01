@@ -7,15 +7,13 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
-use ratatui::Terminal;
-use ratatui::backend::TestBackend;
 use serde::Serialize;
 
 use super::app::App;
-use super::dashboard::DashboardData;
-use super::state::TuiState;
 use super::tabs::Tab;
-use super::views::{self, ViewState};
+
+const MIN_SNAPSHOT_WIDTH: u16 = 40;
+const MIN_SNAPSHOT_HEIGHT: u16 = 12;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -47,7 +45,7 @@ pub struct SnapshotResult {
 
 /// Manifest entry for one captured tab.
 #[derive(Debug, Serialize)]
-struct TabEntry {
+pub struct TabEntry {
     tab: String,
     fkey: String,
     file: String,
@@ -55,7 +53,9 @@ struct TabEntry {
 
 /// Top-level manifest written alongside the snapshot files.
 #[derive(Debug, Serialize)]
-struct Manifest {
+pub struct Manifest {
+    schema_version: u32,
+    renderer: String,
     timestamp: String,
     label: Option<String>,
     width: u16,
@@ -67,24 +67,6 @@ struct Manifest {
 // Core engine
 // ---------------------------------------------------------------------------
 
-/// Extract the visible text content from a `TestBackend` terminal buffer.
-///
-/// Each row is joined into a single string and trailing whitespace is trimmed.
-/// Rows are separated by newlines.
-pub fn buffer_to_text(terminal: &Terminal<TestBackend>) -> String {
-    let buffer = terminal.backend().buffer();
-    let width = buffer.area.width as usize;
-    buffer
-        .content
-        .chunks(width)
-        .map(|row| {
-            let line: String = row.iter().map(|cell| cell.symbol()).collect();
-            line.trim_end().to_string()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 /// Filename for a tab snapshot (e.g. `f01-dashboard.txt`).
 fn tab_filename(tab: Tab) -> String {
     let num = tab.index() + 1;
@@ -94,6 +76,17 @@ fn tab_filename(tab: Tab) -> String {
 
 /// Run the full snapshot capture, writing text files and a manifest.
 pub fn capture_snapshots(workdir: &Path, config: &SnapshotConfig) -> Result<SnapshotResult> {
+    anyhow::ensure!(
+        config.width >= MIN_SNAPSHOT_WIDTH,
+        "snapshot width must be at least {MIN_SNAPSHOT_WIDTH} columns (got {})",
+        config.width
+    );
+    anyhow::ensure!(
+        config.height >= MIN_SNAPSHOT_HEIGHT,
+        "snapshot height must be at least {MIN_SNAPSHOT_HEIGHT} rows (got {})",
+        config.height
+    );
+
     std::fs::create_dir_all(&config.output_dir).with_context(|| {
         format!(
             "failed to create output dir: {}",
@@ -102,17 +95,13 @@ pub fn capture_snapshots(workdir: &Path, config: &SnapshotConfig) -> Result<Snap
     })?;
 
     // Build a headless App to get properly initialized state.
-    let app = App::new(workdir);
-    let data = &app.data;
-    let tui_state = &app.tui_state;
-
-    let tabs_to_capture = resolve_tabs(&config.tabs);
+    let mut app = App::new(workdir);
+    let tabs_to_capture = resolve_tabs(&config.tabs)?;
+    let rendered = app.render_tabs_to_text(config.width, config.height, &tabs_to_capture);
 
     let mut entries = Vec::new();
 
-    for &tab in &tabs_to_capture {
-        let text = render_tab_to_text(config.width, config.height, tab, data, tui_state);
-
+    for (tab, text) in rendered {
         let filename = tab_filename(tab);
         let path = config.output_dir.join(&filename);
         std::fs::write(&path, &text)
@@ -126,6 +115,8 @@ pub fn capture_snapshots(workdir: &Path, config: &SnapshotConfig) -> Result<Snap
     }
 
     let manifest = Manifest {
+        schema_version: 2,
+        renderer: "app.draw/full-frame".to_string(),
         timestamp: chrono::Utc::now().to_rfc3339(),
         label: config.label.clone(),
         width: config.width,
@@ -146,60 +137,58 @@ pub fn capture_snapshots(workdir: &Path, config: &SnapshotConfig) -> Result<Snap
     })
 }
 
-/// Render a single tab to text using a headless `TestBackend`.
-pub fn render_tab_to_text(
-    width: u16,
-    height: u16,
-    tab: Tab,
-    data: &DashboardData,
-    tui_state: &TuiState,
-) -> String {
-    let backend = TestBackend::new(width, height);
-    let mut terminal = Terminal::new(backend).expect("TestBackend terminal creation cannot fail");
-
-    let view_state = ViewState {
-        scroll: 0,
-        selected: 0,
-        sub_tab: 0,
-        secondary_selected: 0,
-        auto_tail: false,
-        search_query: String::new(),
-    };
-
-    let theme = super::dashboard::Theme::default();
-
-    terminal
-        .draw(|frame| {
-            let area = frame.area();
-            views::render_tab_content(frame, area, tab, data, tui_state, &view_state, &theme);
-        })
-        .expect("TestBackend draw cannot fail");
-
-    buffer_to_text(&terminal)
-}
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 /// Resolve which tabs to capture based on an optional filter list.
-fn resolve_tabs(filter: &Option<Vec<String>>) -> Vec<Tab> {
+fn resolve_tabs(filter: &Option<Vec<String>>) -> Result<Vec<Tab>> {
     let Some(filter) = filter else {
-        return Tab::ALL.to_vec();
+        return Ok(Tab::ALL.to_vec());
     };
 
-    Tab::ALL
+    anyhow::ensure!(!filter.is_empty(), "at least one tab must be requested");
+    let normalized = filter
+        .iter()
+        .map(|item| item.trim().to_ascii_lowercase())
+        .filter(|item| !item.is_empty())
+        .collect::<Vec<_>>();
+    anyhow::ensure!(!normalized.is_empty(), "at least one tab must be requested");
+
+    let tabs = Tab::ALL
         .iter()
         .filter(|tab| {
             let label = tab.label().to_ascii_lowercase();
             let fkey = format!("f{}", tab.index() + 1);
-            filter.iter().any(|f| {
-                let f = f.to_ascii_lowercase();
-                f == label || f == fkey
-            })
+            normalized
+                .iter()
+                .any(|item| item == &label || item == &fkey)
         })
         .copied()
-        .collect()
+        .collect::<Vec<_>>();
+
+    let unknown = normalized
+        .iter()
+        .filter(|item| {
+            !Tab::ALL.iter().any(|tab| {
+                item.as_str() == tab.label().to_ascii_lowercase()
+                    || item.as_str() == format!("f{}", tab.index() + 1)
+            })
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    anyhow::ensure!(
+        unknown.is_empty(),
+        "unknown snapshot tab selector(s): {}; available: {}",
+        unknown.join(", "),
+        Tab::ALL
+            .iter()
+            .map(|tab| format!("f{}|{}", tab.index() + 1, tab.label().to_ascii_lowercase()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    anyhow::ensure!(!tabs.is_empty(), "no snapshot tabs matched the request");
+    Ok(tabs)
 }
 
 // ---------------------------------------------------------------------------
@@ -209,27 +198,7 @@ fn resolve_tabs(filter: &Option<Vec<String>>) -> Vec<Tab> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn buffer_to_text_extracts_content() {
-        let backend = TestBackend::new(10, 3);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| {
-                let area = frame.area();
-                let block = ratatui::widgets::Block::default()
-                    .title("Hi")
-                    .borders(ratatui::widgets::Borders::ALL);
-                frame.render_widget(block, area);
-            })
-            .unwrap();
-
-        let text = buffer_to_text(&terminal);
-        assert!(
-            text.contains("Hi"),
-            "expected 'Hi' in rendered text: {text}"
-        );
-    }
+    use tempfile::tempdir;
 
     #[test]
     fn tab_filename_format() {
@@ -240,13 +209,13 @@ mod tests {
 
     #[test]
     fn resolve_tabs_none_returns_all() {
-        let tabs = resolve_tabs(&None);
+        let tabs = resolve_tabs(&None).unwrap();
         assert_eq!(tabs.len(), 10);
     }
 
     #[test]
     fn resolve_tabs_filters_by_label() {
-        let tabs = resolve_tabs(&Some(vec!["dashboard".to_string(), "plans".to_string()]));
+        let tabs = resolve_tabs(&Some(vec!["dashboard".to_string(), "plans".to_string()])).unwrap();
         assert_eq!(tabs.len(), 2);
         assert_eq!(tabs[0], Tab::Dashboard);
         assert_eq!(tabs[1], Tab::Plans);
@@ -254,17 +223,47 @@ mod tests {
 
     #[test]
     fn resolve_tabs_filters_by_fkey() {
-        let tabs = resolve_tabs(&Some(vec!["f1".to_string(), "f10".to_string()]));
+        let tabs = resolve_tabs(&Some(vec!["f1".to_string(), "f10".to_string()])).unwrap();
         assert_eq!(tabs.len(), 2);
         assert_eq!(tabs[0], Tab::Dashboard);
         assert_eq!(tabs[1], Tab::Learning);
     }
 
     #[test]
-    fn render_tab_produces_nonempty_text() {
-        let data = DashboardData::default();
-        let tui_state = TuiState::new();
-        let text = render_tab_to_text(80, 24, Tab::Dashboard, &data, &tui_state);
-        assert!(!text.is_empty(), "rendered text should not be empty");
+    fn rejects_unknown_tabs_and_unrenderable_dimensions() {
+        assert!(resolve_tabs(&Some(vec!["bogus".to_string()])).is_err());
+
+        let dir = tempdir().unwrap();
+        let config = SnapshotConfig {
+            width: 0,
+            height: 0,
+            output_dir: dir.path().join("shots"),
+            tabs: None,
+            label: None,
+        };
+        assert!(capture_snapshots(dir.path(), &config).is_err());
+    }
+
+    #[test]
+    fn capture_uses_full_app_frame() {
+        let dir = tempdir().unwrap();
+        let output_dir = dir.path().join("shots");
+        let config = SnapshotConfig {
+            width: 120,
+            height: 30,
+            output_dir: output_dir.clone(),
+            tabs: Some(vec!["f1".to_string()]),
+            label: Some("full-frame".to_string()),
+        };
+
+        let result = capture_snapshots(dir.path(), &config).unwrap();
+        assert_eq!(result.tabs_captured, 1);
+        let text = std::fs::read_to_string(output_dir.join("f01-dashboard.txt")).unwrap();
+        assert!(text.contains("F1:dash"), "global tab bar missing: {text}");
+        assert!(text.lines().count() >= 20);
+
+        let manifest = std::fs::read_to_string(result.manifest_path).unwrap();
+        assert!(manifest.contains("\"schema_version\": 2"));
+        assert!(manifest.contains("app.draw/full-frame"));
     }
 }

@@ -1586,6 +1586,7 @@ impl AgentDispatcherV2 {
                     output_tokens: u64::from(result.usage.output_tokens),
                     cache_read_tokens: u64::from(result.usage.cache_read_tokens),
                     cache_write_tokens: u64::from(result.usage.cache_create_tokens),
+                    reasoning_tokens: 0,
                 })
                 .await;
         }
@@ -2015,6 +2016,7 @@ fn dispatch_events_from_result(
             output_tokens: u64::from(result.usage.output_tokens),
             cache_read_tokens: u64::from(result.usage.cache_read_tokens),
             cache_write_tokens: u64::from(result.usage.cache_create_tokens),
+            reasoning_tokens: 0,
         });
     }
 
@@ -2064,6 +2066,7 @@ fn agent_event_from_chunk(chunk: StreamChunk) -> AgentRuntimeEvent {
             output_tokens: u64::from(usage.output_tokens),
             cache_read_tokens: u64::from(usage.cache_read_tokens),
             cache_write_tokens: u64::from(usage.cache_create_tokens),
+            reasoning_tokens: 0,
         },
         StreamChunk::Done(_) => AgentRuntimeEvent::TurnCompleted {
             session_id: None,

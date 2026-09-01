@@ -834,6 +834,7 @@ mod tests {
             1,
             "implementer",
             "test-model",
+            "test-provider",
         );
         let manifest = wait_for_captures(&run_dir, 1);
         assert_eq!(manifest.captures[0].label, "agent_spawned");

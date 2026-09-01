@@ -8428,6 +8428,7 @@ fn agent_event_json(event: &AgentEvent) -> serde_json::Value {
             output_tokens,
             cache_read_tokens,
             cache_write_tokens,
+            reasoning_tokens: _,
         } => serde_json::json!({
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
@@ -11822,6 +11823,7 @@ async fn dispatch_action(
                             attempt_ref.attempt,
                             role,
                             "t0-reflex",
+                            "t0-reflex",
                         );
                         ctx.tui
                             .task_started(plan_id, &task_id, &task_def.title, "reflex");
@@ -12830,6 +12832,19 @@ async fn dispatch_action(
                     if let Some(provider) = cli_provider {
                         spawn_config = spawn_config.with_cli_provider(provider);
                     }
+                    // Provider label for `AgentSpawned`, resolved exactly the
+                    // way `spawn_agent_controlled` will resolve it (configured
+                    // provider, else legacy program-name detection).
+                    let spawn_event_provider = spawn_config.cli_provider.as_ref().map_or_else(
+                        || {
+                            crate::dispatch_v2::CliProviderConfig::from_legacy_runner_program(
+                                spawn_config.program.clone(),
+                            )
+                            .descriptor
+                            .event_provider
+                        },
+                        |provider| provider.descriptor.event_provider.clone(),
+                    );
 
                     checkpoint_dispatch_stage(
                         ctx.attempt_ownership,
@@ -12922,6 +12937,7 @@ async fn dispatch_action(
                                 attempt_ref.attempt,
                                 role,
                                 &model_display,
+                                &spawn_event_provider,
                             );
                             ctx.tui.task_started(
                                 plan_id,
@@ -13290,7 +13306,8 @@ async fn dispatch_action(
                         &task_id,
                         attempt_ref.attempt,
                         role,
-                        &format!("{provider_id}:{model}"),
+                        &model,
+                        &provider_id,
                     );
                     ctx.tui
                         .task_started(plan_id, &task_id, &task_def.title, "implementing");
@@ -22326,6 +22343,36 @@ depends_on = []
             feedback.is_none(),
             "verification-only tasks have no model to reward in the cascade router"
         );
+    }
+
+    #[test]
+    fn codex_attempt_with_preserved_model_emits_feedback() {
+        // Checklist #10: with codex model identity preserved end to end, the
+        // empty-model guard above must no longer fire for codex attempts —
+        // the episode feeds the cascade router with slug and provider intact.
+        let event = RunnerEvent::task_attempt_completed(
+            "run-1",
+            TaskAttemptRef::new("plan".to_string(), "task".to_string(), 1),
+            TaskAttemptOutcome::Passed,
+            None,
+            123,
+            "gpt-5.6-sol",
+            "codex-cli",
+        );
+
+        let feedback = runner_event_to_feedback(&event, &None, &TaskUsageSnapshot::default())
+            .expect("codex attempt must survive the empty-model guard");
+
+        match feedback {
+            crate::runtime_feedback::FeedbackEvent::TaskCompleted {
+                outcome, succeeded, ..
+            } => {
+                assert_eq!(outcome.model, "gpt-5.6-sol");
+                assert_eq!(outcome.provider, "codex-cli");
+                assert!(succeeded);
+            }
+            other => panic!("expected task completion feedback, got {}", other.label()),
+        }
     }
 
     #[test]

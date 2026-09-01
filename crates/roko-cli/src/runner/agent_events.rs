@@ -139,6 +139,9 @@ pub(crate) fn handle_agent_event(
             output_tokens,
             cache_read_tokens,
             cache_write_tokens,
+            // Reasoning tokens are a subset of `output_tokens`; nothing in the
+            // runner ledger aggregates them yet, so they are not double-counted.
+            reasoning_tokens: _,
         } => {
             state.tokens_in += input_tokens;
             state.tokens_out += output_tokens;
@@ -472,6 +475,7 @@ mod tests {
             1,
             "implementer",
             "test-model",
+            "test-provider",
         );
 
         handle_agent_event(
@@ -523,6 +527,7 @@ mod tests {
             1,
             "implementer",
             "test-model",
+            "test-provider",
         );
 
         handle_agent_event(
@@ -661,6 +666,7 @@ mod tests {
                 output_tokens: 50,
                 cache_read_tokens: 10,
                 cache_write_tokens: 5,
+                reasoning_tokens: 0,
             },
             &mut state,
             &tui,
@@ -681,6 +687,7 @@ mod tests {
                 output_tokens: 10,
                 cache_read_tokens: 2,
                 cache_write_tokens: 1,
+                reasoning_tokens: 0,
             },
             &mut state,
             &tui,

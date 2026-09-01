@@ -2897,6 +2897,7 @@ mod tests {
             output_tokens: 1,
             cache_read_tokens: 0,
             cache_write_tokens: 0,
+            reasoning_tokens: 0,
         };
         assert_eq!(
             EventCategory::from_agent_event(&token),

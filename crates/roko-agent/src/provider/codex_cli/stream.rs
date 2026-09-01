@@ -73,8 +73,7 @@ struct CodexUsage {
     #[serde(default)]
     cached_input_tokens: u64,
     /// Reasoning (thinking) tokens, already included in `output_tokens`.
-    /// The canonical `AgentRuntimeEvent::TokenUsage` has no reasoning field,
-    /// so this is surfaced via telemetry rather than forwarded on the wire.
+    /// Forwarded on the wire via `AgentRuntimeEvent::TokenUsage::reasoning_tokens`.
     #[serde(default)]
     reasoning_output_tokens: u64,
 }
@@ -218,21 +217,15 @@ pub fn parse_stream_line_with_model(line: &str, model: Option<&str>) -> Vec<Agen
                 .as_ref()
                 .map(|usage| estimate_codex_cost(usage, &pricing));
             if let Some(usage) = event.usage {
-                if usage.reasoning_output_tokens > 0 {
-                    // Reasoning tokens are a subset of `output_tokens` (already
-                    // billed at the output rate by the estimate above). The
-                    // canonical `TokenUsage` event has no reasoning field, so
-                    // the count is surfaced here instead of being dropped.
-                    debug!(
-                        reasoning_output_tokens = usage.reasoning_output_tokens,
-                        "codex turn included reasoning tokens"
-                    );
-                }
                 events.push(AgentRuntimeEvent::TokenUsage {
                     input_tokens: usage.input_tokens,
                     output_tokens: usage.output_tokens,
                     cache_read_tokens: usage.cached_input_tokens,
                     cache_write_tokens: 0,
+                    // Reasoning tokens are a subset of `output_tokens`
+                    // (already billed at the output rate by the estimate
+                    // above); forward the count instead of dropping it.
+                    reasoning_tokens: usage.reasoning_output_tokens,
                 });
             }
             // Codex's turn.completed is the terminal event — synthesize
@@ -431,7 +424,8 @@ mod tests {
     #[test]
     fn reasoning_tokens_do_not_inflate_output_totals() {
         // `reasoning_output_tokens` is a subset of `output_tokens`; the
-        // canonical event must carry the provider-reported total unchanged.
+        // canonical event must carry the provider-reported total unchanged
+        // and forward the reasoning count.
         let events = parse_stream_line(
             r#"{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":40,"reasoning_output_tokens":25}}"#,
         );
@@ -439,6 +433,7 @@ mod tests {
             &events[0],
             AgentRuntimeEvent::TokenUsage {
                 output_tokens: 40,
+                reasoning_tokens: 25,
                 ..
             }
         ));

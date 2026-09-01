@@ -139,6 +139,7 @@ fn spawn(
             attempt: att,
             role: role.into(),
             model: model.into(),
+            provider: String::new(),
         },
         ts,
     );

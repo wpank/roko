@@ -69,6 +69,12 @@ pub enum AgentRuntimeEvent {
         output_tokens: u64,
         cache_read_tokens: u64,
         cache_write_tokens: u64,
+        /// Reasoning (thinking) tokens reported by the provider. For codex /
+        /// OpenAI Responses-style providers these are a *subset* of
+        /// `output_tokens`, not an addition to it. Defaults to `0` so events
+        /// persisted before this field existed still deserialize.
+        #[serde(default)]
+        reasoning_tokens: u64,
     },
     /// One assistant turn (or, for one-shot providers, the entire response)
     /// has finished. `total_cost_usd` is the authoritative cumulative cost,
@@ -175,6 +181,7 @@ mod tests {
                     output_tokens: 2,
                     cache_read_tokens: 0,
                     cache_write_tokens: 0,
+                    reasoning_tokens: 0,
                 },
                 "agent.token_usage",
             ),
@@ -215,5 +222,34 @@ mod tests {
             }
             .is_terminal()
         );
+    }
+
+    #[test]
+    fn token_usage_without_reasoning_field_still_deserializes() {
+        // Events persisted before `reasoning_tokens` existed carry only the
+        // four original counters; they must keep parsing with a zero default.
+        let legacy = r#"{"type":"token_usage","input_tokens":10,"output_tokens":4,"cache_read_tokens":2,"cache_write_tokens":1}"#;
+        let event: AgentRuntimeEvent = serde_json::from_str(legacy).expect("legacy event parses");
+        assert_eq!(
+            event,
+            AgentRuntimeEvent::TokenUsage {
+                input_tokens: 10,
+                output_tokens: 4,
+                cache_read_tokens: 2,
+                cache_write_tokens: 1,
+                reasoning_tokens: 0,
+            }
+        );
+
+        let with_reasoning = r#"{"type":"token_usage","input_tokens":10,"output_tokens":40,"cache_read_tokens":0,"cache_write_tokens":0,"reasoning_tokens":25}"#;
+        let event: AgentRuntimeEvent =
+            serde_json::from_str(with_reasoning).expect("reasoning event parses");
+        assert!(matches!(
+            event,
+            AgentRuntimeEvent::TokenUsage {
+                reasoning_tokens: 25,
+                ..
+            }
+        ));
     }
 }

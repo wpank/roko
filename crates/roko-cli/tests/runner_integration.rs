@@ -340,6 +340,7 @@ fn agent_event_to_event_category_is_provider_neutral() {
             output_tokens: 1,
             cache_read_tokens: 0,
             cache_write_tokens: 0,
+            reasoning_tokens: 0,
         }),
         EventCategory::Token
     );

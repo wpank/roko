@@ -126,6 +126,7 @@ impl TuiBridge {
         attempt: u32,
         role: &str,
         model: &str,
+        provider: &str,
     ) {
         self.sender.publish(DashboardEvent::AgentSpawned {
             agent_id: agent_id.to_string(),
@@ -134,6 +135,7 @@ impl TuiBridge {
             attempt,
             role: role.to_string(),
             model: model.to_string(),
+            provider: provider.to_string(),
         });
         self.capture(
             "agent_spawned",

@@ -247,7 +247,7 @@ pub async fn run_learning_subscriber(
                             );
                         } else {
                             publish_learning_updates(
-                                &dashboard_tx,
+                                dashboard_tx.as_ref(),
                                 &mut trend_cursor,
                                 &mut trend_buckets,
                                 &efficiency_path,
@@ -340,7 +340,7 @@ pub async fn run_learning_subscriber(
                         );
                     } else {
                         publish_learning_updates(
-                            &dashboard_tx,
+                            dashboard_tx.as_ref(),
                             &mut trend_cursor,
                             &mut trend_buckets,
                             &efficiency_path,
@@ -409,7 +409,7 @@ pub async fn run_learning_subscriber(
             );
         } else {
             publish_learning_updates(
-                &dashboard_tx,
+                dashboard_tx.as_ref(),
                 &mut trend_cursor,
                 &mut trend_buckets,
                 &efficiency_path,
@@ -457,7 +457,7 @@ async fn append_efficiency_event(path: &Path, event: &AgentEfficiencyEvent) -> i
 /// so connected-mode dashboards see confidence updates as they happen.
 /// Best-effort: send failures just mean no dashboard consumer is attached.
 fn publish_learning_updates(
-    dashboard_tx: &Option<mpsc::UnboundedSender<DashboardEvent>>,
+    dashboard_tx: Option<&mpsc::UnboundedSender<DashboardEvent>>,
     trend_cursor: &mut Option<JsonlCursor>,
     trend_buckets: &mut Vec<EfficiencyBucket>,
     efficiency_path: &Path,

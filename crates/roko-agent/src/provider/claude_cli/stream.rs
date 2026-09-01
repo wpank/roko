@@ -179,6 +179,7 @@ pub fn parse_stream_line(line: &str) -> Vec<AgentRuntimeEvent> {
                     output_tokens: usage.output_tokens,
                     cache_read_tokens: usage.cache_read_input_tokens,
                     cache_write_tokens: usage.cache_creation_input_tokens,
+                    reasoning_tokens: 0,
                 });
             }
 
@@ -213,6 +214,7 @@ pub fn parse_stream_line(line: &str) -> Vec<AgentRuntimeEvent> {
                     output_tokens: usage.output_tokens,
                     cache_read_tokens: usage.cache_read_input_tokens,
                     cache_write_tokens: usage.cache_creation_input_tokens,
+                    reasoning_tokens: 0,
                 });
             }
             events
@@ -371,6 +373,7 @@ mod tests {
                 output_tokens: 1,
                 cache_read_tokens: 0,
                 cache_write_tokens: 0,
+                reasoning_tokens: 0,
             }
         ));
     }
@@ -420,6 +423,7 @@ mod tests {
                 output_tokens,
                 cache_read_tokens,
                 cache_write_tokens,
+                ..
             } => {
                 assert_eq!(*input_tokens, 850);
                 assert_eq!(*output_tokens, 320);
@@ -449,6 +453,7 @@ mod tests {
                 output_tokens,
                 cache_read_tokens,
                 cache_write_tokens,
+                ..
             } => {
                 assert_eq!(*input_tokens, 400, "input_tokens must be populated");
                 assert_eq!(*output_tokens, 150, "output_tokens must be populated");

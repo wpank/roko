@@ -5,11 +5,13 @@ use crate::config::{ConfigLayer, ConfigPaths, resolve_paths};
 use crate::{Config, load_resolved_config};
 use anyhow::{Context as _, Result};
 use reqwest::Url;
+use roko_core::agent::ProviderKind;
+use roko_core::config::provider::{ProviderConfig, ProviderNetworkPolicy};
 use roko_fs::RokoLayout;
 use serde::Serialize;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const DEFAULT_HEALTH_PATH: &str = "/api/health";
 const DOCTOR_HTTP_TIMEOUT_SECS: u64 = 2;
@@ -2194,6 +2196,395 @@ fn check_plans_dir_conflict(workdir: &Path) -> DoctorCheck {
     }
 }
 
+/// Options for `roko doctor network`.
+#[derive(Debug, Clone)]
+pub struct NetworkDoctorOptions {
+    /// Workspace root containing `roko.toml`.
+    pub workdir: PathBuf,
+    /// Optional explicit config override path (`--config`).
+    pub config_override: Option<PathBuf>,
+    /// Per-probe HTTP timeout. Defaults to [`DEFAULT_NETWORK_PROBE_TIMEOUT`].
+    pub probe_timeout: Duration,
+}
+
+/// Default per-probe timeout for `roko doctor network`.
+pub const DEFAULT_NETWORK_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Probe result for a single provider endpoint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NetworkProbeCheck {
+    /// Stable provider id from `roko.toml` (for example, `"anthropic"`).
+    pub provider_id: String,
+    /// The endpoint URL that was probed (or would have been probed).
+    pub url: String,
+    /// Outcome of the probe.
+    pub status: DoctorStatus,
+    /// Human-readable summary of the probe outcome.
+    pub message: String,
+    /// Round-trip latency in milliseconds, or `None` when unavailable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u64>,
+    /// HTTP status code returned by the endpoint, or `None` when unavailable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
+    /// Actionable fix hint for warning or failure statuses.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fix: Option<String>,
+}
+
+/// Aggregate report from the network doctor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NetworkProbeReport {
+    /// Aggregate counts and latency extrema for the probe run.
+    pub summary: NetworkProbeSummary,
+    /// Per-provider probe results.
+    pub checks: Vec<NetworkProbeCheck>,
+}
+
+/// Aggregate counts plus best and worst providers by latency.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NetworkProbeSummary {
+    /// Total number of provider checks.
+    pub total: usize,
+    /// Number of successful checks.
+    pub ok: usize,
+    /// Number of checks that completed with a warning.
+    pub warn: usize,
+    /// Number of failed checks.
+    pub fail: usize,
+    /// Number of skipped checks.
+    pub skipped: usize,
+    /// Provider id with the lowest observed latency.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fastest_provider: Option<String>,
+    /// Provider id with the highest observed latency.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slowest_provider: Option<String>,
+}
+
+impl NetworkProbeSummary {
+    fn from_checks(checks: &[NetworkProbeCheck]) -> Self {
+        let mut summary = Self {
+            total: checks.len(),
+            ok: 0,
+            warn: 0,
+            fail: 0,
+            skipped: 0,
+            fastest_provider: None,
+            slowest_provider: None,
+        };
+
+        for check in checks {
+            match check.status {
+                DoctorStatus::Ok => summary.ok += 1,
+                DoctorStatus::Warn => summary.warn += 1,
+                DoctorStatus::Fail => summary.fail += 1,
+                DoctorStatus::Skipped => summary.skipped += 1,
+            }
+        }
+
+        let mut observed = checks
+            .iter()
+            .filter_map(|check| {
+                check
+                    .latency_ms
+                    .map(|latency_ms| (latency_ms, check.provider_id.as_str()))
+            })
+            .collect::<Vec<_>>();
+        observed.sort_unstable();
+        summary.fastest_provider = observed
+            .first()
+            .map(|(_, provider_id)| (*provider_id).to_string());
+        summary.slowest_provider = observed
+            .last()
+            .map(|(_, provider_id)| (*provider_id).to_string());
+        summary
+    }
+}
+
+impl NetworkProbeReport {
+    /// Exit code for the focused report: `0` unless a probe failed.
+    #[must_use]
+    pub const fn exit_code(&self) -> i32 {
+        if self.summary.fail == 0 { 0 } else { 1 }
+    }
+
+    /// Render the focused network report for terminal users.
+    #[must_use]
+    pub fn render_human(&self) -> String {
+        let mut out = String::from("doctor network\n");
+        let _ = writeln!(
+            &mut out,
+            "summary: {} ok, {} warn, {} failed, {} skipped",
+            self.summary.ok, self.summary.warn, self.summary.fail, self.summary.skipped
+        );
+
+        if self.checks.is_empty() {
+            out.push_str("no configured provider endpoints to probe\n");
+            return out;
+        }
+
+        if let (Some(fastest), Some(slowest)) = (
+            self.summary.fastest_provider.as_deref(),
+            self.summary.slowest_provider.as_deref(),
+        ) {
+            let _ = writeln!(&mut out, "latency: fastest {fastest}, slowest {slowest}");
+        }
+
+        for check in &self.checks {
+            let latency = check
+                .latency_ms
+                .map_or_else(|| "not probed".to_string(), |ms| format!("{ms}ms"));
+            let _ = write!(
+                &mut out,
+                "[{}] network/{}: {} ({latency})",
+                check.status.label(),
+                check.provider_id,
+                check.message
+            );
+            if !check.url.is_empty() {
+                let _ = write!(&mut out, " [{}]", check.url);
+            }
+            out.push('\n');
+            if matches!(check.status, DoctorStatus::Fail | DoctorStatus::Warn)
+                && let Some(fix) = &check.fix
+            {
+                let _ = writeln!(&mut out, "    \u{2192} fix: {fix}");
+            }
+        }
+        out
+    }
+}
+
+/// Return the canonical endpoint for HTTP provider kinds without a configured URL.
+fn endpoint_for_kind(kind: ProviderKind) -> Option<&'static str> {
+    match kind {
+        ProviderKind::AnthropicApi => Some("https://api.anthropic.com/v1"),
+        ProviderKind::OpenAiCompat => Some("https://api.openai.com/v1"),
+        ProviderKind::GeminiApi => Some("https://generativelanguage.googleapis.com/v1beta"),
+        ProviderKind::PerplexityApi => Some("https://api.perplexity.ai"),
+        ProviderKind::CerebrasApi => Some("https://api.cerebras.ai/v1"),
+        ProviderKind::ClaudeCli
+        | ProviderKind::CursorAcp
+        | ProviderKind::GeminiCli
+        | ProviderKind::CursorCli
+        | ProviderKind::Hermes
+        | ProviderKind::OpenClaw => None,
+    }
+}
+
+fn endpoint_for_provider(provider: &ProviderConfig) -> Option<String> {
+    provider
+        .base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .map(str::to_string)
+        .or_else(|| endpoint_for_kind(provider.kind).map(str::to_string))
+}
+
+fn skipped_provider_check(
+    provider_id: &str,
+    provider: &ProviderConfig,
+) -> Option<NetworkProbeCheck> {
+    let url = endpoint_for_provider(provider).unwrap_or_default();
+    if provider
+        .limits
+        .as_ref()
+        .is_some_and(|limits| matches!(limits.network, ProviderNetworkPolicy::Deny))
+    {
+        return Some(NetworkProbeCheck {
+            provider_id: provider_id.to_string(),
+            url,
+            status: DoctorStatus::Skipped,
+            message: "network policy denies provider network access".to_string(),
+            latency_ms: None,
+            http_status: None,
+            fix: None,
+        });
+    }
+
+    if url.is_empty() {
+        return Some(NetworkProbeCheck {
+            provider_id: provider_id.to_string(),
+            url,
+            status: DoctorStatus::Skipped,
+            message: "provider uses a non-HTTP transport".to_string(),
+            latency_ms: None,
+            http_status: None,
+            fix: None,
+        });
+    }
+
+    None
+}
+
+/// Probe one provider endpoint using an HTTP `HEAD` request.
+async fn probe_one_provider(
+    provider_id: String,
+    url: String,
+    timeout: Duration,
+) -> NetworkProbeCheck {
+    let client = match reqwest::Client::builder().timeout(timeout).build() {
+        Ok(client) => client,
+        Err(err) => {
+            return NetworkProbeCheck {
+                provider_id,
+                url,
+                status: DoctorStatus::Fail,
+                message: format!("could not build HTTP client: {err}"),
+                latency_ms: None,
+                http_status: None,
+                fix: Some("verify the local TLS and HTTP client configuration".to_string()),
+            };
+        }
+    };
+
+    let started = Instant::now();
+    let response = client.head(&url).send().await;
+    let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+    match response {
+        Ok(response) => {
+            let status_code = response.status();
+            let http_status = status_code.as_u16();
+            let (status, message, fix) = if status_code.is_success() {
+                (
+                    DoctorStatus::Ok,
+                    format!("endpoint reachable ({status_code})"),
+                    None,
+                )
+            } else if status_code.is_server_error() {
+                (
+                    DoctorStatus::Fail,
+                    format!("endpoint returned server error {status_code}"),
+                    Some("check the provider status page and retry the probe".to_string()),
+                )
+            } else {
+                let message = if matches!(http_status, 401 | 403) {
+                    format!("endpoint reachable; authentication required ({status_code})")
+                } else {
+                    format!("endpoint reachable but rejected HEAD ({status_code})")
+                };
+                (
+                    DoctorStatus::Warn,
+                    message,
+                    Some(
+                        "verify the provider base URL and credentials; the host is reachable"
+                            .to_string(),
+                    ),
+                )
+            };
+            NetworkProbeCheck {
+                provider_id,
+                url,
+                status,
+                message,
+                latency_ms: Some(latency_ms),
+                http_status: Some(http_status),
+                fix,
+            }
+        }
+        Err(err) => {
+            let message = if err.is_timeout() {
+                format!("probe timed out after {}ms", timeout.as_millis())
+            } else if err.is_builder() {
+                format!("invalid provider URL: {err}")
+            } else if err.is_connect() {
+                format!("could not connect to provider: {err}")
+            } else {
+                format!("network probe failed: {err}")
+            };
+            NetworkProbeCheck {
+                provider_id,
+                url,
+                status: DoctorStatus::Fail,
+                message,
+                latency_ms: Some(latency_ms),
+                http_status: None,
+                fix: Some(
+                    "verify the provider base URL, DNS, proxy, firewall, and network connection"
+                        .to_string(),
+                ),
+            }
+        }
+    }
+}
+
+fn load_network_config(options: &NetworkDoctorOptions) -> Result<Config> {
+    if let Some(path) = options.config_override.as_deref() {
+        return Config::from_file(path);
+    }
+    load_resolved_config(&options.workdir).map(|resolved| resolved.config)
+}
+
+/// Probe every configured HTTP provider concurrently.
+pub async fn run_network_doctor(options: NetworkDoctorOptions) -> NetworkProbeReport {
+    let config = match load_network_config(&options) {
+        Ok(config) => config,
+        Err(err) => {
+            let url = options
+                .config_override
+                .as_ref()
+                .map_or_else(String::new, |path| path.display().to_string());
+            let checks = vec![NetworkProbeCheck {
+                provider_id: "config".to_string(),
+                url,
+                status: DoctorStatus::Fail,
+                message: format!("could not load provider configuration: {err:#}"),
+                latency_ms: None,
+                http_status: None,
+                fix: Some("fix the active roko.toml or pass a valid --config path".to_string()),
+            }];
+            return NetworkProbeReport {
+                summary: NetworkProbeSummary::from_checks(&checks),
+                checks,
+            };
+        }
+    };
+
+    let mut providers = config.providers.iter().collect::<Vec<_>>();
+    providers.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+
+    let mut checks = Vec::with_capacity(providers.len());
+    let mut probes = tokio::task::JoinSet::new();
+    for (provider_id, provider) in providers {
+        if let Some(check) = skipped_provider_check(provider_id, provider) {
+            checks.push(check);
+            continue;
+        }
+
+        let provider_id = provider_id.clone();
+        let url = endpoint_for_provider(provider)
+            .expect("provider without endpoint should have produced a skipped check");
+        let timeout = options.probe_timeout;
+        probes.spawn(async move { probe_one_provider(provider_id, url, timeout).await });
+    }
+
+    while let Some(result) = probes.join_next().await {
+        match result {
+            Ok(check) => checks.push(check),
+            Err(err) => checks.push(NetworkProbeCheck {
+                provider_id: "probe".to_string(),
+                url: String::new(),
+                status: DoctorStatus::Fail,
+                message: format!("provider probe task failed: {err}"),
+                latency_ms: None,
+                http_status: None,
+                fix: Some(
+                    "rerun the network doctor; report reproducible task failures".to_string(),
+                ),
+            }),
+        }
+    }
+
+    checks.sort_unstable_by(|left, right| left.provider_id.cmp(&right.provider_id));
+    NetworkProbeReport {
+        summary: NetworkProbeSummary::from_checks(&checks),
+        checks,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3082,5 +3473,161 @@ mod tests {
             check_ids.contains(&"state_legacy_files"),
             "report should include state_legacy_files; got: {check_ids:?}"
         );
+    }
+
+    fn network_test_provider(kind: ProviderKind, base_url: Option<&str>) -> ProviderConfig {
+        ProviderConfig {
+            kind,
+            base_url: base_url.map(str::to_string),
+            api_key_env: None,
+            command: None,
+            args: None,
+            timeout_ms: None,
+            ttft_timeout_ms: None,
+            connect_timeout_ms: None,
+            extra_headers: None,
+            max_concurrent: None,
+            limits: None,
+        }
+    }
+
+    fn spawn_http_status_server(status: &'static str) -> (String, std::thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let address = listener.local_addr().expect("test server address");
+        let thread = std::thread::spawn(move || {
+            use std::io::{Read as _, Write as _};
+
+            let (mut stream, _) = listener.accept().expect("accept probe request");
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).expect("read probe request");
+            write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+            .expect("write probe response");
+        });
+        (format!("http://{address}"), thread)
+    }
+
+    #[tokio::test]
+    async fn network_probe_empty_config_all_skip() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("empty.toml");
+        std::fs::write(
+            &config_path,
+            Config::default().to_toml().expect("serialize config"),
+        )
+        .expect("write config");
+
+        let report = run_network_doctor(NetworkDoctorOptions {
+            workdir: temp.path().to_path_buf(),
+            config_override: Some(config_path),
+            probe_timeout: Duration::from_millis(100),
+        })
+        .await;
+
+        assert_eq!(
+            report.summary,
+            NetworkProbeSummary {
+                total: 0,
+                ok: 0,
+                warn: 0,
+                fail: 0,
+                skipped: 0,
+                fastest_provider: None,
+                slowest_provider: None,
+            }
+        );
+        assert!(report.checks.is_empty());
+        assert_eq!(report.exit_code(), 0);
+    }
+
+    #[test]
+    fn network_probe_deny_policy_yields_skip() {
+        let mut provider = network_test_provider(
+            ProviderKind::AnthropicApi,
+            Some("https://api.anthropic.com/v1"),
+        );
+        provider.limits = Some(roko_core::config::provider::ProviderLimits {
+            network: ProviderNetworkPolicy::Deny,
+            ..roko_core::config::provider::ProviderLimits::default()
+        });
+
+        let check = skipped_provider_check("anthropic", &provider).expect("skipped check");
+        assert_eq!(check.status, DoctorStatus::Skipped);
+        assert!(check.message.contains("network policy"));
+    }
+
+    #[test]
+    fn cli_only_provider_yields_skip() {
+        let provider = network_test_provider(ProviderKind::ClaudeCli, None);
+        let check = skipped_provider_check("claude", &provider).expect("skipped check");
+        assert_eq!(check.status, DoctorStatus::Skipped);
+        assert!(check.message.contains("non-HTTP"));
+        assert!(endpoint_for_kind(ProviderKind::ClaudeCli).is_none());
+    }
+
+    #[test]
+    fn endpoint_for_kind_returns_anthropic_default() {
+        assert!(
+            endpoint_for_kind(ProviderKind::AnthropicApi)
+                .expect("Anthropic endpoint")
+                .contains("anthropic.com")
+        );
+    }
+
+    #[tokio::test]
+    async fn network_probe_maps_success_auth_client_and_server_statuses() {
+        for (status_line, expected) in [
+            ("204 No Content", DoctorStatus::Ok),
+            ("401 Unauthorized", DoctorStatus::Warn),
+            ("404 Not Found", DoctorStatus::Warn),
+            ("503 Service Unavailable", DoctorStatus::Fail),
+        ] {
+            let (url, server) = spawn_http_status_server(status_line);
+            let check = probe_one_provider("local".to_string(), url, Duration::from_secs(2)).await;
+            server.join().expect("join test server");
+            assert_eq!(check.status, expected, "HTTP {status_line}");
+            assert!(check.http_status.is_some());
+            assert!(check.latency_ms.is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn network_probe_invalid_url_fails_without_panicking() {
+        let check = probe_one_provider(
+            "broken".to_string(),
+            "not a URL".to_string(),
+            Duration::from_millis(100),
+        )
+        .await;
+
+        assert_eq!(check.status, DoctorStatus::Fail);
+        assert!(check.message.contains("invalid provider URL"));
+        assert_eq!(check.http_status, None);
+    }
+
+    #[test]
+    fn network_report_render_includes_status_latency_url_and_fix() {
+        let checks = vec![NetworkProbeCheck {
+            provider_id: "anthropic".to_string(),
+            url: "https://api.anthropic.com/v1".to_string(),
+            status: DoctorStatus::Warn,
+            message: "authentication required".to_string(),
+            latency_ms: Some(42),
+            http_status: Some(401),
+            fix: Some("set ANTHROPIC_API_KEY".to_string()),
+        }];
+        let report = NetworkProbeReport {
+            summary: NetworkProbeSummary::from_checks(&checks),
+            checks,
+        };
+
+        let output = report.render_human();
+        assert!(output.contains(
+            "[warn] network/anthropic: authentication required (42ms) [https://api.anthropic.com/v1]"
+        ));
+        assert!(output.contains("fix: set ANTHROPIC_API_KEY"));
+        assert_eq!(report.exit_code(), 0);
     }
 }

@@ -1128,6 +1128,20 @@ pub(crate) async fn cmd_doctor(
         }
         return Ok(EXIT_SUCCESS);
     }
+    if matches!(subject, Some(DoctorSubject::Network)) {
+        let report = roko_cli::doctor::run_network_doctor(roko_cli::doctor::NetworkDoctorOptions {
+            workdir,
+            config_override: cli.config.clone(),
+            probe_timeout: roko_cli::doctor::DEFAULT_NETWORK_PROBE_TIMEOUT,
+        })
+        .await;
+        if cli.json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            print!("{}", report.render_human());
+        }
+        return Ok(report.exit_code());
+    }
 
     let report = roko_cli::doctor::run_doctor(&roko_cli::doctor::DoctorOptions {
         workdir,

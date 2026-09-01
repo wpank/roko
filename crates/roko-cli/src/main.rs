@@ -563,7 +563,7 @@ Examples:
     },
     /// Diagnose self-hosted workspace bootstrap state.
     Doctor {
-        /// Limit diagnostics to one area (currently: disk).
+        /// Limit diagnostics to one area (`disk` or `network`).
         #[arg(value_enum)]
         subject: Option<DoctorSubject>,
         /// Directory containing `roko.toml` and `.roko/` (default: cwd / --repo).
@@ -4535,6 +4535,20 @@ mod tests {
             cli.command,
             Some(Command::Doctor {
                 subject: Some(DoctorSubject::Disk),
+                workdir: Some(_),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn cli_parses_doctor_network_subreport() {
+        let cli = Cli::try_parse_from(["roko", "doctor", "network", "--workdir", "/tmp/project"])
+            .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Doctor {
+                subject: Some(DoctorSubject::Network),
                 workdir: Some(_),
                 ..
             })

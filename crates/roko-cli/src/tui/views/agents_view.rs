@@ -715,10 +715,14 @@ fn render_output_body(
         return;
     }
 
-    // The live-stream footer repeats the transcript in runner mode. Only show
-    // it when the detail pane is large enough that neither copy becomes a
-    // four-line keyhole.
-    let show_stream_panel = inner.height >= 24 && inner.width >= 72;
+    // The main transcript is the dominant surface. A second stream pane is
+    // useful only when a sidecar stream actually exists; runner-mode output is
+    // already present above and rendering it twice wastes the most valuable
+    // part of the screen.
+    let show_stream_panel = inner.height >= 24
+        && inner.width >= 72
+        && !selected_id.is_empty()
+        && tui_state.agent_streams.contains_key(selected_id);
     let layout = if show_stream_panel {
         Layout::vertical([
             Constraint::Length(1),

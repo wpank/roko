@@ -446,6 +446,8 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             skip_preflight,
             force_backend,
             screenshots,
+            screenshot_interval,
+            screenshot_dir,
             batch_size,
         } => {
             let t_total = std::time::Instant::now();
@@ -975,6 +977,8 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                         None => roko_cli::runner::structured_log::StructuredLogger::noop(),
                     },
                     screenshots,
+                    screenshot_interval_secs: screenshot_interval,
+                    screenshot_dir,
                 };
 
                 if run_config.dangerously_skip_permissions {

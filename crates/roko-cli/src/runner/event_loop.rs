@@ -108,6 +108,7 @@ use super::output_sink::{PlanCompleteSummary, RunCompleteSummary, RunOutputSink,
 use super::persist::{self, GateThresholds, PersistPaths};
 use super::plan_loader::Plan;
 use super::reflex::{self, PromotionTracker};
+use super::screenshot_collector::{ScreenshotCollector, ScreenshotCollectorConfig};
 use super::snapshot_writer::{
     SnapshotPayload, SnapshotWriter, serialize_inner_bounded, serialize_snapshot_bounded,
 };
@@ -2858,7 +2859,36 @@ pub async fn run_with_tui_commands(
     // Establish the dashboard bridge before any potentially long startup
     // work. Approval-mode output uses a NoopSink, so StateHub is the only
     // visible progress channel during cache warming and factory setup.
-    let tui = TuiBridge::new(state_hub.sender());
+    let screenshot_collector = if config.screenshots {
+        let collector_config = ScreenshotCollectorConfig::for_plan_run(
+            config.workdir.clone(),
+            config.screenshot_dir.clone(),
+            Duration::from_secs(config.screenshot_interval_secs),
+        );
+        match ScreenshotCollector::start(collector_config, state_hub.snapshot()) {
+            Ok(collector) => {
+                info!(
+                    path = %collector.run_dir().display(),
+                    interval_secs = config.screenshot_interval_secs,
+                    "continuous TUI screenshot capture enabled"
+                );
+                Some(collector)
+            }
+            Err(error) => {
+                warn!(%error, "continuous TUI screenshots disabled after initialization failure");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let tui = screenshot_collector.as_ref().map_or_else(
+        || TuiBridge::new(state_hub.sender()),
+        |collector| TuiBridge::new(state_hub.sender()).with_screenshot_collector(collector.clone()),
+    );
+    if let Some(collector) = &screenshot_collector {
+        collector.capture_startup();
+    }
 
     // -- Warm cargo cache -------------------------------------------------------
     // Run `cargo check --workspace` once before the main loop so that
@@ -6252,14 +6282,11 @@ pub async fn run_with_tui_commands(
                             cancel.cancel();
                         }
                         super::types::ControlAction::Retry => {
-                            info!(
+                            warn!(
                                 plan_id = ?cmd.plan_id,
                                 task_id = ?cmd.task_id,
-                                "control: retry signal received (to be processed next tick)"
+                                "control: retry is not implemented; no state changed"
                             );
-                            // Retry is handled by the next tick cycle when the
-                            // event loop checks for retryable tasks. The signal
-                            // file was already consumed by poll().
                         }
                     }
                 }
@@ -6303,24 +6330,28 @@ pub async fn run_with_tui_commands(
                         cancel.cancel();
                     }
                     TuiCommand::SoftRetry { plan_id } => {
-                        info!(plan_id = %plan_id, "tui command: soft retry (next tick)");
+                        warn!(plan_id = %plan_id, "tui command rejected: soft retry is not implemented");
+                        tui.error("Soft retry is not available during this run; no state changed");
                     }
                     TuiCommand::Repair { plan_id, preserve_completed } => {
-                        info!(
+                        warn!(
                             plan_id = %plan_id,
                             preserve_completed,
-                            "tui command: repair (next tick)"
+                            "tui command rejected: repair is not implemented"
                         );
+                        tui.error("Repair is not available during this run; no state changed");
                     }
                     TuiCommand::ReverifyGates { plan_id } => {
-                        info!(plan_id = %plan_id, "tui command: reverify gates (next tick)");
+                        warn!(plan_id = %plan_id, "tui command rejected: gate reverify is not implemented");
+                        tui.error("Gate reverify is not available during this run; no state changed");
                     }
                     TuiCommand::Skip { plan_id, task_id } => {
-                        info!(
+                        warn!(
                             plan_id = %plan_id,
                             task_id = %task_id,
-                            "tui command: skip task"
+                            "tui command rejected: task skip is not implemented"
                         );
+                        tui.error("Task skip is not available during this run; no state changed");
                     }
                 }
             }
@@ -7596,28 +7627,87 @@ fn complete_plan_after_successful_verify(
     Ok(phase)
 }
 
-fn complete_verified_plan_success(
+fn build_plan_completed_event(
+    state: &RunState,
     plan_id: &str,
+    outcome: PlanOutcome,
+    reason: Option<String>,
+) -> RunnerEvent {
+    RunnerEvent::plan_completed(
+        state.run_id(),
+        plan_id,
+        outcome,
+        reason,
+        state.plan_cost(plan_id),
+        state.plan_completed_tasks(plan_id).len(),
+        state.plan_failed_tasks(plan_id).len(),
+    )
+}
+
+fn plan_verify_attempt(state: &RunState, completion: &GateCompletion) -> TaskAttemptRef {
+    completion.attempt.clone().unwrap_or_else(|| {
+        TaskAttemptRef::new(
+            completion.plan_id.clone(),
+            completion.task_id.clone(),
+            state.iteration_for(&completion.plan_id, &completion.task_id),
+        )
+    })
+}
+
+fn emit_plan_verify_attempt_completed(
+    completion: &GateCompletion,
+    outcome: TaskAttemptOutcome,
+    failure_kind: Option<RunnerFailureKind>,
+    state: &mut RunState,
+    paths: &PersistPaths,
+    tui: &TuiBridge,
+    config: &RunConfig,
+) {
+    let run_id = state.run_id().to_string();
+    let attempt = plan_verify_attempt(state, completion);
+    emit_runner_event(
+        paths,
+        state,
+        tui,
+        config,
+        RunnerEvent::task_attempt_completed(
+            &run_id,
+            attempt,
+            outcome,
+            failure_kind,
+            completion.duration_ms,
+            "",
+            "",
+        ),
+    );
+}
+
+fn complete_verified_plan_success(
+    completion: &GateCompletion,
     executor: &mut ParallelExecutor,
     state: &mut RunState,
     paths: &PersistPaths,
     tui: &TuiBridge,
     config: &RunConfig,
 ) -> Result<PlanPhase, TransitionError> {
+    let plan_id = completion.plan_id.as_str();
     let was_complete = executor
         .plan_state(plan_id)
         .is_some_and(|state| matches!(state.current_phase, PlanPhase::Complete));
     let phase = complete_plan_after_successful_verify(plan_id, executor)?;
+    emit_plan_verify_attempt_completed(
+        completion,
+        TaskAttemptOutcome::Passed,
+        None,
+        state,
+        paths,
+        tui,
+        config,
+    );
     if !was_complete {
         tui.plan_completed(plan_id, true);
-        let run_id = state.run_id().to_string();
-        emit_runner_event(
-            paths,
-            state,
-            tui,
-            config,
-            RunnerEvent::plan_completed(&run_id, plan_id, PlanOutcome::Succeeded, None, 0.0, 0, 0),
-        );
+        let event = build_plan_completed_event(state, plan_id, PlanOutcome::Succeeded, None);
+        emit_runner_event(paths, state, tui, config, event);
     }
     Ok(phase)
 }
@@ -7635,14 +7725,7 @@ fn handle_plan_verify_completion(
 ) {
     if completion.passed {
         state.clear_retry_backoff(&completion.plan_id);
-        match complete_verified_plan_success(
-            &completion.plan_id,
-            executor,
-            state,
-            paths,
-            tui,
-            config,
-        ) {
+        match complete_verified_plan_success(completion, executor, state, paths, tui, config) {
             Ok(phase) => {
                 tui.phase_transition(&completion.plan_id, "verifying", &format!("{phase:?}"));
                 info!(plan_id = %completion.plan_id, phase = ?phase, "plan verify passed — plan complete");
@@ -7657,6 +7740,15 @@ fn handle_plan_verify_completion(
                     &completion.plan_id,
                     &ExecutorEvent::Fatal(format!("plan verify transition failed: {e}")),
                 );
+                emit_plan_verify_attempt_completed(
+                    completion,
+                    TaskAttemptOutcome::Failed,
+                    Some(RunnerFailureKind::Structural),
+                    state,
+                    paths,
+                    tui,
+                    config,
+                );
             }
         }
     } else {
@@ -7664,11 +7756,7 @@ fn handle_plan_verify_completion(
             .failure_kind
             .unwrap_or_else(|| RunnerFailureKind::from_output(&completion.output));
         let run_id = state.run_id().to_string();
-        let attempt = TaskAttemptRef::new(
-            completion.plan_id.clone(),
-            completion.task_id.clone(),
-            state.iteration_for(&completion.plan_id, &completion.task_id),
-        );
+        let attempt = plan_verify_attempt(state, completion);
         let decision = RetryDecision::for_failure(
             failure_kind,
             attempt.attempt,
@@ -7676,6 +7764,15 @@ fn handle_plan_verify_completion(
             "plan verify failed and verify regeneration is available".to_string(),
         );
         state.set_retry_backoff_from_decision(&completion.plan_id, &decision);
+        emit_plan_verify_attempt_completed(
+            completion,
+            TaskAttemptOutcome::Failed,
+            Some(failure_kind),
+            state,
+            paths,
+            tui,
+            config,
+        );
         emit_runner_event(
             paths,
             state,
@@ -7800,22 +7897,13 @@ async fn handle_failed_merge_outcome(
                 }
                 ctx.tui.plan_completed(&plan_id, false);
                 ctx.tui.error(&reason);
-                let run_id = ctx.state.run_id().to_string();
-                emit_runner_event(
-                    ctx.paths,
+                let event = build_plan_completed_event(
                     ctx.state,
-                    ctx.tui,
-                    ctx.config,
-                    RunnerEvent::plan_completed(
-                        &run_id,
-                        &plan_id,
-                        PlanOutcome::Failed,
-                        Some(reason.clone()),
-                        0.0,
-                        0,
-                        0,
-                    ),
+                    &plan_id,
+                    PlanOutcome::Failed,
+                    Some(reason.clone()),
                 );
+                emit_runner_event(ctx.paths, ctx.state, ctx.tui, ctx.config, event);
             }
             save_snapshot(
                 ctx.config,
@@ -7856,7 +7944,6 @@ async fn handle_merge_completion(
     github_ops: &Arc<dyn GitHubOps>,
     github_workflow: &GitHubWorkflow,
 ) {
-    let run_id = state.run_id().to_string();
     if completion.passed {
         match executor.apply_event(&completion.plan_id, &ExecutorEvent::MergeSucceeded) {
             Ok(phase) => {
@@ -7879,21 +7966,13 @@ async fn handle_merge_completion(
                 );
                 tui.phase_transition(&completion.plan_id, "merging", &format!("{phase:?}"));
                 tui.plan_completed(&completion.plan_id, true);
-                emit_runner_event(
-                    paths,
+                let event = build_plan_completed_event(
                     state,
-                    tui,
-                    config,
-                    RunnerEvent::plan_completed(
-                        &run_id,
-                        &completion.plan_id,
-                        PlanOutcome::Succeeded,
-                        None,
-                        0.0,
-                        0,
-                        0,
-                    ),
+                    &completion.plan_id,
+                    PlanOutcome::Succeeded,
+                    None,
                 );
+                emit_runner_event(paths, state, tui, config, event);
                 info!(
                     plan_id = %completion.plan_id,
                     output = %completion.output,
@@ -7922,21 +8001,13 @@ async fn handle_merge_completion(
                     .apply_event(&completion.plan_id, &ExecutorEvent::Fatal(reason.clone()));
             }
         }
-        emit_runner_event(
-            paths,
+        let event = build_plan_completed_event(
             state,
-            tui,
-            config,
-            RunnerEvent::plan_completed(
-                &run_id,
-                &completion.plan_id,
-                PlanOutcome::Failed,
-                Some(reason.clone()),
-                0.0,
-                0,
-                0,
-            ),
+            &completion.plan_id,
+            PlanOutcome::Failed,
+            Some(reason.clone()),
         );
+        emit_runner_event(paths, state, tui, config, event);
         tui.error(&reason);
     }
 
@@ -9443,15 +9514,20 @@ fn runner_event_to_feedback(
             backoff_secs: cooldown_ms / 1000,
         }),
         RunnerEvent::PlanCompleted {
-            plan_id, outcome, ..
+            plan_id,
+            outcome,
+            cost_usd,
+            tasks_completed,
+            tasks_failed,
+            ..
         } => {
             let succeeded = matches!(outcome, PlanOutcome::Succeeded);
             Some(FeedbackEvent::PlanCompleted {
                 plan_id: plan_id.clone(),
                 succeeded,
-                tasks_completed: 0,
-                tasks_failed: 0,
-                total_cost_usd: 0.0,
+                tasks_completed: *tasks_completed,
+                tasks_failed: *tasks_failed,
+                total_cost_usd: *cost_usd,
             })
         }
         _ => None,
@@ -9582,6 +9658,55 @@ fn refresh_task_fingerprints_from_index(
         );
     }
     state.task_fingerprints = fingerprints;
+}
+
+fn build_runner_status(
+    state: &RunState,
+    total_plans: usize,
+    completed_plans: usize,
+) -> (super::status_file::RunnerStatusFile, bool) {
+    let terminal_phase = match state.lifecycle.status {
+        RunnerRunStatus::Completed => Some("completed"),
+        RunnerRunStatus::Failed => Some("failed"),
+        RunnerRunStatus::Cancelled => Some("cancelled"),
+        RunnerRunStatus::Initialized | RunnerRunStatus::Running => None,
+    };
+    let active_agents = usize::from(terminal_phase.is_none() && state.agent_active);
+    let phase = terminal_phase.unwrap_or_else(|| {
+        if state.agent_active {
+            "dispatch"
+        } else if !state.gate_output.is_empty() {
+            "gate"
+        } else {
+            "idle"
+        }
+    });
+    let active_plans = if terminal_phase.is_some() {
+        0
+    } else {
+        total_plans.saturating_sub(completed_plans)
+    };
+    let last_event = if terminal_phase.is_some() {
+        String::from("run.completed")
+    } else if !state.current_task.is_empty() {
+        format!("task:{}", state.current_task)
+    } else {
+        String::from("none")
+    };
+
+    (
+        super::status_file::RunnerStatusFile {
+            run_id: state.run_id().to_string(),
+            phase: phase.to_string(),
+            active_plans,
+            completed_plans,
+            total_plans,
+            active_agents,
+            elapsed_secs: state.started_at.elapsed().as_secs(),
+            last_event,
+        },
+        terminal_phase.is_some(),
+    )
 }
 
 /// Build a unified [`StateSnapshot`] from all four state groups (executor,
@@ -9718,35 +9843,15 @@ fn save_snapshot(
     }
 
     // Write the lightweight status.json (debounced to 1/sec max).
-    let elapsed = state.started_at.elapsed().as_secs();
-    let active_agents: usize = if state.agent_active { 1 } else { 0 };
-    let phase = if state.agent_active {
-        "dispatch"
-    } else if !state.gate_output.is_empty() {
-        "gate"
-    } else {
-        "idle"
-    };
     let total_plans = executor.plan_count();
     let completed_plans = executor.completed_plans().len();
-    let active_plans = total_plans.saturating_sub(completed_plans);
-    let last_event = if !state.current_task.is_empty() {
-        format!("task:{}", state.current_task)
-    } else {
-        String::from("none")
-    };
-    let status_payload = super::status_file::RunnerStatusFile {
-        run_id: state.run_id().to_string(),
-        phase: phase.to_string(),
-        active_plans,
-        completed_plans,
-        total_plans,
-        active_agents,
-        elapsed_secs: elapsed,
-        last_event,
-    };
+    let (status_payload, terminal) = build_runner_status(state, total_plans, completed_plans);
     if let Some(parent) = paths.status_json.parent() {
-        super::status_file::write_status_debounced(parent, &status_payload);
+        if terminal {
+            super::status_file::write_status_immediate(parent, &status_payload);
+        } else {
+            super::status_file::write_status_debounced(parent, &status_payload);
+        }
     }
 }
 
@@ -13782,22 +13887,9 @@ async fn dispatch_action(
                 },
             );
             ctx.tui.plan_completed(plan_id, true);
-            let run_id = ctx.state.run_id().to_string();
-            emit_runner_event(
-                ctx.paths,
-                ctx.state,
-                ctx.tui,
-                ctx.config,
-                RunnerEvent::plan_completed(
-                    &run_id,
-                    plan_id,
-                    PlanOutcome::Succeeded,
-                    None,
-                    0.0,
-                    0,
-                    0,
-                ),
-            );
+            let event =
+                build_plan_completed_event(ctx.state, plan_id, PlanOutcome::Succeeded, None);
+            emit_runner_event(ctx.paths, ctx.state, ctx.tui, ctx.config, event);
             save_snapshot(
                 ctx.config,
                 ctx.executor,
@@ -13828,22 +13920,13 @@ async fn dispatch_action(
                 },
             );
             ctx.tui.plan_completed(plan_id, false);
-            let run_id = ctx.state.run_id().to_string();
-            emit_runner_event(
-                ctx.paths,
+            let event = build_plan_completed_event(
                 ctx.state,
-                ctx.tui,
-                ctx.config,
-                RunnerEvent::plan_completed(
-                    &run_id,
-                    plan_id,
-                    PlanOutcome::Failed,
-                    Some(reason.clone()),
-                    0.0,
-                    0,
-                    0,
-                ),
+                plan_id,
+                PlanOutcome::Failed,
+                Some(reason.clone()),
             );
+            emit_runner_event(ctx.paths, ctx.state, ctx.tui, ctx.config, event);
             ActionDispatchOutcome::Handled
         }
 
@@ -20085,6 +20168,81 @@ mod tests {
     use super::*;
     use crate::task_parser::TasksFile;
     use tempfile::TempDir;
+
+    #[test]
+    fn plan_completed_event_uses_accumulated_plan_totals() {
+        let mut state = RunState::new(3);
+        state.plan_costs.insert("plan".to_string(), 1.25);
+        assert!(state.mark_task_completed("plan", "T1"));
+        assert!(state.mark_task_completed("plan", "T2"));
+        state.mark_task_failed("plan", "T3");
+
+        let event = build_plan_completed_event(
+            &state,
+            "plan",
+            PlanOutcome::Failed,
+            Some("one task failed".to_string()),
+        );
+
+        match &event {
+            RunnerEvent::PlanCompleted {
+                cost_usd,
+                tasks_completed,
+                tasks_failed,
+                ..
+            } => {
+                assert_eq!(*cost_usd, 1.25);
+                assert_eq!(*tasks_completed, 2);
+                assert_eq!(*tasks_failed, 1);
+            }
+            other => panic!("expected plan.completed, got {}", other.event_type()),
+        }
+
+        let feedback = runner_event_to_feedback(
+            &event,
+            &None,
+            &TaskUsageSnapshot {
+                tokens_in: 0,
+                tokens_out: 0,
+                cost_usd: 0.0,
+                duration_ms: 0,
+                prompt_text: None,
+                agent_output: String::new(),
+            },
+        )
+        .expect("plan completion feedback");
+        match feedback {
+            crate::runtime_feedback::FeedbackEvent::PlanCompleted {
+                tasks_completed,
+                tasks_failed,
+                total_cost_usd,
+                ..
+            } => {
+                assert_eq!(tasks_completed, 2);
+                assert_eq!(tasks_failed, 1);
+                assert_eq!(total_cost_usd, 1.25);
+            }
+            other => panic!("expected plan completion feedback, got {}", other.label()),
+        }
+    }
+
+    #[test]
+    fn terminal_status_projection_overrides_stale_gate_activity() {
+        let mut state = RunState::new(1);
+        state.lifecycle.status = RunnerRunStatus::Failed;
+        state.agent_active = true;
+        state.current_task = "plan-verify".to_string();
+        state.gate_output = "stale gate output".to_string();
+
+        let (status, terminal) = build_runner_status(&state, 1, 0);
+
+        assert!(terminal);
+        assert_eq!(status.phase, "failed");
+        assert_eq!(status.active_plans, 0);
+        assert_eq!(status.completed_plans, 0);
+        assert_eq!(status.active_agents, 0);
+        assert_eq!(status.last_event, "run.completed");
+    }
 
     #[test]
     fn retained_dispatch_continuation_keeps_exact_attempt_across_plan_rollover() {

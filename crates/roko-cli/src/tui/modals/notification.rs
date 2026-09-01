@@ -9,6 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use super::super::dashboard::Theme;
+use super::super::display_utils::truncate;
 
 /// Severity level for a notification toast.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,20 +76,39 @@ pub fn render_notifications(
         return;
     }
 
-    // Size toast to fit longest message, clamped to 80% of screen width
+    // Keep transient messages subordinate to the operational view. Narrow
+    // terminals get one toast; larger canvases can retain a short history.
+    let density_cap = if area.width < 100 || area.height < 32 {
+        1
+    } else if area.height < 48 {
+        2
+    } else {
+        3
+    };
+    let usable_height = area.height.saturating_sub(4); // header/warning + footer
+    let max_visible = (usable_height / 3).min(density_cap) as usize;
+    if max_visible == 0 {
+        return;
+    }
+
+    // Size the toast to its contents, but never let it consume more than two
+    // thirds of the view. Character counts avoid byte-length inflation for
+    // Unicode status text.
     let max_msg_len = active
         .iter()
-        .map(|n| n.message.len() + 8) // "[TAG] " prefix + padding
+        .map(|n| n.message.chars().count() + 8) // "[TAG] " prefix + padding
         .max()
         .unwrap_or(40) as u16;
-    let toast_width: u16 = max_msg_len.clamp(30, (area.width * 4 / 5).max(30));
+    let max_toast_width = (area.width * 2 / 3).max(30).min(area.width);
+    let toast_width = max_msg_len.clamp(30.min(area.width), max_toast_width);
     let toast_height: u16 = 3; // border top + message + border bottom
 
-    let max_visible = (area.height / toast_height).min(5) as usize;
-    let visible = &active[active.len().saturating_sub(max_visible)..];
-
-    for (i, notif) in visible.iter().enumerate() {
-        let y_offset = area.height.saturating_sub((i as u16 + 1) * toast_height);
+    for (i, notif) in active.iter().rev().take(max_visible).enumerate() {
+        // Reserve the final row for the global status/footer bar.
+        let y_offset = area
+            .height
+            .saturating_sub(1)
+            .saturating_sub((i as u16 + 1) * toast_height);
         let x_offset = area.width.saturating_sub(toast_width);
 
         let toast_area = Rect::new(
@@ -127,11 +147,7 @@ pub fn render_notifications(
 
         // Truncate message to fit in one line.
         let max_msg_len = inner.width.saturating_sub(6) as usize; // "[TAG] " prefix
-        let msg = if notif.message.len() > max_msg_len {
-            format!("{}...", &notif.message[..max_msg_len.saturating_sub(3)])
-        } else {
-            notif.message.clone()
-        };
+        let msg = truncate(&notif.message, max_msg_len);
 
         let line = Line::from(vec![
             Span::styled(
@@ -142,5 +158,54 @@ pub fn render_notifications(
         ]);
 
         frame.render_widget(Paragraph::new(line), inner);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use super::*;
+
+    fn rendered(width: u16, height: u16, count: usize) -> String {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let notifications = (0..count)
+            .map(|index| {
+                Notification::error(format!(
+                    "failure {index} — café résumé 東京 with additional details"
+                ))
+            })
+            .collect::<Vec<_>>();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_notifications(frame, area, &notifications, &Theme::dark());
+            })
+            .expect("render notifications");
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn narrow_terminal_shows_only_newest_toast_and_preserves_footer() {
+        let output = rendered(80, 24, 5);
+        assert_eq!(output.matches("[ERR ]").count(), 1);
+        assert!(output.contains("failure 4"));
+        assert!(!output.lines().last().unwrap_or_default().contains("ERR"));
+    }
+
+    #[test]
+    fn unicode_message_truncation_does_not_panic() {
+        let output = rendered(40, 12, 1);
+        assert!(output.contains("ERR"));
     }
 }

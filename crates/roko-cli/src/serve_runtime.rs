@@ -816,6 +816,8 @@ fn build_runner_config(
         batch_size: None,
         warm_cache: true,
         screenshots: false,
+        screenshot_interval_secs: 60,
+        screenshot_dir: None,
         metrics,
         obs_sinks: None,
         conductor: Some(Arc::new(conductor)),

@@ -715,6 +715,8 @@ pub(crate) async fn run_plan_execution(
         warm_cache: true,
         batch_size: None,
         screenshots: false,
+        screenshot_interval_secs: 60,
+        screenshot_dir: None,
         metrics: {
             let m = std::sync::Arc::new(roko_core::obs::metrics::MetricRegistry::new());
             roko_core::obs::metrics::register_standard_metrics(&m);

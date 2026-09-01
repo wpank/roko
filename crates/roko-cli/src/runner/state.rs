@@ -1343,6 +1343,62 @@ mod tests {
     }
 
     #[test]
+    fn synthetic_plan_verify_attempt_settles_after_gate_completion() {
+        let mut state = RunState::new(1);
+        let run_id = state.run_id().to_string();
+        let attempt = TaskAttemptRef::new("plan", "plan-verify", 1);
+        state.apply_runner_event(&RunnerEvent::gate_dispatch_started(
+            &run_id,
+            attempt.clone(),
+            GateCompletionKind::PlanVerify,
+            0,
+        ));
+        let completion = GateCompletion {
+            effect: None,
+            kind: GateCompletionKind::PlanVerify,
+            attempt: Some(attempt.clone()),
+            plan_id: "plan".into(),
+            task_id: "plan-verify".into(),
+            rung: 0,
+            passed: true,
+            failure_kind: None,
+            verdicts: Vec::new(),
+            output: "plan verify passed".into(),
+            duration_ms: 10,
+            selected_rungs: Vec::new(),
+        };
+        state.apply_runner_event(&RunnerEvent::gate_completed(
+            &run_id,
+            attempt.clone(),
+            &completion,
+        ));
+        assert_eq!(
+            state.lifecycle.task_attempts[&attempt.key()].status,
+            TaskAttemptStatus::Gating
+        );
+
+        state.apply_runner_event(&RunnerEvent::task_attempt_completed(
+            &run_id,
+            attempt.clone(),
+            TaskAttemptOutcome::Passed,
+            None,
+            completion.duration_ms,
+            "",
+            "",
+        ));
+
+        assert!(state.task_attempt_is_terminal(&attempt));
+        assert_eq!(
+            state.lifecycle.task_attempts[&attempt.key()].status,
+            TaskAttemptStatus::Passed
+        );
+        assert_eq!(
+            state.lifecycle.tasks["plan:plan-verify"].status,
+            TaskLifecycleStatus::Passed
+        );
+    }
+
+    #[test]
     fn starting_new_attempt_supersedes_stale_retry_attempt() {
         let mut state = RunState::new(1);
         let run_id = state.run_id().to_string();

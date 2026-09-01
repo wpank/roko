@@ -96,6 +96,7 @@ pub fn capture_snapshots(workdir: &Path, config: &SnapshotConfig) -> Result<Snap
 
     // Build a headless App to get properly initialized state.
     let mut app = App::new(workdir);
+    app.prepare_headless_capture();
     let tabs_to_capture = resolve_tabs(&config.tabs)?;
     let rendered = app.render_tabs_to_text(config.width, config.height, &tabs_to_capture);
 
@@ -260,7 +261,7 @@ mod tests {
         assert_eq!(result.tabs_captured, 1);
         let text = std::fs::read_to_string(output_dir.join("f01-dashboard.txt")).unwrap();
         assert!(text.contains("F1:dash"), "global tab bar missing: {text}");
-        assert!(text.lines().count() >= 20);
+        assert_eq!(text.bytes().filter(|byte| *byte == b'\n').count(), 30);
 
         let manifest = std::fs::read_to_string(result.manifest_path).unwrap();
         assert!(manifest.contains("\"schema_version\": 2"));

@@ -2471,8 +2471,12 @@ pub struct RunConfig {
     pub structured_log: super::structured_log::StructuredLogger,
     /// When true, capture event-driven screenshots during execution.
     /// Screenshots are saved to `.roko/screenshots/run-<timestamp>/`.
-    #[allow(dead_code)]
     pub screenshots: bool,
+    /// Maximum seconds between periodic all-tab captures.
+    pub screenshot_interval_secs: u64,
+    /// Exact output directory override for this run. Relative paths are
+    /// resolved against [`Self::workdir`].
+    pub screenshot_dir: Option<PathBuf>,
 }
 
 impl RunConfig {
@@ -2646,6 +2650,8 @@ impl RunConfig {
             github_ops: None,
             structured_log: super::structured_log::StructuredLogger::noop(),
             screenshots: false,
+            screenshot_interval_secs: 60,
+            screenshot_dir: None,
         }
     }
 }
@@ -2700,6 +2706,8 @@ impl Default for RunConfig {
             github_ops: None,
             structured_log: super::structured_log::StructuredLogger::noop(),
             screenshots: false,
+            screenshot_interval_secs: 60,
+            screenshot_dir: None,
         }
     }
 }
@@ -2749,6 +2757,9 @@ impl std::fmt::Debug for RunConfig {
             )
             .field("output_sink", &self.output_sink)
             .field("warm_cache", &self.warm_cache)
+            .field("screenshots", &self.screenshots)
+            .field("screenshot_interval_secs", &self.screenshot_interval_secs)
+            .field("screenshot_dir", &self.screenshot_dir)
             .field("conductor", &self.conductor.as_ref().map(|_| ".."))
             .field(
                 "conductor_ring",

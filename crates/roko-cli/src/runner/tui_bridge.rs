@@ -4,20 +4,33 @@
 //! `DashboardEvent` variants for each significant runner event.
 
 use crate::state_hub::StateHubSender;
+use crate::tui::Tab;
 use roko_core::dashboard_snapshot::{DashboardEvent, DiagnosisSummary};
 
+use super::screenshot_collector::ScreenshotCollector;
 use super::types::RunnerEvent;
 
 /// Publishes runner events to the TUI / dashboard via `StateHub`.
 #[derive(Clone)]
 pub struct TuiBridge {
     sender: StateHubSender,
+    screenshot_collector: Option<ScreenshotCollector>,
 }
 
 impl TuiBridge {
     /// Create a new bridge from a `StateHubSender`.
     pub fn new(sender: StateHubSender) -> Self {
-        Self { sender }
+        Self {
+            sender,
+            screenshot_collector: None,
+        }
+    }
+
+    /// Attach a non-blocking continuous screenshot collector.
+    #[must_use]
+    pub fn with_screenshot_collector(mut self, collector: ScreenshotCollector) -> Self {
+        self.screenshot_collector = Some(collector);
+        self
     }
 
     /// A plan has started execution.
@@ -26,6 +39,11 @@ impl TuiBridge {
             plan_id: plan_id.to_string(),
             tasks_total,
         });
+        self.capture(
+            "plan_started",
+            Some(plan_id.to_string()),
+            &[Tab::Dashboard, Tab::Plans],
+        );
     }
 
     /// A plan has completed (successfully or not).
@@ -34,6 +52,14 @@ impl TuiBridge {
             plan_id: plan_id.to_string(),
             success,
         });
+        self.capture(
+            "plan_completed",
+            Some(format!(
+                "{plan_id}:{}",
+                if success { "passed" } else { "failed" }
+            )),
+            &[Tab::Dashboard, Tab::Plans],
+        );
     }
 
     /// A task has started.
@@ -44,6 +70,11 @@ impl TuiBridge {
             title: title.to_string(),
             phase: phase.to_string(),
         });
+        self.capture(
+            "task_started",
+            Some(format!("{plan_id}/{task_id}")),
+            &[Tab::Dashboard, Tab::Plans],
+        );
     }
 
     /// A task changed phase.
@@ -60,6 +91,11 @@ impl TuiBridge {
             old_phase: old_phase.to_string(),
             new_phase: new_phase.to_string(),
         });
+        self.capture(
+            "task_phase_changed",
+            Some(format!("{plan_id}/{task_id}:{old_phase}->{new_phase}")),
+            &[Tab::Dashboard, Tab::Plans],
+        );
     }
 
     /// A task has completed.
@@ -69,6 +105,11 @@ impl TuiBridge {
             task_id: task_id.to_string(),
             outcome: outcome.to_string(),
         });
+        self.capture(
+            "task_completed",
+            Some(format!("{plan_id}/{task_id}:{outcome}")),
+            &[Tab::Dashboard, Tab::Plans],
+        );
     }
 
     /// An agent has been spawned.
@@ -89,6 +130,11 @@ impl TuiBridge {
             role: role.to_string(),
             model: model.to_string(),
         });
+        self.capture(
+            "agent_spawned",
+            Some(format!("{plan_id}/{task_id}:{agent_id}")),
+            &[Tab::Dashboard, Tab::Agents],
+        );
     }
 
     /// Agent produced text output (streamed).
@@ -117,6 +163,11 @@ impl TuiBridge {
             task_id: task_id.to_string(),
             attempt,
         });
+        self.capture(
+            "agent_completed",
+            Some(format!("{plan_id}/{task_id}:{agent_id}")),
+            &[Tab::Dashboard, Tab::Agents],
+        );
     }
 
     /// A single line of gate output (streamed).
@@ -159,6 +210,11 @@ impl TuiBridge {
             from: from.to_string(),
             to: to.to_string(),
         });
+        self.capture(
+            "phase_transition",
+            Some(format!("{plan_id}:{from}->{to}")),
+            &Tab::ALL,
+        );
     }
 
     /// Efficiency metric for a task.
@@ -206,6 +262,11 @@ impl TuiBridge {
         self.sender.publish(DashboardEvent::Error {
             message: message.to_string(),
         });
+        self.capture(
+            "error",
+            Some(message.to_string()),
+            &[Tab::Dashboard, Tab::Logs],
+        );
     }
 
     /// Publish a lightweight runner status line before the full lifecycle
@@ -218,6 +279,13 @@ impl TuiBridge {
             task_id: String::new(),
             message: message.to_string(),
         });
+        if event_type.starts_with("startup.") {
+            self.capture(
+                event_type,
+                Some(message.to_string()),
+                &[Tab::Dashboard, Tab::Logs],
+            );
+        }
     }
 
     /// Publish a typed runner lifecycle event into the dashboard event log.
@@ -251,6 +319,7 @@ impl TuiBridge {
             task_id: event.task_id().unwrap_or_default().to_string(),
             message: event.message(),
         });
+        self.capture_runner_event(event);
     }
 
     /// Cascade router state updated after observation.
@@ -363,6 +432,72 @@ impl TuiBridge {
             task_id: task_id.to_string(),
             rung_name: rung_name.to_string(),
         });
+    }
+
+    fn capture_runner_event(&self, event: &RunnerEvent) {
+        let detail = event_detail(event);
+        match event {
+            RunnerEvent::RunStarted { .. } => {
+                self.capture("run_started", detail, &Tab::ALL);
+            }
+            RunnerEvent::RunCompleted { .. } => {
+                self.capture("completion", detail, &Tab::ALL);
+            }
+            RunnerEvent::GateCompleted { .. } => {
+                self.capture(
+                    "gate_completed",
+                    detail,
+                    &[Tab::Dashboard, Tab::Plans, Tab::Learning],
+                );
+            }
+            RunnerEvent::MergeBackendCompleted { .. } => {
+                self.capture(
+                    "merge_completed",
+                    detail,
+                    &[Tab::Dashboard, Tab::Plans, Tab::Git],
+                );
+            }
+            RunnerEvent::TaskAttemptCancellationFailed { .. }
+            | RunnerEvent::TimeoutRecorded { .. }
+            | RunnerEvent::BudgetExceeded { .. }
+            | RunnerEvent::PlanCancelled { .. }
+            | RunnerEvent::ConductorIntervention { .. } => {
+                self.capture(event.event_type(), detail, &[Tab::Dashboard, Tab::Logs]);
+            }
+            RunnerEvent::BatchPause { .. } | RunnerEvent::BatchResume { .. } => {
+                self.capture(event.event_type(), detail, &Tab::ALL);
+            }
+            RunnerEvent::ResumeMarker { .. }
+            | RunnerEvent::PlanStarted { .. }
+            | RunnerEvent::PlanCompleted { .. }
+            | RunnerEvent::TaskAttemptStarted { .. }
+            | RunnerEvent::TaskAttemptCompleted { .. }
+            | RunnerEvent::TaskAttemptCancellationRequested { .. }
+            | RunnerEvent::TimeoutSalvagedToGate { .. }
+            | RunnerEvent::AgentDispatchStarted { .. }
+            | RunnerEvent::AgentDispatchCompleted { .. }
+            | RunnerEvent::AgentCompleted { .. }
+            | RunnerEvent::GateDispatchStarted { .. }
+            | RunnerEvent::PromptAssembled { .. }
+            | RunnerEvent::RetryDecision { .. }
+            | RunnerEvent::RunPaused { .. }
+            | RunnerEvent::RunResumed { .. } => {}
+        }
+    }
+
+    fn capture(&self, label: &str, detail: Option<String>, tabs: &[Tab]) {
+        if let Some(collector) = &self.screenshot_collector {
+            let _ = collector.capture_event(label, detail, tabs);
+        }
+    }
+}
+
+fn event_detail(event: &RunnerEvent) -> Option<String> {
+    match (event.plan_id(), event.task_id()) {
+        (Some(plan_id), Some(task_id)) => Some(format!("{plan_id}/{task_id}")),
+        (Some(plan_id), None) => Some(plan_id.to_string()),
+        (None, Some(task_id)) => Some(task_id.to_string()),
+        (None, None) => Some(event.message()),
     }
 }
 

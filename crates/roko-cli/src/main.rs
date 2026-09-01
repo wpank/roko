@@ -1722,6 +1722,19 @@ Examples:
         /// completion, agent spawn/exit, and errors.
         #[arg(long)]
         screenshots: bool,
+        /// Maximum seconds between periodic full-state screenshot captures.
+        #[arg(
+            long,
+            value_name = "SECONDS",
+            default_value_t = 60,
+            value_parser = clap::value_parser!(u64).range(1..=86_400)
+        )]
+        screenshot_interval: u64,
+        /// Exact directory for this run's screenshot timeline. Relative paths
+        /// are resolved against the plan workdir. Existing paths receive a
+        /// collision-safe numeric suffix.
+        #[arg(long, value_name = "PATH")]
+        screenshot_dir: Option<PathBuf>,
         /// Pause execution for review after every N plan completions.
         /// Natural checkpoints for overnight or batch runs.
         #[arg(long, value_name = "N")]
@@ -3388,6 +3401,8 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
                 skip_preflight: false,
                 force_backend: None,
                 screenshots: false,
+                screenshot_interval: 60,
+                screenshot_dir: None,
                 batch_size: None,
             };
             commands::plan::cmd_plan(cli, plan_cmd).await
@@ -4842,6 +4857,56 @@ mod tests {
         assert_eq!(
             resume_plan,
             Some(PathBuf::from(".roko/state/state-snapshot.json"))
+        );
+    }
+
+    #[test]
+    fn cli_parses_continuous_screenshot_options() {
+        let cli = Cli::try_parse_from([
+            "roko",
+            "plan",
+            "run",
+            "plans",
+            "--screenshots",
+            "--screenshot-interval",
+            "30",
+            "--screenshot-dir",
+            "/private/tmp/roko-evidence",
+        ])
+        .unwrap();
+        let Some(Command::Plan {
+            cmd:
+                PlanCmd::Run {
+                    screenshots,
+                    screenshot_interval,
+                    screenshot_dir,
+                    ..
+                },
+        }) = cli.command
+        else {
+            panic!("expected plan run");
+        };
+        assert!(screenshots);
+        assert_eq!(screenshot_interval, 30);
+        assert_eq!(
+            screenshot_dir,
+            Some(PathBuf::from("/private/tmp/roko-evidence"))
+        );
+    }
+
+    #[test]
+    fn cli_rejects_zero_screenshot_interval() {
+        assert!(
+            Cli::try_parse_from([
+                "roko",
+                "plan",
+                "run",
+                "plans",
+                "--screenshots",
+                "--screenshot-interval",
+                "0",
+            ])
+            .is_err()
         );
     }
 

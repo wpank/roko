@@ -145,7 +145,11 @@ pub fn render_status_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
     ));
 
     // ── 4. Context-sensitive keybind hints ────────────────────────────
-    let keys = context_key_hints(state, has_failures);
+    let prefix_width = Line::from(spans.clone()).width();
+    let hint_width = (area.width as usize)
+        .saturating_sub(prefix_width)
+        .saturating_sub(1);
+    let keys = fit_context_hints(&context_key_hints(state, has_failures), hint_width);
 
     spans.push(Span::styled(
         format!(" {keys}"),
@@ -155,6 +159,36 @@ pub fn render_status_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
     let line = Line::from(spans);
     let p = Paragraph::new(line).style(bg);
     frame.render_widget(p, area);
+}
+
+/// Keep complete hint tokens within the remaining footer width. Help is
+/// retained while lower-priority trailing actions are progressively removed;
+/// allowing `Paragraph` to clip the final glyphs produces misleading keys.
+fn fit_context_hints(hints: &str, max_width: usize) -> String {
+    let mut tokens = hints.split("  ").collect::<Vec<_>>();
+    let help = tokens
+        .last()
+        .is_some_and(|token| *token == "?:help")
+        .then(|| tokens.pop())
+        .flatten();
+
+    loop {
+        let candidate = tokens
+            .iter()
+            .copied()
+            .chain(help)
+            .collect::<Vec<_>>()
+            .join("  ");
+        if Line::from(candidate.as_str()).width() <= max_width {
+            return candidate;
+        }
+        if tokens.pop().is_none() {
+            return help
+                .filter(|token| Line::from(*token).width() <= max_width)
+                .unwrap_or_default()
+                .to_string();
+        }
+    }
 }
 
 /// Build context-sensitive keybind hints based on the current tab, selection
@@ -170,8 +204,7 @@ fn context_key_hints(state: &TuiState, has_failures: bool) -> String {
             hints.push("\u{2191}\u{2193}:nav");
             hints.push("a/o/d/e/g:sub-tab");
             if has_failures {
-                hints.push("R:retry");
-                hints.push("D:diag");
+                hints.push("F2:inspect failure");
             }
             hints.push("Tab:panel");
         }
@@ -186,17 +219,18 @@ fn context_key_hints(state: &TuiState, has_failures: bool) -> String {
             });
             match selected_task_status {
                 Some(TaskStatus::Failed) => {
-                    hints.push("Enter:expand");
-                    hints.push("r:retry");
-                    hints.push("s:skip");
-                    hints.push("d:details");
+                    hints.push("Enter:detail");
+                    hints.push("e:expand");
+                    hints.push("z:diagnose");
+                    hints.push("/:filter");
                 }
                 Some(TaskStatus::Active) => {
-                    hints.push("Enter:expand");
-                    hints.push("d:details");
+                    hints.push("Enter:detail");
+                    hints.push("e:expand");
+                    hints.push("p:pause");
                 }
                 _ => {
-                    hints.push("Enter:expand");
+                    hints.push("Enter:detail");
                     hints.push("h/l:drill");
                     hints.push("/:filter");
                 }
@@ -265,10 +299,13 @@ fn context_key_hints(state: &TuiState, has_failures: bool) -> String {
         }
     }
 
-    // Always append help hint if there's room.
-    if hints.len() < 5 {
-        hints.push("?:help");
+    // Reserve the final slot for help. In failure states the contextual list
+    // can already contain five actions; silently omitting discovery is worse
+    // than dropping the lowest-priority trailing action.
+    if hints.len() >= 5 {
+        hints.truncate(4);
     }
+    hints.push("?:help");
 
     // Cap at 5 hints.
     hints.truncate(5);
@@ -324,20 +361,17 @@ mod tests {
     #[test]
     fn dashboard_key_hints_surface_failure_actions_only_when_needed() {
         let failed = key_hints_for_tab(Tab::Dashboard, true);
+        assert!(failed.contains("F2:inspect failure"), "got: {failed}");
         assert!(
-            failed.contains("R:retry"),
-            "Expected R:retry, got: {failed}"
+            failed.contains("sub-tab"),
+            "Expected sub-tab hint, got: {failed}"
         );
-        assert!(failed.contains("D:diag"), "Expected D:diag, got: {failed}");
 
         let healthy = key_hints_for_tab(Tab::Dashboard, false);
+        assert!(!healthy.contains("inspect failure"), "got: {healthy}");
         assert!(
-            !healthy.contains("R:retry"),
-            "Unexpected R:retry in: {healthy}"
-        );
-        assert!(
-            !healthy.contains("D:diag"),
-            "Unexpected D:diag in: {healthy}"
+            healthy.contains("sub-tab"),
+            "Expected sub-tab hint, got: {healthy}"
         );
     }
 
@@ -345,8 +379,8 @@ mod tests {
     fn plans_tab_shows_drill_hints_by_default() {
         let hints = key_hints_for_tab(Tab::Plans, false);
         assert!(
-            hints.contains("Enter:expand"),
-            "Expected Enter:expand in: {hints}"
+            hints.contains("Enter:detail"),
+            "Expected Enter:detail in: {hints}"
         );
         assert!(
             hints.contains("h/l:drill"),
@@ -377,6 +411,14 @@ mod tests {
             count <= 5,
             "Expected at most 5 hints, got {count} in: {hints}"
         );
+    }
+
+    #[test]
+    fn narrow_hint_line_keeps_complete_tokens_and_help() {
+        let fitted = fit_context_hints("↑↓:nav  `:cycle  Ctrl+T:topology  i:inject  ?:help", 36);
+        assert!(fitted.ends_with("?:help"), "got: {fitted}");
+        assert!(!fitted.contains("i:inject"), "got: {fitted}");
+        assert!(Line::from(fitted.as_str()).width() <= 36);
     }
 
     #[test]

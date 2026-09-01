@@ -746,7 +746,21 @@ impl App {
             &mut app.last_seen_plan_phases,
             snapshot,
         );
+        // A materialized capture has no previous frame, so historical gate,
+        // plan, and error records are state rather than new toast events.
+        // Recreating them on every continuous capture would obscure the very
+        // content the evidence tooling is meant to inspect.
+        app.notifications.clear();
         app
+    }
+
+    /// Remove transient overlays before a one-shot headless capture.
+    ///
+    /// Standalone construction replays persisted events to build the current
+    /// state. Those events should remain in their panels, but must not be
+    /// presented as freshly-arrived notifications in a static screenshot.
+    pub(super) fn prepare_headless_capture(&mut self) {
+        self.notifications.clear();
     }
 
     /// Configure this app to exit when the provided shutdown signal arrives.
@@ -819,7 +833,7 @@ impl App {
                 terminal.draw(|frame| self.draw(frame)).expect("draw tab");
                 let buffer = terminal.backend().buffer();
                 let w = buffer.area.width as usize;
-                let text = buffer
+                let mut text = buffer
                     .content
                     .chunks(w)
                     .map(|row| {
@@ -831,6 +845,10 @@ impl App {
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
+                // Terminate every rendered row, including an intentionally
+                // blank final row. This keeps the virtual terminal height
+                // mechanically verifiable in text evidence.
+                text.push('\n');
                 (tab, text)
             })
             .collect();
@@ -1616,17 +1634,23 @@ impl App {
                 }
             }
             TuiAction::TogglePause => {
-                self.tui_state.is_paused = !self.tui_state.is_paused;
                 if let Some(tx) = &self.tui_command_tx {
-                    let command = if self.tui_state.is_paused {
+                    let requested_pause = !self.tui_state.is_paused;
+                    let command = if requested_pause {
                         crate::runner::TuiCommand::Pause
                     } else {
                         crate::runner::TuiCommand::Resume
                     };
-                    // The UI remains responsive even if the runner has already
-                    // shut down; a connected runner receives the transition on
-                    // its bounded in-process command channel.
-                    let _ = tx.try_send(command);
+                    match tx.try_send(command) {
+                        Ok(()) => self.tui_state.is_paused = requested_pause,
+                        Err(_) => self.notifications.push(super::modals::Notification::warn(
+                            "Pause request was not accepted by the runner",
+                        )),
+                    }
+                } else {
+                    self.notifications.push(super::modals::Notification::warn(
+                        "Pause is available only during a connected plan run",
+                    ));
                 }
             }
             TuiAction::SwitchAgentTab(idx) => {
@@ -4342,6 +4366,21 @@ mod tests {
     }
 
     #[test]
+    fn pause_toggle_does_not_fake_state_without_a_runner() {
+        let dir = tempdir().unwrap();
+        let mut app = App::new(dir.path());
+
+        app.dispatch_action(TuiAction::TogglePause);
+
+        assert!(!app.tui_state.is_paused);
+        assert!(
+            app.notifications
+                .iter()
+                .any(|notification| notification.message.contains("connected plan run"))
+        );
+    }
+
+    #[test]
     fn app_new_connected_installs_snapshot_receiver() {
         let dir = tempdir().unwrap();
         let hub = crate::state_hub::shared_state_hub();
@@ -4722,6 +4761,29 @@ mod tests {
                 .any(|n| n.message.contains("compile PASS"))
         );
         assert_eq!(app.last_seen_gate_count, 1);
+    }
+
+    #[test]
+    fn materialized_headless_snapshot_does_not_replay_historical_toasts() {
+        let dir = tempdir().unwrap();
+        let snapshot = roko_core::DashboardSnapshot {
+            gates: vec![roko_core::dashboard_snapshot::GateVerdictView {
+                plan_id: "plan-a".into(),
+                task_id: "task-1".into(),
+                gate: "compile".into(),
+                passed: false,
+                ts_millis: 100,
+            }],
+            errors: vec![roko_core::dashboard_snapshot::ErrorEntry {
+                message: "historical failure".into(),
+                ts_millis: 101,
+            }],
+            ..Default::default()
+        };
+
+        let app = App::new_with_dashboard_snapshot(dir.path(), &snapshot);
+        assert!(app.notifications.is_empty());
+        assert_eq!(app.tui_state.gate_results.len(), 1);
     }
 
     #[test]

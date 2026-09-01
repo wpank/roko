@@ -57,6 +57,30 @@ pub fn write_status_debounced(state_dir: &Path, status: &RunnerStatusFile) {
     LAST_WRITE_MS.store(now_ms, Ordering::Relaxed);
 }
 
+/// Write `status.json` immediately, bypassing the periodic-write debounce.
+///
+/// Terminal lifecycle projections must use this path: the final snapshot can
+/// be produced less than one second after the preceding gate snapshot, and a
+/// skipped terminal write leaves external readers believing the run is still
+/// active.
+pub fn write_status_immediate(state_dir: &Path, status: &RunnerStatusFile) {
+    let Ok(payload) = serde_json::to_string(status) else {
+        return;
+    };
+
+    let path = status_file_path(state_dir);
+    if let Err(e) = atomic_write(&path, payload.as_bytes()) {
+        tracing::trace!(error = %e, "failed to write terminal status.json");
+        return;
+    }
+
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    LAST_WRITE_MS.store(now_ms, Ordering::Relaxed);
+}
+
 /// Canonical path for the lightweight status file.
 pub fn status_file_path(state_dir: &Path) -> PathBuf {
     state_dir.join("status.json")
@@ -71,4 +95,40 @@ fn atomic_write(path: &Path, data: &[u8]) -> std::io::Result<()> {
     std::fs::write(&tmp, data)?;
     std::fs::rename(&tmp, path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn immediate_write_replaces_a_nonterminal_status() {
+        let dir = tempfile::tempdir().expect("temporary status directory");
+        let mut status = RunnerStatusFile {
+            run_id: "run-1".to_string(),
+            phase: "gate".to_string(),
+            active_plans: 1,
+            completed_plans: 0,
+            total_plans: 1,
+            active_agents: 0,
+            elapsed_secs: 4,
+            last_event: "task:plan-verify".to_string(),
+        };
+        write_status_immediate(dir.path(), &status);
+
+        status.phase = "completed".to_string();
+        status.active_plans = 0;
+        status.completed_plans = 1;
+        status.last_event = "run.completed".to_string();
+        write_status_immediate(dir.path(), &status);
+
+        let persisted: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(status_file_path(dir.path())).expect("read terminal status"),
+        )
+        .expect("parse terminal status");
+        assert_eq!(persisted["phase"], "completed");
+        assert_eq!(persisted["active_plans"], 0);
+        assert_eq!(persisted["completed_plans"], 1);
+        assert_eq!(persisted["last_event"], "run.completed");
+    }
 }

@@ -189,7 +189,13 @@ impl TimeoutConfig {
         Duration::from_secs(self.plan_total_secs)
     }
 
-    /// Post-run cleanup as [`Duration`].
+    /// Post-run cleanup timeout as [`Duration`].
+    ///
+    /// Covers all best-effort cleanup steps after the event loop exits:
+    /// knowledge maintenance, dream consolidation, learning completion,
+    /// episode compaction, filesystem GC, worktree cleanup, and branch cleanup.
+    /// When this timeout expires, remaining cleanup is skipped and the run
+    /// report is returned immediately.
     pub fn post_run_cleanup(&self) -> Duration {
         Duration::from_secs(self.post_run_cleanup_secs)
     }

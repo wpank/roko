@@ -482,13 +482,23 @@ mod tests {
         // current task supplied by AgentSpawned.
         let agent_key = "plan-alpha/T42";
         assert!(snap.agents.contains_key(agent_key));
-        assert_eq!(
-            snap.task_outputs
-                .get("T42")
-                .and_then(|lines| lines.back())
-                .map(String::as_str),
-            Some("hello world")
+        // Stream records carry a semantic prefix; verify the payload
+        // round-trips through the StateHub snapshot.
+        let last_line = snap
+            .task_outputs
+            .get("T42")
+            .and_then(|lines| lines.back())
+            .expect("task_outputs should contain T42");
+        assert!(
+            last_line.starts_with(crate::runner::tui_bridge::STREAM_RECORD_PREFIX),
+            "task output must be a stream record"
         );
+        let json_str = last_line
+            .strip_prefix(crate::runner::tui_bridge::STREAM_RECORD_PREFIX)
+            .unwrap();
+        let record: serde_json::Value = serde_json::from_str(json_str).unwrap();
+        assert_eq!(record["kind"], "text");
+        assert_eq!(record["payload"]["text"], "hello world");
         assert!(
             state.agent_output.contains("hello world"),
             "agent_output in RunState must accumulate the delta"
@@ -530,9 +540,38 @@ mod tests {
 
         let snap = hub.snapshot().borrow().clone();
         let lines = snap.task_outputs.get("T42").expect("task output ring");
-        assert!(lines.iter().any(|line| line.contains("tool: cargo check")));
-        assert!(lines.iter().any(|line| line.contains("truncated for TUI")));
-        assert!(snap.agents["plan-alpha/T42"].output_bytes <= MAX_TUI_TOOL_OUTPUT + 256);
+        // Stream records carry the semantic prefix; parse and check payloads.
+        let has_tool_start = lines.iter().any(|line| {
+            line.strip_prefix(crate::runner::tui_bridge::STREAM_RECORD_PREFIX)
+                .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
+                .map_or(false, |v| {
+                    v["kind"] == "tool_start" && v["payload"]["tool"] == "cargo check"
+                })
+        });
+        assert!(
+            has_tool_start,
+            "tool_start record with name 'cargo check' must be projected"
+        );
+        let has_truncated = lines.iter().any(|line| {
+            line.strip_prefix(crate::runner::tui_bridge::STREAM_RECORD_PREFIX)
+                .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
+                .map_or(false, |v| {
+                    v["payload"]["output"]
+                        .as_str()
+                        .map_or(false, |s| s.contains("truncated for TUI"))
+                })
+        });
+        assert!(
+            has_truncated,
+            "tool_result record must contain truncation marker"
+        );
+        // Stream record envelope adds JSON framing (~150B per record × 2 records).
+        assert!(
+            snap.agents["plan-alpha/T42"].output_bytes <= MAX_TUI_TOOL_OUTPUT + 512,
+            "output_bytes {} must stay bounded (max {})",
+            snap.agents["plan-alpha/T42"].output_bytes,
+            MAX_TUI_TOOL_OUTPUT + 512
+        );
     }
 
     // T1 / SH04-T01: structured attribution via agent_id_for_state never depends

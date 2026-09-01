@@ -511,9 +511,17 @@ mod tests {
     fn dispatch_deadline_remaining_returns_none_when_expired() {
         let deadline = DispatchDeadline::new(MonotonicTime::from_millis(100));
         // One tick past the deadline: no remaining budget.
-        assert!(deadline.remaining(MonotonicTime::from_millis(101)).is_none());
+        assert!(
+            deadline
+                .remaining(MonotonicTime::from_millis(101))
+                .is_none()
+        );
         // Exactly at the deadline: no remaining budget.
-        assert!(deadline.remaining(MonotonicTime::from_millis(100)).is_none());
+        assert!(
+            deadline
+                .remaining(MonotonicTime::from_millis(100))
+                .is_none()
+        );
     }
 
     #[test]
@@ -536,7 +544,9 @@ mod tests {
         let dispatch_dl = DispatchDeadline::new(tracker.hard_run_deadline(p));
         // At t=60, the preparation finally returns. Check remaining:
         assert!(
-            dispatch_dl.remaining(MonotonicTime::from_millis(60)).is_none(),
+            dispatch_dl
+                .remaining(MonotonicTime::from_millis(60))
+                .is_none(),
             "expired dispatch deadline must return None to prevent provider launch"
         );
         // The global tracker must also report HardRun expiry at this instant.
@@ -560,10 +570,16 @@ mod tests {
         };
         let dispatch_dl = DispatchDeadline::new(tracker.hard_run_deadline(p));
         // t=109: one tick before boundary — still has headroom.
-        assert!(dispatch_dl.remaining(MonotonicTime::from_millis(109)).is_some());
+        assert!(
+            dispatch_dl
+                .remaining(MonotonicTime::from_millis(109))
+                .is_some()
+        );
         // t=110: exactly at boundary — no headroom left.
         assert!(
-            dispatch_dl.remaining(MonotonicTime::from_millis(110)).is_none(),
+            dispatch_dl
+                .remaining(MonotonicTime::from_millis(110))
+                .is_none(),
             "the exact boundary instant must yield terminal timeout, not launch"
         );
     }
@@ -576,8 +592,11 @@ mod tests {
         // independently. The owner's own timing records when it started and
         // must attribute the specific attempt/phase/effect.
         let attempt = TaskAttemptRef::new("plan", "task-A", 1);
-        let owner =
-            AttemptOwner::new_at(AttemptPhase::Agent, EffectRef(42), MonotonicTime::from_millis(10));
+        let owner = AttemptOwner::new_at(
+            AttemptPhase::Agent,
+            EffectRef(42),
+            MonotonicTime::from_millis(10),
+        );
         let p = DeadlinePolicy {
             agent_silence: Duration::from_millis(25),
             task_attempt: Duration::from_millis(100),
@@ -718,7 +737,10 @@ mod tests {
             None,
             None,
         );
-        assert!(expiry_b.is_none(), "B at t=99 < 100ms default must not expire");
+        assert!(
+            expiry_b.is_none(),
+            "B at t=99 < 100ms default must not expire"
+        );
         let expiry_b_at_100 = owner_expiry(
             MonotonicTime::from_millis(100),
             &attempt_b,
@@ -788,8 +810,10 @@ mod tests {
         };
 
         // At the inner deadline instant, global_expiry must fire.
-        let fired = tracker
-            .global_expiry(MonotonicTime::from_millis(inner_limit.as_millis() as u64), p);
+        let fired = tracker.global_expiry(
+            MonotonicTime::from_millis(inner_limit.as_millis() as u64),
+            p,
+        );
         assert!(fired.is_some(), "global must fire at the inner deadline");
 
         // The outer deadline has NOT been reached yet.
@@ -818,9 +842,17 @@ mod tests {
             Some(Duration::from_millis(1))
         );
         // At deadline: None.
-        assert!(deadline.remaining(MonotonicTime::from_millis(100)).is_none());
+        assert!(
+            deadline
+                .remaining(MonotonicTime::from_millis(100))
+                .is_none()
+        );
         // Past deadline: None.
-        assert!(deadline.remaining(MonotonicTime::from_millis(200)).is_none());
+        assert!(
+            deadline
+                .remaining(MonotonicTime::from_millis(200))
+                .is_none()
+        );
     }
 
     #[test]
@@ -870,7 +902,9 @@ mod tests {
 
         // Preparation finishes at t=45 — 5ms past the hard_run budget.
         assert!(
-            dispatch_dl.remaining(MonotonicTime::from_millis(45)).is_none(),
+            dispatch_dl
+                .remaining(MonotonicTime::from_millis(45))
+                .is_none(),
             "dispatch must refuse launch when preparation exceeds hard_run budget"
         );
         // The global tracker must independently confirm expiry.
@@ -909,7 +943,9 @@ mod tests {
         // The global expiry must fire at the inner boundary while the
         // outer deadline is still in the future.
         assert!(
-            tracker.global_expiry(MonotonicTime::from_millis(inner_dl.as_millis()), p).is_some(),
+            tracker
+                .global_expiry(MonotonicTime::from_millis(inner_dl.as_millis()), p)
+                .is_some(),
             "global expiry must fire at the inner deadline"
         );
         assert!(

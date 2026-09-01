@@ -731,9 +731,8 @@ impl App {
         // Subscribe after capturing the initial snapshot so replay cannot
         // duplicate already-materialized output. The live event bus is the
         // authoritative stream for text and tool records.
-        app.state_events = Some(state_hub.subscribe_events_from(
-            state_hub.cursor_snapshot().next_seq,
-        ));
+        app.state_events =
+            Some(state_hub.subscribe_events_from(state_hub.cursor_snapshot().next_seq));
         app
     }
 
@@ -3695,7 +3694,9 @@ impl App {
 
     fn drain_state_events(&mut self) {
         const MAX_EVENTS: usize = 256;
-        let Some(subscription) = self.state_events.as_mut() else { return; };
+        let Some(subscription) = self.state_events.as_mut() else {
+            return;
+        };
         let mut events = Vec::new();
         for envelope in subscription.replay.drain(..).take(MAX_EVENTS) {
             events.push(envelope.payload);
@@ -3714,16 +3715,61 @@ impl App {
             }
         }
         for event in events {
-            let roko_core::DashboardEvent::AgentOutput { agent_id, content, .. } = event else { continue; };
-            let Some(record) = content.strip_prefix(crate::runner::tui_bridge::STREAM_RECORD_PREFIX) else { continue; };
-            let Ok(record) = serde_json::from_str::<serde_json::Value>(record) else { continue; };
-            let kind = record.get("kind").and_then(serde_json::Value::as_str).unwrap_or("text");
+            let roko_core::DashboardEvent::AgentOutput {
+                agent_id, content, ..
+            } = event
+            else {
+                continue;
+            };
+            let Some(record) =
+                content.strip_prefix(crate::runner::tui_bridge::STREAM_RECORD_PREFIX)
+            else {
+                continue;
+            };
+            let Ok(record) = serde_json::from_str::<serde_json::Value>(record) else {
+                continue;
+            };
+            let kind = record
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("text");
             let payload = record.get("payload").cloned().unwrap_or_default();
             match kind {
-                "text" => if let Some(text) = payload.get("text").and_then(serde_json::Value::as_str) { self.tui_state.push_agent_chunk(&agent_id, text.to_string()); },
-                "reasoning" => if let Some(text) = payload.get("text").and_then(serde_json::Value::as_str) { self.tui_state.push_agent_chunk(&agent_id, format!("[thinking] {text}")); },
-                "tool_start" => { let tool = payload.get("tool").and_then(serde_json::Value::as_str).unwrap_or("tool"); let id = payload.get("tool_id").and_then(serde_json::Value::as_str).unwrap_or(""); self.tui_state.push_agent_chunk(&agent_id, format!("[tool ⏵ {tool} {id}]")); },
-                "tool_result" => { let output = payload.get("output").and_then(serde_json::Value::as_str).unwrap_or(""); let id = payload.get("tool_id").and_then(serde_json::Value::as_str).unwrap_or(""); self.tui_state.push_agent_chunk(&agent_id, format!("[tool ✓ {id}]\n{output}")); },
+                "text" => {
+                    if let Some(text) = payload.get("text").and_then(serde_json::Value::as_str) {
+                        self.tui_state.push_agent_chunk(&agent_id, text.to_string());
+                    }
+                }
+                "reasoning" => {
+                    if let Some(text) = payload.get("text").and_then(serde_json::Value::as_str) {
+                        self.tui_state
+                            .push_agent_chunk(&agent_id, format!("[thinking] {text}"));
+                    }
+                }
+                "tool_start" => {
+                    let tool = payload
+                        .get("tool")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("tool");
+                    let id = payload
+                        .get("tool_id")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("");
+                    self.tui_state
+                        .push_agent_chunk(&agent_id, format!("[tool ⏵ {tool} {id}]"));
+                }
+                "tool_result" => {
+                    let output = payload
+                        .get("output")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("");
+                    let id = payload
+                        .get("tool_id")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("");
+                    self.tui_state
+                        .push_agent_chunk(&agent_id, format!("[tool ✓ {id}]\n{output}"));
+                }
                 _ => {}
             }
         }

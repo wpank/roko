@@ -1906,11 +1906,13 @@ mod tests {
             .claim_phase(&key, AttemptPhase::Agent, AGENT)
             .unwrap();
         assert_eq!(
-            claim.owner().timing.attempt_started_at, after_prep,
+            claim.owner().timing.attempt_started_at,
+            after_prep,
             "attempt timing must be reset to the post-preparation instant"
         );
         assert_eq!(
-            claim.owner().timing.phase_started_at, after_prep,
+            claim.owner().timing.phase_started_at,
+            after_prep,
             "phase timing must match the new baseline"
         );
     }

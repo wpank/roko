@@ -1014,8 +1014,7 @@ diff --git a/crates/roko-core/src/config.rs b/crates/roko-core/src/config.rs
         }))
         .expect("mock metadata should deserialize");
 
-        let (dependents, overflow) =
-            reverse_dependents(&metadata, &["producer".to_string()], 10);
+        let (dependents, overflow) = reverse_dependents(&metadata, &["producer".to_string()], 10);
         assert!(
             dependents.len() >= 2,
             "expected at least 2 reverse dependents, got {dependents:?}"
@@ -1096,9 +1095,7 @@ diff --git a/crates/roko-core/src/types.rs b/crates/roko-core/src/types.rs
 ";
         let serde_reasons = classify_diff_lines(serde_diff);
         assert!(
-            serde_reasons
-                .iter()
-                .any(|r| r.contains("contract")),
+            serde_reasons.iter().any(|r| r.contains("contract")),
             "derive(Deserialize) must trigger contract classification, got {serde_reasons:?}"
         );
 

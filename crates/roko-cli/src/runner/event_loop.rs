@@ -3439,6 +3439,24 @@ pub async fn run_with_tui_commands(
         let costs = Arc::new(roko_learn::costs_db::CostsDb::new());
         let efficiency_path = config.layout.learn_dir().join("efficiency.jsonl");
         let router_persist_path = Some(config.layout.learn_dir().join("cascade-router.json"));
+        // Forward the subscriber's learning updates (efficiency trend, cascade
+        // router) into the StateHub so connected-mode TUIs see live data.
+        let (learning_dashboard_tx, mut learning_dashboard_rx) =
+            tokio::sync::mpsc::unbounded_channel();
+        let forwarder_tui = tui.clone();
+        tokio::spawn(async move {
+            while let Some(event) = learning_dashboard_rx.recv().await {
+                match event {
+                    roko_core::dashboard_snapshot::DashboardEvent::EfficiencyTrendUpdated {
+                        buckets,
+                    } => forwarder_tui.efficiency_trend_updated(buckets),
+                    roko_core::dashboard_snapshot::DashboardEvent::CascadeRouterUpdated {
+                        snapshot_json,
+                    } => forwarder_tui.cascade_router_updated(&snapshot_json),
+                    other => forwarder_tui.publish_event(other),
+                }
+            }
+        });
         tokio::spawn(roko_learn::event_subscriber::run_learning_subscriber(
             learning_subscriber_rx,
             latency,
@@ -3447,6 +3465,7 @@ pub async fn run_with_tui_commands(
             costs,
             efficiency_path,
             router_persist_path,
+            Some(learning_dashboard_tx),
         ))
     };
 

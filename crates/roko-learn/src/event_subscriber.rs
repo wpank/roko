@@ -13,11 +13,13 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use chrono::Utc;
-use tokio::sync::broadcast;
+use chrono::{Duration, Utc};
+use tokio::sync::{broadcast, mpsc};
 
 use roko_agent::chat_types::FinishReason;
+use roko_core::dashboard_snapshot::DashboardEvent;
 
+use crate::aggregate::{self, EfficiencyBucket, JsonlCursor};
 use crate::anomaly::AnomalyDetector;
 use crate::calibration_policy::CalibrationPolicy;
 use crate::cascade_router::CascadeRouter;
@@ -76,6 +78,10 @@ struct PendingEfficiency {
 }
 
 /// Consume `AgentEvent`s and update the learning subsystems that depend on them.
+///
+/// When `dashboard_tx` is attached, each appended efficiency event also pushes
+/// a refreshed efficiency trend and cascade-router snapshot to the TUI bridge
+/// so connected-mode dashboards stay live without polling the learning files.
 pub async fn run_learning_subscriber(
     mut rx: broadcast::Receiver<AgentEvent>,
     latency: Arc<LatencyRegistry>,
@@ -84,6 +90,7 @@ pub async fn run_learning_subscriber(
     costs: Arc<CostsDb>,
     efficiency_path: PathBuf,
     router_persist_path: Option<PathBuf>,
+    dashboard_tx: Option<mpsc::UnboundedSender<DashboardEvent>>,
 ) {
     let cost_table = CostTable {
         models: HashMap::new(),
@@ -94,6 +101,12 @@ pub async fn run_learning_subscriber(
     let mut verdict_history = VerdictHistory::new();
     // Efficiency events waiting for their `GateResult` (runner-v2 async path).
     let mut pending_efficiency: HashMap<String, PendingEfficiency> = HashMap::new();
+    // Incremental trend state for the dashboard push path. The cursor tracks
+    // the efficiency log so each append costs O(new lines), not O(file).
+    let mut trend_cursor = dashboard_tx
+        .as_ref()
+        .map(|_| JsonlCursor::new(&efficiency_path));
+    let mut trend_buckets: Vec<EfficiencyBucket> = Vec::new();
 
     loop {
         let event = match rx.recv().await {
@@ -203,7 +216,11 @@ pub async fn run_learning_subscriber(
                     was_warm_start: false,
                     iteration: turn,
                     turn_number: turn,
-                    is_final_turn: false,
+                    // Semantics: "final turn of the attempt". A gate verdict
+                    // concludes the attempt, so the turn is final iff its gate
+                    // outcome is already known here. Deferred events (`None`)
+                    // are flipped to `true` when the `GateResult` lands.
+                    is_final_turn: gate_passed.is_some(),
                     gate_passed,
                     outcome: match gate_passed {
                         Some(true) => "success".to_string(),
@@ -227,6 +244,14 @@ pub async fn run_learning_subscriber(
                                 path = %efficiency_path.display(),
                                 error = %err,
                                 "failed to append efficiency event"
+                            );
+                        } else {
+                            publish_learning_updates(
+                                &dashboard_tx,
+                                &mut trend_cursor,
+                                &mut trend_buckets,
+                                &efficiency_path,
+                                &router,
                             );
                         }
                     }
@@ -295,6 +320,9 @@ pub async fn run_learning_subscriber(
                 // Flush the buffered efficiency event now that we know the gate outcome.
                 if let Some(mut pending) = pending_efficiency.remove(task_id) {
                     pending.event.gate_passed = Some(passed);
+                    // The gate verdict concludes the attempt, so this buffered
+                    // turn is the final turn of the attempt.
+                    pending.event.is_final_turn = true;
                     pending.event.outcome = if passed {
                         "success".to_string()
                     } else {
@@ -309,6 +337,14 @@ pub async fn run_learning_subscriber(
                             error = %err,
                             task_id = %task_id,
                             "failed to write deferred efficiency event"
+                        );
+                    } else {
+                        publish_learning_updates(
+                            &dashboard_tx,
+                            &mut trend_cursor,
+                            &mut trend_buckets,
+                            &efficiency_path,
+                            &router,
                         );
                     }
                 }
@@ -360,7 +396,8 @@ pub async fn run_learning_subscriber(
     }
 
     // Flush remaining buffered events that never received a GateResult (e.g. task
-    // errored before gating, or subscriber shut down during a gate run).
+    // errored before gating, or subscriber shut down during a gate run). These
+    // keep `is_final_turn: false`: no gate verdict ever concluded the attempt.
     for (task_id, pending) in pending_efficiency.drain() {
         tracing::debug!(task_id = %task_id, "flushing ungated efficiency event on shutdown");
         if let Err(err) = append_efficiency_event(&efficiency_path, &pending.event).await {
@@ -369,6 +406,14 @@ pub async fn run_learning_subscriber(
                 error = %err,
                 task_id = %task_id,
                 "failed to flush ungated efficiency event"
+            );
+        } else {
+            publish_learning_updates(
+                &dashboard_tx,
+                &mut trend_cursor,
+                &mut trend_buckets,
+                &efficiency_path,
+                &router,
             );
         }
     }
@@ -402,6 +447,52 @@ async fn append_efficiency_event(path: &Path, event: &AgentEfficiencyEvent) -> i
     .await
     .map_err(|error| io::Error::other(format!("efficiency append task failed: {error}")))??;
     Ok(())
+}
+
+/// Push refreshed learning snapshots to the TUI bridge after an efficiency
+/// event lands on disk.
+///
+/// The efficiency trend is recomputed incrementally from a cursor over the
+/// log (O(new lines) per append) and the cascade-router snapshot is forwarded
+/// so connected-mode dashboards see confidence updates as they happen.
+/// Best-effort: send failures just mean no dashboard consumer is attached.
+fn publish_learning_updates(
+    dashboard_tx: &Option<mpsc::UnboundedSender<DashboardEvent>>,
+    trend_cursor: &mut Option<JsonlCursor>,
+    trend_buckets: &mut Vec<EfficiencyBucket>,
+    efficiency_path: &Path,
+    router: &CascadeRouter,
+) {
+    let (Some(tx), Some(cursor)) = (dashboard_tx, trend_cursor.as_mut()) else {
+        return;
+    };
+    match aggregate::efficiency_trend_with_cursor(cursor, trend_buckets, Duration::hours(1), 24) {
+        Ok(buckets) => {
+            *trend_buckets = buckets.clone();
+            let buckets = buckets
+                .iter()
+                .map(|bucket| roko_core::dashboard_snapshot::EfficiencyBucket {
+                    start: bucket.start,
+                    turns: bucket.turns,
+                    tokens_in: bucket.tokens_in,
+                    tokens_out: bucket.tokens_out,
+                    cost_usd_cents: bucket.cost_usd_cents,
+                    latency_ms_avg: bucket.latency_ms_avg,
+                })
+                .collect();
+            let _ = tx.send(DashboardEvent::EfficiencyTrendUpdated { buckets });
+        }
+        Err(err) => {
+            tracing::warn!(
+                path = %efficiency_path.display(),
+                error = %err,
+                "failed to refresh efficiency trend for dashboard push"
+            );
+        }
+    }
+    let _ = tx.send(DashboardEvent::CascadeRouterUpdated {
+        snapshot_json: router.snapshot_json(),
+    });
 }
 
 #[cfg(test)]
@@ -441,6 +532,7 @@ mod tests {
             Arc::clone(&costs),
             efficiency_path.clone(),
             Some(router_persist_path),
+            None,
         ));
 
         tx.send(AgentEvent::TurnStarted {
@@ -516,6 +608,7 @@ mod tests {
             costs,
             efficiency_path,
             None, // no persist path needed for this test
+            None,
         ));
 
         tx.send(AgentEvent::TurnStarted {
@@ -560,6 +653,7 @@ mod tests {
             Arc::clone(&costs),
             efficiency_path,
             Some(router_persist_path.clone()),
+            None,
         ));
 
         // Send enough failing turns to trigger a calibration correction.
@@ -622,6 +716,173 @@ mod tests {
         assert!(
             persisted_content.contains("overconfident-model"),
             "persisted state should contain the corrected model"
+        );
+    }
+
+    fn spawn_test_subscriber(
+        rx: broadcast::Receiver<AgentEvent>,
+        efficiency_path: std::path::PathBuf,
+        dashboard_tx: Option<
+            tokio::sync::mpsc::UnboundedSender<roko_core::dashboard_snapshot::DashboardEvent>,
+        >,
+    ) -> tokio::task::JoinHandle<()> {
+        let latency = Arc::new(LatencyRegistry::new());
+        let router = Arc::new(CascadeRouter::new(vec!["glm-5.1".to_string()]));
+        let anomaly = Arc::new(Mutex::new(AnomalyDetector::new(1_700_000_000_000)));
+        let costs = Arc::new(CostsDb::new());
+        tokio::spawn(run_learning_subscriber(
+            rx,
+            latency,
+            router,
+            anomaly,
+            costs,
+            efficiency_path,
+            None,
+            dashboard_tx,
+        ))
+    }
+
+    fn send_single_turn(
+        tx: &broadcast::Sender<AgentEvent>,
+        task_id: &str,
+        gate_passed: Option<bool>,
+    ) {
+        tx.send(AgentEvent::TurnStarted {
+            task_id: task_id.into(),
+            model: "glm-5.1".into(),
+            provider: "zai".into(),
+            timestamp_ms: 1_700_000_000_000,
+        })
+        .expect("turn started");
+        tx.send(AgentEvent::TurnCompleted {
+            turn: 1,
+            usage: Usage {
+                input_tokens: 10,
+                output_tokens: 5,
+                cache_read_tokens: 0,
+                cache_create_tokens: 0,
+                cost_usd: 0.01,
+                wall_ms: 100,
+            },
+            tool_call_count: 0,
+            gate_passed,
+            finish_reason: FinishReason::Stop,
+        })
+        .expect("turn completed");
+    }
+
+    #[tokio::test]
+    async fn turn_with_inline_gate_result_is_marked_final() {
+        let (tx, rx) = broadcast::channel(16);
+        let tempdir = TempDir::new().expect("tempdir");
+        let efficiency_path = tempdir.path().join("efficiency.jsonl");
+
+        let handle = spawn_test_subscriber(rx, efficiency_path.clone(), None);
+        send_single_turn(&tx, "task-inline", Some(true));
+        drop(tx);
+        handle.await.expect("subscriber task");
+
+        let events = read_efficiency_events(&efficiency_path)
+            .await
+            .expect("read efficiency events");
+        assert_eq!(events.len(), 1);
+        assert!(
+            events[0].is_final_turn,
+            "a turn whose gate verdict is known inline concludes the attempt"
+        );
+        assert_eq!(events[0].gate_passed, Some(true));
+    }
+
+    #[tokio::test]
+    async fn deferred_turn_is_marked_final_when_gate_result_arrives() {
+        let (tx, rx) = broadcast::channel(16);
+        let tempdir = TempDir::new().expect("tempdir");
+        let efficiency_path = tempdir.path().join("efficiency.jsonl");
+
+        let handle = spawn_test_subscriber(rx, efficiency_path.clone(), None);
+        send_single_turn(&tx, "task-deferred", None);
+        tx.send(AgentEvent::GateResult {
+            gate_name: "test-gate".into(),
+            passed: true,
+            score: 1.0,
+            duration_ms: 5,
+            task_id: "task-deferred".into(),
+        })
+        .expect("gate result");
+        drop(tx);
+        handle.await.expect("subscriber task");
+
+        let events = read_efficiency_events(&efficiency_path)
+            .await
+            .expect("read efficiency events");
+        assert_eq!(events.len(), 1);
+        assert!(
+            events[0].is_final_turn,
+            "the gate verdict concludes the attempt, so the flushed turn is final"
+        );
+        assert_eq!(events[0].gate_passed, Some(true));
+        assert_eq!(events[0].outcome, "success");
+    }
+
+    #[tokio::test]
+    async fn ungated_turn_flushed_on_shutdown_stays_non_final() {
+        let (tx, rx) = broadcast::channel(16);
+        let tempdir = TempDir::new().expect("tempdir");
+        let efficiency_path = tempdir.path().join("efficiency.jsonl");
+
+        let handle = spawn_test_subscriber(rx, efficiency_path.clone(), None);
+        send_single_turn(&tx, "task-ungated", None);
+        drop(tx);
+        handle.await.expect("subscriber task");
+
+        let events = read_efficiency_events(&efficiency_path)
+            .await
+            .expect("read efficiency events");
+        assert_eq!(events.len(), 1);
+        assert!(
+            !events[0].is_final_turn,
+            "no gate verdict ever arrived, so the record is not attempt-final"
+        );
+        assert_eq!(events[0].gate_passed, None);
+    }
+
+    #[tokio::test]
+    async fn appended_events_push_trend_and_router_updates() {
+        let (tx, rx) = broadcast::channel(16);
+        let (dash_tx, mut dash_rx) = tokio::sync::mpsc::unbounded_channel();
+        let tempdir = TempDir::new().expect("tempdir");
+        let efficiency_path = tempdir.path().join("efficiency.jsonl");
+
+        let handle = spawn_test_subscriber(rx, efficiency_path, Some(dash_tx));
+        send_single_turn(&tx, "task-push", Some(true));
+        drop(tx);
+        handle.await.expect("subscriber task");
+
+        let mut trend = None;
+        let mut router_update = None;
+        while let Ok(event) = dash_rx.try_recv() {
+            match event {
+                roko_core::dashboard_snapshot::DashboardEvent::EfficiencyTrendUpdated {
+                    buckets,
+                } => trend = Some(buckets),
+                roko_core::dashboard_snapshot::DashboardEvent::CascadeRouterUpdated {
+                    snapshot_json,
+                } => router_update = Some(snapshot_json),
+                other => panic!("unexpected dashboard event: {other:?}"),
+            }
+        }
+
+        let trend = trend.expect("efficiency trend update pushed");
+        assert_eq!(trend.len(), 24, "hourly buckets over the last 24 hours");
+        let total_turns: u64 = trend.iter().map(|bucket| bucket.turns).sum();
+        assert_eq!(total_turns, 1, "the appended turn is inside the 24h window");
+        let tokens_in: u64 = trend.iter().map(|bucket| bucket.tokens_in).sum();
+        assert_eq!(tokens_in, 10);
+
+        let router_update = router_update.expect("cascade router update pushed");
+        assert!(
+            router_update.contains("glm-5.1"),
+            "router snapshot should carry the observed model: {router_update}"
         );
     }
 }

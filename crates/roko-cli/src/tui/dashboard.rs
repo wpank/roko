@@ -1824,7 +1824,9 @@ impl GateSignalSummary {
 }
 
 impl ExperimentSummary {
-    fn from_experiment(experiment: &roko_learn::prompt_experiment::PromptExperiment) -> Self {
+    pub(crate) fn from_experiment(
+        experiment: &roko_learn::prompt_experiment::PromptExperiment,
+    ) -> Self {
         let total_trials: u64 = experiment.stats.values().map(|stats| stats.trials).sum();
         let active_variants = experiment
             .variants
@@ -3427,7 +3429,7 @@ fn load_efficiency_summary(path: &Path) -> EfficiencySummary {
 }
 
 /// Compute [`EfficiencySummary`] from an already-loaded slice of events.
-fn efficiency_summary_from_events(events: &[AgentEfficiencyEvent]) -> EfficiencySummary {
+pub(crate) fn efficiency_summary_from_events(events: &[AgentEfficiencyEvent]) -> EfficiencySummary {
     if events.is_empty() {
         return EfficiencySummary::default();
     }
@@ -3531,16 +3533,7 @@ fn build_gate_results_page_data(
 
     let mut threshold_rows = Vec::new();
     if let Some(thresholds) = adaptive_thresholds {
-        threshold_rows = thresholds
-            .all_rungs()
-            .map(|(rung, stats)| GateThresholdRow {
-                rung: *rung,
-                current_threshold: thresholds.suggested_max_retries(*rung),
-                ema_pass_rate: stats.ema_pass_rate,
-                trend: gate_trend_from_ema(stats.ema_pass_rate),
-            })
-            .collect::<Vec<_>>();
-        threshold_rows.sort_by_key(|row| row.rung);
+        threshold_rows = gate_threshold_rows(thresholds);
     }
 
     let mut failure_rows = signals
@@ -3650,6 +3643,24 @@ struct GateAggregate {
     passed_runs: u64,
     total_duration_ms: f64,
     last_run: Option<GateSignalSummary>,
+}
+
+/// Build the adaptive-threshold table rows for the gate-results page.
+///
+/// Shared by the disk-mode loader and the connected-mode push path, which
+/// parses `DashboardSnapshot::gate_thresholds_json` into the same struct.
+pub(crate) fn gate_threshold_rows(thresholds: &AdaptiveThresholds) -> Vec<GateThresholdRow> {
+    let mut rows = thresholds
+        .all_rungs()
+        .map(|(rung, stats)| GateThresholdRow {
+            rung: *rung,
+            current_threshold: thresholds.suggested_max_retries(*rung),
+            ema_pass_rate: stats.ema_pass_rate,
+            trend: gate_trend_from_ema(stats.ema_pass_rate),
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by_key(|row| row.rung);
+    rows
 }
 
 fn gate_trend_from_ema(ema_pass_rate: f64) -> GateTrend {
@@ -4079,9 +4090,13 @@ impl TuiDashboardModel {
     /// delivered through StateHub in connected mode.
     ///
     /// Learning-specific fields (experiments, cascade router, efficiency events)
-    /// are left at their defaults since they are not carried in the core snapshot.
-    /// In connected mode those fields are populated separately when the TUI state
-    /// processes the snapshot via `update_from_dashboard_snapshot`.
+    /// are left at their defaults here because the core snapshot does not carry
+    /// them as typed values. In connected mode
+    /// `TuiState::update_from_dashboard_snapshot` fills them in: the pushed
+    /// learning payloads (efficiency trend, cascade-router and gate-threshold
+    /// JSON) are parsed off the snapshot, and the per-event efficiency log plus
+    /// the experiment store are tailed incrementally from the local
+    /// `.roko/learn/` files.
     pub fn from_core_snapshot(
         snap: &roko_core::dashboard_snapshot::DashboardSnapshot,
         root: PathBuf,

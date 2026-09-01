@@ -463,6 +463,11 @@ impl TuiBridge {
             .publish(DashboardEvent::EfficiencyTrendUpdated { buckets });
     }
 
+    /// Publish a raw `DashboardEvent` that has no dedicated bridge helper.
+    pub fn publish_event(&self, event: DashboardEvent) {
+        self.sender.publish(event);
+    }
+
     /// Model was selected for a task dispatch.
     pub fn model_selected(&self, plan_id: &str, task_id: &str, model: &str, source: &str) {
         self.sender.publish(DashboardEvent::EventLogEntry {

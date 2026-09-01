@@ -168,11 +168,40 @@ slug = "gpt-5.6-sol"
 
 [models.glm51]
 context_window = 128000
+cost_cache_read_per_m = 0.26
+cost_cache_write_per_m = 1.75
+cost_input_per_m = 1.40
+cost_output_per_m = 4.40
 max_output = 4096
 provider = "zai"
 slug = "glm-5.1"
 supports_thinking = true
 supports_tools = true
+
+[models.kimi-k2-5]
+context_window = 256000
+cost_cache_read_per_m = 0.10
+cost_input_per_m = 0.60
+cost_output_per_m = 3.00
+max_output = 65535
+provider = "moonshot"
+slug = "kimi-k2.5"
+supports_thinking = true
+supports_tools = true
+tool_format = "openai_json"
+
+[models.sonar]
+context_window = 127000
+cost_input_per_m = 1.00
+cost_output_per_m = 1.00
+cost_per_request = 0.005
+max_output = 16384
+provider = "perplexity"
+slug = "sonar"
+supports_citations = true
+supports_search = true
+supports_tools = false
+tool_format = "openai_json"
 
 [perplexity]
 academic_mode = false
@@ -227,6 +256,16 @@ kind = "claude_cli"
 [providers.codex_cli]
 command = "codex"
 kind = "claude_cli"
+
+[providers.moonshot]
+api_key_env = "MOONSHOT_API_KEY"
+base_url = "https://api.moonshot.ai/v1"
+kind = "openai_compat"
+
+[providers.perplexity]
+api_key_env = "PERPLEXITY_API_KEY"
+base_url = "https://api.perplexity.ai"
+kind = "perplexity_api"
 
 [providers.zai]
 api_key_env = "ZAI_API_KEY"

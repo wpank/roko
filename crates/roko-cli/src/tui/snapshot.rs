@@ -261,7 +261,7 @@ mod tests {
         assert_eq!(result.tabs_captured, 1);
         let text = std::fs::read_to_string(output_dir.join("f01-dashboard.txt")).unwrap();
         assert!(text.contains("F1:dash"), "global tab bar missing: {text}");
-        assert_eq!(text.bytes().filter(|byte| *byte == b'\n').count(), 30);
+        assert_eq!(text.split('\n').count(), 30);
 
         let manifest = std::fs::read_to_string(result.manifest_path).unwrap();
         assert!(manifest.contains("\"schema_version\": 2"));

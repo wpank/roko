@@ -833,7 +833,7 @@ impl App {
                 terminal.draw(|frame| self.draw(frame)).expect("draw tab");
                 let buffer = terminal.backend().buffer();
                 let w = buffer.area.width as usize;
-                let mut text = buffer
+                let text = buffer
                     .content
                     .chunks(w)
                     .map(|row| {
@@ -845,10 +845,6 @@ impl App {
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
-                // Terminate every rendered row, including an intentionally
-                // blank final row. This keeps the virtual terminal height
-                // mechanically verifiable in text evidence.
-                text.push('\n');
                 (tab, text)
             })
             .collect();

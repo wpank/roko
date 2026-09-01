@@ -1,0 +1,40 @@
+ ● roko  gate-failures-jsonl  Wave 1/1│  ─────────────── ERR:0/1  0%│  0s  $61 F1:dash F2:plans(1) F3:agents F5:logs(8)
+W0 ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+┌ Agents · 0/1 active ───────────────┐   1:impl   2:strat   3:arch   4:audit   5:crit   6:cond   7:res
+│   agent            state  task     │ ┌ Output · gate-failures-jsonl/T01 · idle (attempt 1) [TAIL] ───────────────────┐
+│▶· gate-fa…sonl/T01 IDLE gate…jsonl │ │ [unknown]  ctx -/200k  ·  focus 0.00  ·  balanced                             │
+│                                    │ │                                                                               │
+│                                    │ │                                                                               │
+│                                    │ │                                                                               │
+│                                    │ │                                                                               │
+│                                    │ │                                                                               │
+│                                    │ │                                                                               │
+│                                    │ │                                                                               │
+│                                    │ │                                                                               │
+│                                    │ │                                                                               │
+│                                    │ │                                                                               │
+│                                    │ │                                                                               │
+│                                    │ │                                                                               │
+│                                    │ │                                                                               │
+│                                    │ │                                                                               │
+│                                    │ │                          waiting for agent output...                          │
+│                                    │ │                                                                               │
+│                                    │ │                output will stream here when agents are active                 │
+│                                    │ │                                                                               │
+│                                    │ │                                                                               │
+│                                    │ │                                                                               │
+│                                    │ │                                                                               │
+│                                    │ │                                                                               │
+│                                    │ │                                                                               │
+│                                    │ │                                                                               │
+│                                    │ │                                                                               │
+│                                    │ │                                                                               │
+│                                    │ │                                                                               │
+│                                    │ │                                                                               │
+│                                    │ │                                                                               │
+│                                    │ │                                                                               │
+│                                    │ │                                                                               │
+│                                    │ │                                                                               │
+└────────────────────────────────────┘ │                                                                               │
+ agents: 0/1  tokens: -  cost: $61.61  └───────────────────────────────────────────────────────────────────────────────┘
+ · ERR:1  1▸ 0ag ✗1 $61.61 / unlimited │  ↑↓:nav  S:start  d:details  ?:help

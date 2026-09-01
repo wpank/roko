@@ -1,0 +1,24 @@
+ ● roko  gate-failures-jsonl  Wave 1/1│  ─────────────── ERR:0/1│  0 F7:inspect
+W0 ─────────────────────────────────────────────────────────────────────────────
+  Alt+1:Overview  Alt+2:Signals  Alt+3:Episodes  Alt+4:Knowledge  Alt+5:Cost/Mod
+┌ System Health ───────────────────────────────────────────────────────────────┐
+│input tokens:  0          pass rate:     0.0%       C-Factor:      (not       │
+│output tokens: 0          events:        0          computed)                 │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ Token Burn by Role ──────────────────┐┌ Cost by Model ───────────────────────┐
+│no efficiency data -- run agents to   ││no cost data                          │
+│see token burn                        ││                                      │
+│                                      ││                                      │
+│                                      ││                                      │
+│                                      ││                                      │
+│                                      ││                                      │
+└──────────────────────────────────────┘└──────────────────────────────────────┘
+┌ Cascade Route ───────────────────────┐┌ Alerts & Gates ──────────────────────┐
+│no routing decisions -- run agents to ││          no conductor alerts         │
+│populate                              ││                                      │
+│models: 0  trials: 0  success: -      ││                                      │
+│                                      ││             no gate data             │
+│                                      ││                                      │
+│                                      ││                                      │
+└──────────────────────────────────────┘└──────────────────────────────────────┘
+ · ERR:1  1▸ 0ag ✗1 $61.61 / unlimited │  ↑↓:nav  Tab:panel  ?:help

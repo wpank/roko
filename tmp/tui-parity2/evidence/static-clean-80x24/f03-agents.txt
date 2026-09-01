@@ -1,0 +1,24 @@
+ ● roko  gate-failures-jsonl  Wave 1/1│  ─────────────── ERR:0/1│  0s F3:agents
+W0 ─────────────────────────────────────────────────────────────────────────────
+┌ Agents · 0/1 active ─────────────────────────────────────────────────────────┐
+│   agent          model      state  task                 tokens ctx           │
+│▶· gate-f…onl/T01 unknown    IDLE  gate-failures-jsonl            -   0%      │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+ agents: 0/1  tokens: -  cost: $61.61
+
+  1:impl   2:strat   3:arch   4:audit   5:crit   6:cond   7:res
+┌ Output · gate-failures-jsonl/T01 · idle (attempt 1) [TAIL] ──────────────────┐
+│ [unknown]  ctx -/200k  ·  focus 0.00  ·  balanced                            │
+│                                                                              │
+│                                                                              │
+│                          waiting for agent output...                         │
+│                                                                              │
+│                output will stream here when agents are active                │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+ · ERR:1  1▸ 0ag ✗1 $61.61 / unlimited │  ↑↓:nav  S:start  d:details  ?:help

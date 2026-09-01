@@ -1,0 +1,24 @@
+ ● roko  gate-failures-jsonl  Wave 1/1│  ─────────────── ERR:0/1│  0s F8:market
+W0 ─────────────────────────────────────────────────────────────────────────────
+  Alt+1:Jobs  Alt+2:Detail  Alt+3:New Job
+┌ Marketplace ─────────────────────────────────────────────────────────────────┐
+│                                                                              │
+│                                No jobs posted.                               │
+│                                                                              │
+│     Jobs appear when agents or operators post work items to .roko/jobs/.     │
+│                    Press 'n' to create a new job manually.                   │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+ · ERR:1  1▸ 0ag ✗1 $61.61 / unlimited │  j/k:nav  Enter:detail  n:new  ?:help

@@ -123,6 +123,8 @@ impl DoComplexity {
 pub enum DoctorSubject {
     /// Disk capacity, retained logs, targets, and worktree storage.
     Disk,
+    /// Network connectivity and external service reachability.
+    Network,
 }
 
 /// Workspace-local build and evidence cache lifecycle.

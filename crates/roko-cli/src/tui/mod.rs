@@ -4,6 +4,7 @@
 //! API consumers. The interactive terminal shell lives in `app`, `event`,
 //! `pages`, and `widgets`. The Mori-style modal+focus+tab system is in
 //! `input`, `state`, and `tabs`.
+#![deny(unused_imports)]
 
 pub mod ansi;
 pub mod app;

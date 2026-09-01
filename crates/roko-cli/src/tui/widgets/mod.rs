@@ -3,11 +3,9 @@
 // Shared palette — must come before widget modules that depend on it.
 pub mod rosedust;
 
-pub mod agent_status_grid;
 pub mod braille;
 pub mod cost_by_model;
 pub mod diff_panel;
-pub mod dream_view;
 pub mod error_digest;
 pub mod gate_output;
 pub mod header_bar;

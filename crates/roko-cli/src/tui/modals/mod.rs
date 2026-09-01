@@ -8,10 +8,8 @@
 
 pub mod agent_pool_modal;
 pub mod approval;
-pub mod batch_review;
 pub mod confirm;
 pub mod help;
-pub mod inject;
 pub mod notification;
 pub mod plan_detail;
 pub mod queue_overview;
@@ -22,10 +20,8 @@ pub mod wave_overview;
 
 pub use agent_pool_modal::{AgentPoolRow, render_agent_pool};
 pub use approval::render_approval;
-pub use batch_review::{BatchTaskResult, render_batch_review};
 pub use confirm::{ConfirmAction, render_confirm};
 pub use help::render_help_modal;
-pub use inject::render_inject;
 pub use notification::{Notification, NotificationLevel, render_notifications};
 pub use plan_detail::render_plan_detail_modal;
 pub use queue_overview::{Milestone, QueueTask, render_queue_overview};
@@ -62,13 +58,6 @@ pub enum ModalState {
     /// Destructive action confirmation.
     Confirm { action: ConfirmAction },
 
-    /// Free-text injection to an agent.
-    Inject {
-        target_agent: String,
-        input_text: String,
-        cursor_pos: usize,
-    },
-
     /// Wave progress overview.
     WaveOverview {
         waves: Vec<WaveInfo>,
@@ -99,13 +88,6 @@ pub enum ModalState {
     TaskDetail {
         task_idx: usize,
         scroll_offset: usize,
-    },
-
-    /// Batch-pause review.
-    BatchReview {
-        batch_name: String,
-        results: Vec<BatchTaskResult>,
-        scroll_offset: u16,
     },
 }
 
@@ -145,13 +127,6 @@ pub fn render_modal(
         }
         ModalState::Confirm { action } => {
             render_confirm(frame, area, action, theme);
-        }
-        ModalState::Inject {
-            target_agent,
-            input_text,
-            cursor_pos,
-        } => {
-            render_inject(frame, area, target_agent, input_text, *cursor_pos, theme);
         }
         ModalState::WaveOverview {
             waves,
@@ -222,13 +197,6 @@ pub fn render_modal(
                 );
             }
         }
-        ModalState::BatchReview {
-            batch_name,
-            results,
-            scroll_offset,
-        } => {
-            render_batch_review(frame, area, batch_name, results, *scroll_offset, theme);
-        }
     }
 }
 
@@ -267,13 +235,11 @@ fn modal_area(modal: &ModalState, area: Rect) -> Rect {
         ModalState::Quit => centered_rect_fixed(42, 8, area),
         ModalState::Approval { .. } => centered_rect(60, 40, area),
         ModalState::Confirm { .. } => centered_rect(50, 30, area),
-        ModalState::Inject { .. } => centered_rect(70, 20, area),
         ModalState::WaveOverview { .. } => centered_rect(80, 70, area),
         ModalState::QueueOverview { .. } => centered_rect(85, 75, area),
         ModalState::AgentPool { .. } => centered_rect(90, 70, area),
         ModalState::TaskPicker { .. } => centered_rect(80, 60, area),
         ModalState::TaskDetail { .. } => centered_rect(78, 72, area),
-        ModalState::BatchReview { .. } => centered_rect(75, 65, area),
     }
 }
 

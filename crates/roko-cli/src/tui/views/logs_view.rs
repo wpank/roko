@@ -19,6 +19,7 @@ use crate::tui::dashboard::{DashboardData, Theme};
 use crate::tui::input::FocusZone;
 use crate::tui::input::LogFilterLevel;
 use crate::tui::state::{LogEntry, LogEntryLevel, SearchMode, TuiState};
+use crate::tui::util::truncate_middle;
 
 /// Render the full logs view.
 pub(crate) fn render(
@@ -126,7 +127,7 @@ fn render_with_entries(
     let mut status_spans = vec![
         Span::styled(entry_label, theme.muted()),
         Span::styled(format!("[{tail_label}]"), theme.accent()),
-        Span::styled("  |  levels:", theme.muted()),
+        Span::styled("  ", theme.muted()),
     ];
     for level in LogFilterLevel::all() {
         let style = if tui_state.log_level_visible(level) {
@@ -134,24 +135,33 @@ fn render_with_entries(
         } else {
             theme.muted()
         };
-        status_spans.push(Span::raw(" "));
-        status_spans.push(Span::styled(format!("[{}]", level.label()), style));
+        status_spans.push(Span::styled(format!(" {}", level.label()), style));
     }
-    status_spans.extend([
-        Span::styled("  |  ", theme.muted()),
-        Span::styled(format!("signals:{signal_count}"), theme.info()),
-        Span::styled("  ", theme.muted()),
-        Span::styled(format!("episodes:{episode_count}"), theme.accent()),
-        Span::styled("  ", theme.muted()),
-        Span::styled(format!("efficiency:{eff_count}"), theme.muted()),
-        Span::styled("  ", theme.muted()),
-        Span::styled(format!("gates:{gate_count}"), theme.warning()),
-        Span::styled("  ", theme.muted()),
-        Span::styled(format!("events:{event_count}"), theme.text()),
-    ]);
+    if sections[0].width >= 104 {
+        status_spans.extend([
+            Span::styled("  ·  ", theme.muted()),
+            Span::styled(format!("sig:{signal_count}"), theme.info()),
+            Span::styled("  ", theme.muted()),
+            Span::styled(format!("ep:{episode_count}"), theme.accent()),
+            Span::styled("  ", theme.muted()),
+            Span::styled(format!("gate:{gate_count}"), theme.warning()),
+            Span::styled("  ", theme.muted()),
+            Span::styled(format!("event:{event_count}"), theme.text()),
+        ]);
+    }
+    if sections[0].width >= 160 {
+        status_spans.extend([
+            Span::styled("  ", theme.muted()),
+            Span::styled(format!("eff:{eff_count}"), theme.muted()),
+        ]);
+    }
     let status_line1 = Line::from(status_spans);
     let status = Paragraph::new(vec![status_line1])
-        .alignment(Alignment::Right)
+        .alignment(if sections[0].width < 104 {
+            Alignment::Left
+        } else {
+            Alignment::Right
+        })
         .style(Style::default().bg(Theme::BG_RAISED));
     frame.render_widget(status, sections[0]);
 
@@ -174,7 +184,13 @@ fn render_with_entries(
     frame.render_widget(block, sections[1]);
 
     if filtered_entries.is_empty() {
-        let empty_text = "no log entries -- run agents to generate signals and episodes";
+        let empty_text = if entries.is_empty() {
+            "No logs yet · events appear here as the run starts"
+        } else if search.active && search.mode == SearchMode::Filter {
+            "No logs match this search · press f to highlight instead"
+        } else {
+            "No logs match the active levels · press a to show all"
+        };
         let empty = Paragraph::new(empty_text)
             .style(theme.muted())
             .wrap(Wrap { trim: false });
@@ -208,6 +224,13 @@ fn render_with_entries(
         None
     };
 
+    let source_width = match inner.width {
+        0..=63 => 10,
+        64..=99 => 14,
+        100..=139 => 20,
+        _ => 28,
+    };
+    let show_timestamp = inner.width >= 58;
     let lines: Vec<Line<'_>> = filtered_entries
         .iter()
         .enumerate()
@@ -246,30 +269,60 @@ fn render_with_entries(
             let mut spans = vec![
                 Span::styled(if selected { "▶" } else { " " }, prefix_style),
                 Span::raw(" "),
-                Span::styled(entry.timestamp.clone(), ts_style),
-                Span::raw(" "),
+            ];
+            if show_timestamp {
+                spans.push(Span::styled(entry.timestamp.clone(), ts_style));
+                spans.push(Span::raw(" "));
+            }
+            spans.extend([
                 Span::styled(format!("[{}]", entry.level.label()), entry_level_style),
                 Span::raw(" "),
-                Span::styled(entry.source.clone(), src_style),
-                Span::raw(": "),
-            ];
+                Span::styled(truncate_middle(&entry.source, source_width), src_style),
+                Span::raw(" · "),
+            ]);
             spans.extend(message_spans);
             Line::from(spans)
         })
         .collect();
 
-    let max_scroll = lines.len().saturating_sub(inner.height as usize);
+    let row_offsets = wrapped_row_offsets(&lines, inner.width);
+    let total_rendered_rows = row_offsets.last().copied().unwrap_or(0);
+    let max_scroll = total_rendered_rows.saturating_sub(inner.height as usize);
     let max_scroll = max_scroll.min(u16::MAX as usize) as u16;
     let scroll = if view_state.auto_tail {
         max_scroll
     } else {
-        view_state.scroll.min(max_scroll)
+        row_offsets
+            .get(row_focus_idx)
+            .copied()
+            .unwrap_or(0)
+            .min(max_scroll as usize) as u16
     };
 
     let paragraph = Paragraph::new(lines)
         .wrap(Wrap { trim: false })
         .scroll((scroll, 0));
     frame.render_widget(paragraph, inner);
+}
+
+/// Return the rendered-row offset of every logical line plus one terminal
+/// sentinel containing the total rendered height. Ratatui scroll offsets are
+/// measured after wrapping, while keyboard/search selection is kept in logical
+/// log rows.
+fn wrapped_row_offsets(lines: &[Line<'_>], width: u16) -> Vec<usize> {
+    let mut offsets = Vec::with_capacity(lines.len() + 1);
+    let mut rendered = 0usize;
+    for line in lines {
+        offsets.push(rendered);
+        rendered = rendered.saturating_add(
+            Paragraph::new(line.clone())
+                .wrap(Wrap { trim: false })
+                .line_count(width)
+                .max(1),
+        );
+    }
+    offsets.push(rendered);
+    offsets
 }
 
 /// Color style for log levels.
@@ -345,4 +398,115 @@ fn highlight_spans<'a>(
         spans.push(Span::styled(text.to_owned(), normal_style));
     }
     spans
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    fn rendered_text(terminal: &Terminal<TestBackend>) -> String {
+        let buffer = terminal.backend().buffer();
+        let width = buffer.area.width as usize;
+        buffer
+            .content
+            .chunks(width)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn entries() -> Vec<LogEntry> {
+        (0..24)
+            .map(|idx| {
+                let marker = if idx == 3 {
+                    " CURRENT_MARKER"
+                } else if idx == 23 {
+                    " LATEST_MARKER"
+                } else {
+                    ""
+                };
+                LogEntry::new(
+                    format!("12:34:{idx:02}"),
+                    if idx % 7 == 0 {
+                        LogEntryLevel::Warn
+                    } else {
+                        LogEntryLevel::Info
+                    },
+                    "event:agent.dispatch.with-a-long-source".to_string(),
+                    format!(
+                        "entry {idx:02} {}{marker}",
+                        "a deliberately wrapped diagnostic message ".repeat(5)
+                    ),
+                )
+            })
+            .collect()
+    }
+
+    fn render_entries_at(width: u16, height: u16, view_state: &ViewState) -> String {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let data = DashboardData::default();
+        let state = TuiState::default();
+        let theme = Theme::dark();
+        let entries = entries();
+        terminal
+            .draw(|frame| {
+                render_with_entries(
+                    frame,
+                    frame.area(),
+                    &entries,
+                    &data,
+                    &state,
+                    view_state,
+                    &theme,
+                );
+            })
+            .unwrap();
+        rendered_text(&terminal)
+    }
+
+    #[test]
+    fn logs_auto_tail_counts_wrapped_rows_at_common_sizes() {
+        let view_state = ViewState {
+            auto_tail: true,
+            ..ViewState::default()
+        };
+        for (width, height) in [(80, 24), (120, 40), (200, 60)] {
+            let rendered = render_entries_at(width, height, &view_state);
+            assert!(
+                rendered.contains("LATEST_MARKER"),
+                "wrapped log tail missing at {width}x{height}:\n{rendered}"
+            );
+            assert!(rendered.contains("[TAIL]"));
+        }
+    }
+
+    #[test]
+    fn manual_log_row_selection_maps_to_wrapped_offset() {
+        let view_state = ViewState {
+            scroll: 3,
+            auto_tail: false,
+            ..ViewState::default()
+        };
+        let rendered = render_entries_at(80, 24, &view_state);
+        assert!(
+            rendered.contains("CURRENT_MARKER"),
+            "selected logical row should remain visible after wrapping:\n{rendered}"
+        );
+        assert!(rendered.contains("[SCROLL]"));
+    }
+
+    #[test]
+    fn wrapped_offsets_include_terminal_total() {
+        let lines = vec![
+            Line::from("short"),
+            Line::from("this line wraps across several rendered rows"),
+        ];
+        let offsets = wrapped_row_offsets(&lines, 12);
+        assert_eq!(offsets[0], 0);
+        assert_eq!(offsets[1], 1);
+        assert!(offsets[2] > 2);
+    }
 }

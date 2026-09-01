@@ -42,13 +42,15 @@ impl HitZones {
     pub fn compute(area: Rect, tab: usize, header_tab_count: usize) -> Self {
         let mut zones = Self::default();
 
-        // Top-level layout: header (3 rows) | body | footer (2 rows)
+        // Top-level layout: compact header | body | compact footer. Warning
+        // and wave rows are optional at runtime; treating them as body keeps
+        // clicks conservative without replaying application state here.
         let outer = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),
+                Constraint::Length(1),
                 Constraint::Min(0),
-                Constraint::Length(2),
+                Constraint::Length(1),
             ])
             .split(area);
 
@@ -78,35 +80,38 @@ impl HitZones {
                 zones.right_content = body_area;
             }
             1 => {
-                // Plans: left sidebar (30%) | right content (70%)
+                // Plans: left sidebar | VOID gutter | right detail.
                 let h = Layout::default()
                     .direction(Direction::Horizontal)
-                    .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
+                    .constraints([
+                        Constraint::Percentage(31),
+                        Constraint::Length(1),
+                        Constraint::Min(0),
+                    ])
                     .split(body_area);
                 zones.plan_tree = h[0];
-                zones.right_content = h[1];
+                zones.right_content = h[2];
 
                 // Right side: task progress (top 40%) | agent output (bottom 60%)
                 let v = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
-                    .split(h[1]);
+                    .split(h[2]);
                 zones.task_progress = v[0];
                 zones.agent_output = v[1];
             }
             2 => {
-                // Agents: left agent list (25%) | right output (75%)
+                // Agents: left roster | VOID gutter | right output.
                 let h = Layout::default()
                     .direction(Direction::Horizontal)
-                    .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
+                    .constraints([
+                        Constraint::Percentage(32),
+                        Constraint::Length(1),
+                        Constraint::Min(0),
+                    ])
                     .split(body_area);
                 zones.plan_tree = h[0]; // reuse as agent list
-                let v = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-                    .split(h[1]);
-                zones.agent_output = v[0];
-                zones.command_output = v[1];
+                zones.agent_output = h[2];
             }
             _ => {
                 // Generic: full body is right_content
@@ -190,7 +195,7 @@ mod tests {
         assert_eq!(zones.header_tab_rects.len(), 5);
         // Click in first tab region
         let (first_rect, _) = zones.header_tab_rects[0];
-        let zone = zones.zone_at(first_rect.x + 1, first_rect.y + 1);
+        let zone = zones.zone_at(first_rect.x + 1, first_rect.y);
         assert_eq!(zone, Some(FocusZone::HeaderTab(0)));
     }
 

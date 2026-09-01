@@ -25,7 +25,7 @@ use crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Clear, Paragraph};
+use ratatui::widgets::{Block, Clear, Paragraph};
 use ratatui::{Frame, Terminal};
 
 use roko_runtime::process::ProcessSupervisor;
@@ -406,6 +406,16 @@ struct PanicHookRestoreGuard(Arc<dyn Fn(&std::panic::PanicHookInfo<'_>) + Send +
 
 impl Drop for PanicHookRestoreGuard {
     fn drop(&mut self) {
+        // `std::panic::set_hook` itself panics when called from a panicking
+        // thread.  This guard is dropped while unwinding if the TUI render or
+        // event loop panics, so attempting to restore the hook here used to
+        // turn every recoverable TUI panic into a double-panic SIGABRT and
+        // hide the original diagnostic.  The process is already unwinding in
+        // that case; leave the cleanup hook installed and preserve the first
+        // panic instead.
+        if std::thread::panicking() {
+            return;
+        }
         let hook = Arc::clone(&self.0);
         std::panic::set_hook(Box::new(move |panic_info| hook(panic_info)));
     }
@@ -961,6 +971,11 @@ impl App {
         let theme = Theme::from_env();
         let full_area = frame.area();
 
+        // Establish a real canvas every frame.  Relying on terminal defaults
+        // leaves stale cells and makes post-processing dependent on the host
+        // theme; Mori's visual hierarchy starts from an explicit black field.
+        frame.render_widget(Block::default().style(Theme::block_style()), full_area);
+
         // Responsive outer margin on large terminals
         let content_area = super::layout::responsive_outer_margin(full_area);
 
@@ -1021,6 +1036,22 @@ impl App {
             self.render_input_bar(frame, input_area, &theme);
         }
 
+        // Visual effects are part of the scene, never a layer above controls.
+        // Apply them after ordinary widgets (so they can respect occupied
+        // cells) but before modal dimming and modal content.
+        if self.fx_config.screen_postfx || self.fx_config.nerv_viz || self.fx_config.particles {
+            let buf = frame.buffer_mut();
+            super::postfx_pipeline::apply_pipeline(
+                self.tui_state.active_tab as usize,
+                content_area,
+                buf,
+                self.tui_state.atmosphere.elapsed,
+                self.tui_state.atmosphere.frame_count,
+                &self.fx_config,
+                &self.tui_state,
+            );
+        }
+
         // Dim overlay before modals
         if self.tui_state.active_modal.is_some() {
             let buf = frame.buffer_mut();
@@ -1038,28 +1069,6 @@ impl App {
             &theme,
             self.fx_config.screen_postfx,
         );
-
-        // PostFX pipeline
-        if self.fx_config.screen_postfx || self.fx_config.nerv_viz || self.fx_config.particles {
-            let buf = frame.buffer_mut();
-            super::postfx_pipeline::apply_pipeline(
-                self.tui_state.active_tab as usize,
-                content_area,
-                buf,
-                self.tui_state.atmosphere.elapsed,
-                self.tui_state.atmosphere.frame_count,
-                &self.fx_config,
-                &self.tui_state,
-            );
-        }
-
-        // Ambient breathing brightness — lightweight always-on effect that
-        // subtly modulates high-luminance cells. Respects reduced-motion.
-        if !super::EffectsConfig::is_reduced_motion() {
-            self.tui_state
-                .atmosphere
-                .apply(content_area, frame.buffer_mut());
-        }
     }
 
     // -----------------------------------------------------------------------
@@ -2535,7 +2544,7 @@ impl App {
     fn current_log_max_scroll(&self) -> usize {
         let content_area = self.current_content_area();
         let sections =
-            Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).split(content_area);
+            Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(content_area);
         let viewport_height = sections[1].height.saturating_sub(2) as usize;
         super::views::logs_view::filtered_entry_count(&self.data, &self.tui_state)
             .saturating_sub(viewport_height)
@@ -2700,21 +2709,30 @@ impl App {
 
         match self.tui_state.active_tab {
             Tab::Agents => {
-                let panels =
-                    Layout::horizontal([Constraint::Percentage(32), Constraint::Percentage(68)])
-                        .split(content_area);
+                let panels = Layout::horizontal([
+                    Constraint::Percentage(32),
+                    Constraint::Length(1),
+                    Constraint::Min(0),
+                ])
+                .split(content_area);
                 let sections =
-                    Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(panels[1]);
+                    Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(panels[2]);
                 sections[1].height.saturating_sub(2) as usize
             }
             Tab::Dashboard if self.tui_state.plan_detail_tab == 1 => {
-                let outer = Layout::vertical([Constraint::Min(0), Constraint::Length(6)])
+                let right = if self.tui_state.plans.iter().any(|plan| plan.active) {
+                    let main = Layout::horizontal([
+                        Constraint::Percentage(38),
+                        Constraint::Length(1),
+                        Constraint::Min(0),
+                    ])
                     .split(content_area);
-                let main =
-                    Layout::horizontal([Constraint::Percentage(38), Constraint::Percentage(62)])
-                        .split(outer[0]);
+                    main[2]
+                } else {
+                    content_area
+                };
                 let sections =
-                    Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(main[1]);
+                    Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(right);
                 sections[1].height.saturating_sub(2) as usize
             }
             _ => 0,
@@ -2726,11 +2744,14 @@ impl App {
 
         match self.tui_state.active_tab {
             Tab::Agents => {
-                let panels =
-                    Layout::horizontal([Constraint::Percentage(32), Constraint::Percentage(68)])
-                        .split(content_area);
+                let panels = Layout::horizontal([
+                    Constraint::Percentage(32),
+                    Constraint::Length(1),
+                    Constraint::Min(0),
+                ])
+                .split(content_area);
                 let sections =
-                    Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(panels[1]);
+                    Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(panels[2]);
                 sections[1].height.saturating_sub(3) as usize
             }
             _ => 0,
@@ -4586,6 +4607,42 @@ mod tests {
     }
 
     #[test]
+    fn full_effects_dashboard_preserves_operational_text() {
+        use super::super::effects_config::EffectsPreset;
+
+        let dir = tempdir().unwrap();
+        let mut app = App::new(dir.path());
+        app.fx_config = EffectsConfig::from_preset(EffectsPreset::Full);
+        app.tui_state.agents.push(super::super::state::AgentRow {
+            id: "doctor-network/T1".to_string(),
+            active: true,
+            status: super::super::state::AgentStatus::Active,
+            role: "implementer".to_string(),
+            model: "gpt-5.6-sol".to_string(),
+            current_plan: "doctor-network-v2".to_string(),
+            current_task: "T1".to_string(),
+            output_lines: vec!["agent output remains readable".to_string()],
+            ..Default::default()
+        });
+
+        let backend = TestBackend::new(180, 55);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+
+        let rendered = rendered_text(&terminal);
+        assert!(rendered.contains("parallel agents"));
+        assert!(rendered.contains("agent output remains readable"));
+        let braille_cells = rendered
+            .chars()
+            .filter(|ch| ('\u{2800}'..='\u{28ff}').contains(ch))
+            .count();
+        assert!(
+            braille_cells <= 32,
+            "refined full effects rendered {braille_cells} braille cells"
+        );
+    }
+
+    #[test]
     fn all_tabs_render_without_panic() {
         let dir = tempdir().unwrap();
         let mut app = App::new(dir.path());
@@ -4873,19 +4930,18 @@ mod tests {
 
         let dir = tempdir().unwrap();
         let mut app = App::new(dir.path());
-        assert!(!app.fx_config.screen_postfx);
-
-        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL));
         assert!(app.fx_config.screen_postfx);
 
         app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL));
         assert!(!app.fx_config.screen_postfx);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL));
+        assert!(app.fx_config.screen_postfx);
     }
 
     #[test]
-    fn v_cycles_effects_presets_and_persists_without_touching_screen_postfx() {
+    fn effects_action_cycles_presets_and_persists_without_touching_screen_postfx() {
         use super::super::effects_config::EffectsPreset;
-        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
         let dir = tempdir().unwrap();
         std::fs::write(
@@ -4895,21 +4951,22 @@ mod tests {
         .unwrap();
 
         let mut app = App::new(dir.path());
+        app.fx_config.set_preset(EffectsPreset::Off);
         app.fx_config.screen_postfx = true;
 
-        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        app.dispatch_action(TuiAction::CycleEffectsPreset);
         assert_eq!(app.fx_config.preset, EffectsPreset::Minimal);
         assert!(app.fx_config.screen_postfx);
         assert!(!app.fx_config.nerv_viz);
         assert!(app.fx_config.particles);
 
-        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        app.dispatch_action(TuiAction::CycleEffectsPreset);
         assert_eq!(app.fx_config.preset, EffectsPreset::Full);
         assert!(app.fx_config.screen_postfx);
         assert!(app.fx_config.nerv_viz);
         assert!(app.fx_config.particles);
 
-        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        app.dispatch_action(TuiAction::CycleEffectsPreset);
         assert_eq!(app.fx_config.preset, EffectsPreset::Off);
         assert!(app.fx_config.screen_postfx);
         assert!(!app.fx_config.nerv_viz);

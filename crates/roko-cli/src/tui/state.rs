@@ -2668,7 +2668,15 @@ impl TuiState {
         self.cumulative_input_tokens = data.efficiency.total_input_tokens;
         self.cumulative_output_tokens = data.efficiency.total_output_tokens;
         self.token_total = self.cumulative_input_tokens + self.cumulative_output_tokens;
-        self.update_efficiency_rates();
+        // Snapshot events arrive much more often than token/cost events. Do
+        // not feed zero-delta UI updates into the EMA, or ordinary event-log
+        // traffic would rapidly decay the displayed rate between turns.
+        if self.last_rate_sample_at.is_none()
+            || self.token_total != self.last_token_total_sample
+            || self.cost_dollars != self.last_cost_dollars_sample
+        {
+            self.update_efficiency_rates();
+        }
         self.gate_results = data
             .gate_results
             .iter()
@@ -3151,6 +3159,33 @@ impl TuiState {
         self.token_total = self.cumulative_input_tokens + self.cumulative_output_tokens;
         if snap.stats.cost_usd_total > 0.0 {
             self.cost_dollars = snap.stats.cost_usd_total;
+        }
+        // Connected-mode snapshots carry token deltas in a bounded event
+        // ring. Convert them to a cumulative series aligned to the current
+        // total so the sparkline has real history instead of a single sample.
+        let recent_token_total = snap.token_event_ring.iter().copied().sum::<u64>();
+        let mut running_total = self.token_total.saturating_sub(recent_token_total);
+        let connected_history = snap
+            .token_event_ring
+            .iter()
+            .map(|delta| {
+                running_total = running_total.saturating_add(*delta);
+                running_total
+            })
+            .collect::<VecDeque<_>>();
+        self.token_history.clear();
+        if !connected_history.is_empty() {
+            self.token_history
+                .insert("connected".to_string(), connected_history);
+        } else if self.token_total > 0 {
+            self.token_history
+                .insert("connected".to_string(), VecDeque::from([self.token_total]));
+        }
+        if self.last_rate_sample_at.is_none()
+            || self.token_total != self.last_token_total_sample
+            || self.cost_dollars != self.last_cost_dollars_sample
+        {
+            self.update_efficiency_rates();
         }
 
         // -- network stats --
@@ -6081,6 +6116,78 @@ tier = "focused"
         assert_eq!(state.agents[0].output_lines.len(), MAX_AGENT_OUTPUT_LINES);
         assert_eq!(state.agents[0].output_lines[0], "line-50");
         assert_eq!(state.agents[0].output_lines[49], "line-99");
+    }
+
+    #[test]
+    fn connected_snapshot_builds_cumulative_token_history() {
+        let mut snap = roko_core::DashboardSnapshot::default();
+        snap.agents.insert(
+            "agent-1".into(),
+            roko_core::dashboard_snapshot::AgentState {
+                agent_id: "agent-1".into(),
+                role: "implementer".into(),
+                active: true,
+                output_bytes: 0,
+                model: "test-model".into(),
+                input_tokens: 100,
+                output_tokens: 50,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                cost_usd: 0.0,
+                current_task: "task-1".into(),
+                current_plan: "plan-1".into(),
+                attempt: 1,
+                spawned_at_ms: 0,
+                last_event_at_ms: 0,
+                elapsed_ms: 0,
+            },
+        );
+        snap.token_event_ring = VecDeque::from([25, 50]);
+
+        let mut state = TuiState::default();
+        state.update_from_dashboard_snapshot(&snap);
+
+        assert_eq!(state.token_total, 150);
+        assert_eq!(
+            state.token_history.get("connected"),
+            Some(&VecDeque::from([100, 150]))
+        );
+    }
+
+    #[test]
+    fn connected_snapshot_rate_survives_unchanged_refreshes() {
+        let mut snap = roko_core::DashboardSnapshot::default();
+        snap.agents.insert(
+            "agent-1".into(),
+            roko_core::dashboard_snapshot::AgentState {
+                agent_id: "agent-1".into(),
+                role: "implementer".into(),
+                active: true,
+                output_bytes: 0,
+                model: "test-model".into(),
+                input_tokens: 200,
+                output_tokens: 0,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                cost_usd: 0.0,
+                current_task: "task-1".into(),
+                current_plan: "plan-1".into(),
+                attempt: 1,
+                spawned_at_ms: 0,
+                last_event_at_ms: 0,
+                elapsed_ms: 0,
+            },
+        );
+
+        let mut state = TuiState::default();
+        state.last_rate_sample_at = Some(Instant::now() - Duration::from_secs(60));
+        state.last_token_total_sample = 100;
+        state.update_from_dashboard_snapshot(&snap);
+        let rate_after_delta = state.token_rate;
+        assert!(rate_after_delta > 0.0);
+
+        state.update_from_dashboard_snapshot(&snap);
+        assert_eq!(state.token_rate, rate_after_delta);
     }
 
     #[test]

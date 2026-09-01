@@ -549,7 +549,7 @@ pub fn all_fields() -> Vec<ConfigFieldMeta> {
         ConfigFieldMeta {
             key: "tui.effects.screen_postfx",
             label: "Screen PostFX",
-            description: "Enable full-screen post-processing and modal glow effects",
+            description: "Enable restrained self-glow and modal halo effects",
             kind: ConfigFieldKind::Bool,
             group: "TUI",
         },
@@ -604,7 +604,7 @@ fn resolve_value(key: &str, toml_root: Option<&toml::Value>) -> Option<String> {
 /// Resolve the default value of a config field from the default config.
 fn resolve_default(key: &str, defaults: &toml::Value) -> Option<String> {
     resolve_value(key, Some(defaults)).or_else(|| match key {
-        "tui.effects.screen_postfx" => Some("false".to_string()),
+        "tui.effects.screen_postfx" => Some("true".to_string()),
         _ => None,
     })
 }

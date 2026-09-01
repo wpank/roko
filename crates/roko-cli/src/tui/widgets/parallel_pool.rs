@@ -23,8 +23,9 @@ pub(crate) fn render_parallel_pool(
     let block = Block::default()
         .borders(Borders::ALL)
         .title("parallel agents")
-        .border_style(theme.muted())
-        .title_style(theme.accent_bold());
+        .border_style(Theme::unfocused_border_style())
+        .title_style(Theme::unfocused_title_style())
+        .style(Theme::block_style());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 

@@ -766,6 +766,7 @@ mod tests {
                 attempt: 1,
                 role: "implementer".into(),
                 model: "test-model".into(),
+                provider: "test-provider".into(),
             });
         state
             .state_hub

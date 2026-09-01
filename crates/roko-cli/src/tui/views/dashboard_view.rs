@@ -10,7 +10,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Sparkline, Table, Wrap};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -21,7 +21,6 @@ use roko_core::dashboard_snapshot::{
 };
 
 use super::ViewState;
-use crate::tui::Tab;
 use crate::tui::ansi::parse_ansi_line;
 use crate::tui::dashboard::{DashboardData, GateFailureRow, GateSummaryRow, Theme};
 use crate::tui::input::FocusZone;
@@ -2041,7 +2040,7 @@ fn aggregate_model_usage(
     usage
 }
 
-use crate::tui::display_utils::{display_model, event_model_slug, shorten_model, truncate};
+use crate::tui::display_utils::{display_model, event_model_slug, truncate};
 
 fn fmt_count(n: u64) -> String {
     if n >= 1_000_000 {

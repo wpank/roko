@@ -2102,6 +2102,7 @@ mod tests {
             attempt: 0,
             role: "coder".into(),
             model: "test-model".into(),
+            provider: String::new(),
         });
 
         let snap = hub.current_snapshot();
@@ -2286,6 +2287,7 @@ mod tests {
             attempt: 0,
             role: "coder".into(),
             model: "test-model".into(),
+            provider: String::new(),
         });
         hub.publish(DashboardEvent::PlanStarted {
             plan_id: "p1".into(),
@@ -2322,6 +2324,7 @@ mod tests {
             attempt: 0,
             role: "auditor".into(),
             model: "test-model".into(),
+            provider: String::new(),
         });
 
         let content = std::fs::read_to_string(&log_path).expect("read event log");
@@ -2746,6 +2749,7 @@ mod tests {
             attempt: 0,
             role: "coder".into(),
             model: "test-model".into(),
+            provider: String::new(),
         });
         for i in 0..20usize {
             hub.publish(DashboardEvent::PlanStarted {

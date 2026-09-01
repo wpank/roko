@@ -23,6 +23,7 @@ use ratatui::style::Color;
 use crate::plan::{PlanSummary, plans_dir};
 use crate::task_parser::{TaskDef, TasksFile};
 use roko_core::ExperimentWinnerSummary;
+use roko_core::config::model_registry::model_meta;
 use roko_core::metric::{Headlines, TaskMetric, compute_headlines};
 use roko_gate::adaptive_threshold::AdaptiveThresholds;
 use roko_learn::aggregate::{CFactorBucket, EfficiencyBucket, cfactor_trend, efficiency_trend};
@@ -41,6 +42,7 @@ use roko_runtime::{
 
 use super::cursors::{EpisodeCursor, EventLogCursor, SignalCursor};
 use super::dashboard_gen::DurableDashboardGenerationCounter;
+use super::display_utils::event_model_slug;
 use super::pages::{PageId, PageScaffold, efficiency, operations};
 use super::state::{PlanPhase, TaskStatus};
 use super::task_outputs::TaskOutputCursors;
@@ -1189,7 +1191,7 @@ pub(crate) struct AgentActivityRow {
 /// Model usage count for the bar chart.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ModelUsageRow {
-    pub label: &'static str,
+    pub label: String,
     pub count: u64,
 }
 
@@ -1202,6 +1204,10 @@ pub(crate) struct ModelCostRow {
     pub input_rate: f64,
     pub output_rate: f64,
     pub cost_usd: f64,
+    /// True when at least one event's cost was estimated from registry rates
+    /// because the event recorded `cost_usd: 0.0` despite consuming tokens
+    /// (see `Usage::has_known_cost` semantics in roko-core).
+    pub cost_estimated: bool,
 }
 
 /// Aggregated agent activity snapshot.
@@ -1538,22 +1544,42 @@ pub(crate) fn build_agent_activity_snapshot(
         .collect::<Vec<_>>();
     active_rows.sort_by(|a, b| a.agent_id.cmp(&b.agent_id));
 
-    let mut model_usage: BTreeMap<&'static str, u64> = BTreeMap::new();
+    // Group by model family + exact slug (same pattern as
+    // `views/learning_view.rs`), not the legacy haiku/sonnet/opus trio.
+    let mut model_usage: BTreeMap<(&'static str, String), u64> = BTreeMap::new();
     let mut cost_groups: BTreeMap<String, ModelCostAggregate> = BTreeMap::new();
     for event in efficiency_events {
-        let (tier, input_rate, output_rate) = model_pricing(&event.model);
-        *model_usage.entry(tier).or_default() += 1;
-        let aggregate =
-            cost_groups
-                .entry(event.model.clone())
-                .or_insert_with(|| ModelCostAggregate {
-                    model: event.model.clone(),
-                    input_rate,
-                    output_rate,
-                    ..ModelCostAggregate::default()
-                });
+        let slug = event_model_slug(event);
+        let meta = model_meta(&slug);
+        *model_usage.entry((meta.family, slug.clone())).or_default() += 1;
+        let (input_rate, output_rate) = meta.pricing.map_or((0.0, 0.0), |pricing| {
+            (
+                pricing.input_per_m / 1_000_000.0,
+                pricing.output_per_m / 1_000_000.0,
+            )
+        });
+        let aggregate = cost_groups
+            .entry(slug.clone())
+            .or_insert_with(|| ModelCostAggregate {
+                model: slug.clone(),
+                input_rate,
+                output_rate,
+                ..ModelCostAggregate::default()
+            });
         aggregate.input_tokens += event.input_tokens;
         aggregate.output_tokens += event.output_tokens;
+        if event_has_known_cost(event) {
+            aggregate.real_cost_usd += event.cost_usd;
+        } else {
+            aggregate.events_with_unknown_cost += 1;
+            if let Some(pricing) = meta.pricing {
+                aggregate.estimated_cost_usd += (event.input_tokens as f64 * pricing.input_per_m
+                    + event.output_tokens as f64 * pricing.output_per_m
+                    + event.cache_read_tokens as f64 * pricing.cache_read_per_m
+                    + event.cache_write_tokens as f64 * pricing.cache_write_per_m)
+                    / 1_000_000.0;
+            }
+        }
     }
 
     let mut cost_rows = cost_groups
@@ -1567,12 +1593,9 @@ pub(crate) fn build_agent_activity_snapshot(
             .then_with(|| a.model.cmp(&b.model))
     });
 
-    let model_usage = ["haiku", "sonnet", "opus"]
+    let model_usage = model_usage
         .into_iter()
-        .map(|label| ModelUsageRow {
-            label,
-            count: model_usage.get(label).copied().unwrap_or_default(),
-        })
+        .map(|((_family, slug), count)| ModelUsageRow { label: slug, count })
         .collect::<Vec<_>>();
 
     let total_session_cost = cost_rows.iter().map(|row| row.cost_usd).sum();
@@ -1600,15 +1623,15 @@ fn synthesize_agents_from_events(efficiency_events: &[AgentEfficiencyEvent]) -> 
     agents.into_values().collect()
 }
 
-fn model_pricing(model: &str) -> (&'static str, f64, f64) {
-    let lower = model.to_ascii_lowercase();
-    if lower.contains("haiku") {
-        ("haiku", 0.000_000_25, 0.000_001_25)
-    } else if lower.contains("opus") {
-        ("opus", 0.000_015, 0.000_075)
-    } else {
-        ("sonnet", 0.000_003, 0.000_015)
-    }
+/// Whether an efficiency event's cost is known, mirroring the wave-1
+/// `Usage::has_known_cost` semantics (`roko-core/src/chat_types.rs`): cost is
+/// known when it is non-zero or when no tokens were consumed (a confirmed
+/// free turn). Token-consuming turns recorded with `cost_usd: 0.0` have
+/// *unknown* cost and must be estimated — never silently priced as $0.00.
+fn event_has_known_cost(event: &AgentEfficiencyEvent) -> bool {
+    event.cost_usd.abs() > f64::EPSILON
+        || (event.input_tokens + event.output_tokens + event.cache_write_tokens == 0
+            && event.cache_read_tokens == 0)
 }
 
 #[derive(Debug, Default)]
@@ -1684,18 +1707,24 @@ struct ModelCostAggregate {
     output_tokens: u64,
     input_rate: f64,
     output_rate: f64,
+    /// Sum of `event.cost_usd` across events whose cost is known.
+    real_cost_usd: f64,
+    /// Registry-priced estimate across events whose cost is unknown.
+    estimated_cost_usd: f64,
+    /// Number of events whose cost had to be estimated.
+    events_with_unknown_cost: u64,
 }
 
 impl ModelCostAggregate {
     fn into_row(self) -> ModelCostRow {
         ModelCostRow {
-            cost_usd: self.input_tokens as f64 * self.input_rate
-                + self.output_tokens as f64 * self.output_rate,
             model: self.model,
             input_tokens: self.input_tokens,
             output_tokens: self.output_tokens,
             input_rate: self.input_rate,
             output_rate: self.output_rate,
+            cost_usd: self.real_cost_usd + self.estimated_cost_usd,
+            cost_estimated: self.events_with_unknown_cost > 0,
         }
     }
 }
@@ -4908,14 +4937,24 @@ impl TuiDashboardModel {
             "model", "input tokens", "output tokens", "cost"
         );
         for row in &snapshot.cost_rows {
+            // Estimated costs are marked so an unknown cost never renders as
+            // a bare "$0.00".
+            let cost = if row.cost_estimated {
+                format!("~{}", format_usd(row.cost_usd))
+            } else {
+                format_usd(row.cost_usd)
+            };
             let _ = writeln!(
                 out,
                 "  {:>20}  {:>12}  {:>12}  {:>12}",
                 truncate_str(&row.model, 20),
                 row.input_tokens,
                 row.output_tokens,
-                format_usd(row.cost_usd)
+                cost
             );
+        }
+        if snapshot.cost_rows.iter().any(|row| row.cost_estimated) {
+            let _ = writeln!(out, "  (~ cost estimated from registry rates)");
         }
         let _ = writeln!(
             out,
@@ -6749,6 +6788,193 @@ mod tests {
         assert!(rendered.contains("model distribution:"));
         assert!(rendered.contains("cost breakdown:"));
         assert!(rendered.contains("total session cost:"));
+    }
+
+    #[test]
+    fn agent_activity_snapshot_groups_model_usage_by_family_and_slug() {
+        let events = vec![
+            sample_efficiency_event(
+                "agent-a",
+                "task-1",
+                "Implementer",
+                "gpt-5.6-sol",
+                100,
+                50,
+                0.01,
+                "2026-04-08T10:00:00Z",
+            ),
+            sample_efficiency_event(
+                "agent-b",
+                "task-2",
+                "Implementer",
+                "glm-5.1",
+                100,
+                50,
+                0.01,
+                "2026-04-08T10:01:00Z",
+            ),
+            sample_efficiency_event(
+                "agent-c",
+                "task-3",
+                "Reviewer",
+                "claude-sonnet-4-6",
+                100,
+                50,
+                0.01,
+                "2026-04-08T10:02:00Z",
+            ),
+            sample_efficiency_event(
+                "agent-d",
+                "task-4",
+                "Implementer",
+                "kimi-k2.5",
+                100,
+                50,
+                0.01,
+                "2026-04-08T10:03:00Z",
+            ),
+            sample_efficiency_event(
+                "agent-a",
+                "task-5",
+                "Implementer",
+                "gpt-5.6-sol",
+                100,
+                50,
+                0.01,
+                "2026-04-08T10:04:00Z",
+            ),
+        ];
+
+        let snapshot = build_agent_activity_snapshot(&[], &events).expect("snapshot");
+        let labels: Vec<&str> = snapshot
+            .model_usage
+            .iter()
+            .map(|row| row.label.as_str())
+            .collect();
+
+        // Exact slugs, ordered by family (claude, glm, gpt, kimi) — no
+        // haiku/sonnet/opus bucketing.
+        assert_eq!(
+            labels,
+            vec!["claude-sonnet-4-6", "glm-5.1", "gpt-5.6-sol", "kimi-k2.5"]
+        );
+        let gpt_row = snapshot
+            .model_usage
+            .iter()
+            .find(|row| row.label == "gpt-5.6-sol")
+            .expect("gpt-5.6-sol row");
+        assert_eq!(gpt_row.count, 2);
+    }
+
+    #[test]
+    fn cost_rows_use_real_cost_when_known() {
+        let events = vec![sample_efficiency_event(
+            "agent-a",
+            "task-1",
+            "Implementer",
+            "claude-opus-4-6",
+            500,
+            100,
+            1.25,
+            "2026-04-08T10:00:00Z",
+        )];
+
+        let snapshot = build_agent_activity_snapshot(&[], &events).expect("snapshot");
+        let row = snapshot.cost_rows.first().expect("cost row");
+        assert_eq!(row.model, "claude-opus-4-6");
+        assert_eq!(row.cost_usd, 1.25);
+        assert!(!row.cost_estimated);
+    }
+
+    #[test]
+    fn cost_rows_estimate_from_registry_when_cost_unknown() {
+        // glm-5.1 registry rates: $1.40/M input, $4.40/M output.
+        let events = vec![sample_efficiency_event(
+            "agent-a",
+            "task-1",
+            "Implementer",
+            "glm-5.1",
+            1_000_000,
+            500_000,
+            0.0,
+            "2026-04-08T10:00:00Z",
+        )];
+
+        let snapshot = build_agent_activity_snapshot(&[], &events).expect("snapshot");
+        let row = snapshot.cost_rows.first().expect("cost row");
+        assert!((row.cost_usd - 3.60).abs() < 1e-9);
+        assert!(row.cost_estimated);
+    }
+
+    #[test]
+    fn cost_rows_blend_real_and_estimated_costs() {
+        let events = vec![
+            sample_efficiency_event(
+                "agent-a",
+                "task-1",
+                "Implementer",
+                "glm-5.1",
+                10,
+                5,
+                0.50,
+                "2026-04-08T10:00:00Z",
+            ),
+            sample_efficiency_event(
+                "agent-a",
+                "task-2",
+                "Implementer",
+                "glm-5.1",
+                1_000_000,
+                0,
+                0.0,
+                "2026-04-08T10:05:00Z",
+            ),
+        ];
+
+        let snapshot = build_agent_activity_snapshot(&[], &events).expect("snapshot");
+        let row = snapshot.cost_rows.first().expect("cost row");
+        // $0.50 real + $1.40 estimated (1M glm-5.1 input tokens).
+        assert!((row.cost_usd - 1.90).abs() < 1e-9);
+        assert!(row.cost_estimated);
+    }
+
+    #[test]
+    fn cost_rows_mark_zero_cost_without_pricing_as_estimated() {
+        // Unknown slug: no registry pricing; cost stays 0.0 but must be marked.
+        let events = vec![sample_efficiency_event(
+            "agent-a",
+            "task-1",
+            "Implementer",
+            "brand-new-model-x",
+            1_000,
+            500,
+            0.0,
+            "2026-04-08T10:00:00Z",
+        )];
+
+        let snapshot = build_agent_activity_snapshot(&[], &events).expect("snapshot");
+        let row = snapshot.cost_rows.first().expect("cost row");
+        assert_eq!(row.cost_usd, 0.0);
+        assert!(row.cost_estimated);
+    }
+
+    #[test]
+    fn cost_rows_treat_zero_token_turn_as_known_free() {
+        let events = vec![sample_efficiency_event(
+            "agent-a",
+            "task-1",
+            "Implementer",
+            "glm-5.1",
+            0,
+            0,
+            0.0,
+            "2026-04-08T10:00:00Z",
+        )];
+
+        let snapshot = build_agent_activity_snapshot(&[], &events).expect("snapshot");
+        let row = snapshot.cost_rows.first().expect("cost row");
+        assert_eq!(row.cost_usd, 0.0);
+        assert!(!row.cost_estimated);
     }
 
     #[test]

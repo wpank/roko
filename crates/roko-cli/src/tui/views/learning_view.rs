@@ -232,7 +232,7 @@ fn model_sparkline(
         .collect()
 }
 
-use crate::tui::display_utils::{display_model, event_model_slug, shorten_model};
+use crate::tui::display_utils::{display_model, event_model_slug};
 
 fn render_selection_bars(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme: &Theme) {
     let router = &tui_state.cascade_router;
@@ -580,4 +580,138 @@ struct ModelEffStats {
     passed: usize,
     total_cost: f64,
     total_latency_ms: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::dashboard::{CascadeRouterModelStats, DashboardData};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    fn rendered_text(terminal: &Terminal<TestBackend>) -> String {
+        let buffer = terminal.backend().buffer();
+        let width = buffer.area.width as usize;
+        buffer
+            .content
+            .chunks(width)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn render_view(tui_state: &TuiState, sub_tab: usize, width: u16, height: u16) -> String {
+        let data = DashboardData::default();
+        let view_state = ViewState {
+            sub_tab,
+            ..ViewState::default()
+        };
+        let theme = Theme::dark();
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render(frame, area, &data, tui_state, &view_state, &theme);
+            })
+            .unwrap();
+        rendered_text(&terminal)
+    }
+
+    fn efficiency_event(
+        model: &str,
+        task_id: &str,
+    ) -> roko_learn::efficiency::AgentEfficiencyEvent {
+        let mut event = roko_learn::efficiency::AgentEfficiencyEvent::default_event();
+        event.model = model.to_string();
+        event.plan_id = "plan-1".to_string();
+        event.task_id = task_id.to_string();
+        event.gate_passed = Some(true);
+        event.cost_usd = 0.05;
+        event.wall_time_ms = 4_000;
+        event
+    }
+
+    #[test]
+    fn router_empty_state_renders_placeholder() {
+        let state = TuiState::new();
+        let text = render_view(&state, 0, 100, 20);
+        assert!(text.contains("No cascade router data"), "missing:\n{text}");
+    }
+
+    #[test]
+    fn router_renders_non_claude_model_rows() {
+        let mut state = TuiState::new();
+        state.cascade_router.model_slugs = vec!["gpt-5.6-sol".to_string(), "glm-5.1".to_string()];
+        state.cascade_router.confidence_stats.insert(
+            "gpt-5.6-sol".to_string(),
+            CascadeRouterModelStats {
+                trials: 12,
+                successes: 9,
+            },
+        );
+        state.cascade_router.confidence_stats.insert(
+            "glm-5.1".to_string(),
+            CascadeRouterModelStats {
+                trials: 4,
+                successes: 1,
+            },
+        );
+
+        let text = render_view(&state, 0, 120, 30);
+        assert!(
+            text.contains("Cascade Stage"),
+            "stage block missing:\n{text}"
+        );
+        assert!(text.contains("gpt-5.6-sol"), "codex row missing:\n{text}");
+        assert!(text.contains("glm-5.1"), "glm row missing:\n{text}");
+        assert!(text.contains("75.0%"), "pass rate missing:\n{text}");
+    }
+
+    #[test]
+    fn history_sub_view_renders_without_panic() {
+        let mut state = TuiState::new();
+        state.cascade_router.confidence_stats.insert(
+            "glm-5.1".to_string(),
+            CascadeRouterModelStats {
+                trials: 15,
+                successes: 10,
+            },
+        );
+        let text = render_view(&state, 1, 100, 24);
+        assert!(
+            text.contains("Stage Transition History"),
+            "history missing:\n{text}"
+        );
+    }
+
+    #[test]
+    fn efficiency_sub_view_renders_model_rows() {
+        let mut state = TuiState::new();
+        state
+            .efficiency_events
+            .push(efficiency_event("gpt-5.6-sol", "t1"));
+        state
+            .efficiency_events
+            .push(efficiency_event("glm-5.1", "t2"));
+
+        let text = render_view(&state, 2, 120, 30);
+        assert!(
+            text.contains("Model Efficiency Stats"),
+            "stats block missing:\n{text}"
+        );
+        // Models are grouped by exact slug (shortened for display).
+        assert!(text.contains("5.6-sol"), "codex model missing:\n{text}");
+        assert!(text.contains("glm-5.1"), "glm model missing:\n{text}");
+    }
+
+    #[test]
+    fn efficiency_sub_view_empty_renders_placeholder() {
+        let state = TuiState::new();
+        let text = render_view(&state, 2, 100, 20);
+        assert!(
+            text.contains("No efficiency events recorded yet"),
+            "placeholder missing:\n{text}"
+        );
+    }
 }

@@ -3124,19 +3124,6 @@ impl App {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Legacy compatibility
-    // -----------------------------------------------------------------------
-
-    #[allow(dead_code)]
-    fn select_page_by_slot(&mut self, slot: usize) {
-        let pages = self.pages().ids();
-        if let Some(page) = pages.get(slot).copied() {
-            self.current_page = page;
-            let _ = self.scaffold.set_active_page(self.current_page);
-        }
-    }
-
     /// Full refresh — async version for the connected `run()` path.
     async fn refresh_snapshot_async(&mut self) {
         if self.replay_disk_snapshots || self._state_hub.is_none() {
@@ -3615,7 +3602,7 @@ impl App {
                             let file_len = meta.len();
                             if file_len > self.last_events_offset {
                                 if let Ok(file) = std::fs::File::open(&events_path) {
-                                    use std::io::{BufRead, Seek, SeekFrom};
+                                    use std::io::{Seek, SeekFrom};
                                     let mut reader = std::io::BufReader::new(file);
                                     if reader
                                         .seek(SeekFrom::Start(self.last_events_offset))
@@ -4754,6 +4741,7 @@ mod tests {
                         active: true,
                         output_bytes: 0,
                         model: String::new(),
+                        provider: String::new(),
                         input_tokens: 0,
                         output_tokens: 0,
                         cache_read_tokens: 0,
@@ -4775,6 +4763,7 @@ mod tests {
                         active: false,
                         output_bytes: 0,
                         model: String::new(),
+                        provider: String::new(),
                         input_tokens: 0,
                         output_tokens: 0,
                         cache_read_tokens: 0,

@@ -133,6 +133,10 @@ pub enum DashboardEvent {
         role: String,
         #[serde(default)]
         model: String,
+        /// Provider label (e.g. `"claude-cli"`, `"codex-cli"`); empty when the
+        /// emitter does not know it.
+        #[serde(default)]
+        provider: String,
     },
     /// Incremental agent output.
     AgentOutput {
@@ -469,6 +473,9 @@ pub struct AgentState {
     /// Model slug (e.g. "claude-sonnet-4-20250514").
     #[serde(default)]
     pub model: String,
+    /// Provider label (e.g. "claude-cli", "codex-cli"); empty when unknown.
+    #[serde(default)]
+    pub provider: String,
     /// Cumulative input tokens.
     #[serde(default)]
     pub input_tokens: u64,
@@ -1373,6 +1380,7 @@ impl DashboardSnapshot {
                 attempt,
                 role,
                 model,
+                provider,
             } => {
                 if model.trim().is_empty() {
                     self.push_event_log(
@@ -1400,6 +1408,9 @@ impl DashboardSnapshot {
                         if !model.is_empty() {
                             agent.model.clone_from(model);
                         }
+                        if !provider.is_empty() {
+                            agent.provider.clone_from(provider);
+                        }
                         // Re-stamp spawn time on reactivation; update liveness.
                         agent.spawned_at_ms = ts;
                         agent.last_event_at_ms = ts;
@@ -1423,6 +1434,7 @@ impl DashboardSnapshot {
                             active: true,
                             output_bytes: 0,
                             model: model.clone(),
+                            provider: provider.clone(),
                             input_tokens: 0,
                             output_tokens: 0,
                             cache_read_tokens: 0,
@@ -2511,6 +2523,7 @@ fn bootstrap_plan_state(
                     active: false,
                     output_bytes: 0,
                     model: String::new(),
+                    provider: String::new(),
                     input_tokens: 0,
                     output_tokens: 0,
                     cache_read_tokens: 0,
@@ -2863,6 +2876,7 @@ fn apply_runner_lifecycle_projection(
                 active,
                 output_bytes: 0,
                 model: String::new(),
+                provider: String::new(),
                 input_tokens: 0,
                 output_tokens: 0,
                 cache_read_tokens: 0,
@@ -3970,6 +3984,7 @@ mod tests {
             attempt: 0,
             role: "coder".into(),
             model: String::new(),
+            provider: String::new(),
         });
         snap.apply(&DashboardEvent::AgentOutput {
             agent_id: "a1".into(),
@@ -3992,6 +4007,7 @@ mod tests {
                 attempt: 0,
                 role: "coder".into(),
                 model: String::new(),
+                provider: String::new(),
             },
             42,
         );
@@ -4000,6 +4016,28 @@ mod tests {
         assert_eq!(warning.timestamp_ms, 42);
         assert_eq!(warning.event_type, "validation_warning");
         assert!(warning.message.contains("empty model"));
+    }
+
+    #[test]
+    fn agent_spawned_records_and_refreshes_provider() {
+        let mut snap = DashboardSnapshot::default();
+        let spawned = |provider: &str| DashboardEvent::AgentSpawned {
+            agent_id: "a1".into(),
+            plan_id: String::new(),
+            task_id: String::new(),
+            attempt: 1,
+            role: "coder".into(),
+            model: "gpt-5.6-sol".into(),
+            provider: provider.into(),
+        };
+        snap.apply(&spawned("codex-cli"));
+        assert_eq!(snap.agents["a1"].provider, "codex-cli");
+        // A re-spawn with a different provider replaces it; an empty provider
+        // never wipes the recorded one (mirrors the model handling).
+        snap.apply(&spawned("openai_compat"));
+        assert_eq!(snap.agents["a1"].provider, "openai_compat");
+        snap.apply(&spawned(""));
+        assert_eq!(snap.agents["a1"].provider, "openai_compat");
     }
 
     #[test]

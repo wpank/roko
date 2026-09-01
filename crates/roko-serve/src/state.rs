@@ -1525,6 +1525,7 @@ impl AppState {
                     .clone()
                     .unwrap_or_else(|| stored.agent_id.clone()),
                 model: stored.model.clone().unwrap_or_default(),
+                provider: String::new(),
             });
         stored
     }

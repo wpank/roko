@@ -1061,7 +1061,7 @@ fn format_count(n: u64) -> String {
     }
 }
 
-use crate::tui::display_utils::{display_model, shorten_model, truncate};
+use crate::tui::display_utils::{display_model, truncate};
 
 // ---------------------------------------------------------------------------
 // Three-panel inspect view (item 127)

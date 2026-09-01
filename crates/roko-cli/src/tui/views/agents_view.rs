@@ -1,7 +1,7 @@
 //! F3 Agents view -- Mori-style agent roster + output panel.
 //!
-//! Layout: left 32% (agent roster, summary line, token sparkline),
-//! right 68% (role tabs + scrollable agent output).
+//! Layout: left 32% (agent roster, summary line, token sparkline), a
+//! one-cell VOID gutter, and right detail (role tabs + agent output).
 //!
 //! Renders rich gradient progress bars, context gauges, role-colored
 //! tabs, and status chips matching the Mori Agents screen (F3).
@@ -47,37 +47,18 @@ pub(crate) fn render(
     view_state: &ViewState,
     theme: &Theme,
 ) {
-    // Allocate top section for the agent status grid when agents exist.
-    let has_agents = !tui_state.agent_summaries.is_empty();
-    let grid_height = if has_agents {
-        // Header + min(agents, 8) + 2 for border
-        let agent_rows = tui_state.agent_summaries.len().min(8);
-        (agent_rows as u16 + 3).min(area.height / 3)
-    } else {
-        0
-    };
-
-    let sections = if grid_height > 0 {
-        Layout::vertical([Constraint::Length(grid_height), Constraint::Min(6)]).split(area)
-    } else {
-        Layout::vertical([Constraint::Length(0), Constraint::Min(6)]).split(area)
-    };
-
-    if grid_height > 0 {
-        crate::tui::widgets::agent_status_grid::render_agent_status_grid(
-            frame,
-            sections[0],
-            tui_state,
-            theme,
-        );
-    }
-
-    let main_area = sections[1];
-    let panels = Layout::horizontal([Constraint::Percentage(32), Constraint::Percentage(68)])
-        .split(main_area);
+    // The former full-width status grid duplicated the roster and consumed
+    // the most valuable transcript rows. Keep Roko's richer roster details,
+    // but use Mori's clean master-detail silhouette.
+    let panels = Layout::horizontal([
+        Constraint::Percentage(32),
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ])
+    .split(area);
 
     render_left_panel(frame, panels[0], data, tui_state, view_state, theme);
-    render_right_panel(frame, panels[1], tui_state, view_state, theme);
+    render_right_panel(frame, panels[2], tui_state, view_state, theme);
 }
 
 // ---------------------------------------------------------------------------
@@ -150,10 +131,8 @@ fn render_agent_roster(
 
     let border_style = if focused {
         Theme::focused_border_style()
-    } else if active_count > 0 {
-        Style::default().fg(theme.accent)
     } else {
-        theme.muted()
+        Theme::unfocused_border_style()
     };
     let title_style = if focused {
         Theme::focused_title_style()
@@ -162,7 +141,7 @@ fn render_agent_roster(
             .fg(theme.accent)
             .add_modifier(Modifier::BOLD)
     } else {
-        theme.muted()
+        Theme::unfocused_title_style()
     };
 
     let block = Block::default()
@@ -564,8 +543,9 @@ fn render_role_tabs(
         .map(|(role, _)| *role)
         .unwrap_or("");
 
+    let bg = Theme::BG_RAISED;
     let mut spans: Vec<Span<'_>> = Vec::new();
-    spans.push(Span::styled(" ", Style::default()));
+    spans.push(Span::styled(" ", Style::default().bg(bg)));
 
     for &(role, label) in ROLE_TABS {
         let is_active = role == selected_role;
@@ -578,14 +558,20 @@ fn render_role_tabs(
                 .bg(accent)
                 .add_modifier(Modifier::BOLD)
         } else if has_agent {
-            Style::default().fg(accent)
+            Style::default().fg(accent).bg(bg)
         } else {
-            Style::default().fg(theme.muted)
+            Style::default().fg(theme.muted).bg(bg)
         };
 
         spans.push(Span::styled(format!(" {label} "), style));
-        spans.push(Span::styled(" ", Style::default()));
+        spans.push(Span::styled(" ", Style::default().bg(bg)));
     }
+
+    let used: usize = spans.iter().map(|span| span.content.chars().count()).sum();
+    spans.push(Span::styled(
+        " ".repeat((area.width as usize).saturating_sub(used)),
+        Style::default().bg(bg),
+    ));
 
     let line = Paragraph::new(Line::from(spans));
     frame.render_widget(line, area);
@@ -645,14 +631,14 @@ fn render_output_body(
     let border_style = if focused {
         Theme::focused_border_style()
     } else {
-        theme.muted()
+        Theme::unfocused_border_style()
     };
     let title_style = if focused {
         Theme::focused_title_style()
     } else if selected_agent.is_some_and(|a| AgentStatus::from(a.status.as_str()).is_active()) {
         Style::default().fg(accent).add_modifier(Modifier::BOLD)
     } else {
-        theme.muted()
+        Theme::unfocused_title_style()
     };
 
     let collected = collect_agent_output_lines(tui_state, view_state.selected);
@@ -948,7 +934,7 @@ fn render_live_stream_panel(
     };
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(theme.muted())
+        .border_style(Theme::unfocused_border_style())
         .title(vec![
             Span::styled(" Live Stream ", title_style),
             Span::styled(

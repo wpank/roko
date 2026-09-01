@@ -6185,11 +6185,11 @@ mod tests {
     #[test]
     fn theme_defaults_to_rosedust_palette() {
         let theme = Theme::from_no_color(false);
-        assert_eq!(theme.foreground, Color::Rgb(200, 184, 192)); // ROSEDUST v2 --text-primary #c8b8c0
-        assert_eq!(theme.background, Color::Rgb(6, 6, 8)); // ROSEDUST v2 --bg-void #060608
-        assert_eq!(theme.accent, Color::Rgb(170, 112, 136)); // ROSEDUST v2 --rose #aa7088
-        assert_eq!(theme.selection_background, Color::Rgb(58, 32, 48)); // ROSEDUST v2 --rose-deep #3a2030
-        assert_eq!(theme.selection_foreground, Color::Rgb(220, 165, 189)); // ROSEDUST v2 --rose-glow #dca5bd
+        assert_eq!(theme.foreground, Color::Rgb(165, 142, 158));
+        assert_eq!(theme.background, Color::Rgb(0, 0, 0));
+        assert_eq!(theme.accent, Color::Rgb(185, 120, 148));
+        assert_eq!(theme.selection_background, Color::Rgb(34, 28, 36));
+        assert_eq!(theme.selection_foreground, Color::Rgb(215, 198, 158));
     }
 
     #[test]

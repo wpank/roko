@@ -1,7 +1,7 @@
 //! F2 Plans view -- Mori-style wave browser + plan detail.
 //!
-//! Layout: left 35% (wave list with pipeline header + collapsible plan
-//! groups), right 65% (selected plan detail with tasks, gate results,
+//! Layout: left 31% (wave list with pipeline header + collapsible plan
+//! groups), one-cell VOID gutter, right detail (tasks, gate results,
 //! timing).
 //!
 //! Renders hierarchical wave groups with gradient progress bars, status
@@ -42,15 +42,19 @@ pub(crate) fn render(
     view_state: &ViewState,
     theme: &Theme,
 ) {
-    let panels =
-        Layout::horizontal([Constraint::Percentage(35), Constraint::Percentage(65)]).split(area);
+    let panels = Layout::horizontal([
+        Constraint::Percentage(31),
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ])
+    .split(area);
 
     render_left_panel(frame, panels[0], _data, tui_state, view_state, theme);
-    render_right_panel(frame, panels[1], _data, tui_state, view_state, theme);
+    render_right_panel(frame, panels[2], _data, tui_state, view_state, theme);
 }
 
 // ---------------------------------------------------------------------------
-// Left panel: pipeline header + wave/plan tree
+// Left panel: compact pipeline row + wave/plan tree
 // ---------------------------------------------------------------------------
 
 fn render_left_panel(
@@ -61,116 +65,7 @@ fn render_left_panel(
     view_state: &ViewState,
     theme: &Theme,
 ) {
-    let sections = Layout::vertical([
-        Constraint::Length(3), // Pipeline header
-        Constraint::Length(4), // Selected plan summary
-        Constraint::Min(0),    // Wave/plan tree
-    ])
-    .split(area);
-
-    let focused = matches!(
-        tui_state.focus,
-        FocusZone::PlanTree | FocusZone::TaskProgress
-    );
-
-    render_pipeline_header(frame, sections[0], _data, tui_state, focused, theme);
-    if let Some(plan) = tui_state.plans.get(tui_state.selected_plan_idx) {
-        let plan_summary = tui_state
-            .plan_summaries
-            .iter()
-            .find(|summary| summary.id == plan.id)
-            .or_else(|| tui_state.plan_summaries.get(tui_state.selected_plan_idx));
-        let plan_execution = tui_state
-            .current_plan_execution
-            .as_ref()
-            .filter(|exec| exec.plan_id == plan.id);
-        render_plan_summary(
-            frame,
-            sections[1],
-            plan,
-            plan_summary,
-            plan_execution,
-            tui_state,
-            view_state,
-            theme,
-        );
-    }
-    render_wave_tree(frame, sections[2], _data, tui_state, view_state, theme);
-}
-
-// ---------------------------------------------------------------------------
-// Pipeline header (3 lines with overall progress)
-// ---------------------------------------------------------------------------
-
-fn render_pipeline_header(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    _data: &DashboardData,
-    tui_state: &TuiState,
-    focused: bool,
-    theme: &Theme,
-) {
-    let total_plans = tui_state.plan_summaries.len();
-    let completed = tui_state
-        .plan_summaries
-        .iter()
-        .filter(|p| p.completed)
-        .count();
-    let active_count = tui_state
-        .plans
-        .iter()
-        .filter(|p| p.status.is_active())
-        .count();
-    let pct = if total_plans > 0 {
-        completed as f64 / total_plans as f64
-    } else {
-        0.0
-    };
-
-    let bar_w = (area.width.saturating_sub(24)) as usize;
-    let bar = build_progress_bar(pct, bar_w);
-    let bar_color = progress_color(pct, total_plans, completed, theme);
-
-    let header_line = Line::from(vec![
-        Span::raw(" "),
-        Span::styled(
-            format!("{completed}/{total_plans}"),
-            Style::default().fg(bar_color).add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" "),
-        Span::styled(bar, Style::default().fg(bar_color)),
-        Span::styled(
-            format!(" {:.0}%", pct * 100.0),
-            Style::default().fg(bar_color),
-        ),
-    ]);
-
-    let border_style = if focused {
-        Theme::focused_border_style()
-    } else if completed == total_plans && total_plans > 0 {
-        theme.success()
-    } else if active_count > 0 {
-        theme.accent()
-    } else {
-        theme.muted()
-    };
-    let title_style = if focused {
-        Theme::focused_title_style()
-    } else if completed == total_plans && total_plans > 0 {
-        theme.success().add_modifier(Modifier::BOLD)
-    } else if active_count > 0 {
-        theme.accent().add_modifier(Modifier::BOLD)
-    } else {
-        theme.muted()
-    };
-
-    let header = Paragraph::new(header_line).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(Span::styled(" Pipeline ", title_style))
-            .border_style(border_style),
-    );
-    frame.render_widget(header, area);
+    render_wave_tree(frame, area, _data, tui_state, view_state, theme);
 }
 
 // ---------------------------------------------------------------------------
@@ -216,7 +111,7 @@ fn render_wave_tree(
     let border_style = if focused {
         Theme::focused_border_style()
     } else {
-        theme.muted()
+        Theme::unfocused_border_style()
     };
     let title_style = if focused || active > 0 {
         if focused {
@@ -227,7 +122,7 @@ fn render_wave_tree(
                 .add_modifier(Modifier::BOLD)
         }
     } else {
-        theme.muted()
+        Theme::unfocused_title_style()
     };
 
     let block = Block::default()
@@ -242,22 +137,18 @@ fn render_wave_tree(
     }
 
     if tui_state.plan_summaries.is_empty() {
-        let v_pad = inner.height / 2;
-        let mut empty_lines: Vec<Line<'_>> = Vec::new();
-        for _ in 0..v_pad.saturating_sub(1) {
-            empty_lines.push(Line::from(""));
-        }
-        empty_lines.push(Line::from(Span::styled(
-            "no plans found",
-            Style::default()
-                .fg(theme.muted)
-                .add_modifier(Modifier::ITALIC),
-        )));
-        empty_lines.push(Line::from(""));
-        empty_lines.push(Line::from(Span::styled(
-            "run `roko plan run <dir>` to begin",
-            Style::default().fg(theme.muted),
-        )));
+        let empty_lines = vec![
+            Line::from(Span::styled(
+                "no plans found",
+                Style::default()
+                    .fg(theme.muted)
+                    .add_modifier(Modifier::ITALIC),
+            )),
+            Line::from(Span::styled(
+                "run `roko plan run <dir>` to begin",
+                Style::default().fg(theme.muted),
+            )),
+        ];
         let empty = Paragraph::new(empty_lines)
             .alignment(Alignment::Center)
             .wrap(Wrap { trim: false });
@@ -267,6 +158,29 @@ fn render_wave_tree(
 
     let content_width = inner.width as usize;
     let mut lines: Vec<Line<'_>> = Vec::new();
+
+    // Mori keeps pipeline state inside the plan tree rather than spending two
+    // additional bordered panels on information repeated by the detail pane.
+    let pct = if total_plans > 0 {
+        completed as f64 / total_plans as f64
+    } else {
+        0.0
+    };
+    let pipeline_color = progress_color(pct, total_plans, completed, theme);
+    let pipeline_bar_width = content_width.saturating_sub(22).clamp(4, 12);
+    lines.push(Line::from(vec![
+        Span::styled(" \u{25c8} Pipeline ", Style::default().fg(Theme::DREAM)),
+        Span::styled(
+            build_progress_bar(pct, pipeline_bar_width),
+            Style::default().fg(pipeline_color),
+        ),
+        Span::styled(
+            format!(" {completed}/{total_plans}"),
+            Style::default()
+                .fg(pipeline_color)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
 
     // Column header
     if inner.height > 4 && content_width >= 30 {
@@ -753,12 +667,12 @@ fn render_right_panel(
     let border_style = if focused {
         Theme::focused_border_style()
     } else {
-        theme.muted()
+        Theme::unfocused_border_style()
     };
     let title_style = if focused {
         Theme::focused_title_style()
     } else {
-        theme.muted()
+        Theme::unfocused_title_style()
     };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -792,17 +706,12 @@ fn render_right_panel(
             theme,
         );
     } else {
-        let v_pad = inner.height / 2;
-        let mut empty_lines: Vec<Line<'_>> = Vec::new();
-        for _ in 0..v_pad.saturating_sub(1) {
-            empty_lines.push(Line::from(""));
-        }
-        empty_lines.push(Line::from(Span::styled(
+        let empty_lines = vec![Line::from(Span::styled(
             "select a plan from the left panel",
             Style::default()
                 .fg(theme.muted)
                 .add_modifier(Modifier::ITALIC),
-        )));
+        ))];
         let empty = Paragraph::new(empty_lines)
             .alignment(Alignment::Center)
             .wrap(Wrap { trim: false });

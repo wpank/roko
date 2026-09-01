@@ -12,6 +12,11 @@
 > live-verified count. See the canonical
 > [post-merge live audit](audits/post-merge-live-audit-2026-08-31.md).
 
+> **Visual follow-up:** The unusable Full-effects render was separately
+> redesigned against Mori's current code: effects preserve operational text,
+> layouts use content-first master/detail geometry, and empty Diagnosis chrome
+> is collapsed. See [visual density and effects](audits/visual-density-effects.md).
+
 > Consolidated 2026-08-31 from three parallel audit campaigns:
 > - **v1 audit** (`tmp/tui-parity/archive/ux-audit/SUMMARY.md`): 19 agents, architecture + streaming + broken features
 > - **v2 audit** (`tmp/tui-parity/archive/ux-audit/v2/00-MASTER-SUMMARY.md`): 15 agents, 130 issues with file:line evidence

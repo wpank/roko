@@ -3,7 +3,8 @@
 //! Left panel (38%): plan tree + phase compact + task progress.
 //! Right panel (62%): sub-tabbed detail view (Agents, Output, Diff,
 //! Verify, Git, Context/MCP, Learning, Processes).
-//! Bottom ribbon: wave progress + token sparkline + sys metrics.
+//! The Agents detail keeps its token/system strip local to the right pane so
+//! unrelated detail tabs retain the full vertical canvas.
 //!
 //! Delegates to compiled widgets for all panels.
 
@@ -63,20 +64,22 @@ pub(crate) fn render(
         return;
     }
 
-    let outer = Layout::vertical([Constraint::Min(0), Constraint::Length(6)]).split(area);
-
     // Only show the left panel when plans are actively running.
     let has_active_plans = tui_state.plans.iter().any(|p| p.active);
     if has_active_plans {
-        let main = Layout::horizontal([Constraint::Percentage(38), Constraint::Percentage(62)])
-            .split(outer[0]);
+        let main = Layout::horizontal([
+            Constraint::Percentage(38),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .split(area);
         render_left_panel(frame, main[0], data, tui_state, view_state, theme);
-        render_right_panel(frame, main[1], data, tui_state, view_state, theme);
+        // main[1] is an intentional VOID gutter. It gives adjacent borders
+        // room to breathe and mirrors Mori's master-detail hierarchy.
+        render_right_panel(frame, main[2], data, tui_state, view_state, theme);
     } else {
-        render_right_panel(frame, outer[0], data, tui_state, view_state, theme);
+        render_right_panel(frame, area, data, tui_state, view_state, theme);
     }
-
-    render_bottom_ribbon(frame, outer[1], data, tui_state, theme);
 }
 
 // ===========================================================================
@@ -95,32 +98,30 @@ fn render_left_panel(
     // progress split the rest proportionally based on content.
     let plan_count = tui_state.plans.len();
     let task_count = tui_state.current_task_checklist.len();
-    let has_content = plan_count > 0 || task_count > 0;
-
-    let (plan_pct, phase_h, task_pct) = if has_content {
-        // Content-aware: plan tree gets more space when plans exist
-        let plan_lines = (plan_count + 3).min(20) as u16; // header + plans + padding
-        let task_lines = (task_count + 3).min(15) as u16;
-        let total = plan_lines + task_lines;
-        let plan_frac = if total > 0 {
-            plan_lines * 100 / total
-        } else {
-            50
-        };
-        (
-            plan_frac.max(30).min(70),
-            4u16,
-            (100 - plan_frac.max(30).min(70)),
-        )
+    let phase_h = 4u16.min(area.height);
+    let available = area.height.saturating_sub(phase_h);
+    let plan_content = (plan_count as u16).saturating_add(4);
+    let task_content = if task_count > 0 {
+        (task_count as u16).saturating_add(4)
     } else {
-        // Idle: compact layout — give more room to plan tree for column headers
-        (45, 4, 51)
+        3
     };
+    let total_content = plan_content.saturating_add(task_content).max(1);
+    let min_task = if task_count > 0 { 8 } else { 3 }.min(available.saturating_sub(1));
+    let min_plan = 8u16.min(available.saturating_sub(min_task).max(1));
+    let max_plan = available.saturating_sub(min_task);
+    let desired_plan = ((available as u32 * plan_content as u32) / total_content as u32) as u16;
+    let plan_h = if available <= 1 {
+        available
+    } else {
+        desired_plan.clamp(min_plan.min(max_plan), max_plan)
+    };
+    let task_h = available.saturating_sub(plan_h);
 
     let sections = Layout::vertical([
-        Constraint::Percentage(plan_pct),
+        Constraint::Length(plan_h),
         Constraint::Length(phase_h),
-        Constraint::Percentage(task_pct),
+        Constraint::Length(task_h),
     ])
     .split(area);
 
@@ -148,7 +149,7 @@ fn render_right_panel(
     let sub = view_state
         .sub_tab
         .min(SUB_TAB_LABELS.len().saturating_sub(1));
-    render_sub_tab_bar(frame, sections[0], sub, theme);
+    render_sub_tab_bar(frame, sections[0], sub, tui_state, theme);
 
     let focused = matches!(tui_state.focus, FocusZone::RightPanel);
     let diagnosis_height = diagnosis_panel_height(tui_state.diagnoses.len(), sections[1].height);
@@ -198,25 +199,71 @@ fn render_right_panel_content(
 }
 
 /// Sub-tab bar with key labels and active highlighting.
-fn render_sub_tab_bar(frame: &mut Frame<'_>, area: Rect, active: usize, theme: &Theme) {
-    let mut spans: Vec<Span<'_>> = vec![Span::raw(" ")];
+fn render_sub_tab_bar(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    active: usize,
+    tui_state: &TuiState,
+    theme: &Theme,
+) {
+    let bg = Theme::BG_RAISED;
+    let mut spans: Vec<Span<'_>> = vec![Span::styled(" ", Style::default().bg(bg))];
     for (i, (key, label)) in SUB_TAB_LABELS.iter().enumerate() {
         let style = if i == active {
             Style::default()
                 .fg(theme.background)
                 .bg(theme.accent)
-                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
         } else {
-            Style::default().fg(theme.muted)
+            Style::default().fg(Theme::TEXT_DIM).bg(bg)
         };
         spans.push(Span::styled(format!(" {key}:{label} "), style));
-        if i + 1 < SUB_TAB_LABELS.len() {
-            spans.push(Span::styled(
-                "\u{2502}",
-                Style::default().fg(Color::DarkGray),
-            ));
+
+        let badge = match i {
+            0 => {
+                let count = tui_state.active_agent_count();
+                (count > 0).then(|| format!("{count}\u{25b8}"))
+            }
+            3 => {
+                let count = tui_state
+                    .gate_results
+                    .iter()
+                    .filter(|gate| !gate.passed)
+                    .count();
+                (count > 0).then(|| format!("{count}\u{2717}"))
+            }
+            6 => {
+                let count = tui_state.experiment_winners.len();
+                (count > 0).then(|| count.to_string())
+            }
+            _ => None,
+        };
+        if i != active {
+            if let Some(badge) = badge {
+                spans.push(Span::styled(
+                    badge,
+                    Style::default()
+                        .fg(if i == 3 {
+                            Theme::EMBER
+                        } else {
+                            Theme::ROSE_DIM
+                        })
+                        .bg(bg)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
         }
+        spans.push(Span::styled(" ", Style::default().bg(bg)));
     }
+
+    let hint = " Tab:panel  ?:help ";
+    let used: usize = spans.iter().map(|span| span.content.chars().count()).sum();
+    let gap = (area.width as usize).saturating_sub(used + hint.len());
+    spans.push(Span::styled(" ".repeat(gap), Style::default().bg(bg)));
+    spans.push(Span::styled(
+        hint,
+        Style::default().fg(Theme::TEXT_GHOST).bg(bg),
+    ));
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
@@ -239,14 +286,18 @@ fn render_sub_agents(
         .filter(|agent| tui_state.route_metrics.contains_key(&agent.id))
         .count();
     let route_height = if route_row_count == 0 {
-        3
+        0
     } else {
         (route_row_count as u16 + 3).min(8)
     };
+    let active_agent_count = tui_state.agents.iter().filter(|agent| agent.active).count();
+    let pool_height = (active_agent_count.max(1) as u16 + 3).clamp(4, 7);
+    let bottom_height = 7u16.min(area.height.saturating_sub(6));
     let sections = Layout::vertical([
-        Constraint::Percentage(52),
+        Constraint::Length(pool_height),
         Constraint::Length(route_height),
-        Constraint::Min(0),
+        Constraint::Min(6),
+        Constraint::Length(bottom_height),
     ])
     .split(area);
 
@@ -259,13 +310,15 @@ fn render_sub_agents(
             .min(tui_state.agents.len().saturating_sub(1)),
         theme,
     );
-    render_agent_routes_table(
-        frame,
-        sections[1],
-        tui_state,
-        &tui_state.route_metrics,
-        theme,
-    );
+    if route_height > 0 {
+        render_agent_routes_table(
+            frame,
+            sections[1],
+            tui_state,
+            &tui_state.route_metrics,
+            theme,
+        );
+    }
     render_output_panel(
         frame,
         sections[2],
@@ -275,6 +328,30 @@ fn render_sub_agents(
         focused,
         theme,
     );
+    render_agent_bottom_strip(frame, sections[3], data, tui_state);
+}
+
+fn render_agent_bottom_strip(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    data: &DashboardData,
+    tui_state: &TuiState,
+) {
+    let has_token_data = tui_state.token_total > 0
+        || tui_state.efficiency_summary.event_count > 0
+        || !tui_state.efficiency_events.is_empty();
+    if has_token_data {
+        let columns = Layout::horizontal([
+            Constraint::Percentage(58),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .split(area);
+        widgets::token_sparkline::render_token_sparkline(frame, columns[0], data, tui_state);
+        widgets::sys_metrics::render_sys_metrics(frame, columns[2], tui_state);
+    } else {
+        widgets::sys_metrics::render_sys_metrics(frame, area, tui_state);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -301,12 +378,12 @@ fn render_output_panel(
     let border = if focused {
         Theme::focused_border_style()
     } else {
-        theme.muted()
+        Theme::unfocused_border_style()
     };
     let title_style = if focused {
         Theme::focused_title_style()
     } else {
-        theme.muted()
+        Theme::unfocused_title_style()
     };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -420,7 +497,8 @@ fn render_agent_routes_table(
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Routes ")
-        .border_style(theme.muted());
+        .border_style(Theme::unfocused_border_style())
+        .title_style(Theme::unfocused_title_style());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -1921,33 +1999,6 @@ fn format_uptime(uptime_secs: f64) -> String {
 }
 
 // ===========================================================================
-// Bottom ribbon: wave progress (40%) | token sparkline (40%) | sys (20%)
-// ===========================================================================
-
-fn render_bottom_ribbon(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    data: &DashboardData,
-    tui_state: &TuiState,
-    _theme: &Theme,
-) {
-    // Use the Mori wave_progress + token_sparkline + sys_metrics widgets
-    let sections = Layout::horizontal([
-        Constraint::Percentage(40),
-        Constraint::Percentage(40),
-        Constraint::Percentage(20),
-    ])
-    .split(area);
-
-    // Wave progress: use the real widget
-    widgets::wave_progress::render_wave_progress(frame, sections[0], tui_state);
-    // Token sparkline: use the real widget
-    widgets::token_sparkline::render_token_sparkline(frame, sections[1], data, tui_state);
-    // Sys metrics: use the real widget
-    widgets::sys_metrics::render_sys_metrics(frame, sections[2], tui_state);
-}
-
-// ===========================================================================
 // Helpers
 // ===========================================================================
 
@@ -2076,7 +2127,10 @@ fn route_tier_style(tier: &str, theme: &Theme) -> Style {
 }
 
 fn diagnosis_panel_height(diagnosis_count: usize, available_height: u16) -> u16 {
-    if available_height < 8 {
+    // A permanently visible empty-state panel steals the most valuable part
+    // of the dashboard from live output. Surface this section only when the
+    // conductor has an actionable diagnosis to show.
+    if diagnosis_count == 0 || available_height < 8 {
         return 0;
     }
 
@@ -2365,7 +2419,11 @@ mod tests {
             })
             .unwrap();
 
-        assert!(rendered_text(&terminal).contains("model-canary"));
+        let rendered = rendered_text(&terminal);
+        assert!(
+            rendered.contains("model-canary"),
+            "expected route model in dashboard render:\n{rendered}"
+        );
     }
 
     #[test]

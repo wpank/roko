@@ -7,10 +7,10 @@ use std::path::Path;
 pub enum EffectsPreset {
     /// Disable the new visual effects stack.
     Off,
-    /// Enable floating particles only.
+    /// Enable restrained self-glow and sparse ambient particles.
     #[default]
     Minimal,
-    /// Enable NervViz and floating particles.
+    /// Add a state-driven background field to the minimal treatment.
     Full,
 }
 
@@ -98,7 +98,7 @@ impl EffectsConfig {
     #[must_use]
     pub fn from_preset(preset: EffectsPreset) -> Self {
         let mut config = Self {
-            screen_postfx: false,
+            screen_postfx: !matches!(preset, EffectsPreset::Off),
             preset,
             nerv_viz: false,
             particles: false,
@@ -151,9 +151,14 @@ impl EffectsConfig {
             .and_then(|preset| EffectsPreset::from_str(&preset))
         {
             config.apply_preset(preset);
+            // A persisted preset establishes the screen-effect default for a
+            // fresh session. An explicit screen_postfx value below can still
+            // override it, while in-session preset cycling keeps Ctrl-E
+            // independent.
+            config.screen_postfx = !matches!(preset, EffectsPreset::Off);
         }
-        config.screen_postfx =
-            bool_at_path(&value, &["tui", "effects", "screen_postfx"]).unwrap_or(false);
+        config.screen_postfx = bool_at_path(&value, &["tui", "effects", "screen_postfx"])
+            .unwrap_or(config.screen_postfx);
 
         config
     }
@@ -256,17 +261,19 @@ mod tests {
     fn preset_cycles_and_derives_flags() {
         let mut config = EffectsConfig::default();
         assert_eq!(config.preset, EffectsPreset::Minimal);
-        assert!(!config.screen_postfx);
+        assert!(config.screen_postfx);
         assert!(!config.nerv_viz);
         assert!(config.particles);
 
         assert_eq!(config.cycle_preset(), EffectsPreset::Full);
-        assert!(!config.screen_postfx);
+        assert!(config.screen_postfx);
         assert!(config.nerv_viz);
         assert!(config.particles);
 
         assert_eq!(config.cycle_preset(), EffectsPreset::Off);
-        assert!(!config.screen_postfx);
+        // Screen post-processing is an independent Ctrl-E toggle; changing
+        // the state-visualization preset must not silently change it.
+        assert!(config.screen_postfx);
         assert!(!config.nerv_viz);
         assert!(!config.particles);
     }
@@ -291,5 +298,31 @@ mod tests {
             .expect("save preset to roko.toml");
         let saved = std::fs::read_to_string(dir.path().join("roko.toml")).expect("read back");
         assert!(saved.contains("preset = \"minimal\""));
+    }
+
+    #[test]
+    fn persisted_preset_sets_screen_default_without_overriding_explicit_toggle() {
+        let dir = tempdir().expect("tempdir");
+
+        std::fs::write(
+            dir.path().join("roko.toml"),
+            "[tui.effects]\npreset = \"off\"\n",
+        )
+        .expect("write off preset");
+        assert!(!EffectsConfig::load_from_root(dir.path()).screen_postfx);
+
+        std::fs::write(
+            dir.path().join("roko.toml"),
+            "[tui.effects]\npreset = \"full\"\n",
+        )
+        .expect("write full preset");
+        assert!(EffectsConfig::load_from_root(dir.path()).screen_postfx);
+
+        std::fs::write(
+            dir.path().join("roko.toml"),
+            "[tui.effects]\npreset = \"full\"\nscreen_postfx = false\n",
+        )
+        .expect("write explicit screen toggle");
+        assert!(!EffectsConfig::load_from_root(dir.path()).screen_postfx);
     }
 }

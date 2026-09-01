@@ -69,7 +69,7 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
         Line::from("f          toggle search filter mode (Logs)"),
         Line::from("Ctrl-t     task picker / agent topology"),
         Line::from("Ctrl-e     toggle screen postfx"),
-        Line::from("v          cycle effects preset"),
+        Line::from("v          verify / re-verify selected plan"),
         Line::from("Ctrl-r     refresh"),
         Line::from("Ctrl-a     approve all pending"),
         Line::from("Ctrl-x     force advance (confirm)"),

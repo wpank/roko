@@ -10,7 +10,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::Modifier;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
@@ -84,7 +84,7 @@ fn render_with_entries(
     view_state: &ViewState,
     theme: &Theme,
 ) {
-    let sections = Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).split(area);
+    let sections = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
 
     // Level filter first.
     let level_filtered: Vec<&LogEntry> = entries
@@ -150,19 +150,21 @@ fn render_with_entries(
         Span::styled(format!("events:{event_count}"), theme.text()),
     ]);
     let status_line1 = Line::from(status_spans);
-    let status = Paragraph::new(vec![status_line1]).alignment(Alignment::Right);
+    let status = Paragraph::new(vec![status_line1])
+        .alignment(Alignment::Right)
+        .style(Style::default().bg(Theme::BG_RAISED));
     frame.render_widget(status, sections[0]);
 
     // Log content
     let border_style = if focused {
         Theme::focused_border_style()
     } else {
-        theme.accent()
+        Theme::unfocused_border_style()
     };
     let title_style = if focused {
         Theme::focused_title_style()
     } else {
-        theme.accent()
+        Theme::unfocused_title_style()
     };
     let block = Block::default()
         .borders(Borders::ALL)

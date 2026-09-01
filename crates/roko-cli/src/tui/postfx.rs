@@ -448,10 +448,13 @@ pub fn data_rain(area: Rect, buf: &mut Buffer, elapsed: f64, throughput: f64) {
     }
 }
 
-/// Composite NervViz layer that combines progress, guide lines, ripples, and rain.
+/// Composite NervViz layer expressed as a low-contrast background field.
 ///
-/// The composite is intentionally layered from broadest signal to smallest
-/// detail, and every sub-effect still obeys the blank-cell-only rule.
+/// Widget whitespace is still part of the information design: columns,
+/// indentation, borders, and readable pauses all depend on it.  Consequently
+/// this pass never changes a cell's symbol or foreground.  It conveys plan
+/// progress, activity, throughput, and errors using a very narrow background
+/// range beneath genuinely blank cells.
 pub fn state_viz(area: Rect, buf: &mut Buffer, elapsed: f64, ctx: &VizContext) {
     let progress = ctx.task_progress.max(ctx.plan_progress).clamp(0.0, 1.0);
     let activity = if ctx.agent_active {
@@ -466,24 +469,64 @@ pub fn state_viz(area: Rect, buf: &mut Buffer, elapsed: f64, ctx: &VizContext) {
         return;
     }
 
-    progress_field(area, buf, elapsed, (progress + error_boost).clamp(0.0, 1.0));
-    if ctx.agent_active {
-        guide_lines(
-            area,
-            buf,
-            elapsed + ctx.iteration as f64 * 0.07,
-            (0.25 + ctx.context_pressure * 0.65 + error_boost).clamp(0.0, 1.0),
-            ctx.iteration as u64 ^ 0xA6_56_4E_65,
-        );
+    let h = area.height.max(1) as f64;
+    let w = area.width.max(1) as f64;
+    let error = if ctx.error_state { 1.0 } else { 0.0 };
+
+    for y in area.top()..area.bottom() {
+        let ny = (y.saturating_sub(area.top())) as f64 / h;
+        let progress_depth = if progress > 0.0 && ny > 1.0 - progress {
+            ((ny - (1.0 - progress)) / progress.max(0.01)).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+
+        for x in area.left()..area.right() {
+            let Some(cell) = buf.cell((x, y)) else {
+                continue;
+            };
+            if !accepts_ambient_background(cell) {
+                continue;
+            }
+
+            let nx = (x.saturating_sub(area.left())) as f64 / w;
+            let slow_wave = ((nx * 5.0 + ny * 3.0 + elapsed * 0.22).sin() * 0.5 + 0.5) * activity;
+            let throughput_trace = ((nx * 17.0 - elapsed * 0.35).sin() * 0.5 + 0.5) * token_rate;
+            let strength =
+                (progress_depth * 0.34 + slow_wave * 0.22 + throughput_trace * 0.10 + error * 0.18)
+                    .clamp(0.0, 0.72);
+            if strength < 0.08 {
+                continue;
+            }
+
+            // The ceiling is intentionally close to Mori's raised surfaces.
+            // It should be felt as depth, not read as another data layer.
+            let (r, g, b) = if ctx.error_state {
+                (
+                    (7.0 + 22.0 * strength) as u8,
+                    (3.0 + 7.0 * strength) as u8,
+                    (4.0 + 8.0 * strength) as u8,
+                )
+            } else {
+                (
+                    (6.0 + 18.0 * strength) as u8,
+                    (4.0 + 7.0 * strength) as u8,
+                    (7.0 + 15.0 * strength) as u8,
+                )
+            };
+
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_bg(Color::Rgb(r, g, b));
+            }
+        }
     }
-    data_rain(area, buf, elapsed, token_rate.max(error_boost));
-    activity_ripples(area, buf, elapsed, (activity + error_boost).clamp(0.0, 1.0));
 }
 
 /// Lightweight floating particle overlay for active-agent scenes.
 ///
-/// `density` is normalized to `0.0..=1.0`. The overlay is deterministic for a
-/// given `elapsed`/`seed` pair and only paints blank cells.
+/// Particles are sparse, low-contrast, and require a 3x3 neighborhood of
+/// whitespace.  This keeps them in deep negative space rather than inside
+/// tables, next to borders, or between words.
 pub fn particle_overlay(
     area: Rect,
     buf: &mut Buffer,
@@ -502,19 +545,19 @@ pub fn particle_overlay(
     }
 
     let area_cells = area.width as usize * area.height as usize;
-    let slot_count = ((area_cells as f64).sqrt() * (0.85 + density * 1.8)).round() as usize;
-    let slot_count = slot_count.clamp(4, 72);
-    let lifetime = 2.0;
-    let rise_speed = 0.55 + density * 0.9;
-    let drift_speed = 0.18 + density * 0.35;
-    let brightness = brightness.max(16);
+    let slot_count = ((area_cells / 360) as f64 * (0.45 + density * 0.55)).round() as usize;
+    let slot_count = slot_count.clamp(2, 24);
+    let lifetime = 5.5;
+    let rise_speed = 0.10 + density * 0.16;
+    let drift_speed = 0.04 + density * 0.08;
+    let brightness = brightness.clamp(24, 72);
 
     for slot in 0..slot_count {
         let slot_seed = seed ^ (slot as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
         let phase = unit_from_hash(slot_seed ^ 0x21);
         let age = (elapsed + phase * lifetime) % lifetime;
         let opacity = 1.0 - age / lifetime;
-        if opacity <= 0.08 {
+        if opacity <= 0.22 {
             continue;
         }
 
@@ -536,25 +579,53 @@ pub fn particle_overlay(
             .clamp(area.top() as f64, area.bottom().saturating_sub(1) as f64)
             as u16;
 
-        if let Some(cell) = buf.cell_mut((x, y)) {
-            if !is_blank(cell) {
-                continue;
-            }
+        if !is_deep_blank(buf, area, x, y) {
+            continue;
+        }
 
-            let tint = pulse_tint(0.25 + 0.75 * opacity, opacity);
-            let fg = match tint {
-                Color::Rgb(r, g, b) => Color::Rgb(
-                    scale(r, brightness as f64 / 160.0 * (0.55 + 0.45 * opacity)),
-                    scale(g, brightness as f64 / 170.0 * (0.55 + 0.45 * opacity)),
-                    scale(b, brightness as f64 / 155.0 * (0.55 + 0.45 * opacity)),
-                ),
-                other => other,
+        if let Some(cell) = buf.cell_mut((x, y)) {
+            let level = (brightness as f64 * (0.35 + 0.45 * opacity)) as u8;
+            let fg = Color::Rgb(
+                level,
+                level.saturating_mul(2) / 3,
+                level.saturating_mul(4) / 5,
+            );
+            let primary = PARTICLE_FRAMES[(slot_seed as usize) % PARTICLE_FRAMES.len()];
+            let bits = if opacity > 0.72 {
+                primary | PARTICLE_FRAMES[((slot_seed >> 8) as usize) % PARTICLE_FRAMES.len()]
+            } else {
+                primary
             };
-            let bg = pulse_tint(0.05 + 0.15 * opacity, opacity * 0.25);
-            let bits = braille_mask(slot_seed, x, y, elapsed, opacity);
-            write_blank_braille(cell, bits, fg, bg);
+            cell.set_char(braille(bits));
+            cell.set_fg(fg);
         }
     }
+}
+
+fn accepts_ambient_background(cell: &Cell) -> bool {
+    if !is_blank(cell) {
+        return false;
+    }
+
+    match cell.style().bg {
+        None | Some(Color::Reset | Color::Black) => true,
+        Some(Color::Rgb(r, g, b)) => r <= 16 && g <= 16 && b <= 20,
+        _ => false,
+    }
+}
+
+fn is_deep_blank(buf: &Buffer, area: Rect, x: u16, y: u16) -> bool {
+    let x0 = x.saturating_sub(1).max(area.left());
+    let y0 = y.saturating_sub(1).max(area.top());
+    let x1 = x.saturating_add(1).min(area.right().saturating_sub(1));
+    let y1 = y.saturating_add(1).min(area.bottom().saturating_sub(1));
+
+    (y0..=y1).all(|ny| {
+        (x0..=x1).all(|nx| {
+            buf.cell((nx, ny))
+                .is_some_and(|cell| accepts_ambient_background(cell))
+        })
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -921,10 +992,62 @@ mod tests {
     }
 
     #[test]
+    fn state_viz_is_background_only() {
+        let area = Rect::new(0, 0, 40, 12);
+        let mut buf = Buffer::empty(area);
+        buf[(8, 4)].set_char('X').set_fg(Color::Rgb(200, 180, 190));
+        let before_symbol = buf[(8, 4)].symbol().to_string();
+        let before_fg = buf[(8, 4)].fg;
+
+        state_viz(
+            area,
+            &mut buf,
+            3.0,
+            &VizContext {
+                task_progress: 0.7,
+                plan_progress: 0.5,
+                context_pressure: 0.6,
+                token_rate: 0.8,
+                agent_active: true,
+                iteration: 2,
+                error_state: false,
+            },
+        );
+
+        assert_eq!(buf[(8, 4)].symbol(), before_symbol);
+        assert_eq!(buf[(8, 4)].fg, before_fg);
+        assert!(
+            buf.content
+                .iter()
+                .any(|cell| { matches!(cell.bg, Color::Rgb(r, g, b) if r > 0 || g > 0 || b > 0) })
+        );
+    }
+
+    #[test]
+    fn particles_keep_clearance_around_content() {
+        let area = Rect::new(0, 0, 120, 40);
+        let mut buf = Buffer::empty(area);
+        buf[(60, 20)].set_char('X');
+
+        particle_overlay(area, &mut buf, 1.75, 1.0, 72, 9);
+
+        for y in 19..=21 {
+            for x in 59..=61 {
+                if (x, y) != (60, 20) {
+                    assert_eq!(buf[(x, y)].symbol(), " ");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn guide_lines_uses_wrapping_seed_arithmetic() {
         let area = Rect::new(0, 0, 80, 24);
         let mut buf = Buffer::empty(area);
 
+        // Full intensity renders four guide lines.  The third line multiplies
+        // the golden-ratio seed by two, which must wrap rather than panic in a
+        // debug build.
         guide_lines(area, &mut buf, 1.0, 1.0, 7);
 
         assert!(buf.content.iter().any(|cell| !is_blank(cell)));

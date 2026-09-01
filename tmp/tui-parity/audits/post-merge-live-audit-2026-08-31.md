@@ -92,6 +92,28 @@ fix in that working tree; it predates the final rebased dev-audit tree. The run
 was still in progress and is not evidence that every plan-run or gate behavior
 is correct.
 
+### 17:37 visual recheck: effects were crash-safe but not usable
+
+A later Full-preset run confirmed that surviving the former overflow was not
+the same as having acceptable rendering. The composite effect painted dense
+braille progress bands, guide lines, data rain, ripples, and particles across
+the full dashboard. Widget padding, table spacing, paragraph whitespace, and
+empty panel regions are all blank cells, so a blank-cell-only guard did not
+protect the operational data.
+
+Comparison with Mori established three architectural changes for the follow-up:
+
+1. Start from an explicit true-black canvas with restrained raised surfaces.
+2. Brighten existing foregrounds or alter backgrounds instead of turning panel
+   whitespace into a screen-wide glyph layer.
+3. Render effects before modal dimming/content so modal legibility is invariant.
+
+The integrated visual follow-up applies that model while preserving Roko's
+state effects: Full NervViz is background-only, particles are sparse and need a
+clear 3x3 neighborhood, Dashboard/Plans/Agents use one-cell VOID gutters, and
+empty fixed chrome no longer crowds out transcripts and route rows. See
+`visual-density-effects.md` for the resolution matrix and render regressions.
+
 ## P0-P7 claim matrix
 
 Legend: **V** verified at merge, **P** partial/scaffolded, **N** not operational.
@@ -131,7 +153,7 @@ Legend: **V** verified at merge, **P** partial/scaffolded, **N** not operational
 | P6.1 number-key shadowing | V | Agents and Logs keep their local digit handlers; other tabs use digit tab switching. |
 | P6.2 `v` means verify | V | Global `v` maps to reverify rather than cycling effects. |
 | P6.3 focus zones on remaining tabs | P | New enum variants cycle, but most focused scrolling still falls through to the shared `diff_scroll`; several panels do not consume the new zones. |
-| P6.4 correct, scrollable help | P | Scrolling works, but help still says `v` cycles effects and advertises pause/recovery behavior that is not operational. |
+| P6.4 correct, scrollable help | P | Scrolling works and the stale `v` effects label now says verify/re-verify; pause/recovery behavior is still advertised more strongly than its runner wiring supports. |
 | P6.5 independent Diff/Procs scroll | N | `procs_scroll` renders separately but is never changed by input; input still mutates `diff_scroll`. |
 | P7.1 background `git_diff` refresh | N | The git watcher refreshes branch/commit/worktree summaries, not `TuiState.git_diff`; connected mode therefore keeps the Diff sub-tab empty/stale. |
 | P7.2 Log/Signals split | V | Signals sub-view filters to signal/episode sources. |

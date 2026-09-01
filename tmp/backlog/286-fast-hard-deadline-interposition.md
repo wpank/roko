@@ -10,6 +10,7 @@
 > CLI build and 2,301-test library harness passed; neither substitutes for the open kill-point
 > matrix below.
 
+**Status**: Verification only; the source implementation is present and the final kill-point matrix remains the terminal evidence
 **Priority**: P1 — a slow awaited dispatch-preparation or provider-startup path can outlive the
 FAST execution budget before the event loop gets another chance to settle the run
 **Size**: M (2–3 days)

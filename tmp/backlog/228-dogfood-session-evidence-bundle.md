@@ -118,3 +118,49 @@ Stage 0 subset now present:
 | `docs/v2/29-FAST-DEVELOPMENT.md` | FAST evidence policy and required-event integration |
 | `crates/roko-serve/src/routes/runs.rs` | Read-only run/bundle/artifact/screenshot metadata queries |
 | `scripts/dev_benchmark.py` and `benchmarks/dev-audit/` | Fixed-SHA cold/warm scorecard orchestration and manifest |
+
+## Status Update (2026-09-01)
+
+**Overall: SOURCE-IMPLEMENTED; verification fixtures open.** No new code has landed since the
+2026-08-31 status line (`bba2f8858` + `25aaca597`).
+
+### What is done
+
+All implementation plan items are checked off. The key deliverables exist and are substantial:
+
+- `scripts/run_evidence.py` (3,406 lines) -- full bundle lifecycle, collection, redaction,
+  metrics, scoring, debrief, and validation.
+- `scripts/dev_benchmark.py` (2,689 lines) -- fixed-SHA cold/warm scorecard orchestration.
+- `docs/v2/30-EVIDENCE-BUNDLES.md` (193 lines) -- schema-v2 operator contract.
+- `dev.sh` wrappers for `run-evidence`, `evidence-validate`, `feedback`, `score`, and `fast`.
+- The strict explicit-only fixture passed 8/8 loopback endpoints, the CLI hook, validation,
+  and feedback/score (verification checklist item 1 of 8).
+
+### What remains open
+
+Seven of eight verification checklist items are unchecked. These are all runtime fixture
+exercises, not missing harness code:
+
+1. One-task successful plan bundle.
+2. Agent lost-effect / early-exit bundle.
+3. Gate timeout bundle.
+4. Pre-existing events.jsonl run_id isolation.
+5. Secret-leak detection.
+6. Live-output latency confirmation.
+7. Cold/warm repetitions with real manual Claude/Codex samples.
+
+### Audit cross-references
+
+- **cli-audit**: No direct overlap. The cli-audit does not cover evidence/bundle tooling since
+  it is in `scripts/` and `dev.sh`, not a `roko` CLI subcommand.
+- **engine-audit**: `RUN-LEDGER.md` references evidence reuse and bundle links in its worker
+  handoff protocol. The engine-audit's integration I6 gate ("every failure/cancel point
+  produces exactly one release and terminal receipt") is a prerequisite consumer of #228
+  bundles for proving failure semantics. `IMPLEMENTATION-ROADMAP.md` expects evidence paths
+  and reusable evidence records that align with the bundle schema.
+- **ux-audit**: Empty (no files).
+
+### Recommendation
+
+This item is blocked on runtime fixture time, not implementation. The harness and tooling are
+complete. Priority should be running the seven open fixtures before any further code changes.

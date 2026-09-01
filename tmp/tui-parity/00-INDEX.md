@@ -1,5 +1,7 @@
 # TUI Parity: Consolidated Audit & Implementation Index
 
+> **Current implementation handoff (2026-09-01):** TUI work that intersects the CLI audit is scheduled in [`../cli-audit/IMPLEMENTATION-CHECKLIST.md`](../cli-audit/IMPLEMENTATION-CHECKLIST.md). It serializes #128/#365–#369 with #232–#237/#248/#266 and the current dirty TUI paths; do not dispatch directly from historical completion counts below.
+
 > **Post-merge correction (2026-08-31):** PR #74's “38/38 complete” summary is
 > not supported by live verification. The merged baseline is 19 verified, 11
 > partial/scaffolded, and 8 not operational. Follow-up source fixes move P0.2 and
@@ -222,6 +224,124 @@ Not everything is a gap. These are genuine improvements:
 
 ---
 
+## Cross-Reference: UX Audit (2026-09-01)
+
+> Cross-referencing the v1 UX audit (`tmp/tui-parity/archive/ux-audit/SUMMARY.md`,
+> dated 2026-08-31, 19 parallel agents) against this consolidated tracker. The v1 audit
+> assessed roko at 75% of mori quality and identified 3 critical gaps, graph engine
+> integration, approval TUI disconnection, streaming architecture issues, and prioritized
+> fixes (P0-P6 quick wins, M1-M7 medium-term).
+
+### 1. Root cause mapping
+
+Each of the five root causes identified by the v2 consolidation (and carried into this
+index) has a direct counterpart in the v1 UX audit:
+
+| Root Cause | v1 UX Audit Coverage | Alignment |
+|---|---|---|
+| **RC-1**: Two disconnected data models | "The Three Critical UX Gaps" section 1 (agent output streaming) describes the same DashboardData/TuiState split. The "75% of mori quality" assessment and "dead TUI during plan run" diagnosis both originate from the same observable failure: connected-mode widgets reading from empty DashboardData. The v1 audit attributes 40% of the quality gap to this single cause. | **Confirmed and quantified.** The v1 audit's framing as "agent output streaming" is a symptom-level description of what the v2 consolidation formalized as RC-1. The v1 P1 fix (build AgentOutputWidget, 1.5d) addresses the render-side half; the v2 P0 fixes (P0.1-P0.5) address the data-bridge half. Both are needed. |
+| **RC-2**: Recovery keybindings facade-only | v1 "Critical UX Gap 3: Recovery Keybindings Do Nothing." Identical diagnosis: keys write to engrams.jsonl, runner never polls, pause flips a visual flag only. v1 estimates 0.5d (P0 quick win), v2 estimates 1d (P1.1). | **Confirmed.** v2 is more realistic on effort because it includes the full enum/channel/select!/handler scope that v1 calls "~200 LOC." |
+| **RC-3**: Gate output stripped before TUI | v1 "Critical UX Gap 2: Gate Output Widget (Missing)." Same finding: DashboardEvent::GateResult carries only pass/fail, raw output discarded, no live streaming during 30-120s gate execution. v1 references mori's `command_output.rs` (218 LOC). | **Confirmed.** v2 P2.1-P2.3 expands the fix scope to include gate-rung indicators and streaming line events, which v1's "port mori widget" estimate (0.5d) does not cover. |
+| **RC-4**: Disk I/O in render path | v1 "TUI Performance" section lists the same three offenders: MCP sub-tab, F7 Inspect, F6 Config. The v1 audit additionally documents `Vec::remove(0)` on history buffers and per-frame `Theme::from_env()` syscalls, neither of which appears in the v2 P3 items. | **Confirmed, v1 has additional detail.** The VecDeque and Theme::from_env fixes are not tracked in P3; they should be considered P3 extensions. |
+| **RC-5**: Built-but-not-rendered features | v1 "Broken/Partially-Wired Features" table lists 8 items; v2 RC-5 lists 5. The v1 audit includes WebSocket agent streams (partial) and atmospheric effects (default off) which v2 tracks separately under P4.4 and MX.3. | **Confirmed, broader scope in v1.** |
+
+### 2. Tui-parity items confirmed or superseded by the UX audit
+
+**Confirmed by identical findings (no change to tracker):**
+
+| Tracker Item | UX Audit Section |
+|---|---|
+| P0.1 token sparkline | v1 P0 quick win; v2 report 06/14 |
+| P0.3 cost ordering race | v1 data flow analysis (report 06) |
+| P1.2 log search render | v1 P3 quick win; "Log search: Built, not rendered" |
+| P1.3 plan filter render | v1 P4 quick win; "Plan tree filter: Built, not rendered" |
+| P1.4 role tabs switch output | v1 "Role tabs: Decorative only" |
+| P1.5 critical-path ETA | v1 P6 quick win; "Critical path ETA: Computed, not shown" |
+| P4.4 effects default | v1 P5 quick win; "Ships as EffectsPreset::Off" |
+| P6.1 number key shadowing | v1 report 09 keyboard model |
+| MX.5 250ms async path latency | v1 performance section: "up to 250ms keyboard latency" |
+| MX.6 mouse hit-test zones | v1 "Mouse hit-test: Broken" |
+| MX.7 WCAG contrast | v1 "WCAG contrast: Fails" (ROSEDUST palette) |
+
+**Confirmed but with added context from the UX audit:**
+
+| Tracker Item | UX Audit Addition |
+|---|---|
+| P0.5 learning/efficiency bridge | v1 quantifies this as part of the "40% of operator attention" agent output gap; the tracker treats it as a data-bridge item. The v1 framing suggests P0.5 has higher user impact than its P0 placement implies. |
+| P1.1 TUI-to-runner command channel | v1 notes that mori has real end-to-end JSON-RPC approval flow, not just pause/retry. The tracker's command channel scope may need expansion to cover tool approval. |
+| P2.2 gate output widget | v1 provides the mori reference: `command_output.rs` 218 LOC with animated spinner, pass/fail text detection, and sonar-ring empty state. The tracker's "partial" status reflects widget code that has no production caller. |
+| MX.3 Anthropic API streaming | v1 streaming analysis confirms "the adapter never sends `stream: true`" and identifies this as the biggest provider gap. The tracker carries it at medium-term priority. |
+
+**Superseded or refined by later work:**
+
+| Tracker Item | Status |
+|---|---|
+| P0.2 plan task denominator | Source-fixed by the post-merge audit; v1 did not detect this because it preceded the PR #74 merge. |
+| P0.4 connected token rate/history | Source-fixed by the post-merge audit; same timeline. |
+| P4.1-P4.3, P4.5-P4.7 visual polish | Verified at merge by the post-merge audit; v1 did not assess these because they were implemented after the v1 audit ran. |
+
+### 3. New items from the UX audit not in this tracker
+
+The v1 UX audit identifies several gaps that have no corresponding P0-P7, PX, or MX item
+in this tracker:
+
+| New Finding | UX Audit Source | Severity | Proposed Tracker Placement |
+|---|---|---|---|
+| **Graph engine has zero TUI integration** | v1 "Graph Engine TUI Integration" section; engine-audit reports 19-20 | High | Already partially covered by MX.1 (GraphEventSink) and MX.4 (ASCII DAG), but the v1 audit's scope is broader: it calls for GraphTuiAdapter (~500 LOC), passing runner's live hub instead of isolated `new_in_process()`, and a three-column graph layout. Consider promoting to a dedicated Graph TUI section (GX.1-GX.4) rather than two MX items. |
+| **Approval TUI architecturally disconnected** | v1 "Approval TUI" section | High | Covered by MX.2 but the v1 audit reveals four specific disconnections: (1) `RunConfig.approval` is dead code, (2) ApprovalChannel is never created, (3) BatchReview modal has no input handler, (4) graph engine rejects approval in TTY terminals. MX.2's "1d" estimate is optimistic for all four. |
+| **AgentOutputWidget needed (1,200 LOC vs 120 LOC render)** | v1 "Critical UX Gap 1" | Critical | Not tracked as a standalone item. The tracker addresses RC-1's data-bridge side (P0.1-P0.5) but never proposes building the dedicated widget with semantic parsing, render cache, per-agent tabs, pin/unpin auto-scroll, and contextual empty states that mori's `agent_output.rs` (1,679 LOC) provides. **This is the largest untracked item.** Suggested: add as MX.8 or elevate to P-level given its 40% quality impact. |
+| **Per-frame Theme::from_env() syscalls** | v1 "Known Performance Issues" | Low | No tracker item. Minor; could be appended to P3 as P3.4. |
+| **Vec::remove(0) on history buffers** | v1 "Known Performance Issues" | Low | No tracker item. Should use VecDeque. Could be P3.5. |
+| **Tab maturity ranking and cross-tab issues** | v1 "Tab Maturity Ranking" + "Cross-Tab Issues" | Medium | The tracker has per-item fixes but no explicit cross-tab consistency item. Issues: sub-tab navigation inconsistent (letter keys on F1, number keys elsewhere), no cross-tab drill-down, oversized view files (dashboard_view.rs 2,400+ LOC). Consider a PX.11 for sub-tab navigation consistency. |
+| **Streaming provider gap table** | v1 "Streaming Architecture Assessment" | Medium | MX.3 covers Anthropic API streaming, but the v1 audit documents provider-by-provider streaming quality: OpenAI-compat (real-time SSE), Claude CLI (burst-y), Anthropic API (batch-only), Gemini/Cerebras/Ollama (batch-only). No tracker item addresses the broader provider streaming parity. |
+| **Longer-term graph-first TUI vision (L1-L7)** | v1 "Longer-Term" section | Low (vision) | Entirely untracked. Seven items spanning 2-4 weeks: three-column graph layout, streaming output docked in nodes, conditional edge visualization, Hot Graph tick sparkline, budget heatmap, activity replay VCR, named surface projections. These are product vision, not immediate gaps. |
+| **Memory growth in 24/7 monitoring** | v1 "TUI Performance" | Low | `IncrementalTailer::items` and several TuiState vectors grow unbounded. No tracker item. |
+| **No 256-color terminal fallback** | v1 "Terminal compat" | Low | 24-bit RGB only (ROSEDUST). Not tracked. |
+
+### 4. Updated overall status assessment
+
+**Before this cross-reference**, the tracker reported:
+- 21 source-implemented, 9 partial, 8 not operational (P0-P7, 38 items)
+- 10 PX items, 7 MX items (55 total)
+- 75% baseline quality, ~96% achievable with all P0-P7
+
+**After integrating the UX audit findings:**
+
+The 75% baseline and root cause analysis are fully confirmed by independent assessment.
+The P0-P7 priority ordering is validated. However, the tracker has a significant blind spot:
+the v1 audit's highest-impact finding -- that roko needs a dedicated AgentOutputWidget
+comparable to mori's 1,679 LOC agent_output.rs -- is not represented as a tracked item.
+The tracker addresses the data-flow cause (P0 fixes RC-1's bridge) but not the rendering
+cause (agent output is 120 LOC of raw text lines vs mori's semantic parsing, render cache,
+per-agent tabs, and contextual empty states).
+
+**Revised item count:**
+
+| Category | Before | After (with UX audit additions) |
+|---|---|---|
+| P0-P7 | 38 | 38 (unchanged) |
+| PX (parity) | 10 | 11 (+PX.11 sub-tab nav consistency) |
+| MX (medium-term) | 7 | 10 (+MX.8 AgentOutputWidget, +MX.9 provider streaming parity, +MX.10 approval TUI four-point fix) |
+| Performance addenda | 0 | 2 (P3.4 Theme::from_env, P3.5 VecDeque history) |
+| Long-term (graph vision) | 0 | 7 (L1-L7 from v1 audit, tracked for reference only) |
+| **Total tracked** | **55** | **68** |
+
+The quality trajectory is unchanged: P0-P2 (~6 days) reaches ~90%, all P0-P7 (~13 days)
+reaches ~96%. The MX additions (AgentOutputWidget, approval TUI, provider streaming) are
+the primary items that separate 96% from full mori feature parity.
+
+**Key action items from this cross-reference:**
+
+1. Decide whether MX.8 (AgentOutputWidget) should be elevated to P-level given the v1
+   audit's "40% of operator attention" assessment.
+2. Expand MX.2 (approval TUI) scope and effort estimate to cover all four disconnections
+   identified by the v1 audit.
+3. Add P3.4 and P3.5 to the performance section for the minor per-frame inefficiencies.
+4. Consider whether the graph-first TUI vision (L1-L7) merits a dedicated section or
+   remains reference-only.
+
+---
+
 ## File Index
 
 | File | Contents |
@@ -238,9 +358,10 @@ Not everything is a gap. These are genuine improvements:
 | Source | Path |
 |--------|------|
 | v2 audit (15 reports) | `tmp/tui-parity/archive/ux-audit/v2/01-*.md` through `15-*.md` |
-| v1 audit (17 reports) | `tmp/tui-parity/archive/ux-audit/01-*.md` through `17-*.md` |
+| v1 audit (17 reports + summary) | `tmp/tui-parity/archive/ux-audit/01-*.md` through `17-*.md`; summary at `tmp/tui-parity/archive/ux-audit/SUMMARY.md` |
 | Parity checklist (10 batches) | `tmp/tui-parity/archive/ux-mori-parity-audit/batch-0.md` through `batch-9.md` |
 | Graph integration | `tmp/engine-audit/19-graph-tui-integration.md`, `20-graph-event-emission.md` |
+| UX audit cross-reference | See `## Cross-Reference: UX Audit (2026-09-01)` section above |
 
 ---
 

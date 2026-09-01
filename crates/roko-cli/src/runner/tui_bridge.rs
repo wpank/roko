@@ -7,6 +7,11 @@ use crate::state_hub::StateHubSender;
 use crate::tui::Tab;
 use roko_core::dashboard_snapshot::{DashboardEvent, DiagnosisSummary};
 
+/// Prefix for semantic live transcript records carried through the existing
+/// StateHub `AgentOutput` event. Keeping this wire-compatible avoids a schema
+/// migration while ensuring the TUI never has to scrape provider output text.
+pub const STREAM_RECORD_PREFIX: &str = "\u{001e}roko.stream.v1 ";
+
 use super::screenshot_collector::ScreenshotCollector;
 use super::types::RunnerEvent;
 
@@ -152,6 +157,38 @@ impl TuiBridge {
             task_id: task_id.to_string(),
             attempt,
             content: content.to_string(),
+        });
+    }
+
+    /// Publish an assistant text delta as a semantic StateHub stream record.
+    pub fn agent_text_delta(&self, agent_id: &str, plan_id: &str, task_id: &str, attempt: u32, text: &str) {
+        self.publish_stream_record(agent_id, plan_id, task_id, attempt, "text", serde_json::json!({"text": text}));
+    }
+
+    /// Publish a reasoning delta without degrading it to ordinary assistant text.
+    pub fn agent_reasoning_delta(&self, agent_id: &str, plan_id: &str, task_id: &str, attempt: u32, text: &str) {
+        self.publish_stream_record(agent_id, plan_id, task_id, attempt, "reasoning", serde_json::json!({"text": text}));
+    }
+
+    /// Publish a tool invocation. Arguments are optional because some provider
+    /// protocols stream them separately or omit them for safety.
+    pub fn tool_call(&self, agent_id: &str, plan_id: &str, task_id: &str, attempt: u32, tool_id: &str, tool_name: &str) {
+        self.publish_stream_record(agent_id, plan_id, task_id, attempt, "tool_start", serde_json::json!({"tool_id": tool_id, "tool": tool_name}));
+    }
+
+    /// Publish a tool result correlated by provider call ID.
+    pub fn tool_output(&self, agent_id: &str, plan_id: &str, task_id: &str, attempt: u32, tool_id: &str, output: &str) {
+        self.publish_stream_record(agent_id, plan_id, task_id, attempt, "tool_result", serde_json::json!({"tool_id": tool_id, "output": output}));
+    }
+
+    fn publish_stream_record(&self, agent_id: &str, plan_id: &str, task_id: &str, attempt: u32, kind: &str, payload: serde_json::Value) {
+        let record = serde_json::json!({"kind": kind, "agent_id": agent_id, "plan_id": plan_id, "task_id": task_id, "attempt": attempt, "payload": payload});
+        self.sender.publish(DashboardEvent::AgentOutput {
+            agent_id: agent_id.to_string(),
+            plan_id: plan_id.to_string(),
+            task_id: task_id.to_string(),
+            attempt,
+            content: format!("{}{}", STREAM_RECORD_PREFIX, record),
         });
     }
 
@@ -506,4 +543,29 @@ fn timestamp_now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state_hub::StateHub;
+
+    #[test]
+    fn semantic_stream_records_are_published_through_statehub() {
+        let hub = StateHub::default_capacity();
+        let bridge = TuiBridge::new(hub.sender());
+        let mut subscription = hub.subscribe_events_from(0);
+        bridge.agent_text_delta("a", "p", "t", 1, "hello");
+        let event = subscription.live.try_recv().expect("live event");
+        let DashboardEvent::AgentOutput { content, .. } = event.payload else {
+            panic!("expected agent output event");
+        };
+        assert!(content.starts_with(STREAM_RECORD_PREFIX));
+        let payload: serde_json::Value = serde_json::from_str(
+            content.strip_prefix(STREAM_RECORD_PREFIX).expect("prefix"),
+        )
+        .expect("record json");
+        assert_eq!(payload["kind"], "text");
+        assert_eq!(payload["payload"]["text"], "hello");
+    }
 }

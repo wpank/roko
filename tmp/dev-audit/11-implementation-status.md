@@ -230,3 +230,162 @@ That delta subsequently passed the production-path check and targeted strict lin
 
 These residuals are kept open on purpose. None is silently redefined as “done” by the faster local
 lane.
+
+## Status Update (2026-09-01)
+
+Cross-referenced against findings from three parallel audits conducted 2026-08-31 and the
+consolidated dogfood audit of 2026-08-13 through 2026-08-29:
+
+- CLI audit: `tmp/cli-audit/SUMMARY.md` (30 agent reports, 47 commands, ~170 leaf paths)
+- Engine audit: `tmp/engine-audit/SUMMARY.md` (20 agent reports, engine convergence roadmap)
+- Dogfood audit: `tmp/dogfood-audit/01-findings-register.md` (10 sessions, 106 raw logs)
+
+Note: the user's original request referenced a `tmp/ux-audit/SUMMARY.md` but no such directory
+exists. The `tmp/cybernetic-audit/` directory is empty. This update covers the three audits that
+produced substantive findings.
+
+### Dev-audit items confirmed or strengthened by the new audits
+
+**Lean build graph (implemented).** The CLI audit (report 19-feature-flags.md) confirmed that
+the default `roko-cli` dependency tree now excludes `alloy-provider`/`alloy-network`/
+`alloy-rpc-client`, matching the dev-audit verification checkpoint. The dogfood audit
+independently created backlog #230 for the same Alloy default-build concern, confirming both
+audits converge. The dev-audit's lean-build work is verified.
+
+**Impact-selected verification (implemented).** The dogfood audit's P1 finding on cross-crate
+change-impact scoping (backlog #231) directly validates the dev-audit's conservative design
+choice: the current impact analysis is syntax/Cargo-graph-based and intentionally widens for
+ambiguous cases. The dogfood sessions recorded a real `bool` to `Option<bool>` public type
+change that missed consumers across three crates, exactly the scenario this dev-audit's explicit
+residual (“complete symbol-level, macro-aware, non-Rust consumer analysis”) acknowledges as
+unsolved. No change to that residual's status.
+
+**Evidence bundles (implemented).** The dogfood audit's P1 finding (backlog #228) and the
+dev-audit's evidence harness (`bba2f8858` + `6af235c0f`) address the same gap from different
+angles. The dev-audit's `run-evidence`, `evidence-validate`, and strict bundle validation are
+implemented. The dogfood audit confirms that operational sessions still assembled evidence
+manually in practice, meaning the tooling exists but operator adoption/workflow integration
+remains incomplete.
+
+**Pre-existing gate failures (open residual overlap).** The dev-audit's impact-selected
+verification includes focused baseline classification for pre-existing failures. The dogfood
+audit's P1 finding on baseline gate rejection (backlogs #166, #170) and the CLI audit's
+confirmation that `BenchmarkRegressionGate` always passes both reinforce that this area needs
+further work. The dev-audit's “focused pre-existing failures require stable structured evidence”
+item is implemented in code but not yet proven against the real recurrence pattern the dogfood
+audit documented.
+
+**FAST deadline and scheduling (implemented).** The dogfood audit's strongest repeated finding
+was agent lifecycle and runner termination failures: agents made correct edits but the runner
+failed to observe completion or hung during cleanup. The dev-audit's FAST deadline interposition,
+bounded settlement, and convergent terminal projections address the deadline/timeout side. The
+engine audit noted that `AgentSilence`/`LostEffect` typed deadlines now exist but recommended
+end-to-end proof (backlog #138). The dev-audit's scheduling and salvage implementation is not
+invalidated, but the dogfood evidence shows the broader runner lifecycle problem extends beyond
+FAST mode.
+
+### Dev-audit items with new context from the audits
+
+**Blanket `#![allow(dead_code)]` suppression.** The CLI audit elevated this as critical finding
+#3 and the engine audit reported 242 compiler warnings hidden by the blanket allow on roko-cli.
+The dev-audit did not directly address this suppression (it focused on FAST-mode compilation
+rather than lint hygiene). The engine audit's convergence roadmap schedules removal under
+backlog #43 in Wave 11, after Runner-v2 retirement. This is new context: the dev-audit's
+compilation and cache work coexists with a large hidden dead-code surface that distorts
+incremental compile times and masks stale code.
+
+**`event_loop.rs` size (23,673 lines).** The CLI audit flagged this as the largest file in the
+codebase. The engine audit's convergence plan proposes decomposing it into Cells and ultimately
+deleting it (Waves 2-4, 11). The dev-audit's FAST mode operates within this file for runner-
+owned verification; neither audit contradicts the dev-audit's approach, but the engine audit's
+planned decomposition will eventually restructure the surface the dev-audit's FAST integration
+touches.
+
+**Duplicate code paths.** The engine audit found 7 agent dispatch paths, 11 model resolution
+functions, 9 config loading functions, and 4 doctor implementations. The dev-audit's bounded
+plan context and impact-selected verification intentionally narrowed scope rather than
+consolidating these paths. The engine audit's `RuntimeServices` unification (backlog #243,
+Wave 2) will eventually reduce duplication that currently makes FAST impact analysis harder
+than necessary.
+
+**Run-scoped observability API (implemented).** The CLI audit confirmed ~378 HTTP endpoints
+(versus the documented ~317), including the run-scoped routes added by the dev-audit. The
+dogfood audit's observability reference (`04-observability-reference.md`) documents the
+actual endpoint surface. The dev-audit's loopback fixture verified 8 selected GET endpoints;
+the broader endpoint surface is operational but the full ~378 routes have not been individually
+exercised against the dev-audit's evidence policy.
+
+**Cache lifecycle (implemented).** The CLI audit did not surface cache-related issues. The
+dogfood audit's performance section documented cold release builds at 10-14 minutes and fresh
+worktree compilation at 7+ minutes before shared `CARGO_TARGET_DIR`. The dev-audit's cache
+status/prune tooling and warm-target preservation are implemented, but the open benchmark
+residual (representative cold/warm scorecard) remains the gap between “tooling exists” and
+“measured improvement.”
+
+**Provider/Codex broker residual (open).** The CLI audit documented that Codex streaming/cost
+parsing was fixed in dogfood sessions, and that a first-class Codex provider kind is still
+tracked under backlog #158. The dev-audit's explicit residual for a Roko-owned operation-level
+Codex broker remains open and is independently supported by the engine audit's observation that
+provider operation-level enforcement fails closed for unsupported providers.
+
+### Dev-audit items unchanged by the new audits
+
+The following items were neither confirmed nor contradicted:
+
+- **Benchmark automation tooling** (`d1b94b139`): no audit exercised the benchmark fixtures.
+  The open residual (execute representative matrix and import real samples) remains.
+- **`cargo test --workspace` all-target/full-CI lane**: still not a recorded pass. The CLI
+  audit counted 11,948 tests across the workspace; none of the audits ran the full suite as a
+  verification pass.
+- **Run-index release fixtures** (truncation, active-lock-refusal): still open.
+- **Cache release fixtures** (active-workspace/Cargo-owner refusal): still open.
+- **FAST promotion or auto-merge policy**: still an explicit deferred decision.
+
+### New risks surfaced by the audits that affect dev-audit scope
+
+**HDC feature flag pipeline severed (CLI audit critical finding #4).** `roko-cli` enables
+`roko-neuro/hdc` but does not propagate `hdc` to `roko-compose`, `roko-fs`, or `roko-serve`.
+This does not directly affect dev-audit FAST mode but means the HDC fingerprint-per-episode
+path (used by the evidence harness for run identity) may be incomplete in prompt composition
+and file substrate persistence.
+
+**`roko inject` is a complete stub (CLI audit critical finding #1).** The dev-audit's evidence
+harness and signal injection are unrelated, but a lying stub in the CLI raises a general
+correctness concern about which advertised surfaces actually function.
+
+**Graph engine convergence plan (engine audit).** The engine audit produced a 13-wave, 50+
+backlog-item roadmap to make `GraphEngine` the single execution kernel. This is a large
+structural change that will eventually obsolete Runner-v2, which is where the dev-audit's FAST
+mode, scheduling, deadline, and gate integration live. The dev-audit's implementation will need
+migration when the engine convergence reaches Waves 7-9 (workflow routing, shadow parity,
+cutover). This is not an immediate concern but should be noted in planning.
+
+**State and index drift (dogfood audit).** The dogfood audit found 11 completed plans still
+marked ready and backlog items advertised as open after being implemented. Backlog #229 covers
+reconciliation. This does not directly affect dev-audit implementation but means the backlog
+references in this document (and its tracked reconciliation set) may have stale cross-
+references.
+
+**Marketplace stubs return 200/201 (CLI audit critical finding #6).** The dev-audit's evidence
+harness records optional/unavailable surfaces as skipped rather than green. If marketplace
+stubs are exercised, they would incorrectly report success. This is a correctness issue in the
+broader HTTP surface, not specific to the dev-audit, but the dev-audit's evidence policy should
+treat stub 200 responses the same as genuine 501 responses when scoring.
+
+### Summary disposition
+
+| Dev-audit area | Original status | Post-audit status | Notes |
+|---|---|---|---|
+| Lean build graph | Implemented, verified | Confirmed by CLI audit + dogfood #230 | No change |
+| Evidence harness | Implemented, verified | Confirmed exists; operator adoption gap noted by dogfood audit | No change to implementation status |
+| Impact-selected verification | Implemented, conservative | Confirmed conservative; dogfood #231 validates the explicit residual | No change |
+| FAST deadline/scheduling | Implemented, verified | Confirmed; broader runner lifecycle issues noted | No change to FAST scope |
+| Cache lifecycle | Implemented, verified | No contradicting evidence | Benchmark residual still open |
+| Run-scoped observability | Implemented, verified | Endpoint count updated (~378 vs ~317) | No implementation change |
+| Benchmark automation | Implemented, not exercised | Unchanged | Real samples still needed |
+| Full workspace test pass | Open | Open | 11,948 tests exist; no full pass recorded |
+| Codex operation broker | Open residual | Open; independently confirmed by CLI/engine audits | No change |
+| Symbol-level impact analysis | Open residual | Open; directly validated by dogfood #231 evidence | No change |
+| FAST promotion policy | Deferred | Deferred | No change |
+| Blanket dead_code allow | Not in dev-audit scope | New context from CLI/engine audits | Affects compile-time accuracy |
+| Runner-v2 decomposition | Not in dev-audit scope | Engine audit produced 13-wave plan | Future migration needed for FAST |

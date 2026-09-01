@@ -2,6 +2,8 @@
 
 Date: 2026-08-31
 
+> The CLI audit execution DAG reuses this audit's single-build-lane and evidence-reuse rules. See [`../cli-audit/IMPLEMENTATION-CHECKLIST.md`](../cli-audit/IMPLEMENTATION-CHECKLIST.md), “Fast build and test batches”; individual CLI workers must not run redundant workspace suites.
+
 This directory began as the design package for making routine Claude, Codex, and Roko
 self-development loops dramatically faster. Documents 00–09 preserve the audit evidence and
 design contract, with current status annotations distinguishing later source implementation from

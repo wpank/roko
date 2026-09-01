@@ -23,6 +23,10 @@ const MAX_AGENT_OUTPUT: usize = 32_768;
 /// from the runner's durable evidence so a single compiler dump cannot flood
 /// the watch snapshot or make rendering unresponsive.
 const MAX_TUI_TOOL_OUTPUT: usize = 8_192;
+/// Internal framing used when a provider exposes reasoning but the legacy
+/// runtime event enum only has `MessageDelta`. It is removed before normal
+/// transcript/state accumulation and emitted as a semantic StateHub record.
+pub(crate) const REASONING_DELTA_PREFIX: &str = "\u{001f}roko.reasoning.v1 ";
 
 /// Process a single agent event, updating state and publishing to TUI.
 ///
@@ -60,6 +64,13 @@ pub(crate) fn handle_agent_event(
         }
 
         AgentEvent::MessageDelta { text } => {
+            if let Some(reasoning) = text.strip_prefix(REASONING_DELTA_PREFIX) {
+                let agent_id = agent_id_for_state(state);
+                let attempt = state.iteration_for(plan_id, task_id);
+                tui.agent_reasoning_delta(&agent_id, plan_id, task_id, attempt, reasoning);
+                sink.agent_text_delta(plan_id, task_id, reasoning);
+                return;
+            }
             state.agent_output.push_str(text);
             if state.agent_output.len() > MAX_AGENT_OUTPUT {
                 let trim_point = state.agent_output.len() - MAX_AGENT_OUTPUT / 2;
@@ -76,7 +87,7 @@ pub(crate) fn handle_agent_event(
             }
             let agent_id = agent_id_for_state(state);
             let attempt = state.iteration_for(plan_id, task_id);
-            tui.agent_output(&agent_id, plan_id, task_id, attempt, text);
+            tui.agent_text_delta(&agent_id, plan_id, task_id, attempt, text);
 
             sink.agent_text_delta(plan_id, task_id, text);
         }
@@ -87,8 +98,7 @@ pub(crate) fn handle_agent_event(
 
             let agent_id = agent_id_for_state(state);
             let attempt = state.iteration_for(plan_id, task_id);
-            tui.agent_output(&agent_id, plan_id, task_id, attempt, &marker);
-
+            tui.tool_call(&agent_id, plan_id, task_id, attempt, id, name);
             sink.tool_call(plan_id, task_id, id, name);
         }
 
@@ -113,7 +123,7 @@ pub(crate) fn handle_agent_event(
             }
             let agent_id = agent_id_for_state(state);
             let attempt = state.iteration_for(plan_id, task_id);
-            tui.agent_output(&agent_id, plan_id, task_id, attempt, &dashboard_output);
+            tui.tool_output(&agent_id, plan_id, task_id, attempt, id, &dashboard_output);
 
             sink.tool_output(plan_id, task_id, id, output);
         }

@@ -85,3 +85,68 @@ call sites must also change and which reverse dependents must compile?”
 
 The originally proposed `roko-index` symbol/call-site query remains the residual needed to upgrade
 this item from conservative partial coverage to complete semantic impact analysis.
+
+## Status Update (2026-09-01)
+
+**Overall: PARTIAL -- conservative impact path implemented; runtime fixtures open.** The core
+implementation landed in `d43dd45cd` ("feat(gates): add impact-aware fast verification") with
+a subsequent hardening pass in `38f79a5ca` ("fix: finalize development speed integration").
+No new code has landed since 2026-08-31.
+
+### Verified current state
+
+`crates/roko-cli/src/runner/impact_analysis.rs` (907 lines) implements:
+- Git diff parsing to identify changed files per task.
+- `cargo_metadata` consumption for target ownership, features, and reverse-dependent crates.
+- Public/re-export/trait/serde signal identification from syntax patterns.
+- Bounded transitive reverse-dependent compilation selection.
+- Stable diagnostic emission for high-impact tasks with incomplete file lists.
+- Planned-vs-actual file set persistence as structured telemetry.
+- Explicit author escape hatch for false positives.
+
+The module exports an `analyze` async function and supporting types (`ImpactAnalysis`,
+`ImpactedTarget`). The gate_dispatch module in the runner consumes it for compile scope
+widening.
+
+### What remains open
+
+All six verification checklist items are unchecked. These are runtime fixture exercises:
+
+1. `bool` to `Option<bool>` public field fixture with three-crate consumers.
+2. Private helper body edit (no cross-crate expansion).
+3. Re-exported enum variant + serde snapshot consumer fixture.
+4. Plan generation with public API change and consumer read_files.
+5. Analysis latency measurement and separation from agent time.
+6. Fixed-SHA cold/warm repetitions comparing scoped vs full CI.
+
+The first acceptance criterion (final fixture proving reverse-dependent compile before
+dispatch) is also unchecked.
+
+Additionally, the `roko-index` symbol/call-site query oracle for macro-generated APIs and
+non-Rust schemas is explicitly deferred. The current implementation widens/escalates on
+ambiguity rather than querying exact call sites.
+
+### Audit cross-references
+
+- **cli-audit**: No direct mention of impact analysis or cross-crate scoping. The audit
+  focused on CLI command surfaces, not runner preflight internals.
+- **engine-audit `05-duplicate-paths.md`**: Notes cross-crate duplication of model resolution
+  and config loading functions (11 and 9 copies respectively). These are exactly the kind of
+  widely-consumed internal APIs where a signature change would trigger #231's impact analysis.
+  Consolidating them (as the engine roadmap proposes) would reduce the blast radius that
+  #231 must detect.
+- **engine-audit `12-do-cmd-routing.md`**: References intent classification routing that
+  touches cross-crate boundaries; impact analysis should cover these paths when they change.
+- **engine-audit `IMPLEMENTATION-ROADMAP.md`**: The convergence roadmap's #243 (unified
+  RuntimeServices) and #258-#278 (Cell extraction) will themselves be high-impact cross-crate
+  changes. #231's conservative impact analysis should be exercised as a preflight check during
+  those refactors. The roadmap does not explicitly reference #231 but its integration gates
+  require "affected packages/fixtures identified" evidence, which is what #231 produces.
+- **ux-audit**: Empty (no files).
+
+### Recommendation
+
+The conservative implementation is sound and covers the original dogfood failure scenario.
+The open items are all fixture/proof work. The `roko-index` oracle upgrade should be deferred
+until after the engine-audit convergence work stabilizes the public API surface, since that
+work will both exercise and potentially reshape the impact-analysis boundaries.

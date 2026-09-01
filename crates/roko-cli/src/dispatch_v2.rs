@@ -2028,7 +2028,9 @@ fn dispatch_events_from_result(
 fn agent_event_from_chunk(chunk: StreamChunk) -> AgentRuntimeEvent {
     match chunk {
         StreamChunk::ContentDelta(text) => AgentRuntimeEvent::MessageDelta { text },
-        StreamChunk::ReasoningDelta(text) => AgentRuntimeEvent::MessageDelta { text },
+        StreamChunk::ReasoningDelta(text) => AgentRuntimeEvent::MessageDelta {
+            text: format!("{}{}", crate::runner::agent_events::REASONING_DELTA_PREFIX, text),
+        },
         StreamChunk::ToolCallDelta {
             id_delta,
             name_delta,

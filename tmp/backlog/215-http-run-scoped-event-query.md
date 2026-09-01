@@ -11,6 +11,7 @@
 > serve check, disposable repair fixture, loopback run-resource endpoints, cursor traversal, and
 > bounded SSE replay have passed. A real plan-to-JSONL cross-check remains open.
 
+**Status**: Verification only; close the real plan-to-JSONL cross-check before archive and do not redispatch the historical implementation plan
 **Priority**: P2 — events are only accessible by reading JSONL files directly; no HTTP query capability for run-scoped or filtered event access
 **Size**: M (2-3 days)
 **Crates**: `roko-serve`, `roko-cli`

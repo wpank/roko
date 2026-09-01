@@ -130,6 +130,9 @@ pub struct App {
     connected_plan_observed: bool,
     /// Live dashboard snapshot receiver from `StateHub` when connected.
     pub snapshot_rx: Option<tokio::sync::watch::Receiver<roko_core::DashboardSnapshot>>,
+    /// Lossless live event subscription paired with `snapshot_rx`. This is
+    /// the primary transcript source; disk/task tails are recovery only.
+    state_events: Option<crate::state_hub::StateHubSubscription>,
     /// Last error entry surfaced from the live snapshot stream.
     last_snapshot_error_marker: Option<(String, u64)>,
     /// Number of gate verdicts already processed for toast generation.
@@ -657,6 +660,7 @@ impl App {
             capture_mouse: false,
             connected_plan_observed: false,
             snapshot_rx: None,
+            state_events: None,
             last_snapshot_error_marker: None,
             last_seen_gate_count: 0,
             last_seen_plan_phases: HashMap::new(),
@@ -724,6 +728,12 @@ impl App {
             );
         }
         app.snapshot_rx = Some(snapshot_rx);
+        // Subscribe after capturing the initial snapshot so replay cannot
+        // duplicate already-materialized output. The live event bus is the
+        // authoritative stream for text and tool records.
+        app.state_events = Some(state_hub.subscribe_events_from(
+            state_hub.cursor_snapshot().next_seq,
+        ));
         app
     }
 
@@ -3500,6 +3510,7 @@ impl App {
         const MAX_MESSAGES_PER_DRAIN: usize = 20;
 
         self.drain_snapshot_channel();
+        self.drain_state_events();
         self.drain_agent_topology_fetch();
         self.sync_agent_stream_clients();
         self.drain_agent_stream_clients();
@@ -3680,6 +3691,42 @@ impl App {
             &snapshot,
         );
         self.update_plan_completion_exit(&snapshot);
+    }
+
+    fn drain_state_events(&mut self) {
+        const MAX_EVENTS: usize = 256;
+        let Some(subscription) = self.state_events.as_mut() else { return; };
+        let mut events = Vec::new();
+        for envelope in subscription.replay.drain(..).take(MAX_EVENTS) {
+            events.push(envelope.payload);
+        }
+        while events.len() < MAX_EVENTS {
+            match subscription.live.try_recv() {
+                Ok(envelope) => events.push(envelope.payload),
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(dropped)) => {
+                    self.tui_state.push_agent_chunk(
+                        "system",
+                        format!("[stream lagged: {dropped} StateHub events; snapshot resynced]"),
+                    );
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
+            }
+        }
+        for event in events {
+            let roko_core::DashboardEvent::AgentOutput { agent_id, content, .. } = event else { continue; };
+            let Some(record) = content.strip_prefix(crate::runner::tui_bridge::STREAM_RECORD_PREFIX) else { continue; };
+            let Ok(record) = serde_json::from_str::<serde_json::Value>(record) else { continue; };
+            let kind = record.get("kind").and_then(serde_json::Value::as_str).unwrap_or("text");
+            let payload = record.get("payload").cloned().unwrap_or_default();
+            match kind {
+                "text" => if let Some(text) = payload.get("text").and_then(serde_json::Value::as_str) { self.tui_state.push_agent_chunk(&agent_id, text.to_string()); },
+                "reasoning" => if let Some(text) = payload.get("text").and_then(serde_json::Value::as_str) { self.tui_state.push_agent_chunk(&agent_id, format!("[thinking] {text}")); },
+                "tool_start" => { let tool = payload.get("tool").and_then(serde_json::Value::as_str).unwrap_or("tool"); let id = payload.get("tool_id").and_then(serde_json::Value::as_str).unwrap_or(""); self.tui_state.push_agent_chunk(&agent_id, format!("[tool ⏵ {tool} {id}]")); },
+                "tool_result" => { let output = payload.get("output").and_then(serde_json::Value::as_str).unwrap_or(""); let id = payload.get("tool_id").and_then(serde_json::Value::as_str).unwrap_or(""); self.tui_state.push_agent_chunk(&agent_id, format!("[tool ✓ {id}]\n{output}")); },
+                _ => {}
+            }
+        }
     }
 
     fn drain_shutdown_signal(&mut self) {

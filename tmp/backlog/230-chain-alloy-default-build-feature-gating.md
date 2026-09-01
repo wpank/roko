@@ -9,6 +9,7 @@
 > check, and current default CLI build. Representative before/after repetitions, the complete
 > all-feature test matrix, and release jobs remain open.
 
+**Status**: Verification/proof completion only; source and build-graph changes are implemented, while the packet's benchmark/matrix evidence must close before #338
 **Priority**: P2 — repeated dogfood cold builds took 10–14 minutes and the default CLI still enables Alloy's full dependency graph
 **Size**: M (2–3 days)
 **Wave**: 6
@@ -82,3 +83,58 @@ the full chain stack.
 | `crates/roko-serve/src/routes/chain.rs` and router wiring | Feature-gated routes |
 | `crates/roko-demo/Cargo.toml` / chain apps | Explicit required features |
 | CI workflow files | Lean and all-feature build matrix |
+
+## Status Update (2026-09-01)
+
+**Overall: SOURCE-IMPLEMENTED; benchmark measurements open.** The feature-gating work landed
+in `88c724744` ("perf: complete lean self-development runtime lane") and `6af235c0f` ("fix:
+align lean builds with release automation"). The build graph is verified lean.
+
+### Verified current state
+
+The `roko-cli/Cargo.toml` now has:
+- `default = ["chain"]` -- backend-neutral chain tools only, no Alloy.
+- `alloy-backend` -- explicit opt-in that propagates through `roko-chain/alloy-backend` and
+  `roko-serve/alloy-backend`.
+- `acp` -- explicit opt-in for `roko-acp`.
+- `chain_integration` test requires `alloy-backend` feature.
+
+The `roko-serve/Cargo.toml` has:
+- `default = ["chain"]` -- backend-independent local chain registries.
+- `alloy-backend = ["chain", "dep:alloy", "roko-chain/alloy-backend"]` -- explicit.
+- Chain-disabled builds return typed `501` for chain-only routes.
+
+This matches all five checked acceptance criteria (lean tree excludes alloy-provider/network/
+rpc-client, explicit feature check compiles, serve has 501 diagnostics, release/Docker/CI
+request full features).
+
+### What remains open
+
+Two items from the implementation plan and two from the verification checklist:
+
+1. Reproducible cold/warm baseline measurements (before/after) have not been recorded.
+2. No regression threshold has been set for dependency count or build time.
+3. Default CLI plan validation, dry-run, status, doctor, and screenshot smoke tests have not
+   been run against the lean build specifically.
+4. Full `cargo test --workspace --all-features` confirmation for the lean+full CI matrix.
+
+### Audit cross-references
+
+- **cli-audit `19-feature-flags.md`**: At audit time (2026-08-31), the audit recorded
+  `roko-chain/alloy-backend` as "Healthy. The main binary and server both enable it." This
+  was the pre-gating state. The audit's verdict is now stale -- the feature split has landed
+  since then. The audit also identified the severed HDC feature pipeline
+  (`roko-compose/hdc`, `roko-fs/hdc`, `roko-serve/hdc` all dead at workspace level), which
+  is a separate concern from #230 but was discovered in the same feature-flag audit scope.
+- **cli-audit `29-test-coverage.md`**: Notes that `roko-serve` is under-tested; the
+  all-feature test matrix confirmation (open item 4) intersects with this.
+- **engine-audit**: No direct overlap. The engine-audit focuses on graph-vs-runner
+  architecture, not build graph.
+- **ux-audit**: Empty (no files).
+
+### Recommendation
+
+The code work is done. The remaining items are measurement and CI validation tasks. Recording
+before/after cold-build timings requires the `scripts/dev_benchmark.py` infrastructure from
+#228, which is source-complete but whose real fixtures are also pending. These two items
+should be exercised together.

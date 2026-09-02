@@ -31,6 +31,8 @@ pub mod archive;
 /// Shared atomic-write helpers (write-tmp-rename pattern).
 pub mod atomic;
 pub mod bandit;
+/// Classified persistence for transcript records with redaction and versioning.
+pub mod classified_persistence;
 /// Archive-backed [`ColdStore`](roko_core::ColdStore) for aged-out signals.
 pub mod cold_substrate;
 /// Cross-platform disk space checker and runtime monitor.
@@ -55,6 +57,10 @@ pub use atomic::{
     with_locked_json_transaction_bounded,
 };
 pub use bandit::{ArmSnapshot, BanditStore};
+pub use classified_persistence::{
+    ArtifactDescriptor, CLASSIFIED_SCHEMA_VERSION, Classification, ClassifiedRecord,
+    PayloadPointer, RedactedField, RedactionMeta, ResultMeta,
+};
 pub use cold_substrate::{ArchiveColdSubstrate, SubstrateMigrator};
 pub use disk::{
     DiskError, DiskMonitor, DiskPressureLevel, DiskStatus, DiskUsage, DiskWarning,
@@ -64,13 +70,17 @@ pub use file_substrate::FileSubstrate;
 pub use gc::{FsRetentionPolicy, GcCandidate, GcEngine, GcReport};
 pub use layout::{LayoutVersion, RokoLayout};
 pub use metrics::MetricsLog;
-pub use observability::FsObservabilitySinks;
+pub use observability::{
+    CorrelationQuery, CorrelationResult, FsObservabilitySinks, MAX_METRIC_CARDINALITY,
+    ObservabilityHealth, RetentionPolicy, RunScrubber, SinkTelemetry, SinkTelemetrySnapshot,
+    validate_cardinality, validate_metric_key,
+};
 pub use pointer::PointerStore;
 pub use target_cleanup::{
     CacheCandidateKind, CacheCleanupCandidate, CacheCleanupPolicy, CacheCleanupReport,
     CleanupReport, ColdBuildRisk, ProtectedCachePath, TargetDir, cargo_clean, clean_stale_targets,
     cleanup_workspace_caches, scan_target_dirs,
 };
-pub use tool_audit::ToolAuditLog;
+pub use tool_audit::{AuditLine, ScrubAuditAdapter, ToolAuditLog};
 pub use tool_metrics_sink::{JsonlMetricsSink, ToolMetricsRecord};
-pub use trace_sink::{JsonlTraceSink, default_trace_sink};
+pub use trace_sink::{JsonlTraceSink, TraceSinkHealth, default_trace_sink};

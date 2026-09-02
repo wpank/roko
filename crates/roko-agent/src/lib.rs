@@ -44,6 +44,8 @@
 pub mod agent;
 /// Short-lived content-addressed response cache for identical backend requests.
 pub mod cache;
+/// Explicit capability state enum replacing boolean flags (T008).
+pub mod capability_state;
 pub mod chat_types;
 pub mod claude_agent;
 pub mod claude_cli_agent;
@@ -78,10 +80,13 @@ pub mod ollama;
 pub mod openai_agent;
 pub mod openai_compat_backend;
 pub mod openclaw;
+pub mod parity_matrix;
 pub mod perplexity;
 pub mod pool;
 pub mod process;
 pub mod provider;
+/// Provider-change tracking and attempt-scoped attribution (T009).
+pub mod provider_change;
 pub mod rate_limit;
 pub mod retry;
 pub mod runtime_events;
@@ -154,6 +159,10 @@ pub use openclaw::{
     ConfigError as OpenClawConfigError, InferEnvelope, InferError, InferEventParser, InferOutput,
     OpenClawAcpAgent, OpenClawAcpConfig, OpenClawConfig, OpenClawGatewayService,
     OpenClawInferAgent, OpenClawInferConfig, TransportHint, probe_openclaw_infer,
+};
+pub use parity_matrix::{
+    Capability as ParityCapability, CapabilityState, ProviderCapabilityMatrix,
+    ProviderCapabilityRow, provider_label,
 };
 pub use perplexity::{
     Annotation, PerplexityChatAgent, PerplexityDeepResearchAgent, PerplexityEmbedAgent,

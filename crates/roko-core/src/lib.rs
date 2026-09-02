@@ -191,8 +191,11 @@ pub mod task;
 pub mod telemetry_observe;
 pub mod telemetry_projections;
 pub mod temperament;
+pub mod todo_dag;
 pub mod tool;
 pub mod traits;
+/// Bounded in-memory transcript store with lossless control events.
+pub mod transcript_store;
 /// Trigger protocol types — TriggerProtocol, TriggerBinding, TriggerEvent, TriggerHandle,
 /// TriggerState, TriggerSource, and related configuration types.
 pub mod trigger;
@@ -377,17 +380,26 @@ pub use telemetry_observe::{
     turn_taking_entropy,
 };
 pub use temperament::Temperament;
+pub use todo_dag::{
+    TodoChanges, TodoDag, TodoDagError, TodoDelta, TodoItem, TodoSnapshot, TodoSource, TodoStatus,
+};
 pub use tool::{
     ArmEntry, Artifact, AuditSink, BanditKey, CancelSource, CancelToken, EpsilonGreedyBandit,
     FailureTrace, FormatBandit, KeywordOverlapScorer, MemoryPointer, MetricsKey, MetricsSink,
     ProfileBandit, RewardConfig, ToolCall, ToolCategory, ToolConcurrency, ToolContext, ToolDef,
-    ToolError, ToolFormat, ToolFormatProfile, ToolHandler, ToolMetrics, ToolOutcome,
-    ToolPermission, ToolRegistry, ToolRelevanceScorer, ToolResult, ToolSchema, ToolSource,
-    ToolTrace, ToolTraceEvent, TraceBuilder, TraceId, TraceSink, TraceStep, VecToolRegistry,
-    classify_tool_error, compute_reward, galileo_tsq, profile_for_model,
+    ToolError, ToolExecutionEnvelope, ToolExecutionRecord, ToolFormat, ToolFormatProfile,
+    ToolHandler, ToolLifecycleStatus, ToolMetrics, ToolOutcome, ToolPermission, ToolRegistry,
+    ToolRelevanceScorer, ToolResult, ToolSchema, ToolSource, ToolTrace, ToolTraceEvent,
+    TraceBuilder, TraceFinishGuard, TraceId, TraceSink, TraceStep, TranscriptEvent,
+    TranscriptEventMeta, TranscriptRecord, VecToolRegistry, classify_tool_error, compute_reward,
+    galileo_tsq, profile_for_model,
 };
 pub use traits::{
     Bus, ColdStore, Compose, Connect, Observe, React, Route, Store, Substrate, Trigger, Verify,
+};
+pub use transcript_store::{
+    ChannelDropReport, PriorityEventChannel, ReplayMismatch, StoreError, StoreStats,
+    TranscriptFilter, TranscriptPage, TranscriptReplayContract, TranscriptStore,
 };
 pub use trigger::{
     Author, BusTrigger, ChainEventTrigger, ConcurrencyPolicy, CronTrigger, Expr, FileWatchEvent,

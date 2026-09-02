@@ -8,6 +8,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
+use std::time::Instant;
 
 use roko_core::tool::{ToolDef, ToolSource};
 use tokio::time::{Duration, timeout};
@@ -27,6 +28,25 @@ pub type McpRuntimeTransport = Arc<dyn Transport>;
 /// Initialized client retained for one configured MCP server.
 pub type McpRuntimeClient = Arc<McpClient<McpRuntimeTransport>>;
 
+/// Observable lifecycle state for a single MCP server connection (T013).
+///
+/// Surfaced through [`McpRuntime::lifecycle_state`] so dashboards, health
+/// checks, and the parity matrix can inspect MCP state without owning
+/// the transport.
+#[derive(Debug, Clone)]
+pub struct McpLifecycleState {
+    /// Name of the MCP server (matches [`McpServerConfig::name`]).
+    pub server_name: String,
+    /// When the server was last successfully health-checked (initialize + tools/list).
+    pub last_health_check: Option<Instant>,
+    /// Last error encountered during initialization or tool listing.
+    pub last_error: Option<String>,
+    /// Capabilities returned by the server's initialize response.
+    pub negotiated_capabilities: Option<serde_json::Value>,
+    /// Names of tools discovered from this server.
+    pub available_tools: Vec<String>,
+}
+
 /// Discovered MCP definitions together with the initialized clients that can
 /// execute them.
 ///
@@ -38,6 +58,7 @@ pub struct McpRuntime {
     tools: Arc<Vec<ToolDef>>,
     clients: Arc<HashMap<String, McpRuntimeClient>>,
     owner: Option<Arc<dyn Send + Sync>>,
+    lifecycle: Arc<Vec<McpLifecycleState>>,
 }
 
 struct McpRuntimeResolver {
@@ -59,6 +80,7 @@ impl fmt::Debug for McpRuntime {
             .field("tool_count", &self.tools.len())
             .field("servers", &self.clients.keys().collect::<Vec<_>>())
             .field("has_runtime_owner", &self.owner.is_some())
+            .field("lifecycle_entries", &self.lifecycle.len())
             .finish()
     }
 }
@@ -74,6 +96,22 @@ impl McpRuntime {
             tools: Arc::new(tools),
             clients: Arc::new(clients),
             owner: None,
+            lifecycle: Arc::new(Vec::new()),
+        }
+    }
+
+    /// Build a runtime with lifecycle state from discovery.
+    #[must_use]
+    pub fn from_clients_with_lifecycle(
+        tools: Vec<ToolDef>,
+        clients: HashMap<String, McpRuntimeClient>,
+        lifecycle: Vec<McpLifecycleState>,
+    ) -> Self {
+        Self {
+            tools: Arc::new(tools),
+            clients: Arc::new(clients),
+            owner: None,
+            lifecycle: Arc::new(lifecycle),
         }
     }
 
@@ -134,6 +172,22 @@ impl McpRuntime {
             _runtime: self.clone(),
         })
     }
+
+    /// Observable lifecycle state for each MCP server (T013).
+    ///
+    /// Returns lifecycle information captured during discovery. Dashboards
+    /// and health checks use this to display MCP connection status without
+    /// owning the transport or performing additional I/O.
+    #[must_use]
+    pub fn lifecycle_state(&self) -> &[McpLifecycleState] {
+        &self.lifecycle
+    }
+
+    /// Number of connected MCP servers.
+    #[must_use]
+    pub fn server_count(&self) -> usize {
+        self.clients.len()
+    }
 }
 
 /// Errors raised while discovering MCP tools for HTTP backends.
@@ -178,6 +232,7 @@ pub async fn discover_mcp_runtime(config: &McpConfig) -> Result<McpRuntime, McpB
 
     let mut all_server_tools = Vec::new();
     let mut clients = HashMap::new();
+    let mut lifecycle_states = Vec::new();
 
     for server in &config.servers {
         if server.transport != McpTransportConfig::Stdio {
@@ -195,21 +250,22 @@ pub async fn discover_mcp_runtime(config: &McpConfig) -> Result<McpRuntime, McpB
         let transport: McpRuntimeTransport = Arc::new(transport);
         let client = Arc::new(McpClient::new(transport));
 
-        match timeout(MCP_DISCOVERY_TIMEOUT, client.initialize()).await {
-            Ok(Ok(_)) => {}
-            Ok(Err(source)) => {
-                return Err(McpBridgeError::Initialize {
-                    server: server.name.clone(),
-                    source,
-                });
-            }
-            Err(_) => {
-                return Err(McpBridgeError::InitializeTimeout {
-                    server: server.name.clone(),
-                    timeout_secs: MCP_DISCOVERY_TIMEOUT.as_secs(),
-                });
-            }
-        }
+        let negotiated_capabilities =
+            match timeout(MCP_DISCOVERY_TIMEOUT, client.initialize()).await {
+                Ok(Ok(caps)) => Some(caps),
+                Ok(Err(source)) => {
+                    return Err(McpBridgeError::Initialize {
+                        server: server.name.clone(),
+                        source,
+                    });
+                }
+                Err(_) => {
+                    return Err(McpBridgeError::InitializeTimeout {
+                        server: server.name.clone(),
+                        timeout_secs: MCP_DISCOVERY_TIMEOUT.as_secs(),
+                    });
+                }
+            };
 
         let mcp_tools = match timeout(MCP_DISCOVERY_TIMEOUT, client.list_tools()).await {
             Ok(Ok(tools)) => tools,
@@ -227,17 +283,27 @@ pub async fn discover_mcp_runtime(config: &McpConfig) -> Result<McpRuntime, McpB
             }
         };
 
+        let tool_names: Vec<String> = mcp_tools.iter().map(|t| t.name.clone()).collect();
         let defs = mcp_tools
             .iter()
             .map(|tool| mcp_to_tool_def(tool, &server.name))
             .collect();
         all_server_tools.push((server.name.clone(), defs));
         clients.insert(server.name.clone(), client);
+
+        lifecycle_states.push(McpLifecycleState {
+            server_name: server.name.clone(),
+            last_health_check: Some(Instant::now()),
+            last_error: None,
+            negotiated_capabilities,
+            available_tools: tool_names,
+        });
     }
 
-    Ok(McpRuntime::from_clients(
+    Ok(McpRuntime::from_clients_with_lifecycle(
         dedup_tools(all_server_tools),
         clients,
+        lifecycle_states,
     ))
 }
 

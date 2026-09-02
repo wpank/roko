@@ -129,6 +129,7 @@ pub mod subscriptions;
 pub mod surface_inventory;
 pub mod task_helpers;
 pub mod task_parser;
+pub mod transcript;
 pub mod tui;
 pub mod unified;
 pub mod vision_loop;

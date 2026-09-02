@@ -648,6 +648,16 @@ pub struct ToolTrace {
     pub events: Vec<ToolTraceEvent>,
     /// Terminal outcome.
     pub outcome: ToolOutcome,
+    /// The component that enforced permission/admission checks for this call
+    /// (e.g. `"dispatcher"`, `"safety_layer"`, `"agent_contract"`).
+    /// `None` if no enforcement was applied (should not happen in production).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enforcement_owner: Option<String>,
+    /// The policy source that governed this call's admission
+    /// (e.g. `"role_allowlist"`, `"agent_contract:researcher"`, `"sandbox_policy"`).
+    /// `None` if no explicit policy was applicable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_owner: Option<String>,
 }
 
 impl ToolTrace {
@@ -683,6 +693,8 @@ impl ToolTrace {
             ended_at_ms: self.ended_at_ms,
             events,
             outcome: self.outcome.clone(),
+            enforcement_owner: self.enforcement_owner.clone(),
+            policy_owner: self.policy_owner.clone(),
         }
     }
 }
@@ -853,6 +865,8 @@ impl TraceBuilder {
             ended_at_ms,
             events: std::mem::take(&mut self.events),
             outcome,
+            enforcement_owner: None,
+            policy_owner: None,
         };
         self.sink.finish(trace);
         self.finished = true;
@@ -983,6 +997,8 @@ mod tests {
             ended_at_ms: 1_250,
             events: Vec::new(),
             outcome: ToolOutcome::success(250, 0.01),
+            enforcement_owner: None,
+            policy_owner: None,
         };
         assert_eq!(trace.duration_ms(), 250);
     }
@@ -1008,6 +1024,8 @@ mod tests {
                 ToolTraceEvent::StreamCoerced { at_ms: 3 },
             ],
             outcome: ToolOutcome::success(100, 0.0),
+            enforcement_owner: None,
+            policy_owner: None,
         };
         let idx = trace.find_event_index(|e| matches!(e, ToolTraceEvent::Demotion { .. }));
         assert_eq!(idx, Some(1));
@@ -1242,6 +1260,8 @@ mod tests {
                 at_ms: 1,
             }],
             outcome: ToolOutcome::success(10, 0.0),
+            enforcement_owner: None,
+            policy_owner: None,
         };
         let scrubbed = trace.scrubbed(&scrubber);
 
@@ -1270,6 +1290,8 @@ mod tests {
             ended_at_ms: 10,
             events: Vec::new(),
             outcome: ToolOutcome::success(10, 0.0),
+            enforcement_owner: None,
+            policy_owner: None,
         };
         let scrubbed = trace.scrubbed(&scrubber);
         assert!(!scrubbed.model.contains("sk-ant-api03"));
@@ -1299,6 +1321,8 @@ mod tests {
                 },
             ],
             outcome: ToolOutcome::success(10, 0.0),
+            enforcement_owner: None,
+            policy_owner: None,
         };
         let scrubbed = trace.scrubbed(&scrubber);
         assert_eq!(scrubbed.events.len(), 2);

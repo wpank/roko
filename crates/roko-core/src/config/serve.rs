@@ -17,7 +17,7 @@ pub struct StateHubConfig {
 impl StateHubConfig {
     /// Parse the configured projection-history age window.
     pub fn history_retention_duration(&self) -> Result<std::time::Duration, String> {
-        parse_duration(&self.history_retention)
+        crate::duration::parse_duration(&self.history_retention).map_err(|e| e.to_string())
     }
 }
 
@@ -31,32 +31,6 @@ impl Default for StateHubConfig {
 
 fn default_projection_history_retention() -> String {
     "7d".to_string()
-}
-
-fn parse_duration(value: &str) -> Result<std::time::Duration, String> {
-    let value = value.trim();
-    let split = value
-        .find(|character: char| !character.is_ascii_digit())
-        .ok_or_else(|| "duration requires one of: ms, s, m, h, d".to_string())?;
-    let (amount, unit) = value.split_at(split);
-    let amount = amount
-        .parse::<u64>()
-        .map_err(|error| format!("duration must start with a positive integer: {error}"))?;
-    if amount == 0 {
-        return Err("duration must be greater than zero".to_string());
-    }
-    let multiplier = match unit {
-        "ms" => 1,
-        "s" => 1_000,
-        "m" => 60_000,
-        "h" => 3_600_000,
-        "d" => 86_400_000,
-        _ => return Err("duration unit must be one of: ms, s, m, h, d".to_string()),
-    };
-    amount
-        .checked_mul(multiplier)
-        .map(std::time::Duration::from_millis)
-        .ok_or_else(|| "duration is too large".to_string())
 }
 
 // ---- [serve] -------------------------------------------------------------

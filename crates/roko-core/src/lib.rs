@@ -90,6 +90,8 @@ pub mod decay;
 pub mod defaults;
 
 pub mod demurrage;
+/// Canonical single-unit duration parser (`ms`, `s`, `m`, `h`, `d`).
+pub mod duration;
 pub mod dispatch_plan;
 /// Domain profiles for agent specialization: gate defaults, tool sets, context templates.
 pub mod domain_profile;
@@ -248,6 +250,7 @@ pub use context::Context;
 pub use datum::Datum;
 pub use decay::Decay;
 pub use demurrage::{Demurrage, DemurrageConfig, demurrage_tick};
+pub use duration::{DurationParseError, parse_duration, parse_duration_ms};
 pub use dispatch_plan::{
     ConfigBag, DispatchAttempt, DispatchAttemptKind, DispatchAuthStatus, DispatchCaller,
     DispatchPlan, DispatchRequest, DispatchRequirement, FallbackPolicy, ProviderDispatchError,
@@ -364,7 +367,8 @@ pub use dashboard_snapshot::{
 };
 pub use job::{
     CreateJobRequest, FileJobStore, JobError, JobEvaluation, JobFilter, JobGateResult,
-    JobProgressEntry, JobStats, JobStatus, JobSubmission, JobType, MarketplaceJob, PrdSummary,
+    JobPriority, JobProgressEntry, JobStats, JobStatus, JobSubmission, JobType,
+    LegacyMigrationDiagnostic, MalformedJobFile, MarketplaceJob, PrdSummary,
     TaskSummary as JobTaskSummary,
 };
 pub use lens_registry::{LensConfig, LensRegistration, LensRegistry, parse_scope};

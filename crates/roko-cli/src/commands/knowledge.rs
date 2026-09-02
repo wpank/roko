@@ -264,8 +264,12 @@ pub(crate) async fn cmd_archive(
     }
 
     // Parse duration string (e.g. "30d", "7d", "24h").
-    let max_age_ms = parse_duration_to_ms(older_than)
-        .ok_or_else(|| anyhow!("invalid duration: {older_than} (expected e.g. '30d' or '7d')"))?;
+    let max_age_ms: i64 = roko_core::parse_duration_ms(older_than)
+        .map_err(|e| anyhow!("invalid duration '{older_than}': {e}"))
+        .and_then(|ms| {
+            i64::try_from(ms)
+                .map_err(|_| anyhow!("duration '{older_than}' overflows i64 milliseconds"))
+        })?;
 
     let cutoff_ms = chrono::Utc::now().timestamp_millis() - max_age_ms;
 
@@ -330,22 +334,6 @@ pub(crate) async fn cmd_archive(
     Ok(EXIT_SUCCESS)
 }
 
-/// Parse a human duration string like "30d" or "7d" or "24h" to milliseconds.
-pub(crate) fn parse_duration_to_ms(s: &str) -> Option<i64> {
-    let s = s.trim();
-    if s.is_empty() {
-        return None;
-    }
-    let (num_str, unit) = s.split_at(s.len() - 1);
-    let num: i64 = num_str.parse().ok()?;
-    match unit {
-        "d" => Some(num * 24 * 3600 * 1000),
-        "h" => Some(num * 3600 * 1000),
-        "m" => Some(num * 60 * 1000),
-        "s" => Some(num * 1000),
-        _ => None,
-    }
-}
 
 pub(crate) async fn cmd_neuro(cli: &Cli, cmd: NeuroCmd) -> Result<i32> {
     match cmd {
@@ -730,8 +718,11 @@ pub(crate) async fn cmd_neuro(cli: &Cli, cmd: NeuroCmd) -> Result<i32> {
                 .read_all()
                 .with_context(|| format!("read knowledge store from {}", store.path().display()))?;
 
-            let should_send = direction == "send" || direction == "both";
-            let should_receive = direction == "receive" || direction == "both";
+            let (should_send, should_receive) = match direction {
+                KnowledgeSyncDirection::Send => (true, false),
+                KnowledgeSyncDirection::Receive => (false, true),
+                KnowledgeSyncDirection::Both => (true, true),
+            };
 
             let mut sent_count = 0_usize;
             let mut received_count = 0_usize;
@@ -806,10 +797,16 @@ pub(crate) async fn cmd_neuro(cli: &Cli, cmd: NeuroCmd) -> Result<i32> {
             }
             std::fs::write(&vv_path, serde_json::to_string_pretty(&version_vectors)?)?;
 
+            let direction_str = match direction {
+                KnowledgeSyncDirection::Send => "send",
+                KnowledgeSyncDirection::Receive => "receive",
+                KnowledgeSyncDirection::Both => "both",
+            };
+
             if cli.json {
                 let payload = serde_json::json!({
                     "peer": peer,
-                    "direction": direction,
+                    "direction": direction_str,
                     "sent": sent_count,
                     "received": received_count,
                     "local_seq": new_seq,
@@ -819,7 +816,7 @@ pub(crate) async fn cmd_neuro(cli: &Cli, cmd: NeuroCmd) -> Result<i32> {
             }
 
             println!("Mesh sync with peer '{peer}':");
-            println!("  direction: {direction}");
+            println!("  direction: {direction_str}");
             println!("  sent: {sent_count} engrams");
             println!("  received: {received_count} engrams (0.7x confidence discount)");
             println!("  local sequence: {new_seq}");

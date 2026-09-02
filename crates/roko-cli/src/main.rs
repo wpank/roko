@@ -1038,6 +1038,21 @@ Examples:
         #[arg(long, default_value_t = 1)]
         depth: u8,
     },
+
+    // ── Hidden: dynamic completion endpoint ───────────────────────────
+    /// Internal: emit newline-delimited completion candidates for shells.
+    #[command(name = "__complete", hide = true)]
+    Complete {
+        /// Shell requesting completions (bash, zsh, fish).
+        #[arg(long)]
+        shell: CompletionShell,
+        /// Space-separated command path typed so far (e.g. "config providers").
+        #[arg(long, default_value = "")]
+        path: String,
+        /// The word currently being completed.
+        #[arg(long, default_value = "")]
+        current: String,
+    },
 }
 
 // -----------------------------------------------------------------------
@@ -1153,8 +1168,8 @@ enum KnowledgeCmd {
         #[arg(long)]
         workdir: Option<PathBuf>,
         /// Direction: send, receive, or both (default: both).
-        #[arg(long, default_value = "both")]
-        direction: String,
+        #[arg(long, value_enum, default_value = "both")]
+        direction: KnowledgeSyncDirection,
         /// Maximum engrams to send in this sync cycle.
         #[arg(long, default_value_t = 100)]
         max_send: usize,
@@ -1553,6 +1568,20 @@ enum CompletionShell {
 }
 
 // (CustodyCmd, DreamCmd, DreamsCmd moved into KnowledgeCmd above)
+
+/// Direction for knowledge mesh sync operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum KnowledgeSyncDirection {
+    /// Send local knowledge to the peer.
+    #[value(name = "send")]
+    Send,
+    /// Receive knowledge from the peer.
+    #[value(name = "receive")]
+    Receive,
+    /// Send and receive (bidirectional sync).
+    #[value(name = "both")]
+    Both,
+}
 
 /// Execution engine for `roko plan run`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
@@ -2219,7 +2248,7 @@ enum NeuroCmd {
     Sync {
         peer: String,
         workdir: Option<PathBuf>,
-        direction: String,
+        direction: KnowledgeSyncDirection,
         max_send: usize,
     },
 }
@@ -2400,9 +2429,12 @@ enum ConfigCmd {
         /// Working directory (default: current directory).
         #[arg(long)]
         workdir: Option<PathBuf>,
-        /// Deployment target (currently only "railway" is supported).
+        /// Deployment target: railway, docker, or fly.
         #[arg(long)]
         env: Option<String>,
+        /// Write output to a file instead of stdout.
+        #[arg(long)]
+        output: Option<PathBuf>,
     },
 
     // ── Providers ───────────────────────────────────────────────────
@@ -3524,6 +3556,14 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
         } => commands::auth::cmd_login(&url, api_key, check, &dashboard_url).await,
         Command::Logout => commands::auth::cmd_logout(),
         Command::Whoami => commands::auth::cmd_whoami().await,
+        Command::Complete {
+            shell: _,
+            path,
+            current,
+        } => {
+            commands::util::cmd_complete(&path, &current);
+            Ok(EXIT_SUCCESS)
+        }
     }
 }
 
@@ -4688,6 +4728,72 @@ mod tests {
         ])
         .unwrap();
         assert!(matches!(cli.command, Some(Command::Inject { .. })));
+    }
+
+    #[test]
+    fn inject_fail_closed_directive() {
+        let cli = Cli::try_parse_from(["roko", "inject", "sess-1", "do something"]).unwrap();
+        let code = commands::util::cmd_inject(
+            &cli,
+            "sess-1".into(),
+            "directive",
+            "do something".into(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            code, EXIT_FAILURE,
+            "inject must return non-zero when no transport exists"
+        );
+    }
+
+    #[test]
+    fn inject_fail_closed_abort() {
+        let cli =
+            Cli::try_parse_from(["roko", "inject", "sess-1", "", "--kind", "abort"]).unwrap();
+        let code =
+            commands::util::cmd_inject(&cli, "sess-1".into(), "abort", String::new(), None)
+                .unwrap();
+        assert_eq!(
+            code, EXIT_FAILURE,
+            "inject abort must return non-zero when no transport exists"
+        );
+    }
+
+    #[test]
+    fn inject_fail_closed_context() {
+        let cli = Cli::try_parse_from(["roko", "inject", "sess-1", "ctx data"]).unwrap();
+        let code = commands::util::cmd_inject(
+            &cli,
+            "sess-1".into(),
+            "context",
+            "ctx data".into(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            code, EXIT_FAILURE,
+            "inject context must return non-zero when no transport exists"
+        );
+    }
+
+    #[test]
+    fn inject_fail_closed_json_has_code_and_message() {
+        let cli =
+            Cli::try_parse_from(["roko", "--json", "inject", "sess-1", "payload"]).unwrap();
+        assert!(cli.json, "json flag must be set");
+        let code = commands::util::cmd_inject(
+            &cli,
+            "sess-1".into(),
+            "directive",
+            "payload".into(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            code, EXIT_FAILURE,
+            "inject JSON must return non-zero when no transport exists"
+        );
     }
 
     #[test]

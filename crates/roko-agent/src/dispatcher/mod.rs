@@ -42,6 +42,7 @@ use roko_core::tool::{
     ToolCall, ToolContext, ToolDef, ToolError, ToolHandler, ToolRegistry, ToolResult, ToolSource,
 };
 use roko_core::{Body, Kind, Provenance, Signal, ToolPermissions};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::safety::{CorrigibilityHook, HookDecision, SafetyLayer, TaintLevelHook};
@@ -261,6 +262,40 @@ where
 /// over an `EventBus` and publish an `AgentEvent::SafetyDenial`.
 pub type SafetyDenialCallback = Arc<dyn Fn(String, String, String, i64) + Send + Sync>;
 
+/// Provenance snapshot of the effective tool catalog at the time of dispatch.
+///
+/// Records which tools were available, who owned execution authority, and
+/// what policy governed the call — so that audit and replay can reconstruct
+/// the exact authorization state that applied.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EffectiveCatalogSnapshot {
+    /// Number of tools in the active registry at dispatch time.
+    pub tool_count: usize,
+    /// The entity (runner, agent, sidecar) that owns execution authority.
+    pub execution_owner: String,
+    /// The entity (role, profile, contract) that owns policy authority.
+    pub policy_owner: String,
+    /// Whether a profile-based tool selector was active.
+    pub selector_active: bool,
+    /// Whether an extension hook chain was active.
+    pub hook_chain_active: bool,
+    /// Whether the production (IFC/corrigibility) hook chain was active.
+    pub production_hooks_active: bool,
+}
+
+impl Default for EffectiveCatalogSnapshot {
+    fn default() -> Self {
+        Self {
+            tool_count: 0,
+            execution_owner: "unknown".to_string(),
+            policy_owner: "unknown".to_string(),
+            selector_active: false,
+            hook_chain_active: false,
+            production_hooks_active: false,
+        }
+    }
+}
+
 /// Dispatches [`ToolCall`]s through validation → safety → authorization → handler.
 pub struct ToolDispatcher {
     registry: Arc<dyn ToolRegistry>,
@@ -382,6 +417,28 @@ impl ToolDispatcher {
     #[must_use]
     pub const fn tool_selector(&self) -> Option<&tool_selector::ToolSelector> {
         self.tool_selector.as_ref()
+    }
+
+    /// Snapshot the effective catalog state for audit/replay provenance.
+    ///
+    /// The snapshot captures the tool count, whether selectors/hooks are
+    /// active, and the execution/policy owner identifiers. Callers embed
+    /// this in dispatch results so that offline replay can reconstruct
+    /// exactly what authorization state applied.
+    #[must_use]
+    pub fn effective_catalog_snapshot(
+        &self,
+        execution_owner: impl Into<String>,
+        policy_owner: impl Into<String>,
+    ) -> EffectiveCatalogSnapshot {
+        EffectiveCatalogSnapshot {
+            tool_count: self.registry.all().len(),
+            execution_owner: execution_owner.into(),
+            policy_owner: policy_owner.into(),
+            selector_active: self.tool_selector.is_some(),
+            hook_chain_active: self.hook_chain.is_some(),
+            production_hooks_active: self.production_hook_chain.is_some(),
+        }
     }
 
     /// Attach a callback for safety denial audit events.
@@ -532,6 +589,16 @@ impl ToolDispatcher {
             );
             return ToolResult::err(err);
         };
+        // 2a. T029: Enforce ToolDef::timeout_ms — effective deadline is the
+        //     minimum of the context-level timeout and the per-tool definition
+        //     timeout. Record which source was the limiting factor.
+        let def_timeout = Duration::from_millis(def.timeout_ms);
+        let (timeout, timeout_source) = if def_timeout < timeout {
+            (def_timeout, "tool_definition")
+        } else {
+            (timeout, "context")
+        };
+        let timeout_ms = duration_to_ms(timeout);
         // 2b. Profile-based tool selector check (TOOL-03).
         if let Some(ref selector) = self.tool_selector
             && !selector.is_allowed(&call.name)
@@ -638,12 +705,10 @@ impl ToolDispatcher {
                 "FAILED at safety pre-execution"
             );
             if let Some(ref cb) = self.safety_denial_callback {
-                // task_id is not available on ToolContext; callers in roko-cli
-                // may derive it from outer task state before wiring the callback.
                 cb(
                     call.name.clone(),
                     self.sanitize_audit_label(&e.to_string()),
-                    String::new(),
+                    ctx.correlation.task_id.clone(),
                     chrono::Utc::now().timestamp_millis(),
                 );
             }
@@ -703,6 +768,7 @@ impl ToolDispatcher {
             &json!({
                 "handler": handler_name,
                 "timeout_ms": timeout_ms,
+                "timeout_source": timeout_source,
             }),
         );
         // Capture source taint before awaiting the handler. Any external
@@ -900,35 +966,82 @@ impl ToolDispatcher {
         result: &ToolResult,
         timeout_ms: u64,
     ) {
-        match result {
+        let execution_owner = &ctx.correlation.agent_id;
+        let (phase_status, details) = match result {
             ToolResult::Ok {
                 content,
                 artifacts,
                 is_structured,
-            } => self.emit_audit(
-                ctx,
-                call,
-                "completion",
+            } => (
                 "succeeded",
-                &json!({
+                json!({
                     "content_bytes": content.len(),
                     "artifacts": artifacts.len(),
                     "is_structured": is_structured,
                     "timeout_ms": timeout_ms,
+                    "correlation": &ctx.correlation,
+                    "execution_owner": execution_owner,
                 }),
             ),
-            ToolResult::Err(err) => self.emit_audit(
-                ctx,
-                call,
-                "completion",
+            ToolResult::Err(err) => (
                 "failed",
-                &json!({
+                json!({
                     "error": self.sanitize_audit_label(&err.to_string()),
                     "error_kind": tool_error_kind(err),
                     "timeout_ms": timeout_ms,
+                    "correlation": &ctx.correlation,
+                    "execution_owner": execution_owner,
                 }),
             ),
-        }
+        };
+        // T030: Single emission point that fans out to audit, trace, and metrics sinks.
+        self.emit_audit(ctx, call, "completion", phase_status, &details);
+        // Fan out the canonical terminal observation to trace and metrics sinks.
+        // The trace sink receives a HandlerFinished event; the metrics sink
+        // receives a tool-level completion observation keyed by tool name.
+        let (content_bytes, artifact_count) = match result {
+            ToolResult::Ok {
+                content, artifacts, ..
+            } => (
+                content.len(),
+                u32::try_from(artifacts.len()).unwrap_or(u32::MAX),
+            ),
+            ToolResult::Err(_) => (0, 0),
+        };
+        let trace_event = roko_core::tool::ToolTraceEvent::HandlerFinished {
+            exit_ms: timeout_ms,
+            bytes_out: content_bytes,
+            artifacts_count: artifact_count,
+            at_ms: chrono::Utc::now().timestamp_millis(),
+        };
+        // Generate a trace ID from timestamp + hash of call details.
+        let trace_bytes = {
+            let ts = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0) as u64;
+            let mut b = [0u8; 16];
+            b[..8].copy_from_slice(&ts.to_le_bytes());
+            // Use call name hash for remaining bytes.
+            let h = {
+                use std::hash::{Hash, Hasher};
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                call.name.hash(&mut hasher);
+                call.id.hash(&mut hasher);
+                hasher.finish()
+            };
+            b[8..16].copy_from_slice(&h.to_le_bytes());
+            b
+        };
+        ctx.trace_sink.append(
+            roko_core::tool::TraceId::from_bytes(trace_bytes),
+            trace_event,
+        );
+        let metrics_key = roko_core::tool::MetricsKey::new(
+            &call.name,
+            &ctx.correlation.agent_id,
+            roko_core::AgentRole::Implementer,
+            roko_core::tool::ToolFormat::OpenAiJson,
+        );
+        let metrics = roko_core::tool::ToolMetrics::empty();
+        ctx.metrics_sink.record(&metrics_key, &metrics);
     }
 
     fn sanitize_audit_details(&self, details: &Value) -> Value {

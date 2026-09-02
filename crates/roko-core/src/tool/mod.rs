@@ -65,6 +65,7 @@ pub mod bandit;
 pub mod call;
 pub mod def;
 pub mod discovery;
+pub mod execution_record;
 pub mod format;
 pub mod handler;
 pub mod metrics;
@@ -73,15 +74,19 @@ pub mod registry;
 pub mod relevance;
 pub mod role_allowlist;
 pub mod trace;
+/// RAII guard ensuring TraceSink::finish is called on every terminal path.
+pub mod trace_finish_guard;
+pub mod transcript;
 
 pub use aliases::{ALIASES, ToolAlias};
 pub use bandit::{ArmEntry, BanditKey, EpsilonGreedyBandit, FormatBandit, ProfileBandit};
 pub use call::{Artifact, ToolCall, ToolError, ToolResult};
 pub use def::{ToolCategory, ToolConcurrency, ToolDef, ToolPermission, ToolSchema, ToolSource};
+pub use execution_record::{ToolExecutionEnvelope, ToolExecutionRecord};
 pub use format::{ToolFormat, ToolFormatProfile, profile_for_model};
 pub use handler::{
-    AtomicCancel, AuditSink, CancelToken, ExternalAction, NeverCancel, NoopAuditSink, ToolContext,
-    ToolHandler,
+    AtomicCancel, AuditSink, CancelToken, CorrelationEnvelope, ExternalAction, NeverCancel,
+    NoopAuditSink, ToolContext, ToolHandler,
 };
 pub use metrics::{
     MetricsKey, MetricsSink, NoopMetricsSink, RewardConfig, ToolMetrics, compute_reward,
@@ -95,3 +100,5 @@ pub use trace::{
     CancelSource, FailureKind, FailureTrace, NoopTraceSink, ToolOutcome, ToolTrace, ToolTraceEvent,
     TraceBuilder, TraceId, TraceSink, TraceStep, classify_tool_error,
 };
+pub use trace_finish_guard::TraceFinishGuard;
+pub use transcript::{ToolLifecycleStatus, TranscriptEvent, TranscriptEventMeta, TranscriptRecord};

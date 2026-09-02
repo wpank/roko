@@ -2,10 +2,15 @@
 //! [`Agent`](crate::agent::Agent) trait.
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use roko_core::extension::CamelTaintLevel;
-use roko_core::tool::{ToolContext, ToolDef};
+use roko_core::tool::{
+    AuditSink, CancelToken, CorrelationEnvelope, MetricsSink, NeverCancel, NoopAuditSink,
+    NoopMetricsSink, NoopTraceSink, ToolContext, ToolDef, ToolPermission, TraceSink,
+};
 use roko_core::{Body, Context, Kind, Signal};
 use roko_fs::RokoLayout;
 
@@ -30,6 +35,14 @@ pub struct ToolLoopAgent {
     immune_root_path: Option<PathBuf>,
     input_messages: Vec<ModelInputMessage>,
     input_format: MultimodalInputFormat,
+    // Production dispatch policy fields (T026/T027/T032)
+    timeout: Duration,
+    capabilities: ToolPermission,
+    audit_sink: Arc<dyn AuditSink>,
+    trace_sink: Arc<dyn TraceSink>,
+    metrics_sink: Arc<dyn MetricsSink>,
+    cancel_token: Arc<dyn CancelToken>,
+    correlation: CorrelationEnvelope,
 }
 
 /// Provider-facing format used for the initial structured message history.
@@ -58,6 +71,19 @@ impl ToolLoopAgent {
             worktree_path,
             input_messages: Vec::new(),
             input_format: MultimodalInputFormat::default(),
+            timeout: Duration::from_secs(60),
+            capabilities: ToolPermission {
+                read: true,
+                write: true,
+                exec: true,
+                git: true,
+                network: false,
+            },
+            audit_sink: Arc::new(NoopAuditSink),
+            trace_sink: Arc::new(NoopTraceSink),
+            metrics_sink: Arc::new(NoopMetricsSink),
+            cancel_token: Arc::new(NeverCancel),
+            correlation: CorrelationEnvelope::empty(),
         }
     }
 
@@ -112,6 +138,76 @@ impl ToolLoopAgent {
     ) -> Self {
         self.input_format = input_format;
         self
+    }
+
+    /// Override the tool-call timeout used for the production `ToolContext`.
+    #[must_use]
+    pub const fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// Override the capability flags granted to tool handlers.
+    #[must_use]
+    pub const fn with_capabilities(mut self, capabilities: ToolPermission) -> Self {
+        self.capabilities = capabilities;
+        self
+    }
+
+    /// Attach a real audit sink for production dispatch.
+    #[must_use]
+    pub fn with_audit_sink(mut self, sink: Arc<dyn AuditSink>) -> Self {
+        self.audit_sink = sink;
+        self
+    }
+
+    /// Attach a real trace sink for production dispatch.
+    #[must_use]
+    pub fn with_trace_sink(mut self, sink: Arc<dyn TraceSink>) -> Self {
+        self.trace_sink = sink;
+        self
+    }
+
+    /// Attach a real metrics sink for production dispatch.
+    #[must_use]
+    pub fn with_metrics_sink(mut self, sink: Arc<dyn MetricsSink>) -> Self {
+        self.metrics_sink = sink;
+        self
+    }
+
+    /// Wire the active agent cancellation token (T027).
+    #[must_use]
+    pub fn with_cancel_token(mut self, token: Arc<dyn CancelToken>) -> Self {
+        self.cancel_token = token;
+        self
+    }
+
+    /// Attach correlation metadata for trace/audit joining (T032).
+    #[must_use]
+    pub fn with_correlation(mut self, correlation: CorrelationEnvelope) -> Self {
+        self.correlation = correlation;
+        self
+    }
+
+    /// Build a production [`ToolContext`] using the configured sinks,
+    /// cancel token, capabilities, and correlation data.
+    fn build_tool_context(&self) -> ToolContext {
+        ToolContext::production(
+            &self.worktree_path,
+            self.timeout,
+            self.capabilities,
+            Arc::clone(&self.audit_sink),
+            Arc::clone(&self.trace_sink),
+            Arc::clone(&self.metrics_sink),
+            Arc::clone(&self.cancel_token),
+            self.correlation.clone(),
+        )
+        .with_immune_root(
+            self.immune_root_path
+                .as_deref()
+                .unwrap_or(&self.worktree_path),
+        )
+        .with_taint_level(CamelTaintLevel::External)
     }
 
     fn structured_messages(&self) -> Vec<serde_json::Value> {
@@ -204,13 +300,7 @@ impl ToolLoopAgent {
 impl Agent for ToolLoopAgent {
     async fn run(&self, input: &Signal, ctx: &Context) -> AgentResult {
         let prompt = input.body.as_text().unwrap_or_default();
-        let tool_ctx = ToolContext::testing(&self.worktree_path)
-            .with_immune_root(
-                self.immune_root_path
-                    .as_deref()
-                    .unwrap_or(&self.worktree_path),
-            )
-            .with_taint_level(CamelTaintLevel::External);
+        let tool_ctx = self.build_tool_context();
         let tool_loop = match self.checkpoint_path(ctx) {
             Some(path) => self.tool_loop.clone().with_checkpoint_path(path),
             None => self.tool_loop.clone(),
@@ -297,13 +387,7 @@ impl Agent for ToolLoopAgent {
         event_tx: mpsc::Sender<StreamChunk>,
     ) -> AgentResult {
         let prompt = input.body.as_text().unwrap_or_default();
-        let tool_ctx = ToolContext::testing(&self.worktree_path)
-            .with_immune_root(
-                self.immune_root_path
-                    .as_deref()
-                    .unwrap_or(&self.worktree_path),
-            )
-            .with_taint_level(CamelTaintLevel::External);
+        let tool_ctx = self.build_tool_context();
         let tool_loop = match self.checkpoint_path(ctx) {
             Some(path) => self.tool_loop.clone().with_checkpoint_path(path),
             None => self.tool_loop.clone(),

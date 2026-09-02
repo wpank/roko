@@ -29,6 +29,45 @@ use super::trace::{NoopTraceSink, TraceSink};
 use crate::Engram;
 use crate::extension::CamelTaintLevel;
 
+// ─── CorrelationEnvelope ─────────────────────────────────────────────────
+
+/// Correlation metadata threaded through every tool call so that trace,
+/// metric, and audit records can be joined back to the originating run,
+/// task, attempt, turn, and agent without relying on thread-local or
+/// ambient state.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CorrelationEnvelope {
+    /// Stable identifier for the current plan/runner execution.
+    #[serde(default)]
+    pub run_id: String,
+    /// Identifier of the task being executed (from tasks.toml).
+    #[serde(default)]
+    pub task_id: String,
+    /// Attempt counter for this task (retries after gate failure).
+    #[serde(default)]
+    pub attempt_id: String,
+    /// Sequential turn number within the current tool-loop session.
+    #[serde(default)]
+    pub turn_id: String,
+    /// Name or identifier of the agent executing the call.
+    #[serde(default)]
+    pub agent_id: String,
+}
+
+impl CorrelationEnvelope {
+    /// Empty envelope (all fields are empty strings).
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            run_id: String::new(),
+            task_id: String::new(),
+            attempt_id: String::new(),
+            turn_id: String::new(),
+            agent_id: String::new(),
+        }
+    }
+}
+
 /// A mutating side effect performed by a tool during agent execution.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExternalAction {
@@ -261,6 +300,8 @@ pub struct ToolContext {
     /// The shared cell is monotonic: handlers and the dispatcher may raise
     /// the level after consuming untrusted data, but can never lower it.
     taint_level: Arc<RwLock<CamelTaintLevel>>,
+    /// Correlation envelope linking this call to its run/task/attempt/turn/agent.
+    pub correlation: CorrelationEnvelope,
 }
 
 impl ToolContext {
@@ -289,6 +330,42 @@ impl ToolContext {
             cancel_token,
             external_actions: Arc::new(RwLock::new(Vec::new())),
             taint_level: Arc::new(RwLock::new(CamelTaintLevel::Trusted)),
+            correlation: CorrelationEnvelope::empty(),
+        }
+    }
+
+    /// Construct a production context with all real sinks, cancellation,
+    /// and correlation metadata.
+    ///
+    /// This replaces ad-hoc `ToolContext::testing` in non-test code paths.
+    /// The caller supplies the real role capabilities, deadline, cancel
+    /// token, sinks, and correlation data from the active runner state.
+    #[must_use]
+    pub fn production(
+        worktree_path: impl Into<PathBuf>,
+        timeout: Duration,
+        capabilities: ToolPermission,
+        audit_sink: Arc<dyn AuditSink>,
+        trace_sink: Arc<dyn TraceSink>,
+        metrics_sink: Arc<dyn MetricsSink>,
+        cancel_token: Arc<dyn CancelToken>,
+        correlation: CorrelationEnvelope,
+    ) -> Self {
+        let worktree_path = worktree_path.into();
+        Self {
+            immune_root_path: normalize_immune_root(&worktree_path),
+            worktree_path,
+            timeout,
+            capabilities,
+            allowed_tools: None,
+            denied_tools: None,
+            audit_sink,
+            trace_sink,
+            metrics_sink,
+            cancel_token,
+            external_actions: Arc::new(RwLock::new(Vec::new())),
+            taint_level: Arc::new(RwLock::new(CamelTaintLevel::Trusted)),
+            correlation,
         }
     }
 
@@ -316,6 +393,7 @@ impl ToolContext {
             cancel_token: Arc::new(NeverCancel),
             external_actions: Arc::new(RwLock::new(Vec::new())),
             taint_level: Arc::new(RwLock::new(CamelTaintLevel::Trusted)),
+            correlation: CorrelationEnvelope::empty(),
         }
     }
 
@@ -376,6 +454,13 @@ impl ToolContext {
     pub fn with_immune_root(mut self, immune_root: impl Into<PathBuf>) -> Self {
         let immune_root = immune_root.into();
         self.immune_root_path = normalize_immune_root(&immune_root);
+        self
+    }
+
+    /// Replace the correlation envelope (builder-style).
+    #[must_use]
+    pub fn with_correlation(mut self, correlation: CorrelationEnvelope) -> Self {
+        self.correlation = correlation;
         self
     }
 
@@ -445,6 +530,7 @@ impl std::fmt::Debug for ToolContext {
             .field("cancel_token", &"Arc<dyn CancelToken>")
             .field("external_actions", &"Arc<RwLock<Vec<ExternalAction>>>")
             .field("taint_level", &self.taint_level())
+            .field("correlation", &self.correlation)
             .finish()
     }
 }
@@ -594,5 +680,66 @@ mod tests {
         let handler: Arc<dyn ToolHandler> = Arc::new(EchoHandler);
         assert_eq!(handler.name(), "echo");
         assert_send_sync::<EchoHandler>();
+    }
+
+    #[test]
+    fn correlation_envelope_empty_has_empty_strings() {
+        let env = CorrelationEnvelope::empty();
+        assert!(env.run_id.is_empty());
+        assert!(env.task_id.is_empty());
+        assert!(env.attempt_id.is_empty());
+        assert!(env.turn_id.is_empty());
+        assert!(env.agent_id.is_empty());
+    }
+
+    #[test]
+    fn correlation_envelope_serde_roundtrip() {
+        let env = CorrelationEnvelope {
+            run_id: "run-1".into(),
+            task_id: "task-2".into(),
+            attempt_id: "attempt-3".into(),
+            turn_id: "turn-4".into(),
+            agent_id: "agent-5".into(),
+        };
+        let json = serde_json::to_string(&env).unwrap();
+        let decoded: CorrelationEnvelope = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, env);
+    }
+
+    #[test]
+    fn context_production_carries_correlation() {
+        let correlation = CorrelationEnvelope {
+            run_id: "run-abc".into(),
+            task_id: "task-xyz".into(),
+            attempt_id: "1".into(),
+            turn_id: "5".into(),
+            agent_id: "impl-agent".into(),
+        };
+        let ctx = ToolContext::production(
+            "/tmp/prod",
+            Duration::from_secs(30),
+            ToolPermission::read_only(),
+            Arc::new(NoopAuditSink),
+            Arc::new(NoopTraceSink),
+            Arc::new(NoopMetricsSink),
+            Arc::new(NeverCancel),
+            correlation.clone(),
+        );
+        assert_eq!(ctx.correlation, correlation);
+        assert_eq!(ctx.timeout, Duration::from_secs(30));
+        assert!(ctx.capabilities.read);
+        assert!(!ctx.capabilities.write);
+    }
+
+    #[test]
+    fn context_with_correlation_builder() {
+        let ctx = ToolContext::testing("/tmp/cor").with_correlation(CorrelationEnvelope {
+            run_id: "r1".into(),
+            task_id: "t1".into(),
+            ..Default::default()
+        });
+        assert_eq!(ctx.correlation.run_id, "r1");
+        assert_eq!(ctx.correlation.task_id, "t1");
+        assert!(ctx.correlation.agent_id.is_empty());
     }
 }

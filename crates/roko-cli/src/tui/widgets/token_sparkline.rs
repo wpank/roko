@@ -178,22 +178,44 @@ pub fn render_token_sparkline(
         } else {
             0.0
         };
+        let min_val = *display.iter().min().unwrap_or(&0);
+        let max_val = *display.iter().max().unwrap_or(&1);
+        let range_label = format!("{}-{}", fmt_tokens(min_val), fmt_tokens(max_val));
+        let rate_label = fmt_rate(rate);
         let spark_w = inner_width
-            .saturating_sub(fmt_tokens(snapshot.total_tokens).len() + fmt_rate(rate).len() + 4)
+            .saturating_sub(range_label.len() + rate_label.len() + 5)
             .max(8);
         let mut spans = vec![Span::styled(
-            format!(" {} ", fmt_tokens(snapshot.total_tokens)),
-            Style::default().fg(Theme::BONE_DIM),
+            format!(" {} ", range_label),
+            Style::default().fg(Theme::TEXT_GHOST),
         )];
-        spans.extend(braille::braille_spans_u64(&display, spark_w, pulsed_color));
+        // Use gradient coloring: dim for low values, bright rose for peaks
+        let normalized: Vec<f64> = {
+            let min_f = min_val as f64;
+            let range_f = (max_val - min_val).max(1) as f64;
+            display
+                .iter()
+                .map(|&v| (v as f64 - min_f) / range_f)
+                .collect()
+        };
+        spans.extend(braille::braille_spans_gradient(
+            &normalized,
+            1.0,
+            spark_w,
+            Theme::ROSE_DIM,
+            pulsed_color,
+        ));
         spans.push(Span::styled(
-            format!(" {} ", fmt_rate(rate)),
+            format!(" {} ", rate_label),
             Style::default().fg(Theme::ROSE),
         ));
         lines.push(Line::from(spans));
     } else {
         lines.push(Line::from(Span::styled(
-            format!(" {} waiting for data...", state.atmosphere.spinner()),
+            format!(
+                " {} Token usage will appear during provider calls",
+                state.atmosphere.spinner()
+            ),
             Style::default().fg(Theme::TEXT_DIM),
         )));
     }

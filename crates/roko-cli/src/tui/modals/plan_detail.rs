@@ -266,6 +266,38 @@ fn render_plan(
             Span::styled(format!("{:<14}", task_status), phase_style),
             Span::styled(task.name.as_str(), outcome_style),
         ]));
+
+        // Dependencies line (P5.1).
+        if !task.depends_on.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled("    Deps: ", theme.muted()),
+                Span::styled(task.depends_on.join(", "), theme.text()),
+            ]));
+        }
+
+        // Acceptance criteria (P5.2).
+        if let Some(acceptance) = &task.acceptance_text {
+            lines.push(Line::from(vec![
+                Span::styled("    Accept: ", theme.muted()),
+                Span::styled(acceptance.as_str(), theme.text()),
+            ]));
+        }
+
+        // Verify command (P5.2).
+        if let Some(verify) = &task.verify_command {
+            lines.push(Line::from(vec![
+                Span::styled("    Verify: ", theme.muted()),
+                Span::styled(verify.as_str(), theme.info()),
+            ]));
+        }
+
+        // Start time (P5.5).
+        if let Some(started) = &task.started_at {
+            lines.push(Line::from(vec![
+                Span::styled("    Started: ", theme.muted()),
+                Span::styled(started.as_str(), theme.text()),
+            ]));
+        }
     }
 
     let paragraph = Paragraph::new(lines)

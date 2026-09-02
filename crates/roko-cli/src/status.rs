@@ -35,6 +35,13 @@ pub struct SessionStatus {
     pub total_cost_usd: Option<f64>,
     /// Recorded cost for the current UTC day in USD.
     pub today_cost_usd: Option<f64>,
+    /// Remaining ETA minutes from the critical-path computation.
+    pub critical_path_eta_minutes: Option<u32>,
+    /// Runner phase from `status.json` (e.g. "dispatch", "gate", "idle",
+    /// "completed", "stale/offline").
+    pub runner_phase: Option<String>,
+    /// Whether a runner process is actively writing `status.json`.
+    pub runner_active: bool,
     /// Durable process-session ledger path, when readable or configured.
     pub process_session_ledger: Option<PathBuf>,
     /// Durable process-session state summary for restart/resume diagnosis.
@@ -55,6 +62,9 @@ impl SessionStatus {
             cfactor: None,
             total_cost_usd: None,
             today_cost_usd: None,
+            critical_path_eta_minutes: None,
+            runner_phase: None,
+            runner_active: false,
             process_session_ledger: None,
             process_sessions: None,
         }
@@ -79,6 +89,13 @@ impl SessionStatus {
             }
         ));
 
+        if let Some(phase) = &self.runner_phase {
+            lines.push(format!(
+                "runner : {phase}{}",
+                if self.runner_active { "" } else { " (stale)" }
+            ));
+        }
+
         if let Some(n) = self.signal_count {
             lines.push(format!("signals: {n}"));
         }
@@ -96,6 +113,9 @@ impl SessionStatus {
         }
         if let Some(cost) = self.today_cost_usd {
             lines.push(format!("today cost: ${:.4}", cost.max(0.0)));
+        }
+        if let Some(eta) = self.critical_path_eta_minutes {
+            lines.push(format!("critical-path ETA: {eta}m"));
         }
         if let Some(summary) = &self.process_sessions {
             lines.push(format!(
@@ -152,6 +172,9 @@ impl SessionStatus {
             "cfactor": &self.cfactor,
             "total_cost_usd": self.total_cost_usd,
             "today_cost_usd": self.today_cost_usd,
+            "critical_path_eta_minutes": self.critical_path_eta_minutes,
+            "runner_phase": &self.runner_phase,
+            "runner_active": self.runner_active,
             "process_session_ledger": self
                 .process_session_ledger
                 .as_ref()
@@ -196,6 +219,25 @@ pub fn collect_session_status_with_process_ledger(
     let (episode_count, last_episode_passed) = read_episode_summary(workdir);
     let process_sessions = read_process_session_summary(ledger_path, stale_after_ms);
 
+    // Read lightweight runner status from status.json for phase/liveness.
+    let state_dir = workdir.join(".roko").join("state");
+    let runner_status = crate::runner::status_file::read_runner_status(&state_dir);
+    let runner_active = runner_status.is_live();
+    let runner_phase = match &runner_status {
+        crate::runner::status_file::RunnerStatusRead::Live(s) => {
+            let phase = if s.current_phase.is_empty() {
+                &s.phase
+            } else {
+                &s.current_phase
+            };
+            Some(phase.clone())
+        }
+        crate::runner::status_file::RunnerStatusRead::Stale(s) => {
+            Some(format!("stale/offline (was: {})", s.phase))
+        }
+        crate::runner::status_file::RunnerStatusRead::Missing => None,
+    };
+
     SessionStatus {
         session_id: daemon_info.as_ref().map(|info| info.session_id.clone()),
         workdir: workdir.to_path_buf(),
@@ -208,6 +250,9 @@ pub fn collect_session_status_with_process_ledger(
         cfactor: None,
         total_cost_usd: None,
         today_cost_usd: None,
+        critical_path_eta_minutes: None,
+        runner_phase,
+        runner_active,
         process_session_ledger: Some(ledger_path.to_path_buf()),
         process_sessions,
     }
@@ -290,6 +335,9 @@ mod tests {
             cfactor: None,
             total_cost_usd: Some(12.5),
             today_cost_usd: Some(1.25),
+            critical_path_eta_minutes: None,
+            runner_phase: None,
+            runner_active: false,
             process_session_ledger: None,
             process_sessions: None,
         };
@@ -323,6 +371,9 @@ mod tests {
             cfactor: None,
             total_cost_usd: Some(4.2),
             today_cost_usd: Some(0.7),
+            critical_path_eta_minutes: None,
+            runner_phase: None,
+            runner_active: false,
             process_session_ledger: None,
             process_sessions: None,
         };

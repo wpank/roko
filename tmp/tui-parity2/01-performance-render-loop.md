@@ -710,3 +710,10 @@ bottleneck is the **250ms poll timeout** that gates the entire event loop. A
 single constant change (P0) would bring the TUI from 2.1 FPS to 30-60 FPS. The
 remaining fixes (P1-P9) address CPU efficiency and occasional stalls but are not
 required for the target frame rate.
+
+---
+
+## Implementation Status (2026-09-02 swarm)
+
+`Theme::from_env()` per-frame rebuild eliminated (task #1): theme instance cached in App
+struct, called once at startup instead of every frame. p95 draw benchmark remains open.

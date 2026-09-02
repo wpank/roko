@@ -322,3 +322,11 @@ Additionally:
 | `crates/roko-cli/src/tui/modals/confirm.rs` | 1-168 | Confirm modal renderer (renders y/Enter/n/Esc hints that don't work) |
 | `crates/roko-cli/src/tui/modals/batch_review.rs` | 1-165 | BatchReview renderer (renders a/r/s/Esc hints with no handler) |
 | `apps/mori/src/tui/input.rs` (reference) | 138-202 | Mori's `handle_key` -- correct architecture |
+
+---
+
+## Implementation Status (2026-09-02 swarm)
+
+Modal input precedence (task #2) and mouse scroll/click routing (task #3) were addressed.
+Modal key intercept ordering was fixed so named modals consume keys before normal tab dispatch.
+Mouse event routing uses rendered panel coordinates rather than generic hit/focus fallbacks.

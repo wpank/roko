@@ -68,7 +68,11 @@ pub fn render(
 
     // Clamp cursor
     let cursor = tui_state.config_cursor.min(items.len().saturating_sub(1));
-    let viewport_h = inner.height as usize;
+
+    // Reserve space: 1 for hint bar + up to 2 for provider health summary
+    let provider_summary = build_provider_summary_line(tui_state, inner.width, theme);
+    let summary_lines = if provider_summary.is_some() { 2 } else { 0 };
+    let viewport_h = (inner.height as usize).saturating_sub(1 + summary_lines);
 
     // Compute lines each item takes (field with description on selected = 2 lines)
     let mut line_offsets: Vec<usize> = Vec::with_capacity(items.len());
@@ -88,6 +92,18 @@ pub fn render(
     }
     if cursor_bottom > scroll + viewport_h {
         scroll = cursor_bottom.saturating_sub(viewport_h);
+    }
+
+    // Render compact provider health summary at top (if data available)
+    if let Some(summary) = provider_summary {
+        let summary_area = Rect {
+            x: inner.x,
+            y: inner.y,
+            width: inner.width,
+            height: 2,
+        };
+        let summary_widget = Paragraph::new(vec![summary, Line::default()]);
+        frame.render_widget(summary_widget, summary_area);
     }
 
     // Render visible items
@@ -128,9 +144,15 @@ pub fn render(
                     theme,
                 ));
 
-                // Show description for selected field
+                // Show description + validation for selected field
                 if is_selected {
-                    lines.push(render_description(meta.description, inner.width, theme));
+                    let validation = validate_field_value(display_value, &meta.kind);
+                    lines.push(render_description_with_validation(
+                        meta.description,
+                        validation.as_deref(),
+                        inner.width,
+                        theme,
+                    ));
                 }
             }
             ConfigItem::SaveButton => {
@@ -145,14 +167,20 @@ pub fn render(
     }
 
     // Apply scroll offset: skip `scroll` lines from the top
+    let content_area = Rect {
+        x: inner.x,
+        y: inner.y + summary_lines as u16,
+        width: inner.width,
+        height: inner.height.saturating_sub(1 + summary_lines as u16),
+    };
     let visible_lines: Vec<Line<'_>> = lines
         .into_iter()
         .skip(scroll)
-        .take(viewport_h.saturating_sub(1)) // leave room for hint bar
+        .take(viewport_h)
         .collect();
 
     let content = Paragraph::new(visible_lines).wrap(Wrap { trim: false });
-    frame.render_widget(content, inner);
+    frame.render_widget(content, content_area);
 
     // Hint bar at the bottom
     let hint_area = Rect {
@@ -222,7 +250,24 @@ fn render_field_line<'a>(
     let source_tag = source.label();
     let source_w = source_tag.len() + 2; // padding
 
-    let padded_label = format!("  {label:<lw$}", lw = label_w.saturating_sub(2));
+    // Validation indicator prefix
+    let valid = validate_field_value(value, kind);
+    let (indicator, indicator_style) = if editing {
+        (" ", Style::default())
+    } else {
+        match (kind, &valid) {
+            (ConfigFieldKind::ReadOnly, _) => (" ", Style::default()),
+            (_, Some(_)) => ("X", theme.danger()),
+            (ConfigFieldKind::Bool | ConfigFieldKind::Enum(_), None) => {
+                ("+", theme.success())
+            }
+            (_, None) if source == ConfigSource::Env => ("!", theme.warning()),
+            (_, None) => (" ", Style::default()),
+        }
+    };
+
+    let indicator_span = format!(" {indicator} ");
+    let label_text = format!("{label:<lw$}", lw = label_w.saturating_sub(4));
 
     // Format value based on kind
     let formatted_value = if editing {
@@ -267,6 +312,8 @@ fn render_field_line<'a>(
         theme.accent().add_modifier(Modifier::UNDERLINED)
     } else if modified {
         theme.accent().add_modifier(Modifier::BOLD)
+    } else if valid.is_some() {
+        theme.danger()
     } else {
         theme.text()
     };
@@ -284,14 +331,72 @@ fn render_field_line<'a>(
     };
 
     Line::from(vec![
-        Span::styled(padded_label, label_style.patch(bg)),
+        Span::styled(indicator_span, indicator_style.patch(bg)),
+        Span::styled(label_text, label_style.patch(bg)),
         Span::styled(displayed_value, value_style.patch(bg)),
         Span::styled(source_str, source_style.patch(bg)),
     ])
 }
 
-fn render_description<'a>(desc: &str, _width: u16, theme: &Theme) -> Line<'a> {
-    Line::from(Span::styled(format!("      {desc}"), theme.muted()))
+fn render_description_with_validation<'a>(
+    desc: &str,
+    validation_error: Option<&str>,
+    _width: u16,
+    theme: &Theme,
+) -> Line<'a> {
+    if let Some(err) = validation_error {
+        Line::from(vec![
+            Span::styled("      ", theme.muted()),
+            Span::styled(format!("X {err}"), theme.danger()),
+        ])
+    } else {
+        Line::from(Span::styled(format!("      {desc}"), theme.muted()))
+    }
+}
+
+/// Validate a field value against its kind constraints. Returns `Some(error_message)`
+/// if the value is invalid.
+fn validate_field_value(value: &str, kind: &ConfigFieldKind) -> Option<String> {
+    match kind {
+        ConfigFieldKind::Int { min, max, .. } => {
+            let parsed = match value.parse::<i64>() {
+                Ok(v) => v,
+                Err(_) => return Some("not a valid integer".to_string()),
+            };
+            if let Some(lo) = min {
+                if parsed < *lo {
+                    return Some(format!("below minimum ({lo})"));
+                }
+            }
+            if let Some(hi) = max {
+                if parsed > *hi {
+                    return Some(format!("above maximum ({hi})"));
+                }
+            }
+            None
+        }
+        ConfigFieldKind::Float { min, max } => {
+            let parsed = match value.parse::<f64>() {
+                Ok(v) => v,
+                Err(_) => return Some("not a valid number".to_string()),
+            };
+            if let Some(lo) = min {
+                if parsed < *lo {
+                    return Some(format!("below minimum ({lo})"));
+                }
+            }
+            if let Some(hi) = max {
+                if parsed > *hi {
+                    return Some(format!("above maximum ({hi})"));
+                }
+            }
+            None
+        }
+        ConfigFieldKind::Bool
+        | ConfigFieldKind::Enum(_)
+        | ConfigFieldKind::Str
+        | ConfigFieldKind::ReadOnly => None,
+    }
 }
 
 fn render_save_button<'a>(
@@ -510,26 +615,72 @@ fn append_runtime_sections(items: &mut Vec<ConfigItem>, tui_state: &TuiState) {
 // Sub-view: Provider Health (sub_tab == 1)
 // ---------------------------------------------------------------------------
 
+/// Aggregate provider metrics from efficiency events.
+#[allow(clippy::cast_precision_loss)]
+fn aggregate_providers(
+    tui_state: &TuiState,
+) -> std::collections::BTreeMap<String, ProviderMetrics> {
+    let mut providers: std::collections::BTreeMap<String, ProviderMetrics> =
+        std::collections::BTreeMap::new();
+    for event in &tui_state.efficiency_events {
+        let entry = providers
+            .entry(infer_provider(&event.model))
+            .or_default();
+        entry.total_calls += 1;
+        if event.output_tokens > 0 {
+            entry.successes += 1;
+        }
+        entry.total_latency_ms += event.wall_time_ms;
+        entry.total_cost += event.cost_usd;
+    }
+    providers
+}
+
+/// Per-provider aggregated metrics.
+#[derive(Default)]
+struct ProviderMetrics {
+    total_calls: u64,
+    successes: u64,
+    total_latency_ms: u64,
+    total_cost: f64,
+}
+
+impl ProviderMetrics {
+    fn success_rate(&self) -> f64 {
+        if self.total_calls > 0 {
+            self.successes as f64 / self.total_calls as f64 * 100.0
+        } else {
+            0.0
+        }
+    }
+
+    fn avg_latency_ms(&self) -> f64 {
+        if self.total_calls > 0 {
+            self.total_latency_ms as f64 / self.total_calls as f64
+        } else {
+            0.0
+        }
+    }
+
+    fn error_rate(&self) -> f64 {
+        if self.total_calls > 0 {
+            (self.total_calls - self.successes) as f64 / self.total_calls as f64 * 100.0
+        } else {
+            0.0
+        }
+    }
+}
+
 #[allow(clippy::cast_precision_loss)]
 fn render_provider_health(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme: &Theme) {
     let block = Block::bordered().title(Span::styled(" Provider Health ", theme.accent()));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // Aggregate provider metrics from efficiency events.
-    let mut providers: std::collections::BTreeMap<String, (u64, u64, u64)> =
-        std::collections::BTreeMap::new();
-    for event in &tui_state.efficiency_events {
-        let entry = providers.entry(infer_provider(&event.model)).or_default();
-        entry.0 += 1; // total calls
-        if event.output_tokens > 0 {
-            entry.1 += 1; // successes
-        }
-        entry.2 += event.wall_time_ms; // total latency
-    }
+    let providers = aggregate_providers(tui_state);
 
     if providers.is_empty() {
-        let empty = Paragraph::new("no provider data — run agents to populate")
+        let empty = Paragraph::new("no provider data -- run agents to populate")
             .style(theme.muted())
             .wrap(Wrap { trim: false });
         frame.render_widget(empty, inner);
@@ -538,40 +689,80 @@ fn render_provider_health(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiStat
 
     let rows: Vec<Row<'_>> = providers
         .iter()
-        .map(|(name, (total, successes, latency))| {
-            let rate = if *total > 0 {
-                *successes as f64 / *total as f64 * 100.0
+        .map(|(name, m)| {
+            let rate = m.success_rate();
+            let avg_latency = m.avg_latency_ms();
+            let err_rate = m.error_rate();
+            let (icon, status, status_style) = provider_health_icon(rate, m.total_calls, theme);
+
+            let latency_style = if avg_latency > 10_000.0 {
+                theme.danger()
+            } else if avg_latency > 5_000.0 {
+                theme.warning()
             } else {
-                0.0
+                theme.text()
             };
-            let avg_latency = if *total > 0 {
-                *latency as f64 / *total as f64
+
+            let err_style = if err_rate > 30.0 {
+                theme.danger()
+            } else if err_rate > 10.0 {
+                theme.warning()
             } else {
-                0.0
+                theme.muted()
             };
-            let (status, status_style) = provider_health_status(rate, *total, theme);
+
             Row::new(vec![
-                Cell::from(truncate(name, 20)),
-                Cell::from(Span::styled(status.to_string(), status_style)),
-                Cell::from(format!("{avg_latency:.0}ms")),
+                Cell::from(truncate(name, 16)),
+                Cell::from(Span::styled(format!("{icon} {status}"), status_style)),
+                Cell::from(Span::styled(format!("{avg_latency:.0}ms"), latency_style)),
                 Cell::from(format!("{rate:.0}%")),
+                Cell::from(Span::styled(format!("{err_rate:.0}%"), err_style)),
+                Cell::from(format!("${:.3}", m.total_cost)),
+                Cell::from(m.total_calls.to_string()),
             ])
         })
         .collect();
 
     let widths = [
-        Constraint::Min(14),
-        Constraint::Length(10),
-        Constraint::Length(10),
+        Constraint::Min(12),
+        Constraint::Length(14),
+        Constraint::Length(9),
         Constraint::Length(8),
+        Constraint::Length(7),
+        Constraint::Length(9),
+        Constraint::Length(6),
     ];
     let table = Table::new(rows, widths)
         .header(
-            Row::new(["provider", "status", "latency", "success"])
+            Row::new(["provider", "status", "latency", "success", "errors", "cost", "calls"])
                 .style(theme.accent().add_modifier(Modifier::BOLD)),
         )
         .column_spacing(1);
-    frame.render_widget(table, inner);
+
+    // Render table, leaving room for secrets note at bottom
+    let table_h = inner.height.saturating_sub(2);
+    let table_area = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width,
+        height: table_h,
+    };
+    frame.render_widget(table, table_area);
+
+    // Secrets management note
+    let note_area = Rect {
+        x: inner.x,
+        y: inner.y + inner.height.saturating_sub(1),
+        width: inner.width,
+        height: 1,
+    };
+    let note = Line::from(vec![
+        Span::styled("API keys: ", theme.muted()),
+        Span::styled("roko config set-secret", theme.accent()),
+        Span::styled(" | ", theme.muted()),
+        Span::styled("roko config check-secrets", theme.accent()),
+    ]);
+    frame.render_widget(Paragraph::new(note), note_area);
 }
 
 // ---------------------------------------------------------------------------
@@ -707,14 +898,43 @@ fn infer_tier(model: &str) -> String {
     }
 }
 
-fn provider_health_status(rate: f64, total: u64, theme: &Theme) -> (&'static str, Style) {
+fn provider_health_icon(rate: f64, total: u64, theme: &Theme) -> (&'static str, &'static str, Style) {
     if total == 0 {
-        ("no data", theme.muted())
+        ("?", "no data", theme.muted())
     } else if rate >= 90.0 {
-        ("healthy", theme.success())
+        ("+", "healthy", theme.success())
     } else if rate >= 70.0 {
-        ("degraded", theme.warning())
+        ("~", "degraded", theme.warning())
     } else {
-        ("unhealthy", theme.danger())
+        ("!", "unhealthy", theme.danger())
     }
+}
+
+/// Build a compact one-line provider health summary for the top of the config editor.
+#[allow(clippy::cast_precision_loss)]
+fn build_provider_summary_line<'a>(
+    tui_state: &TuiState,
+    _width: u16,
+    theme: &Theme,
+) -> Option<Line<'a>> {
+    let providers = aggregate_providers(tui_state);
+    if providers.is_empty() {
+        return None;
+    }
+
+    let mut spans: Vec<Span<'a>> = vec![Span::styled("  Providers: ", theme.muted())];
+
+    for (i, (name, m)) in providers.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled("  ", theme.muted()));
+        }
+        let rate = m.success_rate();
+        let (icon, _, style) = provider_health_icon(rate, m.total_calls, theme);
+        spans.push(Span::styled(
+            format!("{icon} {name} {rate:.0}%"),
+            style,
+        ));
+    }
+
+    Some(Line::from(spans))
 }

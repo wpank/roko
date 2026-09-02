@@ -176,6 +176,20 @@ impl EffectsConfig {
         // Mori's default treatment keeps the interface still and legible.
         // Character particles are an explicit Full-preset flourish.
         self.particles = matches!(preset, EffectsPreset::Full);
+        // Full preset enables the remaining dormant effects.
+        self.bloom_enabled = matches!(preset, EffectsPreset::Full);
+        self.shadows_enabled = matches!(preset, EffectsPreset::Full);
+        self.vfx_enabled = matches!(preset, EffectsPreset::Full);
+        self.bloom_intensity = if matches!(preset, EffectsPreset::Full) {
+            0.15
+        } else {
+            0.0
+        };
+        self.vignette_intensity = if matches!(preset, EffectsPreset::Full) {
+            0.20
+        } else {
+            0.0
+        };
     }
 }
 
@@ -246,11 +260,17 @@ mod tests {
         assert!(config.screen_postfx);
         assert!(config.nerv_viz);
         assert!(config.particles);
+        assert!(config.bloom_enabled);
+        assert!(config.shadows_enabled);
+        assert!(config.vfx_enabled);
 
         assert_eq!(config.cycle_preset(), EffectsPreset::Off);
         assert!(!config.screen_postfx);
         assert!(!config.nerv_viz);
         assert!(!config.particles);
+        assert!(!config.bloom_enabled);
+        assert!(!config.shadows_enabled);
+        assert!(!config.vfx_enabled);
     }
 
     #[test]

@@ -101,14 +101,41 @@ pub fn render_task_progress(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
 
     let mut lines: Vec<Line> = Vec::new();
 
-    // ── Progress bar ─────────────────────────────────────────────────────
+    // ── Progress bar with percentage and ETA ────────────────────────────
     if has_bar {
         let fill_pct = done as f64 / total.max(1) as f64;
-        let bar_spans = semantic_bar(inner_width, fill_pct, Some(atm.heartbeat()));
-        let suffix = format!("  {}/{}", done, total);
+        let pct_display = (fill_pct * 100.0) as u32;
+        let count_suffix = format!("  {done}/{total}  {pct_display}%");
+
+        // ETA: prefer critical-path, fall back to proportional.
+        let elapsed = state.elapsed_secs() as u64;
+        let eta_suffix = if done > 0 && done < total {
+            if let Some(cp_min) = state.critical_path_eta_minutes {
+                Some(format!("  CP-ETA:{}", compact_duration(cp_min as u64 * 60)))
+            } else {
+                let rate = elapsed as f64 / done as f64;
+                let remaining = ((total - done) as f64 * rate) as u64;
+                if remaining > 0 {
+                    Some(format!("  ETA:~{}", compact_duration(remaining)))
+                } else {
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let total_suffix_len = count_suffix.chars().count()
+            + eta_suffix.as_ref().map_or(0, |s| s.chars().count());
+        let bar_width = inner_width.saturating_sub(total_suffix_len + 1).max(4);
+        let bar_spans = semantic_bar(bar_width, fill_pct, Some(atm.heartbeat()));
+
         let mut bar_line = vec![Span::styled(" ", Style::default())];
         bar_line.extend(bar_spans);
-        bar_line.push(Span::styled(suffix, Style::default().fg(Theme::FG_DIM)));
+        bar_line.push(Span::styled(count_suffix, Style::default().fg(Theme::FG_DIM)));
+        if let Some(eta) = eta_suffix {
+            bar_line.push(Span::styled(eta, Style::default().fg(Theme::DREAM)));
+        }
         lines.push(Line::from(bar_line));
     }
 
@@ -142,7 +169,7 @@ pub fn render_task_progress(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
             }
             TaskRowStatus::Blocked => ("\u{2717}", Style::default().fg(Theme::STATUS_ERROR)),
             TaskRowStatus::Failed => ("\u{2717}", Style::default().fg(Theme::EMBER)),
-            TaskRowStatus::Pending => ("\u{00b7}", Style::default().fg(Theme::TEXT_DIM)),
+            TaskRowStatus::Pending => ("\u{25cb}", Style::default().fg(Theme::TEXT_DIM)),
         };
 
         let (text_style, bg) = if is_selected {
@@ -172,17 +199,19 @@ pub fn render_task_progress(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
             _ => String::new(),
         };
 
-        // Truncate title
+        // Truncate title using ellipsis character
         let time_tag_len = time_tag.chars().count();
-        let prefix_len = 4 + task.id.len() + time_tag_len;
+        // Fixed 8-char column for task ID alignment
+        let id_col_w = 8;
+        let prefix_len = 4 + id_col_w + time_tag_len;
         let max_title = (inner.width as usize).saturating_sub(prefix_len + 2);
-        let title_display = if task.title.chars().count() > max_title && max_title > 3 {
+        let title_display = if task.title.chars().count() > max_title && max_title > 1 {
             let truncated: String = task
                 .title
                 .chars()
-                .take(max_title.saturating_sub(3))
+                .take(max_title.saturating_sub(1))
                 .collect();
-            format!("{truncated}...")
+            format!("{truncated}\u{2026}")
         } else {
             task.title.clone()
         };
@@ -190,7 +219,7 @@ pub fn render_task_progress(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
         let mut task_spans = vec![
             Span::styled(format!(" {icon} "), effective_icon_style),
             Span::styled(
-                format!("{}  ", &task.id),
+                format!("{:<width$}", &task.id, width = id_col_w),
                 Style::default().fg(Theme::ROSE_DIM),
             ),
         ];
@@ -243,7 +272,10 @@ pub fn render_task_progress(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Build a semantic progress bar with gradient coloring.
+/// Build a semantic progress bar with gradient coloring and leading-edge glow.
+///
+/// The leading filled cell gets an extra brightness pulse driven by the
+/// heartbeat, giving the bar a sense of momentum when advancing.
 fn semantic_bar(width: usize, pct: f64, heartbeat: Option<f64>) -> Vec<Span<'static>> {
     let pct = pct.clamp(0.0, 1.0);
     let filled = ((width as f64) * pct).round() as usize;
@@ -251,30 +283,40 @@ fn semantic_bar(width: usize, pct: f64, heartbeat: Option<f64>) -> Vec<Span<'sta
 
     let mut spans = Vec::new();
 
-    // Filled portion with semantic color gradient
     if filled > 0 {
         let color = Theme::semantic_color(pct);
-        let fill_style = if let Some(hb) = heartbeat {
-            // Pulse the leading edge
-            let scale = hb.clamp(0.9, 1.1);
-            match color {
+
+        if filled > 1 && pct < 1.0 {
+            // Body: the filled portion minus the leading edge.
+            spans.push(Span::styled(
+                "\u{2588}".repeat(filled - 1),
+                Style::default().fg(color),
+            ));
+
+            // Leading edge: brighter, pulsed by heartbeat.
+            let boost = heartbeat.map_or(1.0, |hb| 1.0 + hb * 0.3);
+            let leading_style = match color {
                 Color::Rgb(r, g, b) => Style::default().fg(Color::Rgb(
-                    ((r as f64) * scale).min(255.0) as u8,
-                    ((g as f64) * scale).min(255.0) as u8,
-                    ((b as f64) * scale).min(255.0) as u8,
+                    ((r as f64) * boost).min(255.0) as u8,
+                    ((g as f64) * boost).min(255.0) as u8,
+                    ((b as f64) * boost).min(255.0) as u8,
                 )),
                 _ => Style::default().fg(color),
-            }
+            };
+            spans.push(Span::styled("\u{2588}", leading_style));
         } else {
-            Style::default().fg(color)
-        };
-        spans.push(Span::styled("\u{2588}".repeat(filled), fill_style));
+            // Single cell or complete: no separate leading edge needed.
+            spans.push(Span::styled(
+                "\u{2588}".repeat(filled),
+                Style::default().fg(color),
+            ));
+        }
     }
 
     // Empty portion
     if empty > 0 {
         spans.push(Span::styled(
-            "\u{2591}".repeat(empty),
+            "\u{2500}".repeat(empty),
             Style::default().fg(Theme::TEXT_PHANTOM),
         ));
     }
@@ -322,12 +364,12 @@ fn build_summary_line(
 
     let summary_str = details.join(" \u{00b7} ");
     let max_len = width.saturating_sub(status_text.len() + 4);
-    let summary = if summary_str.chars().count() > max_len && max_len > 3 {
+    let summary = if summary_str.chars().count() > max_len && max_len > 1 {
         let truncated: String = summary_str
             .chars()
-            .take(max_len.saturating_sub(3))
+            .take(max_len.saturating_sub(1))
             .collect();
-        format!("{truncated}...")
+        format!("{truncated}\u{2026}")
     } else {
         summary_str
     };

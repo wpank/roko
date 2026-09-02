@@ -363,3 +363,9 @@ Each category has a Unicode icon and a dedicated color from the theme palette.
 1. **Entry detail view** (item 9) -- the selected row is inert; `Enter` should show full details.
 2. **Search-filter match index reconciliation** (item 3) -- match counts are wrong when level filters are active.
 3. **Performance: eliminate per-frame clones** (item 8) -- use borrowed spans instead of `entry.message.clone()`.
+
+---
+
+## Implementation Status (2026-09-02 swarm)
+
+F5 Logs view improvements (task #19): log viewer layout, search/filter, level indicators.

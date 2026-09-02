@@ -192,20 +192,33 @@ pub fn render_sys_metrics(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         lines.push(Line::from(spans));
     }
 
-    // DSK
+    // DSK — I/O rate + capacity
     if inner.height >= 4 {
+        let read = fmt_rate(state.sys.disk_read_bytes_sec as f64);
+        let write = fmt_rate(state.sys.disk_write_bytes_sec as f64);
         let free = fmt_bytes(state.sys.disk_free_bytes);
-        let total = fmt_bytes(state.sys.disk_total_bytes);
+        let mut spans = vec![
+            Span::styled("DSK ", Style::default().fg(Theme::TEXT_DIM)),
+            Span::styled(
+                format!("R{read:>4}"),
+                Style::default().fg(Theme::DREAM),
+            ),
+            Span::styled(" ", Style::default()),
+            Span::styled(
+                format!("W{write:>4}"),
+                Style::default().fg(Theme::BONE_DIM),
+            ),
+            Span::styled(format!(" {free:>5}f"), Style::default().fg(Theme::TEXT_DIM)),
+        ];
+        // Warn when disk is low
         let disk_frac = if state.sys.disk_total_bytes > 0 {
             1.0 - (state.sys.disk_free_bytes as f64 / state.sys.disk_total_bytes as f64)
         } else {
             0.0
         };
-        let color = pct_color(disk_frac);
-        let spans = vec![
-            Span::styled("DSK ", Style::default().fg(Theme::TEXT_DIM)),
-            Span::styled(format!("{free:>5}/{total}"), Style::default().fg(color)),
-        ];
+        if disk_frac >= 0.9 {
+            spans.push(Span::styled("!", Style::default().fg(Theme::EMBER)));
+        }
         lines.push(Line::from(spans));
     }
 

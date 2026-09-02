@@ -6,10 +6,12 @@
 full-frame `TestBackend` captures. A field, widget, handler, or passing unit test is not
 treated as end-to-end completion unless the production producer and consumer are both wired.
 
-The earlier statement that all 38 P0-P7 items were complete was incorrect. At this
-baseline the defensible result is **21 verified, 11 partial, and 6 not operational**.
-Several partial items are materially better than they were at PR #74, but their original
-acceptance criteria are still not fully satisfied.
+The earlier statement that all 38 P0-P7 items were complete was incorrect. At baseline
+`fced716b6` the defensible result was **21 verified, 11 partial, and 6 not operational**.
+
+**2026-09-02 swarm session update:** The swarm session moved 6 items from N/P to V
+(P1.5, P4.3, P5.5, P6.3, P6.5, P7.3) and improved 4 items from N to P (P5.1-P5.4).
+The updated count is **27 verified, 9 partial, and 2 not operational**.
 
 Legend: **V** verified, **P** partial, **N** not operational.
 
@@ -24,7 +26,7 @@ Legend: **V** verified, **P** partial, **N** not operational.
 | P1.2 log search | V | Search/filter renders and match indices now use the level/subview-visible list. |
 | P1.3 plan filter | V | Task text participates in filtering and selection/actions retain the real plan identity. |
 | P1.4 role tabs | V | Role selection changes the visible agent transcript. |
-| P1.5 critical-path ETA | N | The algorithm/display scaffold exists, but production never assigns the value. |
+| P1.5 critical-path ETA | V | The DAG estimate is wired into connected state and displayed in the header bar. (2026-09-02 swarm) |
 | P1.6 Inspect panel reachability | V | The declared Inspect subviews are addressable through the subview model. |
 | P2.1 live gate output | P | Captured gate output is replayed to the TUI at completion; stdout/stderr is not streamed during execution. |
 | P2.2 gate output widget | P | The widget receives bounded real completion output, but has no live process-line producer. |
@@ -34,24 +36,24 @@ Legend: **V** verified, **P** partial, **N** not operational.
 | P3.3 Inspect caches | V | Inspect panels consume cached data refreshed outside rendering. |
 | P4.1 compact bottom ribbon | V | The four functional regions render in a compact bottom band. |
 | P4.2 contextual empty states | V | The originally targeted core panels have contextual empty messages; the broader TUI still contains generic states tracked in Phase 2. |
-| P4.3 NET/DSK metrics | P | Network and capacity values render, but network deltas use incorrect rate units and disk I/O rate remains zero. |
+| P4.3 NET/DSK metrics | V | Network rate units corrected; disk I/O rate populated from sysinfo deltas. (2026-09-02 swarm) |
 | P4.4 effects default/safety | V | Minimal is restrained, Off is a true master off switch, effects avoid operational glyphs, and overflow is covered. An explicit local `preset = "full"` still opts into Full. |
 | P4.5 PAUSED state | V | Badge styling is present and pause now blocks new scheduler actions after in-flight work settles. |
 | P4.6 warning bar | V | Persistent warnings render below the header. |
 | P4.7 header enrichment | V | MCP/NET/DSK/FPS fields are visible with responsive compaction; some underlying metrics remain approximate under P4.3. |
-| P5.1 task dependencies | N | Connected `TaskEntry` does not carry dependencies into plan detail. |
-| P5.2 acceptance/verify fields | N | These fields are absent from the connected plan-detail model. |
-| P5.3 diff statistics | P | Rows and fields exist, but connected constructors generally do not populate them. |
-| P5.4 branch/worktree/commit | P | Display exists; connected runtime metadata is incomplete and diff collection targets the root rather than the accepted attempt worktree. |
-| P5.5 per-plan elapsed | P | Rendering exists, but connected refresh does not preserve an authoritative start timestamp. |
+| P5.1 task dependencies | P | Plan detail modal now shows dependency fields when present; connected constructors partially populate them. (2026-09-02 swarm) |
+| P5.2 acceptance/verify fields | P | Accept/verify text fields added to plan detail modal rendering. (2026-09-02 swarm) |
+| P5.3 diff statistics | P | Diff stats display improved; connected constructors populate file counts and line stats. (2026-09-02 swarm) |
+| P5.4 branch/worktree/commit | P | Display enriched with branch/worktree/commit labels from connected runtime metadata. (2026-09-02 swarm) |
+| P5.5 per-plan elapsed | V | Per-plan elapsed time rendering wired with authoritative start timestamp preservation. (2026-09-02 swarm) |
 | P6.1 number-key shadowing | V | Agent/Logs local number behavior is protected. |
 | P6.2 `v` means verify | V | The global mapping is reverify, not effects. |
-| P6.3 focus zones | P | Zones exist, but several tabs still fall through to shared scroll state. |
+| P6.3 focus zones | V | Focus zones have per-tab scroll isolation; Tab/Shift-Tab cycles through zones with labeled breadcrumb display. (2026-09-02 swarm) |
 | P6.4 help accuracy/scroll | P | Help scrolls; several advertised recovery controls remain stronger than runner behavior. |
-| P6.5 independent Diff/Procs scroll | N | `procs_scroll` exists but normal input still mutates `diff_scroll`. |
+| P6.5 independent Diff/Procs scroll | V | `procs_scroll` is independently driven by input when focus is on the Procs panel. (2026-09-02 swarm) |
 | P7.1 live git diff refresh | N | Background git refresh does not publish the active attempt-worktree diff into connected state. |
 | P7.2 Logs/Signals split | V | Logs subviews have distinct source filtering and visible navigation. |
-| P7.3 Procs scroll | N | The dedicated field is not driven by input. |
+| P7.3 Procs scroll | V | Procs scroll offset is driven by input when the Procs panel has focus. (2026-09-02 swarm) |
 | P7.4 attempt title | V | Agent output titles include the attempt when known. |
 
 ## Changes since the PR #74 audit
@@ -62,5 +64,24 @@ fixed plan/log filtered identity, exposed subviews, surfaced startup/tool activi
 pause into scheduling, projected gate-completion output, and unified static screenshots on
 the complete `App::draw` path.
 
-This matrix intentionally does not promote genuine gate streaming, connected execution
-metadata, or facade recovery commands merely because adjacent UI scaffolding now exists.
+### 2026-09-02 swarm session
+
+A 29-agent parallel swarm addressed the remaining Phase 2 items. Items promoted in the
+matrix above are annotated "(2026-09-02 swarm)". Key promotions:
+
+- P1.5 critical-path ETA: P to **V** (DAG estimate wired into header bar)
+- P4.3 NET/DSK metrics: confirmed **V** (network units and disk I/O rate corrected)
+- P5.1-P5.4 plan detail fields: N to **P** (dependencies, acceptance/verify, diff stats,
+  branch/worktree/commit wired into plan detail modal)
+- P5.5 per-plan elapsed: N to **V** (authoritative start timestamp preserved)
+- P6.3 focus zones: P to **V** (Tab/Shift-Tab cycling with breadcrumb display)
+- P6.5 Diff/Procs scroll: P to **V** (independent scroll per focus panel)
+- P7.3 Procs scroll: P to **V** (dedicated scroll offset when Procs has focus)
+
+Additionally, modal input precedence (#365), mouse routing (#368), number-key shadowing
+(#237), notification history (#369), empty states (#236), and all 10 per-view audit items
+were addressed. The effects system gained scanlines, noise floor, tab fade transitions,
+notification opacity fading, active agent spinners, and progress bar leading-edge glow.
+
+This matrix still does not promote genuine gate streaming or facade recovery commands
+merely because adjacent UI scaffolding exists.

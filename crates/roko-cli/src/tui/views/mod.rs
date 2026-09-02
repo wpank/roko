@@ -219,7 +219,7 @@ impl SubView {
             Self::EpisodeReplay => "Episodes",
             Self::KnowledgeBrowse => "Knowledge",
             Self::CostByModel => "Cost/Model",
-            Self::ThreePanelInspect => "Inspect",
+            Self::ThreePanelInspect => "Runtime",
             Self::JobList => "Jobs",
             Self::JobDetail => "Detail",
             Self::CreateJob => "New Job",

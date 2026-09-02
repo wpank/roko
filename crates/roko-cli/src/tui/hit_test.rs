@@ -19,6 +19,11 @@ pub enum FocusZone {
     HeaderTab(usize),
     /// A detail sub-tab at the given index.
     DetailTab(usize),
+    // -- per-tab split zones --
+    /// Left pane of a two-column tab (branches, keys, signals, etc.).
+    LeftPane,
+    /// Right/detail pane of a two-column tab.
+    RightPane,
 }
 
 /// Cached screen regions for hit testing.
@@ -29,6 +34,8 @@ pub struct HitZones {
     pub agent_output: Rect,
     pub command_output: Rect,
     pub right_content: Rect,
+    pub left_pane: Rect,
+    pub right_pane: Rect,
     pub detail_tab_rects: Vec<(Rect, usize)>,
     pub header_tab_rects: Vec<(Rect, usize)>,
 }
@@ -113,8 +120,22 @@ impl HitZones {
                 zones.plan_tree = h[0]; // reuse as agent list
                 zones.agent_output = h[2];
             }
+            3 | 4 | 5 | 6 | 7 | 8 | 9 => {
+                // Two-column split: left list/tree | gutter | right detail.
+                let h = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([
+                        Constraint::Percentage(35),
+                        Constraint::Length(1),
+                        Constraint::Min(0),
+                    ])
+                    .split(body_area);
+                zones.left_pane = h[0];
+                zones.right_pane = h[2];
+                zones.right_content = body_area;
+            }
             _ => {
-                // Generic: full body is right_content
+                // Fallback: full body is right_content.
                 zones.right_content = body_area;
             }
         }
@@ -151,6 +172,13 @@ impl HitZones {
         }
         if contains(self.command_output, x, y) && !is_empty(self.command_output) {
             return Some(FocusZone::CommandOutput);
+        }
+        // Per-tab split panes (more specific than right_content).
+        if contains(self.left_pane, x, y) && !is_empty(self.left_pane) {
+            return Some(FocusZone::LeftPane);
+        }
+        if contains(self.right_pane, x, y) && !is_empty(self.right_pane) {
+            return Some(FocusZone::RightPane);
         }
         if contains(self.right_content, x, y) && !is_empty(self.right_content) {
             return Some(FocusZone::RightContent);

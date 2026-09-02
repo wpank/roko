@@ -519,3 +519,11 @@ the operator has acknowledged it.
 6. **Wire cost_by_model** into Learning or a cost overlay
 7. **Show current task name** in the header bar or Progress Card
 8. **Make cost more prominent** -- color-coded budget utilization pill
+
+---
+
+## Implementation Status (2026-09-02 swarm)
+
+F1 Dashboard improvements (task #12): layout restructured, panel organization improved,
+idle dashboard state handling. NET/DSK metrics corrected (task #6). Critical-path ETA
+wired into header bar (task #5).

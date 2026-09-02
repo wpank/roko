@@ -588,7 +588,7 @@ impl DashboardData {
 
         // Backfill agent_output_tail from task-outputs if episode didn't provide it.
         let current_plan_execution =
-            backfill_agent_output_tail(current_plan_execution, &task_output_cursors);
+            backfill_agent_output_tail(current_plan_execution, &mut task_output_cursors);
 
         let (git_diff, git_diff_is_staged) = load_dashboard_git_diff(&root);
         let generation = next_dashboard_data_generation(
@@ -855,7 +855,7 @@ impl DashboardData {
                     load_gate_results(&self.executor_state, &self.signal_gate_results);
                 self.current_plan_execution = backfill_agent_output_tail(
                     load_current_plan_execution(&self.root, &self.executor_state, &self.episodes),
-                    &self.task_output_cursors,
+                    &mut self.task_output_cursors,
                 );
             }
         }
@@ -1336,6 +1336,12 @@ pub(crate) struct PlanTaskSnapshot {
     pub started_at: Option<String>,
     pub ended_at: Option<String>,
     pub wave: Option<u32>,
+    /// Task IDs this task depends on (from tasks.toml).
+    pub dependencies: Vec<String>,
+    /// Free-form acceptance criteria text (from tasks.toml).
+    pub acceptance_text: Option<String>,
+    /// First verify command, if any (from tasks.toml).
+    pub verify_command: Option<String>,
 }
 
 /// Per-plan snapshot used to hydrate `TuiState::plans`.
@@ -1891,7 +1897,7 @@ fn parse_event_entry(value: &Value) -> Option<EventLogEntry> {
 /// Backfill `agent_output_tail` from task-outputs when episodes didn't provide it.
 fn backfill_agent_output_tail(
     mut snapshot: Option<PlanExecutionSnapshot>,
-    task_outputs: &TaskOutputCursors,
+    task_outputs: &mut TaskOutputCursors,
 ) -> Option<PlanExecutionSnapshot> {
     let exec = snapshot.as_mut()?;
     if exec.agent_output_tail.is_empty() {
@@ -2321,6 +2327,13 @@ fn build_plan_task_snapshots(
                     )
                 };
 
+                let acceptance_text = if task.acceptance.is_empty() {
+                    None
+                } else {
+                    Some(task.acceptance.join("; "))
+                };
+                let verify_command = task.verify.first().map(|step| step.command.clone());
+
                 PlanTaskSnapshot {
                     id: task.id.clone(),
                     title: task.title.clone(),
@@ -2335,6 +2348,9 @@ fn build_plan_task_snapshots(
                     started_at: runtime.and_then(|runtime| runtime.started_at.clone()),
                     ended_at: runtime.and_then(|runtime| runtime.ended_at.clone()),
                     wave: runtime.and_then(|runtime| runtime.wave),
+                    dependencies: task.depends_on.clone(),
+                    acceptance_text,
+                    verify_command,
                 }
             })
             .collect();

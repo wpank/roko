@@ -365,3 +365,11 @@ Replace the current boolean `warnings_dismissed` with a `HashSet<String>` of dis
 1. Add a terminal bell (`\x07`) on plan completion/failure -- near zero implementation cost, solves the attention problem.
 2. Add an event timeline to the Dashboard or Logs tab -- solves the notification history gap and provides the post-mortem review capability that long-running operations need.
 3. Expand `HealthStatus` to include `Degraded` (provider unhealthy or resource pressure) and `Stalled` (active but no progress) -- makes the always-visible health dot more accurate.
+
+---
+
+## Implementation Status (2026-09-02 swarm)
+
+Status bar and progress improvements (task #27): input mode indicator, elapsed time,
+budget utilization. Notification history (task #7): bounded retained history with
+filter/navigation. Notification fade-in/out opacity (task #22, effects).

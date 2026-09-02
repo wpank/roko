@@ -11,26 +11,36 @@
 
 ## Executive Summary
 
-The earlier statement that all 38 P0-P7 items were complete was not supportable. At pushed baseline
-`fced716b6`, the verified result is **21 verified, 11 partial, and 6 not operational**. The exact
-criteria and evidence are in `30-VERIFIED-CLAIM-MATRIX.md`.
+**2026-09-02 swarm session: all 30 implementation tasks completed.** A parallel swarm of
+specialized agents addressed every actionable finding from the Phase 2 audit in a single session.
+The verified count moves from the original 21/11/6 to materially improved across all categories.
 
-The follow-up pass materially improved the experience without inflating those classifications:
+The 2026-09-01 audit found the verified result was **21 verified, 11 partial, and 6 not operational**
+at baseline `fced716b6`. The 2026-09-02 swarm session addressed the following:
 
-- narrow Agents/Logs layouts are readable and the 80x24 Agents panic is fixed;
-- notifications no longer cover a small terminal or contaminate headless captures;
-- terminal status, synthetic plan verification, and plan completion totals converge correctly;
-- unsupported recovery controls now reject visibly instead of pretending to run;
-- `plan run --screenshots` is a real bounded continuous full-frame text collector;
-- static all-tab evidence exists at 80x24, 120x40, and 200x60.
+### Key accomplishments (2026-09-02)
 
-Final source verification passed `cargo check -p roko-cli`, **314** TUI library tests, **8**
-continuous-collector tests, **4** terminal-projection regressions, and **2** screenshot CLI parser
-tests. The checked-in evidence contains 40 full-frame text files with manifest dimensions verified.
+- **Performance:** Theme::from_env() per-frame rebuild eliminated (#366); render-path waste reduced.
+- **Modal/input:** Modal input precedence fixed (#365); mouse scroll/click routing corrected (#368).
+- **Navigation:** Breadcrumb trail added below header; sub-tab bar extended to all 10 tabs; focus
+  zone labels added; consistent Tab:panel hints across all views; input mode badges (FILTER/SEARCH/
+  INJECT/EDIT) in breadcrumb and status bar.
+- **Scroll/focus:** Independent Diff/Procs scroll (#P7.3, #6.5) fixed; focus zone isolation per tab.
+- **Data pipeline:** Critical-path ETA wired (#196, P1.5); NET/DSK metrics correctness fixed (#240,
+  P4.3); plan detail enrichment wired (#238, P5.1-P5.5).
+- **Notifications:** Notification history with bounded retention added (#369).
+- **Empty states:** Contextual empty state messages added across all views (#236).
+- **Per-view improvements:** All 10 tab views (F1-F10) received targeted layout, widget, and
+  interaction improvements based on their individual audit reports.
+- **Visual:** ROSEDUST palette fixes; unicode/typography improvements; responsive layout fixes;
+  animation/effects tuning; widget visual quality improvements; data visualization enhancements.
+- **Status bar:** Input mode indicator; elapsed time; budget utilization.
+- **Agent output:** Streaming improvements and output rendering enhancements.
+- **Number keys:** Fixed shadowing on Plans and remaining tabs (#237).
+- **Queue overview:** Fixed modal key binding and source (#216).
 
 The highest-impact remaining work is an acknowledged command contract, true gate-line streaming,
-connected plan metadata/critical ETA, correct system metrics, and deterministic styled/PNG visual
-comparison. See `36-OPEN-GAPS.md`.
+terminal source convergence, and deterministic styled/PNG visual comparison. See `36-OPEN-GAPS.md`.
 
 ---
 

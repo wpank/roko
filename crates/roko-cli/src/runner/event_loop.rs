@@ -3157,6 +3157,11 @@ pub async fn run_with_tui_commands(
     }
     seed_task_dag_from_run_state(&mut task_dag, &plans, &state);
 
+    // Publish initial critical-path ETA for each plan on startup/resume.
+    for plan in &plans {
+        publish_critical_path_eta(&task_index, &task_dag, &tui, &plan.id);
+    }
+
     let mut attempt_ownership = AttemptOwnership::<AgentRuntimeResource>::default();
     let mut pending_gate_tasks: HashMap<String, Vec<String>> = HashMap::new();
     let mut task_runtime_states: HashMap<String, TaskRuntimeState> = HashMap::new();
@@ -9694,16 +9699,32 @@ fn build_runner_status(
         String::from("none")
     };
 
+    let current_phase = if state.agent_active {
+        "dispatch"
+    } else if !state.gate_output.is_empty() {
+        "gate"
+    } else if terminal_phase.is_some() {
+        terminal_phase.unwrap_or("completed")
+    } else {
+        "idle"
+    };
+
     (
         super::status_file::RunnerStatusFile {
             run_id: state.run_id().to_string(),
             phase: phase.to_string(),
+            current_phase: current_phase.to_string(),
             active_plans,
             completed_plans,
             total_plans,
             active_agents,
             elapsed_secs: state.started_at.elapsed().as_secs(),
             last_event,
+            pid: std::process::id(),
+            updated_at_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
         },
         terminal_phase.is_some(),
     )
@@ -18560,6 +18581,7 @@ fn settle_persisted_terminal(
                 state.task_completed();
             }
             task_dag.mark_complete(&attempt.plan_id, &attempt.task_id);
+            publish_critical_path_eta(task_index, task_dag, tui, &attempt.plan_id);
         }
         TaskAttemptOutcome::Failed
         | TaskAttemptOutcome::Exhausted
@@ -18867,6 +18889,27 @@ fn task_refs_for_plan<'a>(
         .get(plan_id)
         .map(|tasks| tasks.values().collect())
         .unwrap_or_default()
+}
+
+/// Compute and publish the critical-path ETA for a plan after a task
+/// state change.
+fn publish_critical_path_eta(
+    task_index: &HashMap<String, HashMap<String, TaskDef>>,
+    task_dag: &TaskDag,
+    tui: &TuiBridge,
+    plan_id: &str,
+) {
+    let task_refs = task_refs_for_plan(task_index, plan_id);
+    if task_refs.is_empty() {
+        return;
+    }
+    let completed = task_dag
+        .plan(plan_id)
+        .map(|dag| &dag.completed)
+        .cloned()
+        .unwrap_or_default();
+    let eta = super::task_dag::remaining_eta_minutes(&task_refs, &completed);
+    tui.critical_path_eta(plan_id, eta);
 }
 
 fn ready_tasks_for_plan<'a>(
@@ -19654,6 +19697,7 @@ async fn terminalize_passed_task(
     );
 
     task_dag.mark_complete(&completion.plan_id, &completion.task_id);
+    publish_critical_path_eta(task_index, task_dag, tui, &completion.plan_id);
     TaskTerminalization::Passed
 }
 

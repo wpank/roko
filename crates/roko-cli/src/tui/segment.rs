@@ -40,6 +40,20 @@ impl SegmentKind {
             Self::TurnMarker => "turn",
         }
     }
+
+    /// Icon prefix character for the segment kind.
+    const fn icon(self) -> &'static str {
+        match self {
+            Self::Thinking => "\u{2502} ",   // |
+            Self::Heading => "",
+            Self::ToolUse => "\u{25b8} ",    // >
+            Self::Code => "\u{2502} ",       // |
+            Self::Success => "\u{2713} ",    // check
+            Self::Error => "\u{2717} ",      // x
+            Self::Blank => "",
+            Self::TurnMarker => "",
+        }
+    }
 }
 
 /// Consecutive lines that share the same semantic kind.
@@ -182,7 +196,23 @@ fn is_heading(trimmed: &str) -> bool {
 
 fn is_tool_use(trimmed: &str) -> bool {
     [
-        "▸ ", "> ", "$ ", "Running ", "Reading ", "Writing ", "Editing ", "Created ",
+        "\u{25b8} ",
+        "> ",
+        "$ ",
+        "Running ",
+        "Reading ",
+        "Writing ",
+        "Editing ",
+        "Created ",
+        "Searching ",
+        "Executing ",
+        "Deleting ",
+        "Moving ",
+        "Copying ",
+        "Installing ",
+        "Fetching ",
+        "Calling ",
+        "Updating ",
     ]
     .iter()
     .any(|prefix| trimmed.starts_with(prefix))
@@ -261,24 +291,288 @@ fn push_group(groups: &mut Vec<SegmentGroup>, kind: SegmentKind, line: String) {
     });
 }
 
+/// Maximum lines to show inline for a tool-use or code group before folding.
+const FOLD_THRESHOLD: usize = 6;
+/// Number of visible lines shown when a group is folded.
+const FOLD_PREVIEW_LINES: usize = 3;
+
 fn render_groups(groups: &[SegmentGroup], theme: &Theme) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
+    let mut prev_kind: Option<SegmentKind> = None;
+    let mut turn_index: usize = 0;
 
     for group in groups {
-        lines.push(render_group_header(group.kind, theme));
-        if matches!(group.kind, SegmentKind::Blank) {
-            lines.extend(std::iter::repeat_with(Line::default).take(group.lines.len()));
+        // Insert a visual separator when transitioning between different
+        // non-blank segment kinds. This gives clear boundaries between
+        // tool calls, reasoning, code, and results.
+        if let Some(prev) = prev_kind {
+            let needs_separator = !matches!(group.kind, SegmentKind::Blank)
+                && !matches!(prev, SegmentKind::Blank)
+                && prev != group.kind;
+            if needs_separator {
+                lines.push(Line::default());
+            }
+        }
+
+        if matches!(group.kind, SegmentKind::TurnMarker) {
+            turn_index += 1;
+            lines.push(render_turn_boundary(turn_index, &group.lines, theme));
+            prev_kind = Some(group.kind);
             continue;
         }
-        for line in &group.lines {
-            lines.push(render_content_line(line, content_style(group.kind, theme)));
+
+        lines.push(render_group_header(group.kind, group.lines.len(), theme));
+        if matches!(group.kind, SegmentKind::Blank) {
+            lines.extend(std::iter::repeat_with(Line::default).take(group.lines.len()));
+            prev_kind = Some(group.kind);
+            continue;
         }
+        let icon = group.kind.icon();
+        let style = content_style(group.kind, theme);
+
+        // Fold long tool-use groups: show first N lines + "[+M lines]" summary.
+        let should_fold = matches!(group.kind, SegmentKind::ToolUse)
+            && group.lines.len() > FOLD_THRESHOLD;
+
+        if should_fold {
+            for line in group.lines.iter().take(FOLD_PREVIEW_LINES) {
+                lines.push(render_content_line(line, style, icon));
+            }
+            let hidden = group.lines.len() - FOLD_PREVIEW_LINES;
+            lines.push(Line::from(vec![
+                Span::styled(" ", style),
+                Span::styled(
+                    format!("  \u{2026} [+{hidden} lines]"),
+                    Style::default()
+                        .fg(Theme::TEXT_GHOST)
+                        .add_modifier(Modifier::ITALIC),
+                ),
+            ]));
+        } else if matches!(group.kind, SegmentKind::Code) {
+            // Render code blocks with a left border and detect JSON.
+            render_code_block(&group.lines, theme, &mut lines);
+        } else {
+            for line in &group.lines {
+                lines.push(render_content_line(line, style, icon));
+            }
+        }
+        prev_kind = Some(group.kind);
     }
 
     lines
 }
 
-fn render_group_header(kind: SegmentKind, theme: &Theme) -> Line<'static> {
+/// Render a turn boundary with a turn number and decorative separator.
+fn render_turn_boundary(turn_index: usize, raw_lines: &[String], theme: &Theme) -> Line<'static> {
+    // Extract any timestamp-like text from the raw turn marker line.
+    let extra = raw_lines
+        .first()
+        .and_then(|line| {
+            let plain = strip_ansi(line);
+            let trimmed = plain.trim().trim_start_matches('\u{2500}').trim_start_matches('-').trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        })
+        .unwrap_or_default();
+
+    let turn_label = format!(" turn {turn_index} ");
+    let extra_part = if extra.is_empty() {
+        String::new()
+    } else {
+        format!(" {extra} ")
+    };
+    let sep = "\u{2500}".repeat(6);
+
+    Line::from(vec![
+        Span::styled(
+            format!("{sep}\u{253c}"),
+            Style::default().fg(Theme::TEXT_PHANTOM),
+        ),
+        Span::styled(
+            turn_label,
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            extra_part,
+            Style::default().fg(Theme::TEXT_GHOST),
+        ),
+        Span::styled(
+            format!("\u{253c}{sep}"),
+            Style::default().fg(Theme::TEXT_PHANTOM),
+        ),
+    ])
+}
+
+/// Render a code block with a left-margin border and optional JSON key highlighting.
+fn render_code_block(code_lines: &[String], theme: &Theme, out: &mut Vec<Line<'static>>) {
+    let code_style = Style::default().fg(theme.success).bg(Theme::BG_SECONDARY);
+    let border_style = Style::default().fg(Theme::TEXT_PHANTOM);
+    let fence_style = Style::default()
+        .fg(Theme::TEXT_GHOST)
+        .bg(Theme::BG_SECONDARY);
+
+    // Detect if this is a JSON block (first non-fence, non-blank line starts with { or [).
+    let is_json = code_lines.iter().any(|line| {
+        let trimmed = strip_ansi(line).trim().to_string();
+        !trimmed.is_empty()
+            && !trimmed.starts_with("```")
+            && (trimmed.starts_with('{')
+                || trimmed.starts_with('[')
+                || trimmed.starts_with("\""))
+    });
+
+    for line in code_lines {
+        let plain = strip_ansi(line);
+        let trimmed = plain.trim();
+
+        // Fence lines (``` markers) rendered dimmer.
+        if trimmed.starts_with("```") {
+            out.push(Line::from(vec![
+                Span::styled("\u{2502} ", border_style),
+                Span::styled(line.to_owned(), fence_style),
+            ]));
+            continue;
+        }
+
+        if is_json {
+            out.push(render_json_line(line, &plain, border_style, theme));
+        } else {
+            let mut spans = Vec::new();
+            spans.push(Span::styled("\u{2502} ", border_style));
+            for span in parse_ansi_line(line) {
+                spans.push(Span::styled(
+                    span.content.into_owned(),
+                    code_style.patch(span.style),
+                ));
+            }
+            out.push(Line::from(spans));
+        }
+    }
+}
+
+/// Render a single JSON line with key highlighting.
+fn render_json_line(
+    raw: &str,
+    plain: &str,
+    border_style: Style,
+    theme: &Theme,
+) -> Line<'static> {
+    let key_style = Style::default()
+        .fg(Theme::BONE)
+        .bg(Theme::BG_SECONDARY)
+        .add_modifier(Modifier::BOLD);
+    let string_style = Style::default()
+        .fg(Theme::SAGE)
+        .bg(Theme::BG_SECONDARY);
+    let punct_style = Style::default()
+        .fg(Theme::TEXT_DIM)
+        .bg(Theme::BG_SECONDARY);
+    let number_style = Style::default()
+        .fg(Theme::WARNING)
+        .bg(Theme::BG_SECONDARY);
+    let bool_style = Style::default()
+        .fg(Theme::DREAM_BRIGHT)
+        .bg(Theme::BG_SECONDARY);
+    let default_style = Style::default()
+        .fg(theme.success)
+        .bg(Theme::BG_SECONDARY);
+
+    let mut spans = vec![Span::styled("\u{2502} ", border_style)];
+
+    // Simple character-level JSON coloring on the plain text.
+    let chars: Vec<char> = plain.chars().collect();
+    let mut i = 0;
+    let mut in_key = false;
+
+    while i < chars.len() {
+        let ch = chars[i];
+        match ch {
+            '"' => {
+                // Find closing quote.
+                let start = i;
+                i += 1;
+                while i < chars.len() && chars[i] != '"' {
+                    if chars[i] == '\\' {
+                        i += 1; // skip escaped char
+                    }
+                    i += 1;
+                }
+                i += 1; // past closing quote
+                let s: String = chars[start..i.min(chars.len())].iter().collect();
+                // Check if this is a key (followed by ':' after optional whitespace).
+                let rest: String = chars[i.min(chars.len())..].iter().collect();
+                let is_key = rest.trim_start().starts_with(':');
+                if is_key {
+                    spans.push(Span::styled(s, key_style));
+                    in_key = true;
+                } else {
+                    spans.push(Span::styled(s, string_style));
+                    in_key = false;
+                }
+            }
+            ':' if in_key => {
+                spans.push(Span::styled(":", punct_style));
+                in_key = false;
+                i += 1;
+            }
+            '{' | '}' | '[' | ']' | ',' => {
+                spans.push(Span::styled(ch.to_string(), punct_style));
+                i += 1;
+            }
+            c if c.is_ascii_digit() || c == '-' => {
+                let start = i;
+                while i < chars.len()
+                    && (chars[i].is_ascii_digit() || chars[i] == '.' || chars[i] == '-' || chars[i] == 'e' || chars[i] == 'E')
+                {
+                    i += 1;
+                }
+                let s: String = chars[start..i].iter().collect();
+                spans.push(Span::styled(s, number_style));
+            }
+            _ => {
+                // Collect a run of non-special characters.
+                let start = i;
+                while i < chars.len()
+                    && !matches!(chars[i], '"' | '{' | '}' | '[' | ']' | ',' | ':')
+                    && !(chars[i].is_ascii_digit() && i > start)
+                {
+                    i += 1;
+                }
+                let s: String = chars[start..i].iter().collect();
+                let trimmed_s = s.trim();
+                let style = match trimmed_s {
+                    "true" | "false" => bool_style,
+                    "null" => Style::default()
+                        .fg(Theme::TEXT_GHOST)
+                        .bg(Theme::BG_SECONDARY),
+                    _ => default_style,
+                };
+                spans.push(Span::styled(s, style));
+            }
+        }
+    }
+
+    // Use the raw line if it contains ANSI (fallback).
+    if raw != plain && spans.len() <= 2 {
+        spans.clear();
+        spans.push(Span::styled("\u{2502} ", border_style));
+        for span in parse_ansi_line(raw) {
+            spans.push(Span::styled(
+                span.content.into_owned(),
+                default_style.patch(span.style),
+            ));
+        }
+    }
+
+    Line::from(spans)
+}
+
+fn render_group_header(kind: SegmentKind, line_count: usize, theme: &Theme) -> Line<'static> {
     let accent = match kind {
         SegmentKind::Thinking => Theme::FG_DIM,
         SegmentKind::Heading => theme.accent,
@@ -293,17 +587,42 @@ fn render_group_header(kind: SegmentKind, theme: &Theme) -> Line<'static> {
         .fg(accent)
         .add_modifier(Modifier::DIM | Modifier::BOLD);
 
-    Line::from(vec![
+    let mut spans = vec![
         Span::styled(" ", Style::default()),
         Span::styled(kind.label().to_ascii_uppercase(), header_style),
-        Span::styled(" ", Style::default()),
-        Span::styled("────────", Style::default().fg(Theme::TEXT_PHANTOM)),
-    ])
+    ];
+    // Show line count for groups with more than a few lines.
+    if line_count > 3
+        && !matches!(
+            kind,
+            SegmentKind::Blank | SegmentKind::TurnMarker | SegmentKind::Heading
+        )
+    {
+        spans.push(Span::styled(
+            format!(" ({line_count})"),
+            Style::default()
+                .fg(Theme::TEXT_PHANTOM)
+                .add_modifier(Modifier::DIM),
+        ));
+    }
+    spans.push(Span::styled(" ", Style::default()));
+    spans.push(Span::styled(
+        "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
+        Style::default().fg(Theme::TEXT_PHANTOM),
+    ));
+
+    Line::from(spans)
 }
 
-fn render_content_line(line: &str, base_style: Style) -> Line<'static> {
+fn render_content_line(line: &str, base_style: Style, icon: &str) -> Line<'static> {
     let mut spans = Vec::new();
     spans.push(Span::styled(" ", base_style));
+    if !icon.is_empty() {
+        spans.push(Span::styled(
+            icon.to_string(),
+            base_style.add_modifier(Modifier::DIM),
+        ));
+    }
 
     for span in parse_ansi_line(line) {
         spans.push(Span::styled(
@@ -441,6 +760,40 @@ mod tests {
     }
 
     #[test]
+    fn recognizes_extended_tool_use_prefixes() {
+        let groups = parse_segment_groups(&[
+            "Searching for files".to_string(),
+            "Executing command".to_string(),
+            "Fetching data".to_string(),
+            "Calling API".to_string(),
+            "Updating config".to_string(),
+        ]);
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].kind, SegmentKind::ToolUse);
+        assert_eq!(groups[0].lines.len(), 5);
+    }
+
+    #[test]
+    fn separator_lines_between_different_segment_kinds() {
+        let render = render_cached_output(
+            &[
+                "$ cargo test".to_string(),
+                "Thinking about it".to_string(),
+                "error[E0001]: bad".to_string(),
+            ],
+            &Theme::dark(),
+        );
+
+        // 3 headers + 3 content lines + 2 separator blank lines = 8 minimum
+        assert!(
+            render.styled_lines.len() >= 8,
+            "expected separator lines, got {} lines",
+            render.styled_lines.len()
+        );
+    }
+
+    #[test]
     fn blank_groups_render_a_header_line() {
         let render = render_cached_output(&[String::new(), String::new()], &Theme::dark());
 
@@ -452,5 +805,82 @@ mod tests {
                 .iter()
                 .any(|span| span.content.contains("BLANK"))
         );
+    }
+
+    #[test]
+    fn long_tool_use_groups_are_folded() {
+        let mut tool_lines: Vec<String> = (0..10)
+            .map(|i| format!("Running step {i}"))
+            .collect();
+        tool_lines.push("done".to_string());
+
+        let render = render_cached_output(&tool_lines, &Theme::dark());
+
+        // Should have a fold indicator somewhere in the output.
+        let has_fold = render.styled_lines.iter().any(|line| {
+            line.spans
+                .iter()
+                .any(|span| span.content.contains("+") && span.content.contains("lines"))
+        });
+        assert!(has_fold, "long tool use group should show fold indicator");
+    }
+
+    #[test]
+    fn code_blocks_get_border() {
+        let render = render_cached_output(
+            &[
+                "```rust".to_string(),
+                "fn main() {}".to_string(),
+                "```".to_string(),
+            ],
+            &Theme::dark(),
+        );
+
+        // Code block lines should have a left border character.
+        let has_border = render.styled_lines.iter().any(|line| {
+            line.spans
+                .iter()
+                .any(|span| span.content.contains('\u{2502}'))
+        });
+        assert!(has_border, "code blocks should have a left border");
+    }
+
+    #[test]
+    fn turn_markers_show_turn_number() {
+        let render = render_cached_output(
+            &[
+                "thinking".to_string(),
+                "\u{2500}\u{2500}\u{2500}\u{2500}".to_string(),
+                "more thinking".to_string(),
+            ],
+            &Theme::dark(),
+        );
+
+        let has_turn = render.styled_lines.iter().any(|line| {
+            line.spans
+                .iter()
+                .any(|span| span.content.contains("turn 1"))
+        });
+        assert!(has_turn, "turn markers should show numbered turn label");
+    }
+
+    #[test]
+    fn json_code_block_highlights_keys() {
+        let render = render_cached_output(
+            &[
+                "```json".to_string(),
+                r#"{"name": "roko", "count": 42}"#.to_string(),
+                "```".to_string(),
+            ],
+            &Theme::dark(),
+        );
+
+        // Should have at least one span with the key style (BONE color).
+        let has_key_color = render.styled_lines.iter().any(|line| {
+            line.spans
+                .iter()
+                .any(|span| span.content.contains("\"name\"") && span.style.fg == Some(Theme::BONE))
+        });
+        assert!(has_key_color, "JSON keys should be highlighted with BONE color");
     }
 }

@@ -364,3 +364,9 @@ call site.
 
 6. **Fix style inconsistency in learning_view.rs** -- Uses `theme.muted` (field access) vs the
    `theme.muted()` (method) pattern used everywhere else. Not a bug but a maintenance hazard.
+
+---
+
+## Implementation Status (2026-09-02 swarm)
+
+F8/F9/F10 view improvements (task #17): marketplace, atelier, learning tab visual quality.

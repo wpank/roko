@@ -627,3 +627,9 @@ Blocks used or recommended, all with excellent modern terminal support:
 | Miscellaneous Symbols | U+2600..U+26FF | `\u{2691}` (flag), `\u{2692}` (hammer), `\u{2699}` (gear), `\u{26a0}` (warning), `\u{26a1}` (lightning) |
 | Dingbats | U+2700..U+27BF | `\u{2713}` (check), `\u{2717}` (X), `\u{2718}` (heavy X) |
 | Braille Patterns | U+2800..U+28FF | Sparklines (algorithmic), spinners (specific frames) |
+
+---
+
+## Implementation Status (2026-09-02 swarm)
+
+Unicode and typography improvements (task #24): icon consistency, box-drawing, text density.

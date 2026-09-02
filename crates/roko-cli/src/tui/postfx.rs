@@ -965,6 +965,117 @@ pub fn drop_shadow(buf: &mut Buffer, area: Rect) {
     }
 }
 
+/// CRT-style scanline dimming. Every `spacing`-th row gets darkened by
+/// `darken_amount`. This is a cheap single-pass atmospheric effect that
+/// adds subtle texture to the display.
+pub fn scanlines(area: Rect, buf: &mut Buffer, spacing: u16, darken_amount: f64) {
+    if area.width == 0 || area.height == 0 || spacing == 0 {
+        return;
+    }
+    let darken = darken_amount.clamp(0.0, 0.2); // safety cap
+    if darken <= 0.0 {
+        return;
+    }
+    let fg_factor = 1.0 - darken * 0.5; // less effect on fg to preserve readability
+    let bg_factor = 1.0 - darken;
+
+    let mut y = area.top();
+    while y < area.bottom() {
+        for x in area.left()..area.right() {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                if let Some((r, g, b)) = cell_fg_rgb(cell) {
+                    cell.set_fg(Color::Rgb(
+                        scale(r, fg_factor),
+                        scale(g, fg_factor),
+                        scale(b, fg_factor),
+                    ));
+                }
+                if let Some((r, g, b)) = cell_bg_rgb(cell) {
+                    cell.set_bg(Color::Rgb(
+                        scale(r, bg_factor),
+                        scale(g, bg_factor),
+                        scale(b, bg_factor),
+                    ));
+                }
+            }
+        }
+        y += spacing;
+    }
+}
+
+/// Sparse noise floor -- random dim characters shimmer in blank cells.
+/// Creates a subtle "aliveness" texture in negative space.
+pub fn noise_floor(area: Rect, buf: &mut Buffer, density: f64, frame_seed: u64) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let density = density.clamp(0.0, 0.05); // never more than 5%
+    if density <= 0.0 {
+        return;
+    }
+
+    const NOISE_CHARS: &[char] = &['\u{2591}', '\u{00b7}', '\u{2219}', '\u{2027}'];
+
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            let hash = splitmix64(
+                frame_seed ^ ((x as u64) << 16) ^ ((y as u64) << 32),
+            );
+            if unit_from_hash(hash) > density {
+                continue;
+            }
+
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                if !is_blank(cell) {
+                    continue;
+                }
+
+                let ch = NOISE_CHARS[(hash >> 8) as usize % NOISE_CHARS.len()];
+                let brightness = 18 + (hash >> 16) as u8 % 16;
+                // Warm rose-tinted noise
+                let fg = Color::Rgb(
+                    brightness.saturating_add(8),
+                    brightness / 2,
+                    brightness.saturating_add(3),
+                );
+                cell.set_char(ch);
+                cell.set_fg(fg);
+            }
+        }
+    }
+}
+
+/// Subtle fade overlay used for tab transitions.
+///
+/// Dims the entire area toward black by `(1 - opacity)`. At opacity 1.0 the
+/// content is fully visible; at 0.0 it is fully black.
+pub fn fade_overlay(area: Rect, buf: &mut Buffer, opacity: f64) {
+    let factor = opacity.clamp(0.0, 1.0);
+    if (factor - 1.0).abs() < f64::EPSILON {
+        return; // fully visible, nothing to do
+    }
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                if let Some((r, g, b)) = cell_fg_rgb(cell) {
+                    cell.set_fg(Color::Rgb(
+                        scale(r, factor),
+                        scale(g, factor),
+                        scale(b, factor),
+                    ));
+                }
+                if let Some((r, g, b)) = cell_bg_rgb(cell) {
+                    cell.set_bg(Color::Rgb(
+                        scale(r, factor),
+                        scale(g, factor),
+                        scale(b, factor),
+                    ));
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1051,5 +1162,55 @@ mod tests {
         guide_lines(area, &mut buf, 1.0, 1.0, 7);
 
         assert!(buf.content.iter().any(|cell| !is_blank(cell)));
+    }
+
+    #[test]
+    fn scanlines_dims_every_nth_row() {
+        let area = Rect::new(0, 0, 10, 6);
+        let mut buf = Buffer::empty(area);
+        // Set a known fg color on row 0 (which is a scanline row with spacing=3)
+        buf[(0, 0)].set_fg(Color::Rgb(100, 100, 100));
+        buf[(0, 1)].set_fg(Color::Rgb(100, 100, 100));
+
+        scanlines(area, &mut buf, 3, 0.04);
+
+        // Row 0 should be slightly dimmed, row 1 untouched
+        let fg0 = buf[(0, 0)].fg;
+        let fg1 = buf[(0, 1)].fg;
+        assert_ne!(fg0, fg1, "scanline row should be dimmer than non-scanline row");
+    }
+
+    #[test]
+    fn noise_floor_only_writes_blank_cells() {
+        let area = Rect::new(0, 0, 20, 10);
+        let mut buf = Buffer::empty(area);
+        buf[(5, 5)].set_char('X');
+
+        noise_floor(area, &mut buf, 1.0, 42); // max density for test coverage
+
+        assert_eq!(buf[(5, 5)].symbol(), "X");
+    }
+
+    #[test]
+    fn fade_overlay_fully_visible_is_noop() {
+        let area = Rect::new(0, 0, 4, 2);
+        let mut buf = Buffer::empty(area);
+        buf[(0, 0)].set_fg(Color::Rgb(200, 150, 100));
+        let before = buf[(0, 0)].fg;
+
+        fade_overlay(area, &mut buf, 1.0);
+
+        assert_eq!(buf[(0, 0)].fg, before);
+    }
+
+    #[test]
+    fn fade_overlay_zero_opacity_blacks_out() {
+        let area = Rect::new(0, 0, 4, 2);
+        let mut buf = Buffer::empty(area);
+        buf[(0, 0)].set_fg(Color::Rgb(200, 150, 100));
+
+        fade_overlay(area, &mut buf, 0.0);
+
+        assert_eq!(buf[(0, 0)].fg, Color::Rgb(0, 0, 0));
     }
 }

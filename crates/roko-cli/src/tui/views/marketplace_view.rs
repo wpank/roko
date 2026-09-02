@@ -51,12 +51,16 @@ pub(crate) fn render(
     view_state: &ViewState,
     theme: &Theme,
 ) {
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+    render_sub_tab_bar(frame, rows[0], view_state, theme);
+
+    let content = rows[1];
     let jobs = &tui_state.marketplace_jobs;
 
     if jobs.is_empty() {
         match view_state.active_sub_view(Tab::Marketplace) {
-            SubView::CreateJob => render_create_job(frame, area, tui_state, theme),
-            _ => render_empty(frame, area, theme),
+            SubView::CreateJob => render_create_job(frame, content, tui_state, theme),
+            _ => render_empty(frame, content, theme),
         }
         return;
     }
@@ -65,20 +69,27 @@ pub(crate) fn render(
     match view_state.active_sub_view(Tab::Marketplace) {
         SubView::JobDetail => {
             if let Some(job) = jobs.get(selected) {
-                render_job_detail(frame, area, job, tui_state, theme);
+                render_job_detail(frame, content, job, tui_state, theme);
             }
         }
-        SubView::CreateJob => render_create_job(frame, area, tui_state, theme),
+        SubView::CreateJob => render_create_job(frame, content, tui_state, theme),
         _ => {
-            let panels =
-                Layout::horizontal([Constraint::Percentage(35), Constraint::Percentage(65)])
-                    .split(area);
-            render_job_list(frame, panels[0], jobs, selected, theme);
+            let (sidebar, detail) =
+                crate::tui::layout::responsive_panel_split(content, 35, 100, content.height / 3);
+            render_job_list(frame, sidebar, jobs, selected, theme);
             if let Some(job) = jobs.get(selected) {
-                render_job_detail(frame, panels[1], job, tui_state, theme);
+                render_job_detail(frame, detail, job, tui_state, theme);
             }
         }
     }
+}
+
+fn render_sub_tab_bar(frame: &mut Frame<'_>, area: Rect, view_state: &ViewState, theme: &Theme) {
+    let label = SubView::bar_label(Tab::Marketplace, view_state.sub_tab);
+    let bar = Paragraph::new(Line::from(Span::styled(label, theme.muted())))
+        .alignment(Alignment::Center)
+        .style(Style::default().bg(Theme::BG_RAISED));
+    frame.render_widget(bar, area);
 }
 
 // ---------------------------------------------------------------------------
@@ -178,7 +189,7 @@ fn render_job_list(
                 "submitted" => ("\u{25d1}", theme.info()),         // half circle
                 "done" | "completed" | "evaluated" => ("\u{2713}", theme.success()), // check
                 "failed" | "cancelled" => ("\u{2717}", theme.danger()), // cross
-                _ => ("\u{00b7}", theme.muted()),                  // dot
+                _ => ("\u{25cb}", theme.muted()),                  // open circle
             };
 
             // Job type color tag (research=rose, coding_task=bone/dim, other=muted).
@@ -385,7 +396,7 @@ fn render_job_detail(
             let bar_line = Line::from(vec![
                 Span::styled(" [", theme.muted()),
                 Span::styled("\u{2588}".repeat(filled), theme.success()),
-                Span::styled("\u{2591}".repeat(empty), theme.muted()),
+                Span::styled("\u{2500}".repeat(empty), theme.muted()),
                 Span::styled(format!("] {}%", progress.percent), theme.muted()),
             ]);
             let agent_hint = if progress.agent_id.is_empty() {
@@ -426,12 +437,12 @@ fn render_job_detail(
             assign_inner,
         );
     } else {
-        // Show keybinding hints
+        // Show keybinding hints (active keys only; planned keys dimmed)
         let hint_line = Line::from(vec![
-            Span::styled(" s", theme.accent()),
-            Span::styled(":status  ", theme.muted()),
-            Span::styled("a", theme.accent()),
-            Span::styled(":assign  ", theme.muted()),
+            Span::styled(" j/k", theme.accent()),
+            Span::styled(":navigate  ", theme.muted()),
+            Span::styled("Enter", theme.accent()),
+            Span::styled(":detail  ", theme.muted()),
             Span::styled("n", theme.accent()),
             Span::styled(":new  ", theme.muted()),
             Span::styled("r", theme.accent()),

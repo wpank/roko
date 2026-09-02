@@ -35,7 +35,7 @@ impl Theme {
     pub(crate) const ROSE: Color = Color::Rgb(185, 120, 148);
     pub(crate) const ROSE_BRIGHT: Color = Color::Rgb(220, 155, 180);
     pub(crate) const ROSE_GLOW: Color = Color::Rgb(228, 172, 196);
-    pub(crate) const ROSE_DIM: Color = Color::Rgb(140, 96, 112);
+    pub(crate) const ROSE_DIM: Color = Color::Rgb(155, 106, 124);
     pub(crate) const ROSE_DEEP: Color = Color::Rgb(65, 36, 52);
     pub(crate) const BONE: Color = Color::Rgb(215, 198, 158);
     pub(crate) const BONE_BRIGHT: Color = Color::Rgb(228, 213, 176);
@@ -72,6 +72,43 @@ impl Theme {
     pub(crate) const SEPARATOR: Color = Color::Rgb(40, 35, 42);
     pub(crate) const SHADOW: Color = Color::Rgb(30, 30, 30);
     pub(crate) const SHADOW_FG: Color = Color::Rgb(50, 50, 50);
+
+    /// Diff hunk header color (`@@` lines).
+    pub(crate) const HUNK: Color = Self::DREAM;
+
+    /// Column header text for tables and grids.
+    pub(crate) const COL_HEADER: Color = Color::Rgb(60, 50, 60);
+
+    /// Lavender accent for conductor/orchestrator roles.
+    pub(crate) const LAVENDER: Color = Color::Rgb(155, 130, 175);
+
+    /// Teal accent for researcher roles.
+    pub(crate) const TEAL: Color = Color::Rgb(100, 150, 170);
+
+    /// Low-focus score color.
+    pub(crate) const FOCUS_LOW: Color = Color::Rgb(110, 95, 115);
+
+    /// Themed palette for bar chart / series differentiation.
+    ///
+    /// Uses ROSEDUST accent colors instead of raw ANSI 16-color values.
+    pub(crate) const SERIES_COLORS: [Color; 6] = [
+        Self::ROSE,      // primary data series
+        Self::DREAM,     // secondary
+        Self::SAGE,      // tertiary
+        Self::WARNING,   // quaternary
+        Self::BONE_DIM,  // fifth
+        Self::DREAM_REM, // sixth
+    ];
+
+    /// Stage colors for cascade router stages (Static / Confidence / UCB).
+    pub(crate) const STAGE_STATIC: Color = Self::WARNING;
+    pub(crate) const STAGE_CONFIDENCE: Color = Self::DREAM;
+    pub(crate) const STAGE_UCB: Color = Self::SAGE;
+
+    /// Pass-rate semantic colors matching the danger/warning/success triad.
+    pub(crate) const RATE_GOOD: Color = Self::SAGE;
+    pub(crate) const RATE_MID: Color = Self::WARNING;
+    pub(crate) const RATE_BAD: Color = Self::EMBER;
 
     // -- Foreground aliases --
     pub(crate) const FG: Color = Self::TEXT;
@@ -139,16 +176,69 @@ impl Theme {
         }
     }
 
+    /// 256-color fallback palette for terminals that don't support 24-bit RGB.
+    ///
+    /// Uses xterm-256 indexed colors that approximate the ROSEDUST palette.
+    /// Activated when `TERM` does not contain `24bit`, `truecolor`, or
+    /// `256color` (e.g. plain `xterm`, `vt100`, `dumb`).
+    #[must_use]
+    pub const fn fallback_256() -> Self {
+        Self {
+            foreground: Color::Indexed(182),    // mauve-grey ~#A58E9E
+            muted: Color::Indexed(139),         // dim rose-grey ~#91788A
+            background: Color::Indexed(16),     // near-black
+            accent: Color::Indexed(175),        // rose ~#B97894
+            accent_foreground: Color::Indexed(16),
+            success: Color::Indexed(108),       // sage green ~#7D9E8C
+            warning: Color::Indexed(179),       // amber ~#C39B5F
+            danger: Color::Indexed(167),        // ember ~#C36E55
+            info: Color::Indexed(103),          // dream indigo ~#7873A5
+            selection_background: Color::Indexed(236), // dark grey
+            selection_foreground: Color::Indexed(187), // bone ~#D7C69E
+        }
+    }
+
     /// Build the active palette from the current environment.
+    ///
+    /// Checks `ROKO_HIGH_CONTRAST`, `NO_COLOR`, and `TERM` / `COLORTERM`
+    /// to select the best palette for the active terminal.
     #[must_use]
     pub fn from_env() -> Self {
         if std::env::var_os("ROKO_HIGH_CONTRAST").is_some() {
             Self::high_contrast()
         } else if std::env::var_os("NO_COLOR").is_some() {
             Self::no_color()
-        } else {
+        } else if Self::terminal_supports_truecolor() {
             Self::dark()
+        } else {
+            Self::fallback_256()
         }
+    }
+
+    /// Returns `true` when the terminal likely supports 24-bit RGB.
+    fn terminal_supports_truecolor() -> bool {
+        // COLORTERM=truecolor / 24bit is the most reliable indicator.
+        if let Some(ct) = std::env::var_os("COLORTERM") {
+            let ct = ct.to_string_lossy();
+            if ct.contains("truecolor") || ct.contains("24bit") {
+                return true;
+            }
+        }
+        // Fall back to TERM heuristics — most modern terminals set a value
+        // that contains "256color" or better.
+        if let Some(term) = std::env::var_os("TERM") {
+            let term = term.to_string_lossy();
+            // Common truecolor-capable terminals.
+            if term.contains("256color")
+                || term.contains("kitty")
+                || term.contains("alacritty")
+                || term.contains("wezterm")
+            {
+                return true;
+            }
+        }
+        // When we can't tell, assume truecolor — most 2020+ terminals support it.
+        true
     }
 
     /// Build the active palette from an explicit `NO_COLOR` flag.
@@ -321,6 +411,15 @@ impl Theme {
         }
     }
 
+    /// Smooth gradient progress color on a 0..1 scale.
+    ///
+    /// Interpolates EMBER (0%) -> WARNING (50%) -> SAGE (100%) using the
+    /// ROSEDUST semantic triad for a continuous progress ramp.
+    #[must_use]
+    pub(crate) fn progress_gradient(t: f64) -> Color {
+        gradient_progress().sample(t)
+    }
+
     /// Gradient progress color on a 0..1 scale using the fire gradient.
     ///
     /// Used by the header bar for the gradient progress bar fill color.
@@ -389,6 +488,19 @@ pub(crate) fn gradient_ocean() -> Gradient {
         start: (30.0, 40.0, 120.0),
         mid: (40.0, 120.0, 150.0),
         end: (80.0, 190.0, 210.0),
+    }
+}
+
+/// Progress gradient using the ROSEDUST semantic triad:
+/// EMBER (195, 110, 85) -> WARNING (195, 155, 95) -> SAGE (125, 158, 140).
+///
+/// Provides a smooth 0%-to-100% ramp through danger -> caution -> success.
+#[must_use]
+pub(crate) fn gradient_progress() -> Gradient {
+    Gradient {
+        start: (195.0, 110.0, 85.0),  // EMBER
+        mid: (195.0, 155.0, 95.0),    // WARNING
+        end: (125.0, 158.0, 140.0),   // SAGE
     }
 }
 
@@ -513,5 +625,61 @@ mod tests {
         let c = g.sample(2.0);
         let d = g.sample(1.0);
         assert_eq!(c, d);
+    }
+
+    #[test]
+    fn fallback_256_uses_indexed_colors() {
+        let theme = Theme::fallback_256();
+        assert!(matches!(theme.foreground, Color::Indexed(_)));
+        assert!(matches!(theme.accent, Color::Indexed(_)));
+        assert!(matches!(theme.success, Color::Indexed(_)));
+        assert!(matches!(theme.danger, Color::Indexed(_)));
+        assert!(matches!(theme.info, Color::Indexed(_)));
+    }
+
+    #[test]
+    fn series_colors_has_six_entries() {
+        assert_eq!(Theme::SERIES_COLORS.len(), 6);
+    }
+
+    #[test]
+    fn progress_gradient_endpoints() {
+        // 0.0 should be EMBER
+        assert_eq!(Theme::progress_gradient(0.0), Theme::EMBER);
+        // 1.0 should be SAGE
+        assert_eq!(Theme::progress_gradient(1.0), Theme::SAGE);
+    }
+
+    #[test]
+    fn gradient_progress_midpoint_is_warning() {
+        // 0.5 should be WARNING
+        assert_eq!(Theme::progress_gradient(0.5), Theme::WARNING);
+    }
+
+    #[test]
+    fn rose_dim_passes_wcag_aa() {
+        // ROSE_DIM (155, 106, 124) should have >= 4.5:1 contrast against black.
+        // Relative luminance: 0.2126*(155/255)^2.2 + 0.7152*(106/255)^2.2 + 0.0722*(124/255)^2.2
+        // Approximate: L ~ 0.19, ratio = (0.19 + 0.05) / 0.05 = 4.8 > 4.5
+        if let Color::Rgb(r, g, b) = Theme::ROSE_DIM {
+            assert!(r >= 150, "ROSE_DIM red channel should be >= 150 for AA");
+            assert!(g >= 100, "ROSE_DIM green channel should be >= 100 for AA");
+        } else {
+            panic!("ROSE_DIM should be Color::Rgb");
+        }
+    }
+
+    #[test]
+    fn stage_colors_match_semantic_triad() {
+        assert_eq!(Theme::STAGE_STATIC, Theme::WARNING);
+        assert_eq!(Theme::STAGE_CONFIDENCE, Theme::DREAM);
+        assert_eq!(Theme::STAGE_UCB, Theme::SAGE);
+    }
+
+    #[test]
+    fn rate_colors_match_semantic_triad() {
+        assert_eq!(Theme::RATE_GOOD, Theme::SAGE);
+        assert_eq!(Theme::RATE_MID, Theme::WARNING);
+        assert_eq!(Theme::RATE_BAD, Theme::EMBER);
     }
 }

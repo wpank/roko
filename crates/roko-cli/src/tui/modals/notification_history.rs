@@ -1,494 +1,220 @@
-//! Bounded, redacted in-memory notification history and its modal renderer.
+//! Scrollable notification history modal.
+//!
+//! Shows all past notifications that have expired or been dismissed,
+//! with timestamp, level icon, and message text.
 
-use std::collections::VecDeque;
-use std::sync::OnceLock;
+use std::time::Instant;
 
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 
-use super::notification::NotificationLevel;
-use crate::tui::dashboard::Theme;
-use crate::tui::display_utils::truncate;
+use super::super::dashboard::Theme;
+use super::NotificationLevel;
 
-/// Maximum number of notification records retained in memory.
-pub const NOTIFICATION_HISTORY_LIMIT: usize = 200;
-
-/// One redacted notification retained independently from transient toasts.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NotificationRecord {
-    /// Monotonic session-local notification identifier.
-    pub id: u64,
-    /// Creation timestamp as Unix epoch milliseconds.
-    pub created_at: u64,
-    /// Notification severity.
-    pub level: NotificationLevel,
-    /// Stable producer category (for example `gate` or `tui`).
-    pub source: String,
-    /// Redacted text exactly as eligible for display.
+/// A single entry in the notification history.
+#[derive(Debug, Clone)]
+pub struct HistoryEntry {
+    /// When the notification was originally created.
+    pub created: Instant,
+    /// The notification message.
     pub message: String,
-    /// Canonical related run/plan identifier, when available.
-    pub related_run: Option<String>,
-    /// Canonical related task identifier, when available.
-    pub related_task: Option<String>,
-    /// Manual dismissal timestamp. Expiration does not mark dismissal.
-    pub dismissed_at: Option<u64>,
+    /// Severity level.
+    pub level: NotificationLevel,
 }
 
-/// Severity filters for Notification History.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NotificationFilters {
-    /// Show informational records.
-    pub info: bool,
-    /// Show warning records.
-    pub warn: bool,
-    /// Show error records.
-    pub error: bool,
-    /// Show debug records.
-    pub debug: bool,
-}
-
-impl Default for NotificationFilters {
-    fn default() -> Self {
-        Self {
-            info: true,
-            warn: true,
-            error: true,
-            debug: true,
-        }
-    }
-}
-
-impl NotificationFilters {
-    /// Whether a severity is currently visible.
-    #[must_use]
-    pub const fn includes(self, level: NotificationLevel) -> bool {
-        match level {
-            NotificationLevel::Info => self.info,
-            NotificationLevel::Warn => self.warn,
-            NotificationLevel::Error => self.error,
-            NotificationLevel::Debug => self.debug,
-        }
-    }
-
-    /// Toggle one filter bit.
-    pub fn toggle(&mut self, level: NotificationLevel) {
-        let bit = match level {
-            NotificationLevel::Info => &mut self.info,
-            NotificationLevel::Warn => &mut self.warn,
-            NotificationLevel::Error => &mut self.error,
-            NotificationLevel::Debug => &mut self.debug,
-        };
-        *bit = !*bit;
-    }
-}
-
-/// Scrub a message before it crosses the notification storage boundary.
-#[must_use]
-pub fn redact_notification_message(message: &str) -> String {
-    static SCRUBBER: OnceLock<roko_core::obs::LogScrubber> = OnceLock::new();
-    SCRUBBER
-        .get_or_init(roko_core::obs::LogScrubber::new)
-        .scrub(message)
-}
-
-/// Insert a record at the back, evicting the oldest at the exact bound.
-pub fn push_history_record(
-    history: &mut VecDeque<NotificationRecord>,
-    evictions: &mut u64,
-    record: NotificationRecord,
-) {
-    if history.len() >= NOTIFICATION_HISTORY_LIMIT {
-        history.pop_front();
-        *evictions = evictions.saturating_add(1);
-    }
-    history.push_back(record);
-}
-
-/// Indices of records admitted by the filters, newest first.
-#[must_use]
-pub fn filtered_indices_newest_first(
-    history: &VecDeque<NotificationRecord>,
-    filters: NotificationFilters,
-) -> Vec<usize> {
-    searched_indices_newest_first(history, filters, "")
-}
-
-/// Indices admitted by both severity filters and a case-insensitive query.
+/// Render the notification history modal.
 ///
-/// The query searches every operator-relevant field instead of only the
-/// rendered message: message, producer source, related run, and related task.
-#[must_use]
-pub fn searched_indices_newest_first(
-    history: &VecDeque<NotificationRecord>,
-    filters: NotificationFilters,
-    query: &str,
-) -> Vec<usize> {
-    let query = query.trim().to_lowercase();
-    history
-        .iter()
-        .enumerate()
-        .rev()
-        .filter_map(|(index, record)| {
-            let query_matches = query.is_empty()
-                || record.message.to_lowercase().contains(&query)
-                || record.source.to_lowercase().contains(&query)
-                || record
-                    .related_run
-                    .as_deref()
-                    .is_some_and(|run| run.to_lowercase().contains(&query))
-                || record
-                    .related_task
-                    .as_deref()
-                    .is_some_and(|task| task.to_lowercase().contains(&query));
-            (filters.includes(record.level) && query_matches).then_some(index)
-        })
-        .collect()
-}
-
-/// Render the Notification History modal without an active search query.
-///
-/// This compatibility entry point preserves the original renderer API. New
-/// interactive callers should use [`render_notification_history_with_search`].
-#[allow(clippy::too_many_arguments)]
+/// Centered ~75x70 rectangle with a scrollable list of past notifications,
+/// most recent first. An eviction counter at the bottom shows how many
+/// entries have been dropped due to the capacity cap.
 pub fn render_notification_history(
     frame: &mut Frame<'_>,
     area: Rect,
-    history: &VecDeque<NotificationRecord>,
-    filters: NotificationFilters,
-    selected_index: usize,
-    scroll_offset: usize,
-    evictions: u64,
+    entries: &[HistoryEntry],
+    scroll_offset: u16,
+    evicted_count: usize,
     theme: &Theme,
 ) {
-    render_notification_history_with_search(
-        frame,
-        area,
-        history,
-        filters,
-        "",
-        false,
-        selected_index,
-        scroll_offset,
-        evictions,
-        theme,
-    );
-}
-
-/// Render the searchable Notification History modal.
-#[allow(clippy::too_many_arguments)]
-pub fn render_notification_history_with_search(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    history: &VecDeque<NotificationRecord>,
-    filters: NotificationFilters,
-    query: &str,
-    query_editing: bool,
-    selected_index: usize,
-    scroll_offset: usize,
-    evictions: u64,
-    theme: &Theme,
-) {
-    let width = area.width.saturating_sub(4).min(100).max(20);
-    let height = area.height.saturating_sub(4).min(32).max(8);
-    let popup = centered_rect(width, height, area);
+    let popup = centered_rect(75, 70, area);
     frame.render_widget(Clear, popup);
 
-    let visible = searched_indices_newest_first(history, filters, query);
-    let title = format!(
-        " Notification History ({}/{}, evicted {evictions}) ",
-        visible.len(),
-        history.len()
-    );
+    let title = format!(" Notification History ({}) ", entries.len());
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(Span::styled(title, theme.accent_bold()))
+        .title(title)
+        .title_alignment(Alignment::Center)
         .border_style(theme.accent());
+
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
-    if inner.width < 8 || inner.height < 3 {
+
+    if entries.is_empty() {
+        let empty = Paragraph::new(Span::styled("No notifications yet.", theme.muted()));
+        frame.render_widget(empty, inner);
         return;
     }
 
-    let rows = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Min(0),
-        Constraint::Length(1),
-    ])
-    .split(inner);
-    let filters_line = Line::from(vec![
-        filter_span("1 INFO", filters.info, theme),
-        Span::raw(" "),
-        filter_span("2 WARN", filters.warn, theme),
-        Span::raw(" "),
-        filter_span("3 ERROR", filters.error, theme),
-        Span::raw(" "),
-        filter_span("4 DEBUG", filters.debug, theme),
-    ]);
-    frame.render_widget(Paragraph::new(filters_line), rows[0]);
-    let query_marker = if query_editing { "▸" } else { "/" };
-    let query_text = if query.is_empty() {
-        format!(" {query_marker} search message/source/run/task")
-    } else {
-        format!(" {query_marker}{query}")
-    };
-    frame.render_widget(
-        Paragraph::new(query_text).style(if query_editing {
-            theme.selection()
-        } else {
-            theme.muted()
-        }),
-        rows[1],
-    );
+    // Reserve 2 lines for the footer (eviction count + key hints).
+    let content_rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(1),
+            Constraint::Length(2),
+        ])
+        .split(inner);
 
-    if visible.is_empty() {
-        frame.render_widget(
-            Paragraph::new("No notifications match the active filters and query.")
-                .alignment(Alignment::Center)
-                .style(theme.muted()),
-            rows[2],
-        );
-    } else {
-        let selected = selected_index.min(visible.len().saturating_sub(1));
-        let viewport = rows[2].height as usize;
-        let max_scroll = visible.len().saturating_sub(viewport);
-        let scroll = scroll_offset.min(max_scroll).min(selected);
-        let lines = visible
-            .iter()
-            .skip(scroll)
-            .take(viewport)
-            .enumerate()
-            .map(|(row, history_index)| {
-                let record = &history[*history_index];
-                let is_selected = scroll + row == selected;
-                notification_line(record, is_selected, rows[2].width, theme)
-            })
-            .collect::<Vec<_>>();
-        frame.render_widget(Paragraph::new(lines), rows[2]);
+    let now = Instant::now();
+
+    // Build lines in reverse chronological order (most recent first).
+    let mut lines: Vec<Line<'_>> = Vec::with_capacity(entries.len());
+    for entry in entries.iter().rev() {
+        let elapsed = now.duration_since(entry.created);
+        let age = format_age(elapsed.as_secs());
+
+        let (icon, icon_style) = match entry.level {
+            NotificationLevel::Info => ("INFO", theme.info()),
+            NotificationLevel::Warn => ("WARN", theme.warning()),
+            NotificationLevel::Error => ("ERR ", theme.danger()),
+            NotificationLevel::Debug => ("DBG ", theme.muted()),
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(format!("{age:>8} "), theme.muted()),
+            Span::styled(format!("[{icon}] "), icon_style),
+            Span::styled(entry.message.clone(), theme.text()),
+        ]));
     }
 
-    frame.render_widget(
-        Paragraph::new(" / search · Ctrl-U clear · 1-4 severity · Enter jump · Esc close ")
-            .style(theme.muted()),
-        rows[3],
-    );
+    let content_area = content_rows[0];
+    let visible_lines = content_area.height as usize;
+    let max_scroll = lines.len().saturating_sub(visible_lines);
+    let clamped_scroll = (scroll_offset as usize).min(max_scroll) as u16;
+
+    let para = Paragraph::new(lines.clone()).scroll((clamped_scroll, 0));
+    frame.render_widget(para, content_area);
+
+    // Scrollbar
+    if lines.len() > visible_lines {
+        let mut scrollbar_state = ScrollbarState::new(lines.len())
+            .position(clamped_scroll as usize)
+            .viewport_content_length(visible_lines);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight),
+            content_area,
+            &mut scrollbar_state,
+        );
+    }
+
+    // Footer: eviction count + key hints
+    let footer_area = content_rows[1];
+    let mut footer_lines: Vec<Line<'_>> = Vec::new();
+
+    if evicted_count > 0 {
+        footer_lines.push(Line::from(Span::styled(
+            format!(" {evicted_count} older entries evicted"),
+            theme.muted(),
+        )));
+    } else {
+        footer_lines.push(Line::from(""));
+    }
+
+    footer_lines.push(Line::from(vec![
+        Span::styled(" [Esc]", theme.accent_bold()),
+        Span::styled(" close  ", theme.muted()),
+        Span::styled("[Up/Down]", theme.accent_bold()),
+        Span::styled(" scroll", theme.muted()),
+    ]));
+
+    let footer_para = Paragraph::new(footer_lines);
+    frame.render_widget(footer_para, footer_area);
 }
 
-fn filter_span<'a>(label: &'a str, enabled: bool, theme: &Theme) -> Span<'a> {
-    let style = if enabled {
-        theme.selection().add_modifier(Modifier::BOLD)
+/// Format an elapsed duration as a human-readable age string.
+fn format_age(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs}s ago")
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
     } else {
-        theme.muted()
-    };
-    Span::styled(label, style)
+        format!("{}h ago", secs / 3600)
+    }
 }
 
-fn notification_line<'a>(
-    record: &'a NotificationRecord,
-    selected: bool,
-    width: u16,
-    theme: &Theme,
-) -> Line<'a> {
-    let marker = if selected { "▶" } else { " " };
-    let level = match record.level {
-        NotificationLevel::Info => "INFO",
-        NotificationLevel::Warn => "WARN",
-        NotificationLevel::Error => "ERR ",
-        NotificationLevel::Debug => "DBG ",
-    };
-    let dismissed = if record.dismissed_at.is_some() {
-        " ×"
-    } else {
-        ""
-    };
-    let target = record
-        .related_run
-        .as_deref()
-        .map(|run| match record.related_task.as_deref() {
-            Some(task) => format!(" [{run}/{task}]"),
-            None => format!(" [{run}]"),
-        })
-        .unwrap_or_default();
-    let prefix = format!("{marker} [{level}] {}{dismissed}{target}: ", record.source);
-    let message_width = (width as usize).saturating_sub(prefix.chars().count());
-    let style = if selected {
-        theme.selection()
-    } else {
-        Style::default().fg(Theme::TEXT_DIM)
-    };
-    Line::from(Span::styled(
-        format!("{prefix}{}", truncate(&record.message, message_width)),
-        style,
-    ))
-}
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(area);
 
-fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
-    let width = width.min(area.width);
-    let height = height.min(area.height);
-    Rect::new(
-        area.x + area.width.saturating_sub(width) / 2,
-        area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    )
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(vertical[1])[1]
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    fn record(id: u64, level: NotificationLevel, message: &str) -> NotificationRecord {
-        NotificationRecord {
-            id,
-            created_at: 1_000 + id,
-            level,
-            source: "test".into(),
-            message: redact_notification_message(message),
-            related_run: None,
-            related_task: None,
-            dismissed_at: None,
-        }
-    }
+    use super::*;
 
     #[test]
-    fn notification_history_bound_filter_order_and_redaction() {
-        let mut history = VecDeque::new();
-        let mut evictions = 0;
-        for id in 0..=NOTIFICATION_HISTORY_LIMIT as u64 {
-            push_history_record(
-                &mut history,
-                &mut evictions,
-                record(
-                    id,
-                    if id % 2 == 0 {
-                        NotificationLevel::Info
-                    } else {
-                        NotificationLevel::Error
-                    },
-                    "token sk-ant-api03-aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789ABCD",
-                ),
-            );
-        }
-        assert_eq!(history.len(), NOTIFICATION_HISTORY_LIMIT);
-        assert_eq!(history.front().map(|entry| entry.id), Some(1));
-        assert_eq!(evictions, 1);
-        assert!(
-            history
-                .iter()
-                .all(|entry| !entry.message.contains("sk-ant"))
-        );
-
-        let filters = NotificationFilters {
-            info: false,
-            warn: false,
-            error: true,
-            debug: false,
-        };
-        let visible = filtered_indices_newest_first(&history, filters);
-        assert!(visible.windows(2).all(|pair| pair[0] > pair[1]));
-        assert!(
-            visible
-                .iter()
-                .all(|index| history[*index].level == NotificationLevel::Error)
-        );
-    }
-
-    #[test]
-    fn notification_search_composes_with_severity_and_all_identity_fields() {
-        let mut history = VecDeque::from([
-            NotificationRecord {
-                source: "gate".into(),
-                related_run: Some("plan-alpha".into()),
-                related_task: Some("compile-task".into()),
-                ..record(1, NotificationLevel::Error, "Compilation failed")
-            },
-            NotificationRecord {
-                source: "scheduler".into(),
-                related_run: Some("plan-beta".into()),
-                related_task: Some("dispatch-task".into()),
-                ..record(2, NotificationLevel::Info, "Worker ready")
-            },
-        ]);
-        let errors_only = NotificationFilters {
-            info: false,
-            warn: false,
-            error: true,
-            debug: false,
-        };
-
-        assert_eq!(
-            searched_indices_newest_first(&history, errors_only, "FAILED"),
-            [0]
-        );
-        assert_eq!(
-            searched_indices_newest_first(&history, errors_only, "gate"),
-            [0]
-        );
-        assert_eq!(
-            searched_indices_newest_first(&history, errors_only, "alpha"),
-            [0]
-        );
-        assert_eq!(
-            searched_indices_newest_first(&history, errors_only, "compile"),
-            [0]
-        );
-        assert!(searched_indices_newest_first(&history, errors_only, "worker").is_empty());
-
-        // Ensure the test does not accidentally rely on insertion mutability.
-        history.clear();
-        assert!(searched_indices_newest_first(&history, errors_only, "").is_empty());
-    }
-
-    #[test]
-    fn searchable_renderer_shows_query_and_only_matching_records() {
-        let history = VecDeque::from([
-            NotificationRecord {
-                source: "gate".into(),
-                related_run: Some("plan-alpha".into()),
-                related_task: Some("compile-task".into()),
-                ..record(1, NotificationLevel::Error, "Compilation failed")
-            },
-            NotificationRecord {
-                source: "scheduler".into(),
-                related_run: Some("plan-beta".into()),
-                related_task: Some("dispatch-task".into()),
-                ..record(2, NotificationLevel::Info, "Worker ready")
-            },
-        ]);
-        let backend = TestBackend::new(100, 30);
-        let mut terminal = Terminal::new(backend).unwrap();
+    fn empty_history_shows_placeholder() {
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
             .draw(|frame| {
-                render_notification_history_with_search(
-                    frame,
-                    frame.area(),
-                    &history,
-                    NotificationFilters::default(),
-                    "compile-task",
-                    true,
-                    0,
-                    0,
-                    0,
-                    &Theme::dark(),
-                );
+                let area = frame.area();
+                render_notification_history(frame, area, &[], 0, 0, &Theme::dark());
             })
-            .unwrap();
+            .expect("render");
         let buffer = terminal.backend().buffer();
-        let width = buffer.area.width as usize;
-        let rendered = buffer
-            .content
-            .chunks(width)
-            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+        let text: String = (0..40)
+            .map(|y| {
+                (0..120)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
             .collect::<Vec<_>>()
             .join("\n");
+        assert!(text.contains("No notifications yet"));
+    }
 
-        assert!(rendered.contains("compile-task"));
-        assert!(rendered.contains("Compilation failed"));
-        assert!(!rendered.contains("Worker ready"));
+    #[test]
+    fn eviction_counter_shown_when_nonzero() {
+        let entries = vec![HistoryEntry {
+            created: Instant::now(),
+            message: "test notification".into(),
+            level: NotificationLevel::Info,
+        }];
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_notification_history(frame, area, &entries, 0, 42, &Theme::dark());
+            })
+            .expect("render");
+        let buffer = terminal.backend().buffer();
+        let text: String = (0..40)
+            .map(|y| {
+                (0..120)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("42 older entries evicted"));
     }
 }

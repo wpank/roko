@@ -610,6 +610,9 @@ pub(crate) async fn cmd_status(
             cfactor: cfactor_snapshot,
             total_cost_usd,
             today_cost_usd,
+            critical_path_eta_minutes: None,
+            runner_phase: None,
+            runner_active: false,
             process_session_ledger: None,
             process_sessions: None,
         };

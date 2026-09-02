@@ -479,3 +479,10 @@ structural elements (borders, headers) but no guidance on how to populate them.
 9. **The `"Terminal too small for form."` message** in `marketplace_view.rs:459` is the
    only explicit small-terminal message. All other widgets silently return. Consider
    adding a similar message to other widgets that bail on small terminals.
+
+---
+
+## Implementation Status (2026-09-02 swarm)
+
+Empty state messages added across all views (task #9): contextual help text replacing
+generic placeholders.

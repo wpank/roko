@@ -288,6 +288,14 @@ fn collect_tasks_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(
     for entry in entries {
         let path = entry.path();
         if path.is_dir() {
+            // Skip archived plans — they contain stale references to
+            // removed files/models and should not block active plan runs.
+            if path
+                .file_name()
+                .is_some_and(|name| name == "archive" || name == "archived")
+            {
+                continue;
+            }
             collect_tasks_files_recursive(&path, out)?;
         } else if path.is_file() && path.file_name().is_some_and(|name| name == "tasks.toml") {
             out.push(path);

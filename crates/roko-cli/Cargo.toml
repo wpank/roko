@@ -12,10 +12,13 @@ default-run = "roko"
 workspace = true
 
 [features]
-default = ["chain"]
+default = ["chain", "hdc"]
 # Backend-neutral chain tools remain cheap and are available in the shipping
 # CLI. Real RPC/provider support is an explicit build choice.
 chain = ["roko-serve/chain"]
+# Full HDC fingerprint pipeline: neuro store, prompt composition, substrate
+# persistence, and serve webhook handling.
+hdc = ["roko-compose/hdc", "roko-fs/hdc", "roko-serve/hdc"]
 acp = ["dep:roko-acp"]
 alloy-backend = [
     "chain",

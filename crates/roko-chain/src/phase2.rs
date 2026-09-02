@@ -21,7 +21,7 @@
 //! They intentionally avoid production logic and exist so the crate matches
 //! the documented type landscape without pulling in new dependencies.
 
-use crate::ChainResult;
+use crate::{ChainError, ChainResult};
 use async_trait::async_trait;
 use std::{
     collections::{BTreeMap, HashMap},
@@ -847,17 +847,23 @@ pub struct HdcPrecompile {
 impl HdcPrecompile {
     /// Compute normalized Hamming similarity between two vectors.
     pub fn similarity(&self, _a: Bytes, _b: Bytes) -> Phase2Result<u256> {
-        todo!("Phase 2+: compute HDC similarity via Korai precompile or Stylus")
+        Err(ChainError::Unsupported(
+            "HdcPrecompile::similarity requires the deferred Korai/Stylus backend".into(),
+        ))
     }
 
     /// XOR-bind two vectors.
     pub fn bind(&self, _a: Bytes, _b: Bytes) -> Phase2Result<Bytes> {
-        todo!("Phase 2+: bind HDC vectors using XOR")
+        Err(ChainError::Unsupported(
+            "HdcPrecompile::bind requires the deferred Korai/Stylus backend".into(),
+        ))
     }
 
     /// Majority-vote bundle of multiple vectors.
     pub fn bundle(&self, _vectors: Vec<Bytes>) -> Phase2Result<Bytes> {
-        todo!("Phase 2+: bundle HDC vectors via majority vote")
+        Err(ChainError::Unsupported(
+            "HdcPrecompile::bundle requires the deferred Korai/Stylus backend".into(),
+        ))
     }
 }
 

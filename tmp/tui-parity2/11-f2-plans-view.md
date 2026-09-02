@@ -446,3 +446,11 @@ the most visually impressive but has the most data requirements and should come 
 | G10 | Data rain fill removed from widget | Low | None (intentional cleanup) |
 | G11 | No task dependency info in TaskEntry | Medium | Small (carry from TaskDef) |
 | G12 | Wave health indicators (flailing/warning) missing | Low | Small (port from mori) |
+
+---
+
+## Implementation Status (2026-09-02 swarm)
+
+F2 Plans view improvements (task #18): plan list, task tree, wave hierarchy, detail modal.
+Plan detail enrichment (task #8): dependencies, accept/verify text, diff stats,
+branch/worktree/commit, and per-plan elapsed time wired into plan detail modal.

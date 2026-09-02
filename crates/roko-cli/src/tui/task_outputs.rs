@@ -1,6 +1,6 @@
 //! Incremental task-output tail manager for `.roko/task-outputs/`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::path::PathBuf;
 
@@ -25,14 +25,14 @@ struct TaskOutputCursor {
 
 #[derive(Debug, Clone)]
 struct RingBuffer<T> {
-    items: Vec<T>,
+    items: VecDeque<T>,
     cap: usize,
 }
 
 impl<T> RingBuffer<T> {
     fn new(cap: usize) -> Self {
         Self {
-            items: Vec::new(),
+            items: VecDeque::new(),
             cap,
         }
     }
@@ -42,9 +42,9 @@ impl<T> RingBuffer<T> {
             return;
         }
         if self.items.len() == self.cap {
-            self.items.remove(0);
+            self.items.pop_front();
         }
-        self.items.push(item);
+        self.items.push_back(item);
     }
 
     fn clear(&mut self) {
@@ -55,8 +55,8 @@ impl<T> RingBuffer<T> {
         self.items.is_empty()
     }
 
-    fn as_slice(&self) -> &[T] {
-        &self.items
+    fn as_slice(&mut self) -> &[T] {
+        self.items.make_contiguous()
     }
 }
 
@@ -169,16 +169,16 @@ impl TaskOutputCursors {
     }
 
     /// Return the bounded tail for `task_id`, if the task is tracked.
-    pub fn tail_for(&self, task_id: &str) -> Option<&[String]> {
+    pub fn tail_for(&mut self, task_id: &str) -> Option<&[String]> {
         self.cursors
-            .get(task_id)
+            .get_mut(task_id)
             .map(|cursor| cursor.tail.as_slice())
     }
 
     /// Clone the tracked tails into a plain map for downstream consumers.
-    pub fn snapshot(&self) -> HashMap<String, Vec<String>> {
+    pub fn snapshot(&mut self) -> HashMap<String, Vec<String>> {
         self.cursors
-            .iter()
+            .iter_mut()
             .map(|(task_id, cursor)| (task_id.clone(), cursor.tail.as_slice().to_vec()))
             .collect()
     }

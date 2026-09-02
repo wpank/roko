@@ -42,15 +42,10 @@ pub(crate) fn render(
     view_state: &ViewState,
     theme: &Theme,
 ) {
-    let panels = Layout::horizontal([
-        Constraint::Percentage(31),
-        Constraint::Length(1),
-        Constraint::Min(0),
-    ])
-    .split(area);
-
-    render_left_panel(frame, panels[0], _data, tui_state, view_state, theme);
-    render_right_panel(frame, panels[2], _data, tui_state, view_state, theme);
+    let (sidebar, detail) =
+        crate::tui::layout::responsive_panel_split(area, 31, 100, area.height / 3);
+    render_left_panel(frame, sidebar, _data, tui_state, view_state, theme);
+    render_right_panel(frame, detail, _data, tui_state, view_state, theme);
 }
 
 // ---------------------------------------------------------------------------
@@ -106,7 +101,32 @@ fn render_wave_tree(
         health_suffix.push_str(&format!(" {failed}\u{2717}"));
     }
 
-    let title = format!(" Plans ({completed}/{total_plans}{health_suffix}) ");
+    // Filter state for F2 left panel (uses the same plan_tree_filter as F1).
+    let filter_active = tui_state.plan_tree_filter.active
+        && !tui_state.plan_tree_filter.pattern.is_empty();
+    let filtered_suffix = if filter_active {
+        let filtered_count = tui_state
+            .plan_summaries
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| {
+                tui_state
+                    .plans
+                    .get(*i)
+                    .map(|p| tui_state.plan_tree_filter.matches_plan_or_tasks(p))
+                    .unwrap_or(true)
+            })
+            .count();
+        format!(", {filtered_count}/{total_plans} filtered")
+    } else {
+        String::new()
+    };
+
+    let title = if focused {
+        format!(" Plans ({completed}/{total_plans}{health_suffix}{filtered_suffix}) [/:filter Enter:detail] ")
+    } else {
+        format!(" Plans ({completed}/{total_plans}{health_suffix}{filtered_suffix}) ")
+    };
 
     let border_style = if focused {
         Theme::focused_border_style()
@@ -139,13 +159,18 @@ fn render_wave_tree(
     if tui_state.plan_summaries.is_empty() {
         let empty_lines = vec![
             Line::from(Span::styled(
-                "no plans found",
+                "No plans loaded",
                 Style::default()
                     .fg(theme.muted)
                     .add_modifier(Modifier::ITALIC),
             )),
+            Line::from(""),
             Line::from(Span::styled(
-                "run `roko plan run <dir>` to begin",
+                "Start with: roko plan run plans/ --engine runner-v2",
+                Style::default().fg(theme.muted),
+            )),
+            Line::from(Span::styled(
+                "Or create:  roko plan create",
                 Style::default().fg(theme.muted),
             )),
         ];
@@ -158,6 +183,18 @@ fn render_wave_tree(
 
     let content_width = inner.width as usize;
     let mut lines: Vec<Line<'_>> = Vec::new();
+
+    // Filter indicator (shared with plan_tree.rs widget)
+    if filter_active {
+        lines.push(Line::from(vec![
+            Span::styled(" /", Style::default().fg(Theme::DREAM)),
+            Span::styled(
+                tui_state.plan_tree_filter.pattern.clone(),
+                Style::default().fg(theme.foreground),
+            ),
+            Span::styled("/ ", Style::default().fg(Theme::DREAM)),
+        ]));
+    }
 
     // Mori keeps pipeline state inside the plan tree rather than spending two
     // additional bordered panels on information repeated by the detail pane.
@@ -188,15 +225,15 @@ fn render_wave_tree(
         lines.push(Line::from(vec![
             Span::styled(
                 format!(" {:<name_w$}", "plan"),
-                Style::default().fg(Color::Rgb(60, 50, 60)),
+                Style::default().fg(Theme::COL_HEADER),
             ),
             Span::styled(
                 format!("{:>6}", "prog"),
-                Style::default().fg(Color::Rgb(60, 50, 60)),
+                Style::default().fg(Theme::COL_HEADER),
             ),
             Span::styled(
                 format!("{:>8}", "bar"),
-                Style::default().fg(Color::Rgb(60, 50, 60)),
+                Style::default().fg(Theme::COL_HEADER),
             ),
         ]));
     }
@@ -280,7 +317,7 @@ fn render_wave_tree(
                 )
             } else {
                 (
-                    "\u{00b7}", // ·
+                    "\u{25cb}", // ○
                     Style::default().fg(theme.muted),
                 )
             };
@@ -342,13 +379,43 @@ fn render_wave_tree(
                 ));
             }
 
+            // "after W{N}" blocker label for pending/non-started waves
+            if !all_done && !any_active && *wave_idx > 0 {
+                // Find the highest incomplete predecessor wave
+                let blocker_waves: Vec<usize> = wave_groups
+                    .iter()
+                    .filter(|(w, indices)| {
+                        *w < wave_idx
+                            && indices.iter().any(|&i| {
+                                tui_state
+                                    .plan_summaries
+                                    .get(i)
+                                    .map(|p| !p.completed)
+                                    .unwrap_or(false)
+                            })
+                    })
+                    .map(|(w, _)| *w)
+                    .collect();
+                if !blocker_waves.is_empty() {
+                    let blocker_label = blocker_waves
+                        .iter()
+                        .map(|w| format!("W{w}"))
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    wave_spans.push(Span::styled(
+                        format!(" after {blocker_label}"),
+                        Style::default().fg(theme.muted),
+                    ));
+                }
+            }
+
             // Fill remaining width with horizontal line
             let used: usize = wave_spans.iter().map(|s| s.content.chars().count()).sum();
             let avail = content_width;
             if avail > used + 1 {
                 wave_spans.push(Span::styled(
                     format!(" {}", "\u{2500}".repeat(avail - used - 1)),
-                    Style::default().fg(Color::Rgb(40, 35, 42)),
+                    Style::default().fg(Theme::SEPARATOR),
                 ));
             }
             lines.push(Line::from(wave_spans));
@@ -357,8 +424,15 @@ fn render_wave_tree(
                 continue;
             }
 
-            // Plans within wave
+            // Plans within wave (apply filter)
             for &i in plan_indices {
+                if filter_active {
+                    if let Some(p) = tui_state.plans.get(i) {
+                        if !tui_state.plan_tree_filter.matches_plan_or_tasks(p) {
+                            continue;
+                        }
+                    }
+                }
                 if let Some(plan) = tui_state.plan_summaries.get(i) {
                     render_plan_line(
                         &mut lines,
@@ -374,8 +448,15 @@ fn render_wave_tree(
             }
         }
     } else {
-        // Flat list
+        // Flat list (apply filter)
         for (i, plan) in tui_state.plan_summaries.iter().enumerate() {
+            if filter_active {
+                if let Some(p) = tui_state.plans.get(i) {
+                    if !tui_state.plan_tree_filter.matches_plan_or_tasks(p) {
+                        continue;
+                    }
+                }
+            }
             render_plan_line(
                 &mut lines,
                 plan,
@@ -523,7 +604,7 @@ fn render_plan_line(
     } else if is_active {
         semantic_color(fill_pct, theme)
     } else if task_done == 0 {
-        Color::Rgb(40, 35, 42)
+        Theme::SEPARATOR
     } else {
         semantic_color(fill_pct, theme)
     };
@@ -535,7 +616,7 @@ fn render_plan_line(
         .max(8);
     let plan_name = truncate_middle(&plan.title, name_budget);
 
-    let sep_style = Style::default().fg(Color::Rgb(40, 35, 42));
+    let sep_style = Style::default().fg(Theme::SEPARATOR);
 
     let mut spans = vec![
         Span::styled(indent.to_string(), Style::default().bg(bg)),
@@ -892,7 +973,7 @@ fn render_plan_summary(
             " {}",
             "\u{2500}".repeat(area.width.saturating_sub(3) as usize)
         ),
-        Style::default().fg(Color::Rgb(40, 35, 42)),
+        Style::default().fg(Theme::SEPARATOR),
     )));
 
     let header_height = header_lines.len() as u16;
@@ -927,10 +1008,16 @@ fn render_plan_tasks(
     view_state: &ViewState,
     theme: &Theme,
 ) {
+    let task_count = tasks.len();
+    let title_text = if task_count > 0 {
+        format!(" Tasks ({task_count}) ")
+    } else {
+        " Tasks ".to_string()
+    };
     let block = Block::default()
         .borders(Borders::TOP)
-        .title(Span::styled(" Tasks ", Style::default().fg(theme.muted)))
-        .border_style(Style::default().fg(Color::Rgb(40, 35, 42)));
+        .title(Span::styled(title_text, Style::default().fg(theme.muted)))
+        .border_style(Style::default().fg(Theme::SEPARATOR));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -946,77 +1033,157 @@ fn render_plan_tasks(
         return;
     }
 
-    let rows: Vec<Row<'_>> = tasks
-        .iter()
-        .enumerate()
-        .map(|(i, task)| {
-            let status = task.status;
-            let (icon, icon_color) = task_status_icon(task, theme);
-            let task_title = if task.name.is_empty() {
-                task.id.as_str()
-            } else {
-                task.name.as_str()
-            };
-            let style = if i == view_state.secondary_selected {
-                theme.selection()
-            } else {
-                theme.text()
-            };
-            let key = format!("{plan_id}:{}", task.id);
-            let spent = tui_state.cost_per_task.get(&key).copied().unwrap_or(0.0);
-            let budget = tui_state.task_budget(plan_id, &task.id);
-            let cost = if budget > 0.0 {
-                format!("${spent:.3}/${budget:.2}")
-            } else {
-                format!("${spent:.3}/∞")
-            };
+    // Use Paragraph-based rendering for scrollable task list.
+    let visible_height = inner.height as usize;
+    let header_lines = 1usize;
+    let available_rows = visible_height.saturating_sub(header_lines);
 
-            Row::new(vec![
-                Cell::from(Span::styled(
-                    format!(" {icon}"),
-                    Style::default().fg(icon_color),
-                )),
-                Cell::from(truncate(task_title, 32)),
-                Cell::from(Span::styled(
-                    truncate(status.label(), 12),
-                    Style::default().fg(phase_color(status, theme)),
-                )),
-                Cell::from(
-                    task.agent_id
-                        .as_deref()
-                        .map(|agent| truncate(agent, 14))
-                        .unwrap_or_else(|| "-".to_string()),
+    // Compute scroll offset to keep selected task visible.
+    let selected = view_state.secondary_selected.min(task_count.saturating_sub(1));
+    let scroll_offset = if task_count > available_rows {
+        selected
+            .saturating_sub(available_rows / 2)
+            .min(task_count.saturating_sub(available_rows))
+    } else {
+        0
+    };
+
+    let content_w = inner.width as usize;
+    let has_deps = tasks.iter().any(|t| !t.depends_on.is_empty());
+    let mut lines: Vec<Line<'_>> = Vec::with_capacity(visible_height);
+
+    // Column header
+    let fourth_label = if has_deps { "deps" } else { "agent" };
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!(" {:<3}  {:<title_w$} {:<8} {:<10} cost",
+                " ",
+                "task",
+                "status",
+                fourth_label,
+                title_w = content_w.saturating_sub(38).max(8)),
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+
+    for (i, task) in tasks.iter().enumerate().skip(scroll_offset).take(available_rows) {
+        let (icon, icon_color) = task_status_icon(task, theme);
+        let task_title = if task.name.is_empty() {
+            task.id.as_str()
+        } else {
+            task.name.as_str()
+        };
+        let is_selected = i == selected;
+        let bg = if is_selected {
+            theme.selection_background
+        } else {
+            Color::Reset
+        };
+
+        let key = format!("{plan_id}:{}", task.id);
+        let spent = tui_state.cost_per_task.get(&key).copied().unwrap_or(0.0);
+        let budget = tui_state.task_budget(plan_id, &task.id);
+        let cost = if budget > 0.0 {
+            format!("${spent:.2}/{budget:.0}")
+        } else if spent > 0.0 {
+            format!("${spent:.3}")
+        } else {
+            "\u{00b7}".to_string()
+        };
+
+        // Fourth column: deps or agent
+        let fourth_col = if has_deps && !task.depends_on.is_empty() {
+            let dep_str = task
+                .depends_on
+                .iter()
+                .map(|d| d.split(':').last().unwrap_or(d).to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            (truncate(&dep_str, 10), theme.muted)
+        } else if let Some(agent) = &task.agent_id {
+            (truncate(agent, 10), theme.foreground)
+        } else {
+            ("-".to_string(), theme.muted)
+        };
+
+        let title_budget = content_w.saturating_sub(38).max(8);
+        let spans = vec![
+            Span::styled(
+                format!(" {icon} "),
+                Style::default().fg(icon_color).bg(bg),
+            ),
+            Span::styled(
+                format!(
+                    "{:<width$}",
+                    truncate(task_title, title_budget),
+                    width = title_budget
                 ),
-                Cell::from(Span::styled(
-                    cost,
-                    Style::default().fg(if budget > 0.0 && spent >= budget {
+                Style::default()
+                    .fg(if is_selected {
+                        theme.accent
+                    } else {
+                        theme.foreground
+                    })
+                    .bg(bg),
+            ),
+            Span::styled(
+                format!(" {:<8}", truncate(task.status.label(), 8)),
+                Style::default().fg(phase_color(task.status, theme)).bg(bg),
+            ),
+            Span::styled(
+                format!(" {:<10}", fourth_col.0),
+                Style::default().fg(fourth_col.1).bg(bg),
+            ),
+            Span::styled(
+                format!(" {cost}"),
+                Style::default()
+                    .fg(if budget > 0.0 && spent >= budget {
                         theme.danger
                     } else {
                         theme.muted
-                    }),
-                )),
-            ])
-            .style(style)
-        })
-        .collect();
-
-    let widths = [
-        Constraint::Length(3),
-        Constraint::Min(16),
-        Constraint::Length(12),
-        Constraint::Min(8),
-        Constraint::Length(14),
-    ];
-    let table = Table::new(rows, widths)
-        .header(
-            Row::new([" ", "task", "status", "agent", "cost / budget"]).style(
-                Style::default()
-                    .fg(theme.accent)
-                    .add_modifier(Modifier::BOLD),
+                    })
+                    .bg(bg),
             ),
-        )
-        .column_spacing(1);
-    frame.render_widget(table, inner);
+        ];
+        lines.push(Line::from(spans));
+
+        // Show dependency details for selected task
+        if is_selected && !task.depends_on.is_empty() && available_rows > 2 {
+            let dep_label = task.depends_on.join(", ");
+            lines.push(Line::from(vec![
+                Span::styled("    ", Style::default().bg(bg)),
+                Span::styled(
+                    "\u{2514}\u{2500} deps: ",
+                    Style::default().fg(theme.muted).bg(bg),
+                ),
+                Span::styled(
+                    truncate(&dep_label, content_w.saturating_sub(14)),
+                    Style::default().fg(theme.muted).bg(bg),
+                ),
+            ]));
+        }
+    }
+
+    // Scroll indicator when tasks are clipped
+    if task_count > available_rows {
+        let remaining = task_count.saturating_sub(scroll_offset + available_rows);
+        if remaining > 0 && lines.len() < visible_height {
+            lines.push(Line::from(Span::styled(
+                format!("  \u{25be} {remaining} more"),
+                Style::default().fg(theme.muted),
+            )));
+        }
+    }
+
+    let paragraph = Paragraph::new(lines);
+    frame.render_widget(paragraph, inner);
+
+    // Scrollbar for task list
+    if task_count > available_rows {
+        render_scrollbar(frame, inner, task_count, available_rows, scroll_offset, theme);
+    }
 }
 
 fn render_plan_gates(
@@ -1031,7 +1198,7 @@ fn render_plan_gates(
             " Verify Results ",
             Style::default().fg(theme.muted),
         ))
-        .border_style(Style::default().fg(Color::Rgb(40, 35, 42)));
+        .border_style(Style::default().fg(Theme::SEPARATOR));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -1101,7 +1268,7 @@ fn render_plan_timing(
     let block = Block::default()
         .borders(Borders::TOP)
         .title(Span::styled(" Timing ", Style::default().fg(theme.muted)))
-        .border_style(Style::default().fg(Color::Rgb(40, 35, 42)));
+        .border_style(Style::default().fg(Theme::SEPARATOR));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -1189,7 +1356,7 @@ fn task_status_icon(task: &TaskEntry, theme: &Theme) -> (&'static str, Color) {
         TaskStatus::Done => ("\u{2713}", theme.success),
         TaskStatus::Active => ("\u{25b6}", theme.warning),
         TaskStatus::Failed | TaskStatus::Blocked => ("\u{2717}", theme.danger),
-        TaskStatus::Pending => ("\u{00b7}", theme.muted),
+        TaskStatus::Pending => ("\u{25cb}", theme.muted),
     }
 }
 
@@ -1229,7 +1396,7 @@ fn render_scrollbar(
         let (ch, color) = if in_thumb {
             ('\u{2588}', theme.accent) // filled block
         } else {
-            ('\u{2502}', Color::Rgb(40, 35, 42)) // thin line
+            ('\u{2502}', Theme::SEPARATOR) // thin line
         };
         if let Some(cell) = buf.cell_mut((x, y)) {
             cell.set_char(ch);
@@ -1259,7 +1426,7 @@ fn build_progress_bar(progress: f64, width: usize) -> String {
     }
     let remaining = width.saturating_sub(bar.chars().count());
     for _ in 0..remaining {
-        bar.push('\u{2591}');
+        bar.push('\u{2500}');
     }
     bar
 }

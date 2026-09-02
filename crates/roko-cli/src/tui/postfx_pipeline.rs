@@ -65,6 +65,15 @@ pub fn apply_pipeline(
             }
         }
     }
+
+    // Noise floor: sparse shimmer in blank cells (Full preset only).
+    if fx.vfx_enabled {
+        postfx::noise_floor(area, buf, 0.003, frame);
+    }
+
+    // Scanlines: subtle CRT texture (always on when postfx is enabled).
+    // Every 3rd row dimmed by 4% -- cheap and atmospheric.
+    postfx::scanlines(area, buf, 3, 0.04);
 }
 
 fn build_viz_context(state: &TuiState) -> postfx::VizContext {

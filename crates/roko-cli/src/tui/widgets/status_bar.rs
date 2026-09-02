@@ -14,7 +14,7 @@ use super::super::state::TuiState;
 use super::super::tabs::Tab;
 use crate::tui::Theme;
 
-const HEARTBEAT_FRAMES: [&str; 4] = ["\u{00b7}", "\u{00b0}", ".", "\u{25cf}"];
+const HEARTBEAT_FRAMES: [&str; 2] = ["\u{25cf}", "\u{25cb}"];
 
 // ---------------------------------------------------------------------------
 // Public render entry-point
@@ -23,6 +23,7 @@ const HEARTBEAT_FRAMES: [&str; 4] = ["\u{00b7}", "\u{00b0}", ".", "\u{25cf}"];
 /// Render the bottom status bar.
 pub fn render_status_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
     let bg = Style::default().bg(Theme::BG_SECONDARY);
+    let compact = area.width < 100;
 
     let (done, total) = state.task_counts();
     let all_done = total > 0 && state.plans.iter().all(|p| !p.active);
@@ -30,7 +31,7 @@ pub fn render_status_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
 
     let mut spans: Vec<Span<'static>> = vec![Span::styled(" ", bg)];
 
-    // ── 1. Git info: branch, commit hash, last commit time ────────────
+    // ── 1. Git info: branch, commit hash ──────────────────────────────
     if !state.git_branch.is_empty() {
         spans.push(Span::styled(
             state.git_branch.clone(),
@@ -44,7 +45,8 @@ pub fn render_status_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
                     .bg(Theme::BG_SECONDARY),
             ));
         }
-        if !state.git_age.is_empty() {
+        // Only show commit age on wider terminals to save space.
+        if !compact && !state.git_age.is_empty() {
             spans.push(Span::styled(
                 format!(" {}", &state.git_age),
                 Style::default()
@@ -58,8 +60,8 @@ pub fn render_status_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         ));
     }
 
-    // ── 2. Heartbeat + pause indicator ────────────────────────────────
-    let hb_idx = (state.atmosphere.frame() / 8) as usize % HEARTBEAT_FRAMES.len();
+    // ── 2. Heartbeat + pause indicator + elapsed time ─────────────────
+    let hb_idx = (state.atmosphere.frame() / 15) as usize % HEARTBEAT_FRAMES.len();
     spans.push(Span::styled(
         HEARTBEAT_FRAMES[hb_idx],
         Style::default().fg(Theme::ROSE_DIM).bg(Theme::BG_SECONDARY),
@@ -74,14 +76,65 @@ pub fn render_status_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         ));
     }
 
-    // ── 3. Plan progress + health summary ─────────────────────────────
+    // Input mode badge (FILTER/SEARCH/INJECT/EDIT)
+    if let Some(badge) = state.input_mode.badge_label() {
+        spans.push(Span::styled(
+            format!(" [{badge}] "),
+            Style::default()
+                .fg(Theme::VOID)
+                .bg(Theme::DREAM)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    // Elapsed time - always show when a run is active.
+    let elapsed_secs = state.elapsed_secs() as u64;
+    if elapsed_secs > 0 {
+        spans.push(Span::styled(
+            format!(" {}", format_elapsed(elapsed_secs)),
+            Style::default().fg(Theme::BONE_DIM).bg(Theme::BG_SECONDARY),
+        ));
+    }
+
+    // ── 3. Plan progress: compact mini-bar + counts + health ──────────
+    if total > 0 {
+        spans.push(Span::styled(
+            " \u{2502} ",
+            Style::default().fg(Theme::ROSE_DIM).bg(Theme::BG_SECONDARY),
+        ));
+
+        // Compact 8-char inline progress bar.
+        let bar_w = 8usize;
+        let fill_pct = done as f64 / total.max(1) as f64;
+        let filled = ((bar_w as f64) * fill_pct).round() as usize;
+        let empty = bar_w.saturating_sub(filled);
+        let bar_color = Theme::semantic_color(fill_pct);
+        if filled > 0 {
+            spans.push(Span::styled(
+                "\u{2588}".repeat(filled),
+                Style::default().fg(bar_color).bg(Theme::BG_SECONDARY),
+            ));
+        }
+        if empty > 0 {
+            spans.push(Span::styled(
+                "\u{2500}".repeat(empty),
+                Style::default()
+                    .fg(Theme::TEXT_PHANTOM)
+                    .bg(Theme::BG_SECONDARY),
+            ));
+        }
+    }
+
     let progress_text = if all_done && !has_failures {
         "COMPLETE".to_string()
     } else if has_failures {
         let err_count = state.plans.iter().filter(|p| p.tasks_failed > 0).count();
         format!("ERR:{err_count}")
+    } else if total > 0 {
+        let pct = (done as f64 / total as f64 * 100.0) as u32;
+        format!(" {done}/{total} {pct}%")
     } else {
-        format!(" {done}/{total}")
+        String::new()
     };
     let progress_style = if has_failures {
         Theme::error_style()
@@ -90,12 +143,14 @@ pub fn render_status_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
     } else {
         Style::default().fg(Theme::ROSE)
     };
-    spans.push(Span::styled(
-        format!(" {progress_text} "),
-        progress_style.bg(Theme::BG_SECONDARY),
-    ));
+    if !progress_text.is_empty() {
+        spans.push(Span::styled(
+            format!(" {progress_text}"),
+            progress_style.bg(Theme::BG_SECONDARY),
+        ));
+    }
 
-    // Health summary: active plans, live agents, flailing, retries, failures
+    // Health summary: active plans, live agents, flailing, failures.
     let active_count = state.plans.iter().filter(|p| p.active).count();
     let live_agents = state.active_agent_count();
     let flailing_count = state.plans.iter().filter(|p| p.tasks_failed >= 3).count();
@@ -103,7 +158,7 @@ pub fn render_status_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
 
     if active_count > 0 || live_agents > 0 {
         spans.push(Span::styled(
-            format!(" {active_count}\u{25b8} {live_agents}ag"),
+            format!(" {active_count}\u{25b8}{live_agents}ag"),
             Style::default().fg(Theme::ROSE_DIM).bg(Theme::BG_SECONDARY),
         ));
     }
@@ -120,23 +175,23 @@ pub fn render_status_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         ));
     }
 
-    // Keep aggregate spend visible on the literal bottom line. The F2 plan
-    // detail supplies the per-plan projection and per-task budget breakdown.
-    let aggregate_budget = state.aggregate_plan_budget();
-    if state.cost_dollars > 0.001 || aggregate_budget > 0.0 {
-        let cost = if aggregate_budget > 0.0 {
-            format!(
-                " ${:.2} / ${aggregate_budget:.2} ({:.0}%)",
-                state.cost_dollars,
-                state.cost_dollars / aggregate_budget * 100.0
-            )
-        } else {
-            format!(" ${:.2} / unlimited", state.cost_dollars)
-        };
-        spans.push(Span::styled(
-            cost,
-            Style::default().fg(Theme::BONE).bg(Theme::BG_SECONDARY),
-        ));
+    // Keep aggregate spend visible on the literal bottom line.
+    if !compact {
+        let aggregate_budget = state.aggregate_plan_budget();
+        if state.cost_dollars > 0.001 || aggregate_budget > 0.0 {
+            let cost = if aggregate_budget > 0.0 {
+                format!(
+                    " ${:.2}/${aggregate_budget:.2}",
+                    state.cost_dollars,
+                )
+            } else {
+                format!(" ${:.2}", state.cost_dollars)
+            };
+            spans.push(Span::styled(
+                cost,
+                Style::default().fg(Theme::BONE).bg(Theme::BG_SECONDARY),
+            ));
+        }
     }
 
     spans.push(Span::styled(
@@ -159,6 +214,20 @@ pub fn render_status_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
     let line = Line::from(spans);
     let p = Paragraph::new(line).style(bg);
     frame.render_widget(p, area);
+}
+
+/// Format elapsed seconds into compact human-readable form.
+fn format_elapsed(secs: u64) -> String {
+    let h = secs / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    if h > 0 {
+        format!("{h}h{m:02}m")
+    } else if m > 0 {
+        format!("{m}m{s:02}s")
+    } else {
+        format!("{s}s")
+    }
 }
 
 /// Keep complete hint tokens within the remaining footer width. Help is
@@ -210,6 +279,7 @@ fn context_key_hints(state: &TuiState, has_failures: bool) -> String {
         }
         Tab::Plans => {
             hints.push("\u{2191}\u{2193}:nav");
+            hints.push("Tab:panel");
             // Check if we have a selected plan with tasks to show item-specific hints.
             let selected_task_status = state.plans.get(state.selected_plan_idx).and_then(|plan| {
                 plan.tasks
@@ -220,61 +290,51 @@ fn context_key_hints(state: &TuiState, has_failures: bool) -> String {
             match selected_task_status {
                 Some(TaskStatus::Failed) => {
                     hints.push("Enter:detail");
-                    hints.push("e:expand");
                     hints.push("z:diagnose");
-                    hints.push("/:filter");
                 }
                 Some(TaskStatus::Active) => {
                     hints.push("Enter:detail");
                     hints.push("e:expand");
-                    hints.push("p:pause");
                 }
                 _ => {
                     hints.push("Enter:detail");
-                    hints.push("h/l:drill");
                     hints.push("/:filter");
                 }
             }
         }
         Tab::Agents => {
             hints.push("\u{2191}\u{2193}:nav");
+            hints.push("Tab:panel");
             let agent_status = state.agents.get(state.selected_agent).map(|a| a.status);
             match agent_status {
                 Some(AgentStatus::Active) => {
                     hints.push("x:stop");
                     hints.push("c:chat");
-                    hints.push("d:details");
                 }
-                Some(AgentStatus::Failed) => {
-                    hints.push("S:start");
-                    hints.push("d:details");
-                }
-                Some(AgentStatus::Idle) => {
+                Some(AgentStatus::Failed) | Some(AgentStatus::Idle) => {
                     hints.push("S:start");
                     hints.push("d:details");
                 }
                 _ => {
                     hints.push("`:cycle");
-                    hints.push("Ctrl+T:topology");
                     hints.push("i:inject");
                 }
             }
         }
         Tab::Git => {
             hints.push("\u{2191}\u{2193}:nav");
-            hints.push("h/l:drill");
+            hints.push("Tab:panel");
             hints.push("Enter:expand");
         }
         Tab::Logs => {
-            hints.push("\u{2191}\u{2193}/PgUp/PgDn:scroll");
-            hints.push("1-4:levels");
-            hints.push("a:all");
+            hints.push("\u{2191}\u{2193}:scroll");
+            hints.push("Tab:panel");
             hints.push("/:search");
         }
         Tab::Config => {
             hints.push("j/k:nav");
+            hints.push("Tab:panel");
             hints.push("Enter:toggle");
-            hints.push("r:reload");
         }
         Tab::Inspect => {
             hints.push("\u{2191}\u{2193}:nav");
@@ -283,18 +343,17 @@ fn context_key_hints(state: &TuiState, has_failures: bool) -> String {
         }
         Tab::Marketplace => {
             hints.push("j/k:nav");
+            hints.push("Tab:panel");
             hints.push("Enter:detail");
-            hints.push("n:new");
-            hints.push("r:refresh");
         }
         Tab::Atelier => {
             hints.push("j/k:nav");
+            hints.push("Tab:panel");
             hints.push("Enter:detail");
-            hints.push("p:publish");
-            hints.push("g:gen plan");
         }
         Tab::Learning => {
             hints.push("\u{2191}\u{2193}:nav");
+            hints.push("Tab:panel");
             hints.push("Enter:details");
         }
     }
@@ -376,15 +435,15 @@ mod tests {
     }
 
     #[test]
-    fn plans_tab_shows_drill_hints_by_default() {
+    fn plans_tab_shows_detail_and_panel_hints() {
         let hints = key_hints_for_tab(Tab::Plans, false);
         assert!(
             hints.contains("Enter:detail"),
             "Expected Enter:detail in: {hints}"
         );
         assert!(
-            hints.contains("h/l:drill"),
-            "Expected h/l:drill in: {hints}"
+            hints.contains("Tab:panel"),
+            "Expected Tab:panel in: {hints}"
         );
     }
 
@@ -398,9 +457,12 @@ mod tests {
     }
 
     #[test]
-    fn config_tab_shows_reload_hint() {
+    fn config_tab_shows_panel_hint() {
         let hints = key_hints_for_tab(Tab::Config, false);
-        assert!(hints.contains("r:reload"), "Expected r:reload in: {hints}");
+        assert!(
+            hints.contains("Tab:panel"),
+            "Expected Tab:panel in: {hints}"
+        );
     }
 
     #[test]
@@ -433,6 +495,37 @@ mod tests {
             .draw(|frame| render_status_bar(frame, frame.area(), &state))
             .unwrap();
 
-        assert!(rendered_text(&terminal).contains("$2.50 / $10.00 (25%)"));
+        assert!(rendered_text(&terminal).contains("$2.50/$10.00"));
+    }
+
+    #[test]
+    fn status_bar_shows_elapsed_time() {
+        let mut state = TuiState::from_dashboard_data(&DashboardData::default());
+        state.run_started = Some(std::time::Instant::now() - std::time::Duration::from_secs(125));
+        let backend = TestBackend::new(120, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_status_bar(frame, frame.area(), &state))
+            .unwrap();
+        let text = rendered_text(&terminal);
+        assert!(text.contains("2m"), "Expected elapsed time, got: {text}");
+    }
+
+    #[test]
+    fn status_bar_shows_inline_progress_bar() {
+        let mut state = TuiState::from_dashboard_data(&DashboardData::default());
+        let mut plan = super::super::super::state::PlanEntry::default();
+        plan.tasks_total = 10;
+        plan.tasks_done = 5;
+        plan.active = true;
+        state.plans.push(plan);
+        let backend = TestBackend::new(120, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_status_bar(frame, frame.area(), &state))
+            .unwrap();
+        let text = rendered_text(&terminal);
+        assert!(text.contains("5/10"), "Expected progress count, got: {text}");
+        assert!(text.contains("50%"), "Expected percentage, got: {text}");
     }
 }

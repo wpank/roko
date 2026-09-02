@@ -113,10 +113,10 @@ fn render_with_entries(
     let gate_count = tui_state.gate_result_summaries.len();
     let event_count = tui_state.event_log.len();
 
-    let tail_label = if view_state.auto_tail {
-        "TAIL"
+    let (tail_label, tail_style) = if view_state.auto_tail {
+        ("TAIL", Style::default().fg(Theme::SAGE).add_modifier(Modifier::BOLD))
     } else {
-        "SCROLL"
+        ("SCROLL", Style::default().fg(Theme::BONE_DIM))
     };
     let focused = matches!(tui_state.focus, FocusZone::RightPanel);
     let entry_label = if filtered_entries.len() == entries.len() {
@@ -126,33 +126,55 @@ fn render_with_entries(
     };
     let mut status_spans = vec![
         Span::styled(entry_label, theme.muted()),
-        Span::styled(format!("[{tail_label}]"), theme.accent()),
+        Span::styled(format!("[{tail_label}]"), tail_style),
         Span::styled("  ", theme.muted()),
     ];
-    for level in LogFilterLevel::all() {
-        let style = if tui_state.log_level_visible(level) {
-            level_filter_style(level, theme)
+
+    // Show active search match info inline in the status bar.
+    if search.active && search.match_count > 0 {
+        let current_1 = search.current_match + 1;
+        let total = search.match_count;
+        status_spans.extend([
+            Span::styled(
+                format!("[{current_1}"),
+                Style::default().fg(Theme::BONE_BRIGHT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("/{total}]"),
+                theme.muted(),
+            ),
+            Span::styled("  ", theme.muted()),
+        ]);
+    }
+
+    for (key_idx, level) in LogFilterLevel::all().iter().enumerate() {
+        let style = if tui_state.log_level_visible(*level) {
+            level_filter_style(*level, theme)
         } else {
-            theme.muted()
+            Style::default().fg(Theme::TEXT_PHANTOM)
         };
-        status_spans.push(Span::styled(format!(" {}", level.label()), style));
+        // Show key hint next to label: "1:INF 2:WRN 3:ERR 4:DBG"
+        status_spans.push(Span::styled(
+            format!(" {}:{}", key_idx + 1, level.label()),
+            style,
+        ));
     }
     if sections[0].width >= 104 {
         status_spans.extend([
-            Span::styled("  ·  ", theme.muted()),
-            Span::styled(format!("sig:{signal_count}"), theme.info()),
+            Span::styled("  \u{00b7}  ", theme.muted()),
+            Span::styled(format!("\u{25c6}{signal_count}"), theme.info()),
             Span::styled("  ", theme.muted()),
-            Span::styled(format!("ep:{episode_count}"), theme.accent()),
+            Span::styled(format!("\u{25cf}{episode_count}"), theme.accent()),
             Span::styled("  ", theme.muted()),
-            Span::styled(format!("gate:{gate_count}"), theme.warning()),
+            Span::styled(format!("\u{25a0}{gate_count}"), theme.warning()),
             Span::styled("  ", theme.muted()),
-            Span::styled(format!("event:{event_count}"), theme.text()),
+            Span::styled(format!("\u{25b8}{event_count}"), Style::default().fg(Theme::SAGE)),
         ]);
     }
     if sections[0].width >= 160 {
         status_spans.extend([
             Span::styled("  ", theme.muted()),
-            Span::styled(format!("eff:{eff_count}"), theme.muted()),
+            Span::styled(format!("\u{2261}{eff_count}"), theme.muted()),
         ]);
     }
     let status_line1 = Line::from(status_spans);
@@ -208,6 +230,11 @@ fn render_with_entries(
     let highlight_style = ratatui::style::Style::default()
         .fg(Theme::TEXT_STRONG)
         .bg(Theme::DREAM);
+    // Stronger highlight for the current n/N target match.
+    let current_match_hl_style = ratatui::style::Style::default()
+        .fg(Theme::BONE_BRIGHT)
+        .bg(Theme::DREAM_BRIGHT)
+        .add_modifier(Modifier::BOLD);
 
     // Current match index for extra emphasis (selection highlight on n/N target).
     let current_match_filtered_idx = if search.active && !search.match_indices.is_empty() {
@@ -237,7 +264,10 @@ fn render_with_entries(
         .map(|(idx, entry)| {
             let selected = idx == row_focus_idx;
             let is_current_match = current_match_filtered_idx == Some(idx);
-            let row_bg = if selected || is_current_match {
+            let row_bg = if is_current_match {
+                // Current search target gets a brighter bg.
+                Some(Theme::DREAM_DEEP)
+            } else if selected {
                 Some(theme.selection_background)
             } else {
                 None
@@ -247,13 +277,21 @@ fn render_with_entries(
             } else {
                 theme.muted()
             };
-            let entry_level_style = style_with_bg(level_style(entry.level, theme), row_bg);
+            let badge_style = style_with_bg(level_badge_style(entry.level, theme), row_bg);
             let src_style = style_with_bg(source_style(&entry.source, theme), row_bg);
             let message_style = style_with_bg(
                 level_style(entry.level, theme).remove_modifier(Modifier::BOLD),
                 row_bg,
             );
             let ts_style = style_with_bg(theme.muted(), row_bg);
+            let icon_style = style_with_bg(source_style(&entry.source, theme), row_bg);
+
+            // Pick highlight style: current match gets brighter emphasis.
+            let match_hl = if is_current_match {
+                current_match_hl_style
+            } else {
+                highlight_style
+            };
 
             // In Highlight mode, split the message into matching/non-matching spans.
             let message_spans: Vec<Span<'_>> = if search.active
@@ -261,21 +299,22 @@ fn render_with_entries(
                 && search.compiled.is_some()
             {
                 let re = search.compiled.as_ref().unwrap();
-                highlight_spans(&entry.message, re, message_style, highlight_style)
+                highlight_spans(&entry.message, re, message_style, match_hl)
             } else {
                 vec![Span::styled(entry.message.clone(), message_style)]
             };
 
+            let icon = source_icon(&entry.source);
             let mut spans = vec![
                 Span::styled(if selected { "▶" } else { " " }, prefix_style),
-                Span::raw(" "),
+                Span::styled(icon, icon_style),
             ];
             if show_timestamp {
                 spans.push(Span::styled(entry.timestamp.clone(), ts_style));
                 spans.push(Span::raw(" "));
             }
             spans.extend([
-                Span::styled(format!("[{}]", entry.level.label()), entry_level_style),
+                Span::styled(format!("[{}]", entry.level.label()), badge_style),
                 Span::raw(" "),
                 Span::styled(truncate_middle(&entry.source, source_width), src_style),
                 Span::raw(" · "),
@@ -328,7 +367,22 @@ fn wrapped_row_offsets(lines: &[Line<'_>], width: u16) -> Vec<usize> {
 /// Color style for log levels.
 fn level_style(level: LogEntryLevel, theme: &Theme) -> ratatui::style::Style {
     match level {
-        LogEntryLevel::Debug => theme.muted(),
+        LogEntryLevel::Debug => Style::default()
+            .fg(Theme::TEXT_GHOST)
+            .add_modifier(Modifier::ITALIC),
+        LogEntryLevel::Info => theme.muted(),
+        LogEntryLevel::Warn => theme.warning(),
+        LogEntryLevel::Error => theme.danger(),
+    }
+}
+
+/// Distinct badge style for the `[LVL]` bracket -- slightly stronger than the
+/// message body style so the level tag stands out from the message text.
+fn level_badge_style(level: LogEntryLevel, theme: &Theme) -> ratatui::style::Style {
+    match level {
+        LogEntryLevel::Debug => Style::default()
+            .fg(Theme::TEXT_GHOST)
+            .add_modifier(Modifier::ITALIC),
         LogEntryLevel::Info => theme.text(),
         LogEntryLevel::Warn => theme.warning(),
         LogEntryLevel::Error => theme.danger(),
@@ -355,9 +409,27 @@ fn source_style(source: &str, theme: &Theme) -> ratatui::style::Style {
     } else if source.starts_with("efficiency:") {
         theme.muted()
     } else if source.starts_with("event:") {
-        theme.info()
+        // Distinct from signal: (DREAM) -- use SAGE so events are visually separable.
+        Style::default().fg(Theme::SAGE)
     } else {
         theme.text()
+    }
+}
+
+/// Return a type-indicator icon for the log source prefix.
+fn source_icon(source: &str) -> &'static str {
+    if source.starts_with("signal:") {
+        "\u{25c6}" // diamond
+    } else if source.starts_with("episode:") {
+        "\u{25cf}" // filled circle
+    } else if source.starts_with("gate:") {
+        "\u{25a0}" // filled square
+    } else if source.starts_with("efficiency:") {
+        "\u{2261}" // triple bar
+    } else if source.starts_with("event:") {
+        "\u{25b8}" // right-pointing triangle
+    } else {
+        "\u{00b7}" // middle dot
     }
 }
 
@@ -508,5 +580,34 @@ mod tests {
         assert_eq!(offsets[0], 0);
         assert_eq!(offsets[1], 1);
         assert!(offsets[2] > 2);
+    }
+
+    #[test]
+    fn source_icons_are_distinct() {
+        let icons: Vec<&str> = [
+            "signal:gate",
+            "episode:run",
+            "gate:compile",
+            "efficiency:x",
+            "event:bus",
+            "other:unknown",
+        ]
+        .iter()
+        .map(|s| source_icon(s))
+        .collect();
+        // All source-type icons should be unique.
+        let mut deduped = icons.clone();
+        deduped.sort();
+        deduped.dedup();
+        assert_eq!(deduped.len(), icons.len(), "source icons must be distinct");
+    }
+
+    #[test]
+    fn level_badge_info_stronger_than_body() {
+        let theme = Theme::dark();
+        let badge = level_badge_style(LogEntryLevel::Info, &theme);
+        let body = level_style(LogEntryLevel::Info, &theme);
+        // Badge uses theme.text() (TEXT), body uses theme.muted() (TEXT_DIM).
+        assert_ne!(badge, body, "INFO badge should be brighter than body text");
     }
 }

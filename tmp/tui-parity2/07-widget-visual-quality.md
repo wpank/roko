@@ -803,3 +803,10 @@ roko. The ones that would transfer well:
 - **WaveformTrace:** Block-character time series. Useful for PAD/affect waveforms.
 - **ConfidenceBar:** Decay-aware confidence display. Useful for knowledge tier visualization.
 - **VitalityNumber:** Lerped single-number display. Useful for cost/token aggregates.
+
+---
+
+## Implementation Status (2026-09-02 swarm)
+
+Widget visual quality improvements (task #21): border styles, padding, alignment, and
+truncation fixes across widgets.

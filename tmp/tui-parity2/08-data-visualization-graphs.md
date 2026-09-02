@@ -744,3 +744,10 @@ The bardo `01-demoscene.md` specifies demoscene algorithms. Of these, only the r
 5. **Canvas is the right tool for the DAG.** The plan tree widget uses text/box-drawing for hierarchy. A `Canvas`-based DAG with Braille lines and labeled nodes would show the dependency topology that the tree view cannot express.
 
 6. **Demoscene effects should be subtle.** Roko is a developer tool, not a consciousness visualizer. Scanlines, phosphor decay, and breathing colors add depth; tunnels, plasma, and fractals do not serve the operational use case.
+
+---
+
+## Implementation Status (2026-09-02 swarm)
+
+Data visualization improvements (task #20): sparkline resolution, gauge rendering, and
+progress bar enhancements.

@@ -307,9 +307,10 @@ fn render_token_burn_by_role(
     frame.render_widget(block, area);
 
     if tui_state.efficiency_events.is_empty() {
-        let empty = Paragraph::new("no efficiency data -- run agents to see token burn")
-            .style(theme.muted())
-            .wrap(Wrap { trim: false });
+        let empty =
+            Paragraph::new("No efficiency data yet \u{2014} token burn appears after agent turns")
+                .style(theme.muted())
+                .wrap(Wrap { trim: false });
         frame.render_widget(empty, inner);
         return;
     }
@@ -420,7 +421,7 @@ fn render_cost_by_model(
     frame.render_widget(block, area);
 
     if tui_state.efficiency_events.is_empty() {
-        let empty = Paragraph::new("no cost data")
+        let empty = Paragraph::new("No cost data yet \u{2014} breakdowns appear after agent turns")
             .style(theme.muted())
             .wrap(Wrap { trim: false });
         frame.render_widget(empty, inner);
@@ -454,8 +455,8 @@ fn render_cost_by_model(
     let rows: Vec<Row<'_>> = sorted
         .iter()
         .map(|(model, agg)| {
-            let avg_time = if agg.turns > 0 {
-                format!("{:.0}ms", agg.wall_time_ms as f64 / agg.turns as f64)
+            let cost_per_turn = if agg.turns > 0 {
+                format!("${:.4}", agg.cost_usd / agg.turns as f64)
             } else {
                 "-".to_string()
             };
@@ -469,23 +470,47 @@ fn render_cost_by_model(
             Row::new(vec![
                 Cell::from(truncate(&display_model(Some(model.as_str())), 20)),
                 Cell::from(Span::styled(format!("${:.4}", agg.cost_usd), cost_style)),
-                Cell::from(format_count(agg.input_tokens)),
-                Cell::from(format_count(agg.output_tokens)),
-                Cell::from(avg_time),
+                Cell::from(agg.turns.to_string()),
+                Cell::from(cost_per_turn),
+                Cell::from(format_count(agg.input_tokens + agg.output_tokens)),
             ])
         })
         .collect();
 
+    // Total row
+    let total_cost: f64 = model_agg.values().map(|a| a.cost_usd).sum();
+    let total_turns: u64 = model_agg.values().map(|a| a.turns).sum();
+    let total_tokens: u64 = model_agg
+        .values()
+        .map(|a| a.input_tokens + a.output_tokens)
+        .sum();
+    let total_cpt = if total_turns > 0 {
+        format!("${:.4}", total_cost / total_turns as f64)
+    } else {
+        "-".to_string()
+    };
+    let mut all_rows = rows;
+    all_rows.push(
+        Row::new(vec![
+            Cell::from(Span::styled("TOTAL", theme.accent_bold())),
+            Cell::from(Span::styled(format!("${total_cost:.4}"), theme.warning())),
+            Cell::from(Span::styled(total_turns.to_string(), theme.accent())),
+            Cell::from(total_cpt),
+            Cell::from(Span::styled(format_count(total_tokens), theme.accent())),
+        ])
+        .style(theme.accent()),
+    );
+
     let widths = [
         Constraint::Min(12),
         Constraint::Length(9),
+        Constraint::Length(5),
         Constraint::Length(7),
         Constraint::Length(7),
-        Constraint::Length(8),
     ];
-    let table = Table::new(rows, widths)
+    let table = Table::new(all_rows, widths)
         .header(
-            Row::new(["model", "cost", "in", "out", "avg"])
+            Row::new(["model", "cost", "turns", "$/turn", "tokens"])
                 .style(theme.accent().add_modifier(Modifier::BOLD)),
         )
         .column_spacing(1);
@@ -522,7 +547,7 @@ fn render_cascade_router(
 
     // Route model stats
     if tui_state.cascade_router.model_slugs.is_empty() && ctx_data.token_burns.is_empty() {
-        let empty = Paragraph::new("no routing decisions -- run agents to populate")
+        let empty = Paragraph::new("No routing decisions yet \u{2014} run agents to populate")
             .style(theme.muted())
             .wrap(Wrap { trim: false });
         frame.render_widget(empty, sections[0]);
@@ -658,7 +683,7 @@ fn render_alerts_and_health(
 
     // Conductor alerts
     if tui_state.conductor_alerts.is_empty() {
-        let empty = Paragraph::new("no conductor alerts")
+        let empty = Paragraph::new("No conductor alerts \u{2014} all systems nominal")
             .style(theme.success())
             .alignment(Alignment::Center);
         frame.render_widget(empty, sections[0]);
@@ -687,7 +712,7 @@ fn render_alerts_and_health(
     if tui_state.gate_results_page.threshold_rows.is_empty()
         && tui_state.gate_results_page.gate_rows.is_empty()
     {
-        let empty = Paragraph::new("no gate data")
+        let empty = Paragraph::new("No gate data yet \u{2014} thresholds appear after gate runs")
             .style(theme.muted())
             .alignment(Alignment::Center);
         frame.render_widget(empty, sections[1]);
@@ -748,7 +773,7 @@ fn render_signal_dag(
     frame.render_widget(block, area);
 
     if tui_state.recent_signals.is_empty() {
-        let empty = Paragraph::new("no signals -- run agents to populate signal DAG")
+        let empty = Paragraph::new("No signals yet \u{2014} run agents to populate the signal DAG")
             .style(theme.muted())
             .wrap(Wrap { trim: false });
         frame.render_widget(empty, inner);
@@ -833,7 +858,7 @@ fn render_episode_replay(
     frame.render_widget(block, area);
 
     if tui_state.episodes_cache.is_empty() {
-        let empty = Paragraph::new("no episodes -- run agents to populate episode log")
+        let empty = Paragraph::new("No episodes yet \u{2014} agent turns populate the episode log")
             .style(theme.muted())
             .wrap(Wrap { trim: false });
         frame.render_widget(empty, inner);
@@ -912,9 +937,10 @@ fn render_knowledge_browse(
     frame.render_widget(block, area);
 
     if tui_state.knowledge_entries.is_empty() {
-        let empty = Paragraph::new("no knowledge entries -- neuro store is empty")
-            .style(theme.muted())
-            .wrap(Wrap { trim: false });
+        let empty =
+            Paragraph::new("No knowledge entries yet \u{2014} the neuro store fills across runs")
+                .style(theme.muted())
+                .wrap(Wrap { trim: false });
         frame.render_widget(empty, inner);
         return;
     }
@@ -1011,7 +1037,7 @@ fn confidence_bar(confidence: Option<f64>, width: usize) -> String {
     format!(
         "[{}{}]",
         "\u{2588}".repeat(filled.min(width)),
-        "\u{2591}".repeat(empty)
+        "\u{2500}".repeat(empty)
     )
 }
 
@@ -1074,10 +1100,11 @@ fn render_three_panel_inspect(
     tui_state: &TuiState,
     theme: &Theme,
 ) {
+    // Give MCP panel more width since it shows longer paths/commands.
     let columns = Layout::horizontal([
-        Constraint::Percentage(33),
-        Constraint::Percentage(34),
-        Constraint::Percentage(33),
+        Constraint::Percentage(38),
+        Constraint::Percentage(32),
+        Constraint::Percentage(30),
     ])
     .split(area);
 
@@ -1086,54 +1113,141 @@ fn render_three_panel_inspect(
     render_prompt_stats_panel(frame, columns[2], tui_state, theme);
 }
 
-/// Column 1: MCP runtime status panel (reads from cached `InspectData`).
+/// Column 1: MCP runtime status panel.
+///
+/// Uses the richer `McpConfigView` (from TuiState) for per-server commands
+/// and error messages, falling back to `InspectData.mcp` for tool/index counts.
 fn render_mcp_panel(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme: &Theme) {
     let block = Block::bordered()
-        .title(Span::styled(" MCP Runtime ", theme.accent()))
+        .title(Span::styled(" MCP / Providers ", theme.accent()))
         .border_style(theme.accent());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let mcp = &tui_state.inspect_data.mcp;
+    let mcp_config = &tui_state.mcp_config_view;
+    let mcp_stats = &tui_state.inspect_data.mcp;
+    let max_label = inner.width.saturating_sub(12) as usize;
 
-    let mut lines: Vec<Line<'_>> = vec![
-        Line::from(vec![
-            Span::styled("config:    ", theme.muted()),
-            if mcp.config_exists {
-                Span::styled("roko.toml", theme.success())
-            } else {
-                Span::styled("not found", theme.danger())
-            },
-        ]),
-        Line::from(vec![
-            Span::styled("tools:     ", theme.muted()),
-            Span::styled(mcp.tool_count.to_string(), theme.info()),
-        ]),
-        Line::from(vec![
-            Span::styled("servers:   ", theme.muted()),
-            Span::styled(mcp.servers.len().to_string(), theme.info()),
-        ]),
-    ];
-    for name in mcp.servers.iter().take(5) {
+    let mut lines: Vec<Line<'_>> = Vec::new();
+
+    // Config file status
+    let config_label = mcp_config
+        .resolved_path
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .or_else(|| {
+            mcp_config
+                .configured_path
+                .as_ref()
+                .map(|p| p.display().to_string())
+        });
+    lines.push(Line::from(vec![
+        Span::styled("config: ", theme.muted()),
+        if let Some(ref path) = config_label {
+            Span::styled(truncate(path, max_label), theme.success())
+        } else if mcp_stats.config_exists {
+            Span::styled("roko.toml", theme.success())
+        } else {
+            Span::styled("not configured", theme.muted())
+        },
+    ]));
+
+    // Error from MCP config loading
+    if let Some(ref error) = mcp_config.error {
         lines.push(Line::from(vec![
-            Span::raw("  "),
-            Span::styled(name.as_str(), theme.muted()),
+            Span::styled("error:  ", theme.danger()),
+            Span::styled(truncate(error, max_label), theme.danger()),
         ]));
     }
+
+    // Server list with connection status indicators
+    if let Some(ref config) = mcp_config.config {
+        let server_count = config.servers.len();
+        lines.push(Line::from(vec![
+            Span::styled("servers:", theme.muted()),
+            Span::raw(" "),
+            Span::styled(server_count.to_string(), theme.info()),
+        ]));
+        let max_servers = inner.height.saturating_sub(6) as usize;
+        for server in config.servers.iter().take(max_servers) {
+            let (icon, icon_style) = if !server.command.is_empty() {
+                ("+", theme.success())
+            } else {
+                ("?", theme.warning())
+            };
+            let cmd = if !server.command.is_empty() {
+                truncate(&server.command, max_label.saturating_sub(6))
+            } else {
+                "(no command)".to_string()
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {icon} "), icon_style),
+                Span::styled(
+                    format!("{}: ", truncate(&server.name, 10)),
+                    theme.accent(),
+                ),
+                Span::styled(cmd, theme.text()),
+            ]));
+        }
+        if server_count > max_servers {
+            lines.push(Line::from(Span::styled(
+                format!("  (+{} more)", server_count - max_servers),
+                theme.muted(),
+            )));
+        }
+    } else if !mcp_stats.servers.is_empty() {
+        // Fall back to InspectData server names
+        lines.push(Line::from(vec![
+            Span::styled("servers:", theme.muted()),
+            Span::raw(" "),
+            Span::styled(mcp_stats.servers.len().to_string(), theme.info()),
+        ]));
+        for name in mcp_stats.servers.iter().take(5) {
+            lines.push(Line::from(vec![
+                Span::styled("  ? ", theme.muted()),
+                Span::styled(truncate(name, max_label), theme.muted()),
+            ]));
+        }
+        if mcp_stats.servers.len() > 5 {
+            lines.push(Line::from(Span::styled(
+                format!("  (+{} more)", mcp_stats.servers.len() - 5),
+                theme.muted(),
+            )));
+        }
+    } else {
+        lines.push(Line::from(Span::styled(
+            "No MCP servers configured",
+            theme.muted(),
+        )));
+    }
+
+    // Tool and index stats
     lines.push(Line::raw(""));
     lines.push(Line::from(vec![
-        Span::styled("AST index: ", theme.muted()),
-        Span::styled(format!("{} files", mcp.index_file_count), theme.info()),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("symbols:   ", theme.muted()),
-        Span::styled(mcp.index_symbol_count.to_string(), theme.info()),
+        Span::styled("tools:  ", theme.muted()),
+        if mcp_stats.tool_count > 0 {
+            Span::styled(mcp_stats.tool_count.to_string(), theme.info())
+        } else {
+            Span::styled("0", theme.muted())
+        },
+        Span::styled("   index: ", theme.muted()),
+        if mcp_stats.index_file_count > 0 {
+            Span::styled(
+                format!("{} files / {} sym", mcp_stats.index_file_count, mcp_stats.index_symbol_count),
+                theme.info(),
+            )
+        } else {
+            Span::styled("not built", theme.muted())
+        },
     ]));
 
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
-/// Column 2: Learning state metrics panel (reads from cached `InspectData`).
+/// Column 2: Learning state metrics panel.
+///
+/// Shows episode stats, experiment winners (previously unused), playbook rules,
+/// routing coverage, and gate thresholds with value-based coloring.
 fn render_learning_panel(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme: &Theme) {
     let block = Block::bordered()
         .title(Span::styled(" Learning ", theme.accent()))
@@ -1142,6 +1256,19 @@ fn render_learning_panel(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState
     frame.render_widget(block, area);
 
     let learn = &tui_state.inspect_data.learning;
+    let has_any_data = learn.episode_count > 0
+        || learn.playbook_rule_count > 0
+        || !learn.gate_thresholds.is_empty()
+        || !tui_state.experiment_winners.is_empty();
+
+    if !has_any_data {
+        let empty = Paragraph::new("Data available during active runs")
+            .style(theme.muted())
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: false });
+        frame.render_widget(empty, inner);
+        return;
+    }
 
     let ep_total = learn.episode_count;
     let ep_passed = learn.episodes_passed;
@@ -1152,9 +1279,9 @@ fn render_learning_panel(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState
         0.0
     };
 
-    let router_models = tui_state.cascade_router.model_slugs.len();
-
-    let accuracy_style = if accuracy >= 80.0 {
+    let accuracy_style = if ep_total == 0 {
+        theme.muted()
+    } else if accuracy >= 80.0 {
         theme.success()
     } else if accuracy >= 50.0 {
         theme.warning()
@@ -1164,41 +1291,135 @@ fn render_learning_panel(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState
 
     let mut lines: Vec<Line<'_>> = vec![
         Line::from(vec![
-            Span::styled("episodes:  ", theme.muted()),
+            Span::styled("episodes: ", theme.muted()),
             Span::styled(ep_total.to_string(), theme.info()),
             Span::styled(
-                format!("  ({ep_passed} pass / {ep_failed} fail)"),
+                format!(" ({ep_passed}P/{ep_failed}F)"),
                 theme.muted(),
             ),
         ]),
         Line::from(vec![
-            Span::styled("accuracy:  ", theme.muted()),
-            Span::styled(format!("{accuracy:.1}%"), accuracy_style),
+            Span::styled("accuracy: ", theme.muted()),
+            if ep_total > 0 {
+                Span::styled(format!("{accuracy:.1}%"), accuracy_style)
+            } else {
+                Span::styled("-", theme.muted())
+            },
         ]),
         Line::from(vec![
-            Span::styled("playbooks: ", theme.muted()),
-            Span::styled(learn.playbook_rule_count.to_string(), theme.info()),
+            Span::styled("playbook: ", theme.muted()),
+            Span::styled(
+                format!("{} rules", learn.playbook_rule_count),
+                theme.info(),
+            ),
         ]),
         Line::from(vec![
-            Span::styled("routing:   ", theme.muted()),
+            Span::styled("routing:  ", theme.muted()),
             Span::styled(
                 format!(
-                    "{:.0}% coverage ({router_models} models)",
-                    learn.routing_coverage_pct
+                    "{:.0}% ({} models)",
+                    learn.routing_coverage_pct,
+                    tui_state.cascade_router.model_slugs.len()
                 ),
                 theme.info(),
             ),
         ]),
     ];
 
-    // Gate thresholds from cached data
-    if !learn.gate_thresholds.is_empty() {
+    // Knowledge tier distribution
+    if !tui_state.knowledge_entries.is_empty() {
+        let total_k = tui_state.knowledge_entries.len();
+        let high_conf = tui_state
+            .knowledge_entries
+            .iter()
+            .filter(|e| e.confidence >= 0.75)
+            .count();
+        let mid_conf = tui_state
+            .knowledge_entries
+            .iter()
+            .filter(|e| e.confidence >= 0.45 && e.confidence < 0.75)
+            .count();
+        let low_conf = total_k - high_conf - mid_conf;
+        lines.push(Line::from(vec![
+            Span::styled("knowledge:", theme.muted()),
+            Span::styled(format!(" {total_k}"), theme.info()),
+            Span::styled(" (", theme.muted()),
+            Span::styled(format!("{high_conf}"), theme.success()),
+            Span::styled("/", theme.muted()),
+            Span::styled(format!("{mid_conf}"), theme.warning()),
+            Span::styled("/", theme.muted()),
+            Span::styled(format!("{low_conf}"), theme.danger()),
+            Span::styled(")", theme.muted()),
+        ]));
+    }
+
+    // Experiments: active and winners
+    let has_experiments =
+        !tui_state.experiment_winners.is_empty() || !tui_state.experiments.is_empty();
+    if has_experiments {
+        lines.push(Line::raw(""));
+        lines.push(Line::from(Span::styled("Experiments:", theme.accent())));
+        let max_experiments = (inner.height as usize).saturating_sub(lines.len() + 2);
+        let mut shown = 0usize;
+        // Active experiments first
+        for exp in &tui_state.experiments {
+            if shown >= max_experiments {
+                break;
+            }
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  {}: ", truncate(&exp.experiment_id, 8)),
+                    theme.muted(),
+                ),
+                Span::styled(
+                    format!("{} ({}t)", exp.status, exp.total_trials),
+                    theme.info(),
+                ),
+            ]));
+            shown += 1;
+        }
+        // Then concluded winners
+        for w in &tui_state.experiment_winners {
+            if shown >= max_experiments {
+                break;
+            }
+            let label = if w.winner.is_empty() {
+                truncate(&w.winner_variant_id, 10)
+            } else {
+                truncate(&w.winner, 10)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  {}: ", truncate(&w.experiment_id, 8)),
+                    theme.muted(),
+                ),
+                Span::styled(format!("+ {label}"), theme.success()),
+                if w.sample_size > 0 {
+                    Span::styled(format!(" n={}", w.sample_size), theme.muted())
+                } else {
+                    Span::raw("")
+                },
+            ]));
+            shown += 1;
+        }
+    }
+
+    // Gate thresholds with value coloring
+    let remaining_height = (inner.height as usize).saturating_sub(lines.len() + 1);
+    if !learn.gate_thresholds.is_empty() && remaining_height > 2 {
         lines.push(Line::raw(""));
         lines.push(Line::from(Span::styled("Gate Thresholds:", theme.accent())));
-        for (rung, t) in learn.gate_thresholds.iter().take(8) {
+        for (rung, t) in learn.gate_thresholds.iter().take(remaining_height.saturating_sub(1)) {
+            let threshold_style = if *t >= 0.8 {
+                theme.success()
+            } else if *t >= 0.5 {
+                theme.warning()
+            } else {
+                theme.danger()
+            };
             lines.push(Line::from(vec![
-                Span::styled(format!("  {rung}: "), theme.muted()),
-                Span::styled(format!("{t:.3}"), theme.info()),
+                Span::styled(format!("  {}: ", truncate(rung, 10)), theme.muted()),
+                Span::styled(format!("{t:.3}"), threshold_style),
             ]));
         }
     }
@@ -1206,7 +1427,10 @@ fn render_learning_panel(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
-/// Column 3: Prompt statistics panel (reads from cached `InspectData`).
+/// Column 3: Prompt / token statistics panel.
+///
+/// Shows per-role token breakdown with input/output split and cache hit rate,
+/// plus overall context utilization summary.
 fn render_prompt_stats_panel(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -1214,70 +1438,119 @@ fn render_prompt_stats_panel(
     theme: &Theme,
 ) {
     let block = Block::bordered()
-        .title(Span::styled(" Prompt Stats ", theme.accent()))
+        .title(Span::styled(" Token / Cost ", theme.accent()))
         .border_style(theme.accent());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let ps = &tui_state.inspect_data.prompt_stats;
+    if tui_state.efficiency_events.is_empty() {
+        let empty = Paragraph::new("Data available during active runs")
+            .style(theme.muted())
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: false });
+        frame.render_widget(empty, inner);
+        return;
+    }
+
+    // Compute per-role aggregates with input/output/cache breakdown
+    let mut role_data: BTreeMap<String, (u64, u64, u64, u64, f64)> = BTreeMap::new(); // (in, out, cache_read, turns, cost)
+    for ev in &tui_state.efficiency_events {
+        let role = if ev.role.is_empty() { "unknown" } else { ev.role.as_str() };
+        let entry = role_data.entry(role.to_string()).or_default();
+        entry.0 += ev.input_tokens;
+        entry.1 += ev.output_tokens;
+        entry.2 += ev.cache_read_tokens;
+        entry.3 += 1;
+        entry.4 += ev.cost_usd;
+    }
 
     let mut lines: Vec<Line<'_>> = vec![Line::from(Span::styled(
-        "Avg Tokens per Role:",
+        "Per-Role Breakdown:",
         theme.accent(),
     ))];
 
-    if ps.tokens_per_role.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "  (no efficiency data)",
-            theme.muted(),
-        )));
-    } else {
-        for (role, avg) in &ps.tokens_per_role {
-            // Look up utilization from the paired list.
-            let utilization = ps
-                .context_utilization
-                .iter()
-                .find(|(r, _)| r == role)
-                .map(|(_, u)| *u * 100.0)
-                .unwrap_or(0.0);
-            let util_style = if utilization > 80.0 {
-                theme.danger()
-            } else if utilization > 50.0 {
-                theme.warning()
-            } else {
-                theme.success()
-            };
-            lines.push(Line::from(vec![
-                Span::styled(format!("  {role}: "), theme.muted()),
-                Span::styled(format_count(*avg), theme.info()),
-                Span::raw("  "),
-                Span::styled(format!("({utilization:.1}% ctx)"), util_style),
-            ]));
-        }
+    let remaining = (inner.height as usize).saturating_sub(6); // reserve for summary
+    for (role, (inp, out, cache, turns, cost)) in role_data.iter().take(remaining) {
+        let cache_pct = if *inp > 0 {
+            format!("{:.0}%c", *cache as f64 / *inp as f64 * 100.0)
+        } else {
+            "-".to_string()
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {}: ", truncate(role, 8)), theme.muted()),
+            Span::styled(format_count(*inp), theme.info()),
+            Span::styled("/", theme.muted()),
+            Span::styled(format_count(*out), theme.info()),
+            Span::styled(format!(" {cache_pct}"), theme.muted()),
+        ]));
+        let _ = (turns, cost); // used below in totals
     }
 
-    lines.push(Line::raw(""));
-    lines.push(Line::from(Span::styled(
-        "Context Utilization:",
-        theme.accent(),
-    )));
+    // Overall totals
+    let total_in: u64 = role_data.values().map(|r| r.0).sum();
+    let total_out: u64 = role_data.values().map(|r| r.1).sum();
+    let total_cache: u64 = role_data.values().map(|r| r.2).sum();
+    let total_cost: f64 = role_data.values().map(|r| r.4).sum();
+    let cache_ratio = if total_in > 0 {
+        total_cache as f64 / total_in as f64 * 100.0
+    } else {
+        0.0
+    };
 
-    let total_tokens: u64 = ps.tokens_per_role.iter().map(|(_, t)| *t).sum();
-    let role_count = ps.tokens_per_role.len() as u64;
-    let avg_overall = if role_count > 0 {
-        total_tokens / role_count
+    // Compute avg input tokens per turn for context utilization
+    let total_turns: u64 = role_data.values().map(|r| r.3).sum();
+    let avg_input_per_turn = if total_turns > 0 {
+        total_in / total_turns
     } else {
         0
     };
-    let overall_util = ps.context_utilization.iter().map(|(_, u)| *u).sum::<f64>()
-        / ps.context_utilization.len().max(1) as f64
-        * 100.0;
 
+    // Context window headroom (use configured or default model limit)
+    let ctx_limit = crate::tui::state::model_context_limit(
+        &tui_state.efficiency_events.last().map_or(String::new(), |e| e.model.clone()),
+    );
+    let utilization_pct = if ctx_limit > 0 {
+        avg_input_per_turn as f64 / ctx_limit as f64 * 100.0
+    } else {
+        0.0
+    };
+    let util_style = if utilization_pct > 80.0 {
+        theme.danger()
+    } else if utilization_pct > 50.0 {
+        theme.warning()
+    } else {
+        theme.success()
+    };
+
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled("Summary:", theme.accent())));
     lines.push(Line::from(vec![
-        Span::styled("  overall: ", theme.muted()),
-        Span::styled(format!("{overall_util:.1}%"), theme.info()),
+        Span::styled(" in/out: ", theme.muted()),
+        Span::styled(format_count(total_in), theme.info()),
+        Span::styled(" / ", theme.muted()),
+        Span::styled(format_count(total_out), theme.info()),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(" cache:  ", theme.muted()),
         Span::styled(
-            format!("  ({} avg tokens)", format_count(avg_overall)),
+            format!("{cache_ratio:.1}%"),
+            if cache_ratio > 50.0 {
+                theme.success()
+            } else {
+                theme.info()
+            },
+        ),
+        Span::styled("   cost: ", theme.muted()),
+        Span::styled(format!("${total_cost:.4}"), theme.warning()),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(" ctx:    ", theme.muted()),
+        Span::styled(
+            format!("{utilization_pct:.0}%"),
+            util_style,
+        ),
+        Span::styled(
+            format!(" ({}/{})", format_count(avg_input_per_turn), format_count(ctx_limit)),
             theme.muted(),
         ),
     ]));
@@ -1306,7 +1579,7 @@ mod tests {
 
     #[test]
     fn confidence_bar_renders_known_and_unknown_values() {
-        assert_eq!(confidence_bar(Some(0.5), 6), "[███░░░]");
+        assert_eq!(confidence_bar(Some(0.5), 6), "[███───]");
         assert_eq!(confidence_bar(Some(1.2), 4), "[████]");
         assert_eq!(confidence_bar(None, 4), "[────]");
     }

@@ -1214,3 +1214,30 @@ fn draw(&mut self, frame: &mut Frame) {
 - **PostFX pipeline:** `/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/tui/postfx_pipeline.rs` -- per-tab dispatch, viz context construction
 - **Atmosphere:** `/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/tui/atmosphere.rs` -- timing, heartbeat, breathing, spinners
 - **Smoothing:** `/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/tui/smoothing.rs` -- EMA for display values
+
+---
+
+## Implementation Status (2026-09-02)
+
+### Completed
+
+| Item | What was done | Files |
+|---|---|---|
+| **1. Fix effects presets** | `apply_preset(Full)` now sets `bloom_enabled`, `shadows_enabled`, `vfx_enabled` to true; test updated | `effects_config.rs` |
+| **3. Scanlines** | `scanlines()` added to postfx.rs; wired into pipeline (always-on when postfx enabled, spacing=3, darken=4%); 1 test | `postfx.rs`, `postfx_pipeline.rs` |
+| **4. Noise floor** | `noise_floor()` added to postfx.rs; wired into pipeline (Full preset only, density=0.003); rose-tinted sparse shimmer in blank cells; 1 test | `postfx.rs`, `postfx_pipeline.rs` |
+| **6. Tab transitions (simplified)** | Fade-in overlay on tab switch (200ms ease-out cubic) instead of full buffer-snapshot approach; `tab_transition` field on App | `app.rs`, `postfx.rs` |
+| **8. Notification fade** | `opacity()` method on Notification with 300ms entrance / 500ms exit fade; `fade_overlay()` applied per-toast | `notification.rs`, `postfx.rs` |
+| **9. Progress bar smoothing** | Leading-edge glow on `semantic_bar` pulsed by heartbeat; `SmoothedValue::update_progress()` snaps at 0/1 boundaries | `task_progress.rs`, `smoothing.rs`, `state.rs` |
+| **Active agent spinners** | `status_icon_animated()` uses `atmosphere.spinner()` braille rotation for Active agents in both full and compact grid | `agent_status_grid.rs` |
+
+### Remaining
+
+| Item | Status | Notes |
+|---|---|---|
+| **2. Animator struct** | Not built | Full animation scheduler was not needed; individual animations use simpler inline approaches |
+| **5. Transition struct (buffer snapshot)** | Skipped | Fade-in approach chosen over buffer-snapshot for simplicity; covers the biggest UX gap |
+| **7. Modal animations** | Not done | Scale-up/down on modal appear/dismiss |
+| **10. Selection glow** | Not done | PostFX pass for focused/selected items |
+| **11. Focus-change pulse** | Not done | Border brightness pulse on focus change |
+| **12-15. Atmospheric (Phase 4)** | Not done | Phosphor persistence, color breathing, CRT barrel distortion, state-driven intensity |

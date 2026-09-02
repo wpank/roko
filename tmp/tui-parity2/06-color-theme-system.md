@@ -522,3 +522,10 @@ The ROSEDUST palette is a well-designed, warm-toned dark theme with clear semant
 - True-black background (#000000) loses the violet-depth feel that bardo's #060608 provides
 - The atmospheric/demoscene features (scanlines, phosphor persistence, plasma) from bardo's spec are entirely absent -- but the infrastructure (postfx.rs, braille.rs, atmosphere module) exists to implement them incrementally
 - 6 defined color constants are never used in any view or widget
+
+---
+
+## Implementation Status (2026-09-02 swarm)
+
+ROSEDUST palette fixes (task #23): WCAG contrast improvements, semantic color usage
+corrections across views and widgets.

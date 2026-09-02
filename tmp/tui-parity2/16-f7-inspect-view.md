@@ -296,3 +296,9 @@ Move Episodes to F5 Logs (where SignalStream already lives). Remove Cost/Model a
 | 12 | No provider circuit breaker visualization anywhere in TUI | High |
 | 13 | No prompt section-level token accounting | Medium |
 | 14 | Three-panel columns too narrow on 80-col terminals | Low |
+
+---
+
+## Implementation Status (2026-09-02 swarm)
+
+F7 Inspect view improvements (task #16): sub-tab layouts, data explorer, three-panel layout.

@@ -1,11 +1,12 @@
 //! Wave progress ribbon — proportional segments per execution wave with
-//! animated ocean gradient fill.
+//! animated ocean gradient fill, per-wave percentage annotations, and
+//! overall completion summary.
 //!
 //! Ported from Mori's wave_progress.rs.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
@@ -20,6 +21,11 @@ use crate::tui::Theme;
 /// Render the wave progress ribbon.
 pub fn render_wave_progress(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
     if state.execution_waves.is_empty() {
+        let placeholder = Line::from(Span::styled(
+            "No execution waves",
+            Style::default().fg(Theme::TEXT_GHOST),
+        ));
+        frame.render_widget(Paragraph::new(placeholder), area);
         return;
     }
 
@@ -33,13 +39,25 @@ pub fn render_wave_progress(frame: &mut Frame<'_>, area: Rect, state: &TuiState)
         return;
     }
 
+    // Overall completion summary (right-aligned)
+    let total_done: usize = state.execution_waves.iter().map(|w| w.done).sum();
+    let overall_pct = if total_plans > 0 {
+        (total_done as f64 / total_plans as f64 * 100.0).round() as u32
+    } else {
+        0
+    };
+    let summary = format!(" {total_done}/{total_plans} ({overall_pct}%)");
+    let summary_width = summary.len();
+    let bar_area_width = width.saturating_sub(summary_width);
+
     let gradient = gradient_ocean();
     let current_wave = state.current_wave();
     let elapsed = state.atmosphere.elapsed();
     let mut spans: Vec<Span> = Vec::new();
 
     for (idx, wave) in state.execution_waves.iter().enumerate() {
-        let wave_width = (wave.total as f64 / total_plans as f64 * width as f64).ceil() as usize;
+        let wave_width =
+            (wave.total as f64 / total_plans as f64 * bar_area_width as f64).ceil() as usize;
         let wave_width = wave_width.max(3); // minimum 3 chars per wave
 
         let fraction = if wave.total > 0 {
@@ -59,8 +77,13 @@ pub fn render_wave_progress(frame: &mut Frame<'_>, area: Rect, state: &TuiState)
 
         let filled = (fraction * wave_width as f64) as usize;
 
-        // Wave label
-        let label = format!("W{}", wave.index);
+        // Wave label with completion percentage when space allows
+        let pct_val = (fraction * 100.0).round() as u32;
+        let label = if wave_width > 10 {
+            format!("W{} {pct_val}%", wave.index)
+        } else {
+            format!("W{}", wave.index)
+        };
         let label_len = label.len();
 
         if wave_width > label_len + 1 {
@@ -113,6 +136,18 @@ pub fn render_wave_progress(frame: &mut Frame<'_>, area: Rect, state: &TuiState)
             ));
         }
     }
+
+    // Append overall completion summary
+    let summary_style = if overall_pct >= 100 {
+        Style::default()
+            .fg(Theme::SAGE)
+            .add_modifier(Modifier::BOLD)
+    } else if overall_pct >= 50 {
+        Style::default().fg(Theme::BONE_DIM)
+    } else {
+        Style::default().fg(Theme::TEXT_DIM)
+    };
+    spans.push(Span::styled(summary, summary_style));
 
     let line = Line::from(spans);
     frame.render_widget(Paragraph::new(line), area);

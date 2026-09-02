@@ -340,6 +340,29 @@ fn render_wave_tree(
             ));
         }
 
+        // "after W{N}" blocker label for pending waves
+        if !all_done && !any_active && !wave.blocked_by_waves.is_empty() {
+            let blocker_label = wave
+                .blocked_by_waves
+                .iter()
+                .filter(|&&w| {
+                    // Only show incomplete blocker waves
+                    state
+                        .execution_waves
+                        .iter()
+                        .any(|ew| ew.index == w && ew.done < ew.total)
+                })
+                .map(|w| format!("W{w}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            if !blocker_label.is_empty() {
+                wave_spans.push(Span::styled(
+                    format!(" after {blocker_label}"),
+                    Style::default().fg(Theme::TEXT_GHOST).bg(header_bg),
+                ));
+            }
+        }
+
         // Fill remaining width with horizontal line
         let used: usize = wave_spans.iter().map(|s| s.content.chars().count()).sum();
         let avail = (area.width.saturating_sub(2)) as usize;
@@ -923,6 +946,7 @@ mod tests {
                 done: 1,
                 total: 2,
                 expanded: true,
+                blocked_by_waves: Vec::new(),
             },
             Wave {
                 index: 1,
@@ -930,6 +954,7 @@ mod tests {
                 done: 0,
                 total: 1,
                 expanded: true,
+                blocked_by_waves: vec![0],
             },
         ];
         state

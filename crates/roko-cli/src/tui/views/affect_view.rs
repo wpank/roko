@@ -31,8 +31,11 @@ pub(crate) fn render(
     frame.render_widget(block, area);
 
     let Some(ref affect) = tui_state.affect else {
-        let placeholder = Paragraph::new("No affect data yet.\nWaiting for first task turn...")
-            .style(Style::default().fg(theme.muted));
+        let spinner = tui_state.atmosphere.spinner();
+        let placeholder = Paragraph::new(format!(
+            "No affect data yet.\n{spinner} Waiting for first task turn..."
+        ))
+        .style(Style::default().fg(theme.muted));
         frame.render_widget(placeholder, inner);
         return;
     };

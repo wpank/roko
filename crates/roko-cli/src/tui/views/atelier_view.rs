@@ -104,31 +104,44 @@ pub(crate) fn render(
     let prds = &tui_state.atelier_prds;
 
     let rows = Layout::vertical([
+        Constraint::Length(1), // Sub-tab bar
         Constraint::Length(3), // Stats bar
         Constraint::Min(0),    // Main content
     ])
     .split(area);
 
-    render_stats_bar(frame, rows[0], &prds, data, theme);
+    render_sub_tab_bar(frame, rows[0], view_state, theme);
+    render_stats_bar(frame, rows[1], prds, data, theme);
 
     if prds.is_empty() {
-        render_empty(frame, rows[1], theme);
+        render_empty(frame, rows[2], theme);
         return;
     }
 
     let selected = view_state.selected.min(prds.len().saturating_sub(1));
     match view_state.active_sub_view(Tab::Atelier) {
         SubView::PlanExplorer => {
-            render_plan_detail(frame, rows[1], prds, selected, data, tui_state, theme);
+            render_plan_detail(frame, rows[2], prds, selected, data, tui_state, theme);
         }
         _ => {
-            let panels =
-                Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
-                    .split(rows[1]);
-            render_prd_list(frame, panels[0], prds, selected, theme);
-            render_plan_detail(frame, panels[1], prds, selected, data, tui_state, theme);
+            let (sidebar, detail) = crate::tui::layout::responsive_panel_split(
+                rows[2],
+                40,
+                100,
+                rows[2].height / 3,
+            );
+            render_prd_list(frame, sidebar, prds, selected, theme);
+            render_plan_detail(frame, detail, prds, selected, data, tui_state, theme);
         }
     }
+}
+
+fn render_sub_tab_bar(frame: &mut Frame<'_>, area: Rect, view_state: &ViewState, theme: &Theme) {
+    let label = SubView::bar_label(Tab::Atelier, view_state.sub_tab);
+    let bar = Paragraph::new(Line::from(Span::styled(label, theme.muted())))
+        .alignment(Alignment::Center)
+        .style(ratatui::style::Style::default().bg(Theme::BG_RAISED));
+    frame.render_widget(bar, area);
 }
 
 // ---------------------------------------------------------------------------
@@ -465,12 +478,20 @@ fn render_plan_detail(
         .get(&prd.slug)
         .unwrap_or(&empty_tasks);
 
+    let visible_task_rows = (sections[2].height.saturating_sub(2)) as usize; // border + header
+    let overflow = tasks.len() > visible_task_rows;
+    let task_title = if overflow {
+        format!(
+            " Tasks ({}) [{} hidden] ",
+            tasks.len(),
+            tasks.len() - visible_task_rows
+        )
+    } else {
+        format!(" Tasks ({}) ", tasks.len())
+    };
     let task_block = Block::default()
         .borders(Borders::TOP)
-        .title(Span::styled(
-            format!(" Tasks ({}) ", tasks.len()),
-            theme.muted(),
-        ))
+        .title(Span::styled(task_title, theme.muted()))
         .border_style(theme.muted());
     let task_inner = task_block.inner(sections[2]);
     frame.render_widget(task_block, sections[2]);
@@ -521,12 +542,12 @@ fn render_plan_detail(
         task_inner,
     );
 
-    // Bottom keybinding hints
+    // Bottom keybinding hints (active keys only)
     let hint_line = Line::from(vec![
-        Span::styled(" p", theme.accent()),
-        Span::styled(":publish  ", theme.muted()),
-        Span::styled("g", theme.accent()),
-        Span::styled(":gen plan  ", theme.muted()),
+        Span::styled(" j/k", theme.accent()),
+        Span::styled(":navigate  ", theme.muted()),
+        Span::styled("Enter", theme.accent()),
+        Span::styled(":expand  ", theme.muted()),
         Span::styled("r", theme.accent()),
         Span::styled(":refresh", theme.muted()),
     ]);

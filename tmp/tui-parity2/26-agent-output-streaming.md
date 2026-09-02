@@ -302,3 +302,10 @@ Users can scroll up to pin, and new output will not auto-scroll. But with only 5
 - `/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/tui/segment.rs` -- `SegmentKind`, `SegmentGroup`, `parse_segment_groups()`, `render_groups()`, `render_cached_output()`
 - `/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/tui/ansi.rs` -- ANSI SGR parsing (`parse_ansi_line()`) for preserving terminal colors
 - `/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/tui/input.rs` -- `FocusZone::AgentOutput`, `LogSearch`/`PlanFilter` modes (agent output has neither)
+
+---
+
+## Implementation Status (2026-09-02 swarm)
+
+Agent output streaming improvements (task #26): live output rendering, semantic parsing,
+auto-scroll enhancements.

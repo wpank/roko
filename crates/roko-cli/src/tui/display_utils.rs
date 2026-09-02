@@ -18,9 +18,12 @@ pub fn shorten_model(slug: &str) -> String {
 }
 
 /// Human-friendly model name for display, handling `None`/empty/sentinel values.
+///
+/// Returns an em-dash for missing/empty/sentinel values so the TUI shows a
+/// clear placeholder rather than a misleading label.
 pub fn display_model(model: Option<&str>) -> String {
     match model {
-        None | Some("") | Some("-") | Some("unknown-model") => "unknown".to_string(),
+        None | Some("") | Some("-") | Some("unknown-model") => "\u{2014}".to_string(),
         Some(m) => shorten_model(m),
     }
 }
@@ -41,19 +44,22 @@ pub fn event_model_slug(event: &roko_learn::efficiency::AgentEfficiencyEvent) ->
     }
 }
 
-/// Truncate a string to at most `max` characters, appending `...` when
+/// Truncate a string to at most `max` characters, appending an ellipsis when
 /// truncated. UTF-8 safe — counts by `char`, not by byte.
 pub fn truncate(s: &str, max: usize) -> String {
     let char_count = s.chars().count();
     if char_count <= max {
         return s.to_string();
     }
-    if max <= 3 {
-        return ".".repeat(max);
+    if max == 0 {
+        return String::new();
     }
-    let keep = max - 3;
+    if max <= 1 {
+        return "\u{2026}".to_string();
+    }
+    let keep = max - 1;
     let truncated: String = s.chars().take(keep).collect();
-    format!("{truncated}...")
+    format!("{truncated}\u{2026}")
 }
 
 #[cfg(test)]
@@ -69,26 +75,27 @@ mod tests {
 
     #[test]
     fn display_model_handles_sentinels() {
-        assert_eq!(display_model(None), "unknown");
-        assert_eq!(display_model(Some("")), "unknown");
-        assert_eq!(display_model(Some("-")), "unknown");
-        assert_eq!(display_model(Some("unknown-model")), "unknown");
+        assert_eq!(display_model(None), "\u{2014}");
+        assert_eq!(display_model(Some("")), "\u{2014}");
+        assert_eq!(display_model(Some("-")), "\u{2014}");
+        assert_eq!(display_model(Some("unknown-model")), "\u{2014}");
         assert_eq!(display_model(Some("claude-opus-4-6")), "o4-6");
     }
 
     #[test]
     fn truncate_ascii() {
         assert_eq!(truncate("hello", 10), "hello");
-        assert_eq!(truncate("hello world", 8), "hello...");
+        assert_eq!(truncate("hello world", 8), "hello w\u{2026}");
         assert_eq!(truncate("ab", 2), "ab");
-        assert_eq!(truncate("abcdef", 3), "...");
+        assert_eq!(truncate("abcdef", 1), "\u{2026}");
+        assert_eq!(truncate("abcdef", 3), "ab\u{2026}");
     }
 
     #[test]
     fn truncate_utf8_safe() {
         // Multi-byte characters must not panic.
-        let s = "café résumé";
+        let s = "caf\u{00e9} r\u{00e9}sum\u{00e9}";
         let t = truncate(s, 6);
-        assert_eq!(t, "caf...");
+        assert_eq!(t, "caf\u{00e9} \u{2026}");
     }
 }

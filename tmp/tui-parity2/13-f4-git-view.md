@@ -332,3 +332,9 @@ diff panel to F4 with per-file selection.
   fallback
 - `app.rs`: 2 integration tests covering git cursor drill and view state mapping
 - No rendering snapshot tests for the git view panels
+
+---
+
+## Implementation Status (2026-09-02 swarm)
+
+F4 Git view improvements (task #14): diff display, branch info, worktree indicators.

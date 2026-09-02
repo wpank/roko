@@ -13,12 +13,14 @@ pub mod confirm;
 pub mod help;
 pub mod inject;
 pub mod notification;
+pub mod notification_history;
 pub mod plan_detail;
 pub mod queue_overview;
 pub mod quit;
 pub mod task_detail;
 pub mod task_picker;
 pub mod wave_overview;
+pub mod welcome;
 
 pub use agent_pool_modal::{AgentPoolRow, render_agent_pool};
 pub use approval::render_approval;
@@ -27,12 +29,14 @@ pub use confirm::{ConfirmAction, render_confirm};
 pub use help::render_help_modal;
 pub use inject::render_inject;
 pub use notification::{Notification, NotificationLevel, render_notifications};
+pub use notification_history::{HistoryEntry, render_notification_history};
 pub use plan_detail::render_plan_detail_modal;
 pub use queue_overview::{Milestone, QueueTask, render_queue_overview};
 pub use quit::render_quit;
 pub use task_detail::render_task_detail_modal;
 pub use task_picker::{TaskPickerRow, render_task_picker};
 pub use wave_overview::{WaveInfo, WavePlanEntry, render_wave_overview};
+pub use welcome::render_welcome;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -106,6 +110,17 @@ pub enum ModalState {
         batch_name: String,
         results: Vec<BatchTaskResult>,
         scroll_offset: u16,
+    },
+
+    /// Notification history browser.
+    NotificationHistory {
+        scroll_offset: u16,
+    },
+
+    /// First-run welcome / workspace initialization.
+    Welcome {
+        /// Whether the workspace has been initialized (shows confirmation).
+        initialized: bool,
     },
 }
 
@@ -229,6 +244,19 @@ pub fn render_modal(
         } => {
             render_batch_review(frame, area, batch_name, results, *scroll_offset, theme);
         }
+        ModalState::NotificationHistory { scroll_offset } => {
+            render_notification_history(
+                frame,
+                area,
+                &tui_state.notification_history,
+                *scroll_offset,
+                tui_state.notification_evicted_count,
+                theme,
+            );
+        }
+        ModalState::Welcome { initialized } => {
+            render_welcome(frame, area, *initialized, theme);
+        }
     }
 }
 
@@ -274,6 +302,8 @@ fn modal_area(modal: &ModalState, area: Rect) -> Rect {
         ModalState::TaskPicker { .. } => centered_rect(80, 60, area),
         ModalState::TaskDetail { .. } => centered_rect(78, 72, area),
         ModalState::BatchReview { .. } => centered_rect(75, 65, area),
+        ModalState::NotificationHistory { .. } => centered_rect(75, 70, area),
+        ModalState::Welcome { .. } => centered_rect_fixed(60, 16, area),
     }
 }
 

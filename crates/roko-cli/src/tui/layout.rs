@@ -66,6 +66,59 @@ pub fn split_vertical(area: Rect, top_pct: u16) -> (Rect, Rect) {
     (chunks[0], chunks[1])
 }
 
+/// Minimum terminal width the TUI is designed for.
+/// Below this, layout calculations may produce degenerate results.
+pub const MIN_VIABLE_WIDTH: u16 = 60;
+
+/// Minimum terminal height the TUI is designed for.
+pub const MIN_VIABLE_HEIGHT: u16 = 10;
+
+/// Returns `true` if the terminal is too small for useful rendering.
+#[must_use]
+pub fn is_terminal_too_small(area: Rect) -> bool {
+    area.width < MIN_VIABLE_WIDTH || area.height < MIN_VIABLE_HEIGHT
+}
+
+/// Responsive master-detail panel split.
+///
+/// Above `stack_threshold` columns, returns a horizontal split with the
+/// given sidebar percentage and a 1-cell gutter. At or below the threshold,
+/// returns a vertical stack with the sidebar taking `stacked_rows` rows.
+///
+/// Returns `(sidebar_area, detail_area)`.
+#[must_use]
+pub fn responsive_panel_split(
+    area: Rect,
+    sidebar_pct: u16,
+    stack_threshold: u16,
+    stacked_rows: u16,
+) -> (Rect, Rect) {
+    if area.width > stack_threshold {
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(sidebar_pct),
+                Constraint::Length(1),
+                Constraint::Min(0),
+            ])
+            .split(area);
+        (chunks[0], chunks[2])
+    } else {
+        let clamped = stacked_rows
+            .clamp(4, 9)
+            .min(area.height.saturating_sub(5).max(1));
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(clamped),
+                Constraint::Length(1),
+                Constraint::Min(0),
+            ])
+            .split(area);
+        (chunks[0], chunks[2])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,5 +164,36 @@ mod tests {
         let (top, bottom) = split_vertical(area, 40);
         assert!(top.height + bottom.height <= area.height);
         assert_eq!(top.x, bottom.x);
+    }
+
+    #[test]
+    fn is_terminal_too_small_detects_narrow() {
+        assert!(is_terminal_too_small(Rect::new(0, 0, 50, 24)));
+        assert!(!is_terminal_too_small(Rect::new(0, 0, 80, 24)));
+    }
+
+    #[test]
+    fn is_terminal_too_small_detects_short() {
+        assert!(is_terminal_too_small(Rect::new(0, 0, 80, 8)));
+        assert!(!is_terminal_too_small(Rect::new(0, 0, 80, 24)));
+    }
+
+    #[test]
+    fn responsive_panel_split_horizontal_above_threshold() {
+        let area = Rect::new(0, 0, 120, 40);
+        let (sidebar, detail) = responsive_panel_split(area, 30, 100, 6);
+        // Horizontal: sidebar on left, detail on right
+        assert!(sidebar.width > 0);
+        assert!(detail.width > 0);
+        assert_eq!(sidebar.y, detail.y);
+    }
+
+    #[test]
+    fn responsive_panel_split_stacks_below_threshold() {
+        let area = Rect::new(0, 0, 80, 30);
+        let (sidebar, detail) = responsive_panel_split(area, 30, 100, 6);
+        // Stacked: sidebar on top, detail below
+        assert_eq!(sidebar.x, detail.x);
+        assert!(sidebar.bottom() <= detail.y + 1);
     }
 }

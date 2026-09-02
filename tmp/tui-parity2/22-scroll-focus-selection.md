@@ -295,3 +295,11 @@ However, `plan_scroll_offset`, `task_scroll`, `command_output_scroll`, `diff_scr
 | G11 | `scroll_focused` detail-zone fallthrough: scrolling in e.g. LogDetail or InspectDetail writes to `diff_scroll`, which may conflict | Low | `app.rs:2420-2424` |
 | G12 | No multi-select capability anywhere (single-select only) | Informational | Architecture |
 | G13 | Duplicate scrollbar rendering code in plan_tree.rs and plans_view.rs | Low | `plan_tree.rs:746`, `plans_view.rs:1200` |
+
+---
+
+## Implementation Status (2026-09-02 swarm)
+
+Scroll and focus management (task #28): per-tab scroll isolation, focus zone cycling with
+Tab/Shift-Tab, breadcrumb display of current zone. Independent Diff/Procs scroll (task #4):
+dedicated scroll offsets per focus panel.

@@ -559,6 +559,14 @@ pub struct TaskEntry {
     pub name: String,
     pub status: TaskStatus,
     pub agent_id: Option<String>,
+    /// Task IDs this task depends on (carried from TaskDef).
+    pub depends_on: Vec<String>,
+    /// Free-form acceptance criteria text (joined from TaskDef).
+    pub acceptance_text: Option<String>,
+    /// First verify command, if any (from TaskDef).
+    pub verify_command: Option<String>,
+    /// ISO timestamp when task started (from runtime metadata).
+    pub started_at: Option<String>,
 }
 
 /// Cost/budget projection for one plan in the F2 view.
@@ -1110,6 +1118,8 @@ pub struct Wave {
     pub total: usize,
     /// Whether the wave tree node is expanded.
     pub expanded: bool,
+    /// Wave indices that must complete before this wave can start.
+    pub blocked_by_waves: Vec<usize>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1166,33 +1176,25 @@ pub struct SysMetrics {
     /// CPU usage percentage (0.0 .. 100.0).
     pub cpu_pct: f32,
     /// Recent CPU usage history for sparkline.
-    pub cpu_history: Vec<f32>,
+    pub cpu_history: VecDeque<f32>,
     /// Memory currently used in bytes.
     pub mem_used_bytes: u64,
     /// Total system memory in bytes.
     pub mem_total_bytes: u64,
     /// Recent memory usage history (fractional, 0.0..1.0) for sparkline.
-    pub mem_history: Vec<f32>,
-    /// Network bytes received (cumulative total from OS).
+    pub mem_history: VecDeque<f32>,
+    /// Network download bytes/sec (computed rate).
     pub net_down_bytes_sec: u64,
-    /// Network bytes sent (cumulative total from OS).
-    pub net_out_bytes_total: u64,
     /// Network upload bytes/sec (computed rate).
     pub net_up_bytes_sec: u64,
-    /// Disk bytes read (cumulative total from OS).
+    /// Disk read bytes/sec (computed rate).
     pub disk_read_bytes_sec: u64,
-    /// Disk bytes written (cumulative total from OS).
-    pub disk_write_bytes_total: u64,
+    /// Disk write bytes/sec (computed rate).
+    pub disk_write_bytes_sec: u64,
     /// Disk free space in bytes.
     pub disk_free_bytes: u64,
     /// Total disk space in bytes.
     pub disk_total_bytes: u64,
-    /// Previous network in total (for rate calculation).
-    pub prev_net_in: u64,
-    /// Previous network out total (for rate calculation).
-    pub prev_net_out: u64,
-    /// Previous disk read total (for rate calculation).
-    pub prev_disk_read: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -1240,6 +1242,42 @@ pub struct CommandResult {
     pub message: String,
 }
 
+/// Sort mode for the cost-by-model table.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CostSortMode {
+    /// Sort alphabetically by model name (default BTreeMap order).
+    #[default]
+    Name,
+    /// Sort descending by total cost.
+    Cost,
+    /// Sort descending by task count.
+    Tasks,
+    /// Sort descending by pass rate.
+    PassRate,
+}
+
+impl CostSortMode {
+    /// Cycle to the next sort mode.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Name => Self::Cost,
+            Self::Cost => Self::Tasks,
+            Self::Tasks => Self::PassRate,
+            Self::PassRate => Self::Name,
+        }
+    }
+
+    /// Short label for the header indicator.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Name => "name",
+            Self::Cost => "cost",
+            Self::Tasks => "tasks",
+            Self::PassRate => "pass%",
+        }
+    }
+}
+
 /// Complete TUI state, matching Mori's `RunState` field set.
 #[derive(Debug, Clone)]
 pub struct TuiState {
@@ -1271,6 +1309,9 @@ pub struct TuiState {
     // -- task checklist --
     /// Task rows for the task_progress widget.
     pub current_task_checklist: Vec<TaskRow>,
+    /// Smoothed task progress (0.0..1.0) for animated progress bars.
+    /// Updated each frame via EMA to avoid jarring jumps.
+    pub task_progress_smooth: super::smoothing::SmoothedValue,
 
     // -- gate results --
     /// Verify pipeline results for the command_output widget.
@@ -1366,6 +1407,20 @@ pub struct TuiState {
     pub diff_scroll: usize,
     /// Procs sub-tab scroll offset (independent from diff_scroll).
     pub procs_scroll: usize,
+    /// Per-tab detail-pane scroll offsets (independent from diff_scroll).
+    pub git_detail_scroll: usize,
+    /// Log detail pane scroll offset.
+    pub log_detail_scroll: usize,
+    /// Config values pane scroll offset.
+    pub config_values_scroll: usize,
+    /// Inspect detail pane scroll offset.
+    pub inspect_detail_scroll: usize,
+    /// Marketplace detail pane scroll offset.
+    pub marketplace_detail_scroll: usize,
+    /// Atelier detail pane scroll offset.
+    pub atelier_detail_scroll: usize,
+    /// Learning detail pane scroll offset.
+    pub learning_detail_scroll: usize,
     /// Task list scroll offset.
     pub task_scroll: usize,
     /// Command output panel scroll offset.
@@ -1424,6 +1479,8 @@ pub struct TuiState {
     pub is_paused: bool,
 
     // -- cost / tokens --
+    /// Sort mode for the cost-by-model table widget.
+    pub cost_sort_mode: CostSortMode,
     /// Cost per plan (plan_id -> USD).
     pub cost_per_plan: HashMap<String, f64>,
     /// Cost per task (task_id -> USD).
@@ -1550,6 +1607,15 @@ pub struct TuiState {
     pub tui_fps: f32,
     /// Whether the warning bar has been dismissed by the user (`n` key).
     pub warnings_dismissed: bool,
+    /// Per-warning dismiss set -- individual warning keys dismissed by the user.
+    /// New warnings that don't match a dismissed key will still appear.
+    pub dismissed_warning_keys: HashSet<String>,
+
+    // -- notification history --
+    /// Retained history of expired/dismissed notifications (bounded to 200).
+    pub notification_history: Vec<super::modals::HistoryEntry>,
+    /// Count of entries evicted from history due to the 200-entry cap.
+    pub notification_evicted_count: usize,
 
     // -- knowledge browse --
     /// Knowledge entries for the Inspect tab's KnowledgeBrowse sub-view.
@@ -1631,6 +1697,7 @@ impl Default for TuiState {
             collapsed_waves: HashSet::new(),
             critical_path_eta_minutes: None,
             current_task_checklist: Vec::new(),
+            task_progress_smooth: super::smoothing::SmoothedValue::new(0.15),
             gate_results: Vec::new(),
             diagnoses: Vec::new(),
             experiment_winners: Vec::new(),
@@ -1674,6 +1741,13 @@ impl Default for TuiState {
             agent_scroll: None,
             diff_scroll: 0,
             procs_scroll: 0,
+            git_detail_scroll: 0,
+            log_detail_scroll: 0,
+            config_values_scroll: 0,
+            inspect_detail_scroll: 0,
+            marketplace_detail_scroll: 0,
+            atelier_detail_scroll: 0,
+            learning_detail_scroll: 0,
             task_scroll: 0,
             command_output_scroll: 0,
             plan_detail_scroll: 0,
@@ -1703,6 +1777,7 @@ impl Default for TuiState {
 
             is_paused: false,
 
+            cost_sort_mode: CostSortMode::default(),
             cost_per_plan: HashMap::new(),
             cost_per_task: HashMap::new(),
             max_plan_budget_usd: 0.0,
@@ -1775,6 +1850,10 @@ impl Default for TuiState {
             mcp_connection_count: 0,
             tui_fps: 0.0,
             warnings_dismissed: false,
+            dismissed_warning_keys: HashSet::new(),
+
+            notification_history: Vec::new(),
+            notification_evicted_count: 0,
 
             knowledge_entries: Vec::new(),
 
@@ -2404,18 +2483,21 @@ impl TuiState {
 
     /// Collect active warnings for the persistent warning bar.
     ///
-    /// Returns an empty vec when the user has dismissed warnings (`n` key).
+    /// Returns an empty vec when the user has dismissed all warnings (`n` key).
+    /// Individual warnings dismissed via `dismissed_warning_keys` are filtered
+    /// out while new warnings continue to appear.
     #[must_use]
     pub fn active_warnings(&self) -> Vec<String> {
         if self.warnings_dismissed {
             return Vec::new();
         }
-        let mut warnings = Vec::new();
+        let mut candidates: Vec<(String, String)> = Vec::new(); // (key, message)
+
         // Disk low: warn when less than 1 GiB free and we have data.
         const LOW_DISK_THRESHOLD: u64 = 1 << 30; // 1 GiB
         if self.sys.disk_free_bytes > 0 && self.sys.disk_free_bytes < LOW_DISK_THRESHOLD {
             let free = crate::tui::widgets::header_bar::fmt_bytes_short(self.sys.disk_free_bytes);
-            warnings.push(format!("DSK LOW: {free} free"));
+            candidates.push(("dsk_low".into(), format!("DSK LOW: {free} free")));
         }
         // Provider unhealthy: any agent marked as failed.
         let unhealthy_count = self
@@ -2424,13 +2506,61 @@ impl TuiState {
             .filter(|a| matches!(a.status, AgentStatus::Failed))
             .count();
         if unhealthy_count > 0 {
-            warnings.push(format!("{unhealthy_count} provider(s) unhealthy"));
+            candidates.push((
+                "provider_unhealthy".into(),
+                format!("{unhealthy_count} provider(s) unhealthy"),
+            ));
         }
         // Stale snapshot: if no run is active but there are plans with active flag.
         if self.run_started.is_none() && self.plans.iter().any(|p| p.active) {
-            warnings.push("Stale snapshot: plans active but no run".to_string());
+            candidates.push((
+                "stale_snapshot".into(),
+                "Stale snapshot: plans active but no run".to_string(),
+            ));
         }
-        warnings
+        // Budget approaching: warn when > 80% consumed.
+        let budget = self.aggregate_plan_budget();
+        if budget > 0.0 && self.cost_dollars / budget > 0.8 {
+            let pct = (self.cost_dollars / budget * 100.0) as u32;
+            candidates.push((
+                "budget_high".into(),
+                format!(
+                    "BUDGET: ${:.2}/${budget:.2} ({pct}%)",
+                    self.cost_dollars
+                ),
+            ));
+        }
+
+        candidates
+            .into_iter()
+            .filter(|(key, _)| !self.dismissed_warning_keys.contains(key))
+            .map(|(_, msg)| msg)
+            .collect()
+    }
+
+    /// Return the warning keys for currently active warnings.
+    #[must_use]
+    pub fn active_warning_keys(&self) -> Vec<String> {
+        let mut keys = Vec::new();
+        const LOW_DISK_THRESHOLD: u64 = 1 << 30;
+        if self.sys.disk_free_bytes > 0 && self.sys.disk_free_bytes < LOW_DISK_THRESHOLD {
+            keys.push("dsk_low".into());
+        }
+        if self
+            .agents
+            .iter()
+            .any(|a| matches!(a.status, AgentStatus::Failed))
+        {
+            keys.push("provider_unhealthy".into());
+        }
+        if self.run_started.is_none() && self.plans.iter().any(|p| p.active) {
+            keys.push("stale_snapshot".into());
+        }
+        let budget = self.aggregate_plan_budget();
+        if budget > 0.0 && self.cost_dollars / budget > 0.8 {
+            keys.push("budget_high".into());
+        }
+        keys
     }
 
     /// Badge count for a tab. Returns `0` when the tab has nothing noteworthy,
@@ -2520,7 +2650,30 @@ impl TuiState {
     pub fn update_from_snapshot(&mut self, data: &DashboardData) {
         let executor_summary = data.executor_summary();
         if executor_summary.orchestrator_state.is_empty() {
-            if self.orchestrator_state.is_empty() {
+            // Try to derive orchestrator state from status.json when the
+            // executor summary is empty (standalone TUI without a live hub).
+            if !self.workdir.as_os_str().is_empty() {
+                let state_dir = self.workdir.join(".roko").join("state");
+                let runner_read =
+                    crate::runner::status_file::read_runner_status(&state_dir);
+                match &runner_read {
+                    crate::runner::status_file::RunnerStatusRead::Live(s) => {
+                        self.orchestrator_state = if s.current_phase.is_empty() {
+                            s.phase.clone()
+                        } else {
+                            s.current_phase.clone()
+                        };
+                    }
+                    crate::runner::status_file::RunnerStatusRead::Stale(_) => {
+                        self.orchestrator_state = String::from("stale/offline");
+                    }
+                    crate::runner::status_file::RunnerStatusRead::Missing => {
+                        if self.orchestrator_state.is_empty() {
+                            self.orchestrator_state = String::from("idle");
+                        }
+                    }
+                }
+            } else if self.orchestrator_state.is_empty() {
                 self.orchestrator_state = String::from("idle");
             }
         } else {
@@ -2547,6 +2700,7 @@ impl TuiState {
                     ),
                     status: TaskStatus::from(task.status.as_str()),
                     agent_id: task.assigned_agents.first().cloned(),
+                    ..Default::default()
                 });
         }
 
@@ -2562,6 +2716,7 @@ impl TuiState {
                     },
                     status: TaskStatus::from(task.phase.as_str()),
                     agent_id: None,
+                    ..Default::default()
                 }));
             }
         }
@@ -2632,6 +2787,10 @@ impl TuiState {
                                     name: task.title.clone(),
                                     status: TaskStatus::from(task.status.as_str()),
                                     agent_id: task.agent_id.clone(),
+                                    depends_on: task.dependencies.clone(),
+                                    acceptance_text: task.acceptance_text.clone(),
+                                    verify_command: task.verify_command.clone(),
+                                    started_at: task.started_at.clone(),
                                 })
                                 .collect()
                         })
@@ -2991,6 +3150,7 @@ impl TuiState {
                         },
                         status,
                         agent_id: None,
+                        ..Default::default()
                     });
                 TaskRow {
                     id: task.task_id.clone(),
@@ -3247,6 +3407,7 @@ impl TuiState {
         self.gate_trends = snap.gate_trends.clone();
         self.gate_recent_failures = snap.gate_recent_failures.clone();
         self.affect = snap.affect.clone();
+        self.critical_path_eta_minutes = snap.critical_path_eta_minutes;
         if !snap.agent_topology.is_empty() {
             self.agent_topology = snap.agent_topology.clone();
             self.agent_topology_status = AgentTopologyStatus::Ready;
@@ -3621,6 +3782,13 @@ impl TuiState {
         self.agent_scroll = None;
         self.diff_scroll = 0;
         self.procs_scroll = 0;
+        self.git_detail_scroll = 0;
+        self.log_detail_scroll = 0;
+        self.config_values_scroll = 0;
+        self.inspect_detail_scroll = 0;
+        self.marketplace_detail_scroll = 0;
+        self.atelier_detail_scroll = 0;
+        self.learning_detail_scroll = 0;
         self.task_scroll = 0;
         self.command_output_scroll = 0;
         self.plan_detail_scroll = 0;
@@ -4170,6 +4338,7 @@ fn build_execution_waves(plans: &[PlanEntry]) -> Vec<Wave> {
             done,
             total: plans.len(),
             expanded: true,
+            blocked_by_waves: Vec::new(),
         }];
     }
 
@@ -4180,6 +4349,9 @@ fn build_execution_waves(plans: &[PlanEntry]) -> Vec<Wave> {
         wave_map.entry(wave_index).or_default().push(plan);
     }
 
+    // Collect all wave indices for blocker computation.
+    let wave_indices: Vec<usize> = wave_map.keys().copied().collect();
+
     wave_map
         .into_iter()
         .map(|(idx, wave_plans)| {
@@ -4187,12 +4359,19 @@ fn build_execution_waves(plans: &[PlanEntry]) -> Vec<Wave> {
                 .iter()
                 .filter(|plan| plan_is_complete(plan))
                 .count();
+            // A wave is blocked by all waves with a lower index.
+            let blocked_by: Vec<usize> = wave_indices
+                .iter()
+                .copied()
+                .filter(|&w| w < idx)
+                .collect();
             Wave {
                 index: idx,
                 plans: wave_plans.iter().map(|plan| plan.id.clone()).collect(),
                 done,
                 total: wave_plans.len(),
                 expanded: true,
+                blocked_by_waves: blocked_by,
             }
         })
         .collect()

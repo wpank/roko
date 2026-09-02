@@ -59,18 +59,157 @@ pub(crate) fn render(
     // Only show the left panel when plans are actively running.
     let has_active_plans = tui_state.plans.iter().any(|p| p.active);
     if has_active_plans {
-        let main = Layout::horizontal([
-            Constraint::Percentage(38),
-            Constraint::Length(1),
-            Constraint::Min(0),
-        ])
-        .split(area);
-        render_left_panel(frame, main[0], data, tui_state, view_state, theme);
-        // main[1] is an intentional VOID gutter. It gives adjacent borders
-        // room to breathe and mirrors Mori's master-detail hierarchy.
-        render_right_panel(frame, main[2], data, tui_state, view_state, theme);
+        let (sidebar, detail) =
+            crate::tui::layout::responsive_panel_split(area, 38, 100, area.height / 3);
+        render_left_panel(frame, sidebar, data, tui_state, view_state, theme);
+        render_right_panel(frame, detail, data, tui_state, view_state, theme);
     } else {
-        render_right_panel(frame, area, data, tui_state, view_state, theme);
+        render_idle_dashboard(frame, area, data, tui_state, view_state, theme);
+    }
+}
+
+// ===========================================================================
+// Idle dashboard: shown when no plans are actively running
+// ===========================================================================
+
+fn render_idle_dashboard(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    data: &DashboardData,
+    tui_state: &TuiState,
+    view_state: &ViewState,
+    theme: &Theme,
+) {
+    // Idle layout: summary card (top) + full-width sub-tab area (bottom).
+    let summary_h = 8u16.min(area.height.saturating_sub(4));
+    let sections = Layout::vertical([
+        Constraint::Length(summary_h),
+        Constraint::Min(0),
+    ])
+    .split(area);
+
+    render_idle_summary_card(frame, sections[0], tui_state, theme);
+    render_right_panel(frame, sections[1], data, tui_state, view_state, theme);
+}
+
+fn render_idle_summary_card(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    tui_state: &TuiState,
+    theme: &Theme,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(" roko ", Theme::focused_title_style()))
+        .border_style(theme.muted());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.width < 12 || inner.height < 3 {
+        return;
+    }
+
+    let mut lines: Vec<Line<'_>> = Vec::new();
+
+    // Show last run summary if any plans exist.
+    let completed_plans = tui_state
+        .plans
+        .iter()
+        .filter(|p| !p.active && p.tasks_done > 0)
+        .count();
+    let total_done: usize = tui_state.plans.iter().map(|p| p.tasks_done).sum();
+    let total_tasks: usize = tui_state.plans.iter().map(|p| p.tasks_total).sum();
+    let total_failed: usize = tui_state.plans.iter().map(|p| p.tasks_failed).sum();
+
+    if completed_plans > 0 || total_done > 0 {
+        lines.push(Line::from(vec![
+            Span::styled(" Idle", Style::default().fg(Theme::TEXT_DIM)),
+            Span::styled(
+                format!("  {completed_plans} plan(s) completed"),
+                theme.text(),
+            ),
+        ]));
+
+        let mut status_spans = vec![
+            Span::styled(" tasks: ", theme.muted()),
+            Span::styled(
+                format!("{total_done}/{total_tasks}"),
+                theme.info(),
+            ),
+        ];
+        if total_failed > 0 {
+            status_spans.push(Span::styled(
+                format!("  {total_failed} failed"),
+                theme.danger(),
+            ));
+        }
+        lines.push(Line::from(status_spans));
+
+        // Cost summary.
+        let cost = tui_state.cost_dollars;
+        let budget = tui_state.max_plan_budget_usd;
+        let cost_style = cost_color(cost, budget, theme);
+        let mut cost_spans = vec![
+            Span::styled(" cost:  ", theme.muted()),
+            Span::styled(format!("${cost:.2}"), cost_style),
+        ];
+        if budget > 0.0 {
+            cost_spans.push(Span::styled(
+                format!(" / ${budget:.2}"),
+                theme.muted(),
+            ));
+        }
+        lines.push(Line::from(cost_spans));
+
+        // Gate pass rate.
+        if let Some(rate) = tui_state.gate_pass_rate {
+            let pct = rate * 100.0;
+            let gate_style = if rate >= 0.8 {
+                theme.success()
+            } else if rate >= 0.5 {
+                theme.warning()
+            } else {
+                theme.danger()
+            };
+            lines.push(Line::from(vec![
+                Span::styled(" gates: ", theme.muted()),
+                Span::styled(format!("{pct:.0}% pass"), gate_style),
+            ]));
+        }
+    } else {
+        lines.push(Line::from(Span::styled(
+            " No active plans",
+            Style::default().fg(Theme::TEXT_DIM),
+        )));
+        lines.push(Line::from(Span::styled(
+            " roko plan run plans/ --engine runner-v2",
+            theme.muted(),
+        )));
+    }
+
+    frame.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: false }),
+        inner,
+    );
+}
+
+// ===========================================================================
+// Left panel: progress card + phase compact + plan tree + task progress
+// ===========================================================================
+
+/// Compute the cost color style based on budget utilization.
+fn cost_color(cost: f64, budget: f64, theme: &Theme) -> Style {
+    if budget <= 0.0 || cost <= 0.0 {
+        theme.info()
+    } else {
+        let ratio = cost / budget;
+        if ratio >= 0.8 {
+            theme.danger()
+        } else if ratio >= 0.5 {
+            theme.warning()
+        } else {
+            theme.success()
+        }
     }
 }
 
@@ -84,14 +223,15 @@ fn render_left_panel(
     _data: &DashboardData,
     tui_state: &TuiState,
     _view_state: &ViewState,
-    _theme: &Theme,
+    theme: &Theme,
 ) {
-    // Content-aware sizing: phase gets a fixed 4 lines, plan tree and task
-    // progress split the rest proportionally based on content.
+    // Content-aware sizing: progress card gets 5 lines, phase gets 4 lines,
+    // plan tree and task progress split the rest proportionally.
+    let progress_h = 5u16.min(area.height);
     let plan_count = tui_state.plans.len();
     let task_count = tui_state.current_task_checklist.len();
-    let phase_h = 4u16.min(area.height);
-    let available = area.height.saturating_sub(phase_h);
+    let phase_h = 4u16.min(area.height.saturating_sub(progress_h));
+    let available = area.height.saturating_sub(phase_h + progress_h);
     let plan_content = (plan_count as u16).saturating_add(4);
     let task_content = if task_count > 0 {
         (task_count as u16).saturating_add(4)
@@ -111,18 +251,175 @@ fn render_left_panel(
     let task_h = available.saturating_sub(plan_h);
 
     let sections = Layout::vertical([
-        Constraint::Length(plan_h),
+        Constraint::Length(progress_h),
         Constraint::Length(phase_h),
+        Constraint::Length(plan_h),
         Constraint::Length(task_h),
     ])
     .split(area);
 
+    render_progress_card(frame, sections[0], tui_state, theme);
+    widgets::phase_compact::render_phase_compact(frame, sections[1], tui_state, false);
+
     let plan_focused = matches!(tui_state.focus, FocusZone::PlanTree);
     let task_focused = matches!(tui_state.focus, FocusZone::TaskProgress);
 
-    widgets::plan_tree::render_plan_tree(frame, sections[0], tui_state, plan_focused);
-    widgets::phase_compact::render_phase_compact(frame, sections[1], tui_state, false);
-    widgets::task_progress::render_task_progress(frame, sections[2], tui_state, task_focused);
+    widgets::plan_tree::render_plan_tree(frame, sections[2], tui_state, plan_focused);
+    widgets::task_progress::render_task_progress(frame, sections[3], tui_state, task_focused);
+}
+
+/// Compact progress card showing cost, ETA, gate status, and current task.
+///
+/// ```text
+/// +-- Progress -----------------------+
+/// | [========>    ] 7/12  ETA ~4m     |
+/// | $2.31/$5.00  GATE: PASS (83%)    |
+/// | > t-017: Wire gate pipeline       |
+/// +-----------------------------------+
+/// ```
+fn render_progress_card(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    tui_state: &TuiState,
+    theme: &Theme,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(" Progress ", Theme::unfocused_title_style()))
+        .border_style(Theme::unfocused_border_style());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.width < 16 || inner.height < 2 {
+        return;
+    }
+
+    let mut lines: Vec<Line<'_>> = Vec::new();
+
+    // Line 1: progress bar + task count + ETA.
+    let total_tasks: usize = tui_state.plans.iter().map(|p| p.tasks_total).sum();
+    let done_tasks: usize = tui_state.plans.iter().map(|p| p.tasks_done).sum();
+    let pct = if total_tasks > 0 {
+        done_tasks as f64 / total_tasks as f64
+    } else {
+        0.0
+    };
+    let bar_width = (inner.width as usize).saturating_sub(20).max(6);
+    let filled = (pct * bar_width as f64).round() as usize;
+    let bar = format!(
+        "[{}{}] {}/{}",
+        "=".repeat(filled.min(bar_width)),
+        " ".repeat(bar_width.saturating_sub(filled)),
+        done_tasks,
+        total_tasks,
+    );
+
+    let mut progress_spans = vec![Span::styled(format!(" {bar}"), theme.info())];
+
+    // ETA.
+    if let Some(eta_min) = tui_state.critical_path_eta_minutes {
+        progress_spans.push(Span::styled(format!("  ~{eta_min}m"), theme.muted()));
+    } else if total_tasks > 0 && done_tasks > 0 && done_tasks < total_tasks {
+        // Proportional ETA from elapsed time.
+        let elapsed = tui_state
+            .run_started
+            .map(|s| s.elapsed().as_secs_f64())
+            .or(tui_state.run_duration_secs)
+            .unwrap_or(0.0);
+        if elapsed > 0.0 {
+            let remaining_tasks = total_tasks.saturating_sub(done_tasks);
+            let per_task = elapsed / done_tasks as f64;
+            let eta_min = (per_task * remaining_tasks as f64 / 60.0).ceil() as u64;
+            progress_spans.push(Span::styled(format!("  ~{eta_min}m"), theme.muted()));
+        }
+    }
+    lines.push(Line::from(progress_spans));
+
+    // Line 2: cost + gate badge.
+    if inner.height >= 3 {
+        let cost = tui_state.cost_dollars;
+        let budget = tui_state.max_plan_budget_usd;
+        let cost_style = cost_color(cost, budget, theme);
+
+        let mut status_spans = vec![
+            Span::styled(" ", Style::default()),
+            Span::styled(format!("${cost:.2}"), cost_style),
+        ];
+        if budget > 0.0 {
+            status_spans.push(Span::styled(format!("/${budget:.2}"), theme.muted()));
+        }
+
+        // Gate badge.
+        if let Some(rate) = tui_state.gate_pass_rate {
+            let pct = rate * 100.0;
+            let (label, style) = if rate >= 0.8 {
+                ("PASS", theme.success())
+            } else if rate >= 0.5 {
+                ("WARN", theme.warning())
+            } else {
+                ("FAIL", theme.danger())
+            };
+            status_spans.push(Span::styled("  GATE:", theme.muted()));
+            status_spans.push(Span::styled(
+                format!("{label} ({pct:.0}%)"),
+                style.add_modifier(Modifier::BOLD),
+            ));
+        }
+        lines.push(Line::from(status_spans));
+    }
+
+    // Line 3: current task name.
+    if inner.height >= 4 {
+        if let Some(task) = current_task_label(tui_state, inner.width as usize) {
+            lines.push(Line::from(vec![
+                Span::styled(" > ", theme.accent()),
+                Span::styled(task, theme.text()),
+            ]));
+        }
+    }
+
+    frame.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: false }),
+        inner,
+    );
+}
+
+/// Find the current task label from the task checklist or execution snapshot.
+fn current_task_label(tui_state: &TuiState, max_width: usize) -> Option<String> {
+    // Try the execution snapshot first.
+    if let Some(exec) = &tui_state.current_plan_execution {
+        if let Some(detail) = &exec.current_task {
+            if !detail.task_id.is_empty() {
+                // Look up the title from the execution task list.
+                let title = exec
+                    .tasks
+                    .iter()
+                    .find(|r| r.task_id == detail.task_id)
+                    .map(|r| r.title.as_str())
+                    .unwrap_or("");
+                let label = if title.is_empty() {
+                    detail.task_id.clone()
+                } else {
+                    format!("{}: {}", detail.task_id, title)
+                };
+                return Some(truncate(&label, max_width.saturating_sub(4)));
+            }
+        }
+    }
+
+    // Fallback: find a running task in the checklist.
+    tui_state
+        .current_task_checklist
+        .iter()
+        .find(|t| t.status == crate::tui::state::TaskStatus::InProgress)
+        .map(|t| {
+            let label = if t.title.is_empty() {
+                t.id.clone()
+            } else {
+                format!("{}: {}", t.id, t.title)
+            };
+            truncate(&label, max_width.saturating_sub(4))
+        })
 }
 
 // ===========================================================================
@@ -199,6 +496,8 @@ fn render_sub_tab_bar(
     theme: &Theme,
 ) {
     let bg = Theme::BG_RAISED;
+    // Compact: show only key letters below 70 columns, full labels above.
+    let compact_sub = area.width < 70;
     let mut spans: Vec<Span<'_>> = vec![Span::styled(" ", Style::default().bg(bg))];
     for (i, (key, label)) in SUB_TAB_LABELS.iter().enumerate() {
         let style = if i == active {
@@ -209,7 +508,12 @@ fn render_sub_tab_bar(
         } else {
             Style::default().fg(Theme::TEXT_DIM).bg(bg)
         };
-        spans.push(Span::styled(format!(" {key}:{label} "), style));
+        let tab_text = if compact_sub {
+            format!(" {key} ")
+        } else {
+            format!(" {key}:{label} ")
+        };
+        spans.push(Span::styled(tab_text, style));
 
         let badge = match i {
             0 => {
@@ -248,14 +552,16 @@ fn render_sub_tab_bar(
         spans.push(Span::styled(" ", Style::default().bg(bg)));
     }
 
-    let hint = " Tab:panel  ?:help ";
+    let hint = if compact_sub { "" } else { " Tab:panel  ?:help " };
     let used: usize = spans.iter().map(|span| span.content.chars().count()).sum();
     let gap = (area.width as usize).saturating_sub(used + hint.len());
     spans.push(Span::styled(" ".repeat(gap), Style::default().bg(bg)));
-    spans.push(Span::styled(
-        hint,
-        Style::default().fg(Theme::TEXT_GHOST).bg(bg),
-    ));
+    if !hint.is_empty() {
+        spans.push(Span::styled(
+            hint,
+            Style::default().fg(Theme::TEXT_GHOST).bg(bg),
+        ));
+    }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
@@ -280,11 +586,13 @@ fn render_sub_agents(
     let route_height = if route_row_count == 0 {
         0
     } else {
-        (route_row_count as u16 + 3).min(8)
+        (route_row_count as u16 + 3).min(6)
     };
     let active_agent_count = tui_state.agents.iter().filter(|agent| agent.active).count();
-    let pool_height = (active_agent_count.max(1) as u16 + 3).clamp(4, 7);
-    let bottom_height = 7u16.min(area.height.saturating_sub(6));
+    // Tighter pool cap gives the output hero more vertical space.
+    let pool_height = (active_agent_count.max(1) as u16 + 3).clamp(4, 6);
+    // Compact bottom strip (was 7).
+    let bottom_height = 5u16.min(area.height.saturating_sub(6));
     let sections = Layout::vertical([
         Constraint::Length(pool_height),
         Constraint::Length(route_height),
@@ -450,7 +758,7 @@ fn render_output_panel(
 
     if lines.is_empty() {
         frame.render_widget(
-            Paragraph::new("no agent output yet").style(theme.muted()),
+            Paragraph::new("Waiting for agent output...").style(theme.muted()),
             inner,
         );
         return;
@@ -526,7 +834,8 @@ fn render_agent_routes_table(
 
     if rows.is_empty() {
         frame.render_widget(
-            Paragraph::new("no agent route metrics").style(theme.muted()),
+            Paragraph::new("No route metrics yet \u{2014} metrics appear after agent dispatch")
+                .style(theme.muted()),
             inner,
         );
         return;
@@ -917,7 +1226,7 @@ fn render_sub_mcp(
     if model_usage.is_empty() {
         lines.push(Line::from(vec![
             Span::styled("models: ", theme.muted()),
-            Span::styled("no efficiency events", theme.muted()),
+            Span::styled("awaiting first agent turn", theme.muted()),
         ]));
     } else {
         lines.push(Line::from(vec![
@@ -951,7 +1260,7 @@ fn render_sub_mcp(
     if tui_state.cascade_router.model_slugs.is_empty() && total_trials == 0 {
         lines.push(Line::from(vec![
             Span::styled("status: ", theme.muted()),
-            Span::styled("no router stats yet", theme.muted()),
+            Span::styled("awaiting router data", theme.muted()),
         ]));
     } else {
         let success_rate = if total_trials > 0 {
@@ -1028,7 +1337,8 @@ fn render_sub_processes(
 
     if process_rows.is_empty() {
         frame.render_widget(
-            Paragraph::new("No process data").style(theme.muted()),
+            Paragraph::new("No processes running \u{2014} agents spawn during plan execution")
+                .style(theme.muted()),
             inner,
         );
         return;
@@ -1488,7 +1798,7 @@ fn render_rate_bar(rate: f64, width: usize) -> String {
     let filled = (rate.clamp(0.0, 1.0) * width as f64).round() as usize;
     let filled = filled.min(width);
     let empty = width.saturating_sub(filled);
-    format!("[{}{}]", "█".repeat(filled), "░".repeat(empty))
+    format!("[{}{}]", "█".repeat(filled), "─".repeat(empty))
 }
 
 fn format_ci_range(lower: f64, upper: f64) -> String {

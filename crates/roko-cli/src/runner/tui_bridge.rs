@@ -525,6 +525,15 @@ impl TuiBridge {
         });
     }
 
+    /// Critical-path ETA updated after a task state change.
+    pub fn critical_path_eta(&self, plan_id: &str, eta_minutes: Option<u32>) {
+        self.sender
+            .publish(DashboardEvent::CriticalPathEtaUpdated {
+                plan_id: plan_id.to_string(),
+                eta_minutes,
+            });
+    }
+
     /// A gate rung started execution (item 108).
     ///
     /// Published before each rung in the gate pipeline so the TUI can show

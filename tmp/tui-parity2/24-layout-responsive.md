@@ -308,3 +308,10 @@ fn responsive_outer_margin(area: Rect) -> Rect {
 - `/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/tui/views/learning_view.rs` (F10, fixed+flex vertical)
 - `/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/tui/views/affect_view.rs` (affect gauges, fixed vertical)
 - `/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/tui/modals/mod.rs` (modal sizing, centered_rect, centered_rect_fixed)
+
+---
+
+## Implementation Status (2026-09-02 swarm)
+
+Responsive layout fixes (task #25): terminal size handling, column collapse breakpoints,
+minimum size behavior.

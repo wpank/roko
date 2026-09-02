@@ -40,6 +40,16 @@ impl SmoothedValue {
     pub fn get(&self) -> f64 {
         self.value
     }
+
+    /// Update for progress values: snaps to 0.0 and 1.0 instead of
+    /// smoothing through them (completion and reset should feel decisive).
+    pub fn update_progress(&mut self, raw: f64) {
+        if raw >= 1.0 || raw <= 0.0 {
+            self.value = raw;
+        } else {
+            self.update(raw);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -79,5 +89,22 @@ mod tests {
             s.update(100.0);
         }
         assert!((s.get() - 100.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn update_progress_snaps_at_boundaries() {
+        let mut s = SmoothedValue::with_initial(0.15, 0.5);
+
+        // Completion: snap immediately to 1.0.
+        s.update_progress(1.0);
+        assert!((s.get() - 1.0).abs() < f64::EPSILON);
+
+        // Reset: snap immediately to 0.0.
+        s.update_progress(0.0);
+        assert!((s.get() - 0.0).abs() < f64::EPSILON);
+
+        // Mid-range: smooth (does not snap).
+        s.update_progress(0.6);
+        assert!(s.get() > 0.0 && s.get() < 0.6);
     }
 }

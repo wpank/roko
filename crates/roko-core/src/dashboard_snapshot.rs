@@ -392,6 +392,12 @@ pub enum DashboardEvent {
     /// Published after `AgentSpawned` or `AgentCompleted` events so the TUI
     /// can display the current agent relationship graph.
     AgentTopologyUpdated { topology: crate::AgentTopology },
+    /// Critical-path ETA updated after a task state change.
+    CriticalPathEtaUpdated {
+        plan_id: String,
+        /// Remaining minutes on the critical path. `None` clears the value.
+        eta_minutes: Option<u32>,
+    },
     /// An error occurred.
     Error { message: String },
 }
@@ -1124,6 +1130,9 @@ pub struct DashboardSnapshot {
     /// Rolling ring of recent token counts from efficiency events (bounded to 120).
     #[serde(default)]
     pub token_event_ring: VecDeque<u64>,
+    /// Remaining ETA minutes from the critical-path computation.
+    #[serde(default)]
+    pub critical_path_eta_minutes: Option<u32>,
     /// Overall counts.
     pub stats: SnapshotStats,
 }
@@ -1788,6 +1797,9 @@ impl DashboardSnapshot {
             }
             DashboardEvent::AgentTopologyUpdated { topology } => {
                 self.agent_topology = topology.clone();
+            }
+            DashboardEvent::CriticalPathEtaUpdated { eta_minutes, .. } => {
+                self.critical_path_eta_minutes = *eta_minutes;
             }
         }
     }

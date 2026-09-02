@@ -386,3 +386,11 @@ Add input mode to the status bar: when in Filter/Inject/Search mode, show a smal
 2. **D-01**: The F1 letter sub-tabs (a/o/d/e/g/m/L/P) create compressed clones of other tabs. With 10 top-level tabs, this duplication is no longer justified by "everything in one place" -- it just fragments the user's mental model.
 
 3. **BC-03**: F10 Learning is invisible in the F-key strip. Users who don't know it exists cannot discover it. Simple fix in `header_bar.rs` line 480.
+
+---
+
+## Implementation Status (2026-09-02 swarm)
+
+Navigation architecture improvements (task #29): breadcrumb bar added below header,
+sub-tab bar extended to all 10 tabs, focus zone labels added, input mode badges
+(FILTER/SEARCH/INJECT/EDIT) in breadcrumb and status bar, consistent Tab:panel hints.

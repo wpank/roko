@@ -317,3 +317,11 @@ gaps vs mori are: role tabs don't filter output (decorative only), no animated s
 no scrollbar widget, no search in agent output, no per-agent provider/route detail header,
 and the `parallel_pool.rs` widget is built but not wired. The proposed sparklines, typing
 indicator, and model badges would add meaningful at-a-glance density without clutter.
+
+---
+
+## Implementation Status (2026-09-02 swarm)
+
+F3 Agents view improvements (task #13): agent roster density, output rendering, role tab
+switching. Agent output streaming improvements (task #26): semantic parsing, auto-scroll.
+Active agent animated braille spinners added (task #22, effects).

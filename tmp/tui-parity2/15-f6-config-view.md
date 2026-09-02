@@ -369,3 +369,9 @@ TOML editing.
 | 8 | Search/filter | MISSING | No capability; linear scrolling only |
 | 9 | Default vs custom distinct | GOOD | Three-level source tags with distinct styles; no show-default or reset |
 | 10 | Proposals | -- | 8 proposals: diff view, validation, inline health, search, collapse, reset, env feedback, coverage |
+
+---
+
+## Implementation Status (2026-09-02 swarm)
+
+F6 Config view improvements (task #15): config editor layout, provider health, MCP panel.

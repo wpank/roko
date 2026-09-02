@@ -25,6 +25,7 @@ const HEARTBEAT_FRAMES: [&str; 2] = ["\u{25cf}", "\u{25cb}"];
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HealthStatus {
     Healthy,
+    Degraded,
     Gating,
     Error,
     Idle,
@@ -43,6 +44,17 @@ impl HealthStatus {
         }
         let has_active = state.plans.iter().any(|p| p.active);
         if has_active {
+            // Degraded: providers unhealthy, CPU stressed, or disk low.
+            let provider_unhealthy = state
+                .agents
+                .iter()
+                .any(|a| matches!(a.status, super::super::state::AgentStatus::Failed));
+            let high_cpu = state.sys.cpu_pct > 90.0;
+            let low_disk =
+                state.sys.disk_free_bytes > 0 && state.sys.disk_free_bytes < (1 << 30);
+            if provider_unhealthy || high_cpu || low_disk {
+                return Self::Degraded;
+            }
             Self::Healthy
         } else {
             Self::Idle
@@ -52,7 +64,8 @@ impl HealthStatus {
     fn color(self) -> Color {
         match self {
             Self::Healthy => Theme::SAGE,
-            Self::Gating => Theme::WARNING,
+            Self::Degraded => Theme::WARNING,
+            Self::Gating => Theme::DREAM,
             Self::Error => Theme::EMBER,
             Self::Idle => Theme::TEXT_GHOST,
         }
@@ -96,6 +109,61 @@ fn hdr_fmt_bytes(b: u64) -> String {
     fmt_bytes_short(b)
 }
 
+/// Compact provider health dots for the header bar.
+///
+/// Returns a vec of (short_name, color) pairs: green = healthy (>= 90% success),
+/// yellow = degraded (50-90%), red = down (< 50% or zero calls).
+fn provider_health_dots(state: &TuiState) -> Vec<(&'static str, Color)> {
+    use std::collections::BTreeMap;
+    if state.efficiency_events.is_empty() {
+        return Vec::new();
+    }
+    let mut providers: BTreeMap<&'static str, (u64, u64)> = BTreeMap::new();
+    for event in &state.efficiency_events {
+        let name = infer_provider_short(&event.model);
+        let entry = providers.entry(name).or_insert((0, 0));
+        entry.0 += 1; // total
+        if event.output_tokens > 0 {
+            entry.1 += 1; // successes
+        }
+    }
+    providers
+        .into_iter()
+        .map(|(name, (total, successes))| {
+            let rate = if total > 0 {
+                successes as f64 / total as f64
+            } else {
+                0.0
+            };
+            let color = if rate >= 0.9 {
+                Theme::SAGE
+            } else if rate >= 0.5 {
+                Theme::WARNING
+            } else {
+                Theme::EMBER
+            };
+            (name, color)
+        })
+        .collect()
+}
+
+fn infer_provider_short(model: &str) -> &'static str {
+    let lower = model.to_ascii_lowercase();
+    if lower.contains("claude") || lower.contains("anthropic") {
+        "A"
+    } else if lower.contains("gpt") || lower.contains("openai") || lower.contains("o1") {
+        "O"
+    } else if lower.contains("gemini") || lower.contains("google") {
+        "G"
+    } else if lower.contains("cerebras") {
+        "C"
+    } else if lower.contains("perplexity") || lower.contains("pplx") {
+        "P"
+    } else {
+        "?"
+    }
+}
+
 /// Format a byte count as a short human-readable string (e.g. "12G", "384M").
 ///
 /// Public so that other modules (e.g. warning bar in `state.rs`) can reuse it.
@@ -137,10 +205,13 @@ fn queue_label(state: &TuiState) -> Option<String> {
 }
 
 fn truncate_label(s: &str, max: usize) -> String {
-    if s.len() <= max {
+    if s.chars().count() <= max {
         s.to_string()
+    } else if max <= 1 {
+        "\u{2026}".to_string()
     } else {
-        format!("{}..", &s[..max.saturating_sub(2)])
+        let truncated: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{truncated}\u{2026}")
     }
 }
 
@@ -168,7 +239,10 @@ fn tab_badge_color(tab: super::super::tabs::Tab) -> Color {
 /// Render the header bar with all 8 sections.
 pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
     let bg = Style::default().bg(Theme::BG_SECONDARY);
-    let compact = area.width < 120;
+    let w = area.width;
+    // Responsive tiers: ultra-compact (<80), compact (80-119), normal (120-149), wide (150+)
+    let compact = w < 120;
+    let ultra_compact = w < 80;
 
     let (done, total) = state.task_counts();
     let elapsed_secs = state.elapsed_secs() as u64;
@@ -211,8 +285,8 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         ));
     }
 
-    // ── 2. Wave indicator ─────────────────────────────────────────────
-    if !state.execution_waves.is_empty() {
+    // ── 2. Wave indicator (hidden at ultra-compact) ─────────────────
+    if !ultra_compact && !state.execution_waves.is_empty() {
         let total_waves = state.wave_count();
         let wave_idx = state.current_wave() + 1;
         spans.push(Span::styled(
@@ -224,7 +298,7 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
     spans.push(sep());
 
     // ── 3. Progress bar with fire gradient ────────────────────────────
-    let bar_width = 15usize;
+    let bar_width = if ultra_compact { 8 } else { 15usize };
     if total > 0 {
         let fraction = done as f64 / total.max(1) as f64;
         let filled = (fraction * bar_width as f64) as usize;
@@ -248,7 +322,7 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         }
     }
 
-    // ── 4. Plan count with semantic coloring ──────────────────────────
+    // ── 4. Task count with semantic coloring ─────────────────────────
     let fill_pct = if total > 0 {
         done as f64 / total as f64
     } else {
@@ -257,12 +331,15 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
     let all_done = state.plans.iter().all(|p| !p.active);
     let has_failures = state.plans.iter().any(|p| p.tasks_failed > 0);
 
+    // Show "done/total tasks" fraction next to progress bar
     let progress_text = if all_done && total > 0 && !has_failures {
         " COMPLETE".to_string()
     } else if has_failures {
         format!(" ERR:{done}/{total}")
+    } else if ultra_compact {
+        format!(" {done}/{total}")
     } else {
-        format!("  {done}/{total}")
+        format!("  {done}/{total} tasks")
     };
     let progress_style = if has_failures {
         Style::default()
@@ -280,8 +357,8 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         progress_style.bg(Theme::BG_SECONDARY),
     ));
 
-    // Percentage (hidden when compact)
-    if !compact && total > 0 && !(all_done && !has_failures) {
+    // Percentage (hidden when ultra-compact, shown when >=80 cols)
+    if !ultra_compact && total > 0 && !(all_done && !has_failures) {
         let pct = (fill_pct * 100.0) as u32;
         spans.push(Span::styled(
             format!("  {pct}%"),
@@ -304,14 +381,15 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
 
     // ── 5. ETA / elapsed / cost / tokens ──────────────────────────────
     // ETA estimate: prefer critical-path ETA, fall back to proportional.
+    // Label quality: "ETA" = critical-path (best), "~ETA" = proportional (rough).
     if total > 0 && done < total {
         let eta_display = if let Some(cp_minutes) = state.critical_path_eta_minutes {
             let cp_secs = cp_minutes as u64 * 60;
-            Some((format_elapsed(cp_secs.max(1)), "CP-ETA"))
+            Some((format_elapsed(cp_secs.max(1)), "ETA"))
         } else if done > 0 {
             let rate = elapsed_secs as f64 / done as f64;
             let remaining = ((total - done) as f64 * rate) as u64;
-            Some((format_elapsed(remaining.max(1)), "ETA"))
+            Some((format_elapsed(remaining.max(1)), "~ETA"))
         } else {
             None
         };
@@ -324,10 +402,12 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
     }
 
     // Elapsed
-    spans.push(Span::styled(
-        format!("  {elapsed_str}"),
-        Style::default().fg(Theme::FG_DIM).bg(Theme::BG_SECONDARY),
-    ));
+    if !ultra_compact || total == 0 {
+        spans.push(Span::styled(
+            format!("  {elapsed_str}"),
+            Style::default().fg(Theme::FG_DIM).bg(Theme::BG_SECONDARY),
+        ));
+    }
 
     // Cost
     let aggregate_budget = state.aggregate_plan_budget();
@@ -351,12 +431,14 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         ));
     }
 
-    // Tokens
-    if state.token_total > 0 {
+    // Tokens (hidden at ultra-compact to save space)
+    if !ultra_compact && state.token_total > 0 {
         let tok_display = if state.token_total >= 1_000_000 {
-            format!("  {}M tok", state.token_total / 1_000_000)
+            format!("  {:.1}M tok", state.token_total as f64 / 1_000_000.0)
+        } else if state.token_total >= 10_000 {
+            format!("  {}k tok", state.token_total / 1_000)
         } else if state.token_total >= 1_000 {
-            format!("  {}K tok", state.token_total / 1_000)
+            format!("  {:.1}k tok", state.token_total as f64 / 1_000.0)
         } else {
             format!("  {} tok", state.token_total)
         };
@@ -380,20 +462,22 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
                 .bg(Theme::BG_SECONDARY),
         ));
 
-        let mem_frac = if state.sys.mem_total_bytes > 0 {
-            state.sys.mem_used_bytes as f64 / state.sys.mem_total_bytes as f64
-        } else {
-            0.0
-        };
-        spans.push(Span::styled(
-            format!(" M{}{}", colon, hdr_fmt_bytes(state.sys.mem_used_bytes)),
-            Style::default()
-                .fg(hdr_pct_color(mem_frac))
-                .bg(Theme::BG_SECONDARY),
-        ));
+        if !ultra_compact {
+            let mem_frac = if state.sys.mem_total_bytes > 0 {
+                state.sys.mem_used_bytes as f64 / state.sys.mem_total_bytes as f64
+            } else {
+                0.0
+            };
+            spans.push(Span::styled(
+                format!(" M{}{}", colon, hdr_fmt_bytes(state.sys.mem_used_bytes)),
+                Style::default()
+                    .fg(hdr_pct_color(mem_frac))
+                    .bg(Theme::BG_SECONDARY),
+            ));
+        }
     }
 
-    // ── 6b. Network stats (agents online + gate pass rate) ────────────
+    // ── 6b. Agents, gates, provider health dots ──────────────────────
     let agent_color = if state.agents_online > 0 {
         Theme::SAGE
     } else {
@@ -403,22 +487,36 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         format!(" {}ag", state.agents_online),
         Style::default().fg(agent_color).bg(Theme::BG_SECONDARY),
     ));
-    match state.gate_pass_rate {
-        Some(pass_rate) => {
-            let pct = (pass_rate.clamp(0.0, 1.0) * 100.0).round();
-            spans.push(Span::styled(
-                format!(" GATES:{pct:.0}%"),
-                Style::default()
-                    .fg(hdr_success_color(pass_rate))
-                    .bg(Theme::BG_SECONDARY),
-            ));
+    if !ultra_compact {
+        match state.gate_pass_rate {
+            Some(pass_rate) => {
+                let pct = (pass_rate.clamp(0.0, 1.0) * 100.0).round();
+                spans.push(Span::styled(
+                    format!(" GATES:{pct:.0}%"),
+                    Style::default()
+                        .fg(hdr_success_color(pass_rate))
+                        .bg(Theme::BG_SECONDARY),
+                ));
+            }
+            None => {
+                spans.push(Span::styled(
+                    " GATES:\u{2014}",
+                    Style::default()
+                        .fg(Theme::TEXT_GHOST)
+                        .bg(Theme::BG_SECONDARY),
+                ));
+            }
         }
-        None => {
+    }
+
+    // Provider health dots: colored dot per provider (green=healthy, yellow=degraded, red=down)
+    let dots = provider_health_dots(state);
+    if !dots.is_empty() {
+        spans.push(Span::styled(" ", bg));
+        for (name, color) in &dots {
             spans.push(Span::styled(
-                " GATES:—",
-                Style::default()
-                    .fg(Theme::TEXT_GHOST)
-                    .bg(Theme::BG_SECONDARY),
+                format!("\u{25cf}{name}"),
+                Style::default().fg(*color).bg(Theme::BG_SECONDARY),
             ));
         }
     }
@@ -460,6 +558,17 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
                     .bg(Theme::BG_SECONDARY),
             ));
         }
+    }
+
+    // Low-disk warning always shown (even compact) when < 1GiB
+    if compact && state.sys.disk_free_bytes > 0 && state.sys.disk_free_bytes < (1 << 30) {
+        spans.push(Span::styled(
+            format!(" DSK:{}!", hdr_fmt_bytes(state.sys.disk_free_bytes)),
+            Style::default()
+                .fg(Theme::EMBER)
+                .bg(Theme::BG_SECONDARY)
+                .add_modifier(Modifier::BOLD),
+        ));
     }
 
     spans.push(sep());
@@ -609,7 +718,7 @@ pub fn render_warning_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
     }
 
     let bg = Style::default().bg(Theme::ROSE_EMBER);
-    let text = warnings.join("  |  ");
+    let text = warnings.join("  \u{2502}  ");
     let spans = vec![
         Span::styled(
             " \u{26a0} ",
@@ -624,6 +733,85 @@ pub fn render_warning_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
             Style::default().fg(Theme::TEXT_GHOST).bg(Theme::ROSE_EMBER),
         ),
     ];
+
+    let line = Line::from(spans);
+    frame.render_widget(Paragraph::new(line).style(bg), area);
+}
+
+// ---------------------------------------------------------------------------
+// Breadcrumb bar — shows Tab > SubView > Focus zone
+// ---------------------------------------------------------------------------
+
+/// Render a 1-line breadcrumb trail showing the current navigation path.
+///
+/// Format: "Dashboard > Agents [Tab:cycle]" or "Inspect > Knowledge > Detail [Tab:cycle]"
+pub fn render_breadcrumb_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
+    if area.height == 0 {
+        return;
+    }
+
+    let bg = Style::default().bg(Theme::BG);
+    let sep_style = Style::default().fg(Theme::TEXT_PHANTOM).bg(Theme::BG);
+    let tab_style = Style::default()
+        .fg(Theme::ROSE)
+        .bg(Theme::BG)
+        .add_modifier(Modifier::BOLD);
+    let sub_style = Style::default().fg(Theme::BONE).bg(Theme::BG);
+    let focus_style = Style::default().fg(Theme::BONE_DIM).bg(Theme::BG);
+    let hint_style = Style::default().fg(Theme::TEXT_GHOST).bg(Theme::BG);
+
+    let mut spans: Vec<Span<'static>> = vec![Span::styled(" ", bg)];
+
+    // Breadcrumb chevron
+    spans.push(Span::styled(
+        "\u{25b8} ",
+        Style::default().fg(Theme::ROSE_DIM).bg(Theme::BG),
+    ));
+
+    // Tab name
+    let tab = state.active_tab;
+    spans.push(Span::styled(tab.label().to_string(), tab_style));
+
+    // Sub-view name (if the tab has multiple sub-views)
+    let sub_views = super::super::views::SubView::for_tab(tab);
+    if sub_views.len() > 1 {
+        let active_idx = state.sub_tab_for(tab);
+        let active_sv = sub_views
+            .get(active_idx)
+            .copied()
+            .unwrap_or(sub_views[0]);
+        spans.push(Span::styled(" \u{203a} ", sep_style));
+        spans.push(Span::styled(active_sv.label().to_string(), sub_style));
+    }
+
+    // Focus zone — always shown since every tab has focusable panels.
+    let focus = state.focus;
+    spans.push(Span::styled(" \u{203a} ", sep_style));
+    spans.push(Span::styled(focus.label().to_string(), focus_style));
+
+    // Input mode badge
+    if let Some(badge) = state.input_mode.badge_label() {
+        spans.push(Span::styled(
+            format!(" [{badge}]"),
+            Style::default()
+                .fg(Theme::WARNING)
+                .bg(Theme::BG)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    // Right-aligned navigation hints
+    let hint = " Tab:cycle panels  Alt+N:sub-view";
+    let hint_width = hint.len() as u16 + 1;
+    let left_width: u16 = spans.iter().map(|s| s.content.len() as u16).sum();
+    let remaining = area.width.saturating_sub(left_width).saturating_sub(1);
+    if remaining >= hint_width {
+        let padding = remaining.saturating_sub(hint_width);
+        if padding > 0 {
+            spans.push(Span::styled(" ".repeat(padding as usize), bg));
+        }
+        spans.push(Span::styled(hint.to_string(), hint_style));
+    }
 
     let line = Line::from(spans);
     frame.render_widget(Paragraph::new(line).style(bg), area);
@@ -793,7 +981,7 @@ mod tests {
             ..Default::default()
         });
         let label = queue_label(&state).unwrap();
-        assert!(label.len() <= 24);
-        assert!(label.ends_with(".."));
+        assert!(label.chars().count() <= 24);
+        assert!(label.ends_with('\u{2026}'));
     }
 }

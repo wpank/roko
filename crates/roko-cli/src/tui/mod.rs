@@ -19,6 +19,7 @@ pub mod event;
 pub mod fs_watch;
 pub(crate) mod git_watch;
 pub mod hit_test;
+pub mod icons;
 pub mod input;
 mod jsonl_cursor;
 pub mod jsonl_tailer;

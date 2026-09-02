@@ -25,13 +25,21 @@ use crate::tui::Theme;
 // Public render entry-point
 // ---------------------------------------------------------------------------
 
-/// Render a compact 2-line phase widget.
+/// Render a compact phase widget that adapts to available height.
+///
+/// When idle (no phases or all pending), collapses to a single line.
+/// When active, shows a segmented bar + detail line + phase flow.
 ///
 /// ```text
-/// ┌ Phase ──────────────────────────────────┐
+/// ┌ Phase . implementer ────────────────────┐
 /// │ ████████████████████░░░░░░────────────── │
-/// │ ✧ implementer  42%  2m31s  ETA ~4m      │
+/// │ * implementer  42%  2m31s                │
 /// └─────────────────────────────────────────┘
+/// ```
+///
+/// Idle (single line):
+/// ```text
+/// Phase: idle
 /// ```
 pub fn render_phase_compact(frame: &mut Frame<'_>, area: Rect, state: &TuiState, focused: bool) {
     let atm = &state.atmosphere;
@@ -41,6 +49,22 @@ pub fn render_phase_compact(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
         .phase_pipeline
         .iter()
         .position(|s| s.status == PhaseStatus::Active);
+
+    let is_idle = state.phase_pipeline.is_empty()
+        || state
+            .phase_pipeline
+            .iter()
+            .all(|s| s.status == PhaseStatus::Pending);
+
+    // Collapse to a single borderless line when idle and space is tight.
+    if is_idle && area.height <= 2 {
+        let line = Line::from(vec![
+            Span::styled("Phase: ", Style::default().fg(Theme::TEXT_DIM)),
+            Span::styled("idle", Style::default().fg(Theme::TEXT_GHOST)),
+        ]);
+        frame.render_widget(Paragraph::new(line), area);
+        return;
+    }
 
     let title = if let Some(idx) = active_idx {
         format!("Phase \u{00b7} {}", state.phase_pipeline[idx].name)
@@ -127,7 +151,7 @@ pub fn render_phase_compact(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
         return;
     }
 
-    // ── Line 2: Active phase detail ──────────────────────────────────────
+    // ── Line 2: Active phase detail or phase flow ────────────────────────
     let detail_line = if let Some(idx) = state
         .phase_pipeline
         .iter()
@@ -144,7 +168,7 @@ pub fn render_phase_compact(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
             Span::styled(format!("at {name}"), Style::default().fg(Theme::EMBER)),
         ])
     } else if let Some(idx) = active_idx {
-        build_active_detail(&state.phase_pipeline[idx], atm)
+        build_active_detail(&state.phase_pipeline[idx], atm, inner_w)
     } else {
         // All done or all pending
         let all_done = state
@@ -156,11 +180,14 @@ pub fn render_phase_compact(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
                 "all phases complete",
                 Style::default().fg(Theme::SAGE),
             ))
-        } else {
+        } else if state.phase_pipeline.is_empty() {
             Line::from(Span::styled(
-                "waiting...",
+                "no phases configured",
                 Style::default().fg(Theme::TEXT_DIM),
             ))
+        } else {
+            // Show phase flow: "dispatch > gate > merge"
+            build_phase_flow(&state.phase_pipeline)
         }
     };
 
@@ -174,8 +201,12 @@ pub fn render_phase_compact(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Build the active-phase detail line: icon + name + pct + elapsed + ETA.
-fn build_active_detail(step: &super::super::state::PhaseStep, atm: &Atmosphere) -> Line<'static> {
+/// Build the active-phase detail line: icon + name + pct + elapsed + flow.
+fn build_active_detail(
+    step: &super::super::state::PhaseStep,
+    atm: &Atmosphere,
+    width: usize,
+) -> Line<'static> {
     let pulse_color = pulse_active(atm.heartbeat());
     let icon = atm.spinner_ethereal().to_string();
 
@@ -205,7 +236,11 @@ fn build_active_detail(step: &super::super::state::PhaseStep, atm: &Atmosphere) 
     // Elapsed time
     if step.elapsed_secs > 0.0 {
         let secs = step.elapsed_secs as u64;
-        let time_str = format!(" {}m{:02}s", secs / 60, secs % 60);
+        let time_str = if secs >= 3600 {
+            format!(" {}h{}m", secs / 3600, (secs % 3600) / 60)
+        } else {
+            format!(" {}m{:02}s", secs / 60, secs % 60)
+        };
         let time_style = {
             let pulse = atm.heartbeat();
             let base_r = 170.0_f64;
@@ -215,6 +250,38 @@ fn build_active_detail(step: &super::super::state::PhaseStep, atm: &Atmosphere) 
         spans.push(Span::styled(time_str, time_style));
     }
 
+    // If there's room, append a compact phase position indicator.
+    let current_len: usize = spans.iter().map(|s| s.content.len()).sum();
+    if width > current_len + 8 {
+        spans.push(Span::styled(
+            format!("  [{}/{}]", step.pct.min(100.0) as u32 / 10, 10),
+            Style::default().fg(Theme::TEXT_DIM),
+        ));
+    }
+
+    Line::from(spans)
+}
+
+/// Build a phase flow line showing phase transitions: "dispatch > gate > merge".
+fn build_phase_flow(pipeline: &[super::super::state::PhaseStep]) -> Line<'static> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for (i, step) in pipeline.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(
+                " \u{203a} ",
+                Style::default().fg(Theme::TEXT_GHOST),
+            ));
+        }
+        let style = match step.status {
+            PhaseStatus::Done => Style::default().fg(Theme::SAGE),
+            PhaseStatus::Active => Style::default()
+                .fg(Theme::WARNING)
+                .add_modifier(Modifier::BOLD),
+            PhaseStatus::Failed => Style::default().fg(Theme::EMBER),
+            PhaseStatus::Pending => Style::default().fg(Theme::TEXT_DIM),
+        };
+        spans.push(Span::styled(step.name.clone(), style));
+    }
     Line::from(spans)
 }
 

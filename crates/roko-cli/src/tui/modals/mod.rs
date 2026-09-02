@@ -270,7 +270,7 @@ pub fn render_modals(
     active_modal: Option<&ModalState>,
     tui_state: &TuiState,
     data: &DashboardData,
-    notifications: &[Notification],
+    notifications: &std::collections::VecDeque<Notification>,
     theme: &Theme,
     screen_postfx: bool,
 ) {
@@ -284,7 +284,8 @@ pub fn render_modals(
 
     // Notifications always render (they stack in the bottom-right corner).
     if !notifications.is_empty() {
-        render_notifications(frame, area, notifications, theme);
+        let notif_vec: Vec<Notification> = notifications.iter().cloned().collect();
+        render_notifications(frame, area, &notif_vec, theme);
     }
 }
 

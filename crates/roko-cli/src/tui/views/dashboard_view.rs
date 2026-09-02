@@ -410,7 +410,7 @@ fn current_task_label(tui_state: &TuiState, max_width: usize) -> Option<String> 
     tui_state
         .current_task_checklist
         .iter()
-        .find(|t| t.status == crate::tui::state::TaskStatus::InProgress)
+        .find(|t| t.status == crate::tui::state::TaskStatus::Active)
         .map(|t| {
             let label = if t.title.is_empty() {
                 t.id.clone()

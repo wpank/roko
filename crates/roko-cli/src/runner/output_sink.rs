@@ -1477,7 +1477,8 @@ pub fn format_dashboard_event(
         | DashboardEvent::GateRungStarted { .. }
         | DashboardEvent::GateOutputLine { .. }
         | DashboardEvent::AffectUpdated { .. }
-        | DashboardEvent::AgentTopologyUpdated { .. } => return None,
+        | DashboardEvent::AgentTopologyUpdated { .. }
+        | DashboardEvent::CriticalPathEtaUpdated { .. } => return None,
     };
 
     let line = if pfx.is_empty() {

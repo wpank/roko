@@ -385,7 +385,7 @@ fn render_wave_tree(
                 let blocker_waves: Vec<usize> = wave_groups
                     .iter()
                     .filter(|(w, indices)| {
-                        *w < wave_idx
+                        *w < *wave_idx
                             && indices.iter().any(|&i| {
                                 tui_state
                                     .plan_summaries

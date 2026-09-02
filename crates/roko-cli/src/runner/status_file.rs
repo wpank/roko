@@ -200,11 +200,14 @@ pub fn read_runner_status(state_dir: &Path) -> RunnerStatusRead {
 }
 
 /// Check if a process with the given PID is alive.
+#[allow(unsafe_code)]
 fn process_is_alive(pid: u32) -> bool {
     // Use kill(0) to check existence without sending a signal.
     // This avoids the overhead of sysinfo for a single PID check.
     #[cfg(unix)]
     {
+        // SAFETY: kill(pid, 0) is a well-defined POSIX operation that checks
+        // process existence without sending a signal. No memory safety concern.
         unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
     }
     #[cfg(not(unix))]

@@ -322,7 +322,7 @@ fn queue_overview_milestones(state: &TuiState, workdir: &Path) -> Vec<Milestone>
     // Try loading milestones from .roko/queue.toml first; fall back to execution waves.
     let queue_path = workdir.join(".roko").join("queue.toml");
     if let Ok(manifest) = crate::runner::queue_manifest::QueueManifest::from_file(&queue_path) {
-        if \!manifest.milestones.is_empty() {
+        if !manifest.milestones.is_empty() {
             return manifest
                 .milestones
                 .iter()
@@ -1686,7 +1686,7 @@ impl App {
                     "disabled"
                 };
                 self.notifications
-                    .push(super::modals::Notification::info(&format!(
+                    .push_back(super::modals::Notification::info(&format!(
                         "Screen postfx {state}"
                     )));
             }
@@ -1695,14 +1695,14 @@ impl App {
                 match self.fx_config.save_preset(&self.workdir) {
                     Ok(()) => {
                         self.notifications
-                            .push(super::modals::Notification::info(&format!(
+                            .push_back(super::modals::Notification::info(&format!(
                                 "Effects: {}",
                                 preset.label()
                             )));
                     }
                     Err(error) => {
                         self.notifications
-                            .push(super::modals::Notification::error(&format!(
+                            .push_back(super::modals::Notification::error(&format!(
                                 "Effects preset save failed: {error}"
                             )));
                     }
@@ -1839,12 +1839,12 @@ impl App {
                     };
                     match tx.try_send(command) {
                         Ok(()) => self.tui_state.is_paused = requested_pause,
-                        Err(_) => self.notifications.push(super::modals::Notification::warn(
+                        Err(_) => self.notifications.push_back(super::modals::Notification::warn(
                             "Pause request was not accepted by the runner",
                         )),
                     }
                 } else {
-                    self.notifications.push(super::modals::Notification::warn(
+                    self.notifications.push_back(super::modals::Notification::warn(
                         "Pause is available only during a connected plan run",
                     ));
                 }
@@ -1939,7 +1939,7 @@ impl App {
                                 .ok()
                         });
                     self.notifications
-                        .push(super::modals::Notification::info(format!(
+                        .push_back(super::modals::Notification::info(format!(
                             "Injected: {}",
                             truncate_str(&msg, 40)
                         )));
@@ -2056,7 +2056,7 @@ impl App {
                                 .ok()
                         });
                     self.notifications
-                        .push(super::modals::Notification::info(format!(
+                        .push_back(super::modals::Notification::info(format!(
                             "Confirmed: {}",
                             truncate_str(&action_str, 40)
                         )));
@@ -2451,7 +2451,7 @@ impl App {
                         let plan_id = plan.id.clone();
                         self.open_confirm_modal(ConfirmAction::SoftRetryPlan(plan_id));
                     } else {
-                        self.notifications.push(super::modals::Notification::info(
+                        self.notifications.push_back(super::modals::Notification::info(
                             "No failed tasks to retry",
                         ));
                     }
@@ -2474,7 +2474,7 @@ impl App {
                     };
                     self.tui_state.active_modal = Some(ModalState::PlanDetail { plan_id });
                     self.notifications
-                        .push(super::modals::Notification::info(truncate_str(
+                        .push_back(super::modals::Notification::info(truncate_str(
                             &message, 80,
                         )));
                 }
@@ -3473,8 +3473,9 @@ impl App {
         let mut i = 0;
         while i < self.notifications.len() {
             if self.notifications[i].is_expired() {
-                let expired = self.notifications.remove(i);
-                self.push_notification_history(expired);
+                if let Some(expired) = self.notifications.remove(i) {
+                    self.push_notification_history(expired);
+                }
             } else {
                 i += 1;
             }
@@ -3678,7 +3679,7 @@ impl App {
 
     fn save_config_changes(&mut self) {
         if self.tui_state.config_pending.is_empty() {
-            self.notifications.push(super::modals::Notification::info(
+            self.notifications.push_back(super::modals::Notification::info(
                 "No pending changes to save",
             ));
             return;
@@ -3691,13 +3692,13 @@ impl App {
                 self.tui_state.invalidate_config_cache();
                 self.fx_config = EffectsConfig::load_from_root(&self.workdir);
                 self.pending_refresh = true;
-                self.notifications.push(super::modals::Notification::info(
+                self.notifications.push_back(super::modals::Notification::info(
                     "Config saved and reloaded",
                 ));
             }
             Err(error) => {
                 self.notifications
-                    .push(super::modals::Notification::error(&format!(
+                    .push_back(super::modals::Notification::error(&format!(
                         "Save failed: {error}"
                     )));
             }
@@ -3710,7 +3711,7 @@ impl App {
         let title = self.tui_state.job_form_title.trim().to_string();
         if title.is_empty() {
             self.notifications
-                .push(super::modals::Notification::warn("Job title is required"));
+                .push_back(super::modals::Notification::warn("Job title is required"));
             return;
         }
 
@@ -3761,7 +3762,7 @@ impl App {
         let jobs_dir = self.workdir.join(".roko").join("jobs");
         if let Err(e) = std::fs::create_dir_all(&jobs_dir) {
             self.notifications
-                .push(super::modals::Notification::error(&format!(
+                .push_back(super::modals::Notification::error(&format!(
                     "Failed to create jobs directory: {e}"
                 )));
             return;
@@ -3787,20 +3788,20 @@ impl App {
 
                     self.pending_refresh = true;
                     self.notifications
-                        .push(super::modals::Notification::info(format!(
+                        .push_back(super::modals::Notification::info(format!(
                             "Job '{title}' created"
                         )));
                 }
                 Err(e) => {
                     self.notifications
-                        .push(super::modals::Notification::error(&format!(
+                        .push_back(super::modals::Notification::error(&format!(
                             "Failed to write job file: {e}"
                         )));
                 }
             },
             Err(e) => {
                 self.notifications
-                    .push(super::modals::Notification::error(&format!(
+                    .push_back(super::modals::Notification::error(&format!(
                         "Failed to serialize job: {e}"
                     )));
             }
@@ -4659,7 +4660,7 @@ use crate::tui::display_utils::truncate as truncate_str;
 
 fn apply_dashboard_snapshot(
     tui_state: &mut TuiState,
-    notifications: &mut Vec<super::modals::Notification>,
+    notifications: &mut VecDeque<super::modals::Notification>,
     last_snapshot_error_marker: &mut Option<(String, u64)>,
     last_seen_gate_count: &mut usize,
     last_seen_plan_phases: &mut HashMap<String, String>,
@@ -4758,14 +4759,14 @@ fn apply_dashboard_snapshot(
 /// Push a notification unless a duplicate (same message within 2 seconds)
 /// already exists in the stack.
 fn push_deduped_notification(
-    notifications: &mut Vec<super::modals::Notification>,
+    notifications: &mut VecDeque<super::modals::Notification>,
     notification: super::modals::Notification,
 ) {
     let dominated = notifications.iter().any(|existing| {
         existing.message == notification.message && existing.created.elapsed().as_secs() < 2
     });
     if !dominated {
-        notifications.push(notification);
+        notifications.push_back(notification);
     }
 }
 
@@ -5379,7 +5380,7 @@ mod tests {
         let mut app = App::new(dir.path());
         for i in 0..25 {
             app.notifications
-                .push(super::modals::Notification::info(format!("msg {i}")));
+                .push_back(super::modals::Notification::info(format!("msg {i}")));
         }
         app.expire_notifications();
         assert!(app.notifications.len() <= 20);

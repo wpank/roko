@@ -1079,6 +1079,9 @@ enum KnowledgeCmd {
         /// Working directory (default: cwd).
         #[arg(long)]
         workdir: Option<PathBuf>,
+        /// Maximum number of results to return (1-1000, default: 10).
+        #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u16).range(1..=1000))]
+        limit: u16,
     },
     /// Show aggregate statistics for the durable knowledge store.
     Stats {
@@ -1091,6 +1094,12 @@ enum KnowledgeCmd {
         /// Working directory (default: cwd).
         #[arg(long)]
         workdir: Option<PathBuf>,
+        /// Minimum confidence threshold for GC (0.0-1.0, default: 0.05).
+        #[arg(long, value_parser = parse_decay_factor)]
+        threshold: Option<f64>,
+        /// Preview what would be collected without actually removing entries.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Export a canonical, integrity-protected knowledge bundle.
     Export {
@@ -1105,6 +1114,15 @@ enum KnowledgeCmd {
         /// Export only the top N secret-safe entries by confidence.
         #[arg(long)]
         top_n: Option<usize>,
+        /// Minimum confidence threshold (0.0-1.0).
+        #[arg(long, value_parser = parse_decay_factor)]
+        min_confidence: Option<f64>,
+        /// Filter by knowledge types (comma-separated; e.g. "insight,heuristic").
+        #[arg(long)]
+        types: Option<String>,
+        /// Exclude entries with any of these tags (comma-separated).
+        #[arg(long)]
+        exclude_tags: Option<String>,
     },
     /// Import a canonical, integrity-protected knowledge bundle.
     Import {
@@ -1119,6 +1137,12 @@ enum KnowledgeCmd {
         /// Explicitly migrate a trusted legacy raw/version-1 JSONL backup.
         #[arg(long)]
         legacy_raw: bool,
+        /// Filter by knowledge types (comma-separated; e.g. "insight,heuristic").
+        #[arg(long)]
+        types: Option<String>,
+        /// Only import entries with confidence >= this threshold (0.0-1.0).
+        #[arg(long, value_parser = parse_decay_factor)]
+        min_confidence: Option<f64>,
     },
     /// Backup the knowledge store to a directory with optional genomic bottleneck.
     Backup {
@@ -1184,12 +1208,17 @@ enum KnowledgeCmd {
         #[command(subcommand)]
         cmd: KnowledgeCustodyCmd,
     },
-    /// Move old engrams to cold storage (compressed monthly archives).
-    Archive {
-        /// Only archive engrams older than this duration (e.g. "30d", "7d").
+    /// Move old signals to cold storage (compressed monthly archives).
+    ///
+    /// This archives signal (engram) data from the hot JSONL substrate,
+    /// NOT neuro knowledge-store entries. Use `roko knowledge gc` to manage
+    /// the knowledge store.
+    #[command(alias = "archive")]
+    SignalArchive {
+        /// Only archive signals older than this duration (e.g. "30d", "7d").
         #[arg(long, default_value = "30d")]
         older_than: String,
-        /// Maximum number of engrams to archive per batch.
+        /// Maximum number of signals to archive per batch.
         #[arg(long, default_value_t = 500)]
         batch_size: usize,
         /// Working directory (default: cwd / --repo).
@@ -1219,6 +1248,9 @@ enum KnowledgeDreamCmd {
         /// Directory containing `.roko/` (default: cwd).
         #[arg(long)]
         workdir: Option<PathBuf>,
+        /// Preview what would be consolidated without executing.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Show the latest dream report without running a new cycle.
     Report {
@@ -1303,21 +1335,76 @@ enum LearnCmd {
         /// Working directory (default: cwd).
         #[arg(long)]
         workdir: Option<PathBuf>,
+        /// Maximum number of experiments to display (1..=10000).
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=10_000))]
+        limit: Option<u32>,
     },
     /// Show efficiency metrics.
     Efficiency {
         /// Working directory (default: cwd).
         #[arg(long)]
         workdir: Option<PathBuf>,
+        /// Show at most N matching rows from the start (mutually exclusive with --tail).
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=10_000), conflicts_with = "tail")]
+        limit: Option<u32>,
+        /// Show the last N matching rows in chronological order (mutually exclusive with --limit).
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=10_000))]
+        tail: Option<u32>,
+        /// Only include entries at or after this RFC 3339 timestamp.
+        #[arg(long)]
+        since: Option<String>,
+        /// Filter by model slug (substring match).
+        #[arg(long)]
+        model: Option<String>,
+        /// Filter by plan ID (substring match).
+        #[arg(long)]
+        plan: Option<String>,
+        /// Filter by task ID (substring match).
+        #[arg(long)]
+        task: Option<String>,
     },
     /// Show episode summary.
     Episodes {
         /// Working directory (default: cwd).
         #[arg(long)]
         workdir: Option<PathBuf>,
+        /// Show at most N matching rows from the start (mutually exclusive with --tail).
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=10_000), conflicts_with = "tail")]
+        limit: Option<u32>,
+        /// Show the last N matching rows in chronological order (mutually exclusive with --limit).
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=10_000))]
+        tail: Option<u32>,
+        /// Only include entries at or after this RFC 3339 timestamp.
+        #[arg(long)]
+        since: Option<String>,
+        /// Filter by model slug (substring match).
+        #[arg(long)]
+        model: Option<String>,
+        /// Filter by plan ID (substring match).
+        #[arg(long)]
+        plan: Option<String>,
+        /// Filter by task ID (substring match).
+        #[arg(long)]
+        task: Option<String>,
+        /// Filter by pass/fail status (pass or fail).
+        #[arg(long)]
+        status: Option<String>,
     },
     /// Show T0 reflex rules (count, top five by hits, and recent demotions).
     Reflexes {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show adaptive gate threshold state.
+    Gates {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show durable knowledge entry counts.
+    #[command(alias = "knowledge")]
+    KnowledgeStats {
         /// Working directory (default: cwd).
         #[arg(long)]
         workdir: Option<PathBuf>,
@@ -1416,19 +1503,22 @@ Examples:
 
 #[derive(Debug, Subcommand)]
 enum BacklogCmd {
-    /// Import backlog spec(s) as PRD ideas.
+    /// Import backlog spec(s) as plan artifacts with eligibility checks.
     Import {
         /// Path to a single backlog .md file or a directory containing them.
         path: PathBuf,
-        /// After creating the idea, also generate a PRD draft.
+        /// Create/update the plan artifact without execution.
         #[arg(long)]
         draft: bool,
-        /// After drafting, also generate an implementation plan.
+        /// Alias for --draft (deprecated; use --draft).
         #[arg(long)]
         plan: bool,
-        /// Full pipeline: idea -> draft -> plan -> run.
+        /// Create then start an eligible packet (fails on blocked packets).
         #[arg(long)]
         execute: bool,
+        /// Dry-run: check eligibility without side effects.
+        #[arg(long)]
+        check: bool,
         /// Working directory (default: cwd / --repo).
         #[arg(long)]
         workdir: Option<PathBuf>,
@@ -1510,7 +1600,7 @@ enum IndexCmd {
     },
     /// Search the code index.
     Search {
-        /// Search query text.
+        /// Search query text (symbol name/pattern, never a file path).
         query: String,
         /// Restrict to a symbol kind (function, struct, enum, trait, const, type, module, impl).
         #[arg(long)]
@@ -1518,7 +1608,10 @@ enum IndexCmd {
         /// Search strategy: keyword, structural, hybrid.
         #[arg(long, default_value = "keyword")]
         strategy: String,
-        /// Maximum number of results.
+        /// Glob filter on file paths (independent of query text).
+        #[arg(long)]
+        file_pattern: Option<String>,
+        /// Maximum number of results (must be > 0).
         #[arg(long, default_value_t = 20)]
         limit: usize,
         /// Directory to index (default: cwd / --repo).
@@ -2070,7 +2163,7 @@ enum JobCmd {
         /// Working directory (default: cwd / --repo).
         #[arg(long)]
         workdir: Option<PathBuf>,
-        /// Filter by status (open, assigned, in_progress, completed, failed, cancelled).
+        /// Filter by status (open, assigned, in_progress, submitted, completed, failed, cancelled).
         #[arg(long)]
         status: Option<String>,
     },
@@ -2078,7 +2171,7 @@ enum JobCmd {
     Create {
         /// Job title.
         title: String,
-        /// Job type: research, coding_task, chain_monitor, chain_analysis.
+        /// Job type: research, coding_task, chain_monitor, chain_analysis, review, documentation, testing.
         #[arg(long, default_value = "research")]
         r#type: String,
         /// Job description.
@@ -2093,6 +2186,15 @@ enum JobCmd {
         /// Associated plan ID.
         #[arg(long)]
         plan_id: Option<String>,
+        /// Tag (repeatable, e.g. --tag rust --tag cli).
+        #[arg(long)]
+        tag: Vec<String>,
+        /// Reward string, e.g. "2500 KORAI".
+        #[arg(long)]
+        reward: Option<String>,
+        /// Identity of the poster.
+        #[arg(long)]
+        posted_by: Option<String>,
         /// Working directory (default: cwd / --repo).
         #[arg(long)]
         workdir: Option<PathBuf>,
@@ -2210,24 +2312,32 @@ enum NeuroCmd {
     Query {
         topic: Vec<String>,
         workdir: Option<PathBuf>,
+        limit: u16,
     },
     Stats {
         workdir: Option<PathBuf>,
     },
     Gc {
         workdir: Option<PathBuf>,
+        threshold: Option<f64>,
+        dry_run: bool,
     },
     Export {
         workdir: Option<PathBuf>,
         output: PathBuf,
         force: bool,
         top_n: Option<usize>,
+        min_confidence: Option<f64>,
+        types: Option<String>,
+        exclude_tags: Option<String>,
     },
     Import {
         workdir: Option<PathBuf>,
         input: PathBuf,
         decay_factor: f64,
         legacy_raw: bool,
+        types: Option<String>,
+        min_confidence: Option<f64>,
     },
     Backup {
         workdir: Option<PathBuf>,
@@ -2256,7 +2366,10 @@ enum NeuroCmd {
 // Internal enum used by cmd_dream — mirrors the old top-level DreamCmd.
 #[derive(Debug)]
 enum DreamCmdLegacy {
-    Run { workdir: Option<PathBuf> },
+    Run {
+        workdir: Option<PathBuf>,
+        dry_run: bool,
+    },
     Report { workdir: Option<PathBuf> },
     Schedule { workdir: Option<PathBuf> },
 }
@@ -2283,8 +2396,13 @@ enum DeployCmd {
         /// Skip the security posture check (WARNING: server will be public without auth).
         #[arg(long)]
         unsafe_public: bool,
+        /// Show the deploy plan without performing any mutations.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Generate `fly.toml` and deploy the current workspace with Fly.io.
+    ///
+    /// Note: --with-mirage and --workers are not supported on Fly.io.
     Fly {
         /// Working directory / repository root (default: cwd / --repo).
         #[arg(long)]
@@ -2292,6 +2410,30 @@ enum DeployCmd {
         /// Skip the security posture check (WARNING: server will be public without auth).
         #[arg(long)]
         unsafe_public: bool,
+        /// Show the deploy plan without performing any mutations.
+        #[arg(long)]
+        dry_run: bool,
+        /// Fly.io app name (default: roko-agent).
+        #[arg(long, default_value = "roko-agent")]
+        app: String,
+        /// Fly.io primary region (default: iad).
+        #[arg(long, default_value = "iad")]
+        region: String,
+        /// Path to the Dockerfile for the Fly build (default: Dockerfile).
+        #[arg(long, default_value = "Dockerfile")]
+        dockerfile: String,
+        /// Healthcheck endpoint path (default: /health).
+        #[arg(long, default_value = "/health")]
+        health_path: String,
+        /// Volume source name (default: roko_data).
+        #[arg(long, default_value = "roko_data")]
+        volume_source: String,
+        /// Volume mount destination path (default: /data/.roko).
+        #[arg(long, default_value = "/data/.roko")]
+        volume_destination: String,
+        /// Overwrite an existing fly.toml even if it differs from the generated one.
+        #[arg(long)]
+        force: bool,
     },
     /// Build the local Docker image and tag it for the configured registry.
     Docker {
@@ -2308,6 +2450,18 @@ enum DeployCmd {
         /// Skip the security posture check (WARNING: server will be public without auth).
         #[arg(long)]
         unsafe_public: bool,
+        /// Show the deploy plan without performing any mutations.
+        #[arg(long)]
+        dry_run: bool,
+        /// Path to the Dockerfile (default: Dockerfile).
+        #[arg(long, default_value = "Dockerfile")]
+        dockerfile: String,
+        /// Docker build target stage (e.g. runtime, distroless).
+        #[arg(long)]
+        target: Option<String>,
+        /// Docker image name (default: roko).
+        #[arg(long, default_value = "roko")]
+        image: String,
     },
 }
 
@@ -2437,6 +2591,14 @@ enum ConfigCmd {
         output: Option<PathBuf>,
     },
 
+    // ── Environment variables ─────────────────────────────────────
+    /// List all recognized environment variables with descriptions.
+    Env {
+        /// Emit JSON instead of a formatted table.
+        #[arg(long)]
+        json: bool,
+    },
+
     // ── Providers ───────────────────────────────────────────────────
     /// Inspect configured LLM providers.
     Providers {
@@ -2534,6 +2696,12 @@ enum ConfigProviderCmd {
     },
     /// Show all known providers from the built-in catalog with availability status.
     Catalog {
+        /// Directory containing `roko.toml` (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Validate provider and model config semantics (early failure checks).
+    Validate {
         /// Directory containing `roko.toml` (default: cwd / --repo).
         #[arg(long)]
         workdir: Option<PathBuf>,
@@ -2855,6 +3023,17 @@ fn format_error_with_hint(err: &anyhow::Error) -> String {
 fn error_hint(msg: &str) -> Option<&'static str> {
     let lower = msg.to_lowercase();
 
+    // State recovery errors must be checked before the generic auth pattern
+    // to prevent "authoritative" from matching the "auth" substring.
+    if lower.contains("state recovery required") || lower.contains("state snapshot corrupt") {
+        return Some(
+            "run with `--fresh` to archive prior state and start a new run. \
+             The corrupt snapshot has been preserved for diagnosis. \
+             (--fresh is a temporary compatibility escape; a future release \
+             will replace it with plan-scoped run management)",
+        );
+    }
+
     if lower.contains("no .roko directory")
         || lower.contains(".roko/")
             && (lower.contains("not found") || lower.contains("no such file"))
@@ -2884,10 +3063,13 @@ fn error_hint(msg: &str) -> Option<&'static str> {
         return Some("is the server running? Start it with `roko serve`");
     }
 
+    // Authentication hint: match specific auth-related terms, not substrings
+    // like "authoritative" or "authorization policy".
     if lower.contains("401")
         || lower.contains("unauthorized")
-        || lower.contains("auth")
-            && (lower.contains("failed") || lower.contains("invalid") || lower.contains("denied"))
+        || lower.contains("invalid_api_key")
+        || lower.contains("authentication failed")
+        || lower.contains("auth denied")
     {
         return Some(
             "check your API key: set ROKO_API_KEY or run `roko config set-secret ROKO_API_KEY <key>`",
@@ -5499,6 +5681,168 @@ mod tests {
                 cmd: DeployCmd::Docker { push: true, .. }
             })
         ));
+    }
+
+    #[test]
+    fn deploy_railway_dry_run_flag() {
+        let cli =
+            Cli::try_parse_from(["roko", "deploy", "railway", "--dry-run"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Deploy {
+                cmd: DeployCmd::Railway {
+                    dry_run: true,
+                    ..
+                }
+            })
+        ));
+    }
+
+    #[test]
+    fn deploy_fly_dry_run_flag() {
+        let cli = Cli::try_parse_from(["roko", "deploy", "fly", "--dry-run"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Deploy {
+                cmd: DeployCmd::Fly {
+                    dry_run: true,
+                    ..
+                }
+            })
+        ));
+    }
+
+    #[test]
+    fn deploy_fly_custom_app_and_region() {
+        let cli = Cli::try_parse_from([
+            "roko", "deploy", "fly", "--app", "my-app", "--region", "lhr",
+        ])
+        .unwrap();
+        if let Some(Command::Deploy {
+            cmd:
+                DeployCmd::Fly {
+                    app, region, ..
+                },
+        }) = cli.command
+        {
+            assert_eq!(app, "my-app");
+            assert_eq!(region, "lhr");
+        } else {
+            panic!("expected Deploy Fly");
+        }
+    }
+
+    #[test]
+    fn deploy_fly_defaults() {
+        let cli = Cli::try_parse_from(["roko", "deploy", "fly"]).unwrap();
+        if let Some(Command::Deploy {
+            cmd:
+                DeployCmd::Fly {
+                    app,
+                    region,
+                    dockerfile,
+                    health_path,
+                    volume_source,
+                    volume_destination,
+                    force,
+                    dry_run,
+                    ..
+                },
+        }) = cli.command
+        {
+            assert_eq!(app, "roko-agent");
+            assert_eq!(region, "iad");
+            assert_eq!(dockerfile, "Dockerfile");
+            assert_eq!(health_path, "/health");
+            assert_eq!(volume_source, "roko_data");
+            assert_eq!(volume_destination, "/data/.roko");
+            assert!(!force);
+            assert!(!dry_run);
+        } else {
+            panic!("expected Deploy Fly");
+        }
+    }
+
+    #[test]
+    fn deploy_fly_force_flag() {
+        let cli =
+            Cli::try_parse_from(["roko", "deploy", "fly", "--force"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Deploy {
+                cmd: DeployCmd::Fly { force: true, .. }
+            })
+        ));
+    }
+
+    #[test]
+    fn deploy_docker_dry_run_flag() {
+        let cli =
+            Cli::try_parse_from(["roko", "deploy", "docker", "--dry-run"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Deploy {
+                cmd: DeployCmd::Docker {
+                    dry_run: true,
+                    ..
+                }
+            })
+        ));
+    }
+
+    #[test]
+    fn deploy_docker_custom_dockerfile_and_target() {
+        let cli = Cli::try_parse_from([
+            "roko",
+            "deploy",
+            "docker",
+            "--dockerfile",
+            "docker/roko.Dockerfile",
+            "--target",
+            "distroless",
+            "--image",
+            "my-roko",
+        ])
+        .unwrap();
+        if let Some(Command::Deploy {
+            cmd:
+                DeployCmd::Docker {
+                    dockerfile,
+                    target,
+                    image,
+                    ..
+                },
+        }) = cli.command
+        {
+            assert_eq!(dockerfile, "docker/roko.Dockerfile");
+            assert_eq!(target.as_deref(), Some("distroless"));
+            assert_eq!(image, "my-roko");
+        } else {
+            panic!("expected Deploy Docker");
+        }
+    }
+
+    #[test]
+    fn deploy_docker_defaults() {
+        let cli = Cli::try_parse_from(["roko", "deploy", "docker"]).unwrap();
+        if let Some(Command::Deploy {
+            cmd:
+                DeployCmd::Docker {
+                    dockerfile,
+                    target,
+                    image,
+                    dry_run,
+                    ..
+                },
+        }) = cli.command
+        {
+            assert_eq!(dockerfile, "Dockerfile");
+            assert!(target.is_none());
+            assert_eq!(image, "roko");
+            assert!(!dry_run);
+        } else {
+            panic!("expected Deploy Docker");
+        }
     }
 
     #[test]

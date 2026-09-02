@@ -490,8 +490,20 @@ pub(crate) async fn cmd_status(
         "→"
     };
     let learn_dir = workdir.join(".roko").join("learn");
-    let costs_log = CostsLog::at(learn_dir.join("costs.jsonl"));
-    let total_cost_usd = costs_log.total_cost().await.ok();
+    let costs_path = learn_dir.join("costs.jsonl");
+    let costs_log = CostsLog::at(&costs_path);
+    let mut cost_diagnostics: Vec<StatusDiagnostic> = Vec::new();
+    let total_cost_usd = match costs_log.total_cost().await {
+        Ok(v) => Some(v),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            cost_diagnostics.push(StatusDiagnostic {
+                source: "costs".into(),
+                message: format!("could not read {}: {e}", costs_path.display()),
+            });
+            None
+        }
+    };
     let today_cost_usd = costs_log
         .daily_cost(1)
         .await
@@ -600,22 +612,18 @@ pub(crate) async fn cmd_status(
             last_passed
         };
 
-        let status = SessionStatus {
-            session_id: cli.resume.clone(),
-            workdir: workdir.clone(),
-            daemon_running: false,
-            signal_count: Some(all.len()),
-            episode_count: Some(episode_count),
-            last_episode_passed: last_passed,
-            cfactor: cfactor_snapshot,
-            total_cost_usd,
-            today_cost_usd,
-            critical_path_eta_minutes: None,
-            runner_phase: None,
-            runner_active: false,
-            process_session_ledger: None,
-            process_sessions: None,
-        };
+        // Use the canonical collector for daemon/process/runner fields.
+        let mut status = collect_session_status(&workdir);
+        if let Some(resume_id) = &cli.resume {
+            status.session_id = Some(resume_id.clone());
+        }
+        status.signal_count = Some(all.len());
+        status.episode_count = Some(episode_count);
+        status.last_episode_passed = last_passed;
+        status.cfactor = cfactor_snapshot;
+        status.total_cost_usd = total_cost_usd;
+        status.today_cost_usd = today_cost_usd;
+        status.diagnostics.extend(cost_diagnostics.iter().cloned());
 
         // Build enriched JSON with gate verdicts, workspace info, and signal counts.
         let counts_json = serde_json::to_string(&counts).unwrap_or_else(|_| "{}".to_string());
@@ -1129,7 +1137,7 @@ pub(crate) async fn cmd_doctor(
         } else {
             print!("{}", report.render_human());
         }
-        return Ok(EXIT_SUCCESS);
+        return Ok(report.exit_code());
     }
     if matches!(subject, Some(DoctorSubject::Network)) {
         let report = roko_cli::doctor::run_network_doctor(roko_cli::doctor::NetworkDoctorOptions {
@@ -1305,20 +1313,27 @@ pub(crate) fn cmd_inject(
     let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
     let request = InjectRequest::new(session, kind, payload, wd);
 
+    // Validation errors (empty session, empty payload for directive/context) remain
+    // more specific than the transport-unavailable error below.
     request.validate().map_err(|e| anyhow!("{e}"))?;
+
+    // No delivery backend exists yet (#361 owns the transport).
+    // Fail closed: never report success when nothing was delivered.
+    let code = "inject_transport_unavailable";
+    let message = "inject transport unavailable — no delivery backend is configured";
+    let hint =
+        "No live command transport is installed; use plan pause/cancel controls where applicable.";
 
     if cli.json {
         println!(
-            r#"{{"status":"queued","kind":"{}","session":"{}","bytes":{}}}"#,
-            request.kind,
-            request.session_id,
-            request.payload.len(),
+            r#"{{"code":"{code}","message":"{message}","hint":"{hint}"}}"#,
         );
-    } else if !cli.quiet {
-        println!("{}", request.summary());
+    } else {
+        eprintln!("Error: {message}");
+        eprintln!("Hint: {hint}");
     }
 
-    Ok(EXIT_SUCCESS)
+    Ok(EXIT_FAILURE)
 }
 
 pub(crate) fn cmd_index(cli: &Cli, cmd: IndexCmd) -> Result<i32> {
@@ -1368,6 +1383,7 @@ pub(crate) fn cmd_index(cli: &Cli, cmd: IndexCmd) -> Result<i32> {
             query,
             kind,
             strategy,
+            file_pattern,
             limit,
             path,
         } => {
@@ -1381,41 +1397,15 @@ pub(crate) fn cmd_index(cli: &Cli, cmd: IndexCmd) -> Result<i32> {
                 None
             };
 
-            let search_strategy = match strategy.as_str() {
-                "keyword" => roko_index::SearchStrategy::Keyword(roko_index::KeywordQuery {
-                    text: query.clone(),
-                    scope: roko_index::SearchScope::Both,
-                    case_sensitive: false,
-                    whole_word: false,
-                }),
-                "structural" => {
-                    roko_index::SearchStrategy::Structural(roko_index::StructuralQuery {
-                        kind: sym_kind,
-                        visibility: None,
-                        file_pattern: Some(query.clone()),
-                        has_callers: None,
-                        min_pagerank: None,
-                    })
-                }
-                "hybrid" => roko_index::SearchStrategy::Hybrid {
-                    keyword: Some(roko_index::KeywordQuery {
-                        text: query.clone(),
-                        scope: roko_index::SearchScope::Both,
-                        case_sensitive: false,
-                        whole_word: false,
-                    }),
-                    structural: sym_kind.map(|k| roko_index::StructuralQuery {
-                        kind: Some(k),
-                        ..Default::default()
-                    }),
-                    hdc: None,
-                },
-                other => bail!(
-                    "unknown search strategy: {other} (expected keyword, structural, or hybrid)"
-                ),
+            let index_query = roko_index::IndexQuery {
+                strategy,
+                query: query.clone(),
+                kind: sym_kind,
+                file_pattern,
+                limit,
             };
 
-            let results = idx.search(search_strategy, limit);
+            let results = index_query.execute(&idx)?;
             if results.is_empty() {
                 println!("No results found for \"{query}\"");
             } else {
@@ -1490,87 +1480,206 @@ pub(crate) fn parse_symbol_kind(s: &str) -> Result<roko_core::language::SymbolKi
     }
 }
 
-pub(crate) fn print_completions(shell: CompletionShell) {
-    let words = completion_words();
-    let subcommand_map = nested_subcommand_words();
-    let dynamic = dynamic_completion_words();
-    match shell {
-        CompletionShell::Bash => print_bash_completions(&words, &subcommand_map, &dynamic),
-        CompletionShell::Zsh => print_zsh_completions(&words, &subcommand_map, &dynamic),
-        CompletionShell::Fish => print_fish_completions(&words, &subcommand_map, &dynamic),
-    }
+// ---------------------------------------------------------------------------
+// Recursive shell completion engine (#332)
+// ---------------------------------------------------------------------------
+
+/// A node in the recursive command tree used by completion generators.
+#[derive(Debug, Clone)]
+pub(crate) struct CompletionNode {
+    pub name: String,
+    pub children: Vec<CompletionNode>,
+    /// Long flags (e.g. `--workdir`).
+    pub long_flags: Vec<String>,
+    /// Short flags (e.g. `-q`).
+    pub short_flags: Vec<String>,
+    /// Value-enum candidates keyed by flag name.
+    pub value_enums: Vec<(String, Vec<String>)>,
 }
 
-pub(crate) fn completion_words() -> Vec<String> {
+/// Build the full recursive completion tree from clap metadata.
+pub(crate) fn build_completion_tree() -> CompletionNode {
     let mut command = Cli::command();
     command.build();
-    let mut words = command
+    build_node(&command)
+}
+
+fn build_node(cmd: &clap::Command) -> CompletionNode {
+    let children: Vec<CompletionNode> = cmd
         .get_subcommands()
-        .map(|cmd| cmd.get_name().to_string())
-        .collect::<Vec<_>>();
-    words.sort();
-    words.dedup();
-    words
-}
+        .filter(|s| !s.is_hide_set())
+        .map(build_node)
+        .collect();
 
-/// Collect nested subcommand names for each top-level command.
-pub(crate) fn nested_subcommand_words() -> Vec<(String, Vec<String>)> {
-    let mut command = Cli::command();
-    command.build();
-    let mut result = Vec::new();
-    for sub in command.get_subcommands() {
-        let name = sub.get_name().to_string();
-        let nested: Vec<String> = sub
-            .get_subcommands()
-            .map(|s| s.get_name().to_string())
+    let mut long_flags = Vec::new();
+    let mut short_flags = Vec::new();
+    let mut value_enums = Vec::new();
+
+    for arg in cmd.get_arguments() {
+        if let Some(l) = arg.get_long() {
+            long_flags.push(format!("--{l}"));
+        }
+        if let Some(s) = arg.get_short() {
+            short_flags.push(format!("-{s}"));
+        }
+        let possible: Vec<String> = arg
+            .get_possible_values()
+            .iter()
+            .filter(|v| !v.is_hide_set())
+            .map(|v| v.get_name().to_string())
             .collect();
-        if !nested.is_empty() {
-            result.push((name, nested));
+        if !possible.is_empty() {
+            let flag_name = arg
+                .get_long()
+                .map(|l| format!("--{l}"))
+                .unwrap_or_else(|| arg.get_id().to_string());
+            value_enums.push((flag_name, possible));
         }
     }
-    result
+
+    long_flags.sort();
+    long_flags.dedup();
+    short_flags.sort();
+    short_flags.dedup();
+
+    CompletionNode {
+        name: cmd.get_name().to_string(),
+        children,
+        long_flags,
+        short_flags,
+        value_enums,
+    }
 }
 
-/// Scan the filesystem for dynamic completion words (plan names, PRD slugs).
-pub(crate) fn dynamic_completion_words() -> Vec<(String, Vec<String>)> {
-    let mut result = Vec::new();
+/// Walk the tree to find the node matching a command path.
+fn resolve_node<'a>(root: &'a CompletionNode, path: &[&str]) -> Option<&'a CompletionNode> {
+    let mut node = root;
+    for segment in path {
+        node = node.children.iter().find(|c| c.name == *segment)?;
+    }
+    Some(node)
+}
 
-    // Scan plans/ directory for plan names.
-    if let Ok(entries) = std::fs::read_dir("plans") {
-        let plans: Vec<String> = entries
-            .filter_map(Result::ok)
-            .filter(|e| e.path().is_dir() || e.path().extension().is_some_and(|x| x == "toml"))
-            .filter_map(|e| {
-                e.path()
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().to_string())
+/// Scan the filesystem for dynamic completion candidates. Read-only, no network.
+pub(crate) fn dynamic_completion_candidates(path: &[&str]) -> Vec<String> {
+    match path {
+        ["plan", "run" | "show" | "validate"] | ["plan"] => scan_dir_names("plans"),
+        ["prd", "plan" | "status"]
+        | ["prd", "draft", "edit" | "promote"]
+        | ["prd"] => scan_dir_names(".roko/prd"),
+        ["agent", ..] => scan_dir_names(".roko/agents"),
+        _ => Vec::new(),
+    }
+}
+
+fn scan_dir_names(dir: &str) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .filter_map(Result::ok)
+        .filter_map(|e| {
+            let p = e.path();
+            if p.is_dir() {
+                p.file_name().map(|n| n.to_string_lossy().into_owned())
+            } else {
+                p.file_stem().map(|n| n.to_string_lossy().into_owned())
+            }
+        })
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// Shell-escape a candidate word for safe embedding in shell scripts.
+fn shell_escape(s: &str) -> String {
+    if s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '/')
+    {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Hidden __complete handler — emits newline-delimited candidates
+// ---------------------------------------------------------------------------
+
+/// Handle `roko __complete --shell <shell> --path <path> --current <word>`.
+pub(crate) fn cmd_complete(path_str: &str, current: &str) {
+    let tree = build_completion_tree();
+    let path_segments: Vec<&str> = if path_str.is_empty() {
+        Vec::new()
+    } else {
+        path_str.split_whitespace().collect()
+    };
+
+    let node = resolve_node(&tree, &path_segments).unwrap_or(&tree);
+
+    let candidates: Vec<String> = if current.starts_with('-') {
+        // Offer matching flags from the resolved node.
+        node.long_flags
+            .iter()
+            .chain(node.short_flags.iter())
+            .filter(|f| f.starts_with(current))
+            .cloned()
+            .collect()
+    } else {
+        // Check if the last path segment is a flag with enum values.
+        let flag_values = path_segments
+            .last()
+            .and_then(|last_seg| {
+                if last_seg.starts_with('-') {
+                    node.value_enums
+                        .iter()
+                        .find(|(flag, _)| flag == *last_seg)
+                        .map(|(_, vals)| vals.clone())
+                } else {
+                    None
+                }
             })
-            .collect();
-        if !plans.is_empty() {
-            result.push(("plan".to_string(), plans));
-        }
-    }
+            .unwrap_or_default();
 
-    // Scan .roko/prd/ directory for PRD slugs.
-    if let Ok(entries) = std::fs::read_dir(".roko/prd") {
-        let prds: Vec<String> = entries
-            .filter_map(Result::ok)
-            .filter(|e| e.path().is_dir())
-            .filter_map(|e| {
-                e.path()
-                    .file_name()
-                    .map(|s| s.to_string_lossy().to_string())
-            })
-            .collect();
-        if !prds.is_empty() {
-            result.push(("prd".to_string(), prds));
+        if !flag_values.is_empty() {
+            flag_values
+                .into_iter()
+                .filter(|v| v.starts_with(current))
+                .collect()
+        } else {
+            let mut cands: Vec<String> = node
+                .children
+                .iter()
+                .map(|c| c.name.clone())
+                .filter(|n| n.starts_with(current))
+                .collect();
+            let dynamic = dynamic_completion_candidates(&path_segments);
+            cands.extend(dynamic.into_iter().filter(|d| d.starts_with(current)));
+            cands.sort();
+            cands.dedup();
+            cands
         }
-    }
+    };
 
-    result
+    for c in &candidates {
+        println!("{c}");
+    }
 }
 
-/// Global flag names for flag completion (UX-1c).
+// ---------------------------------------------------------------------------
+// Static completion script generators (bash / zsh / fish)
+// ---------------------------------------------------------------------------
+
+pub(crate) fn print_completions(shell: CompletionShell) {
+    match shell {
+        CompletionShell::Bash => print_bash_completions(),
+        CompletionShell::Zsh => print_zsh_completions(),
+        CompletionShell::Fish => print_fish_completions(),
+    }
+}
+
+/// Global flag names for flag completion.
 pub(crate) fn completion_flag_words() -> Vec<String> {
     let mut command = Cli::command();
     command.build();
@@ -1583,124 +1692,233 @@ pub(crate) fn completion_flag_words() -> Vec<String> {
     flags
 }
 
-pub(crate) fn print_bash_completions(
-    words: &[String],
-    subcommands: &[(String, Vec<String>)],
-    dynamic: &[(String, Vec<String>)],
-) {
-    let top_words = words.join(" ");
-    let flag_words = completion_flag_words().join(" ");
-    println!(r#"# roko bash completions (DEPLOY-06: dynamic + nested + flags)"#);
-    println!(r#"_roko()"#);
-    println!(r#"{{"#);
+/// Collect all recursive command paths for shell case statements.
+fn collect_all_subcommand_paths(
+    node: &CompletionNode,
+    prefix: &[String],
+) -> Vec<(Vec<String>, Vec<String>)> {
+    let mut result = Vec::new();
+    let child_names: Vec<String> = node.children.iter().map(|c| c.name.clone()).collect();
+    if !child_names.is_empty() {
+        result.push((prefix.to_vec(), child_names));
+    }
+    for child in &node.children {
+        let mut child_prefix = prefix.to_vec();
+        child_prefix.push(child.name.clone());
+        result.extend(collect_all_subcommand_paths(child, &child_prefix));
+    }
+    result
+}
+
+fn print_bash_completions() {
+    let tree = build_completion_tree();
+    let top_names: Vec<String> = tree.children.iter().map(|c| c.name.clone()).collect();
+    let all_paths = collect_all_subcommand_paths(&tree, &[]);
+
+    println!("# roko bash completions — recursive + dynamic (#332)");
+    println!("_roko()");
+    println!("{{");
     println!(r#"    local cur="${{COMP_WORDS[COMP_CWORD]}}""#);
     println!(r#"    local prev="${{COMP_WORDS[COMP_CWORD-1]}}""#);
     println!();
-    // Flag completions when current word starts with -.
-    println!(r#"    if [[ "$cur" == -* ]]; then"#);
-    println!(r#"        COMPREPLY=( $(compgen -W "{flag_words}" -- "$cur") )"#);
-    println!(r#"        return 0"#);
-    println!(r#"    fi"#);
+    // Build the command path from COMP_WORDS.
+    println!("    # Build command path from COMP_WORDS, skipping roko and flags.");
+    println!(r#"    local cmd_path="""#);
+    println!("    local i");
+    println!("    for (( i=1; i<COMP_CWORD; i++ )); do");
+    println!(r#"        case "${{COMP_WORDS[i]}}" in"#);
+    println!(r#"            -*) ;;"#);
+    println!(r#"            *) cmd_path="$cmd_path ${{COMP_WORDS[i]}}" ;;"#);
+    println!("        esac");
+    println!("    done");
+    println!(r#"    cmd_path="${{cmd_path## }}""#);
     println!();
-    // Nested subcommand completions.
+    // Try dynamic completion via __complete (handles workspace names + arbitrary depth).
+    println!(r#"    local candidates"#);
+    println!(r#"    candidates="$(roko __complete --shell bash --path "$cmd_path" --current "$cur" 2>/dev/null)""#);
+    println!(r#"    if [[ -n "$candidates" ]]; then"#);
+    println!(r#"        COMPREPLY=( $(compgen -W "$candidates" -- "$cur") )"#);
+    println!("        return 0");
+    println!("    fi");
+    println!();
+    // Static fallback: case tree for offline use.
     println!(r#"    case "$prev" in"#);
-    for (parent, children) in subcommands {
-        let child_words = children.join(" ");
-        println!(r#"        {parent})"#);
-        println!(r#"            COMPREPLY=( $(compgen -W "{child_words}" -- "$cur") )"#);
-        println!(r#"            return 0"#);
-        println!(r#"            ;;"#);
+    let mut seen_keys = std::collections::HashSet::new();
+    for (path, children) in &all_paths {
+        let key = path.last().map_or("roko", |s| s.as_str());
+        if !seen_keys.insert(key.to_string()) {
+            continue;
+        }
+        let child_str = children
+            .iter()
+            .map(|c| shell_escape(c))
+            .collect::<Vec<_>>()
+            .join(" ");
+        println!(r#"        {key})"#);
+        println!(r#"            COMPREPLY=( $(compgen -W "{child_str}" -- "$cur") )"#);
+        println!("            return 0");
+        println!("            ;;");
     }
-    // Dynamic completions for plan/prd subcommands.
-    for (parent, items) in dynamic {
-        let item_words = items.join(" ");
-        // Add dynamic words to existing subcommand completions.
-        println!(r#"        {parent})"#);
-        println!(r#"            COMPREPLY=( $(compgen -W "{item_words}" -- "$cur") )"#);
-        println!(r#"            return 0"#);
-        println!(r#"            ;;"#);
-    }
-    println!(r#"    esac"#);
+    println!("    esac");
     println!();
-    // Top-level completions.
+    // Top-level fallback.
+    let top_words = top_names
+        .iter()
+        .map(|c| shell_escape(c))
+        .collect::<Vec<_>>()
+        .join(" ");
     println!(r#"    COMPREPLY=( $(compgen -W "{top_words}" -- "$cur") )"#);
-    println!(r#"}}"#);
-    println!(r#"complete -F _roko roko"#);
+    println!("}}");
+    println!("complete -F _roko roko");
 }
 
-pub(crate) fn print_zsh_completions(
-    words: &[String],
-    subcommands: &[(String, Vec<String>)],
-    dynamic: &[(String, Vec<String>)],
-) {
+fn print_zsh_completions() {
+    let tree = build_completion_tree();
+    let all_paths = collect_all_subcommand_paths(&tree, &[]);
     let flags = completion_flag_words();
-    println!(r#"#compdef roko"#);
-    println!(r#"# roko zsh completions (DEPLOY-06: dynamic + nested + flags)"#);
-    println!(r#"_roko() {{"#);
-    println!(r#"  local -a commands flags"#);
-    let top_words = words.join(" ");
     let flag_words = flags.join(" ");
-    println!(r#"  commands=({top_words})"#);
-    println!(r#"  flags=({flag_words})"#);
+
+    println!("#compdef roko");
+    println!("# roko zsh completions — recursive + dynamic (#332)");
+    println!("_roko() {{");
+    println!("  local -a candidates");
     println!();
-    // Flag completion at any position when current word starts with -.
+    // Build command path from words, skipping flags.
+    println!("  local cmd_path=()");
+    println!("  local i");
+    println!("  for (( i=2; i<CURRENT; i++ )); do");
+    println!(r#"    case "$words[i]" in"#);
+    println!("      -*) ;;");
+    println!("      *) cmd_path+=(\"$words[i]\") ;;");
+    println!("    esac");
+    println!("  done");
+    println!();
+    // Flag completion.
     println!(r#"  if [[ "$words[CURRENT]" == -* ]]; then"#);
+    println!("    local -a flags");
+    println!("    flags=({flag_words})");
     println!(r#"    _describe 'roko flag' flags"#);
-    println!(r#"    return"#);
-    println!(r#"  fi"#);
+    println!("    return");
+    println!("  fi");
     println!();
-    println!(r#"  if (( CURRENT == 2 )); then"#);
-    println!(r#"    _describe 'roko command' commands"#);
-    println!(r#"  elif (( CURRENT == 3 )); then"#);
-    println!(r#"    case $words[2] in"#);
-    for (parent, children) in subcommands {
-        let child_words = children.join(" ");
-        println!(r#"      {parent})"#);
-        println!(r#"        local -a subcmds"#);
-        println!(r#"        subcmds=({child_words})"#);
-        println!(r#"        _describe '{parent} subcommand' subcmds"#);
-        println!(r#"        ;;"#);
+    // Dynamic completion via __complete.
+    println!("  candidates=(${{(f)\"$(roko __complete --shell zsh --path \"${{(j: :)cmd_path}}\" --current \"$words[CURRENT]\" 2>/dev/null)\"}})");
+    println!("  if (( $#candidates )); then");
+    println!(r#"    _describe 'roko' candidates"#);
+    println!("    return");
+    println!("  fi");
+    println!();
+    // Static fallback by joined path.
+    println!(r#"  local joined="${{(j: :)cmd_path}}""#);
+    println!("  case \"$joined\" in");
+    for (path, children) in &all_paths {
+        let key = path.join(" ");
+        let child_str = children
+            .iter()
+            .map(|c| shell_escape(c))
+            .collect::<Vec<_>>()
+            .join(" ");
+        println!("    \"{key}\")");
+        println!("      local -a subcmds");
+        println!("      subcmds=({child_str})");
+        println!(r#"      _describe 'roko subcommand' subcmds"#);
+        println!("      ;;");
     }
-    for (parent, items) in dynamic {
-        let item_words = items.join(" ");
-        println!(r#"      {parent})"#);
-        println!(r#"        local -a slugs"#);
-        println!(r#"        slugs=({item_words})"#);
-        println!(r#"        _describe '{parent} item' slugs"#);
-        println!(r#"        ;;"#);
-    }
-    println!(r#"    esac"#);
-    println!(r#"  fi"#);
-    println!(r#"}}"#);
+    // Empty path = top-level.
+    let top_names: Vec<String> = tree
+        .children
+        .iter()
+        .map(|c| shell_escape(&c.name))
+        .collect();
+    let top_words = top_names.join(" ");
+    println!("    \"\")");
+    println!("      local -a commands");
+    println!("      commands=({top_words})");
+    println!(r#"      _describe 'roko command' commands"#);
+    println!("      ;;");
+    println!("  esac");
+    println!("}}");
     println!(r#"_roko "$@""#);
 }
 
-pub(crate) fn print_fish_completions(
-    words: &[String],
-    subcommands: &[(String, Vec<String>)],
-    dynamic: &[(String, Vec<String>)],
-) {
-    let flags = completion_flag_words();
-    println!("# roko fish completions (DEPLOY-06: dynamic + nested + flags)");
-    for word in words {
-        println!("complete -c roko -f -n '__fish_use_subcommand' -a '{word}'");
+fn print_fish_completions() {
+    let tree = build_completion_tree();
+
+    println!("# roko fish completions — recursive + dynamic (#332)");
+    println!();
+    // Dynamic completion helper function.
+    println!("function __roko_dynamic_complete");
+    println!("    set -l tokens (commandline -opc)");
+    println!("    set -e tokens[1]  # remove 'roko'");
+    println!("    set -l current (commandline -ct)");
+    println!("    set -l cmd_path (string join ' ' -- $tokens)");
+    println!(
+        "    roko __complete --shell fish --path \"$cmd_path\" --current \"$current\" 2>/dev/null"
+    );
+    println!("end");
+    println!();
+    // Top-level subcommands.
+    for child in &tree.children {
+        let name = shell_escape(&child.name);
+        println!("complete -c roko -f -n '__fish_use_subcommand' -a '{name}'");
     }
-    // Global flag completions.
-    for flag in &flags {
-        let short = flag.trim_start_matches('-');
-        println!("complete -c roko -l '{short}'");
-    }
-    // Nested subcommand completions.
-    for (parent, children) in subcommands {
-        for child in children {
-            println!("complete -c roko -f -n '__fish_seen_subcommand_from {parent}' -a '{child}'");
+    println!();
+    // Global flags with both long and short variants.
+    let mut cli_cmd = Cli::command();
+    cli_cmd.build();
+    for arg in cli_cmd.get_arguments() {
+        if let Some(long) = arg.get_long() {
+            let escaped = shell_escape(long);
+            if let Some(short) = arg.get_short() {
+                println!("complete -c roko -l '{escaped}' -s '{short}'");
+            } else {
+                println!("complete -c roko -l '{escaped}'");
+            }
         }
     }
-    // Dynamic completions.
-    for (parent, items) in dynamic {
-        for item in items {
-            println!("complete -c roko -f -n '__fish_seen_subcommand_from {parent}' -a '{item}'");
+    println!();
+    // Recursive static subcommands at all depths.
+    emit_fish_children(&tree);
+    println!();
+    // Dynamic completions for workspace items (plan/prd/agent names).
+    println!("# Dynamic completions for workspace values.");
+    println!(
+        "complete -c roko -f -n '__fish_seen_subcommand_from plan' -a '(__roko_dynamic_complete)'"
+    );
+    println!(
+        "complete -c roko -f -n '__fish_seen_subcommand_from prd' -a '(__roko_dynamic_complete)'"
+    );
+    println!(
+        "complete -c roko -f -n '__fish_seen_subcommand_from agent' -a '(__roko_dynamic_complete)'"
+    );
+}
+
+fn emit_fish_children(node: &CompletionNode) {
+    for child in &node.children {
+        let parent_name = shell_escape(&node.name);
+        let child_name = shell_escape(&child.name);
+        // Emit subcommand entry visible when parent is active.
+        if node.name != "roko" && !node.name.is_empty() {
+            println!(
+                "complete -c roko -f -n '__fish_seen_subcommand_from {parent_name}' -a '{child_name}'"
+            );
         }
+        // Emit per-command value-enum flags.
+        for (flag, values) in &child.value_enums {
+            let flag_clean = flag.trim_start_matches('-');
+            let vals = values
+                .iter()
+                .map(|v| shell_escape(v))
+                .collect::<Vec<_>>()
+                .join(" ");
+            println!(
+                "complete -c roko -f -n '__fish_seen_subcommand_from {}' -l '{}' -xa '{}'",
+                shell_escape(&child.name),
+                shell_escape(flag_clean),
+                vals,
+            );
+        }
+        emit_fish_children(child);
     }
 }
 

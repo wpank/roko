@@ -471,6 +471,7 @@ impl ClaudeCliAgent {
             output_tokens: Self::saturating_u64_to_u32(stream_usage.output_tokens),
             cache_read_tokens: Self::saturating_u64_to_u32(stream_usage.cache_read_tokens),
             cache_create_tokens: Self::saturating_u64_to_u32(stream_usage.cache_creation_tokens),
+            reasoning_tokens: 0,
             cost_usd: stream_usage.cost_usd.unwrap_or(0.0) as f32,
             wall_ms,
         }

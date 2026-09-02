@@ -1418,6 +1418,7 @@ struct TaskRuntimeState {
     tokens_out: u64,
     cache_read_tokens: u64,
     cache_write_tokens: u64,
+    reasoning_tokens: u64,
     cost_usd: f64,
     task_agent_calls: u32,
     task_model_hint: Option<String>,
@@ -1511,6 +1512,7 @@ impl TaskRuntimeState {
             tokens_out: state.tokens_out,
             cache_read_tokens: state.cache_read_tokens,
             cache_write_tokens: state.cache_write_tokens,
+            reasoning_tokens: state.reasoning_tokens,
             cost_usd: state.cost_usd,
             task_agent_calls: state.task_agent_calls,
             task_model_hint: state.task_model_hint.clone(),
@@ -1538,6 +1540,7 @@ impl TaskRuntimeState {
         state.tokens_out = self.tokens_out;
         state.cache_read_tokens = self.cache_read_tokens;
         state.cache_write_tokens = self.cache_write_tokens;
+        state.reasoning_tokens = self.reasoning_tokens;
         state.cost_usd = self.cost_usd;
         state.task_agent_calls = self.task_agent_calls;
         state.task_model_hint = self.task_model_hint.clone();
@@ -2524,10 +2527,38 @@ pub async fn run_with_tui_commands(
     // of a prior run is ambiguous and must remain an explicit operator choice.
     // The unified snapshot is authoritative whenever present. Legacy
     // run-state.json is consulted only when the unified path is NotFound.
-    let (mut prior_snapshot, mut loaded_gate_thresholds) = match persist::load_state_snapshot(
-        &paths,
-    ) {
-        Ok(Some(unified)) => {
+    // Load the unified snapshot exactly once. The loaded StateSnapshot is
+    // reused by both run-state resume and executor/merge-queue resume so
+    // load_state_snapshot is never called a second time.
+    let loaded_unified: Option<roko_runtime::StateSnapshot> =
+        match persist::load_state_snapshot(&paths) {
+            Ok(snap) => snap,
+            Err(err) => {
+                warn!(error = %err, "state snapshot corrupt; trying backup");
+                match persist::load_state_snapshot_backup(&paths) {
+                    Ok(backup) => backup,
+                    _ => {
+                        // Both authoritative and backup snapshots are corrupt or
+                        // missing. Return a typed recovery error instead of
+                        // silently starting fresh (which would fail later when
+                        // prepare_resume_with_force re-reads the same file).
+                        return Err(anyhow::anyhow!(
+                            super::resume::ResumeError::StateRecoveryRequired {
+                                snapshot_path: paths.state_snapshot_json.clone(),
+                                reason: format!(
+                                    "the snapshot at {} is corrupt and no valid backup exists. \
+                                     The file has been preserved for diagnosis. \
+                                     Run with --fresh to archive prior state and start a new run",
+                                    paths.state_snapshot_json.display()
+                                ),
+                            }
+                        ));
+                    }
+                }
+            }
+        };
+    let (mut prior_snapshot, mut loaded_gate_thresholds) = match loaded_unified.as_ref() {
+        Some(unified) => {
             info!(
                 timestamp_ms = unified.timestamp_ms,
                 "loaded state snapshot -- checksum valid"
@@ -2538,7 +2569,7 @@ pub async fn run_with_tui_commands(
                 .context("parse validated authoritative gate_thresholds_json")?;
             (Some(run_state), Some(loaded_gt))
         }
-        Ok(None) => {
+        None => {
             // No unified snapshot -- try legacy run-state.json.
             match persist::load_run_state(&paths) {
                 Ok(Some(snapshot)) => {
@@ -2551,23 +2582,6 @@ pub async fn run_with_tui_commands(
                         error = %err,
                         "failed to read prior run-state.json; continuing without seeded resume state"
                     );
-                    (None, None)
-                }
-            }
-        }
-        Err(err) => {
-            warn!(error = %err, "state snapshot corrupt; trying backup");
-            match persist::load_state_snapshot_backup(&paths) {
-                Ok(Some(backup)) => {
-                    warn!("loaded backup snapshot — most recent checkpoint may be lost");
-                    let run_state = serde_json::from_str(&backup.run_state_json)
-                        .context("parse validated backup run_state_json")?;
-                    let loaded_gt = serde_json::from_str(&backup.gate_thresholds_json)
-                        .context("parse validated backup gate_thresholds_json")?;
-                    (Some(run_state), Some(loaded_gt))
-                }
-                _ => {
-                    warn!("no valid backup; starting fresh");
                     (None, None)
                 }
             }
@@ -2793,7 +2807,9 @@ pub async fn run_with_tui_commands(
     let plan_ids: Vec<String> = plans.iter().map(|p| p.id.clone()).collect();
 
     // Only resume if snapshot exists AND its plans match the current run.
-    let resume = load_executor(&paths, &exec_config, &plan_ids);
+    // Pass the already-loaded unified snapshot so load_executor does not
+    // re-read the file from disk.
+    let resume = load_executor(&paths, &exec_config, &plan_ids, loaded_unified.as_ref());
     let mut executor = resume.executor;
     let merge_queue = resume.merge_queue;
 
@@ -3220,6 +3236,7 @@ pub async fn run_with_tui_commands(
         state.tokens_out = salvage.agent_snapshot.tokens_out;
         state.cache_read_tokens = salvage.agent_snapshot.cache_read_tokens;
         state.cache_write_tokens = salvage.agent_snapshot.cache_write_tokens;
+        state.reasoning_tokens = salvage.agent_snapshot.reasoning_tokens;
         state.cost_usd = salvage.agent_snapshot.cost_usd;
         capture_task_runtime(
             &mut task_runtime_states,
@@ -8384,6 +8401,7 @@ fn publish_learning_agent_event(
                     output_tokens: saturating_u32(state.tokens_out),
                     cache_read_tokens: saturating_u32(state.cache_read_tokens),
                     cache_create_tokens: saturating_u32(state.cache_write_tokens),
+                    reasoning_tokens: saturating_u32(state.reasoning_tokens),
                     cost_usd: total_cost_usd.unwrap_or(state.cost_usd) as f32,
                     wall_ms: state.task_elapsed_ms(),
                 },
@@ -8433,12 +8451,13 @@ fn agent_event_json(event: &AgentEvent) -> serde_json::Value {
             output_tokens,
             cache_read_tokens,
             cache_write_tokens,
-            reasoning_tokens: _,
+            reasoning_tokens,
         } => serde_json::json!({
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "cache_read_tokens": cache_read_tokens,
             "cache_write_tokens": cache_write_tokens,
+            "reasoning_tokens": reasoning_tokens,
         }),
         AgentEvent::TurnCompleted {
             session_id,
@@ -10067,11 +10086,22 @@ struct ResumeLoad {
 
 /// Load a resumable executor snapshot when compatible, otherwise start fresh
 /// and emit a structured resume marker explaining the decision.
-fn load_executor(paths: &PersistPaths, config: &ExecutorConfig, plan_ids: &[String]) -> ResumeLoad {
+///
+/// When `preloaded_unified` is `Some`, the unified snapshot has already been
+/// loaded and validated by the caller; this avoids a second disk read.
+fn load_executor(
+    paths: &PersistPaths,
+    config: &ExecutorConfig,
+    plan_ids: &[String],
+    preloaded_unified: Option<&roko_runtime::StateSnapshot>,
+) -> ResumeLoad {
     // The unified snapshot is authoritative whenever present. Standalone
     // orchestrator/executor files are legacy fallbacks only for NotFound;
     // corruption must never resume an unrelated generation.
-    let (snapshot, merge_queue, snapshot_path) = match load_unified_state_checkpoint(paths) {
+    let (snapshot, merge_queue, snapshot_path) = match extract_executor_from_unified(
+        preloaded_unified,
+        paths,
+    ) {
         Ok(Some((snapshot, merge_queue))) => (
             snapshot,
             merge_queue,
@@ -10246,6 +10276,32 @@ fn load_orchestrator_checkpoint(
             crate::orchestrator::executor::current_schema_version()
         ));
     }
+    let merge_queue = snapshot
+        .merge_queue
+        .map(MergeQueue::from_snapshot)
+        .unwrap_or_else(MergeQueue::new);
+    Ok(Some((snapshot.executor, merge_queue)))
+}
+
+/// Extract executor + merge queue from a pre-loaded unified snapshot,
+/// falling back to disk-based `load_unified_state_checkpoint` if no
+/// preloaded snapshot is available.
+fn extract_executor_from_unified(
+    preloaded: Option<&roko_runtime::StateSnapshot>,
+    paths: &PersistPaths,
+) -> Result<Option<(ExecutorSnapshot, MergeQueue)>, String> {
+    match preloaded {
+        Some(unified) => parse_executor_from_unified(unified),
+        None => load_unified_state_checkpoint(paths),
+    }
+}
+
+/// Parse executor and merge queue from an already-loaded unified snapshot.
+fn parse_executor_from_unified(
+    unified: &roko_runtime::StateSnapshot,
+) -> Result<Option<(ExecutorSnapshot, MergeQueue)>, String> {
+    let snapshot = OrchestratorSnapshot::from_json(&unified.orchestrator_json)
+        .map_err(|err| format!("failed to parse authoritative orchestrator_json: {err}"))?;
     let merge_queue = snapshot
         .merge_queue
         .map(MergeQueue::from_snapshot)
@@ -11086,6 +11142,7 @@ async fn dispatch_action(
             // the guardrail.
             let max_plan_usd = ctx.config.max_plan_usd;
             let plan_spent = ctx.state.plan_cost(plan_id);
+            let mut budget_pressure = false;
 
             if ctx.state.budget_exhausted && !ctx.config.budget_override {
                 warn!(
@@ -11162,8 +11219,9 @@ async fn dispatch_action(
                             spent = plan_spent,
                             limit = max_plan_usd,
                             pct = ">80%",
-                            "plan budget >80% consumed — BudgetAction::RouteToCheaper"
+                            "plan budget >80% consumed — routing to cheaper models"
                         );
+                        budget_pressure = true;
                     }
                     roko_learn::budget::BudgetAction::Warn {
                         percent_used,
@@ -12021,7 +12079,7 @@ async fn dispatch_action(
                 .clone()
                 .unwrap_or_else(|| "implementer".to_string());
             let dispatcher = ctx.factory.dispatcher();
-            let mut dispatch_plan = match dispatcher.plan(&task_def, &dispatch_ctx) {
+            let mut dispatch_plan = match dispatcher.plan_logged(&task_def, &dispatch_ctx, &task_id, budget_pressure) {
                 Ok(plan) => plan,
                 Err(err) => {
                     let message = format!("dispatch planning failed: {err}");
@@ -15738,6 +15796,7 @@ fn timeout_agent_snapshot(state: &RunState) -> TimeoutAgentSnapshot {
         tokens_out: state.tokens_out,
         cache_read_tokens: state.cache_read_tokens,
         cache_write_tokens: state.cache_write_tokens,
+        reasoning_tokens: state.reasoning_tokens,
         cost_usd: state.cost_usd,
     }
 }
@@ -22326,6 +22385,7 @@ depends_on = []
             &paths,
             &ExecutorConfig::default(),
             &["self-dev-ux".to_string()],
+            Some(&unified),
         );
 
         assert_eq!(resume.marker.outcome, ResumeOutcome::Resumed);

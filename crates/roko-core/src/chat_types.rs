@@ -131,6 +131,11 @@ pub struct Usage {
     pub cache_read_tokens: u32,
     /// Cache-creation tokens (wrote to prompt cache).
     pub cache_create_tokens: u32,
+    /// Reasoning/thinking tokens reported by the provider.
+    /// For OpenAI o-series / Codex, these are a *subset* of `output_tokens`,
+    /// not an addition. Defaults to `0` for backward compatibility.
+    #[serde(default)]
+    pub reasoning_tokens: u32,
     /// Estimated cost in USD.
     pub cost_usd: f32,
     /// Wall-clock duration in milliseconds.
@@ -146,6 +151,7 @@ impl Usage {
             output_tokens: 0,
             cache_read_tokens: 0,
             cache_create_tokens: 0,
+            reasoning_tokens: 0,
             cost_usd: 0.0,
             wall_ms: 0,
         }
@@ -163,6 +169,7 @@ impl Usage {
         self.output_tokens += other.output_tokens;
         self.cache_read_tokens += other.cache_read_tokens;
         self.cache_create_tokens += other.cache_create_tokens;
+        self.reasoning_tokens += other.reasoning_tokens;
         self.cost_usd += other.cost_usd;
         self.wall_ms += other.wall_ms;
     }
@@ -435,6 +442,7 @@ mod tests {
             output_tokens: 2_000,
             cache_read_tokens: 500,
             cache_create_tokens: 0,
+            reasoning_tokens: 0,
             cost_usd: 0.0,
             wall_ms: 100,
         };
@@ -459,6 +467,7 @@ mod tests {
             output_tokens: 2_000,
             cache_read_tokens: 0,
             cache_create_tokens: 0,
+            reasoning_tokens: 0,
             cost_usd: 0.05, // already set (e.g. Claude CLI)
             wall_ms: 100,
         };
@@ -480,6 +489,7 @@ mod tests {
             output_tokens: 2_000,
             cache_read_tokens: 0,
             cache_create_tokens: 0,
+            reasoning_tokens: 0,
             cost_usd: 0.0,
             wall_ms: 100,
         };
@@ -504,6 +514,7 @@ mod tests {
             output_tokens: 0,
             cache_read_tokens: 1_000_000,
             cache_create_tokens: 0,
+            reasoning_tokens: 0,
             cost_usd: 0.0,
             wall_ms: 0,
         };

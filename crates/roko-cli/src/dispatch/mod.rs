@@ -201,6 +201,28 @@ impl Dispatcher {
         })
     }
 
+    /// Like [`plan`](Self::plan) but emits structured routing decision logs.
+    ///
+    /// Used by the live event loop where routing visibility matters.
+    pub fn plan_logged(
+        &self,
+        task: &TaskDef,
+        ctx: &DispatchContext,
+        task_id: &str,
+        budget_pressure: bool,
+    ) -> Result<RunnerDispatchPlan, RunnerDispatchError> {
+        let mut inputs = RoutingInputs::from_task(task, ctx);
+        inputs.budget_pressure = budget_pressure;
+        let choice = self.router.route_logged(&inputs, task_id)?;
+        let prompt_ctx = PromptContext::from_task(task, ctx);
+        let assembled = self.prompt_assembler.assemble(task, &prompt_ctx)?;
+        Ok(RunnerDispatchPlan {
+            model: choice.model.clone(),
+            forced: choice.forced(),
+            prompt: assembled,
+        })
+    }
+
     /// Dispatch `task` through the supplied bridge and normalize the
     /// outcome.
     ///

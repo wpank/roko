@@ -139,14 +139,13 @@ pub(crate) fn handle_agent_event(
             output_tokens,
             cache_read_tokens,
             cache_write_tokens,
-            // Reasoning tokens are a subset of `output_tokens`; nothing in the
-            // runner ledger aggregates them yet, so they are not double-counted.
-            reasoning_tokens: _,
+            reasoning_tokens,
         } => {
             state.tokens_in += input_tokens;
             state.tokens_out += output_tokens;
             state.cache_read_tokens += cache_read_tokens;
             state.cache_write_tokens += cache_write_tokens;
+            state.reasoning_tokens += reasoning_tokens;
             // Token counts are accumulated here; authoritative cost comes from
             // TurnCompleted.total_cost_usd which overwrites state.cost_usd.
 

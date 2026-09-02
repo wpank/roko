@@ -199,7 +199,7 @@ pub async fn run_learning_subscriber(
                     attempt_id,
                     input_tokens: u64::from(usage.input_tokens),
                     output_tokens: u64::from(usage.output_tokens),
-                    reasoning_tokens: 0,
+                    reasoning_tokens: u64::from(usage.reasoning_tokens),
                     cache_read_tokens: u64::from(usage.cache_read_tokens),
                     cache_write_tokens: u64::from(usage.cache_create_tokens),
                     cost_usd: f64::from(usage.cost_usd),

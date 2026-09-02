@@ -1811,6 +1811,27 @@ pub struct DiskHealthReport {
 }
 
 impl DiskHealthReport {
+    /// Exit code for the focused disk report.
+    ///
+    /// - `0` — all clear
+    /// - `1` — advisory findings only (orphaned worktrees, large logs, stale targets)
+    /// - `2` — `low_disk` is true (fatal)
+    #[must_use]
+    pub const fn exit_code(&self) -> i32 {
+        if self.low_disk {
+            return 2;
+        }
+        // Advisory findings: orphaned worktrees, large JSONL, stale targets.
+        // These match `DoctorStatus::Warn` in the full doctor, so exit 1.
+        if !self.orphaned_worktree_dirs.is_empty()
+            || !self.large_jsonl_files.is_empty()
+            || !self.stale_target_dirs.is_empty()
+        {
+            return 1;
+        }
+        0
+    }
+
     /// Render the focused `roko doctor disk` report.
     #[must_use]
     pub fn render_human(&self) -> String {
@@ -2357,7 +2378,7 @@ impl NetworkProbeReport {
 }
 
 /// Return the canonical endpoint for HTTP provider kinds without a configured URL.
-fn endpoint_for_kind(kind: ProviderKind) -> Option<&'static str> {
+pub(crate) fn endpoint_for_kind(kind: ProviderKind) -> Option<&'static str> {
     match kind {
         ProviderKind::AnthropicApi => Some("https://api.anthropic.com/v1"),
         ProviderKind::OpenAiCompat => Some("https://api.openai.com/v1"),
@@ -2373,7 +2394,7 @@ fn endpoint_for_kind(kind: ProviderKind) -> Option<&'static str> {
     }
 }
 
-fn endpoint_for_provider(provider: &ProviderConfig) -> Option<String> {
+pub(crate) fn endpoint_for_provider(provider: &ProviderConfig) -> Option<String> {
     provider
         .base_url
         .as_deref()
@@ -2420,7 +2441,7 @@ fn skipped_provider_check(
 }
 
 /// Probe one provider endpoint using an HTTP `HEAD` request.
-async fn probe_one_provider(
+pub(crate) async fn probe_one_provider(
     provider_id: String,
     url: String,
     timeout: Duration,
@@ -3629,5 +3650,73 @@ mod tests {
         ));
         assert!(output.contains("fix: set ANTHROPIC_API_KEY"));
         assert_eq!(report.exit_code(), 0);
+    }
+
+    fn clean_disk_report() -> DiskHealthReport {
+        DiskHealthReport {
+            free_disk_mb: Some(100_000),
+            low_disk: false,
+            orphaned_worktree_dirs: vec![],
+            large_jsonl_files: vec![],
+            stale_target_dirs: vec![],
+            total_target_mb: 500,
+            roko_dir_mb: 10,
+            worktree_count: 0,
+            worktree_total_mb: 0,
+            log_rotation_max_mb: 100,
+        }
+    }
+
+    #[test]
+    fn disk_report_clean_exits_zero() {
+        let report = clean_disk_report();
+        assert_eq!(report.exit_code(), 0);
+    }
+
+    #[test]
+    fn disk_report_low_disk_exits_two() {
+        let mut report = clean_disk_report();
+        report.low_disk = true;
+        assert_eq!(report.exit_code(), 2);
+    }
+
+    #[test]
+    fn disk_report_advisory_orphaned_worktree_exits_one() {
+        let mut report = clean_disk_report();
+        report
+            .orphaned_worktree_dirs
+            .push("/tmp/orphan".to_string());
+        assert_eq!(report.exit_code(), 1);
+    }
+
+    #[test]
+    fn disk_report_advisory_large_jsonl_exits_one() {
+        let mut report = clean_disk_report();
+        report
+            .large_jsonl_files
+            .push("/tmp/big.jsonl".to_string());
+        assert_eq!(report.exit_code(), 1);
+    }
+
+    #[test]
+    fn disk_report_advisory_stale_target_exits_one() {
+        let mut report = clean_disk_report();
+        report.stale_target_dirs.push(DiskTargetFinding {
+            path: "/tmp/target".to_string(),
+            size_mb: 1000,
+            age_days: 90,
+        });
+        assert_eq!(report.exit_code(), 1);
+    }
+
+    #[test]
+    fn disk_report_low_disk_trumps_advisory() {
+        let mut report = clean_disk_report();
+        report.low_disk = true;
+        report
+            .orphaned_worktree_dirs
+            .push("/tmp/orphan".to_string());
+        // Fatal (low_disk) should return 2, not 1.
+        assert_eq!(report.exit_code(), 2);
     }
 }

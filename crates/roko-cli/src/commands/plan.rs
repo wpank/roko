@@ -326,7 +326,15 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 });
                 println!("{}", serde_json::to_string_pretty(&payload)?);
             } else if !cli.quiet {
-                println!("created plan '{}' at {}", plan_id, plan_dir.display());
+                roko_cli::spinner::print_success(&format!(
+                    "Created plan '{plan_id}' at {}",
+                    plan_dir.display()
+                ));
+                print_next_step_hint(&format!(
+                    "Next: edit {tasks} and run with `roko plan run {}`",
+                    plan_dir.display(),
+                    tasks = tasks_path.display()
+                ));
             }
             Ok(EXIT_SUCCESS)
         }
@@ -674,6 +682,16 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                         &wd,
                     );
                     if roko_cli::runner::preflight::print_preflight_results(&preflight_checks) {
+                        return Ok(EXIT_FAILURE);
+                    }
+
+                    // ── Async provider connectivity checks ───────────────
+                    let connectivity_checks =
+                        roko_cli::runner::preflight::check_provider_connectivity(
+                            &early_roko_config,
+                        )
+                        .await;
+                    if roko_cli::runner::preflight::print_preflight_results(&connectivity_checks) {
                         return Ok(EXIT_FAILURE);
                     }
                 }

@@ -52,6 +52,31 @@ impl From<InferenceTier> for u8 {
 /// Vitality threshold: below this, T2 degrades from Opus to Sonnet (sharp boundary, not fuzzy).
 pub const T2_VITALITY_THRESHOLD: f32 = 0.3;
 
+/// Default T1 model when no profile-driven candidate is configured.
+pub const DEFAULT_T1_MODEL: &str = "claude-haiku-4-5";
+/// Default T2 model at or above [`T2_VITALITY_THRESHOLD`].
+pub const DEFAULT_T2_HIGH_MODEL: &str = "claude-opus-4-6";
+/// Default T2 model below [`T2_VITALITY_THRESHOLD`].
+pub const DEFAULT_T2_LOW_MODEL: &str = "claude-sonnet-4-6";
+
+/// Per-tier model candidates for [`TierRouter::select_model_with`].
+///
+/// Typically derived from configured model profiles or the model registry
+/// (e.g. the cheapest configured Fast-tier profile for `t1`). Any tier left
+/// as `None` falls back to the built-in claude defaults, so a config that
+/// only overrides some tiers still behaves sanely.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TierModelCandidates {
+    /// Model for T1 (light inference). `None` → [`DEFAULT_T1_MODEL`].
+    pub t1: Option<String>,
+    /// Model for T2 when vitality ≥ [`T2_VITALITY_THRESHOLD`].
+    /// `None` → [`DEFAULT_T2_HIGH_MODEL`].
+    pub t2_high: Option<String>,
+    /// Model for T2 when vitality < [`T2_VITALITY_THRESHOLD`].
+    /// `None` → [`DEFAULT_T2_LOW_MODEL`].
+    pub t2_low: Option<String>,
+}
+
 /// Maps an `InferenceTier` + vitality score to a concrete model identifier.
 ///
 /// This is a pure stateless function. All model selection logic lives here.
@@ -67,12 +92,53 @@ impl TierRouter {
     pub fn select_model(tier: InferenceTier, vitality: f32) -> Option<&'static str> {
         match tier {
             InferenceTier::T0 => None,
-            InferenceTier::T1 => Some("claude-haiku-4-5"),
+            InferenceTier::T1 => Some(DEFAULT_T1_MODEL),
             InferenceTier::T2 => {
                 if vitality >= T2_VITALITY_THRESHOLD {
-                    Some("claude-opus-4-6")
+                    Some(DEFAULT_T2_HIGH_MODEL)
                 } else {
-                    Some("claude-sonnet-4-6")
+                    Some(DEFAULT_T2_LOW_MODEL)
+                }
+            }
+        }
+    }
+
+    /// Select a model from profile/registry-driven candidates.
+    ///
+    /// Same semantics as [`select_model`](Self::select_model) — including the
+    /// sharp vitality boundary — but each tier resolves to the caller's
+    /// candidate when present. Tiers without a candidate use the built-in
+    /// defaults, so an empty [`TierModelCandidates`] reproduces
+    /// `select_model` exactly.
+    #[must_use]
+    pub fn select_model_with(
+        tier: InferenceTier,
+        vitality: f32,
+        candidates: &TierModelCandidates,
+    ) -> Option<String> {
+        match tier {
+            InferenceTier::T0 => None,
+            InferenceTier::T1 => Some(
+                candidates
+                    .t1
+                    .clone()
+                    .unwrap_or_else(|| DEFAULT_T1_MODEL.to_string()),
+            ),
+            InferenceTier::T2 => {
+                if vitality >= T2_VITALITY_THRESHOLD {
+                    Some(
+                        candidates
+                            .t2_high
+                            .clone()
+                            .unwrap_or_else(|| DEFAULT_T2_HIGH_MODEL.to_string()),
+                    )
+                } else {
+                    Some(
+                        candidates
+                            .t2_low
+                            .clone()
+                            .unwrap_or_else(|| DEFAULT_T2_LOW_MODEL.to_string()),
+                    )
                 }
             }
         }
@@ -83,7 +149,7 @@ impl TierRouter {
 mod tests {
     use std::convert::TryFrom;
 
-    use super::{InferenceTier, TierRouter};
+    use super::{InferenceTier, TierModelCandidates, TierRouter};
 
     #[test]
     fn t0_suppresses() {
@@ -148,5 +214,69 @@ mod tests {
         assert_eq!(u8::from(InferenceTier::T0), 0);
         assert_eq!(u8::from(InferenceTier::T1), 1);
         assert_eq!(u8::from(InferenceTier::T2), 2);
+    }
+
+    #[test]
+    fn select_model_with_empty_candidates_matches_defaults() {
+        let candidates = TierModelCandidates::default();
+        for tier in [InferenceTier::T0, InferenceTier::T1, InferenceTier::T2] {
+            for vitality in [0.0, 0.1, 0.3, 0.5, 1.0] {
+                let with = TierRouter::select_model_with(tier, vitality, &candidates);
+                let default = TierRouter::select_model(tier, vitality);
+                assert_eq!(
+                    with.as_deref(),
+                    default,
+                    "tier {tier:?} vitality {vitality}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn select_model_with_uses_configured_candidates() {
+        let candidates = TierModelCandidates {
+            t1: Some("gpt-5.4-mini".to_string()),
+            t2_high: Some("gpt-5.6-sol".to_string()),
+            t2_low: Some("glm-5.1".to_string()),
+        };
+
+        assert_eq!(
+            TierRouter::select_model_with(InferenceTier::T0, 1.0, &candidates),
+            None
+        );
+        assert_eq!(
+            TierRouter::select_model_with(InferenceTier::T1, 0.0, &candidates).as_deref(),
+            Some("gpt-5.4-mini")
+        );
+        assert_eq!(
+            TierRouter::select_model_with(InferenceTier::T2, 0.5, &candidates).as_deref(),
+            Some("gpt-5.6-sol")
+        );
+        assert_eq!(
+            TierRouter::select_model_with(InferenceTier::T2, 0.1, &candidates).as_deref(),
+            Some("glm-5.1")
+        );
+    }
+
+    #[test]
+    fn select_model_with_partial_candidates_fall_back_per_tier() {
+        // Only T1 overridden; T2 tiers keep the claude defaults.
+        let candidates = TierModelCandidates {
+            t1: Some("codex-mini".to_string()),
+            ..TierModelCandidates::default()
+        };
+
+        assert_eq!(
+            TierRouter::select_model_with(InferenceTier::T1, 1.0, &candidates).as_deref(),
+            Some("codex-mini")
+        );
+        assert_eq!(
+            TierRouter::select_model_with(InferenceTier::T2, 0.5, &candidates).as_deref(),
+            Some("claude-opus-4-6")
+        );
+        assert_eq!(
+            TierRouter::select_model_with(InferenceTier::T2, 0.1, &candidates).as_deref(),
+            Some("claude-sonnet-4-6")
+        );
     }
 }

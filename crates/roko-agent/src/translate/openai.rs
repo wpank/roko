@@ -286,12 +286,20 @@ fn render_tool_with_source(source: &ToolSource, _t: &ToolDef) -> serde_json::Val
 /// Parse the OpenAI-compatible `usage` block into canonical [`UsageObservation`].
 ///
 /// GLM-5.1 reports cached tokens under `prompt_tokens_details.cached_tokens`,
-/// while Kimi-K2.5 uses a top-level `cached_tokens` field.
+/// while Kimi-K2.5 uses a top-level `cached_tokens` field. The provider-reported
+/// top-level `model` is carried through so downstream attribution does not have
+/// to rely on the configured slug alone.
 #[must_use]
 pub(crate) fn parse_usage_observation(response: &serde_json::Value) -> UsageObservation {
+    let model = response
+        .get("model")
+        .and_then(serde_json::Value::as_str)
+        .filter(|model| !model.is_empty())
+        .map(str::to_string);
     let Some(usage) = response.get("usage") else {
         return UsageObservation {
             source: UsageSource::Unknown,
+            model,
             ..Default::default()
         };
     };
@@ -314,6 +322,7 @@ pub(crate) fn parse_usage_observation(response: &serde_json::Value) -> UsageObse
         output_tokens,
         cache_read_tokens,
         source: UsageSource::ProviderReported,
+        model,
         ..Default::default()
     }
 }
@@ -969,6 +978,27 @@ mod tests {
         assert_eq!(usage.cache_read_tokens, Some(0));
         assert_eq!(usage.cache_creation_tokens, None);
         assert_eq!(usage.cost_usd, None);
+    }
+
+    #[test]
+    fn parse_usage_observation_carries_provider_reported_model() {
+        let raw = serde_json::json!({
+            "model": "glm-5.1",
+            "usage": {
+                "prompt_tokens": 1200,
+                "completion_tokens": 300
+            }
+        });
+
+        let usage = parse_usage_observation(&raw);
+
+        assert_eq!(usage.model.as_deref(), Some("glm-5.1"));
+
+        // No model on the wire → None (callers keep their configured slug).
+        let raw = serde_json::json!({
+            "usage": { "prompt_tokens": 1, "completion_tokens": 1 }
+        });
+        assert_eq!(parse_usage_observation(&raw).model, None);
     }
 
     #[test]

@@ -1235,6 +1235,7 @@ async fn send_turn_streaming_with_program(
                 output_tokens: result.output_tokens,
                 cache_read_tokens: 0,
                 cache_write_tokens: 0,
+                reasoning_tokens: 0,
             })
             .await;
         let _ = tx

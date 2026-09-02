@@ -171,9 +171,12 @@ impl Usage {
     ///
     /// Returns `false` when `cost_usd` is the uninitialised default (`0.0`)
     /// **and** there were tokens consumed — meaning cost was never computed.
+    /// Cache-read tokens count as consumption here: a cache-read-only turn
+    /// with `0.0` cost is *unknown*, not free.
     #[must_use]
     pub fn has_known_cost(&self) -> bool {
-        self.cost_usd.abs() > f32::EPSILON || self.total_tokens() == 0
+        self.cost_usd.abs() > f32::EPSILON
+            || (self.total_tokens() == 0 && self.cache_read_tokens == 0)
     }
 
     /// Compute cost from per-million token pricing when the provider did not
@@ -540,6 +543,18 @@ mod tests {
         let usage = Usage {
             input_tokens: 10_000,
             output_tokens: 2_000,
+            cost_usd: 0.0,
+            ..Usage::default()
+        };
+        assert!(!usage.has_known_cost());
+    }
+
+    #[test]
+    fn has_known_cost_false_when_only_cache_reads() {
+        // Cache-read tokens are consumption too: a cache-read-only turn with
+        // 0.0 cost never had its cost computed — unknown, not free.
+        let usage = Usage {
+            cache_read_tokens: 5_000,
             cost_usd: 0.0,
             ..Usage::default()
         };

@@ -246,6 +246,7 @@ impl EfficiencyTracker {
     async fn record_event(
         &self,
         template_name: &str,
+        model_slug: &str,
         turns: u64,
         tokens: u64,
         success: bool,
@@ -260,7 +261,7 @@ impl EfficiencyTracker {
             agent_id: template_name.to_string(),
             role: template_name.to_string(),
             backend: "roko-serve".to_string(),
-            model: template_name.to_string(),
+            model: model_slug.to_string(),
             plan_id: String::new(),
             task_id: String::new(),
             attempt_id: format!("roko-serve:{template_name}:{turns}"),
@@ -291,7 +292,7 @@ impl EfficiencyTracker {
                 "failure".to_string()
             },
             gate_errors: Vec::new(),
-            model_used: template_name.to_string(),
+            model_used: model_slug.to_string(),
             frequency: OperatingFrequency::Theta,
             strategy_attempted: String::new(),
             timestamp: Utc::now().to_rfc3339(),
@@ -2572,7 +2573,13 @@ async fn drain_dispatch_learning_events(
                     None => EfficiencyTracker::new(&state.workdir),
                 };
                 efficiency
-                    .record_event(template_name, turns, tokens_used, outcome.success)
+                    .record_event(
+                        template_name,
+                        &template.model,
+                        turns,
+                        tokens_used,
+                        outcome.success,
+                    )
                     .await?;
             }
             Ok(_) => {}
@@ -3119,6 +3126,25 @@ filter = { path = "src/*.rs" }
         );
     }
 
+    #[tokio::test]
+    async fn efficiency_tracker_records_model_slug_not_template_name() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let tracker = EfficiencyTracker::new(tmp.path());
+
+        tracker
+            .record_event("my-template", "claude-sonnet-4-6", 1, 42, true)
+            .await
+            .expect("record event");
+
+        let contents = std::fs::read_to_string(&tracker.path).expect("read efficiency.jsonl");
+        let event: AgentEfficiencyEvent =
+            serde_json::from_str(contents.trim()).expect("parse efficiency event");
+        assert_eq!(event.backend, "roko-serve");
+        assert_eq!(event.agent_id, "my-template");
+        assert_eq!(event.model, "claude-sonnet-4-6");
+        assert_eq!(event.model_used, "claude-sonnet-4-6");
+    }
+
     #[test]
     fn cross_repo_context_is_empty_for_no_repos() {
         let repos: Vec<RepoInfo> = Vec::new();
@@ -3279,6 +3305,106 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"template-ok"}}'
         let health = state.provider_health.get("template-cli");
         assert_eq!(health.total_attempts, 1);
         assert_eq!(health.total_successes, 1);
+    }
+
+    #[tokio::test]
+    async fn dispatch_agent_efficiency_row_records_model_slug_not_template_name() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workdir = tmp.path().to_path_buf();
+        let script = write_fake_claude_script(
+            &tmp,
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"template-ok"}}'
+"#,
+        );
+
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.agent.default_model = "template-model".to_string();
+        config.providers.insert(
+            "template-cli".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::ClaudeCli,
+                base_url: None,
+                api_key_env: None,
+                command: Some(script.display().to_string()),
+                args: None,
+                timeout_ms: Some(DEFAULT_REQUEST_TIMEOUT_MS),
+                ttft_timeout_ms: Some(DEFAULT_TTFT_TIMEOUT_MS),
+                connect_timeout_ms: Some(DEFAULT_CONNECT_TIMEOUT_MS),
+                extra_headers: None,
+                max_concurrent: None,
+                limits: None,
+            },
+        );
+        config.models.insert(
+            "template-model".to_string(),
+            ModelProfile {
+                provider: "template-cli".to_string(),
+                slug: "claude-sonnet-4-6".to_string(),
+                ..Default::default()
+            },
+        );
+
+        let deploy_backend =
+            Arc::from(create_backend("manual", None, None, None).expect("manual backend"));
+        let state = Arc::new(
+            AppState::new(
+                workdir.clone(),
+                Arc::new(NoOpRuntime),
+                config.clone(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+
+        let template = AgentTemplate {
+            name: "webhook-template".into(),
+            description: "Test template feedback".into(),
+            model: "template-model".into(),
+            role: "implementer".into(),
+            system_prompt: "You are the template role.".into(),
+            max_turns: 4,
+            output_format: crate::templates::TemplateOutputFormat::Markdown,
+            mcp_servers: Vec::new(),
+            allowed_tools: Vec::new(),
+            denied_tools: Vec::new(),
+            experiment: None,
+            provider: None,
+        };
+        state
+            .templates
+            .write()
+            .await
+            .insert(template)
+            .expect("insert template");
+
+        let subscription = Subscription::new("webhook-template", "prompt");
+        let signal = Signal::builder(Kind::Prompt)
+            .body(Body::text("dispatch this"))
+            .provenance(Provenance::trusted("test"))
+            .build();
+        let dispatcher: Arc<dyn AgentDispatcher> =
+            Arc::new(TemplateAgentDispatcher::new(workdir.clone(), None, config));
+
+        let terminal = dispatch_agent(state, subscription, signal, dispatcher, None)
+            .await
+            .expect("dispatch agent");
+        assert!(terminal.success);
+
+        let efficiency = std::fs::read_to_string(workdir.join(".roko/learn/efficiency.jsonl"))
+            .expect("read efficiency");
+        let tracker_event = efficiency
+            .lines()
+            .filter_map(|line| serde_json::from_str::<AgentEfficiencyEvent>(line).ok())
+            .find(|event| event.backend == "roko-serve")
+            .expect("dispatch tracker efficiency row");
+        assert_eq!(tracker_event.agent_id, "webhook-template");
+        assert_eq!(tracker_event.model, "claude-sonnet-4-6");
+        assert_eq!(tracker_event.model_used, "claude-sonnet-4-6");
     }
 
     #[test]

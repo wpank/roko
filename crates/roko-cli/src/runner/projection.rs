@@ -414,6 +414,7 @@ impl Projection {
                 output_tokens,
                 cache_read_tokens,
                 cache_write_tokens,
+                ..
             } => serde_json::json!({
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,

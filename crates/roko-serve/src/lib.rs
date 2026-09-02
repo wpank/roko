@@ -694,6 +694,7 @@ impl EventConsumer for DashboardEventBridge {
                 attempt: 0,
                 role: role.clone(),
                 model: dashboard_model_label(model, agent_id),
+                provider: String::new(),
             }],
             RuntimeEvent::AgentOutput {
                 agent_id, chunk, ..
@@ -1599,6 +1600,7 @@ fn server_event_to_dashboard(event: &ServerEvent) -> Option<roko_core::Dashboard
             attempt: 0,
             role: role.clone(),
             model: dashboard_model_label(model, agent_id),
+            provider: String::new(),
         }),
         ServerEvent::AgentOutput {
             agent_id, content, ..
@@ -1720,6 +1722,7 @@ fn server_event_to_dashboard(event: &ServerEvent) -> Option<roko_core::Dashboard
             attempt: 0,
             role: String::new(),
             model: dashboard_model_label("", agent_id),
+            provider: String::new(),
         }),
         ServerEvent::AgentStopped { agent_id, .. } => Some(DashboardEvent::AgentCompleted {
             agent_id: agent_id.clone(),

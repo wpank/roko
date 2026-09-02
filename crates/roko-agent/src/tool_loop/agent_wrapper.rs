@@ -227,11 +227,45 @@ impl ToolLoopAgent {
         messages
     }
 
-    fn output_signal(input: &Signal, text: &str, stop_reason: &str, iterations: usize) -> Signal {
-        derived_output(input, Kind::AgentOutput, Body::text(text))
+    fn output_signal(
+        &self,
+        input: &Signal,
+        text: &str,
+        stop_reason: &str,
+        iterations: usize,
+    ) -> Signal {
+        let builder = derived_output(input, Kind::AgentOutput, Body::text(text))
             .tag("stop_reason", stop_reason)
-            .tag("iterations", iterations.to_string())
-            .build()
+            .tag("iterations", iterations.to_string());
+        match self.model_slug() {
+            Some(slug) => builder.tag("model", slug).build(),
+            None => builder.build(),
+        }
+    }
+
+    /// Model slug configured on the tool loop's model profile, if any.
+    ///
+    /// The tool loop aggregates legacy [`crate::usage::Usage`] per turn, which
+    /// has no model field; the profile attached via
+    /// [`ToolLoop::with_model_profile`] is the only model identity available
+    /// at this layer.
+    fn model_slug(&self) -> Option<&str> {
+        self.tool_loop
+            .model_profile
+            .as_ref()
+            .map(|profile| profile.slug.as_str())
+            .filter(|slug| !slug.is_empty())
+    }
+
+    /// Stamp the configured model slug onto the usage observation so model
+    /// attribution survives the legacy `Usage` conversion.
+    fn attach_model(&self, mut result: AgentResult) -> AgentResult {
+        if let Some(slug) = self.model_slug()
+            && let Some(usage_obs) = result.usage_obs.as_mut()
+        {
+            usage_obs.model = Some(slug.to_string());
+        }
+        result
     }
 
     fn checkpoint_path(&self, ctx: &Context) -> Option<PathBuf> {
@@ -315,7 +349,7 @@ impl Agent for ToolLoopAgent {
                 )
                 .await
         } else if let Err(error) = validate_model_input_messages(&self.input_messages) {
-            return AgentResult::fail(Self::output_signal(
+            return AgentResult::fail(self.output_signal(
                 input,
                 &format!("invalid image input: {error}"),
                 "backend_error",
@@ -328,35 +362,35 @@ impl Agent for ToolLoopAgent {
         };
 
         let result = match &output.stop_reason {
-            StopReason::Stop => AgentResult::ok(Self::output_signal(
+            StopReason::Stop => AgentResult::ok(self.output_signal(
                 input,
                 &output.final_text,
                 "stop",
                 output.iterations,
             ))
             .with_usage(output.total_usage),
-            StopReason::MaxIterations => AgentResult::fail(Self::output_signal(
+            StopReason::MaxIterations => AgentResult::fail(self.output_signal(
                 input,
                 &format!("Max iterations ({}) reached", output.iterations),
                 "max_iterations",
                 output.iterations,
             ))
             .with_usage(output.total_usage),
-            StopReason::Cancelled => AgentResult::fail(Self::output_signal(
+            StopReason::Cancelled => AgentResult::fail(self.output_signal(
                 input,
                 "Tool loop cancelled",
                 "cancelled",
                 output.iterations,
             ))
             .with_usage(output.total_usage),
-            StopReason::BackendError(err) => AgentResult::fail(Self::output_signal(
+            StopReason::BackendError(err) => AgentResult::fail(self.output_signal(
                 input,
                 err,
                 "backend_error",
                 output.iterations,
             ))
             .with_usage(output.total_usage),
-            StopReason::BudgetExhausted => AgentResult::fail(Self::output_signal(
+            StopReason::BudgetExhausted => AgentResult::fail(self.output_signal(
                 input,
                 "Budget exhausted",
                 "budget_exhausted",
@@ -365,7 +399,8 @@ impl Agent for ToolLoopAgent {
             .with_usage(output.total_usage),
         };
 
-        Self::attach_trace_metadata(result, input, &output)
+        let result = Self::attach_trace_metadata(result, input, &output);
+        self.attach_model(result)
     }
 
     fn name(&self) -> &str {
@@ -403,7 +438,7 @@ impl Agent for ToolLoopAgent {
                 )
                 .await
         } else if let Err(error) = validate_model_input_messages(&self.input_messages) {
-            return AgentResult::fail(Self::output_signal(
+            return AgentResult::fail(self.output_signal(
                 input,
                 &format!("invalid image input: {error}"),
                 "backend_error",
@@ -421,35 +456,35 @@ impl Agent for ToolLoopAgent {
         };
 
         let result = match &output.stop_reason {
-            StopReason::Stop => AgentResult::ok(Self::output_signal(
+            StopReason::Stop => AgentResult::ok(self.output_signal(
                 input,
                 &output.final_text,
                 "stop",
                 output.iterations,
             ))
             .with_usage(output.total_usage),
-            StopReason::MaxIterations => AgentResult::fail(Self::output_signal(
+            StopReason::MaxIterations => AgentResult::fail(self.output_signal(
                 input,
                 &format!("Max iterations ({}) reached", output.iterations),
                 "max_iterations",
                 output.iterations,
             ))
             .with_usage(output.total_usage),
-            StopReason::Cancelled => AgentResult::fail(Self::output_signal(
+            StopReason::Cancelled => AgentResult::fail(self.output_signal(
                 input,
                 "Tool loop cancelled",
                 "cancelled",
                 output.iterations,
             ))
             .with_usage(output.total_usage),
-            StopReason::BackendError(err) => AgentResult::fail(Self::output_signal(
+            StopReason::BackendError(err) => AgentResult::fail(self.output_signal(
                 input,
                 err,
                 "backend_error",
                 output.iterations,
             ))
             .with_usage(output.total_usage),
-            StopReason::BudgetExhausted => AgentResult::fail(Self::output_signal(
+            StopReason::BudgetExhausted => AgentResult::fail(self.output_signal(
                 input,
                 "Budget exhausted",
                 "budget_exhausted",
@@ -458,7 +493,8 @@ impl Agent for ToolLoopAgent {
             .with_usage(output.total_usage),
         };
 
-        Self::attach_trace_metadata(result, input, &output)
+        let result = Self::attach_trace_metadata(result, input, &output);
+        self.attach_model(result)
     }
 }
 
@@ -711,5 +747,32 @@ mod tests {
             "backend error: server error"
         );
         assert_eq!(result.output.tag("stop_reason"), Some("backend_error"));
+    }
+
+    #[tokio::test]
+    async fn tool_loop_agent_stamps_configured_model_on_result() {
+        let profile = roko_core::config::schema::ModelProfile {
+            provider: "openai_compat".to_string(),
+            slug: "gpt-5.6-sol".to_string(),
+            ..Default::default()
+        };
+        let tool_loop = make_tool_loop(Arc::new(TwoStepBackend::new())).with_model_profile(profile);
+        let agent = ToolLoopAgent::new(tool_loop)
+            .with_tools(test_tools())
+            .with_worktree_path("/tmp");
+        let input = Signal::builder(Kind::Prompt)
+            .body(Body::text("call the tool"))
+            .build();
+
+        let result = agent.run(&input, &Context::now()).await;
+
+        assert!(result.success);
+        assert_eq!(result.output.tag("model"), Some("gpt-5.6-sol"));
+        let usage_obs = result.usage_obs.expect("usage_obs populated");
+        assert_eq!(
+            usage_obs.model.as_deref(),
+            Some("gpt-5.6-sol"),
+            "usage_obs must carry the configured model slug"
+        );
     }
 }

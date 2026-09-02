@@ -694,6 +694,9 @@ impl App {
         let mut tui_state = TuiState::new();
         tui_state.update_from_snapshot(&data);
         tui_state.workdir = workdir.clone();
+        // Warm the config editor cache so the first F6 press (and headless
+        // --snapshot draws) renders config fields, not an empty editor.
+        tui_state.invalidate_config_cache();
         tui_state.run_started = Some(Instant::now());
         tui_state.refresh_mcp_config_view();
 
@@ -1232,6 +1235,11 @@ impl App {
         let (content_area, input_area) = self.split_content_area(main_layout[content_idx]);
 
         self.clamp_scroll_state_to_view();
+        // Honor the config cache TTL per draw so the F6 tab stays fresh even
+        // when no refresh tick fires (also covers headless --snapshot draws).
+        if self.tui_state.active_tab == Tab::Config && self.tui_state.config_needs_refresh() {
+            self.tui_state.invalidate_config_cache();
+        }
         let view_state = self.current_view_state();
         views::render_tab_content(
             frame,
@@ -1350,6 +1358,11 @@ impl App {
                 if let Some(page_id) = tab_to_page(tab) {
                     self.current_page = page_id;
                     let _ = self.scaffold.set_active_page(page_id);
+                }
+                // Warm the config editor cache on tab entry so the first F6
+                // render shows config fields instead of only Runtime sections.
+                if matches!(tab, Tab::Config) && self.tui_state.config_needs_refresh() {
+                    self.tui_state.invalidate_config_cache();
                 }
                 if matches!(tab, Tab::Agents) && !matches!(previous_tab, Tab::Agents) {
                     self.request_agent_topology_refresh();
@@ -2315,6 +2328,9 @@ impl App {
             }
             TuiAction::ConfigSave => {
                 self.save_config_changes();
+            }
+            TuiAction::ConfigReload => {
+                self.tui_state.invalidate_config_cache();
             }
             TuiAction::MouseClick { x, y } => {
                 // Use hit_test to determine zone
@@ -3507,19 +3523,6 @@ impl App {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Legacy compatibility
-    // -----------------------------------------------------------------------
-
-    #[allow(dead_code)]
-    fn select_page_by_slot(&mut self, slot: usize) {
-        let pages = self.pages().ids();
-        if let Some(page) = pages.get(slot).copied() {
-            self.current_page = page;
-            let _ = self.scaffold.set_active_page(self.current_page);
-        }
-    }
-
     /// Full refresh — async version for the connected `run()` path.
     async fn refresh_snapshot_async(&mut self) {
         if self.replay_disk_snapshots || self._state_hub.is_none() {
@@ -3986,7 +3989,7 @@ impl App {
                             let file_len = meta.len();
                             if file_len > self.last_events_offset {
                                 if let Ok(file) = std::fs::File::open(&events_path) {
-                                    use std::io::{BufRead, Seek, SeekFrom};
+                                    use std::io::{Seek, SeekFrom};
                                     let mut reader = std::io::BufReader::new(file);
                                     if reader
                                         .seek(SeekFrom::Start(self.last_events_offset))
@@ -5149,6 +5152,7 @@ mod tests {
                         active: true,
                         output_bytes: 0,
                         model: String::new(),
+                        provider: String::new(),
                         input_tokens: 0,
                         output_tokens: 0,
                         cache_read_tokens: 0,
@@ -5170,6 +5174,7 @@ mod tests {
                         active: false,
                         output_bytes: 0,
                         model: String::new(),
+                        provider: String::new(),
                         input_tokens: 0,
                         output_tokens: 0,
                         cache_read_tokens: 0,
@@ -5706,6 +5711,87 @@ mod tests {
         let saved = std::fs::read_to_string(dir.path().join("roko.toml")).unwrap();
         assert!(saved.contains("[tui.effects]"));
         assert!(saved.contains("screen_postfx = true"));
+    }
+
+    #[test]
+    fn f6_switch_to_config_tab_populates_cache_and_renders_fields() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("roko.toml"),
+            RokoConfig::default().to_toml().unwrap(),
+        )
+        .unwrap();
+
+        let mut app = App::new(dir.path());
+        // Deterministic text assertions: no post-processing over the content.
+        app.fx_config.screen_postfx = false;
+        // Constructor warms the cache (covers the headless --snapshot path).
+        assert!(
+            !app.tui_state.config_items_cache.is_empty(),
+            "App::new must warm the config items cache"
+        );
+
+        // Simulate the cold-cache regression: fresh session state where the
+        // cache was never populated.
+        app.tui_state.config_items_cache.clear();
+        app.tui_state.config_items_refreshed_at = None;
+
+        app.dispatch_action(TuiAction::SwitchTab(Tab::Config));
+
+        assert!(
+            !app.tui_state.config_items_cache.is_empty(),
+            "F6 must warm the config items cache"
+        );
+
+        let rendered = app.render_tabs_to_text(100, 40, &[Tab::Config]);
+        let text = &rendered[0].1;
+        // Real config editor content: a group header and a field label, not
+        // only the always-rendered `Runtime:` sections.
+        assert!(text.contains("Agent"), "expected group header in:\n{text}");
+        assert!(
+            text.contains("Default Model"),
+            "expected config field label in:\n{text}"
+        );
+    }
+
+    #[test]
+    fn config_r_key_reloads_items_cache() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("roko.toml"),
+            RokoConfig::default().to_toml().unwrap(),
+        )
+        .unwrap();
+
+        let mut app = App::new(dir.path());
+        app.dispatch_action(TuiAction::SwitchTab(Tab::Config));
+
+        // Externally modify roko.toml while the cache is still within its TTL.
+        let mut cfg = RokoConfig::default();
+        cfg.agent.default_model = "claude-haiku-4-5".to_string();
+        std::fs::write(dir.path().join("roko.toml"), cfg.to_toml().unwrap()).unwrap();
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+
+        let value = app
+            .tui_state
+            .config_items_cache
+            .iter()
+            .find_map(|item| match item {
+                crate::tui::config_meta::ConfigItem::Field { meta, value, .. }
+                    if meta.key == "agent.default_model" =>
+                {
+                    Some(value.clone())
+                }
+                _ => None,
+            })
+            .expect("agent.default_model field present");
+        assert!(
+            value.contains("claude-haiku-4-5"),
+            "r:reload must re-parse roko.toml immediately, got: {value}"
+        );
     }
 
     #[test]

@@ -30,15 +30,15 @@ pub fn display_model(model: Option<&str>) -> String {
 
 /// Extract the effective model identifier from an efficiency event.
 ///
-/// Prefers `model_used` (the model the backend actually routed to) over
-/// `model` (the requested model), falling back to `"unknown"`.
+/// Prefers `model_used` (the resolved model the backend actually routed to)
+/// over `model` (the requested model), falling back to `"unknown"`.
 pub fn event_model_slug(event: &roko_learn::efficiency::AgentEfficiencyEvent) -> String {
-    let model = event.model.trim();
     let used = event.model_used.trim();
-    if !model.is_empty() {
-        model.to_string()
-    } else if !used.is_empty() {
+    let model = event.model.trim();
+    if !used.is_empty() {
         used.to_string()
+    } else if !model.is_empty() {
+        model.to_string()
     } else {
         "unknown".to_string()
     }
@@ -80,6 +80,21 @@ mod tests {
         assert_eq!(display_model(Some("-")), "\u{2014}");
         assert_eq!(display_model(Some("unknown-model")), "\u{2014}");
         assert_eq!(display_model(Some("claude-opus-4-6")), "o4-6");
+    }
+
+    #[test]
+    fn event_model_slug_prefers_resolved_then_requested() {
+        let mut event = roko_learn::efficiency::AgentEfficiencyEvent::default();
+        event.model = "requested-model".to_string();
+        event.model_used = "resolved-model".to_string();
+        assert_eq!(event_model_slug(&event), "resolved-model");
+
+        // Rows without a resolved model fall back to the requested slug.
+        event.model_used.clear();
+        assert_eq!(event_model_slug(&event), "requested-model");
+
+        event.model.clear();
+        assert_eq!(event_model_slug(&event), "unknown");
     }
 
     #[test]

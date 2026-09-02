@@ -121,6 +121,7 @@ pub fn parse_stream_line(line: &str) -> Vec<AgentRuntimeEvent> {
                     output_tokens: stats.output_tokens,
                     cache_read_tokens: stats.cached,
                     cache_write_tokens: 0,
+                    reasoning_tokens: 0,
                 });
             }
             if is_error {
@@ -192,6 +193,7 @@ mod tests {
                     output_tokens: 7,
                     cache_read_tokens: 3,
                     cache_write_tokens: 0,
+                    reasoning_tokens: 0,
                 },
                 AgentRuntimeEvent::TurnCompleted {
                     session_id: None,

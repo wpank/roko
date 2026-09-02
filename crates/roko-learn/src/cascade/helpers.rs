@@ -505,6 +505,10 @@ pub fn slug_family(slug: &str) -> Option<&'static str> {
         Some("opus")
     } else if slug.contains("glm") {
         Some("glm")
+    } else if slug.contains("codex") {
+        // Codex family (codex-mini, gpt-5-codex, …) — checked before the
+        // gpt- prefix so codex variants are not lumped into plain gpt.
+        Some("codex")
     } else if slug.starts_with("gpt-") {
         Some("gpt")
     } else if slug.starts_with("o1") {
@@ -789,4 +793,31 @@ fn output_contains_code(text: &str) -> bool {
 
 pub(crate) fn contains_any(haystack: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| haystack.contains(needle))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::slug_family;
+
+    #[test]
+    fn slug_family_codex_branch() {
+        assert_eq!(slug_family("codex-mini"), Some("codex"));
+        assert_eq!(slug_family("gpt-5-codex"), Some("codex"));
+        assert_eq!(slug_family("gpt-5.6-sol-codex"), Some("codex"));
+    }
+
+    #[test]
+    fn slug_family_existing_classification_unchanged() {
+        // Plain gpt slugs still classify as gpt, not codex.
+        assert_eq!(slug_family("gpt-5.6-sol"), Some("gpt"));
+        assert_eq!(slug_family("gpt-5.4-mini"), Some("gpt"));
+        assert_eq!(slug_family("claude-haiku-4-5"), Some("haiku"));
+        assert_eq!(slug_family("claude-sonnet-4-6"), Some("sonnet"));
+        assert_eq!(slug_family("claude-opus-4-6"), Some("opus"));
+        assert_eq!(slug_family("glm-5.1"), Some("glm"));
+        assert_eq!(slug_family("kimi-k2.5"), Some("kimi-k2"));
+        assert_eq!(slug_family("sonar"), Some("sonar"));
+        assert_eq!(slug_family("o3"), Some("o3"));
+        assert_eq!(slug_family("my-fine-tune"), None);
+    }
 }

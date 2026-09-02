@@ -1586,6 +1586,7 @@ impl AgentDispatcherV2 {
                     output_tokens: u64::from(result.usage.output_tokens),
                     cache_read_tokens: u64::from(result.usage.cache_read_tokens),
                     cache_write_tokens: u64::from(result.usage.cache_create_tokens),
+                    reasoning_tokens: 0,
                 })
                 .await;
         }
@@ -1954,12 +1955,28 @@ pub type DispatchEvent = AgentRuntimeEvent;
 
 /// Back-fill `usage.cost_usd` from the model profile's per-million token
 /// pricing when the provider did not report a dollar amount natively.
+///
+/// When the profile carries no pricing (or no profile exists), fall back to
+/// the shared registry rates for known slugs (glm-5.1, kimi-k2.5, sonar,
+/// gpt-5.x, codex, …) so token-bearing usage is not silently recorded as
+/// $0.00. Truly unknown models stay at 0.0, which
+/// `Usage::has_known_cost` reports as "unknown" rather than "free".
 fn fill_cost_from_profile(result: &mut AgentResult, target: &ProviderDispatchSpec) {
     if let Some(profile) = target.model_profile.as_ref() {
         result.usage.fill_cost_from_pricing(
             profile.cost_input_per_m,
             profile.cost_output_per_m,
             profile.cost_cache_read_per_m,
+        );
+    }
+    if result.usage.cost_usd.abs() <= f32::EPSILON
+        && let Some(pricing) =
+            roko_core::config::model_registry::builtin_pricing(&target.model_slug)
+    {
+        result.usage.fill_cost_from_pricing(
+            Some(pricing.input_per_m),
+            Some(pricing.output_per_m),
+            Some(pricing.cache_read_per_m),
         );
     }
 }
@@ -1999,6 +2016,7 @@ fn dispatch_events_from_result(
             output_tokens: u64::from(result.usage.output_tokens),
             cache_read_tokens: u64::from(result.usage.cache_read_tokens),
             cache_write_tokens: u64::from(result.usage.cache_create_tokens),
+            reasoning_tokens: 0,
         });
     }
 
@@ -2048,6 +2066,7 @@ fn agent_event_from_chunk(chunk: StreamChunk) -> AgentRuntimeEvent {
             output_tokens: u64::from(usage.output_tokens),
             cache_read_tokens: u64::from(usage.cache_read_tokens),
             cache_write_tokens: u64::from(usage.cache_create_tokens),
+            reasoning_tokens: 0,
         },
         StreamChunk::Done(_) => AgentRuntimeEvent::TurnCompleted {
             session_id: None,
@@ -3112,5 +3131,88 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"dispatch-ok"}}'
                 "secret leak violations must be Block severity per E04-T05"
             );
         }
+    }
+
+    fn cost_test_target(model_slug: &str, profile: Option<ModelProfile>) -> ProviderDispatchSpec {
+        ProviderDispatchSpec {
+            model_key: model_slug.to_string(),
+            model_slug: model_slug.to_string(),
+            provider_id: "test".to_string(),
+            provider_kind: ProviderKind::OpenAiCompat,
+            model_profile: profile,
+            provider_config: None,
+            runtime: ProviderRuntime::AgentResultBridge {
+                provider_kind: ProviderKind::OpenAiCompat,
+            },
+        }
+    }
+
+    #[test]
+    fn fill_cost_falls_back_to_registry_pricing_for_known_slug() {
+        // No profile at all (or a profile without cost fields): known slugs
+        // still get priced from the shared registry instead of staying $0.
+        let target = cost_test_target("glm-5.1", None);
+        let mut result = AgentResult::ok(
+            Signal::builder(Kind::AgentOutput)
+                .body(Body::text("done"))
+                .build(),
+        );
+        result.usage.input_tokens = 1_000_000;
+        result.usage.output_tokens = 1_000_000;
+
+        fill_cost_from_profile(&mut result, &target);
+
+        // glm-5.1 registry rates: $1.40/M input + $4.40/M output.
+        assert!(
+            (f64::from(result.usage.cost_usd) - 5.80).abs() < 1e-6,
+            "registry-priced cost, got {}",
+            result.usage.cost_usd
+        );
+        assert!(result.usage.has_known_cost());
+    }
+
+    #[test]
+    fn fill_cost_leaves_unknown_slug_zero_and_marked_unknown() {
+        let target = cost_test_target("totally-unknown-llm-9000", None);
+        let mut result = AgentResult::ok(
+            Signal::builder(Kind::AgentOutput)
+                .body(Body::text("done"))
+                .build(),
+        );
+        result.usage.input_tokens = 1_000;
+
+        fill_cost_from_profile(&mut result, &target);
+
+        // Unknown model: cost stays 0.0 and reports as unknown, not free.
+        assert!(result.usage.cost_usd.abs() <= f32::EPSILON);
+        assert!(!result.usage.has_known_cost());
+    }
+
+    #[test]
+    fn fill_cost_profile_pricing_wins_over_registry() {
+        let profile = ModelProfile {
+            provider: "zai".to_string(),
+            slug: "glm-5.1".to_string(),
+            cost_input_per_m: Some(9.0),
+            cost_output_per_m: Some(9.0),
+            ..ModelProfile::default()
+        };
+        let target = cost_test_target("glm-5.1", Some(profile));
+        let mut result = AgentResult::ok(
+            Signal::builder(Kind::AgentOutput)
+                .body(Body::text("done"))
+                .build(),
+        );
+        result.usage.input_tokens = 1_000_000;
+        result.usage.output_tokens = 1_000_000;
+
+        fill_cost_from_profile(&mut result, &target);
+
+        // Configured profile rates ($9/$9) beat the registry ($1.40/$4.40).
+        assert!(
+            (f64::from(result.usage.cost_usd) - 18.0).abs() < 1e-6,
+            "profile-priced cost, got {}",
+            result.usage.cost_usd
+        );
     }
 }

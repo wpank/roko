@@ -126,6 +126,7 @@ impl TuiBridge {
         attempt: u32,
         role: &str,
         model: &str,
+        provider: &str,
     ) {
         self.sender.publish(DashboardEvent::AgentSpawned {
             agent_id: agent_id.to_string(),
@@ -134,6 +135,7 @@ impl TuiBridge {
             attempt,
             role: role.to_string(),
             model: model.to_string(),
+            provider: provider.to_string(),
         });
         self.capture(
             "agent_spawned",
@@ -461,6 +463,11 @@ impl TuiBridge {
     ) {
         self.sender
             .publish(DashboardEvent::EfficiencyTrendUpdated { buckets });
+    }
+
+    /// Publish a raw `DashboardEvent` that has no dedicated bridge helper.
+    pub fn publish_event(&self, event: DashboardEvent) {
+        self.sender.publish(event);
     }
 
     /// Model was selected for a task dispatch.

@@ -1573,9 +1573,16 @@ pub fn refresh_correction_audit() -> Vec<RefreshCorrection> {
             notes: "DashboardData and TuiState have overlapping fields. The \
                     bridge is update_from_snapshot (DashboardData -> TuiState) \
                     for standalone mode and update_from_dashboard_snapshot \
-                    (DashboardSnapshot -> TuiState) for connected mode. Views \
-                    already read from TuiState, not DashboardData -- confirmed \
-                    by source audit: plans_view, agents_view, logs_view, \
+                    (DashboardSnapshot -> TuiState) for connected mode. In \
+                    connected mode the learning fields are populated too: \
+                    efficiency trend buckets, cascade-router and gate-threshold \
+                    JSON arrive as pushed DashboardEvents and are parsed into \
+                    the typed structs, while per-event payloads the core \
+                    snapshot cannot carry (efficiency_events, experiments, \
+                    experiment winners) are tailed incrementally from the local \
+                    .roko/learn/ files by TuiState::sync_connected_learning_files. \
+                    Views already read from TuiState, not DashboardData -- \
+                    confirmed by source audit: plans_view, agents_view, logs_view, \
                     context_view, marketplace_view, atelier_view all prefix the \
                     DashboardData param with _ (unused). The duplication is only \
                     for the standalone fallback path."

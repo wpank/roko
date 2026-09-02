@@ -1571,6 +1571,15 @@ pub struct TuiState {
     pub gate_results_page: GateResultsPageData,
     /// Experiment summaries for the config tab.
     pub experiments: Vec<ExperimentSummary>,
+    /// Incremental tailer over `.roko/learn/efficiency.jsonl`, used in
+    /// connected mode where the core snapshot cannot carry per-event
+    /// learning payloads (they are `roko-learn` types).
+    connected_efficiency_tailer:
+        super::jsonl_tailer::IncrementalTailer<roko_learn::efficiency::AgentEfficiencyEvent>,
+    /// Last observed efficiency log size; change detector for the tailer.
+    connected_efficiency_len: u64,
+    /// Last observed experiments store stamp `(len, mtime_ms)`.
+    connected_experiments_stamp: (u64, i64),
     /// Per-task output tails.
     pub task_output_tails: HashMap<String, Vec<String>>,
     /// Git diff content.
@@ -1833,6 +1842,9 @@ impl Default for TuiState {
             cfactor: None,
             gate_results_page: GateResultsPageData::default(),
             experiments: Vec::new(),
+            connected_efficiency_tailer: super::jsonl_tailer::IncrementalTailer::default(),
+            connected_efficiency_len: 0,
+            connected_experiments_stamp: (0, 0),
             task_output_tails: HashMap::new(),
             git_diff: String::new(),
             plan_summaries: Vec::new(),
@@ -3060,7 +3072,12 @@ impl TuiState {
     /// Populate state from a connected-mode `DashboardSnapshot`.
     ///
     /// This mirrors the live state published by `StateHub` without touching
-    /// navigation or scroll state.
+    /// navigation or scroll state. Learning data arrives through two channels:
+    /// pushed snapshot payloads (efficiency trend buckets, cascade-router and
+    /// gate-threshold JSON) are parsed into the typed view structs here, and
+    /// per-event payloads the snapshot cannot carry (efficiency events,
+    /// experiment store) are tailed from the local `.roko/learn/` files by
+    /// [`Self::sync_connected_learning_files`].
     pub fn update_from_dashboard_snapshot(&mut self, snap: &roko_core::DashboardSnapshot) {
         if let Some(duration_ms) = snap.run_duration_ms {
             self.run_duration_secs = Some(duration_ms as f64 / 1_000.0);
@@ -3403,7 +3420,11 @@ impl TuiState {
             (rung.rung_name.clone(), started_at)
         });
         self.diagnoses = snap.diagnoses.iter().cloned().collect();
-        self.experiment_winners = snap.experiment_winners.clone();
+        // Nothing publishes `ExperimentWinnersUpdated` today, so an empty push
+        // must not clobber winners synced from the local experiment store.
+        if !snap.experiment_winners.is_empty() {
+            self.experiment_winners = snap.experiment_winners.clone();
+        }
         self.gate_trends = snap.gate_trends.clone();
         self.gate_recent_failures = snap.gate_recent_failures.clone();
         self.affect = snap.affect.clone();
@@ -3427,9 +3448,39 @@ impl TuiState {
         // --- Event log from snapshot ---
         self.event_log = snap.event_log.iter().cloned().collect();
 
-        // --- Learning data (opaque JSON for now) ---
-        self.cascade_router_json = snap.cascade_router_json.clone();
-        self.gate_thresholds_json = snap.gate_thresholds_json.clone();
+        // --- Learning data (pushed JSON parsed into the typed view structs) ---
+        // Re-parse only on change; the stored strings double as change detectors.
+        if snap.cascade_router_json != self.cascade_router_json {
+            self.cascade_router_json
+                .clone_from(&snap.cascade_router_json);
+            if !self.cascade_router_json.is_empty() {
+                match serde_json::from_str::<CascadeRouterState>(&self.cascade_router_json) {
+                    Ok(parsed) => self.cascade_router = parsed,
+                    Err(error) => tracing::warn!(
+                        error = %error,
+                        "failed to parse pushed cascade router snapshot"
+                    ),
+                }
+            }
+        }
+        if snap.gate_thresholds_json != self.gate_thresholds_json {
+            self.gate_thresholds_json
+                .clone_from(&snap.gate_thresholds_json);
+            if !self.gate_thresholds_json.is_empty() {
+                match serde_json::from_str::<roko_gate::adaptive_threshold::AdaptiveThresholds>(
+                    &self.gate_thresholds_json,
+                ) {
+                    Ok(thresholds) => {
+                        self.gate_results_page.threshold_rows =
+                            super::dashboard::gate_threshold_rows(&thresholds);
+                    }
+                    Err(error) => tracing::warn!(
+                        error = %error,
+                        "failed to parse pushed gate thresholds snapshot"
+                    ),
+                }
+            }
+        }
 
         // --- Token/cost aggregation across agents ---
         self.cumulative_input_tokens = self.agents.iter().map(|a| a.input_tokens).sum();
@@ -3633,6 +3684,19 @@ impl TuiState {
                 passed_count: 0,
                 average_wall_time_ms: avg_latency,
             };
+            // Keep the chart-facing trend in the learning crate's bucket type.
+            self.efficiency_trend = snap
+                .efficiency_trend
+                .iter()
+                .map(|bucket| roko_learn::aggregate::EfficiencyBucket {
+                    start: bucket.start,
+                    turns: bucket.turns,
+                    tokens_in: bucket.tokens_in,
+                    tokens_out: bucket.tokens_out,
+                    cost_usd_cents: bucket.cost_usd_cents,
+                    latency_ms_avg: bucket.latency_ms_avg,
+                })
+                .collect();
         }
 
         // --- C-factor trend buckets ---
@@ -3656,7 +3720,85 @@ impl TuiState {
         // gate's output leaks into the active panel.
         self.gate_output_lines = snap.gate_output_lines.clone();
 
+        // --- Learning files the snapshot cannot carry (per-event payloads) ---
+        self.sync_connected_learning_files();
+
         self.refresh_cached_unified_log();
+    }
+
+    /// Tail the local learning files in connected mode.
+    ///
+    /// The core snapshot cannot carry per-event learning payloads (they are
+    /// `roko-learn` types, and `roko-core` cannot depend on `roko-learn`), so
+    /// the connected TUI incrementally tails the append-only `.roko/learn/`
+    /// logs on the same host. Both reads are gated on cheap file-metadata
+    /// changes, so idle snapshots cost one `stat` per file. Pushed snapshot
+    /// data wins when both sources provide the same field: this sync never
+    /// overwrites a non-empty pushed efficiency trend.
+    fn sync_connected_learning_files(&mut self) {
+        if self.workdir.as_os_str().is_empty() {
+            return;
+        }
+        let learn_dir = self.workdir.join(".roko").join("learn");
+
+        // -- efficiency events: incremental JSONL tail, parse only new bytes --
+        let efficiency_path = learn_dir.join("efficiency.jsonl");
+        let efficiency_len = std::fs::metadata(&efficiency_path).map_or(0, |meta| meta.len());
+        if efficiency_len != self.connected_efficiency_len {
+            self.connected_efficiency_len = efficiency_len;
+            if self
+                .connected_efficiency_tailer
+                .path()
+                .as_os_str()
+                .is_empty()
+            {
+                self.connected_efficiency_tailer =
+                    super::jsonl_tailer::IncrementalTailer::new(&efficiency_path);
+            }
+            let _ = self.connected_efficiency_tailer.tick();
+            self.efficiency_events = self.connected_efficiency_tailer.items().to_vec();
+            if !self.efficiency_events.is_empty() {
+                // Event-derived summary has real pass counts and latencies;
+                // prefer it over the approximation from pushed trend buckets.
+                self.efficiency_summary =
+                    super::dashboard::efficiency_summary_from_events(&self.efficiency_events);
+            }
+            if self.efficiency_trend.is_empty() {
+                self.efficiency_trend = roko_learn::aggregate::efficiency_trend(
+                    &efficiency_path,
+                    chrono::Duration::hours(1),
+                    24,
+                )
+                .unwrap_or_default();
+            }
+        }
+
+        // -- experiment store: stamp-gated whole-file reload --
+        let experiments_path = learn_dir.join("experiments.json");
+        let experiments_stamp = std::fs::metadata(&experiments_path).map_or((0, 0), |meta| {
+            let mtime_ms = meta
+                .modified()
+                .ok()
+                .and_then(|mtime| mtime.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |duration| duration.as_millis() as i64);
+            (meta.len(), mtime_ms)
+        });
+        if experiments_stamp != self.connected_experiments_stamp {
+            self.connected_experiments_stamp = experiments_stamp;
+            if let Ok(text) = std::fs::read_to_string(&experiments_path) {
+                if let Ok(store) =
+                    serde_json::from_str::<roko_learn::prompt_experiment::ExperimentStore>(&text)
+                {
+                    let mut experiments = store
+                        .iter()
+                        .map(ExperimentSummary::from_experiment)
+                        .collect::<Vec<_>>();
+                    experiments.sort_by(|a, b| a.experiment_id.cmp(&b.experiment_id));
+                    self.experiments = experiments;
+                    self.experiment_winners = store.winner_summaries();
+                }
+            }
+        }
     }
 
     /// Return the display-ready cached log rows for the Logs tab.
@@ -5764,6 +5906,7 @@ tier = "focused"
                         active: true,
                         output_bytes: 128,
                         model: String::new(),
+                        provider: String::new(),
                         input_tokens: 0,
                         output_tokens: 0,
                         cache_read_tokens: 0,
@@ -5785,6 +5928,7 @@ tier = "focused"
                         active: false,
                         output_bytes: 0,
                         model: String::new(),
+                        provider: String::new(),
                         input_tokens: 0,
                         output_tokens: 0,
                         cache_read_tokens: 0,
@@ -5944,6 +6088,149 @@ tier = "focused"
         assert_eq!(state.plans.len(), 1);
         assert_eq!(state.plans[0].id, "plan-b");
         assert!(state.plans[0].expanded);
+    }
+
+    #[test]
+    fn update_from_dashboard_snapshot_populates_connected_learning_state() {
+        use roko_core::dashboard_snapshot::{
+            DashboardSnapshot, EfficiencyBucket as CoreEfficiencyBucket,
+        };
+
+        let tmpdir = tempdir().expect("tempdir");
+        let learn_dir = tmpdir.path().join(".roko").join("learn");
+        std::fs::create_dir_all(&learn_dir).expect("create learn dir");
+
+        // Per-event payloads the snapshot cannot carry live in the local
+        // append-only learning files.
+        let now = Utc::now();
+        let events = [
+            AgentEfficiencyEvent {
+                agent_id: "agent-a".into(),
+                model: "gpt-5.6-sol".into(),
+                backend: "codex-cli".into(),
+                input_tokens: 120,
+                output_tokens: 45,
+                cost_usd: 0.25,
+                wall_time_ms: 800,
+                gate_passed: Some(true),
+                is_final_turn: true,
+                timestamp: now.to_rfc3339(),
+                ..AgentEfficiencyEvent::default()
+            },
+            AgentEfficiencyEvent {
+                agent_id: "agent-b".into(),
+                model: "glm-5.1".into(),
+                backend: "zai".into(),
+                input_tokens: 60,
+                output_tokens: 15,
+                cost_usd: 0.05,
+                wall_time_ms: 400,
+                gate_passed: Some(false),
+                is_final_turn: true,
+                timestamp: now.to_rfc3339(),
+                ..AgentEfficiencyEvent::default()
+            },
+        ];
+        let mut log = String::new();
+        for event in &events {
+            log.push_str(&serde_json::to_string(event).expect("serialize event"));
+            log.push('\n');
+        }
+        std::fs::write(learn_dir.join("efficiency.jsonl"), log).expect("write efficiency log");
+
+        let mut store = roko_learn::prompt_experiment::ExperimentStore::new();
+        store.register(roko_learn::prompt_experiment::PromptExperiment::new(
+            "exp-1",
+            "constraints",
+            vec![roko_learn::prompt_experiment::PromptVariant {
+                id: "v1".into(),
+                name: "baseline".into(),
+                section_name: "constraints".into(),
+                content: "be terse".into(),
+                slug: None,
+                active: true,
+            }],
+        ));
+        store
+            .save(&learn_dir.join("experiments.json"))
+            .expect("save experiments");
+
+        let snap = DashboardSnapshot {
+            cascade_router_json: serde_json::json!({
+                "model_slugs": ["gpt-5.6-sol"],
+                "confidence_stats": {"gpt-5.6-sol": {"trials": 3, "successes": 2}},
+            })
+            .to_string(),
+            gate_thresholds_json: serde_json::json!({
+                "rungs": {"1": {"pass_count": 4, "total_count": 5, "ema_pass_rate": 0.8}},
+            })
+            .to_string(),
+            efficiency_trend: vec![CoreEfficiencyBucket {
+                start: now,
+                turns: 2,
+                tokens_in: 180,
+                tokens_out: 60,
+                cost_usd_cents: 30,
+                latency_ms_avg: 600.0,
+            }],
+            ..Default::default()
+        };
+
+        let mut state = TuiState::default();
+        state.workdir = tmpdir.path().to_path_buf();
+        state.update_from_dashboard_snapshot(&snap);
+
+        // Pushed JSON parsed into the typed structs.
+        assert_eq!(
+            state.cascade_router.model_slugs,
+            vec!["gpt-5.6-sol".to_string()]
+        );
+        assert_eq!(
+            state.cascade_router.confidence_stats["gpt-5.6-sol"].successes,
+            2
+        );
+        assert_eq!(state.gate_results_page.threshold_rows.len(), 1);
+        assert_eq!(state.gate_results_page.threshold_rows[0].rung, 1);
+        assert!((state.gate_results_page.threshold_rows[0].ema_pass_rate - 0.8).abs() < 1e-9);
+
+        // Pushed trend converted into the chart-facing bucket type.
+        assert_eq!(state.efficiency_trend.len(), 1);
+        assert_eq!(state.efficiency_trend[0].turns, 2);
+
+        // Per-event payloads tailed from the local learning files.
+        assert_eq!(state.efficiency_events.len(), 2);
+        assert_eq!(state.efficiency_events[0].model, "gpt-5.6-sol");
+        // The event-derived summary wins over the pushed-bucket approximation
+        // (pushed buckets hardcode passed_count = 0; events know the truth).
+        assert_eq!(state.efficiency_summary.event_count, 2);
+        assert!((state.efficiency_summary.total_cost_usd - 0.30).abs() < 1e-9);
+        assert_eq!(state.efficiency_summary.passed_count, 1);
+
+        // Experiment store loaded from disk; no concluded experiments yet, so
+        // no winners — and the empty push did not invent any either.
+        assert_eq!(state.experiments.len(), 1);
+        assert_eq!(state.experiments[0].experiment_id, "exp-1");
+        assert!(state.experiment_winners.is_empty());
+    }
+
+    #[test]
+    fn update_from_dashboard_snapshot_preserves_experiment_winners_when_push_is_empty() {
+        use roko_core::dashboard_snapshot::DashboardSnapshot;
+
+        let tmpdir = tempdir().expect("tempdir");
+        let mut state = TuiState::default();
+        state.workdir = tmpdir.path().to_path_buf();
+        state.experiment_winners = vec![roko_core::ExperimentWinnerSummary {
+            experiment_id: "exp-w".into(),
+            ..Default::default()
+        }];
+
+        // Nothing publishes ExperimentWinnersUpdated today; an empty push must
+        // not clobber winners already in state.
+        state.update_from_dashboard_snapshot(&DashboardSnapshot::default());
+
+        assert_eq!(state.experiment_winners.len(), 1);
+        assert_eq!(state.experiment_winners[0].experiment_id, "exp-w");
     }
 
     #[test]
@@ -6109,6 +6396,7 @@ tier = "focused"
                 active: true,
                 output_bytes: 42,
                 model: String::new(),
+                provider: String::new(),
                 input_tokens: 0,
                 output_tokens: 0,
                 cache_read_tokens: 0,
@@ -6290,6 +6578,7 @@ tier = "focused"
                 active: true,
                 output_bytes: 3,
                 model: String::new(),
+                provider: String::new(),
                 input_tokens: 0,
                 output_tokens: 0,
                 cache_read_tokens: 0,
@@ -6311,6 +6600,7 @@ tier = "focused"
                 active: false,
                 output_bytes: 0,
                 model: String::new(),
+                provider: String::new(),
                 input_tokens: 0,
                 output_tokens: 0,
                 cache_read_tokens: 0,
@@ -6360,6 +6650,7 @@ tier = "focused"
                 active: true,
                 output_bytes: 12,
                 model: "test-model".into(),
+                provider: String::new(),
                 input_tokens: 0,
                 output_tokens: 0,
                 cache_read_tokens: 0,
@@ -6397,6 +6688,7 @@ tier = "focused"
                 active: true,
                 output_bytes: 100,
                 model: "test-model".into(),
+                provider: String::new(),
                 input_tokens: 0,
                 output_tokens: 0,
                 cache_read_tokens: 0,
@@ -6434,6 +6726,7 @@ tier = "focused"
                 active: true,
                 output_bytes: 0,
                 model: "test-model".into(),
+                provider: String::new(),
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_read_tokens: 0,
@@ -6480,6 +6773,7 @@ tier = "focused"
                 active: true,
                 output_bytes: 0,
                 model: "test-model".into(),
+                provider: String::new(),
                 input_tokens: 0,
                 output_tokens: 0,
                 cache_read_tokens: 0,

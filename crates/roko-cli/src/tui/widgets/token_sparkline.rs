@@ -15,7 +15,9 @@ use super::braille;
 use super::rosedust::brighten;
 use crate::tui::Theme;
 use crate::tui::dashboard::DashboardData;
-use crate::tui::pages::efficiency::{EfficiencySnapshot, build_efficiency_snapshot};
+use crate::tui::pages::efficiency::{
+    EfficiencySnapshot, build_efficiency_snapshot, model_tier_label, tier_bar_labels,
+};
 use crate::tui::state::TuiState;
 
 fn fmt_tokens(n: u64) -> String {
@@ -53,11 +55,14 @@ fn tier_color(tier: &str) -> Color {
     }
 }
 
-fn tier_label(tier: &str) -> &'static str {
+/// Generic fallback label for a tier with no events. Non-empty tiers are
+/// labeled by their dominant model family/slug via
+/// [`EfficiencySnapshot::tier_labels`], never hardcoded claude tier names.
+fn tier_fallback_label(tier: &str) -> &'static str {
     match tier {
-        "T0" => "haiku",
-        "T1" => "sonnet",
-        "T2" => "opus",
+        "T0" => "fast",
+        "T1" => "std",
+        "T2" => "pro",
         _ => "other",
     }
 }
@@ -225,7 +230,11 @@ pub fn render_token_sparkline(
     for tier in ["T0", "T1", "T2"].into_iter().take(remaining_rows) {
         let count = snapshot.tier_counts.get(tier).copied().unwrap_or_default();
         let pct = count as f64 / event_count;
-        let label = format!(" {:>2} {:<6} ", tier, tier_label(tier));
+        let bar_label = snapshot
+            .tier_labels
+            .get(tier)
+            .map_or(tier_fallback_label(tier), String::as_str);
+        let label = format!(" {:>2} {:<8} ", tier, bar_label);
         let suffix = format!(" {} ({:.0}%)", count, pct * 100.0);
         let bar_w = inner_width
             .saturating_sub(label.len() + suffix.len())
@@ -278,9 +287,11 @@ fn build_snapshot_from_tui_state(state: &TuiState) -> EfficiencySnapshot {
         tier_counts.insert(tier, 0);
     }
     for agent in &state.agents {
-        let tier = model_tier(&agent.model);
-        *tier_counts.entry(tier).or_default() += 1;
+        *tier_counts
+            .entry(model_tier_label(&agent.model))
+            .or_default() += 1;
     }
+    let tier_labels = tier_bar_labels(state.agents.iter().map(|a| a.model.as_str()));
 
     // Build token series from per-agent token history; each sample is the
     // sum of all agents' cumulative totals at that point.
@@ -320,17 +331,135 @@ fn build_snapshot_from_tui_state(state: &TuiState) -> EfficiencySnapshot {
         average_cost_per_task,
         success_rate,
         tier_counts,
+        tier_labels,
         token_series,
     }
 }
 
-fn model_tier(model: &str) -> &'static str {
-    let lower = model.to_ascii_lowercase();
-    if lower.contains("haiku") {
-        "T0"
-    } else if lower.contains("opus") {
-        "T2"
-    } else {
-        "T1"
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::state::AgentRow;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use roko_learn::efficiency::AgentEfficiencyEvent;
+
+    fn rendered_text(terminal: &Terminal<TestBackend>) -> String {
+        let buffer = terminal.backend().buffer();
+        let width = buffer.area.width as usize;
+        buffer
+            .content
+            .chunks(width)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn event(model: &str, task_id: &str) -> AgentEfficiencyEvent {
+        let mut event = AgentEfficiencyEvent::default_event();
+        event.model = model.to_string();
+        event.plan_id = "plan-1".to_string();
+        event.task_id = task_id.to_string();
+        event.input_tokens = 1_000;
+        event.output_tokens = 200;
+        event
+    }
+
+    fn render(data: &DashboardData, state: &TuiState, width: u16, height: u16) -> String {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_token_sparkline(frame, area, data, state);
+            })
+            .unwrap();
+        rendered_text(&terminal)
+    }
+
+    #[test]
+    fn sparkline_labels_tiers_by_family_not_sonnet() {
+        let mut data = DashboardData::default();
+        data.efficiency_events = vec![
+            event("gpt-5.6-sol", "t1"),
+            event("glm-5.1", "t2"),
+            event("codex-mini", "t3"),
+        ];
+        data.efficiency.total_input_tokens = 4_000;
+        data.efficiency.total_output_tokens = 800;
+        data.efficiency.total_cost_usd = 0.42;
+        let state = TuiState::new();
+
+        let text = render(&data, &state, 100, 12);
+        assert!(text.contains("Efficiency"), "title missing:\n{text}");
+        // Codex/gpt/glm tokens render under family labels...
+        assert!(text.contains("gpt"), "gpt label missing:\n{text}");
+        assert!(text.contains("glm"), "glm label missing:\n{text}");
+        assert!(text.contains("codex"), "codex label missing:\n{text}");
+        // ...never under hardcoded claude tier names.
+        assert!(!text.contains("sonnet"), "stale label present:\n{text}");
+        assert!(!text.contains("haiku"), "stale label present:\n{text}");
+    }
+
+    #[test]
+    fn sparkline_empty_uses_generic_fallback_labels() {
+        let data = DashboardData::default();
+        let state = TuiState::new();
+        let text = render(&data, &state, 100, 12);
+        assert!(
+            text.contains("waiting for data"),
+            "placeholder missing:\n{text}"
+        );
+        assert!(text.contains("fast"), "fallback label missing:\n{text}");
+        assert!(text.contains("std"), "fallback label missing:\n{text}");
+        assert!(text.contains("pro"), "fallback label missing:\n{text}");
+        assert!(!text.contains("sonnet"), "stale label present:\n{text}");
+    }
+
+    #[test]
+    fn sparkline_tiny_area_does_not_panic() {
+        let data = DashboardData::default();
+        let state = TuiState::new();
+        let _ = render(&data, &state, 8, 3);
+    }
+
+    #[test]
+    fn snapshot_from_tui_state_labels_live_agents() {
+        let mut state = TuiState::new();
+        for (id, model) in [
+            ("a1", "codex-mini"),
+            ("a2", "glm-5.1"),
+            ("a3", "totally-custom-model"),
+        ] {
+            let agent = AgentRow {
+                id: id.to_string(),
+                model: model.to_string(),
+                ..AgentRow::default()
+            };
+            state.agents.push(agent);
+        }
+
+        let snap = build_snapshot_from_tui_state(&state);
+        assert_eq!(snap.tier_counts.get("T0").copied(), Some(1)); // codex-mini -> Fast
+        assert_eq!(snap.tier_counts.get("T1").copied(), Some(2)); // glm + unknown
+        assert_eq!(
+            snap.tier_labels.get("T0").map(String::as_str),
+            Some("codex")
+        );
+        assert_eq!(snap.tier_labels.get("T1").map(String::as_str), Some("glm"));
+        // No label is a claude tier name.
+        assert!(snap.tier_labels.values().all(|l| l != "sonnet"));
+    }
+
+    #[test]
+    fn snapshot_from_tui_state_empty_model_degrades_gracefully() {
+        let mut state = TuiState::new();
+        state.agents.push(AgentRow::default()); // model == ""
+        let snap = build_snapshot_from_tui_state(&state);
+        assert_eq!(snap.tier_counts.get("T1").copied(), Some(1));
+        assert_eq!(
+            snap.tier_labels.get("T1").map(String::as_str),
+            Some("unknown")
+        );
     }
 }

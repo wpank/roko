@@ -24,6 +24,18 @@ use serde::{Deserialize, Serialize};
 
 const BASELINE_PLAN_COUNT: usize = 10;
 
+/// Schema discriminator written as the `"schema"` field on every new
+/// [`AgentEfficiencyEvent`] row in `.roko/learn/efficiency.jsonl`.
+///
+/// The file is shared with the `FeedbackService`, which writes `kind`-tagged
+/// feedback rows ([`FEEDBACK_EVENT_SCHEMA`]). Rows written before this field
+/// existed are classified by shape instead — see [`classify_efficiency_row`].
+pub const AGENT_EFFICIENCY_EVENT_SCHEMA: &str = "agent_efficiency_event/v1";
+
+/// Schema discriminator for the `kind`-tagged rows the `FeedbackService`
+/// writes into the same `.roko/learn/efficiency.jsonl` file.
+pub const FEEDBACK_EVENT_SCHEMA: &str = "feedback_event/v1";
+
 // ─── PromptSectionMeta ──────────────────────────────────────────────────────
 
 /// Metadata for one section in a composed prompt.
@@ -76,7 +88,7 @@ pub struct ToolCallMeta {
 /// This is the bridge between agent-level execution and system-level
 /// optimization. Contains 20+ fields covering identity, token accounting,
 /// cost accounting, prompt composition, tool utilization, and timing.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct AgentEfficiencyEvent {
     // ── Identity ────────────────────────────────────────────────────
     /// Agent identifier.
@@ -179,6 +191,61 @@ pub struct AgentEfficiencyEvent {
     pub timestamp: String,
 }
 
+// Manual `Serialize` impl: stamps every serialized row with the explicit
+// `"schema"` discriminator (audit #23) without adding a field to the struct,
+// which would break the many struct-literal construction sites across the
+// workspace. Serde ignores unknown fields on deserialize, so the extra key
+// is backward compatible for both old readers (new rows) and old rows (no
+// field). Keep this field list in sync with the struct —
+// `efficiency_event_serialization_roundtrip` fails if one side drifts.
+impl Serialize for AgentEfficiencyEvent {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        // 34 struct fields + the schema discriminator.
+        let mut state = serializer.serialize_struct("AgentEfficiencyEvent", 35)?;
+        state.serialize_field("schema", AGENT_EFFICIENCY_EVENT_SCHEMA)?;
+        state.serialize_field("agent_id", &self.agent_id)?;
+        state.serialize_field("role", &self.role)?;
+        state.serialize_field("backend", &self.backend)?;
+        state.serialize_field("model", &self.model)?;
+        state.serialize_field("plan_id", &self.plan_id)?;
+        state.serialize_field("task_id", &self.task_id)?;
+        state.serialize_field("attempt_id", &self.attempt_id)?;
+        state.serialize_field("input_tokens", &self.input_tokens)?;
+        state.serialize_field("output_tokens", &self.output_tokens)?;
+        state.serialize_field("reasoning_tokens", &self.reasoning_tokens)?;
+        state.serialize_field("cache_read_tokens", &self.cache_read_tokens)?;
+        state.serialize_field("cache_write_tokens", &self.cache_write_tokens)?;
+        state.serialize_field("cost_usd", &self.cost_usd)?;
+        state.serialize_field("cost_usd_without_cache", &self.cost_usd_without_cache)?;
+        state.serialize_field("prompt_sections", &self.prompt_sections)?;
+        state.serialize_field("total_prompt_tokens", &self.total_prompt_tokens)?;
+        state.serialize_field("system_prompt_tokens", &self.system_prompt_tokens)?;
+        state.serialize_field("tools_available", &self.tools_available)?;
+        state.serialize_field("tools_used", &self.tools_used)?;
+        state.serialize_field("tool_calls", &self.tool_calls)?;
+        state.serialize_field("wall_time_ms", &self.wall_time_ms)?;
+        state.serialize_field("duration_ms", &self.duration_ms)?;
+        state.serialize_field("time_to_first_token_ms", &self.time_to_first_token_ms)?;
+        state.serialize_field("was_warm_start", &self.was_warm_start)?;
+        state.serialize_field("iteration", &self.iteration)?;
+        state.serialize_field("turn_number", &self.turn_number)?;
+        state.serialize_field("is_final_turn", &self.is_final_turn)?;
+        state.serialize_field("gate_passed", &self.gate_passed)?;
+        state.serialize_field("outcome", &self.outcome)?;
+        state.serialize_field("gate_errors", &self.gate_errors)?;
+        // Serialized as `resolved_model`, matching the serde rename.
+        state.serialize_field("resolved_model", &self.model_used)?;
+        state.serialize_field("frequency", &self.frequency)?;
+        state.serialize_field("strategy_attempted", &self.strategy_attempted)?;
+        state.serialize_field("timestamp", &self.timestamp)?;
+        state.end()
+    }
+}
+
 impl AgentEfficiencyEvent {
     /// Build a default empty event payload.
     #[must_use]
@@ -220,6 +287,91 @@ fn default_operating_frequency() -> OperatingFrequency {
 
 fn default_true() -> bool {
     true
+}
+
+// ─── efficiency.jsonl schema discrimination ─────────────────────────────────
+
+/// Which of the schemas sharing `.roko/learn/efficiency.jsonl` a row uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EfficiencyRowSchema {
+    /// [`AgentEfficiencyEvent`] rows (per-turn cost/efficiency records).
+    AgentEfficiencyEvent,
+    /// `FeedbackService` `kind`-tagged rows (`model_call`, `gate_result`, ...).
+    FeedbackEvent,
+    /// Matches neither schema (corrupt row or unrecognized future schema).
+    Unknown,
+}
+
+/// Classify one parsed efficiency.jsonl row.
+///
+/// Rows written after the discriminator was introduced carry an explicit
+/// `"schema"` field. Legacy rows predate it and are classified by shape:
+/// `FeedbackService` rows always have a `"kind"` tag, [`AgentEfficiencyEvent`]
+/// rows never do and always carry `"agent_id"`.
+#[must_use]
+pub fn classify_efficiency_row(value: &serde_json::Value) -> EfficiencyRowSchema {
+    if let Some(schema) = value.get("schema").and_then(serde_json::Value::as_str) {
+        return match schema {
+            AGENT_EFFICIENCY_EVENT_SCHEMA => EfficiencyRowSchema::AgentEfficiencyEvent,
+            FEEDBACK_EVENT_SCHEMA => EfficiencyRowSchema::FeedbackEvent,
+            _ => EfficiencyRowSchema::Unknown,
+        };
+    }
+    if value.get("kind").is_some() {
+        EfficiencyRowSchema::FeedbackEvent
+    } else if value.get("agent_id").is_some() {
+        EfficiencyRowSchema::AgentEfficiencyEvent
+    } else {
+        EfficiencyRowSchema::Unknown
+    }
+}
+
+/// Outcome of tolerantly parsing efficiency.jsonl content.
+#[derive(Debug, Default)]
+pub struct EfficiencyEventsParse {
+    /// Rows that parsed as [`AgentEfficiencyEvent`].
+    pub events: Vec<AgentEfficiencyEvent>,
+    /// Rows matching the foreign `FeedbackService` schema (skipped, counted).
+    pub skipped_foreign_rows: usize,
+    /// Rows matching neither schema or failing to parse (skipped, counted).
+    pub skipped_unknown_rows: usize,
+}
+
+/// Parse efficiency.jsonl content, tolerating the `FeedbackService` rows that
+/// share the file. Foreign and unparseable rows are skipped explicitly and
+/// reported at debug level instead of vanishing silently (audit #23).
+#[must_use]
+pub fn parse_efficiency_events_jsonl(contents: &str) -> EfficiencyEventsParse {
+    let mut parsed = EfficiencyEventsParse::default();
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            parsed.skipped_unknown_rows += 1;
+            continue;
+        };
+        match classify_efficiency_row(&value) {
+            EfficiencyRowSchema::AgentEfficiencyEvent => {
+                match serde_json::from_value::<AgentEfficiencyEvent>(value) {
+                    Ok(event) => parsed.events.push(event),
+                    Err(_) => parsed.skipped_unknown_rows += 1,
+                }
+            }
+            EfficiencyRowSchema::FeedbackEvent => parsed.skipped_foreign_rows += 1,
+            EfficiencyRowSchema::Unknown => parsed.skipped_unknown_rows += 1,
+        }
+    }
+    if parsed.skipped_foreign_rows > 0 || parsed.skipped_unknown_rows > 0 {
+        tracing::debug!(
+            skipped_foreign_rows = parsed.skipped_foreign_rows,
+            skipped_unknown_rows = parsed.skipped_unknown_rows,
+            parsed_events = parsed.events.len(),
+            "efficiency.jsonl: skipped rows outside the AgentEfficiencyEvent schema"
+        );
+    }
+    parsed
 }
 
 impl Default for AgentEfficiencyEvent {
@@ -989,6 +1141,79 @@ mod tests {
         let e2: AgentEfficiencyEvent = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(e2.reasoning_tokens, 120);
         assert_eq!(e, e2);
+    }
+
+    // ── Schema discrimination tests (audit #23) ─────────────────────
+
+    #[test]
+    fn efficiency_event_serialization_includes_schema_discriminator() {
+        let event = AgentEfficiencyEvent::default_event();
+        let json = serde_json::to_value(&event).expect("serialize");
+        assert_eq!(json["schema"], AGENT_EFFICIENCY_EVENT_SCHEMA);
+        // The `resolved_model` rename is preserved by the manual Serialize impl.
+        assert!(json.get("model_used").is_none());
+        assert!(json.get("resolved_model").is_some());
+    }
+
+    #[test]
+    fn legacy_event_row_without_schema_still_loads() {
+        let event = make_test_event("Implementer", 0.42, 1500, 300, 200, 45000, 8, 3, true, true);
+        let mut json = serde_json::to_value(&event).expect("serialize");
+        json.as_object_mut().expect("object").remove("schema");
+        let parsed: AgentEfficiencyEvent = serde_json::from_value(json).expect("legacy row loads");
+        assert_eq!(parsed, event);
+    }
+
+    #[test]
+    fn classify_efficiency_row_by_tag_and_shape() {
+        // Explicit discriminator wins.
+        assert_eq!(
+            classify_efficiency_row(&serde_json::json!({"schema": AGENT_EFFICIENCY_EVENT_SCHEMA})),
+            EfficiencyRowSchema::AgentEfficiencyEvent
+        );
+        assert_eq!(
+            classify_efficiency_row(
+                &serde_json::json!({"schema": FEEDBACK_EVENT_SCHEMA, "kind": "model_call"})
+            ),
+            EfficiencyRowSchema::FeedbackEvent
+        );
+        assert_eq!(
+            classify_efficiency_row(&serde_json::json!({"schema": "future/v9"})),
+            EfficiencyRowSchema::Unknown
+        );
+        // Legacy rows (no discriminator) classified by shape.
+        assert_eq!(
+            classify_efficiency_row(&serde_json::json!({"kind": "gate_result", "run_id": "r1"})),
+            EfficiencyRowSchema::FeedbackEvent
+        );
+        assert_eq!(
+            classify_efficiency_row(&serde_json::json!({"agent_id": "a1", "input_tokens": 10})),
+            EfficiencyRowSchema::AgentEfficiencyEvent
+        );
+        assert_eq!(
+            classify_efficiency_row(&serde_json::json!({"unrelated": true})),
+            EfficiencyRowSchema::Unknown
+        );
+    }
+
+    #[test]
+    fn parse_efficiency_events_jsonl_counts_skipped_rows() {
+        let event = make_test_event("Implementer", 0.42, 1500, 300, 200, 45000, 8, 3, true, true);
+        let tagged_row = serde_json::to_string(&event).expect("serialize");
+        let mut legacy_value = serde_json::to_value(&event).expect("serialize");
+        legacy_value
+            .as_object_mut()
+            .expect("object")
+            .remove("schema");
+        let legacy_row = serde_json::to_string(&legacy_value).expect("serialize");
+        let feedback_row = serde_json::json!({"kind": "model_call", "model": "sonnet"}).to_string();
+
+        let contents = format!("{tagged_row}\n{legacy_row}\n{feedback_row}\nnot json\n");
+        let parsed = parse_efficiency_events_jsonl(&contents);
+
+        assert_eq!(parsed.events.len(), 2, "tagged + legacy rows both load");
+        assert_eq!(parsed.skipped_foreign_rows, 1, "kind-tagged row counted");
+        assert_eq!(parsed.skipped_unknown_rows, 1, "invalid line counted");
     }
 
     // ── RoleCostProfile tests ───────────────────────────────────────

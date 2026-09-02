@@ -417,11 +417,18 @@ pub fn parse_stream_line(line: &str) -> Vec<AgentEvent> {
 }
 
 /// Parse one line using the selected provider's stream protocol.
-pub fn parse_provider_stream_line(protocol: CliProtocol, line: &str) -> Vec<AgentEvent> {
+///
+/// `model` is the configured model slug; providers with model-dependent
+/// pricing (codex) use it to resolve per-model cost tiers, others ignore it.
+pub fn parse_provider_stream_line(
+    protocol: CliProtocol,
+    line: &str,
+    model: Option<&str>,
+) -> Vec<AgentEvent> {
     match protocol {
         CliProtocol::ClaudeStreamJson => parse_stream_line(line),
         CliProtocol::CodexExecJson => {
-            roko_agent::provider::codex_cli::stream::parse_stream_line(line)
+            roko_agent::provider::codex_cli::stream::parse_stream_line_with_model(line, model)
         }
         CliProtocol::GeminiStreamJson => {
             roko_agent::provider::gemini_cli::stream::parse_stream_line(line)
@@ -641,6 +648,7 @@ pub async fn spawn_agent_controlled(
     let agent_id = config.agent_id.clone();
     let stdout_tx = event_tx.clone();
     let protocol = invocation.protocol;
+    let stream_model = invocation.model.clone();
     let scrubber = Arc::new(LogScrubber::new());
     let stdout_scrubber = Arc::clone(&scrubber);
     let reader_task = tokio::spawn(async move {
@@ -649,7 +657,7 @@ pub async fn spawn_agent_controlled(
 
         while let Ok(Some(line)) = lines.next_line().await {
             let line = stdout_scrubber.scrub(&line);
-            for event in parse_provider_stream_line(protocol, &line) {
+            for event in parse_provider_stream_line(protocol, &line, Some(&stream_model)) {
                 if stdout_tx.send(event).await.is_err() {
                     debug!(agent_id = %agent_id, "event channel closed, stopping reader");
                     return;

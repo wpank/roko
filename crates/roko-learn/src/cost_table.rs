@@ -133,28 +133,23 @@ impl CostTable {
     }
 
     /// Fill in fallback pricing rows for known models without overriding config.
+    ///
+    /// Rows come from the shared registry
+    /// ([`roko_core::config::model_registry::BUILTIN_PRICING`]) so this table,
+    /// the TUI, and the enrichment estimator all price known slugs
+    /// (including codex / gpt-5.x) from the same source.
     #[must_use]
     pub fn with_defaults(mut self) -> Self {
-        let defaults = [
-            ("claude-opus-4-6", 15.00, 75.00, 3.75, 18.75, 1.0),
-            ("claude-sonnet-4-6", 3.00, 15.00, 0.30, 3.75, 1.0),
-            ("claude-haiku-4-5", 0.80, 4.00, 0.08, 1.00, 1.0),
-            ("glm-5.1", 1.40, 4.40, 0.26, 1.75, 1.05),
-            ("glm-5", 1.00, 3.20, 0.50, 1.25, 1.05),
-            ("kimi-k2.5", 0.60, 3.00, 0.10, 0.75, 0.98),
-            ("gpt-5.2", 2.00, 8.00, 0.50, 2.50, 1.0),
-            ("gpt-5.4", 2.50, 10.00, 0.63, 3.13, 1.0),
-            ("gpt-5.4-mini", 0.40, 1.60, 0.10, 0.50, 1.0),
-        ];
-
-        for (slug, input, output, cache_r, cache_w, ratio) in defaults {
-            self.models.entry(slug.to_string()).or_insert(ModelPricing {
-                input_per_m: input,
-                output_per_m: output,
-                cache_read_per_m: cache_r,
-                cache_write_per_m: cache_w,
-                tokenizer_ratio: ratio,
-            });
+        for (slug, pricing) in roko_core::config::model_registry::BUILTIN_PRICING {
+            self.models
+                .entry((*slug).to_string())
+                .or_insert(ModelPricing {
+                    input_per_m: pricing.input_per_m,
+                    output_per_m: pricing.output_per_m,
+                    cache_read_per_m: pricing.cache_read_per_m,
+                    cache_write_per_m: pricing.cache_write_per_m,
+                    tokenizer_ratio: pricing.tokenizer_ratio,
+                });
         }
 
         self
@@ -350,5 +345,37 @@ mod tests {
         };
         let cost = table.calculate("unknown-model", &usage);
         assert!((cost - 3.00).abs() < 1e-12);
+    }
+
+    #[test]
+    fn codex_and_gpt5x_price_from_registry_not_sonnet_fallback() {
+        let table = CostTable {
+            models: HashMap::new(),
+        }
+        .with_defaults();
+
+        // Codex slugs resolve to codex rates ($2/$8), not the $3/$15 sonnet
+        // fallback they silently got before.
+        let usage = Usage {
+            input_tokens: 1_000_000,
+            output_tokens: 1_000_000,
+            ..Usage::default()
+        };
+        let cost = table.calculate("gpt-5.6-sol", &usage);
+        assert!((cost - 10.00).abs() < 1e-12, "gpt-5.6-sol cost {cost}");
+        let cost = table.calculate("codex-mini", &usage);
+        assert!((cost - 10.00).abs() < 1e-12, "codex-mini cost {cost}");
+
+        // Date-/variant-suffixed codex slugs still prefix-match.
+        let pricing = table.lookup("gpt-5.6-sol-2026").expect("prefix match");
+        assert!((pricing.input_per_m - 2.00).abs() < 1e-12);
+
+        // Sonar rows exist now too.
+        let pricing = table.lookup("sonar").expect("sonar pricing");
+        assert!((pricing.input_per_m - 1.00).abs() < 1e-12);
+
+        // Truly unknown models keep the sonnet fallback.
+        let cost = table.calculate("totally-unknown-llm", &usage);
+        assert!((cost - 18.00).abs() < 1e-12, "unknown cost {cost}");
     }
 }

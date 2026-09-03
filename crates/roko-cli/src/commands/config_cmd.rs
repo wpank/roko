@@ -86,16 +86,12 @@ pub(crate) async fn dispatch_config(cli: &Cli, cmd: ConfigCmd) -> Result<()> {
         ConfigCmd::Set {
             key,
             value,
-            global: _,
+            global,
             project,
             workdir,
         } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-            let target = if project {
-                EditTarget::Project
-            } else {
-                EditTarget::Global
-            };
+            let target = edit_target(global, project);
             config_cmd::cmd_set(&wd, target, &key, &value)
         }
         ConfigCmd::SetSecret { name, value } => config_cmd::cmd_set_secret(&name, &value),

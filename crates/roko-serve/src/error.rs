@@ -121,6 +121,28 @@ impl ApiError {
         }
     }
 
+    /// 501 Not Implemented.
+    ///
+    /// Used for stub endpoints where the underlying feature is not yet backed
+    /// by durable storage or a production adapter. The body uses the standard
+    /// error envelope with `code = "not_implemented"` and structured details
+    /// containing the implementation phase and an actionable hint.
+    pub fn not_implemented(
+        msg: impl Into<String>,
+        phase: impl Into<String>,
+        hint: impl Into<String>,
+    ) -> Self {
+        Self {
+            status: StatusCode::NOT_IMPLEMENTED,
+            code: "not_implemented".into(),
+            message: msg.into(),
+            details: Some(Box::new(json!({
+                "phase": phase.into(),
+                "hint": hint.into(),
+            }))),
+        }
+    }
+
     /// 401 Unauthorized.
     pub fn unauthorized(msg: impl Into<String>) -> Self {
         Self {

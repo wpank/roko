@@ -1,7 +1,7 @@
 //! `roko doctor` bootstrap diagnostics for self-hosted workspaces.
 
 use crate::auth_detect::{AuthMethod, detect_auth_from_config};
-use crate::config::{ConfigLayer, ConfigPaths, resolve_paths};
+use crate::config::{ConfigPaths, resolve_paths};
 use crate::{Config, load_resolved_config};
 use anyhow::{Context as _, Result};
 use reqwest::Url;
@@ -328,6 +328,17 @@ pub async fn run_disk_doctor(workdir: &Path, config_override: Option<&Path>) -> 
     report
 }
 
+/// Check whether raw TOML text contains a given top-level key.
+fn toml_has_key(text: &str, key: &str) -> bool {
+    let value: toml::Value = match toml::from_str(text) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    value
+        .as_table()
+        .is_some_and(|table| table.contains_key(key))
+}
+
 fn load_active_config(workdir: &Path, config_override: Option<&Path>) -> Result<LoadedConfig> {
     if let Some(path) = config_override {
         if !path.is_file() {
@@ -343,8 +354,10 @@ fn load_active_config(workdir: &Path, config_override: Option<&Path>) -> Result<
             });
         }
 
-        let layer = ConfigLayer::from_file(path)?;
         let resolved = Config::from_file(path)?;
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("read config {}", path.display()))?;
+        let has_serve = toml_has_key(&text, "serve");
         return Ok(LoadedConfig {
             paths: ConfigPaths {
                 global: crate::config::global_config_path(),
@@ -353,18 +366,18 @@ fn load_active_config(workdir: &Path, config_override: Option<&Path>) -> Result<
             },
             resolved: Some(resolved),
             active_path: Some(path.to_path_buf()),
-            explicit_serve: layer.serve.is_some(),
+            explicit_serve: has_serve,
         });
     }
 
     let paths = resolve_paths(workdir);
     let mut explicit_serve = false;
+    let mut found_any_config = false;
     let active_path = if let Some(env_path) = &paths.env_override {
         match std::fs::read_to_string(env_path) {
             Ok(text) => {
-                let layer = ConfigLayer::parse_toml(&text)
-                    .with_context(|| format!("parse config {}", env_path.display()))?;
-                explicit_serve = layer.serve.is_some();
+                explicit_serve = toml_has_key(&text, "serve");
+                found_any_config = true;
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => {
@@ -375,16 +388,13 @@ fn load_active_config(workdir: &Path, config_override: Option<&Path>) -> Result<
         }
         Some(env_path.clone())
     } else {
-        let mut merged = ConfigLayer::default();
         let mut active_path = None;
 
         if let Some(ref global_path) = paths.global {
             match std::fs::read_to_string(global_path) {
                 Ok(text) => {
-                    let layer = ConfigLayer::parse_toml(&text)
-                        .with_context(|| format!("parse config {}", global_path.display()))?;
-                    explicit_serve |= layer.serve.is_some();
-                    merged = merged.merge(layer);
+                    explicit_serve |= toml_has_key(&text, "serve");
+                    found_any_config = true;
                     active_path = Some(global_path.clone());
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -395,13 +405,14 @@ fn load_active_config(workdir: &Path, config_override: Option<&Path>) -> Result<
             }
         }
         if let Some(project_path) = &paths.project {
-            let layer = ConfigLayer::from_file(project_path)?;
-            explicit_serve |= layer.serve.is_some();
-            merged = merged.merge(layer);
+            if let Ok(text) = std::fs::read_to_string(project_path) {
+                explicit_serve |= toml_has_key(&text, "serve");
+                found_any_config = true;
+            }
             active_path = Some(project_path.clone());
         }
 
-        if merged.is_empty() { None } else { active_path }
+        if !found_any_config { None } else { active_path }
     };
 
     let resolved = if paths

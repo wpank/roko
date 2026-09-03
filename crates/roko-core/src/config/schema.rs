@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 pub use super::agent::*;
 pub use super::budget::*;
 pub use super::chain::*;
-pub use super::execution::*;
+pub use super::execution::{DaimonConfig, DreamScheduleConfig, RepoConfig, StrategySpaceConfig};
 pub use super::gates::*;
 pub use super::graduation::*;
 pub use super::learning::*;

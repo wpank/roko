@@ -2102,6 +2102,7 @@ where
                     input_messages: input_messages.clone(),
                     mcp_config: mcp_config_path,
                     provenance_card,
+                    route: crate::runner::AcpWorkflowRoute::LegacyDefault,
                 },
                 event_sender,
             )
@@ -4784,6 +4785,7 @@ Use the Workflow dropdown in the status bar to select, or:
                     mcp_config: None,
                     provenance_card,
                     input_messages: Vec::new(),
+                    route: crate::runner::AcpWorkflowRoute::LegacyDefault,
                 },
                 event_sender,
             )
@@ -4834,6 +4836,7 @@ Use the Workflow dropdown in the status bar to select, or:
                     mcp_config: None,
                     provenance_card,
                     input_messages: Vec::new(),
+                    route: crate::runner::AcpWorkflowRoute::LegacyDefault,
                 },
                 event_sender,
             )

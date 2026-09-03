@@ -666,6 +666,10 @@ pub struct PerplexityConfig {
     /// Include related questions in search results.
     #[serde(default = "default_true")]
     pub return_related_questions: bool,
+    /// When true, `auto` backend selection prefers Perplexity deep research
+    /// over standard search for `research topic`. Default `false`.
+    #[serde(default)]
+    pub auto_deep: bool,
 }
 
 impl Default for PerplexityConfig {
@@ -680,6 +684,7 @@ impl Default for PerplexityConfig {
             search_domain_filter: Vec::new(),
             return_images: false,
             return_related_questions: true,
+            auto_deep: false,
         }
     }
 }
@@ -857,6 +862,48 @@ mod model_profile_tests {
             profile.effective_max_output(),
             u64::from(DEFAULT_MAX_OUTPUT_TOKENS),
             "missing max_output in TOML should fall back to DEFAULT_MAX_OUTPUT_TOKENS"
+        );
+    }
+}
+
+#[cfg(test)]
+mod perplexity_config_tests {
+    use super::*;
+
+    #[test]
+    fn auto_deep_defaults_to_false() {
+        let cfg = PerplexityConfig::default();
+        assert!(!cfg.auto_deep, "auto_deep must default to false");
+    }
+
+    #[test]
+    fn auto_deep_roundtrips_through_toml() {
+        let cfg = PerplexityConfig {
+            auto_deep: true,
+            ..Default::default()
+        };
+        let encoded = toml::to_string(&cfg).expect("serialize PerplexityConfig");
+        assert!(encoded.contains("auto_deep = true"));
+        let decoded: PerplexityConfig = toml::from_str(&encoded).expect("deserialize");
+        assert!(decoded.auto_deep);
+    }
+
+    #[test]
+    fn auto_deep_absent_in_toml_defaults_to_false() {
+        let toml_str = r#"
+            search_recency_filter = "month"
+        "#;
+        let cfg: PerplexityConfig = toml::from_str(toml_str).expect("deserialize");
+        assert!(!cfg.auto_deep);
+    }
+
+    #[test]
+    fn auto_deep_false_omitted_from_serialization() {
+        let cfg = PerplexityConfig::default();
+        let encoded = toml::to_string(&cfg).expect("serialize");
+        assert!(
+            !encoded.contains("auto_deep"),
+            "auto_deep = false should be omitted: {encoded}"
         );
     }
 }

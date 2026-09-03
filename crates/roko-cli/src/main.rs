@@ -101,6 +101,9 @@ pub enum Effort {
 /// Complexity override for `roko do`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum DoComplexity {
+    /// Mechanical: single-line / derive-only change.
+    #[value(alias = "mechanical")]
+    Trivial,
     /// Direct single-agent workflow.
     Simple,
     /// Planned workflow.
@@ -114,6 +117,7 @@ pub enum DoComplexity {
 impl DoComplexity {
     fn into_plan_complexity(self) -> roko_gate::PlanComplexity {
         match self {
+            Self::Trivial => roko_gate::PlanComplexity::Trivial,
             Self::Simple => roko_gate::PlanComplexity::Simple,
             Self::Medium => roko_gate::PlanComplexity::Standard,
             Self::Complex => roko_gate::PlanComplexity::Complex,
@@ -296,10 +300,10 @@ COMMAND GROUPS:
   Agents:            agent (create, start, stop, chat, serve)
   Research:          research, think, note
   Knowledge:         knowledge (query, dream, custody, archive)
-  Learning:          learn (router, experiments, efficiency, reflexes, tune)
+  Learning:          learn (router, experiments, efficiency, reflexes, inspect)
   Jobs:              job
   Benchmarks:        bench
-  Configuration:     tune, config (providers, models, subscriptions, plugins, secrets)
+  Configuration:     config (providers, models, subscriptions, plugins, secrets, preset)
   Code intelligence: index
   Server:            up, serve, acp, daemon, deploy, worker
   Interactive:       dashboard
@@ -700,17 +704,16 @@ Examples:
         /// Note text.
         text: Vec<String>,
     },
-    /// (deprecated: use `roko learn tune`) Adjust behavior by writing roko.toml.
+    /// (deprecated: use `roko config preset`) Apply config presets by writing roko.toml.
     #[command(
         hide = true,
         subcommand,
         after_help = "\
-Examples:
-  roko tune routing
-  roko tune gates
-  roko tune budget
-  roko tune model sonnet
-  roko tune model haiku"
+Examples (deprecated -- use `roko config preset` instead):
+  roko tune routing   ->  roko config preset routing
+  roko tune gates     ->  roko config preset gates
+  roko tune budget    ->  roko config preset budget
+  roko tune model X   ->  roko config preset model X"
     )]
     Tune(TuneCmd),
 
@@ -722,7 +725,7 @@ Examples:
     },
 
     // ── Learning & feedback ─────────────────────────────────────────
-    /// Inspect learning state: routing, experiments, efficiency, episodes, reflexes, and tuning.
+    /// Inspect learning state: routing, experiments, efficiency, episodes, reflexes, and subsystem inspection.
     Learn {
         #[command(subcommand)]
         cmd: LearnCmd,
@@ -1326,7 +1329,7 @@ enum KnowledgeCustodyCmd {
 }
 
 // -----------------------------------------------------------------------
-// Learn: learning state + tuning
+// Learn: learning state + inspection
 // -----------------------------------------------------------------------
 
 #[derive(Debug, Subcommand)]
@@ -3558,7 +3561,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             commands::note::cmd_note(&wd, text, tags, cli.json)
         }
         Command::Tune(cmd) => {
-            eprintln!("warning: 'roko tune' is deprecated, use 'roko learn tune'");
+            eprintln!("warning: 'roko tune' is deprecated, use 'roko config preset'");
             commands::tune::cmd_tune(cli, cmd).await
         }
         Command::Knowledge { cmd } => commands::knowledge::dispatch_knowledge(cli, cmd).await,
@@ -3600,6 +3603,9 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
                     let workdir = resolve_workdir(cli);
                     dispatch_mcp_cmd(&mcp_cmd, &workdir)?;
                     return Ok(EXIT_SUCCESS);
+                }
+                ConfigCmd::Preset { cmd: preset_cmd } => {
+                    return commands::tune::cmd_config_preset(cli, preset_cmd).await;
                 }
                 other => {
                     commands::config_cmd::dispatch_config(cli, other).await?;
@@ -3876,9 +3882,21 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             hash,
             workdir,
             forensic,
+            from_event,
             as_of,
             format,
-        } => commands::util::cmd_replay(workdir, hash, forensic, as_of, format).await,
+        } => {
+            commands::util::cmd_replay(
+                cli,
+                workdir,
+                hash,
+                forensic,
+                from_event,
+                as_of,
+                format,
+            )
+            .await
+        }
         Command::History { id, workdir } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             let truncate = |value: &str, max_chars: usize| -> String {
@@ -5846,6 +5864,77 @@ mod tests {
     #[test]
     fn cli_parses_replay_subcommand() {
         let cli = Cli::try_parse_from(["roko", "replay", "abcd1234"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Replay { .. })));
+    }
+
+    #[test]
+    fn cli_parses_replay_from_event() {
+        let cli =
+            Cli::try_parse_from(["roko", "replay", "abcd1234", "--from-event", "3"])
+                .unwrap();
+        match cli.command {
+            Some(Command::Replay {
+                from_event, as_of, ..
+            }) => {
+                assert_eq!(from_event.as_deref(), Some("3"));
+                assert!(as_of.is_none());
+            }
+            other => panic!("expected Replay, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_replay_as_of_hidden() {
+        let cli =
+            Cli::try_parse_from(["roko", "replay", "abcd1234", "--as-of", "5"]).unwrap();
+        match cli.command {
+            Some(Command::Replay {
+                from_event, as_of, ..
+            }) => {
+                assert!(from_event.is_none());
+                assert_eq!(as_of.as_deref(), Some("5"));
+            }
+            other => panic!("expected Replay, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_replay_from_event_conflicts_with_as_of() {
+        let result = Cli::try_parse_from([
+            "roko",
+            "replay",
+            "abcd1234",
+            "--from-event",
+            "3",
+            "--as-of",
+            "5",
+        ]);
+        assert!(result.is_err(), "--from-event and --as-of must conflict");
+    }
+
+    #[test]
+    fn cli_parses_replay_with_workdir() {
+        let cli = Cli::try_parse_from([
+            "roko",
+            "replay",
+            "abcd1234",
+            "--workdir",
+            "/tmp/proj",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Replay { workdir, .. }) => {
+                assert_eq!(workdir, Some(PathBuf::from("/tmp/proj")));
+            }
+            other => panic!("expected Replay, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_replay_global_json() {
+        let cli =
+            Cli::try_parse_from(["roko", "--json", "replay", "abcd1234"]).unwrap();
+        assert!(cli.json);
         assert!(matches!(cli.command, Some(Command::Replay { .. })));
     }
 

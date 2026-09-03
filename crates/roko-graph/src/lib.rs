@@ -56,6 +56,7 @@ pub mod fingerprint;
 pub mod hot;
 pub mod loader;
 pub mod plan_mutation;
+pub mod profile;
 pub mod registry;
 pub mod replay;
 pub mod topo;
@@ -120,5 +121,11 @@ pub use plan_mutation::{
 pub use delivery::{
     CompletionDeliveryReceiptV1, CompletionDeliveryRequest, CompletionDeliveryService,
     CompletionDeliveryState, DeliveryError, DeliveryReceiptStore, DeliveryTransitionError,
-    ReleasePolicy, DELIVERY_EXTENSION_KEY, delivery_extension_value,
+    MergeSlot, MergeSlotBlocked, ReleasePolicy, DELIVERY_EXTENSION_KEY, delivery_extension_value,
+};
+
+// Re-export authored graph production profile (#267).
+pub use profile::{
+    AuthoredGraphProfile, AuthoredGraphProfileBuilder, CapabilityDenial, CellCapabilityDenial,
+    DenialReason, ProfileValidationError, RuntimeProfileKind, validate_cell_capabilities,
 };

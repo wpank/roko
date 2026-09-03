@@ -1,14 +1,172 @@
-//! `roko do` command — universal entry point with progressive formality.
+//! `roko do` command — deterministic template routing (#278).
 //!
-//! Classifies prompt complexity and routes through the appropriate pipeline:
-//! - Trivial/Simple: direct single-agent WorkflowEngine run
-//! - Standard: generate plan from prompt, then execute it
-//! - Complex: create PRD -> draft PRD -> generate plan -> execute plan
+//! Replaces silent engine/workflow delegation with explicit named Graph
+//! template selection. The frozen routing table is implemented as the
+//! pure [`resolve_do_route`] function and table-tested against every row.
+//!
+//! ## Routing table (frozen)
+//!
+//! | Input                          | Route                                    |
+//! |-------------------------------|------------------------------------------|
+//! | `--complexity trivial`        | `mechanical@1`                           |
+//! | `--complexity simple`         | `focused@1`                              |
+//! | `--complexity standard`       | prompt -> plan -> execute                |
+//! | `--complexity complex`        | PRD -> plan -> execute                   |
+//! | `--plan` with trivial/simple  | `integrative@1`                          |
+//! | research intent               | `roko research topic`                    |
+//! | plan-generate intent          | `roko plan generate`                     |
+//! | unqualified TTY prompt        | preview + confirm before dispatch        |
+//! | unqualified non-TTY prompt    | reject; require `--complexity`/`--plan`  |
+//! | dry-run/ghost/compare         | print route; never execute               |
+//! | single word matching plan dir | instruct `roko plan run <path>`          |
 
 use crate::*;
 use roko_core::config::schema::RokoConfig;
 use roko_gate::PlanComplexity;
 use std::path::{Path, PathBuf};
+
+// ─── Routing types ──────────────────────────────────────────────────────
+
+/// Resolved execution route for `roko do`.
+///
+/// Each variant maps to exactly one row in the frozen routing table.
+/// The resolver is pure: no I/O, no config loading, no filesystem probing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DoRoute {
+    /// `--complexity trivial` -> `mechanical@1` single-agent template.
+    Mechanical,
+    /// `--complexity simple` -> `focused@1` single-agent template.
+    Focused,
+    /// `--complexity standard` -> generate plan from prompt, then execute.
+    PromptPlan,
+    /// `--complexity complex` -> create/validate PRD, generate plan, execute.
+    PrdPlan,
+    /// `--plan` with trivial/simple classification -> `integrative@1`.
+    Integrative,
+    /// Research intent auto-detected from prompt.
+    Research,
+    /// Plan-generation intent auto-detected from prompt.
+    PlanGenerate,
+    /// Dry-run / ghost / compare: print route without executing.
+    DryRun {
+        /// The inner route that *would* execute.
+        inner: Box<DoRoute>,
+    },
+    /// Non-TTY prompt without explicit complexity/plan: reject before side effects.
+    RejectNonTty,
+    /// Single word matching a known plan directory: instruct `roko plan run`.
+    PlanHint {
+        /// The slug the user typed.
+        slug: String,
+    },
+}
+
+impl DoRoute {
+    /// Canonical template name for display in previews.
+    #[must_use]
+    pub fn template_name(&self) -> &'static str {
+        match self {
+            Self::Mechanical => "mechanical@1",
+            Self::Focused => "focused@1",
+            Self::PromptPlan => "prompt-plan",
+            Self::PrdPlan => "prd-plan",
+            Self::Integrative => "integrative@1",
+            Self::Research => "research",
+            Self::PlanGenerate => "plan-generate",
+            Self::DryRun { inner } => inner.template_name(),
+            Self::RejectNonTty => "reject",
+            Self::PlanHint { .. } => "plan-hint",
+        }
+    }
+
+    /// Estimated cost band for display in previews.
+    #[must_use]
+    pub fn cost_band(&self) -> &'static str {
+        match self {
+            Self::Mechanical => "<$0.01",
+            Self::Focused => "$0.01-$0.05",
+            Self::PromptPlan => "$0.05-$0.25",
+            Self::PrdPlan => "$0.25+",
+            Self::Integrative => "$0.05-$0.25",
+            Self::Research => "$0.01-$0.10",
+            Self::PlanGenerate => "$0.05-$0.25",
+            Self::DryRun { inner } => inner.cost_band(),
+            Self::RejectNonTty => "$0.00",
+            Self::PlanHint { .. } => "$0.00",
+        }
+    }
+
+    /// Human-readable pipeline description.
+    #[must_use]
+    pub fn pipeline_description(&self) -> &'static str {
+        match self {
+            Self::Mechanical => "single agent (mechanical)",
+            Self::Focused => "single agent (focused)",
+            Self::PromptPlan => "generate plan -> execute",
+            Self::PrdPlan => "PRD -> draft -> plan -> execute",
+            Self::Integrative => "single agent (integrative, plan-forced)",
+            Self::Research => "research command",
+            Self::PlanGenerate => "plan generation command",
+            Self::DryRun { inner } => inner.pipeline_description(),
+            Self::RejectNonTty => "rejected (non-TTY without explicit complexity)",
+            Self::PlanHint { .. } => "plan hint (use roko plan run)",
+        }
+    }
+}
+
+/// Inputs to the pure routing resolver.
+#[derive(Debug, Clone)]
+pub struct DoRouteInput {
+    /// Classified or overridden complexity.
+    pub complexity: PlanComplexity,
+    /// Whether `--complexity` was explicitly provided.
+    pub complexity_forced: bool,
+    /// Whether `--plan` was passed.
+    pub plan_flag: bool,
+    /// Whether `--dry-run` or `--ghost` was passed.
+    pub dry_preview: bool,
+    /// Whether `--compare` was passed.
+    pub compare: bool,
+    /// Whether stdin is a TTY.
+    pub is_tty: bool,
+}
+
+/// Pure routing resolver: maps [`DoRouteInput`] to a [`DoRoute`].
+///
+/// This function performs no I/O, no config loading, and no filesystem
+/// access. Intent classification and single-word plan detection happen
+/// *before* this function is called.
+#[must_use]
+pub fn resolve_do_route(input: &DoRouteInput) -> DoRoute {
+    let base = if input.plan_flag {
+        match input.complexity {
+            PlanComplexity::Trivial | PlanComplexity::Simple => DoRoute::Integrative,
+            PlanComplexity::Standard => DoRoute::PromptPlan,
+            PlanComplexity::Complex => DoRoute::PrdPlan,
+        }
+    } else {
+        match input.complexity {
+            PlanComplexity::Trivial => DoRoute::Mechanical,
+            PlanComplexity::Simple => DoRoute::Focused,
+            PlanComplexity::Standard => DoRoute::PromptPlan,
+            PlanComplexity::Complex => DoRoute::PrdPlan,
+        }
+    };
+
+    // Dry-run / ghost / compare: wrap the base route.
+    if input.dry_preview || input.compare {
+        return DoRoute::DryRun {
+            inner: Box::new(base),
+        };
+    }
+
+    // Non-TTY without explicit complexity: reject before side effects.
+    if !input.is_tty && !input.complexity_forced && !input.plan_flag {
+        return DoRoute::RejectNonTty;
+    }
+
+    base
+}
 
 /// Main entry point for `roko do`.
 pub(crate) async fn cmd_do(
@@ -72,9 +230,14 @@ pub(crate) async fn cmd_do(
                 out.step("Routing", "roko research topic ...");
                 let topic_words: Vec<String> =
                     prompt.split_whitespace().map(String::from).collect();
+                // Respect configured auto_deep preference for auto-routed research.
+                let auto_deep = roko_core::config::loader::load_config_unified(&workdir)
+                    .map(|c| c.perplexity.auto_deep)
+                    .unwrap_or(false);
                 let research_cmd = crate::ResearchCmd::Topic {
                     topic: topic_words,
-                    deep: false,
+                    deep: auto_deep,
+                    backend: crate::ResearchBackend::Auto,
                 };
                 return crate::commands::research::cmd_research(cli, research_cmd).await;
             }
@@ -181,14 +344,18 @@ async fn run_simple_path(
         effort: cli.effort.map(|e| e.to_string()),
     };
 
+    let route = roko_cli::run::WorkflowExecutionRoute::LegacyDefault;
+
     tracing::debug!(
         complexity = complexity_label(complexity),
         workflow_template,
         cascade_enabled = !no_cascade,
+        %route,
         "dispatching roko do (simple) through WorkflowEngine"
     );
 
-    let result = roko_cli::run::run_workflow_engine_report_with_hub(
+    let result = roko_cli::run::run_workflow_report(
+        route,
         prompt,
         workdir,
         workflow_template,

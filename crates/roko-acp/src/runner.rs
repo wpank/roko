@@ -601,6 +601,65 @@ impl std::str::FromStr for AcpWorkflowRoute {
     }
 }
 
+// ---------------------------------------------------------------------------
+// #245: Non-plan service migration adapter (Lane D2)
+// ---------------------------------------------------------------------------
+
+/// Thin adapter that validates an ACP workflow request against the
+/// [`roko_execution::profiles::ProfileMatrix`] before delegating to the
+/// existing `ServiceFactory::build` path.
+///
+/// When #243 lands, this adapter will be replaced by a direct call to
+/// `RuntimeServicesBuilder::build()`. Until then it serves as the
+/// consumer-side contract: ACP session params are translated into
+/// `ExecutionOverrides` and validated against the `Workflow` profile
+/// (ACP workflow calls use the same service bundle as CLI workflows).
+///
+/// **Spec constraint (Lane D2):** this adapter does not edit
+/// `commands/plan.rs`, `runner/event_loop.rs`, or any plan-path type.
+pub struct AcpSessionServiceAdapter;
+
+impl AcpSessionServiceAdapter {
+    /// Validate that an ACP workflow request satisfies the profile matrix
+    /// and return a handle for cost settlement correlation.
+    ///
+    /// The caller must still call `ServiceFactory::build` directly —
+    /// this adapter only validates the profile matrix and provides the
+    /// correlation handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the profile matrix validation fails.
+    pub fn validate_workflow(
+        session_id: &str,
+        workdir: &std::path::Path,
+        model_key: Option<String>,
+        mcp_config: Option<std::path::PathBuf>,
+    ) -> anyhow::Result<roko_execution::NonPlanServiceHandle> {
+        use roko_execution::profiles::RuntimeProfile;
+
+        let exec_overrides =
+            roko_execution::overrides_for_acp(session_id, model_key, mcp_config);
+        let request = roko_execution::NonPlanServiceRequest::new(
+            RuntimeProfile::Workflow,
+            workdir.to_path_buf(),
+            exec_overrides,
+        );
+        let handle = roko_execution::validate_service_request(&request)
+            .map_err(|e| anyhow::anyhow!("ACP session service validation: {e}"))?;
+
+        tracing::debug!(
+            session_id = %session_id,
+            instance_id = %handle.instance_id(),
+            profile = %handle.profile(),
+            required = ?handle.required_bundles(),
+            "validated ACP session service request"
+        );
+
+        Ok(handle)
+    }
+}
+
 /// Execute a prompt via WorkflowEngine, bridging events to ACP protocol.
 ///
 /// This is an alternative to [`run_workflow_pipeline`] that uses the shared

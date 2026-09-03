@@ -1,43 +1,9 @@
 //! Typed streaming events for provider adapters and tool loops.
 
-use crate::chat_types::{ChatResponse, FinishReason};
+use crate::tool_loop::{StreamEvent, StreamEventKind};
 use crate::translate::{normalize_finish_reason, openai::parse_usage};
 use crate::usage::Usage;
-use roko_core::tool::ToolCall;
 use serde_json::Value;
-
-/// Incremental stream events normalized across GLM and Kimi responses.
-#[derive(Debug, Clone)]
-pub enum StreamChunk {
-    /// Incremental reasoning or thinking text.
-    ReasoningDelta(String),
-    /// Incremental assistant-visible content text.
-    ContentDelta(String),
-    /// Incremental function-call data for one tool call slot.
-    ToolCallDelta {
-        /// Zero-based tool call index within the current assistant turn.
-        index: usize,
-        /// Incremental tool call identifier fragment, if the provider streamed one.
-        id_delta: Option<String>,
-        /// Incremental function name fragment, if the provider streamed one.
-        name_delta: Option<String>,
-        /// Incremental JSON argument text for the tool call.
-        arguments_delta: String,
-    },
-    /// Token accounting emitted during or after the stream.
-    Usage(Usage),
-    /// Terminal stream marker with the canonical finish reason.
-    Done(FinishReason),
-    /// Terminal provider or transport error surfaced as a stream event.
-    Error(String),
-    /// Progress update from a running tool (harness adapters).
-    ToolProgress {
-        /// Tool name or identifier.
-        tool: String,
-        /// Human-readable progress status.
-        status: String,
-    },
-}
 
 /// Provider-neutral stream event covering both OpenAI SSE and Claude CLI protocols.
 #[derive(Debug, Clone)]
@@ -116,35 +82,37 @@ impl UnifiedStreamEvent {
             | AgentRuntimeEvent::Exited { .. } => None,
         }
     }
-}
 
-impl From<StreamChunk> for UnifiedStreamEvent {
-    fn from(chunk: StreamChunk) -> Self {
-        match chunk {
-            StreamChunk::ContentDelta(delta) => Self::ContentDelta(delta),
-            StreamChunk::ReasoningDelta(delta) => Self::ReasoningDelta(delta),
-            StreamChunk::ToolCallDelta {
-                index: _,
-                id_delta,
-                name_delta,
-                arguments_delta,
-            } => Self::ToolCall {
-                id: id_delta.unwrap_or_default(),
-                name: name_delta.unwrap_or_default(),
-                arguments: arguments_delta,
-            },
-            StreamChunk::Usage(usage) => Self::Usage {
+    /// Convert a [`StreamEvent`] into a [`UnifiedStreamEvent`].
+    #[must_use]
+    pub fn from_stream_event(event: StreamEvent) -> Option<Self> {
+        match event.kind {
+            StreamEventKind::TextDelta(text) => Some(Self::ContentDelta(text)),
+            StreamEventKind::ReasoningDelta(text) => Some(Self::ReasoningDelta(text)),
+            StreamEventKind::ToolCallStart { id, name } => Some(Self::ToolCall {
+                id,
+                name,
+                arguments: String::new(),
+            }),
+            StreamEventKind::ToolCallDelta { id: _, json_fragment } => {
+                // Deltas carry partial arguments; map to an empty-named ToolCall
+                // for accumulators that need argument fragments.
+                Some(Self::ToolCall {
+                    id: String::new(),
+                    name: String::new(),
+                    arguments: json_fragment,
+                })
+            }
+            StreamEventKind::ToolCallEnd { id, name, args } => Some(Self::ToolCall {
+                id,
+                name,
+                arguments: args.to_string(),
+            }),
+            StreamEventKind::Usage(usage) => Some(Self::Usage {
                 input_tokens: u64::from(usage.input_tokens),
                 output_tokens: u64::from(usage.output_tokens),
-            },
-            StreamChunk::Done(_) => Self::Done,
-            StreamChunk::Error(error) => Self::Error(error),
-            StreamChunk::ToolProgress { .. } => {
-                // Tool progress events are purely informational and carry no
-                // content. Map to an empty ContentDelta so that accumulators
-                // append nothing and no spurious Done signal is emitted.
-                Self::ContentDelta(String::new())
-            }
+            }),
+            StreamEventKind::Done { .. } => Some(Self::Done),
         }
     }
 }
@@ -167,14 +135,20 @@ pub trait StreamJsonParser: Send + Sync {
 
 /// Parser for OpenAI-compatible SSE streams (`data: {...}` lines).
 ///
-/// Wraps the existing [`parse_sse_line`] function and translates
-/// [`StreamChunk`] variants into [`UnifiedStreamEvent`].
+/// Wraps the existing [`parse_sse_line`] function and converts
+/// [`StreamEvent`] values into [`UnifiedStreamEvent`].
 pub struct OpenAiSseParser;
 
 impl StreamJsonParser for OpenAiSseParser {
     fn parse_line(&self, line: &str) -> Vec<UnifiedStreamEvent> {
         match parse_sse_line(line) {
-            Some(chunk) => vec![chunk.into()],
+            Some(event) => {
+                if let Some(unified) = UnifiedStreamEvent::from_stream_event(event) {
+                    vec![unified]
+                } else {
+                    Vec::new()
+                }
+            }
             None => Vec::new(),
         }
     }
@@ -205,111 +179,17 @@ impl StreamJsonParser for ClaudeCliParser {
     }
 }
 
-/// Incrementally reconstruct a canonical [`ChatResponse`] from stream chunks.
-#[derive(Debug, Clone, Default)]
-pub struct StreamAccumulator {
-    reasoning: String,
-    content: String,
-    tool_calls: Vec<PartialToolCall>,
-    usage: Usage,
-    finish_reason: FinishReason,
-}
-
-#[derive(Debug, Clone, Default)]
-struct PartialToolCall {
-    id: String,
-    name: String,
-    arguments: String,
-}
-
-impl StreamAccumulator {
-    /// Create an empty accumulator.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Incorporate one streamed chunk into the in-progress response.
-    pub fn push(&mut self, chunk: StreamChunk) {
-        match chunk {
-            StreamChunk::ReasoningDelta(delta) => self.reasoning.push_str(&delta),
-            StreamChunk::ContentDelta(delta) => self.content.push_str(&delta),
-            StreamChunk::ToolCallDelta {
-                index,
-                id_delta,
-                name_delta,
-                arguments_delta,
-            } => {
-                while self.tool_calls.len() <= index {
-                    self.tool_calls.push(PartialToolCall::default());
-                }
-
-                let tool_call = &mut self.tool_calls[index];
-                if let Some(id) = id_delta {
-                    tool_call.id = id;
-                }
-                if let Some(name) = name_delta {
-                    tool_call.name = name;
-                }
-                tool_call.arguments.push_str(&arguments_delta);
-            }
-            StreamChunk::Usage(usage) => self.usage = usage,
-            StreamChunk::Done(finish_reason) => {
-                let should_preserve_existing = matches!(finish_reason, FinishReason::Stop)
-                    && !matches!(self.finish_reason, FinishReason::Stop);
-                if !should_preserve_existing {
-                    self.finish_reason = finish_reason;
-                }
-            }
-            StreamChunk::Error(_) => {}
-            StreamChunk::ToolProgress { .. } => {
-                // Tool progress is informational; does not affect the accumulated response.
-            }
-        }
-    }
-
-    /// Convert the accumulated stream state into a canonical response.
-    #[must_use]
-    pub fn finalize(self) -> ChatResponse {
-        let tool_calls = self
-            .tool_calls
-            .into_iter()
-            .filter(|tool_call| {
-                !(tool_call.id.is_empty()
-                    && tool_call.name.is_empty()
-                    && tool_call.arguments.trim().is_empty())
-            })
-            .map(|tool_call| {
-                let arguments = if tool_call.arguments.trim().is_empty() {
-                    serde_json::json!({})
-                } else {
-                    serde_json::from_str(&tool_call.arguments)
-                        .unwrap_or_else(|_| Value::String(tool_call.arguments))
-                };
-
-                ToolCall::new(tool_call.id, tool_call.name, arguments)
-            })
-            .collect();
-
-        let mut response = ChatResponse {
-            content: self.content,
-            reasoning: (!self.reasoning.is_empty()).then_some(self.reasoning),
-            tool_calls,
-            usage: self.usage,
-            finish_reason: self.finish_reason,
-            ..Default::default()
-        };
-        response.raw_assistant_message = Some(response.as_assistant_message());
-        response
-    }
-}
-
-/// Parse a single OpenAI-compatible SSE line into a canonical stream chunk.
+/// Parse a single OpenAI-compatible SSE line into a canonical stream event.
+///
+/// Returns a [`StreamEvent`] ready for direct use with [`crate::tool_loop::collect_stream_to_response`]
+/// and the `stream_turn` API.
 #[must_use]
-pub fn parse_sse_line(line: &str) -> Option<StreamChunk> {
+pub fn parse_sse_line(line: &str) -> Option<StreamEvent> {
     let line = line.strip_prefix("data:")?.trim_start();
     if line == "[DONE]" {
-        return Some(StreamChunk::Done(FinishReason::Stop));
+        return Some(StreamEvent::now(StreamEventKind::Done {
+            finish_reason: "stop".to_string(),
+        }));
     }
 
     let json: Value = serde_json::from_str(line).ok()?;
@@ -317,41 +197,58 @@ pub fn parse_sse_line(line: &str) -> Option<StreamChunk> {
 
     // GLM streams reasoning before content, so surface that first.
     if let Some(reasoning) = delta.get("reasoning_content").and_then(Value::as_str) {
-        return Some(StreamChunk::ReasoningDelta(reasoning.to_string()));
+        return Some(StreamEvent::now(StreamEventKind::ReasoningDelta(
+            reasoning.to_string(),
+        )));
     }
     if let Some(content) = delta.get("content").and_then(Value::as_str) {
-        return Some(StreamChunk::ContentDelta(content.to_string()));
+        return Some(StreamEvent::now(StreamEventKind::TextDelta(
+            content.to_string(),
+        )));
     }
     if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
         for tc in tool_calls {
-            let index = tc
-                .get("index")
-                .and_then(Value::as_u64)
-                .and_then(|value| usize::try_from(value).ok())
-                .unwrap_or(0);
-            return Some(StreamChunk::ToolCallDelta {
-                index,
-                id_delta: tc.get("id").and_then(Value::as_str).map(str::to_string),
-                name_delta: tc
-                    .pointer("/function/name")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-                arguments_delta: tc
-                    .pointer("/function/arguments")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string(),
-            });
+            let id = tc
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_default();
+            let name = tc
+                .pointer("/function/name")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_default();
+            let arguments = tc
+                .pointer("/function/arguments")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+
+            // When both id and name are present, this is a tool call start.
+            if !id.is_empty() || !name.is_empty() {
+                return Some(StreamEvent::now(StreamEventKind::ToolCallStart {
+                    id,
+                    name,
+                }));
+            }
+            // Otherwise it's a delta with partial arguments.
+            return Some(StreamEvent::now(StreamEventKind::ToolCallDelta {
+                id: String::new(),
+                json_fragment: arguments,
+            }));
         }
     }
     if json.get("usage").is_some() {
-        return Some(StreamChunk::Usage(parse_usage(&json)));
+        return Some(StreamEvent::now(StreamEventKind::Usage(parse_usage(&json))));
     }
     if let Some(reason) = json
         .pointer("/choices/0/finish_reason")
         .and_then(Value::as_str)
     {
-        return Some(StreamChunk::Done(normalize_finish_reason(reason)));
+        let finish_reason = normalize_finish_reason(reason);
+        return Some(StreamEvent::now(StreamEventKind::Done {
+            finish_reason: format!("{finish_reason:?}"),
+        }));
     }
 
     None
@@ -359,60 +256,54 @@ pub fn parse_sse_line(line: &str) -> Option<StreamChunk> {
 
 #[cfg(test)]
 mod tests {
-    use super::{StreamAccumulator, StreamChunk, parse_sse_line};
-    use crate::chat_types::FinishReason;
+    use super::parse_sse_line;
+    use crate::tool_loop::StreamEventKind;
 
     #[test]
     fn sse_parser_reads_reasoning_delta() {
-        let chunk = parse_sse_line(
+        let event = parse_sse_line(
             r#"data: {"choices":[{"delta":{"reasoning_content":"Need to inspect the file."}}]}"#,
         );
 
         assert!(matches!(
-            chunk,
-            Some(StreamChunk::ReasoningDelta(reasoning)) if reasoning == "Need to inspect the file."
+            event.map(|e| e.kind),
+            Some(StreamEventKind::ReasoningDelta(reasoning)) if reasoning == "Need to inspect the file."
         ));
     }
 
     #[test]
     fn sse_parser_reads_content_delta() {
-        let chunk =
+        let event =
             parse_sse_line(r#"data: {"choices":[{"delta":{"content":"I can answer now."}}]}"#);
 
         assert!(matches!(
-            chunk,
-            Some(StreamChunk::ContentDelta(content)) if content == "I can answer now."
+            event.map(|e| e.kind),
+            Some(StreamEventKind::TextDelta(content)) if content == "I can answer now."
         ));
     }
 
     #[test]
-    fn sse_parser_reads_tool_call_delta() {
-        let chunk = parse_sse_line(
+    fn sse_parser_reads_tool_call_start() {
+        let event = parse_sse_line(
             r#"data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_glm_","function":{"name":"edit_file","arguments":"{\"path\":\"note.txt\"}"}}]}}]}"#,
         );
 
         assert!(matches!(
-            chunk,
-            Some(StreamChunk::ToolCallDelta {
-                index: 1,
-                id_delta: Some(id),
-                name_delta: Some(name),
-                arguments_delta,
-            }) if id == "call_glm_"
-                && name == "edit_file"
-                && arguments_delta == "{\"path\":\"note.txt\"}"
+            event.map(|e| e.kind),
+            Some(StreamEventKind::ToolCallStart { id, name })
+                if id == "call_glm_" && name == "edit_file"
         ));
     }
 
     #[test]
-    fn sse_parser_reads_usage_chunk() {
-        let chunk = parse_sse_line(
+    fn sse_parser_reads_usage() {
+        let event = parse_sse_line(
             r#"data: {"choices":[],"usage":{"prompt_tokens":21,"completion_tokens":9,"prompt_tokens_details":{"cached_tokens":4}}}"#,
         );
 
         assert!(matches!(
-            chunk,
-            Some(StreamChunk::Usage(usage))
+            event.map(|e| e.kind),
+            Some(StreamEventKind::Usage(usage))
                 if usage.input_tokens == 21
                     && usage.output_tokens == 9
                     && usage.cache_read_tokens == 4
@@ -420,75 +311,28 @@ mod tests {
     }
 
     #[test]
-    fn sse_parser_reads_finish_reason_chunk() {
-        let chunk =
+    fn sse_parser_reads_finish_reason() {
+        let event =
             parse_sse_line(r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#);
 
         assert!(matches!(
-            chunk,
-            Some(StreamChunk::Done(FinishReason::ToolCalls))
+            event.map(|e| e.kind),
+            Some(StreamEventKind::Done { finish_reason }) if finish_reason == "ToolCalls"
         ));
     }
 
     #[test]
     fn sse_parser_reads_done_marker() {
-        let chunk = parse_sse_line("data: [DONE]");
+        let event = parse_sse_line("data: [DONE]");
 
-        assert!(matches!(chunk, Some(StreamChunk::Done(FinishReason::Stop))));
-    }
-
-    #[test]
-    fn done_marker_does_not_override_tool_calls_finish_reason() {
-        let mut accumulator = StreamAccumulator::new();
-        accumulator.push(StreamChunk::Done(FinishReason::ToolCalls));
-        accumulator.push(StreamChunk::Done(FinishReason::Stop));
-
-        let response = accumulator.finalize();
-        assert_eq!(response.finish_reason, FinishReason::ToolCalls);
+        assert!(matches!(
+            event.map(|e| e.kind),
+            Some(StreamEventKind::Done { finish_reason }) if finish_reason == "stop"
+        ));
     }
 
     #[test]
     fn sse_parser_ignores_non_data_lines() {
         assert!(parse_sse_line("event: message").is_none());
-    }
-
-    #[test]
-    fn tool_progress_does_not_mutate_accumulator() {
-        let mut accumulator = StreamAccumulator::new();
-        accumulator.push(StreamChunk::ContentDelta("hello".to_string()));
-        accumulator.push(StreamChunk::Done(FinishReason::Stop));
-
-        // Snapshot the content and finish_reason before the ToolProgress.
-        // Pushing ToolProgress must leave both unchanged.
-        accumulator.push(StreamChunk::ToolProgress {
-            tool: "test".into(),
-            status: "running".into(),
-        });
-
-        let response = accumulator.finalize();
-        assert_eq!(response.content, "hello");
-        assert_eq!(response.finish_reason, FinishReason::Stop);
-    }
-
-    #[test]
-    fn tool_progress_from_impl_is_not_done() {
-        use super::UnifiedStreamEvent;
-
-        let event: UnifiedStreamEvent = StreamChunk::ToolProgress {
-            tool: "test".into(),
-            status: "running".into(),
-        }
-        .into();
-
-        // Must NOT be the Done variant — that would emit a spurious stream-complete signal.
-        assert!(
-            !matches!(event, UnifiedStreamEvent::Done),
-            "ToolProgress must not convert to UnifiedStreamEvent::Done"
-        );
-        // Must be an empty ContentDelta (truly inert for all accumulators).
-        assert!(
-            matches!(event, UnifiedStreamEvent::ContentDelta(ref s) if s.is_empty()),
-            "ToolProgress should convert to ContentDelta(String::new())"
-        );
     }
 }

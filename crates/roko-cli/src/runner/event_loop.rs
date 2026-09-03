@@ -123,7 +123,10 @@ use super::types::{
     PromptAssemblyDiagnostics, ResumeMarker, ResumeOutcome, RetryDecision, RunConfig, RunOutcome,
     RunTotals, RunnerEvent, RunnerFailureKind, RunnerRunStatus, TaskAttemptOutcome, TaskAttemptRef,
     TaskAttemptStatus, TaskLifecycleStatus, TaskPhaseDurations, TaskRunCategory, TaskRunSummary,
-    TimeoutAgentSnapshot, TimeoutEvent, TimeoutKind, TuiCommand, effective_plan_timeout_secs,
+    TimeoutAgentSnapshot, TimeoutEvent, TimeoutKind, effective_plan_timeout_secs,
+};
+use crate::execution_control::{
+    CommandAckStatus, ExecutionCommand, ExecutionCommandKind, ack_for,
 };
 
 /// Bridges passive observable telemetry into the runner's shared StateHub.
@@ -2306,17 +2309,19 @@ pub async fn run(
     state_hub: &StateHub,
     cancel: CancellationToken,
 ) -> Result<RunReport> {
-    run_with_tui_commands(plans, config, state_hub, cancel, None).await
+    run_with_tui_commands(plans, config, state_hub, cancel, None, None).await
 }
 
 /// Run all plans to completion (or cancellation), optionally accepting
-/// in-process commands from the interactive TUI via `tui_cmd_rx`.
+/// in-process commands from the interactive TUI via `exec_cmd_rx` and
+/// sending acknowledgements back through `exec_ack_tx`.
 pub async fn run_with_tui_commands(
     plans: Vec<Plan>,
     config: &RunConfig,
     state_hub: &StateHub,
     cancel: CancellationToken,
-    tui_cmd_rx: Option<mpsc::Receiver<TuiCommand>>,
+    exec_cmd_rx: Option<mpsc::Receiver<ExecutionCommand>>,
+    exec_ack_tx: Option<mpsc::Sender<crate::execution_control::CommandAck>>,
 ) -> Result<RunReport> {
     // ── Ensure effective RokoConfig is available ─────────────────────────
     //
@@ -3327,8 +3332,8 @@ pub async fn run_with_tui_commands(
     let mut control_poll_interval = interval(Duration::from_millis(250));
     // Tracks whether the runner is currently paused via a control command.
     let mut control_paused = false;
-    // In-process TUI command receiver (when running with an attached TUI).
-    let mut tui_cmd_rx = tui_cmd_rx;
+    // In-process execution command receiver (when running with an attached TUI).
+    let mut exec_cmd_rx = exec_cmd_rx;
     // Batch controller (#179): tracks completed plans since last batch pause.
     let _completed_since_batch_pause: usize = 0;
     // Conductor supervision fires every 5 s. Cheap: just locks + drains the
@@ -3389,6 +3394,13 @@ pub async fn run_with_tui_commands(
         "starting runner v2 event loop"
     );
     let run_id = state.run_id().to_string();
+    // Adapter that processes ExecutionCommands and returns RunnerCommandEffects.
+    let exec_adapter = exec_ack_tx.as_ref().map(|ack_tx| {
+        super::control_adapter::RunnerExecutionCommandAdapter::new(
+            run_id.clone(),
+            ack_tx.clone(),
+        )
+    });
     emit_runner_event(
         &paths,
         &mut state,
@@ -6340,67 +6352,64 @@ pub async fn run_with_tui_commands(
                 }
             }
 
-            // ─── Branch 5b: In-process TUI commands ────────────────
-            Some(tui_cmd) = async {
-                match tui_cmd_rx.as_mut() {
+            // ─── Branch 5b: In-process execution commands ────────────
+            Some(exec_cmd) = async {
+                match exec_cmd_rx.as_mut() {
                     Some(rx) => rx.recv().await,
                     None => std::future::pending().await,
                 }
             } => {
-                match tui_cmd {
-                    TuiCommand::Pause => {
-                        if !control_paused {
-                            control_paused = true;
-                            info!("tui command: pause");
-                            let stamp = super::types::EventStamp::now();
-                            config.structured_log.log(&super::types::RunnerEvent::RunPaused {
-                                timestamp: stamp.timestamp,
-                                timestamp_ms: stamp.timestamp_ms,
-                                run_id: run_id.clone(),
-                                reason: "TUI command".to_string(),
-                            });
+                use super::control_adapter::RunnerCommandEffect;
+                if let Some(adapter) = &exec_adapter {
+                    match adapter.process(&exec_cmd).await {
+                        RunnerCommandEffect::Pause => {
+                            if !control_paused {
+                                control_paused = true;
+                                let stamp = super::types::EventStamp::now();
+                                config.structured_log.log(&super::types::RunnerEvent::RunPaused {
+                                    timestamp: stamp.timestamp,
+                                    timestamp_ms: stamp.timestamp_ms,
+                                    run_id: run_id.clone(),
+                                    reason: "execution command".to_string(),
+                                });
+                            }
+                        }
+                        RunnerCommandEffect::Resume => {
+                            if control_paused {
+                                control_paused = false;
+                                let stamp = super::types::EventStamp::now();
+                                config.structured_log.log(&super::types::RunnerEvent::RunResumed {
+                                    timestamp: stamp.timestamp,
+                                    timestamp_ms: stamp.timestamp_ms,
+                                    run_id: run_id.clone(),
+                                });
+                            }
+                        }
+                        RunnerCommandEffect::Cancel { .. } => {
+                            cancel.cancel();
+                        }
+                        RunnerCommandEffect::NotImplemented { message, .. } => {
+                            tui.error(&message);
+                        }
+                        RunnerCommandEffect::Rejected { message } => {
+                            tui.error(&message);
                         }
                     }
-                    TuiCommand::Resume => {
-                        if control_paused {
-                            control_paused = false;
-                            info!("tui command: resume");
-                            let stamp = super::types::EventStamp::now();
-                            config.structured_log.log(&super::types::RunnerEvent::RunResumed {
-                                timestamp: stamp.timestamp,
-                                timestamp_ms: stamp.timestamp_ms,
-                                run_id: run_id.clone(),
-                            });
-                        }
-                    }
-                    TuiCommand::Cancel { plan_id } => {
-                        warn!(plan_id = %plan_id, "tui command: cancel plan");
-                        cancel.cancel();
-                    }
-                    TuiCommand::SoftRetry { plan_id } => {
-                        warn!(plan_id = %plan_id, "tui command rejected: soft retry is not implemented");
-                        tui.error("Soft retry is not available during this run; no state changed");
-                    }
-                    TuiCommand::Repair { plan_id, preserve_completed } => {
-                        warn!(
-                            plan_id = %plan_id,
-                            preserve_completed,
-                            "tui command rejected: repair is not implemented"
+                } else {
+                    // No adapter — send a rejection ack directly if we have
+                    // a channel, otherwise just log.
+                    if let Some(ack_tx) = &exec_ack_tx {
+                        let ack = ack_for(
+                            &exec_cmd,
+                            CommandAckStatus::Rejected,
+                            Some("no command adapter configured".into()),
                         );
-                        tui.error("Repair is not available during this run; no state changed");
+                        let _ = ack_tx.send(ack).await;
                     }
-                    TuiCommand::ReverifyGates { plan_id } => {
-                        warn!(plan_id = %plan_id, "tui command rejected: gate reverify is not implemented");
-                        tui.error("Gate reverify is not available during this run; no state changed");
-                    }
-                    TuiCommand::Skip { plan_id, task_id } => {
-                        warn!(
-                            plan_id = %plan_id,
-                            task_id = %task_id,
-                            "tui command rejected: task skip is not implemented"
-                        );
-                        tui.error("Task skip is not available during this run; no state changed");
-                    }
+                    warn!(
+                        command_id = %exec_cmd.command_id,
+                        "execution command received but no adapter is configured"
+                    );
                 }
             }
 

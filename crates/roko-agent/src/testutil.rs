@@ -9,9 +9,8 @@ use crate::openai_compat_backend::OpenAiCompatLlmBackend;
 use crate::provider::ProviderError;
 use crate::rate_limit::ProviderRateLimiter;
 use crate::safety::SafetyLayer;
-use crate::streaming::StreamChunk;
 use crate::streaming::parse_sse_line;
-use crate::tool_loop::{LlmBackend, LlmError, StopReason, ToolLoop};
+use crate::tool_loop::{LlmBackend, LlmError, StreamEvent, StreamEventKind, StopReason, TurnConfig, ToolLoop};
 use crate::translate::{
     BackendResponse, FinishReason, OpenAiTranslator, RenderedTools, SessionState, Translator,
 };
@@ -462,44 +461,44 @@ async fn run_llm_streaming(backend: ParityBackend) -> Result<(), String> {
     let messages = prompt_messages("streaming parity");
     let rendered_tools = empty_tools();
     let session = SessionState::default();
-    let (event_tx, mut event_rx) =
-        tokio::sync::mpsc::channel(roko_core::defaults::DEFAULT_CHANNEL_BUFFER);
+    let config = TurnConfig::default();
 
-    let response = match backend {
+    let stream = match backend {
         ParityBackend::Codex | ParityBackend::OpenAi => {
             let backend = openai_compat_backend_with_base_url(backend, server.base_url(backend));
             backend
-                .send_turn_streaming(&messages, &rendered_tools, &session, event_tx)
+                .stream_turn(&messages, &rendered_tools, &session, &config)
                 .await
         }
         ParityBackend::Cursor => {
             let backend = cursor_backend_with_base_url(server.base_url(backend));
             backend
-                .send_turn_streaming(&messages, &rendered_tools, &session, event_tx)
+                .stream_turn(&messages, &rendered_tools, &session, &config)
                 .await
         }
         ParityBackend::Exec => unreachable!("handled by exec ignore"),
     }
     .map_err(|err| format!("streaming request failed: {err}"))?;
 
-    let mut chunks = Vec::new();
-    while let Some(chunk) = event_rx.recv().await {
-        chunks.push(chunk);
-    }
+    use futures::StreamExt;
+    let events: Vec<StreamEvent> = stream
+        .filter_map(|r| async { r.ok() })
+        .collect()
+        .await;
 
-    let observed = normalize_chunks(&chunks);
+    let observed = normalize_events(&events);
     if observed != scenario.expected_chunks {
         return Err(format!(
-            "stream chunk mismatch for {}",
+            "stream event mismatch for {}",
             scenario.scenario.fixture_path.display()
         ));
     }
 
-    match chunks.last() {
-        Some(StreamChunk::Done(FinishReason::Stop)) => {}
+    match events.last().map(|e| &e.kind) {
+        Some(StreamEventKind::Done { .. }) => {}
         other => {
             return Err(format!(
-                "stream did not end with a clean stop chunk: {other:?}"
+                "stream did not end with a Done event: {other:?}"
             ));
         }
     }
@@ -952,65 +951,65 @@ fn append_stream_value(
     }
 
     let line = sse_line(value.clone());
-    if let Some(chunk) = parse_sse_line(line.trim_end()) {
-        match chunk {
-            StreamChunk::ReasoningDelta(text) => {
-                expected_chunks.push(ExpectedChunk::Reasoning(text));
+    if let Some(event) = parse_sse_line(line.trim_end()) {
+        match &event.kind {
+            StreamEventKind::ReasoningDelta(text) => {
+                expected_chunks.push(ExpectedChunk::Reasoning(text.clone()));
             }
-            StreamChunk::ContentDelta(text) => {
-                content.push_str(&text);
-                expected_chunks.push(ExpectedChunk::Content(text));
+            StreamEventKind::TextDelta(text) => {
+                content.push_str(text);
+                expected_chunks.push(ExpectedChunk::Content(text.clone()));
             }
-            StreamChunk::ToolCallDelta {
-                index,
-                id_delta,
-                name_delta,
-                arguments_delta,
-            } => {
+            StreamEventKind::ToolCallStart { id, name } => {
                 expected_chunks.push(ExpectedChunk::ToolCall {
-                    index,
-                    id: id_delta,
-                    name: name_delta,
-                    arguments: arguments_delta,
+                    index: 0,
+                    id: Some(id.clone()),
+                    name: Some(name.clone()),
+                    arguments: String::new(),
                 });
             }
-            StreamChunk::Usage(usage) => {
+            StreamEventKind::Usage(usage) => {
                 expected_chunks.push(ExpectedChunk::Usage {
                     input_tokens: usage.input_tokens,
                     output_tokens: usage.output_tokens,
                     cached_tokens: usage.cache_read_tokens,
                 });
             }
-            StreamChunk::Done(_) | StreamChunk::Error(_) | StreamChunk::ToolProgress { .. } => {}
+            StreamEventKind::Done { .. }
+            | StreamEventKind::ToolCallDelta { .. }
+            | StreamEventKind::ToolCallEnd { .. } => {}
         }
     }
 
     response_lines.push(line);
 }
 
-fn normalize_chunks(chunks: &[StreamChunk]) -> Vec<ExpectedChunk> {
+fn normalize_events(events: &[StreamEvent]) -> Vec<ExpectedChunk> {
     let mut out = Vec::new();
-    for chunk in chunks {
-        match chunk {
-            StreamChunk::ReasoningDelta(text) => out.push(ExpectedChunk::Reasoning(text.clone())),
-            StreamChunk::ContentDelta(text) => out.push(ExpectedChunk::Content(text.clone())),
-            StreamChunk::ToolCallDelta {
-                index,
-                id_delta,
-                name_delta,
-                arguments_delta,
-            } => out.push(ExpectedChunk::ToolCall {
-                index: *index,
-                id: id_delta.clone(),
-                name: name_delta.clone(),
-                arguments: arguments_delta.clone(),
-            }),
-            StreamChunk::Usage(usage) => out.push(ExpectedChunk::Usage {
+    for event in events {
+        match &event.kind {
+            StreamEventKind::ReasoningDelta(text) => {
+                out.push(ExpectedChunk::Reasoning(text.clone()));
+            }
+            StreamEventKind::TextDelta(text) => {
+                out.push(ExpectedChunk::Content(text.clone()));
+            }
+            StreamEventKind::ToolCallStart { id, name } => {
+                out.push(ExpectedChunk::ToolCall {
+                    index: 0,
+                    id: Some(id.clone()),
+                    name: Some(name.clone()),
+                    arguments: String::new(),
+                });
+            }
+            StreamEventKind::Usage(usage) => out.push(ExpectedChunk::Usage {
                 input_tokens: usage.input_tokens,
                 output_tokens: usage.output_tokens,
                 cached_tokens: usage.cache_read_tokens,
             }),
-            StreamChunk::Done(_) | StreamChunk::Error(_) | StreamChunk::ToolProgress { .. } => {}
+            StreamEventKind::Done { .. }
+            | StreamEventKind::ToolCallDelta { .. }
+            | StreamEventKind::ToolCallEnd { .. } => {}
         }
     }
     out

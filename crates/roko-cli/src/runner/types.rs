@@ -77,11 +77,15 @@ impl ControlCommand {
 }
 
 // ---------------------------------------------------------------------------
-// TuiCommand — in-process channel commands from the TUI to the runner
+// TuiCommand — DEPRECATED: use `execution_control::ExecutionCommand` (#233)
 // ---------------------------------------------------------------------------
 
-/// Commands sent from the interactive TUI to the runner event loop via an
-/// in-process channel (as opposed to [`ControlCommand`] which uses file IPC).
+/// **Deprecated**: use [`crate::execution_control::ExecutionCommand`] instead.
+///
+/// This enum is retained only for backward-compatible type signatures.
+/// All production callers have migrated to `ExecutionCommand`; this enum
+/// will be removed in a future cleanup pass.
+#[deprecated(note = "use execution_control::ExecutionCommand instead (#233)")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TuiCommand {
     /// Pause the runner: finish the current agent turn, then stop dispatching.

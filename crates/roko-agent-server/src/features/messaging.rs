@@ -15,7 +15,7 @@ use axum::{
 use futures::StreamExt;
 use roko_agent::{
     chat_types::{ChatRequest, FinishReason, RequestOptions, ToolChoice},
-    streaming::StreamChunk,
+    tool_loop::{StreamEvent, StreamEventKind},
     translate::SessionState,
 };
 use serde::Deserialize;
@@ -172,43 +172,52 @@ async fn stream_prompt(
     let stream_task =
         tokio::spawn(async move { dispatcher.dispatch_streaming(request, event_tx).await });
 
-    while let Some(chunk) = event_rx.recv().await {
-        let payload = match chunk {
-            StreamChunk::ReasoningDelta(reasoning) => json!({
+    while let Some(event) = event_rx.recv().await {
+        let payload = match &event.kind {
+            StreamEventKind::ReasoningDelta(reasoning) => json!({
                 "reasoning": reasoning,
                 "done": false,
             }),
-            StreamChunk::ContentDelta(content) => json!({
+            StreamEventKind::TextDelta(content) => json!({
                 "chunk": content,
                 "done": false,
             }),
-            StreamChunk::ToolCallDelta {
-                index,
-                id_delta,
-                name_delta,
-                arguments_delta,
-            } => json!({
+            StreamEventKind::ToolCallStart { id, name } => json!({
                 "tool_call": {
-                    "index": index,
-                    "id_delta": id_delta,
-                    "name_delta": name_delta,
-                    "arguments_delta": arguments_delta,
+                    "id": id,
+                    "name": name,
                 },
                 "done": false,
             }),
-            StreamChunk::Usage(usage) => json!({
+            StreamEventKind::ToolCallDelta { id, json_fragment } => json!({
+                "tool_call_delta": {
+                    "id": id,
+                    "arguments_delta": json_fragment,
+                },
+                "done": false,
+            }),
+            StreamEventKind::ToolCallEnd { id, name, args } => json!({
+                "tool_call_end": {
+                    "id": id,
+                    "name": name,
+                    "arguments": args,
+                },
+                "done": false,
+            }),
+            StreamEventKind::Usage(usage) => json!({
                 "usage": usage,
                 "done": false,
             }),
-            StreamChunk::Done(_) => continue,
-            StreamChunk::Error(error) => json!({
-                "error": error,
-                "done": false,
-            }),
-            StreamChunk::ToolProgress { tool, status } => json!({
-                "tool_progress": { "tool": tool, "status": status },
-                "done": false,
-            }),
+            StreamEventKind::Done { finish_reason } => {
+                if finish_reason.starts_with("error:") {
+                    json!({
+                        "error": &finish_reason[7..],
+                        "done": true,
+                    })
+                } else {
+                    continue;
+                }
+            }
         };
 
         send_socket_payload(socket, payload).await?;
@@ -299,16 +308,18 @@ mod tests {
         async fn dispatch_streaming(
             &self,
             _request: ChatRequest,
-            event_tx: mpsc::UnboundedSender<StreamChunk>,
+            event_tx: mpsc::UnboundedSender<StreamEvent>,
         ) -> Result<ChatResponse, SidecarDispatchError> {
             if let Some(error) = &self.error {
                 return Err(error.clone());
             }
 
             for chunk in &self.stream_chunks {
-                let _ = event_tx.send(StreamChunk::ContentDelta(chunk.clone()));
+                let _ = event_tx.send(StreamEvent::now(StreamEventKind::TextDelta(chunk.clone())));
             }
-            let _ = event_tx.send(StreamChunk::Done(FinishReason::Stop));
+            let _ = event_tx.send(StreamEvent::now(StreamEventKind::Done {
+                finish_reason: "stop".to_string(),
+            }));
             Ok(self.response.clone())
         }
     }

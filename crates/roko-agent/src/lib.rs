@@ -179,8 +179,7 @@ pub use session::{
     WarmReuseRequest, fingerprint_text, validate_resume_request,
 };
 pub use streaming::{
-    ClaudeCliParser, OpenAiSseParser, StreamAccumulator, StreamChunk, StreamJsonParser,
-    UnifiedStreamEvent,
+    ClaudeCliParser, OpenAiSseParser, StreamJsonParser, UnifiedStreamEvent,
 };
 pub use task_runner::{
     AgentEvent, Anomaly, AnomalyDetector, BudgetAction, BudgetGuardrail, ConductorAction,

@@ -35,7 +35,7 @@ use crate::harness::acp_client::{
 use crate::harness::capability::*;
 use crate::harness::{HarnessAdapter, HarnessCapabilities, ProbeError, TransportFlavor};
 use crate::process::ResourceLimits;
-use crate::streaming::StreamChunk;
+use crate::tool_loop::{StreamEvent, StreamEventKind};
 use crate::usage::Usage;
 
 // ---------------------------------------------------------------------------
@@ -177,7 +177,7 @@ impl OpenClawAcpAgent {
     async fn run_acp_lifecycle(
         &self,
         prompt: &str,
-        mut stream_tx: Option<&mpsc::Sender<StreamChunk>>,
+        mut stream_tx: Option<&mpsc::Sender<StreamEvent>>,
     ) -> (String, Usage, bool) {
         let start = Instant::now();
         let mut client = self.client.lock().await;
@@ -260,7 +260,7 @@ impl OpenClawAcpAgent {
                             AcpEvent::Output { text } => {
                                 output_text.push_str(&text);
                                 if let Some(tx) = stream_tx.as_mut() {
-                                    let _ = tx.send(StreamChunk::ContentDelta(text)).await;
+                                    let _ = tx.send(StreamEvent::now(StreamEventKind::TextDelta(text))).await;
                                 }
                             }
                             AcpEvent::ToolCall { id, name, arguments } => {
@@ -268,10 +268,9 @@ impl OpenClawAcpAgent {
                                     "[openclaw-acp] tool_call: id={id}, name={name}, args={arguments}"
                                 );
                                 if let Some(tx) = stream_tx.as_mut() {
-                                    let _ = tx.send(StreamChunk::ToolProgress {
-                                        tool: name,
-                                        status: "started".to_string(),
-                                    }).await;
+                                    let _ = tx.send(StreamEvent::now(StreamEventKind::TextDelta(
+                                        format!("[{name}] started"),
+                                    ))).await;
                                 }
                             }
                             AcpEvent::ToolCallUpdate { id, progress } => {
@@ -297,11 +296,11 @@ impl OpenClawAcpAgent {
                                 output_tokens = out;
                                 got_usage = true;
                                 if let Some(tx) = stream_tx.as_mut() {
-                                    let _ = tx.send(StreamChunk::Usage(Usage {
+                                    let _ = tx.send(StreamEvent::now(StreamEventKind::Usage(Usage {
                                         input_tokens: u32::try_from(inp).unwrap_or(u32::MAX),
                                         output_tokens: u32::try_from(out).unwrap_or(u32::MAX),
                                         ..Usage::zero()
-                                    })).await;
+                                    }))).await;
                                 }
                             }
                             AcpEvent::StopReason(reason) => {
@@ -314,7 +313,7 @@ impl OpenClawAcpAgent {
                     // Turn completed.
                     tracing::debug!("[openclaw-acp] turn done (prompt_id={prompt_id})");
                     if let Some(tx) = stream_tx.as_mut() {
-                        let _ = tx.send(StreamChunk::Done(FinishReason::Stop)).await;
+                        let _ = tx.send(StreamEvent::now(StreamEventKind::Done { finish_reason: "stop".to_string() })).await;
                     }
                     break;
                 }
@@ -400,7 +399,7 @@ impl Agent for OpenClawAcpAgent {
         &self,
         input: &Signal,
         _ctx: &Context,
-        event_tx: mpsc::Sender<StreamChunk>,
+        event_tx: mpsc::Sender<StreamEvent>,
     ) -> AgentResult {
         let prompt = Self::extract_prompt(input);
         let (output_text, usage, success) = self.run_acp_lifecycle(&prompt, Some(&event_tx)).await;

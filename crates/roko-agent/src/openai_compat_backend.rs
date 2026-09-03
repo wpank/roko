@@ -13,7 +13,7 @@ use crate::http::{HttpPoster, ReqwestPoster};
 use crate::multimodal::wire_messages_contain_images;
 use crate::provider::map_provider_error;
 use crate::rate_limit::ProviderRateLimiter;
-use crate::streaming::{StreamAccumulator, StreamChunk, parse_sse_line};
+use crate::streaming::parse_sse_line;
 use crate::tool_loop::{LlmBackend, LlmError};
 use crate::translate::FinishReason;
 use crate::translate::{BackendResponse, RenderedTools, SessionState, convert_images_for_openai};
@@ -252,7 +252,7 @@ impl OpenAiCompatLlmBackend {
 
     /// Set the time-to-first-token timeout for streaming requests.
     ///
-    /// When set, `send_turn_streaming` wraps the first `response.chunk()`
+    /// When set, `stream_turn` wraps the first `response.chunk()`
     /// call with `tokio::time::timeout` so slow providers fail fast instead
     /// of hanging until the full request timeout expires.
     #[must_use]
@@ -400,21 +400,6 @@ impl OpenAiCompatLlmBackend {
         serde_json::to_vec(&body).map_err(|e| LlmError::Backend(format!("serialize: {e}")))
     }
 
-    async fn push_stream_line(
-        line: &[u8],
-        accumulator: &mut StreamAccumulator,
-        event_tx: &mpsc::Sender<StreamChunk>,
-    ) -> bool {
-        let line = String::from_utf8_lossy(line);
-        let line = line.trim_end_matches(['\r', '\n']);
-        if let Some(chunk) = parse_sse_line(line) {
-            accumulator.push(chunk.clone());
-            let _ = event_tx.send(chunk).await;
-            true
-        } else {
-            false
-        }
-    }
 
     fn capture_stream_metadata(line: &[u8], metadata: &mut StreamResponseMetadata) {
         let line = String::from_utf8_lossy(line);
@@ -762,135 +747,6 @@ impl LlmBackend for OpenAiCompatLlmBackend {
             rx.recv().await.map(|item| (item, rx))
         });
         Ok(Box::pin(stream))
-    }
-
-    async fn send_turn_streaming(
-        &self,
-        messages: &[serde_json::Value],
-        tools: &RenderedTools,
-        session: &SessionState,
-        event_tx: mpsc::Sender<StreamChunk>,
-    ) -> Result<BackendResponse, LlmError> {
-        let body_bytes = self.build_body(messages, tools, session, true)?;
-        self.rate_limiter.acquire(&self.provider_id).await;
-
-        let mut req = crate::provider::shared_http_client()
-            .post(self.endpoint())
-            .timeout(Duration::from_millis(self.timeout_ms));
-        for (key, value) in &self.computed_headers {
-            req = req.header(key.as_str(), value.as_str());
-        }
-
-        let response = match req.body(body_bytes).send().await {
-            Ok(response) => response,
-            Err(e) => {
-                let message = self.decorate_error(&e);
-                let _ = event_tx.send(StreamChunk::Error(message.clone())).await;
-                return Err(LlmError::Network(message));
-            }
-        };
-
-        let status = response.status();
-        if !status.is_success() {
-            let retry_after = crate::http::extract_retry_after_from_response(&response);
-            let text = match response.text().await {
-                Ok(text) => text,
-                Err(e) => {
-                    let message = self.decorate_error(&e);
-                    let _ = event_tx.send(StreamChunk::Error(message.clone())).await;
-                    return Err(LlmError::Network(message));
-                }
-            };
-            let raw_err = crate::http::HttpPostError::http_with_retry_after(
-                status.as_u16(),
-                text,
-                retry_after,
-            );
-            let err = classify_http_error(raw_err);
-            let _ = event_tx.send(StreamChunk::Error(err.to_string())).await;
-            return Err(err);
-        }
-
-        let mut response = response;
-        let mut pending = Vec::new();
-        let mut raw_body = Vec::new();
-        let mut accumulator = StreamAccumulator::new();
-        let mut metadata = StreamResponseMetadata::default();
-        let mut first_chunk = true;
-        let mut saw_stream_event = false;
-
-        loop {
-            let chunk_fut = response.chunk();
-            let chunk = if first_chunk {
-                // Apply TTFT timeout only to the first body chunk. This
-                // measures the real time-to-first-token: from HTTP headers
-                // received until the provider starts streaming content.
-                first_chunk = false;
-                if let Some(ttft_ms) = self.ttft_timeout_ms {
-                    match tokio::time::timeout(Duration::from_millis(ttft_ms), chunk_fut).await {
-                        Ok(inner) => inner,
-                        Err(_) => {
-                            let message =
-                                format!("TTFT timeout: no streaming data within {ttft_ms}ms");
-                            tracing::warn!(
-                                endpoint = %self.endpoint(),
-                                ttft_timeout_ms = ttft_ms,
-                                "TTFT timeout — no first chunk within deadline"
-                            );
-                            let _ = event_tx.send(StreamChunk::Error(message.clone())).await;
-                            return Err(LlmError::Network(message));
-                        }
-                    }
-                } else {
-                    chunk_fut.await
-                }
-            } else {
-                chunk_fut.await
-            };
-            let chunk = match chunk {
-                Ok(c) => c,
-                Err(e) => {
-                    let message = format!("read chunk failed: {e}");
-                    let _ = event_tx.send(StreamChunk::Error(message.clone())).await;
-                    return Err(LlmError::Network(message));
-                }
-            };
-            let Some(chunk) = chunk else {
-                break;
-            };
-
-            raw_body.extend_from_slice(&chunk);
-            pending.extend_from_slice(&chunk);
-            while let Some(newline_idx) = pending.iter().position(|byte| *byte == b'\n') {
-                let line: Vec<u8> = pending.drain(..=newline_idx).collect();
-                Self::capture_stream_metadata(&line, &mut metadata);
-                saw_stream_event |=
-                    Self::push_stream_line(&line, &mut accumulator, &event_tx).await;
-            }
-        }
-
-        if !pending.is_empty() {
-            Self::capture_stream_metadata(&pending, &mut metadata);
-            saw_stream_event |= Self::push_stream_line(&pending, &mut accumulator, &event_tx).await;
-        }
-
-        if !saw_stream_event {
-            let json: Value = serde_json::from_slice(&raw_body)
-                .map_err(|e| LlmError::Backend(format!("parse non-SSE response: {e}")))?;
-            if let Some(text) = json
-                .pointer("/choices/0/message/content")
-                .and_then(Value::as_str)
-                && !text.is_empty()
-            {
-                let _ = event_tx
-                    .send(StreamChunk::ContentDelta(text.to_string()))
-                    .await;
-            }
-            return Ok(BackendResponse::Json(json));
-        }
-
-        let json = Self::stream_response_to_json(accumulator.finalize(), metadata)?;
-        Ok(BackendResponse::Json(json))
     }
 
     fn extract_session(&self, response: &BackendResponse) -> SessionState {

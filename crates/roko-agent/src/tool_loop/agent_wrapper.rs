@@ -16,7 +16,7 @@ use roko_fs::RokoLayout;
 
 use crate::agent::{Agent, AgentResult, derived_output};
 use crate::multimodal::{anthropic_messages, gemini_messages, openai_messages};
-use crate::streaming::StreamChunk;
+use crate::tool_loop::StreamEvent;
 use crate::task_runner::task_id_from_context;
 use roko_core::{ModelInputMessage, validate_model_input_messages};
 
@@ -419,7 +419,7 @@ impl Agent for ToolLoopAgent {
         &self,
         input: &Signal,
         ctx: &Context,
-        event_tx: mpsc::Sender<StreamChunk>,
+        event_tx: mpsc::Sender<StreamEvent>,
     ) -> AgentResult {
         let prompt = input.body.as_text().unwrap_or_default();
         let tool_ctx = self.build_tool_context();

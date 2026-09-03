@@ -72,6 +72,7 @@ pub mod doctor;
 pub mod dry_run;
 pub mod episode;
 pub mod event_sources;
+pub mod execution_control;
 pub mod exit_codes;
 pub mod explain;
 #[allow(dead_code)]

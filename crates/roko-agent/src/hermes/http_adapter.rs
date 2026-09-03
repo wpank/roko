@@ -24,8 +24,8 @@ use crate::harness::{
 };
 use crate::http::ReqwestPoster;
 use crate::openai_compat_backend::OpenAiCompatLlmBackend;
-use crate::streaming::StreamChunk;
-use crate::tool_loop::LlmBackend;
+use crate::streaming::parse_sse_line;
+use crate::tool_loop::{LlmBackend, StreamEvent, StreamEventKind, TurnConfig, collect_stream_to_response};
 use crate::translate::{BackendResponse, RenderedTools, SessionState};
 use crate::usage::Usage;
 use roko_core::{Body, Context, Kind, Provenance, Signal};
@@ -386,7 +386,7 @@ impl Agent for HermesHttpAgent {
         &self,
         input: &Signal,
         _ctx: &Context,
-        event_tx: mpsc::Sender<StreamChunk>,
+        event_tx: mpsc::Sender<StreamEvent>,
     ) -> AgentResult {
         let started = Instant::now();
 
@@ -404,13 +404,23 @@ impl Agent for HermesHttpAgent {
 
         let tools = RenderedTools::JsonArray(serde_json::json!([]));
         let session = SessionState::default();
+        let config = TurnConfig::default();
 
-        // Attempt the streaming turn.
-        let result = self
+        // Attempt the streaming turn via `stream_turn`, then collect.
+        let stream = match self
             .backend
-            .send_turn_streaming(&messages, &tools, &session, event_tx.clone())
-            .await;
+            .stream_turn(&messages, &tools, &session, &config)
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                let output =
+                    self.build_error_output(input, &format!("hermes streaming error: {e}"));
+                return AgentResult::fail(output);
+            }
+        };
 
+        let result = collect_stream_to_response(stream, started).await;
         match result {
             Ok(response) => {
                 let wall_ms = started.elapsed().as_millis() as u64;
@@ -480,7 +490,6 @@ impl HarnessAdapter for HermesHttpAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::streaming::parse_sse_line;
 
     #[test]
     fn basic_sse_fixture_parses_correctly() {
@@ -489,10 +498,10 @@ mod tests {
         let mut saw_done = false;
 
         for line in fixture.lines() {
-            if let Some(chunk) = parse_sse_line(line) {
-                match chunk {
-                    StreamChunk::ContentDelta(delta) => content.push_str(&delta),
-                    StreamChunk::Done(_) => saw_done = true,
+            if let Some(event) = parse_sse_line(line) {
+                match &event.kind {
+                    StreamEventKind::TextDelta(delta) => content.push_str(delta),
+                    StreamEventKind::Done { .. } => saw_done = true,
                     _ => {}
                 }
             }
@@ -518,16 +527,16 @@ mod tests {
                     // Non-standard event -- check inspector.
                     if data != "[DONE]" {
                         if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
-                            if let Some(chunk) = inspector.inspect(&event_name, &json) {
-                                tool_events.push(chunk);
+                            if let Some(event) = inspector.inspect(&event_name, &json) {
+                                tool_events.push(event);
                             }
                         }
                     }
                 } else {
                     // Standard data line.
-                    if let Some(chunk) = parse_sse_line(line) {
-                        if let StreamChunk::ContentDelta(delta) = chunk {
-                            content.push_str(&delta);
+                    if let Some(event) = parse_sse_line(line) {
+                        if let StreamEventKind::TextDelta(delta) = &event.kind {
+                            content.push_str(delta);
                         }
                     }
                 }
@@ -537,20 +546,20 @@ mod tests {
         assert_eq!(content, "Let me check the files.");
         assert_eq!(tool_events.len(), 2);
 
-        match &tool_events[0] {
-            StreamChunk::ToolProgress { tool, status } => {
-                assert_eq!(tool, "terminal");
-                assert_eq!(status, "start");
+        match &tool_events[0].kind {
+            StreamEventKind::TextDelta(text) => {
+                assert!(text.contains("terminal"));
+                assert!(text.contains("start"));
             }
-            other => panic!("expected ToolProgress, got {other:?}"),
+            other => panic!("expected TextDelta, got {other:?}"),
         }
 
-        match &tool_events[1] {
-            StreamChunk::ToolProgress { tool, status } => {
-                assert_eq!(tool, "terminal");
-                assert_eq!(status, "done");
+        match &tool_events[1].kind {
+            StreamEventKind::TextDelta(text) => {
+                assert!(text.contains("terminal"));
+                assert!(text.contains("done"));
             }
-            other => panic!("expected ToolProgress, got {other:?}"),
+            other => panic!("expected TextDelta, got {other:?}"),
         }
     }
 
@@ -629,10 +638,10 @@ mod tests {
         let mut content = String::new();
 
         for line in fixture.lines() {
-            if let Some(chunk) = parse_sse_line(line) {
-                match chunk {
-                    StreamChunk::ContentDelta(delta) => content.push_str(&delta),
-                    StreamChunk::Done(_) => saw_done = true,
+            if let Some(event) = parse_sse_line(line) {
+                match &event.kind {
+                    StreamEventKind::TextDelta(delta) => content.push_str(delta),
+                    StreamEventKind::Done { .. } => saw_done = true,
                     _ => {}
                 }
             }

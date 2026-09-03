@@ -9913,7 +9913,7 @@ fn save_snapshot(
     }
 
     // E05-T01: Also persist gate thresholds to the standalone learn file so
-    // `roko learn tune gates` and cross-run adaptation can read it without
+    // `roko learn inspect gates` and cross-run adaptation can read it without
     // parsing the unified snapshot.  Best-effort: log and continue.
     if let Err(e) = gate_thresholds.save(&paths.gate_thresholds_json) {
         warn!(error = %e, "failed to persist gate thresholds to learn file");

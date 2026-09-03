@@ -55,6 +55,7 @@ pub mod events;
 pub mod fingerprint;
 pub mod hot;
 pub mod loader;
+pub mod plan_mutation;
 pub mod registry;
 pub mod replay;
 pub mod topo;
@@ -107,6 +108,12 @@ pub use control::{
     ApprovalRequestV1, ApprovalResolution, ControlEffect, ControlReceiptV1,
     ExecutionControlService, FinalizationIntent, ReceiptStatus, CONTROL_EXTENSION_NAME,
     CONTROL_EXTENSION_VERSION,
+};
+
+// Re-export graph-layer replan mutation adapter (#252).
+pub use plan_mutation::{
+    build_merge_with_rewiring, build_split_with_rewiring, completed_tasks_preserved,
+    downstream_tasks, pending_siblings, upstream_tasks,
 };
 
 // Re-export completion delivery lifecycle (#254).

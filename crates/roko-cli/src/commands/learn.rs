@@ -1,5 +1,4 @@
 //! learn command handlers.
-#![allow(unused_imports)]
 
 use crate::*;
 use std::collections::HashSet;
@@ -43,6 +42,7 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
         | LearnCmd::KnowledgeStats { workdir } => {
             workdir.clone().unwrap_or_else(|| resolve_workdir(cli))
         }
+        LearnCmd::Inspect { subsystem } => inspect_workdir(cli, subsystem),
         LearnCmd::Tune { workdir, .. } => workdir.clone().unwrap_or_else(|| resolve_workdir(cli)),
     };
     let _lock = roko_cli::workspace_lock::acquire_workspace_lock_shared(
@@ -114,63 +114,340 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
                 cmd_learn(&wd, "knowledge").await
             }
         }
+        LearnCmd::Inspect { subsystem } => {
+            let wd = inspect_workdir(cli, &subsystem);
+            cmd_learn_inspect(&wd, &subsystem, json).await
+        }
         LearnCmd::Tune {
             subsystem,
             dry_run,
             workdir,
         } => {
+            eprintln!("warning: 'roko learn tune' is deprecated, use 'roko learn inspect {subsystem}'");
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-            cmd_tune(&wd, &subsystem, dry_run).await
+            if dry_run {
+                eprintln!("note: inspection is always read-only; --dry-run has no effect");
+            }
+            cmd_learn_inspect_legacy(&wd, &subsystem, json).await
         }
     }
 }
 
-/// `roko tune [subsystem]` — display and optionally adjust adaptive thresholds.
-pub(crate) async fn cmd_tune(
+// ── Inspect command ─────────────────────────────────────────────────
+
+/// Extract workdir from an `InspectSubsystem` variant.
+fn inspect_workdir(cli: &Cli, subsystem: &InspectSubsystem) -> PathBuf {
+    match subsystem {
+        InspectSubsystem::Gates { workdir }
+        | InspectSubsystem::Routing { workdir }
+        | InspectSubsystem::Budget { workdir } => {
+            workdir.clone().unwrap_or_else(|| resolve_workdir(cli))
+        }
+    }
+}
+
+/// `roko learn inspect <subsystem>` — rich, read-only inspection.
+#[allow(clippy::cast_precision_loss)]
+async fn cmd_learn_inspect(
     workdir: &std::path::Path,
-    subsystem: &str,
-    dry_run: bool,
+    subsystem: &InspectSubsystem,
+    json: bool,
 ) -> Result<i32> {
     match subsystem {
-        "gates" => {
-            let path = learn_gate_thresholds_path(workdir);
-            if path.exists() {
-                let content = std::fs::read_to_string(&path)?;
-                let thresholds: serde_json::Value = serde_json::from_str(&content)?;
-                println!("Verify adaptive thresholds ({}):", path.display());
-                println!("{}", serde_json::to_string_pretty(&thresholds)?);
-            } else {
-                print_no_data(&path);
-            }
+        InspectSubsystem::Gates { .. } => inspect_gates(workdir, json),
+        InspectSubsystem::Routing { .. } => inspect_routing(workdir, json),
+        InspectSubsystem::Budget { .. } => inspect_budget(workdir, json).await,
+    }
+}
+
+/// Legacy `roko learn tune <name>` now routes to the matching inspect handler.
+#[allow(clippy::cast_precision_loss)]
+async fn cmd_learn_inspect_legacy(
+    workdir: &std::path::Path,
+    subsystem: &str,
+    json: bool,
+) -> Result<i32> {
+    match subsystem {
+        "gates" => inspect_gates(workdir, json),
+        "routing" => inspect_routing(workdir, json),
+        "budget" => inspect_budget(workdir, json).await,
+        other => anyhow::bail!(
+            "unknown subsystem '{other}'. Available: gates, routing, budget"
+        ),
+    }
+}
+
+// ── Inspect: gates ──────────────────────────────────────────────────
+
+/// Typed representation for gate threshold JSON output.
+#[derive(serde::Serialize)]
+struct InspectGatesJson {
+    path: String,
+    rung_count: usize,
+    rungs: serde_json::Value,
+}
+
+fn inspect_gates(workdir: &std::path::Path, json: bool) -> Result<i32> {
+    let path = learn_gate_thresholds_path(workdir);
+
+    if !path.exists() {
+        if json {
+            let output = InspectGatesJson {
+                path: path.display().to_string(),
+                rung_count: 0,
+                rungs: serde_json::Value::Object(Default::default()),
+            };
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        } else {
+            print_no_data(&path);
         }
-        "routing" => {
-            let path = learn_router_path(workdir);
-            if path.exists() {
-                let content = std::fs::read_to_string(&path)?;
-                let router: serde_json::Value = serde_json::from_str(&content)?;
-                println!("Cascade router state ({}):", path.display());
-                println!("{}", serde_json::to_string_pretty(&router)?);
-            } else {
-                print_no_data(&path);
+        return Ok(EXIT_SUCCESS);
+    }
+
+    let content = std::fs::read_to_string(&path)?;
+    let thresholds: serde_json::Value = serde_json::from_str(&content)?;
+    let rung_count = thresholds
+        .get("rungs")
+        .and_then(serde_json::Value::as_object)
+        .map_or(0, |rungs| rungs.len());
+
+    if json {
+        let output = InspectGatesJson {
+            path: path.display().to_string(),
+            rung_count,
+            rungs: thresholds
+                .get("rungs")
+                .cloned()
+                .unwrap_or(serde_json::Value::Object(Default::default())),
+        };
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!("Adaptive gate thresholds ({})", path.display());
+        println!("  Rungs: {rung_count}");
+        if let Some(rungs) = thresholds.get("rungs").and_then(|v| v.as_object()) {
+            for (rung_key, rung_val) in rungs {
+                let ema = rung_val
+                    .get("ema_pass_rate")
+                    .and_then(|v| v.as_f64())
+                    .map(|v| format!("{v:.2}"))
+                    .unwrap_or_else(|| "n/a".to_string());
+                let count = rung_val
+                    .get("observation_count")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                println!("    rung {rung_key}: EMA pass rate={ema}, observations={count}");
             }
-        }
-        "budget" => {
-            let path = learn_efficiency_path(workdir);
-            if path.exists() {
-                let content = std::fs::read_to_string(&path)?;
-                let count = content.lines().filter(|l| !l.trim().is_empty()).count();
-                println!("Efficiency log: {} entries at {}", count, path.display());
-            } else {
-                print_no_data(&path);
-            }
-        }
-        other => {
-            anyhow::bail!("unknown subsystem '{other}'. Available: gates, routing, budget");
         }
     }
-    if dry_run {
-        println!("(dry-run: no changes applied)");
+
+    Ok(EXIT_SUCCESS)
+}
+
+// ── Inspect: routing ────────────────────────────────────────────────
+
+/// Typed representation for routing JSON output.
+#[derive(serde::Serialize)]
+struct InspectRoutingJson {
+    path: String,
+    total_observations: u64,
+    stage: String,
+    models: Vec<LearnJsonRouterModel>,
+}
+
+fn inspect_routing(workdir: &std::path::Path, json: bool) -> Result<i32> {
+    let path = learn_router_path(workdir);
+
+    if !path.exists() {
+        if json {
+            let output = InspectRoutingJson {
+                path: path.display().to_string(),
+                total_observations: 0,
+                stage: "static".to_string(),
+                models: Vec::new(),
+            };
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        } else {
+            print_no_data(&path);
+        }
+        return Ok(EXIT_SUCCESS);
     }
+
+    let content = std::fs::read_to_string(&path)?;
+    let snapshot =
+        serde_json::from_str::<LearnCascadeRouterSnapshot>(&content).unwrap_or_default();
+    let configured_slugs = roko_core::config::loader::load_config_unified(workdir)
+        .ok()
+        .map(|config| {
+            config
+                .model_slugs_for_cascade()
+                .into_iter()
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_default();
+    let model_rows = learn_router_model_rows(&snapshot, &configured_slugs);
+    let total_observations = if snapshot.total_observations > 0 {
+        snapshot.total_observations
+    } else {
+        model_rows.iter().map(|row| row.trials).sum()
+    };
+    let stage = cascade_stage_for_observations(total_observations).to_string();
+
+    if json {
+        let output = InspectRoutingJson {
+            path: path.display().to_string(),
+            total_observations,
+            stage,
+            models: model_rows
+                .into_iter()
+                .map(|row| LearnJsonRouterModel {
+                    slug: row.slug,
+                    trials: row.trials,
+                    successes: row.successes,
+                    available: row.available,
+                })
+                .collect(),
+        };
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!("Cascade router state ({})", path.display());
+        println!("  Observations: {total_observations}");
+        println!("  Stage: {stage}");
+        if model_rows.is_empty() {
+            println!("  Models: none");
+        } else {
+            println!("  Models:");
+            for row in &model_rows {
+                let suffix = if row.available { "" } else { " (unavailable)" };
+                println!(
+                    "    {}{}: {} trials, {} successes",
+                    row.slug, suffix, row.trials, row.successes
+                );
+            }
+        }
+    }
+
+    Ok(EXIT_SUCCESS)
+}
+
+// ── Inspect: budget ─────────────────────────────────────────────────
+
+/// Typed representation for budget JSON output.
+#[derive(serde::Serialize)]
+struct InspectBudgetJson {
+    config: InspectBudgetConfigJson,
+    efficiency: InspectBudgetEfficiencyJson,
+}
+
+#[derive(serde::Serialize)]
+struct InspectBudgetConfigJson {
+    max_plan_usd: f32,
+    max_task_usd: f32,
+    max_turn_usd: f32,
+    max_task_retry_usd: f32,
+    prompt_token_budget: usize,
+}
+
+#[derive(serde::Serialize)]
+struct InspectBudgetEfficiencyJson {
+    path: String,
+    total_events: usize,
+    passed: usize,
+    failed: usize,
+    total_cost_usd: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    first_seen: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_seen: Option<String>,
+}
+
+#[allow(clippy::cast_precision_loss)]
+async fn inspect_budget(workdir: &std::path::Path, json: bool) -> Result<i32> {
+    // Load configured budget
+    let config = roko_core::config::loader::load_config_unified(workdir)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let budget = &config.budget;
+
+    // Parse efficiency log for spend summaries
+    let eff_path = learn_efficiency_path(workdir);
+    let text = tokio::fs::read_to_string(&eff_path).await.unwrap_or_default();
+
+    let mut total_events = 0usize;
+    let mut passed = 0usize;
+    let mut failed = 0usize;
+    let mut total_cost = 0.0f64;
+    let mut first_seen: Option<chrono::DateTime<chrono::Utc>> = None;
+    let mut last_seen: Option<chrono::DateTime<chrono::Utc>> = None;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(event) =
+            serde_json::from_str::<roko_learn::efficiency::AgentEfficiencyEvent>(trimmed)
+        else {
+            continue;
+        };
+        total_events += 1;
+        total_cost += event.cost_usd;
+        match event.gate_passed {
+            Some(true) => passed += 1,
+            Some(false) => failed += 1,
+            None => {}
+        }
+        if let Some(ts) = parse_rfc3339_utc(&event.timestamp) {
+            first_seen = Some(first_seen.map_or(ts, |c| c.min(ts)));
+            last_seen = Some(last_seen.map_or(ts, |c| c.max(ts)));
+        }
+    }
+
+    if json {
+        let output = InspectBudgetJson {
+            config: InspectBudgetConfigJson {
+                max_plan_usd: budget.max_plan_usd,
+                max_task_usd: budget.max_task_usd,
+                max_turn_usd: budget.max_turn_usd,
+                max_task_retry_usd: budget.max_task_retry_usd,
+                prompt_token_budget: budget.prompt_token_budget,
+            },
+            efficiency: InspectBudgetEfficiencyJson {
+                path: eff_path.display().to_string(),
+                total_events,
+                passed,
+                failed,
+                total_cost_usd: total_cost,
+                first_seen: first_seen.map(|ts| ts.to_rfc3339()),
+                last_seen: last_seen.map(|ts| ts.to_rfc3339()),
+            },
+        };
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        let fmt_limit = |v: f32| -> String {
+            if v <= 0.0 {
+                "unlimited".to_string()
+            } else {
+                format!("${v:.2}")
+            }
+        };
+        println!("Budget configuration");
+        println!("  max_plan_usd:       {}", fmt_limit(budget.max_plan_usd));
+        println!("  max_task_usd:       {}", fmt_limit(budget.max_task_usd));
+        println!("  max_turn_usd:       {}", fmt_limit(budget.max_turn_usd));
+        println!(
+            "  max_task_retry_usd: {}",
+            fmt_limit(budget.max_task_retry_usd)
+        );
+        println!("  prompt_token_budget: {}", budget.prompt_token_budget);
+        println!();
+        println!("Spend history ({})", eff_path.display());
+        println!("  Events: {total_events} ({passed} passed, {failed} failed)");
+        println!("  Total cost: ${total_cost:.4}");
+        println!(
+            "  Range: {}",
+            format_range(first_seen, last_seen)
+        );
+    }
+
     Ok(EXIT_SUCCESS)
 }
 
@@ -1306,5 +1583,137 @@ mod tests {
         assert!(availability["configured"]);
         assert!(availability["history"]);
         assert!(!availability["legacy"]);
+    }
+
+    // ── Inspect tests ──────────────────────────────────────────────
+
+    #[test]
+    fn inspect_gates_handles_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let workdir = dir.path();
+        // No gate-thresholds.json exists; should succeed with "no data" message.
+        let result = inspect_gates(workdir, false);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), EXIT_SUCCESS);
+    }
+
+    #[test]
+    fn inspect_gates_json_handles_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let workdir = dir.path();
+        let result = inspect_gates(workdir, true);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn inspect_gates_parses_threshold_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let workdir = dir.path();
+        let learn_dir = workdir.join(".roko").join("learn");
+        std::fs::create_dir_all(&learn_dir).unwrap();
+        std::fs::write(
+            learn_dir.join("gate-thresholds.json"),
+            r#"{"rungs":{"1":{"ema_pass_rate":0.85,"observation_count":12},"2":{"ema_pass_rate":0.70,"observation_count":5}}}"#,
+        )
+        .unwrap();
+
+        let result = inspect_gates(workdir, false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn inspect_gates_json_produces_valid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let workdir = dir.path();
+        let learn_dir = workdir.join(".roko").join("learn");
+        std::fs::create_dir_all(&learn_dir).unwrap();
+        std::fs::write(
+            learn_dir.join("gate-thresholds.json"),
+            r#"{"rungs":{"1":{"ema_pass_rate":0.5}}}"#,
+        )
+        .unwrap();
+
+        let result = inspect_gates(workdir, true);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn inspect_routing_handles_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = inspect_routing(dir.path(), false);
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn inspect_budget_handles_missing_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let workdir = dir.path();
+        // Create minimal roko.toml so config loads.
+        std::fs::write(workdir.join("roko.toml"), "schema_version = 2\n").unwrap();
+        let result = inspect_budget(workdir, false).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn inspect_budget_json_reports_configured_limits() {
+        let dir = tempfile::tempdir().unwrap();
+        let workdir = dir.path();
+        std::fs::write(
+            workdir.join("roko.toml"),
+            "schema_version = 2\n[budget]\nmax_plan_usd = 25.0\nmax_turn_usd = 2.5\n",
+        )
+        .unwrap();
+        let result = inspect_budget(workdir, true).await;
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn inspect_gates_json_struct_serializes() {
+        let output = InspectGatesJson {
+            path: "/tmp/test".into(),
+            rung_count: 2,
+            rungs: serde_json::json!({"1": {"ema_pass_rate": 0.5}}),
+        };
+        let json = serde_json::to_string(&output).unwrap();
+        assert!(json.contains("\"rung_count\":2"));
+    }
+
+    #[test]
+    fn inspect_routing_json_struct_serializes() {
+        let output = InspectRoutingJson {
+            path: "/tmp/test".into(),
+            total_observations: 100,
+            stage: "confidence".into(),
+            models: vec![],
+        };
+        let json = serde_json::to_string(&output).unwrap();
+        assert!(json.contains("\"total_observations\":100"));
+        assert!(json.contains("\"stage\":\"confidence\""));
+    }
+
+    #[test]
+    fn inspect_budget_json_struct_serializes() {
+        let output = InspectBudgetJson {
+            config: InspectBudgetConfigJson {
+                max_plan_usd: 25.0,
+                max_task_usd: 0.0,
+                max_turn_usd: 2.5,
+                max_task_retry_usd: 0.0,
+                prompt_token_budget: 10_000,
+            },
+            efficiency: InspectBudgetEfficiencyJson {
+                path: "/tmp/test".into(),
+                total_events: 42,
+                passed: 30,
+                failed: 12,
+                total_cost_usd: 3.14,
+                first_seen: None,
+                last_seen: None,
+            },
+        };
+        let json = serde_json::to_string(&output).unwrap();
+        assert!(json.contains("\"max_plan_usd\":25.0"));
+        assert!(json.contains("\"total_events\":42"));
+        assert!(json.contains("\"passed\":30"));
     }
 }

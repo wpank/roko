@@ -70,7 +70,7 @@ async fn show_artifact(Path(artifact_ref): Path<String>) -> Json<Value> {
 
 async fn publish_artifact() -> (StatusCode, Json<Value>) {
     (
-        StatusCode::CREATED,
+        StatusCode::NOT_IMPLEMENTED,
         Json(json!({
             "status": "not_implemented",
             "artifact_ref": null,
@@ -81,7 +81,7 @@ async fn publish_artifact() -> (StatusCode, Json<Value>) {
 
 async fn fork_artifact() -> (StatusCode, Json<Value>) {
     (
-        StatusCode::OK,
+        StatusCode::NOT_IMPLEMENTED,
         Json(json!({
             "status": "not_implemented",
             "artifact_ref": null,
@@ -99,11 +99,11 @@ mod tests {
     async fn marketplace_mutation_stubs_have_contract_status_codes() {
         assert_eq!(
             publish_artifact().await.into_response().status(),
-            StatusCode::CREATED
+            StatusCode::NOT_IMPLEMENTED
         );
         assert_eq!(
             fork_artifact().await.into_response().status(),
-            StatusCode::OK
+            StatusCode::NOT_IMPLEMENTED
         );
     }
 

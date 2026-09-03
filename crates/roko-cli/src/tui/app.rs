@@ -778,7 +778,7 @@ impl App {
             replay_disk_snapshots,
             shutdown_rx: None,
             exit_on_plan_completion: false,
-            capture_mouse: false,
+            capture_mouse: true,
             tab_transition: None,
             connected_plan_observed: false,
             snapshot_rx: None,
@@ -2087,6 +2087,10 @@ impl App {
                     self.tui_state.plan_tree_filter.pattern.push(c);
                     self.tui_state.plan_tree_filter.reparse();
                     self.normalize_selected_plan_for_filter();
+                } else if self.tui_state.input_mode == InputMode::AgentOutputSearch {
+                    self.tui_state.agent_output_search.pattern.push(c);
+                    self.tui_state.agent_output_search.recompile();
+                    self.refresh_agent_output_search_matches();
                 }
             }
             TuiAction::InputBackspace => {
@@ -2106,6 +2110,10 @@ impl App {
                     self.tui_state.plan_tree_filter.pattern.pop();
                     self.tui_state.plan_tree_filter.reparse();
                     self.normalize_selected_plan_for_filter();
+                } else if self.tui_state.input_mode == InputMode::AgentOutputSearch {
+                    self.tui_state.agent_output_search.pattern.pop();
+                    self.tui_state.agent_output_search.recompile();
+                    self.refresh_agent_output_search_matches();
                 }
             }
             TuiAction::StartFilter => {
@@ -2587,7 +2595,7 @@ impl App {
                 self.tui_state.invalidate_config_cache();
             }
             TuiAction::MouseClick { x, y } => {
-                // Use hit_test to determine zone
+                // Use hit_test registry to determine click target (#368).
                 let zones = super::hit_test::HitZones::compute(
                     super::layout::responsive_outer_margin(Rect::new(
                         0,
@@ -2598,20 +2606,22 @@ impl App {
                     self.tui_state.active_tab as usize,
                     Tab::ALL.len(),
                 );
-                if let Some(zone) = zones.zone_at(x, y) {
-                    match zone {
-                        super::hit_test::FocusZone::HeaderTab(idx) => {
+                let registry = zones.into_registry(self.tui_state.active_tab);
+                if let Some(region) = registry.region_at(x, y) {
+                    match region.click_target {
+                        super::hit_test::ClickTarget::SwitchTab(idx) => {
                             if let Some(&tab) = Tab::ALL.get(idx) {
                                 self.dispatch_action(TuiAction::SwitchTab(tab));
                             }
                         }
-                        super::hit_test::FocusZone::DetailTab(idx) => {
+                        super::hit_test::ClickTarget::SwitchSubView(idx) => {
                             self.dispatch_action(TuiAction::SwitchSubView(idx));
                         }
-                        other => {
-                            let mapped = self.map_hit_zone(other);
+                        super::hit_test::ClickTarget::SetFocus(zone) => {
+                            let mapped = self.map_hit_zone(zone);
                             self.tui_state.focus = mapped;
                         }
+                        super::hit_test::ClickTarget::None => {}
                     }
                 }
             }
@@ -2709,6 +2719,40 @@ impl App {
                 self.tui_state.input_mode = InputMode::Normal;
                 self.tui_state.plan_tree_filter.clear();
                 self.normalize_selected_plan_for_filter();
+            }
+
+            // -- Agent output search (#367) --
+            TuiAction::StartAgentOutputSearch => {
+                self.tui_state.input_mode = InputMode::AgentOutputSearch;
+                self.tui_state.agent_output_search.active = true;
+                self.tui_state.agent_output_search.pattern.clear();
+                self.tui_state.agent_output_search.recompile();
+            }
+            TuiAction::AcceptAgentOutputSearch => {
+                self.tui_state.input_mode = InputMode::Normal;
+                // Keep search active with the current pattern for n/N navigation
+            }
+            TuiAction::CancelAgentOutputSearch => {
+                self.tui_state.input_mode = InputMode::Normal;
+                self.tui_state.agent_output_search.clear();
+            }
+            TuiAction::NextAgentOutputMatch => {
+                self.tui_state.agent_output_search.next_match();
+                // Scroll to the current match if we have one
+                if self.tui_state.agent_output_search.current_match_seq().is_some() {
+                    // Pin the scroll (switch from tail to pinned mode)
+                    if self.tui_state.agent_scroll.is_none() {
+                        self.tui_state.agent_scroll = Some(0);
+                    }
+                }
+            }
+            TuiAction::PrevAgentOutputMatch => {
+                self.tui_state.agent_output_search.prev_match();
+                if self.tui_state.agent_output_search.current_match_seq().is_some() {
+                    if self.tui_state.agent_scroll.is_none() {
+                        self.tui_state.agent_scroll = Some(0);
+                    }
+                }
             }
 
             // -- Recovery keybindings (#119) --
@@ -3013,6 +3057,19 @@ impl App {
         }
     }
 
+    /// Refresh agent output search matches for the currently selected agent (#367).
+    fn refresh_agent_output_search_matches(&mut self) {
+        let selected_id = self
+            .tui_state
+            .agent_summaries
+            .get(self.tui_state.selected_agent)
+            .map(|a| a.id.clone())
+            .unwrap_or_default();
+        self.tui_state
+            .agent_output_search
+            .update_matches(&self.tui_state.agent_output_history, &selected_id);
+    }
+
     fn current_git_branch(&self) -> String {
         if !self.tui_state.git_branch.is_empty() {
             return self.tui_state.git_branch.clone();
@@ -3069,7 +3126,11 @@ impl App {
     }
 
     /// Scroll the panel under the mouse cursor at (x, y) by delta lines.
-    /// Falls back to scroll_focused when the cursor is outside any known zone.
+    ///
+    /// Uses the `HitRegionRegistry`-derived `ScrollTarget` to route the scroll
+    /// to the correct state field. Updates focus to the hovered panel so
+    /// subsequent keyboard scrolling continues from the same panel (#368).
+    /// Falls back to `scroll_focused` when the cursor is outside any known zone.
     fn scroll_at(&mut self, x: u16, y: u16, delta: i32) {
         let zones = super::hit_test::HitZones::compute(
             super::layout::responsive_outer_margin(Rect::new(
@@ -3081,25 +3142,98 @@ impl App {
             self.tui_state.active_tab as usize,
             Tab::ALL.len(),
         );
-        if let Some(zone) = zones.zone_at(x, y) {
-            match zone {
-                super::hit_test::FocusZone::HeaderTab(_)
-                | super::hit_test::FocusZone::DetailTab(_) => {
-                    // Header/detail tabs are not scrollable panels.
-                    return;
-                }
-                other => {
-                    let mapped = self.map_hit_zone(other);
-                    // Temporarily set focus to the zone under the cursor, scroll, restore.
-                    let saved = self.tui_state.focus;
-                    self.tui_state.focus = mapped;
-                    self.scroll_focused(delta);
-                    self.tui_state.focus = saved;
-                }
-            }
+        let registry = zones.into_registry(self.tui_state.active_tab);
+
+        if let Some(region) = registry.region_at(x, y) {
+            // Update focus to the hovered panel so keyboard scrolling follows.
+            let mapped = self.map_hit_zone(region.focus_zone);
+            self.tui_state.focus = mapped;
+
+            // Route scroll to the dedicated target, avoiding the generic
+            // diff_scroll fallback for unrelated detail panes.
+            self.scroll_by_target(region.scroll_target, delta);
         } else {
             // Cursor outside any panel -- fall back to keyboard-focused panel.
             self.scroll_focused(delta);
+        }
+    }
+
+    /// Apply a scroll delta to a specific `ScrollTarget`.
+    ///
+    /// Each target maps to exactly one scroll state field, avoiding the old
+    /// pattern of temporarily swapping focus and falling through to a generic
+    /// diff_scroll fallback.
+    fn scroll_by_target(&mut self, target: super::hit_test::ScrollTarget, delta: i32) {
+        use super::hit_test::ScrollTarget;
+        match target {
+            ScrollTarget::PlanTree => {
+                let current = self.tui_state.plan_scroll_offset as i32;
+                self.tui_state.plan_scroll_offset = (current + delta).max(0) as usize;
+            }
+            ScrollTarget::TaskProgress => {
+                let current = self.tui_state.task_scroll as i32;
+                self.tui_state.task_scroll = (current + delta).max(0) as usize;
+            }
+            ScrollTarget::AgentOutput => self.scroll_agent_output_by(delta),
+            ScrollTarget::CommandOutput => {
+                let current = self.tui_state.command_output_scroll as i32;
+                self.tui_state.command_output_scroll = (current + delta).max(0) as usize;
+            }
+            ScrollTarget::RightPanel => {
+                let current = self.tui_state.diff_scroll as i32;
+                self.tui_state.diff_scroll = (current + delta).max(0) as usize;
+            }
+            ScrollTarget::Procs => {
+                let current = self.tui_state.procs_scroll as i32;
+                self.tui_state.procs_scroll = (current + delta).max(0) as usize;
+            }
+            ScrollTarget::GitDetail => {
+                let current = self.tui_state.git_detail_scroll as i32;
+                self.tui_state.git_detail_scroll = (current + delta).max(0) as usize;
+            }
+            ScrollTarget::ConfigValues => {
+                let current = self.tui_state.config_values_scroll as i32;
+                self.tui_state.config_values_scroll = (current + delta).max(0) as usize;
+            }
+            ScrollTarget::InspectDetail => {
+                let current = self.tui_state.inspect_detail_scroll as i32;
+                self.tui_state.inspect_detail_scroll = (current + delta).max(0) as usize;
+            }
+            ScrollTarget::LearningDetail => {
+                let current = self.tui_state.learning_detail_scroll as i32;
+                self.tui_state.learning_detail_scroll = (current + delta).max(0) as usize;
+            }
+            ScrollTarget::ConfigKeys => {
+                let current = self.tui_state.config_scroll_offset as i32;
+                self.tui_state.config_scroll_offset = (current + delta).max(0) as usize;
+            }
+            ScrollTarget::LogList => self.scroll_logs_by(delta),
+            ScrollTarget::AgentRoster => {
+                let max = self.tui_state.agents.len().saturating_sub(1);
+                let next =
+                    (self.tui_state.selected_agent as i32 + delta).clamp(0, max as i32);
+                self.tui_state.selected_agent = next as usize;
+            }
+            ScrollTarget::MarketplaceJobs => {
+                if !self.tui_state.marketplace_jobs.is_empty() {
+                    let max = self.tui_state.marketplace_jobs.len().saturating_sub(1);
+                    let next = (self.tui_state.marketplace_selected_job as i32 + delta)
+                        .clamp(0, max as i32);
+                    self.tui_state.marketplace_selected_job = next as usize;
+                }
+            }
+            ScrollTarget::AtelierPrds => {
+                if !self.tui_state.atelier_prds.is_empty() {
+                    let max = self.tui_state.atelier_prds.len().saturating_sub(1);
+                    let next =
+                        (self.tui_state.atelier_selected_prd as i32 + delta).clamp(0, max as i32);
+                    self.tui_state.atelier_selected_prd = next as usize;
+                }
+            }
+            ScrollTarget::Modal | ScrollTarget::None => {
+                // Modal scroll is handled by handle_mouse before reaching here.
+                // None is not scrollable.
+            }
         }
     }
 
@@ -3621,6 +3755,7 @@ impl App {
             InputMode::Filter => self.tui_state.filter_text.as_str(),
             InputMode::LogSearch => self.tui_state.log_search.pattern.as_str(),
             InputMode::PlanFilter => self.tui_state.plan_tree_filter.pattern.as_str(),
+            InputMode::AgentOutputSearch => self.tui_state.agent_output_search.pattern.as_str(),
             _ => return,
         };
 
@@ -3639,6 +3774,19 @@ impl App {
                         self.tui_state.log_search.current_match + 1,
                         self.tui_state.log_search.match_count,
                         mode_label,
+                    )
+                }
+            }
+            InputMode::AgentOutputSearch
+                if !self.tui_state.agent_output_search.pattern.is_empty() =>
+            {
+                if self.tui_state.agent_output_search.pattern_error {
+                    " [invalid regex]".to_string()
+                } else {
+                    format!(
+                        " [{}/{}]",
+                        self.tui_state.agent_output_search.current_match + 1,
+                        self.tui_state.agent_output_search.match_count,
                     )
                 }
             }
@@ -3667,7 +3815,8 @@ impl App {
     }
 
     fn handle_mouse(&mut self, mouse: MouseEvent) {
-        // When a modal is open, route scroll to the modal and consume clicks.
+        // When a modal is open, scroll/click cannot affect underlying content
+        // (#368). Route scroll to the modal and consume all other events.
         if self.tui_state.active_modal.is_some() {
             let action = match mouse.kind {
                 MouseEventKind::ScrollUp => TuiAction::ModalScrollUp,
@@ -5271,14 +5420,14 @@ mod tests {
     }
 
     #[test]
-    fn app_defaults_to_keyboard_only_terminal_mode() {
+    fn app_defaults_to_mouse_capture_enabled() {
         let dir = tempdir().unwrap();
         let app = App::new(dir.path());
-        assert!(!app.capture_mouse);
+        assert!(app.capture_mouse);
     }
 
     #[test]
-    fn approval_tui_can_disable_mouse_capture() {
+    fn without_mouse_capture_disables_mouse() {
         let dir = tempdir().unwrap();
         let app = App::new(dir.path()).without_mouse_capture();
         assert!(!app.capture_mouse);

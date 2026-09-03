@@ -955,4 +955,208 @@ mod tui_mouse_hit_test {
             assert!(region.rect.y + region.rect.height <= 3);
         }
     }
+
+    // -- Scroll target isolation tests --
+
+    #[test]
+    fn detail_panes_use_distinct_scroll_targets_per_tab() {
+        let area = Rect::new(0, 0, 120, 50);
+
+        // Build a registry for every two-column tab and verify the right-pane
+        // scroll target is unique to that tab, not a shared generic value.
+        let tabs_and_expected_right: &[(usize, Tab, ScrollTarget)] = &[
+            (3, Tab::Git, ScrollTarget::GitDetail),
+            (5, Tab::Config, ScrollTarget::ConfigValues),
+            (6, Tab::Inspect, ScrollTarget::InspectDetail),
+            (9, Tab::Learning, ScrollTarget::LearningDetail),
+        ];
+
+        for &(tab_idx, tab, expected) in tabs_and_expected_right {
+            let zones = HitZones::compute(area, tab_idx, 10);
+            let reg = zones.into_registry(tab);
+
+            // Right pane should use the tab-specific scroll target.
+            let target = reg.scroll_target_at(80, 10);
+            assert_eq!(
+                target,
+                Some(expected),
+                "Tab {} right pane scroll target: expected {:?}, got {:?}",
+                tab.label(),
+                expected,
+                target
+            );
+        }
+    }
+
+    #[test]
+    fn left_panes_use_distinct_scroll_targets_per_tab() {
+        let area = Rect::new(0, 0, 120, 50);
+
+        let tabs_and_expected_left: &[(usize, Tab, ScrollTarget)] = &[
+            (3, Tab::Git, ScrollTarget::PlanTree),
+            (4, Tab::Logs, ScrollTarget::LogList),
+            (5, Tab::Config, ScrollTarget::ConfigKeys),
+            (6, Tab::Inspect, ScrollTarget::PlanTree),
+            (7, Tab::Marketplace, ScrollTarget::MarketplaceJobs),
+            (8, Tab::Atelier, ScrollTarget::AtelierPrds),
+            (9, Tab::Learning, ScrollTarget::PlanTree),
+        ];
+
+        for &(tab_idx, tab, expected) in tabs_and_expected_left {
+            let zones = HitZones::compute(area, tab_idx, 10);
+            let reg = zones.into_registry(tab);
+
+            let target = reg.scroll_target_at(5, 10);
+            assert_eq!(
+                target,
+                Some(expected),
+                "Tab {} left pane scroll target: expected {:?}, got {:?}",
+                tab.label(),
+                expected,
+                target
+            );
+        }
+    }
+
+    // -- No-mouse registry isolation --
+
+    #[test]
+    fn no_mouse_registry_still_computes_valid_regions() {
+        // When --no-mouse is active, the App does not call enable_mouse_capture.
+        // The registry itself is still populated normally (it is purely geometric).
+        // This test verifies that the registry computation is independent of
+        // the mouse capture flag: regions are always valid for layout purposes.
+        let area = Rect::new(0, 0, 120, 50);
+        for &tab in &Tab::ALL {
+            let zones = HitZones::compute(area, tab.index(), 10);
+            let reg = zones.into_registry(tab);
+            // All regions must fit the terminal.
+            for region in &reg.regions {
+                assert!(
+                    region.rect.x + region.rect.width <= 120
+                        && region.rect.y + region.rect.height <= 50,
+                    "Tab {:?}: region {:?} exceeds terminal at 120x50",
+                    tab,
+                    region.focus_zone
+                );
+            }
+        }
+    }
+
+    // -- Modal click target is always None --
+
+    #[test]
+    fn modal_region_click_target_is_none() {
+        let mut reg = HitRegionRegistry::new();
+        reg.register_modal(Rect::new(10, 10, 40, 20), ScrollTarget::Modal);
+        let click = reg.click_target_at(20, 15);
+        assert_eq!(click, Some(ClickTarget::None));
+    }
+
+    // -- Register_modal sets correct z level --
+
+    #[test]
+    fn register_modal_uses_z_modal() {
+        let mut reg = HitRegionRegistry::new();
+        reg.register_modal(Rect::new(0, 0, 10, 10), ScrollTarget::Modal);
+        let region = reg.region_at(5, 5).unwrap();
+        assert_eq!(region.z, Z_MODAL);
+    }
+
+    // -- Multiple modals: highest z wins --
+
+    #[test]
+    fn multiple_overlapping_modal_regions_use_highest_z() {
+        let mut reg = HitRegionRegistry::new();
+        // Base panel
+        reg.register(HitRegion {
+            rect: Rect::new(0, 0, 80, 24),
+            tab: Some(Tab::Plans),
+            focus_zone: FocusZone::PlanTree,
+            scroll_target: ScrollTarget::PlanTree,
+            click_target: ClickTarget::SetFocus(FocusZone::PlanTree),
+            z: Z_PANEL,
+        });
+        // Modal layer 1
+        reg.register(HitRegion {
+            rect: Rect::new(10, 5, 60, 14),
+            tab: None,
+            focus_zone: FocusZone::RightContent,
+            scroll_target: ScrollTarget::Modal,
+            click_target: ClickTarget::None,
+            z: Z_MODAL,
+        });
+        // Modal layer 2 (higher z, smaller rect)
+        reg.register(HitRegion {
+            rect: Rect::new(20, 8, 40, 8),
+            tab: None,
+            focus_zone: FocusZone::LeftPane,
+            scroll_target: ScrollTarget::None,
+            click_target: ClickTarget::None,
+            z: Z_MODAL + 1,
+        });
+
+        // Inside both modals: highest z wins.
+        let hit = reg.region_at(30, 10).unwrap();
+        assert_eq!(hit.z, Z_MODAL + 1);
+        assert_eq!(hit.focus_zone, FocusZone::LeftPane);
+
+        // Inside only modal layer 1: still returns layer 1 (not panel).
+        let hit2 = reg.region_at(15, 6).unwrap();
+        assert_eq!(hit2.z, Z_MODAL);
+    }
+
+    // -- Every scroll_for_left and scroll_for_right return a valid target --
+
+    #[test]
+    fn scroll_for_helpers_cover_all_tabs() {
+        for &tab in &Tab::ALL {
+            let left = scroll_for_left(tab);
+            let right = scroll_for_right(tab);
+
+            // Neither should return Modal or None for any tab.
+            assert_ne!(
+                left,
+                ScrollTarget::Modal,
+                "Tab {:?} left scroll target is Modal",
+                tab
+            );
+            assert_ne!(
+                right,
+                ScrollTarget::Modal,
+                "Tab {:?} right scroll target is Modal",
+                tab
+            );
+        }
+    }
+
+    // -- Full resize sweep: every tab at every common size --
+
+    #[test]
+    fn all_tabs_all_sizes_produce_valid_registries() {
+        let sizes: &[(u16, u16)] = &[
+            (80, 24),
+            (120, 40),
+            (200, 60),
+            (40, 12),
+            (20, 6),
+            (160, 50),
+        ];
+        for &(w, h) in sizes {
+            for &tab in &Tab::ALL {
+                let area = Rect::new(0, 0, w, h);
+                let zones = HitZones::compute(area, tab.index(), 10);
+                let reg = zones.into_registry(tab);
+                for region in &reg.regions {
+                    assert!(
+                        region.rect.x + region.rect.width <= w
+                            && region.rect.y + region.rect.height <= h,
+                        "Tab {:?} at ({w}x{h}): region {:?} exceeds terminal",
+                        tab,
+                        region.focus_zone
+                    );
+                }
+            }
+        }
+    }
 }

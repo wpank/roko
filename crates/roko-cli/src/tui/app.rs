@@ -3307,11 +3307,36 @@ impl App {
                 let current = self.tui_state.config_scroll_offset as i32;
                 self.tui_state.config_scroll_offset = (current + delta).max(0) as usize;
             }
-            _ => {
-                // Fallback: still use diff_scroll for any unmatched zones.
-                let current = self.tui_state.diff_scroll as i32;
-                self.tui_state.diff_scroll = (current + delta).max(0) as usize;
+            // Per-tab left/detail zones not captured above: route to their
+            // dedicated scroll field so that no unrelated pane bleeds into
+            // diff_scroll (#368).
+            (Tab::Git, FocusZone::GitBranches) => {
+                let current = self.tui_state.plan_scroll_offset as i32;
+                self.tui_state.plan_scroll_offset = (current + delta).max(0) as usize;
             }
+            (Tab::Inspect, FocusZone::InspectTree) => {
+                let current = self.tui_state.plan_scroll_offset as i32;
+                self.tui_state.plan_scroll_offset = (current + delta).max(0) as usize;
+            }
+            (Tab::Learning, FocusZone::LearningMetrics) => {
+                let current = self.tui_state.plan_scroll_offset as i32;
+                self.tui_state.plan_scroll_offset = (current + delta).max(0) as usize;
+            }
+            (Tab::Logs, FocusZone::LogDetail) => {
+                let current = self.tui_state.log_detail_scroll as i32;
+                self.tui_state.log_detail_scroll = (current + delta).max(0) as usize;
+            }
+            (Tab::Marketplace, FocusZone::MarketDetail) => {
+                let current = self.tui_state.marketplace_detail_scroll as i32;
+                self.tui_state.marketplace_detail_scroll = (current + delta).max(0) as usize;
+            }
+            (Tab::Atelier, FocusZone::AtelierDetail) => {
+                let current = self.tui_state.atelier_detail_scroll as i32;
+                self.tui_state.atelier_detail_scroll = (current + delta).max(0) as usize;
+            }
+            // Exhaustive: any remaining (tab, zone) combination is a no-op
+            // rather than leaking into a shared scroll field.
+            _ => {}
         }
     }
 
@@ -3415,9 +3440,25 @@ impl App {
             (Tab::Learning, FocusZone::LearningDetail) => {
                 self.tui_state.learning_detail_scroll = offset;
             }
-            _ => {
-                self.tui_state.diff_scroll = offset;
+            // Per-tab left/detail zones not captured above: route to their
+            // dedicated field so that no unrelated pane bleeds into
+            // diff_scroll (#368).
+            (Tab::Git, FocusZone::GitBranches)
+            | (Tab::Inspect, FocusZone::InspectTree)
+            | (Tab::Learning, FocusZone::LearningMetrics) => {
+                self.tui_state.plan_scroll_offset = offset;
             }
+            (Tab::Logs, FocusZone::LogDetail) => {
+                self.tui_state.log_detail_scroll = offset;
+            }
+            (Tab::Marketplace, FocusZone::MarketDetail) => {
+                self.tui_state.marketplace_detail_scroll = offset;
+            }
+            (Tab::Atelier, FocusZone::AtelierDetail) => {
+                self.tui_state.atelier_detail_scroll = offset;
+            }
+            // Exhaustive: any remaining (tab, zone) combination is a no-op.
+            _ => {}
         }
     }
 

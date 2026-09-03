@@ -4651,6 +4651,51 @@ impl TuiState {
         self.command_output_scroll = self.command_output_scroll.min(max);
     }
 
+    /// Clamp the git detail scroll offset to the current rendered maximum.
+    pub fn clamp_git_detail_scroll(&mut self, max: usize) {
+        self.git_detail_scroll = self.git_detail_scroll.min(max);
+    }
+
+    /// Clamp the config values scroll offset to the current rendered maximum.
+    pub fn clamp_config_values_scroll(&mut self, max: usize) {
+        self.config_values_scroll = self.config_values_scroll.min(max);
+    }
+
+    /// Clamp the config keys scroll offset to the current rendered maximum.
+    pub fn clamp_config_scroll_offset(&mut self, max: usize) {
+        self.config_scroll_offset = self.config_scroll_offset.min(max);
+    }
+
+    /// Clamp the inspect detail scroll offset to the current rendered maximum.
+    pub fn clamp_inspect_detail_scroll(&mut self, max: usize) {
+        self.inspect_detail_scroll = self.inspect_detail_scroll.min(max);
+    }
+
+    /// Clamp the learning detail scroll offset to the current rendered maximum.
+    pub fn clamp_learning_detail_scroll(&mut self, max: usize) {
+        self.learning_detail_scroll = self.learning_detail_scroll.min(max);
+    }
+
+    /// Clamp the procs scroll offset to the current rendered maximum.
+    pub fn clamp_procs_scroll(&mut self, max: usize) {
+        self.procs_scroll = self.procs_scroll.min(max);
+    }
+
+    /// Clamp the log detail scroll offset to the current rendered maximum.
+    pub fn clamp_log_detail_scroll(&mut self, max: usize) {
+        self.log_detail_scroll = self.log_detail_scroll.min(max);
+    }
+
+    /// Clamp the marketplace detail scroll offset to the current rendered maximum.
+    pub fn clamp_marketplace_detail_scroll(&mut self, max: usize) {
+        self.marketplace_detail_scroll = self.marketplace_detail_scroll.min(max);
+    }
+
+    /// Clamp the atelier detail scroll offset to the current rendered maximum.
+    pub fn clamp_atelier_detail_scroll(&mut self, max: usize) {
+        self.atelier_detail_scroll = self.atelier_detail_scroll.min(max);
+    }
+
     /// Toggle visibility for a single log level in the Logs tab.
     pub fn toggle_log_filter_level(&mut self, level: LogFilterLevel) {
         if !self.log_filter_levels.insert(level) {
@@ -7922,5 +7967,107 @@ tier = "focused"
 
         let re = regex::Regex::new("test").unwrap();
         assert!(history.search("nonexistent", &re, None, 10).is_empty());
+    }
+
+    // -- #368 per-tab detail scroll clamp tests --
+
+    #[test]
+    fn clamp_git_detail_scroll_clamps_to_max() {
+        let mut state = TuiState::default();
+        state.git_detail_scroll = 100;
+        state.clamp_git_detail_scroll(42);
+        assert_eq!(state.git_detail_scroll, 42);
+
+        // Already within range: no change.
+        state.clamp_git_detail_scroll(50);
+        assert_eq!(state.git_detail_scroll, 42);
+    }
+
+    #[test]
+    fn clamp_config_values_scroll_clamps_to_max() {
+        let mut state = TuiState::default();
+        state.config_values_scroll = 80;
+        state.clamp_config_values_scroll(30);
+        assert_eq!(state.config_values_scroll, 30);
+    }
+
+    #[test]
+    fn clamp_inspect_detail_scroll_clamps_to_max() {
+        let mut state = TuiState::default();
+        state.inspect_detail_scroll = 60;
+        state.clamp_inspect_detail_scroll(25);
+        assert_eq!(state.inspect_detail_scroll, 25);
+    }
+
+    #[test]
+    fn clamp_learning_detail_scroll_clamps_to_max() {
+        let mut state = TuiState::default();
+        state.learning_detail_scroll = 50;
+        state.clamp_learning_detail_scroll(10);
+        assert_eq!(state.learning_detail_scroll, 10);
+    }
+
+    #[test]
+    fn clamp_procs_scroll_clamps_to_max() {
+        let mut state = TuiState::default();
+        state.procs_scroll = 40;
+        state.clamp_procs_scroll(15);
+        assert_eq!(state.procs_scroll, 15);
+    }
+
+    #[test]
+    fn clamp_config_scroll_offset_clamps_to_max() {
+        let mut state = TuiState::default();
+        state.config_scroll_offset = 90;
+        state.clamp_config_scroll_offset(20);
+        assert_eq!(state.config_scroll_offset, 20);
+    }
+
+    #[test]
+    fn clamp_log_detail_scroll_clamps_to_max() {
+        let mut state = TuiState::default();
+        state.log_detail_scroll = 70;
+        state.clamp_log_detail_scroll(35);
+        assert_eq!(state.log_detail_scroll, 35);
+    }
+
+    #[test]
+    fn clamp_marketplace_detail_scroll_clamps_to_max() {
+        let mut state = TuiState::default();
+        state.marketplace_detail_scroll = 55;
+        state.clamp_marketplace_detail_scroll(22);
+        assert_eq!(state.marketplace_detail_scroll, 22);
+    }
+
+    #[test]
+    fn clamp_atelier_detail_scroll_clamps_to_max() {
+        let mut state = TuiState::default();
+        state.atelier_detail_scroll = 45;
+        state.clamp_atelier_detail_scroll(18);
+        assert_eq!(state.atelier_detail_scroll, 18);
+    }
+
+    #[test]
+    fn reset_scrolls_includes_all_detail_fields() {
+        let mut state = TuiState::default();
+        state.git_detail_scroll = 10;
+        state.config_values_scroll = 20;
+        state.inspect_detail_scroll = 30;
+        state.learning_detail_scroll = 40;
+        state.procs_scroll = 50;
+        state.log_detail_scroll = 60;
+        state.marketplace_detail_scroll = 70;
+        state.atelier_detail_scroll = 80;
+
+        state.reset_scrolls();
+
+        assert_eq!(state.git_detail_scroll, 0);
+        assert_eq!(state.config_values_scroll, 0);
+        assert_eq!(state.inspect_detail_scroll, 0);
+        assert_eq!(state.learning_detail_scroll, 0);
+        assert_eq!(state.procs_scroll, 0);
+        assert_eq!(state.log_detail_scroll, 0);
+        assert_eq!(state.marketplace_detail_scroll, 0);
+        assert_eq!(state.atelier_detail_scroll, 0);
     }
 }

@@ -14,8 +14,9 @@ use roko_agent::chat_types::{
     ChatRequest, ChatResponse, FinishReason, RequestOptions, ResponseMetadata, SessionState,
     ToolChoice,
 };
-use roko_agent::streaming::StreamChunk;
-use roko_agent::tool_loop::LlmBackend;
+use roko_agent::tool_loop::{
+    LlmBackend, StreamEvent, StreamEventKind, TurnConfig, collect_stream_to_response,
+};
 use roko_agent::translate::{BackendResponse, RenderedTools, normalize_finish_reason};
 use roko_chain::ChainClient;
 use roko_core::obs::LogScrubber;
@@ -64,7 +65,7 @@ pub trait DispatchLike: Send + Sync {
     async fn dispatch_streaming(
         &self,
         request: ChatRequest,
-        event_tx: mpsc::UnboundedSender<StreamChunk>,
+        event_tx: mpsc::UnboundedSender<StreamEvent>,
     ) -> Result<ChatResponse, SidecarDispatchError> {
         let _ = event_tx;
         self.dispatch(request).await
@@ -105,7 +106,7 @@ impl DispatchLike for BackendMessageDispatcher {
     async fn dispatch_streaming(
         &self,
         request: ChatRequest,
-        event_tx: mpsc::UnboundedSender<StreamChunk>,
+        event_tx: mpsc::UnboundedSender<StreamEvent>,
     ) -> Result<ChatResponse, SidecarDispatchError> {
         let messages = request
             .messages
@@ -114,32 +115,20 @@ impl DispatchLike for BackendMessageDispatcher {
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| SidecarDispatchError::DispatchFailed(error.to_string()))?;
 
-        // Bridge: create a bounded channel for the LlmBackend, forward chunks
-        // to the public unbounded sender so the DispatchLike trait signature
-        // remains unchanged.
-        let (bounded_tx, mut bounded_rx) =
-            mpsc::channel::<StreamChunk>(roko_core::defaults::DEFAULT_CHANNEL_BUFFER);
-        let forwarder = tokio::spawn(async move {
-            while let Some(chunk) = bounded_rx.recv().await {
-                if event_tx.send(chunk).is_err() {
-                    break;
-                }
-            }
-        });
+        let config = TurnConfig::default();
+        let session = SessionState::default();
+        let tools = RenderedTools::JsonArray(serde_json::json!([]));
 
-        let response = self
+        let stream = self
             .backend
-            .send_turn_streaming(
-                &messages,
-                &RenderedTools::JsonArray(serde_json::json!([])),
-                &SessionState::default(),
-                bounded_tx,
-            )
+            .stream_turn(&messages, &tools, &session, &config)
             .await
             .map_err(|error| SidecarDispatchError::DispatchFailed(error.to_string()))?;
 
-        // Ensure all remaining chunks are forwarded before returning.
-        let _ = forwarder.await;
+        let request_start = std::time::Instant::now();
+        let response = collect_stream_to_response(stream, request_start)
+            .await
+            .map_err(|error| SidecarDispatchError::DispatchFailed(error.to_string()))?;
 
         Ok(chat_response_from_backend(&*self.backend, &response))
     }

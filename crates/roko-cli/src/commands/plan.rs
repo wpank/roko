@@ -1037,8 +1037,11 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
 
                 // Optionally spawn the approval TUI.
                 let mut approval_tui_handle = None;
-                let mut tui_cmd_rx: Option<
-                    tokio::sync::mpsc::Receiver<roko_cli::runner::TuiCommand>,
+                let mut exec_cmd_rx: Option<
+                    tokio::sync::mpsc::Receiver<roko_cli::execution_control::ExecutionCommand>,
+                > = None;
+                let mut exec_ack_tx: Option<
+                    tokio::sync::mpsc::Sender<roko_cli::execution_control::CommandAck>,
                 > = None;
                 if approval {
                     if !std::io::stdout().is_terminal() {
@@ -1060,9 +1063,13 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
 
                     let state_hub_for_tui = state_hub.clone();
                     let workdir_for_tui = wd.clone();
-                    // Create in-process TUI→runner command channel.
-                    let (tui_cmd_tx, tui_cmd_rx_slot) = tokio::sync::mpsc::channel(32);
-                    tui_cmd_rx = Some(tui_cmd_rx_slot);
+                    // Create in-process TUI→runner execution command channel (#233).
+                    let (cmd_sender, cmd_rx, ack_tx, ack_rx) =
+                        roko_cli::execution_control::ExecutionCommandSender::channel("plan-run");
+                    let ack_receiver =
+                        roko_cli::execution_control::CommandAckReceiver::new(ack_rx);
+                    exec_cmd_rx = Some(cmd_rx);
+                    exec_ack_tx = Some(ack_tx);
                     let handle = std::thread::Builder::new()
                         .name("roko-plan-approval-tui".to_string())
                         .spawn(move || {
@@ -1072,7 +1079,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                                 &state_hub_for_tui,
                             )
                             .without_mouse_capture()
-                            .with_tui_command_tx(tui_cmd_tx);
+                            .with_execution_command_sender(cmd_sender, ack_receiver);
                             app.run()
                         })
                         .context("spawn approval TUI thread")?;
@@ -1123,7 +1130,8 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     &run_config,
                     &state_hub,
                     cancel,
-                    tui_cmd_rx,
+                    exec_cmd_rx,
+                    exec_ack_tx,
                 )
                 .await;
                 if let Err(error) = &v2_result {

@@ -20,7 +20,7 @@ use crate::harness::{
     SessionResumeMode, StreamingMode, ToolInjection, TransportFlavor,
 };
 use crate::process::ResourceLimits;
-use crate::streaming::StreamChunk;
+use crate::tool_loop::{StreamEvent, StreamEventKind};
 use crate::usage::Usage;
 use roko_core::{Body, Context, Kind, Provenance, Signal};
 
@@ -451,7 +451,7 @@ impl Agent for HermesAcpAgent {
         &self,
         input: &Signal,
         _ctx: &Context,
-        event_tx: mpsc::Sender<StreamChunk>,
+        event_tx: mpsc::Sender<StreamEvent>,
     ) -> AgentResult {
         let started = Instant::now();
         let prompt = Self::extract_prompt(input);
@@ -464,7 +464,7 @@ impl Agent for HermesAcpAgent {
         {
             let msg = format!("hermes ACP connect failed: {e}");
             tracing::error!("{msg}");
-            let _ = event_tx.send(StreamChunk::Error(msg.clone())).await;
+            let _ = event_tx.send(StreamEvent::now(StreamEventKind::Done { finish_reason: format!("error: {}", msg) })).await;
             return AgentResult::fail(self.build_error_output(input, &msg));
         }
 
@@ -483,7 +483,7 @@ impl Agent for HermesAcpAgent {
             Err(e) => {
                 let msg = format!("hermes ACP new_session failed: {e}");
                 tracing::error!("{msg}");
-                let _ = event_tx.send(StreamChunk::Error(msg.clone())).await;
+                let _ = event_tx.send(StreamEvent::now(StreamEventKind::Done { finish_reason: format!("error: {}", msg) })).await;
                 return AgentResult::fail(self.build_error_output(input, &msg));
             }
         };
@@ -514,7 +514,7 @@ impl Agent for HermesAcpAgent {
                 let msg = format!("hermes ACP send_prompt failed: {e}");
                 tracing::error!("{msg}");
                 let _ = client.close_session(&session_id).await;
-                let _ = event_tx.send(StreamChunk::Error(msg.clone())).await;
+                let _ = event_tx.send(StreamEvent::now(StreamEventKind::Done { finish_reason: format!("error: {}", msg) })).await;
                 return AgentResult::fail(self.build_error_output(input, &msg));
             }
         };
@@ -537,7 +537,7 @@ impl Agent for HermesAcpAgent {
                                         AcpEvent::Output { text } => {
                                             output_text.push_str(&text);
                                             let _ = event_tx
-                                                .send(StreamChunk::ContentDelta(text))
+                                                .send(StreamEvent::now(StreamEventKind::TextDelta(text)))
                                                 .await;
                                         }
                                         AcpEvent::ToolCall { id, name, arguments } => {
@@ -546,21 +546,22 @@ impl Agent for HermesAcpAgent {
                                                 other => other.to_string(),
                                             };
                                             let _ = event_tx
-                                                .send(StreamChunk::ToolCallDelta {
-                                                    index: tool_call_index,
-                                                    id_delta: Some(id),
-                                                    name_delta: Some(name),
-                                                    arguments_delta: args_str,
-                                                })
+                                                .send(StreamEvent::now(
+                                                    StreamEventKind::ToolCallStart {
+                                                        id,
+                                                        name,
+                                                    },
+                                                ))
                                                 .await;
                                             tool_call_index += 1;
                                         }
                                         AcpEvent::ToolCallUpdate { id, progress } => {
                                             let _ = event_tx
-                                                .send(StreamChunk::ToolProgress {
-                                                    tool: id,
-                                                    status: progress,
-                                                })
+                                                .send(StreamEvent::now(
+                                                    StreamEventKind::TextDelta(format!(
+                                                        "[{id}] {progress}"
+                                                    )),
+                                                ))
                                                 .await;
                                         }
                                         AcpEvent::Usage { input_tokens, output_tokens } => {
@@ -572,7 +573,9 @@ impl Agent for HermesAcpAgent {
                                                 ..Default::default()
                                             };
                                             let _ = event_tx
-                                                .send(StreamChunk::Usage(u))
+                                                .send(StreamEvent::now(
+                                                    StreamEventKind::Usage(u),
+                                                ))
                                                 .await;
                                         }
                                         _ => {}
@@ -592,17 +595,17 @@ impl Agent for HermesAcpAgent {
                                     && output_text.is_empty() {
                                         output_text.push_str(text);
                                         let _ = event_tx
-                                            .send(StreamChunk::ContentDelta(text.to_string()))
+                                            .send(StreamEvent::now(StreamEventKind::TextDelta(text.to_string())))
                                             .await;
                                     }
                                 let _ = event_tx
-                                    .send(StreamChunk::Done(FinishReason::Stop))
+                                    .send(StreamEvent::now(StreamEventKind::Done { finish_reason: "stop".to_string() }))
                                     .await;
                                 break;
                             }
                             None => {
                                 let _ = event_tx
-                                    .send(StreamChunk::Done(FinishReason::Stop))
+                                    .send(StreamEvent::now(StreamEventKind::Done { finish_reason: "stop".to_string() }))
                                     .await;
                                 break;
                             }
@@ -611,7 +614,7 @@ impl Agent for HermesAcpAgent {
                     _ = tokio::time::sleep(timeout) => {
                         tracing::warn!("hermes ACP streaming turn timed out after {:?}", timeout);
                         let _ = event_tx
-                            .send(StreamChunk::Done(FinishReason::Stop))
+                            .send(StreamEvent::now(StreamEventKind::Done { finish_reason: "stop".to_string() }))
                             .await;
                         break;
                     }
@@ -631,7 +634,7 @@ impl Agent for HermesAcpAgent {
                     {
                         output_text.push_str(text);
                         let _ = event_tx
-                            .send(StreamChunk::ContentDelta(text.to_string()))
+                            .send(StreamEvent::now(StreamEventKind::TextDelta(text.to_string())))
                             .await;
                     }
                 }
@@ -639,7 +642,7 @@ impl Agent for HermesAcpAgent {
                     tracing::warn!("hermes ACP recv_response error: {e}");
                 }
             }
-            let _ = event_tx.send(StreamChunk::Done(FinishReason::Stop)).await;
+            let _ = event_tx.send(StreamEvent::now(StreamEventKind::Done { finish_reason: "stop".to_string() })).await;
         }
 
         // Close session.

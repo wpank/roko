@@ -178,6 +178,10 @@ pub struct App {
     exec_cmd_sender: Option<crate::execution_control::ExecutionCommandSender>,
     /// Receiver for command acknowledgements from the executor.
     exec_ack_receiver: Option<crate::execution_control::CommandAckReceiver>,
+    /// Pending commands awaiting acknowledgement: command_id -> kind.
+    /// Used to commit state changes (e.g. flip is_paused) on `Completed`.
+    pending_exec_commands:
+        std::collections::HashMap<String, crate::execution_control::ExecutionCommandKind>,
     /// Receiver for background git data collection results.
     git_bg_rx: Option<std::sync::mpsc::Receiver<(u64, GitBgData)>>,
     /// Monotonically increasing generation counter for spawned git jobs.
@@ -794,6 +798,7 @@ impl App {
             last_events_offset: 0,
             exec_cmd_sender: None,
             exec_ack_receiver: None,
+            pending_exec_commands: std::collections::HashMap::new(),
             git_bg_rx: None,
             git_bg_generation: 0,
             git_applied_generation: 0,
@@ -1937,9 +1942,12 @@ impl App {
                     } else {
                         crate::execution_control::ExecutionCommandKind::Resume
                     };
-                    let cmd = sender.build_command(kind, None, None, None);
+                    let cmd = sender.build_command(kind.clone(), None, None, None);
+                    let cmd_id = cmd.command_id.clone();
                     match sender.try_send(cmd) {
                         Ok(()) => {
+                            // Track the pending command so we can commit state on ack.
+                            self.pending_exec_commands.insert(cmd_id, kind);
                             // State changes on Completed ack; show pending.
                             self.notifications.push_back(super::modals::Notification::info(
                                 if requested_pause { "Pause requested" } else { "Resume requested" },
@@ -4384,30 +4392,49 @@ impl App {
     }
 
     /// Drain pending command acknowledgements from the executor and update
-    /// TUI state accordingly.
+    /// TUI state accordingly. `Completed` acks commit the state change (e.g.
+    /// flip `is_paused`); `Rejected`/`Failed` acks show a toast/error entry
+    /// and remove the pending command.
     fn drain_execution_acks(&mut self) {
         let Some(ack_rx) = self.exec_ack_receiver.as_mut() else {
             return;
         };
         for ack in ack_rx.drain() {
-            use crate::execution_control::CommandAckStatus;
+            use crate::execution_control::{CommandAckStatus, ExecutionCommandKind};
+            let pending_kind = self.pending_exec_commands.remove(&ack.command_id);
             match ack.status {
                 CommandAckStatus::Accepted => {
                     let msg = ack.message.unwrap_or_else(|| "command accepted".into());
-                    self.notifications.push_back(super::modals::Notification::info(msg));
+                    self.notifications
+                        .push_back(super::modals::Notification::info(msg));
                 }
                 CommandAckStatus::Completed => {
+                    // Commit the state change based on the original command kind.
+                    if let Some(kind) = &pending_kind {
+                        match kind {
+                            ExecutionCommandKind::Pause => {
+                                self.tui_state.is_paused = true;
+                            }
+                            ExecutionCommandKind::Resume => {
+                                self.tui_state.is_paused = false;
+                            }
+                            _ => {}
+                        }
+                    }
                     let msg = ack.message.unwrap_or_else(|| "command completed".into());
-                    self.notifications.push_back(super::modals::Notification::info(msg));
+                    self.notifications
+                        .push_back(super::modals::Notification::info(msg));
                     self.render_dirty.insert(RenderDirty::SNAPSHOT);
                 }
                 CommandAckStatus::Rejected => {
                     let msg = ack.message.unwrap_or_else(|| "command rejected".into());
-                    self.notifications.push_back(super::modals::Notification::warn(msg));
+                    self.notifications
+                        .push_back(super::modals::Notification::warn(msg));
                 }
                 CommandAckStatus::Failed => {
                     let msg = ack.message.unwrap_or_else(|| "command failed".into());
-                    self.notifications.push_back(super::modals::Notification::error(msg));
+                    self.notifications
+                        .push_back(super::modals::Notification::error(msg));
                 }
             }
         }

@@ -45,11 +45,14 @@ use crate::agent::{Agent, AgentResult};
 use crate::http::HttpPostError;
 use crate::http::{HttpPoster, ReqwestPoster};
 use crate::safety::SafetyLayer;
-use crate::streaming::{StreamAccumulator, StreamChunk, parse_sse_line};
-use crate::tool_loop::{LlmBackend, LlmError};
+use crate::streaming::parse_sse_line;
+use crate::tool_loop::{
+    LlmBackend, LlmError, StreamEvent, StreamEventKind, TurnConfig, collect_stream_to_response,
+};
 use crate::translate::{BackendResponse, RenderedTools, SessionState};
 use crate::usage::{Usage, UsageObservation, UsageSource};
 use async_trait::async_trait;
+use futures::stream::BoxStream;
 use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
 use roko_core::extension::CamelTaintLevel;
 use roko_core::tool::{ToolCall, ToolContext, ToolResult};
@@ -59,7 +62,6 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
 
 /// Default Cursor ACP endpoint host.
 pub const DEFAULT_BASE_URL: &str = "https://api.cursor.sh";
@@ -353,8 +355,7 @@ impl CursorAgent {
 
     async fn push_stream_line(
         line: &[u8],
-        accumulator: &mut StreamAccumulator,
-        event_tx: &mpsc::Sender<StreamChunk>,
+        tx: &tokio::sync::mpsc::Sender<Result<StreamEvent, LlmError>>,
     ) {
         let line = String::from_utf8_lossy(line);
         let line = line.trim_end_matches(['\r', '\n']);
@@ -363,8 +364,8 @@ impl CursorAgent {
         }
 
         if let Some(chunk) = parse_sse_line(line) {
-            accumulator.push(chunk.clone());
-            let _ = event_tx.send(chunk).await;
+            let event: StreamEvent = chunk.into();
+            let _ = tx.send(Ok(event)).await;
             return;
         }
 
@@ -651,13 +652,13 @@ impl LlmBackend for CursorAgent {
         Ok(BackendResponse::Json(json))
     }
 
-    async fn send_turn_streaming(
+    async fn stream_turn(
         &self,
         messages: &[Value],
         tools: &RenderedTools,
         session: &SessionState,
-        event_tx: mpsc::Sender<StreamChunk>,
-    ) -> Result<BackendResponse, LlmError> {
+        _config: &TurnConfig,
+    ) -> Result<BoxStream<'static, Result<StreamEvent, LlmError>>, LlmError> {
         let body = self.build_chat_completion_body(messages, tools, session, true)?;
 
         let mut req = crate::provider::shared_http_client()
@@ -667,64 +668,72 @@ impl LlmBackend for CursorAgent {
             req = req.header(key, value);
         }
 
-        let response = match req.body(body).send().await {
-            Ok(response) => response,
-            Err(err) => {
-                let message = format!("request failed: {err}");
-                let _ = event_tx.send(StreamChunk::Error(message.clone())).await;
-                return Err(LlmError::Network(message));
-            }
-        };
+        let response = req
+            .body(body)
+            .send()
+            .await
+            .map_err(|err| LlmError::Network(format!("request failed: {err}")))?;
 
         let status = response.status();
         if !status.is_success() {
-            let text = match response.text().await {
-                Ok(text) => text,
-                Err(err) => {
-                    let message = format!("read body failed: {err}");
-                    let _ = event_tx.send(StreamChunk::Error(message.clone())).await;
-                    return Err(LlmError::Network(message));
-                }
-            };
+            let text = response
+                .text()
+                .await
+                .unwrap_or_else(|err| format!("read body failed: {err}"));
             let message = crate::http::HttpPostError::http(status.as_u16(), text).to_string();
-            let _ = event_tx.send(StreamChunk::Error(message.clone())).await;
             return Err(LlmError::Network(message));
         }
 
-        let mut response = response;
-        let mut pending = Vec::new();
-        let mut accumulator = StreamAccumulator::new();
-        let mut metadata = StreamResponseMetadata::default();
+        let (tx, rx) =
+            tokio::sync::mpsc::channel::<Result<StreamEvent, LlmError>>(256);
 
-        loop {
-            let chunk = match response.chunk().await {
-                Ok(c) => c,
-                Err(err) => {
-                    let message = format!("read chunk failed: {err}");
-                    let _ = event_tx.send(StreamChunk::Error(message.clone())).await;
-                    return Err(LlmError::Network(message));
+        tokio::spawn(async move {
+            let mut response = response;
+            let mut pending = Vec::new();
+            let mut sent_done = false;
+
+            loop {
+                let chunk = match response.chunk().await {
+                    Ok(c) => c,
+                    Err(err) => {
+                        let _ = tx
+                            .send(Err(LlmError::Network(format!(
+                                "read chunk failed: {err}"
+                            ))))
+                            .await;
+                        return;
+                    }
+                };
+                let Some(chunk) = chunk else {
+                    break;
+                };
+
+                pending.extend_from_slice(&chunk);
+                while let Some(newline_idx) = pending.iter().position(|byte| *byte == b'\n') {
+                    let line: Vec<u8> = pending.drain(..=newline_idx).collect();
+                    Self::push_stream_line(&line, &tx).await;
                 }
-            };
-            let Some(chunk) = chunk else {
-                break;
-            };
-
-            pending.extend_from_slice(&chunk);
-            while let Some(newline_idx) = pending.iter().position(|byte| *byte == b'\n') {
-                let line: Vec<u8> = pending.drain(..=newline_idx).collect();
-                Self::capture_stream_metadata(&line, &mut metadata);
-                Self::push_stream_line(&line, &mut accumulator, &event_tx).await;
             }
-        }
 
-        if !pending.is_empty() {
-            Self::capture_stream_metadata(&pending, &mut metadata);
-            Self::push_stream_line(&pending, &mut accumulator, &event_tx).await;
-        }
+            if !pending.is_empty() {
+                Self::push_stream_line(&pending, &tx).await;
+            }
 
-        let json = Self::stream_response_to_json(accumulator.finalize(), metadata)?;
-        self.check_tool_calls_for_safety(&json)?;
-        Ok(BackendResponse::Json(json))
+            // Ensure a Done event is always emitted.
+            if !sent_done {
+                let _ = tx
+                    .send(Ok(StreamEvent::now(StreamEventKind::Done {
+                        finish_reason: "stop".to_string(),
+                    })))
+                    .await;
+            }
+            let _ = sent_done;
+        });
+
+        let stream = futures::stream::unfold(rx, |mut rx| async move {
+            rx.recv().await.map(|item| (item, rx))
+        });
+        Ok(Box::pin(stream))
     }
 
     fn extract_session(&self, response: &BackendResponse) -> SessionState {

@@ -78,6 +78,29 @@ pub struct TimeoutConfig {
     /// learning, episode compaction, GC, and branch cleanup.
     #[serde(default = "default_post_run_cleanup_secs")]
     pub post_run_cleanup_secs: u64,
+
+    /// Tool execution wall-clock timeout (milliseconds). Applied to tool
+    /// calls (bash, read, write, etc.) when no per-tool override is set.
+    /// Replaces the previously-hardcoded `120_000` ms default scattered
+    /// across `roko-std`, `roko-acp`, `roko-chain`, and tool definitions.
+    #[serde(default = "default_tool_execution_ms")]
+    pub tool_execution_ms: u64,
+
+    /// ACP (Agent Client Protocol) request timeout (milliseconds).
+    /// Applied to inbound ACP tool dispatches and bridge event handling.
+    #[serde(default = "default_acp_request_ms")]
+    pub acp_request_ms: u64,
+
+    /// Graph engine per-node execution timeout (seconds). Applied when a
+    /// graph definition does not carry its own `policy.timeout_ms` override.
+    #[serde(default = "default_graph_node_secs")]
+    pub graph_node_secs: u64,
+
+    /// Maximum time (seconds) an owned effect may remain without its
+    /// producing agent/gate being live. Corresponds to the runner's
+    /// `TimeoutKind::LostEffect`.
+    #[serde(default = "default_lost_effect_secs")]
+    pub lost_effect_secs: u64,
 }
 
 // ── Default helpers (const fn for serde) ─────────────────────────────────
@@ -114,6 +137,18 @@ const fn default_plan_total_secs() -> u64 {
 }
 const fn default_post_run_cleanup_secs() -> u64 {
     120
+}
+const fn default_tool_execution_ms() -> u64 {
+    120_000
+}
+const fn default_acp_request_ms() -> u64 {
+    120_000
+}
+const fn default_graph_node_secs() -> u64 {
+    300
+}
+const fn default_lost_effect_secs() -> u64 {
+    600
 }
 
 // ── Duration accessors ───────────────────────────────────────────────────
@@ -199,6 +234,48 @@ impl TimeoutConfig {
     pub fn post_run_cleanup(&self) -> Duration {
         Duration::from_secs(self.post_run_cleanup_secs)
     }
+
+    /// Tool execution timeout as [`Duration`].
+    ///
+    /// Used as the wall-clock budget for tool calls (bash, read, write, etc.)
+    /// when no per-tool override is present. Expressed in milliseconds because
+    /// tool definitions use millisecond granularity.
+    pub fn tool_execution(&self) -> Duration {
+        Duration::from_millis(self.tool_execution_ms)
+    }
+
+    /// Tool execution timeout in milliseconds (convenience for tool-def wiring).
+    pub const fn tool_execution_ms_val(&self) -> u64 {
+        self.tool_execution_ms
+    }
+
+    /// ACP request timeout as [`Duration`].
+    pub fn acp_request(&self) -> Duration {
+        Duration::from_millis(self.acp_request_ms)
+    }
+
+    /// ACP request timeout in milliseconds (convenience for ACP wiring).
+    pub const fn acp_request_ms_val(&self) -> u64 {
+        self.acp_request_ms
+    }
+
+    /// Graph node execution timeout as [`Duration`].
+    pub fn graph_node(&self) -> Duration {
+        Duration::from_secs(self.graph_node_secs)
+    }
+
+    /// Graph node timeout in milliseconds (convenience for graph policy wiring).
+    pub const fn graph_node_ms(&self) -> u64 {
+        self.graph_node_secs * 1_000
+    }
+
+    /// Lost-effect timeout as [`Duration`].
+    ///
+    /// Maximum time an owned effect may remain without its producing
+    /// agent or gate being live before the runner declares it lost.
+    pub fn lost_effect(&self) -> Duration {
+        Duration::from_secs(self.lost_effect_secs)
+    }
 }
 
 impl Default for TimeoutConfig {
@@ -220,6 +297,10 @@ impl Default for TimeoutConfig {
             health_check_secs: default_health_check_secs(),
             plan_total_secs: default_plan_total_secs(),
             post_run_cleanup_secs: default_post_run_cleanup_secs(),
+            tool_execution_ms: default_tool_execution_ms(),
+            acp_request_ms: default_acp_request_ms(),
+            graph_node_secs: default_graph_node_secs(),
+            lost_effect_secs: default_lost_effect_secs(),
         }
     }
 }
@@ -242,6 +323,10 @@ mod tests {
         assert_eq!(cfg.health_check_secs, 3);
         assert_eq!(cfg.plan_total_secs, 3_600);
         assert_eq!(cfg.post_run_cleanup_secs, 120);
+        assert_eq!(cfg.tool_execution_ms, 120_000);
+        assert_eq!(cfg.acp_request_ms, 120_000);
+        assert_eq!(cfg.graph_node_secs, 300);
+        assert_eq!(cfg.lost_effect_secs, 600);
     }
 
     #[test]
@@ -263,6 +348,13 @@ mod tests {
         assert_eq!(cfg.health_check(), Duration::from_secs(3));
         assert_eq!(cfg.plan_total(), Duration::from_secs(3_600));
         assert_eq!(cfg.post_run_cleanup(), Duration::from_secs(120));
+        assert_eq!(cfg.tool_execution(), Duration::from_millis(120_000));
+        assert_eq!(cfg.acp_request(), Duration::from_millis(120_000));
+        assert_eq!(cfg.graph_node(), Duration::from_secs(300));
+        assert_eq!(cfg.lost_effect(), Duration::from_secs(600));
+        assert_eq!(cfg.tool_execution_ms_val(), 120_000);
+        assert_eq!(cfg.acp_request_ms_val(), 120_000);
+        assert_eq!(cfg.graph_node_ms(), 300_000);
     }
 
     #[test]
@@ -284,6 +376,10 @@ mod tests {
             health_check_secs: 5,
             plan_total_secs: 7_200,
             post_run_cleanup_secs: 60,
+            tool_execution_ms: 60_000,
+            acp_request_ms: 90_000,
+            graph_node_secs: 180,
+            lost_effect_secs: 300,
         };
         let toml_str = toml::to_string_pretty(&cfg).expect("serialize");
         let parsed: TimeoutConfig = toml::from_str(&toml_str).expect("deserialize");

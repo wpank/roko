@@ -65,6 +65,7 @@ struct ToolBlockState {
     call_id: String,
     tool_name: String,
     arguments_preview: Option<String>,
+    #[allow(dead_code)]
     status: ToolBlockStatus,
 }
 

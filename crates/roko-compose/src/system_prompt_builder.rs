@@ -54,7 +54,7 @@ use roko_learn::skill_library::Skill;
 /// let prompt = SystemPromptBuilder::new("You are an implementer...")
 ///     .with_conventions("Use snake_case, thiserror for errors")
 ///     .with_domain("DeFi protocol context: ...")
-///     .with_task("Implement the rate limiter in crates/golem-core")
+///     .with_task("Implement the rate limiter in crates/roko-core")
 ///     .with_tools("MCP tools available: Read, Write, Bash")
 ///     .with_anti_patterns(vec!["Never call unwrap in library crates"])
 ///     .build();
@@ -1451,7 +1451,7 @@ mod tests {
             .with_conventions("Use snake_case. Use thiserror.")
             .with_domain("DeFi protocol: Uniswap v4 hooks")
             .with_context("Knowledge about execution flow.")
-            .with_task("Implement rate limiter in crates/golem-core")
+            .with_task("Implement rate limiter in crates/roko-core")
             .with_tools("MCP tools: Read, Write, Bash")
             .with_anti_patterns(vec![
                 "Never call unwrap in library crates".to_string(),

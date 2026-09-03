@@ -230,6 +230,7 @@ pub async fn check_provider_connectivity(config: &RokoConfig) -> Vec<PreflightCh
         let is_cli = matches!(
             kind,
             ProviderKind::ClaudeCli
+                | ProviderKind::CodexCli
                 | ProviderKind::CursorCli
                 | ProviderKind::GeminiCli
                 | ProviderKind::CursorAcp
@@ -240,6 +241,7 @@ pub async fn check_provider_connectivity(config: &RokoConfig) -> Vec<PreflightCh
         if is_cli {
             let binary = match kind {
                 ProviderKind::ClaudeCli => "claude",
+                ProviderKind::CodexCli => "codex",
                 ProviderKind::CursorCli | ProviderKind::CursorAcp => "cursor",
                 ProviderKind::GeminiCli => "gemini",
                 ProviderKind::Hermes => "hermes",

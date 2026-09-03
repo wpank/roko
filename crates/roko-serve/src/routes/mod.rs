@@ -806,13 +806,15 @@ mod tests {
             .header("X-Api-Key", plaintext)
             .body(Body::empty())
             .expect("build marketplace read");
+        // Browse is a stub (501) but auth must still pass -- a read-scoped key
+        // must not be rejected by the auth middleware.
         assert_eq!(
             app.clone()
                 .oneshot(read)
                 .await
                 .expect("read response")
                 .status(),
-            StatusCode::OK
+            StatusCode::NOT_IMPLEMENTED
         );
 
         for uri in ["/api/marketplace/publish", "/api/marketplace/fork"] {

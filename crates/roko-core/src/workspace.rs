@@ -162,7 +162,7 @@ impl Workspace {
         self.root.join(".roko/episodes.jsonl")
     }
 
-    /// `.roko/signals.jsonl` — signal log.
+    /// `.roko/signals.jsonl` — legacy signal log (canonical path is `engrams.jsonl`).
     #[must_use]
     pub fn signals_path(&self) -> PathBuf {
         self.root.join(".roko/signals.jsonl")

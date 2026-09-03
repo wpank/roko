@@ -955,6 +955,7 @@ fn handle_dashboard_key(key: KeyEvent, focus: FocusZone) -> TuiAction {
         KeyCode::Char('m') => TuiAction::SwitchDetailTab(5), // MCP
         KeyCode::Char('L') => TuiAction::SwitchDetailTab(6), // Learning
         KeyCode::Char('P') => TuiAction::SwitchDetailTab(7), // Processes
+        KeyCode::Char('C') => TuiAction::SwitchDetailTab(8), // Conductor
 
         // Modal triggers
         KeyCode::Char('w') => TuiAction::ShowWaveOverview,

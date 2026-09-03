@@ -451,7 +451,7 @@ pub struct LearningUpdate {
     /// Whether adaptive gate thresholds should be flushed to disk at this cadence point.
     ///
     /// Retained for backward compatibility with callers that handle the
-    /// flush themselves (orchestrate.rs legacy path).
+    /// flush themselves (legacy path).
     pub gate_thresholds_flush_due: bool,
     /// Whether adaptive gate thresholds were incrementally flushed to disk
     /// by `LearningRuntime` during this `record_completed_run` call.
@@ -2042,6 +2042,25 @@ impl LearningRuntime {
         event: &AgentEfficiencyEvent,
         scope: EfficiencyScope,
     ) -> Result<(), LearningRuntimeError> {
+        // Audit #80: reject efficiency events with invalid timing or cost data
+        // to prevent corrupted observations from polluting learning signals.
+        if event.wall_time_ms == 0 && event.duration_ms == 0 {
+            tracing::warn!(
+                agent_id = %event.agent_id,
+                task_id = %event.task_id,
+                "dropping efficiency event with zero duration — likely a measurement error"
+            );
+            return Ok(());
+        }
+        if event.cost_usd < 0.0 || !event.cost_usd.is_finite() {
+            tracing::warn!(
+                agent_id = %event.agent_id,
+                task_id = %event.task_id,
+                cost_usd = event.cost_usd,
+                "dropping efficiency event with negative or non-finite cost"
+            );
+            return Ok(());
+        }
         append_jsonl_record(&self.paths.efficiency_jsonl, event).await?;
         self.record_latency_from_efficiency_event(event)?;
         self.record_section_effectiveness_from_efficiency_event(event)?;
@@ -2302,8 +2321,8 @@ impl LearningRuntime {
     /// Record a gate threshold EMA update in the WAL.
     ///
     /// Gate thresholds live in `roko-gate` which must not depend on
-    /// `roko-learn`. This public method lets `orchestrate.rs` (or the
-    /// runner event loop) write a gate threshold WAL entry after
+    /// `roko-learn`. This public method lets the runner event loop
+    /// write a gate threshold WAL entry after
     /// updating the in-memory threshold state.
     pub fn wal_append_gate_threshold(&self, rung: u32, passed: bool) {
         self.wal_append(WalEntry::GateThresholdUpdate {

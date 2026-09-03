@@ -7,7 +7,6 @@
 //! Falls back to the legacy line-oriented REPL when stdout is not a TTY.
 
 use std::collections::HashMap;
-use std::fs;
 use std::io::Write as _;
 use std::time::{Duration, Instant};
 
@@ -35,7 +34,6 @@ use crate::tui::Theme;
 
 use crate::chat_session::{ChatAgentSession, SlashResult};
 use chrono;
-use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
 use roko_learn::cost_table::CostTable;
 
 // ---------------------------------------------------------------------------
@@ -583,6 +581,7 @@ impl InputState {
     }
 
     /// Number of lines in the buffer.
+    #[allow(dead_code)]
     fn line_count(&self) -> usize {
         self.buffer.lines().count().max(1)
     }
@@ -714,10 +713,14 @@ enum DispatchMode {
         client: reqwest::Client,
         backend_url: String,
         is_sidecar: bool,
+        #[allow(dead_code)]
         serve_url: String,
     },
     /// Deprecated direct fallback. Kept only to make stale paths fail visibly.
-    Direct { auth: AuthMethod },
+    #[allow(dead_code)]
+    Direct {
+        auth: AuthMethod,
+    },
     /// Full agent session with system prompt, tools, MCP, safety.
     Session,
 }
@@ -3197,7 +3200,7 @@ fn handle_slash_command(
         "/status" => {
             let roko_dir = std::path::Path::new(".roko");
             let has_roko = roko_dir.exists();
-            let signal_count = std::fs::read_to_string(".roko/signals.jsonl")
+            let signal_count = std::fs::read_to_string(".roko/engrams.jsonl")
                 .map(|s| s.lines().count())
                 .unwrap_or(0);
             let episode_count = std::fs::read_to_string(".roko/episodes.jsonl")

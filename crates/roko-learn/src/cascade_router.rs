@@ -62,6 +62,7 @@ use crate::cascade::persistence::{
     remap_role_table_entry,
 };
 use crate::cascade::types::{
+    CATEGORY_CONFIDENCE_WEIGHT, CATEGORY_MIN_TRIALS, CategoryModelStats,
     GeminiObservationTotals, HIGH_CFACTOR_THRESHOLD, LOW_AFFECT_CONFIDENCE_THRESHOLD,
     LOW_CFACTOR_THRESHOLD, ModelStats, OVERRIDE_LEARNING_RATE, PARETO_RECOMPUTE_INTERVAL,
     ParetoFrontierState, PerplexityObservationTotals, StageTracking,
@@ -100,6 +101,9 @@ pub struct CascadeRouter {
     tier_map: HashMap<String, ModelTier>,
     /// Active stage and recorded stage-transition history.
     stage_tracking: Mutex<StageTracking>,
+    /// Per-(model, category) pass-rate statistics for category-aware
+    /// confidence scoring (audit #84).
+    category_stats: Mutex<HashMap<(String, TaskCategory), CategoryModelStats>>,
     /// Optional free-tier Gemini runner used for shadow evaluation.
     free_tier_shadow_runner: Option<Arc<dyn ShadowModelRunner>>,
 }
@@ -171,6 +175,7 @@ impl CascadeRouter {
                 current: CascadeStage::Static,
                 transitions: Vec::new(),
             }),
+            category_stats: Mutex::new(HashMap::new()),
             free_tier_shadow_runner: None,
         }
     }
@@ -1373,13 +1378,15 @@ impl CascadeRouter {
         self.record_confidence_outcome(model_slug, success)
     }
 
-    /// Record a force_backend override outcome for learning (UX34).
+    /// Record a manual model override outcome for learning (UX34).
     ///
-    /// Uses the full multi-objective observation path so that LinUCB context
-    /// is updated alongside confidence stats.  The `dampening` factor
-    /// (0.0--1.0) scales the quality signal to prevent a single user
-    /// override from dominating the bandit policy.  Pass `None` to use the
-    /// built-in default (`OVERRIDE_LEARNING_RATE`, currently 0.5).
+    /// Called when the operator used `--model` / `--force-model` /
+    /// `--force-backend` to bypass the cascade router. Uses the full
+    /// multi-objective observation path so that LinUCB context is updated
+    /// alongside confidence stats.  The `dampening` factor (0.0--1.0)
+    /// scales the quality signal to prevent a single user override from
+    /// dominating the bandit policy.  Pass `None` to use the built-in
+    /// default (`OVERRIDE_LEARNING_RATE`, currently 0.5).
     pub fn record_override_outcome(
         &self,
         model_slug: &str,
@@ -1405,6 +1412,47 @@ impl CascadeRouter {
             &weights,
         );
         true
+    }
+
+    /// Record a per-category observation for the given model (audit #84).
+    ///
+    /// Called alongside the main observation path so the router can
+    /// adjust confidence scores based on how a model performs on a
+    /// specific task category (e.g. research, implementation, refactor).
+    pub fn record_category_outcome(
+        &self,
+        model_slug: &str,
+        category: TaskCategory,
+        success: bool,
+    ) {
+        let mut cat = self.category_stats.lock();
+        let entry = cat
+            .entry((model_slug.to_string(), category))
+            .or_default();
+        entry.trials += 1;
+        if success {
+            entry.successes += 1;
+        }
+    }
+
+    /// Look up the category-specific pass-rate deviation for a model.
+    ///
+    /// Returns the delta between the category pass rate and the global
+    /// pass rate, or 0.0 if there are too few category observations.
+    fn category_pass_rate_delta(
+        &self,
+        slug: &str,
+        category: TaskCategory,
+        global_pass_rate: f64,
+    ) -> f64 {
+        let cat = self.category_stats.lock();
+        let Some(entry) = cat.get(&(slug.to_string(), category)) else {
+            return 0.0;
+        };
+        if entry.trials < CATEGORY_MIN_TRIALS {
+            return 0.0;
+        }
+        entry.pass_rate() - global_pass_rate
     }
 
     /// Record the outcome of a rate-limit fallback attempt for cascade learning.
@@ -2453,11 +2501,24 @@ impl CascadeRouter {
             .map(|th| prediction_error > th.t0_ceiling)
             .unwrap_or(ctx.daimon_policy.affect_confidence < LOW_AFFECT_CONFIDENCE_THRESHOLD);
 
+        // Pre-compute global pass rates while holding the lock so we can
+        // derive per-category deltas below without re-locking.
+        let global_rates: HashMap<&str, f64> = candidates
+            .iter()
+            .filter_map(|slug| {
+                stats.get(slug).map(|s| (slug.as_str(), s.pass_rate()))
+            })
+            .collect();
+
         let mut scores: Vec<(String, f64)> = candidates
             .iter()
             .map(|slug| {
                 let s = stats.get(slug).cloned().unwrap_or_default();
-                let base_score = if s.trials == 0 { 0.5 } else { s.upper_bound() };
+                // Audit #80: cold-start penalty — untried models get 0.2 instead
+                // of the neutral 0.5 so they are not preferred over models with
+                // proven observations.  Once a model records its first trial the
+                // empirical upper-bound takes over.
+                let base_score = if s.trials == 0 { 0.2 } else { s.upper_bound() };
                 let tier_bonus = if low_confidence {
                     low_confidence_tier_bonus(slug_to_tier(slug, &self.tier_map))
                 } else {
@@ -2467,6 +2528,16 @@ impl CascadeRouter {
             })
             .collect();
         drop(stats);
+
+        // Audit #84: apply category-aware adjustment.  If the task
+        // carries a category and we have enough per-category data,
+        // nudge the score toward models that historically do well on
+        // this category (and away from those that do poorly).
+        for (slug, score) in &mut scores {
+            let global_pr = global_rates.get(slug.as_str()).copied().unwrap_or(0.5);
+            let delta = self.category_pass_rate_delta(slug, ctx.task_category, global_pr);
+            *score += CATEGORY_CONFIDENCE_WEIGHT * delta;
+        }
 
         apply_cache_affinity(&mut scores, ctx.previous_model.as_deref());
         scores

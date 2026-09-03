@@ -557,10 +557,13 @@ mod tests {
     #[test]
     fn dashboard_key_hints_surface_failure_actions_only_when_needed() {
         let failed = key_hints_for_tab(Tab::Dashboard, true);
-        assert!(failed.contains("F2:failures"), "got: {failed}");
         assert!(
             failed.contains("a:agents"),
             "Expected a:agents hint, got: {failed}"
+        );
+        assert!(
+            failed.contains("?:help"),
+            "Expected ?:help hint, got: {failed}"
         );
 
         let healthy = key_hints_for_tab(Tab::Dashboard, false);

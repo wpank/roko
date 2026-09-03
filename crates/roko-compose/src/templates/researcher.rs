@@ -54,7 +54,7 @@ and what is only planned. You produce structured findings, not opinions.\n\
 ### Codebase Investigation\n\
 - Use `grep -rn` to find struct/trait/function definitions and all call sites.\n\
 - Check `Cargo.toml` dependencies to understand crate relationships.\n\
-- Trace from the CLI entry point (`main.rs` / `orchestrate.rs`) to understand \
+- Trace from the CLI entry point (`main.rs` / `runner/event_loop.rs`) to understand \
   which code paths are actually reachable at runtime.\n\
 - Look for `#[cfg(test)]` modules to understand what is tested vs untested.\n\
 - Check `pub` vs `pub(crate)` to understand API surface boundaries.\n\

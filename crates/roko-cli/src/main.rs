@@ -30,7 +30,7 @@ use roko_cli::serve_runtime::RokoCliRuntime;
 use roko_cli::tui::App;
 use roko_cli::{
     Config, DashboardScaffold, EditTarget, InjectKind, InjectRequest, PageId, PipeMode, Plan,
-    RepoRegistry, SessionStatus, Source, WizardInputs, config_cmd, load_resolved_config,
+    RepoRegistry, Source, WizardInputs, config_cmd, load_resolved_config,
     run_init_wizard, run_once,
 };
 pub use roko_cli::{model_selection, repo_context};
@@ -311,7 +311,18 @@ struct Cli {
     #[arg(long, global = true)]
     role: Option<String>,
 
-    /// Force the model name for this invocation, bypassing adaptive routing.
+    /// Force the model slug for this invocation, bypassing adaptive routing.
+    ///
+    /// This is the **global** model override — it applies to every subcommand.
+    /// When set, the cascade router is skipped and the specified model is used
+    /// unconditionally. The outcome is tagged as a manual override so the
+    /// router does not conflate it with its own learned policy.
+    ///
+    /// `--force-model` is an accepted alias for this flag.
+    ///
+    /// For `plan run` only, the subcommand-level `--force-backend` flag is
+    /// also available and takes priority over this global flag when both are
+    /// specified.
     #[arg(long, global = true, visible_alias = "force-model")]
     model: Option<String>,
 
@@ -1529,6 +1540,20 @@ enum BacklogCmd {
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
+    /// Reconcile plan TOML status against durable runner state.
+    ///
+    /// Scans plans/*/tasks.toml and compares declared task/meta status with
+    /// the executor snapshot and run-state in .roko/state/. Reports drift
+    /// such as tasks marked "done" in TOML but absent from runner completion
+    /// records, or runner-failed tasks whose TOML still says "ready".
+    Audit {
+        /// Working directory (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Emit machine-readable JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 // -----------------------------------------------------------------------
@@ -1830,8 +1855,19 @@ Examples:
         #[arg(long)]
         skip_preflight: bool,
         /// Override the model for this plan run, bypassing adaptive routing.
-        /// Equivalent to the global `--model` flag but placed after the subcommand
-        /// for convenience.
+        ///
+        /// This is a **subcommand-level convenience** duplicate of the global
+        /// `--model` flag, placed after `plan run` so you do not need to put it
+        /// before the subcommand. When both `--force-backend` and the global
+        /// `--model` are specified, `--force-backend` wins.
+        ///
+        /// Despite the name, this sets the **model slug** (e.g.
+        /// `claude-sonnet-4-5`), not a provider backend. It bypasses the
+        /// cascade router entirely and the outcome is tagged as a manual
+        /// override for learning purposes.
+        ///
+        /// Prefer the global `--model` flag for new scripts; `--force-backend`
+        /// is retained for backward compatibility.
         ///
         /// Example: `roko plan run plans/ --force-backend claude-sonnet-4-5`
         #[arg(long, value_name = "MODEL_SLUG")]
@@ -2308,6 +2344,7 @@ fn cmd_market(command: MarketCmd) -> Result<i32> {
 // Internal enum used by cmd_neuro — mirrors the old top-level NeuroCmd.
 // KnowledgeCmd dispatches to this.
 #[derive(Debug)]
+#[allow(dead_code)]
 enum NeuroCmd {
     Query {
         topic: Vec<String>,
@@ -2365,6 +2402,7 @@ enum NeuroCmd {
 
 // Internal enum used by cmd_dream — mirrors the old top-level DreamCmd.
 #[derive(Debug)]
+#[allow(dead_code)]
 enum DreamCmdLegacy {
     Run {
         workdir: Option<PathBuf>,
@@ -2798,6 +2836,60 @@ enum ConfigMcpCmd {
 }
 
 fn main() {
+    // ── Crash report panic hook ─────────────────────────────────────
+    // Install a global panic hook that writes a structured crash report
+    // to `.roko/crash-report.json` before the default handler runs.
+    // This must be as early as possible so all panics are captured.
+    {
+        let default_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            // Extract the panic message.
+            let message = if let Some(s) = info.payload().downcast_ref::<&str>() {
+                Some((*s).to_string())
+            } else {
+                info.payload().downcast_ref::<String>().cloned()
+            };
+
+            // Include location if available.
+            let message = if let (Some(msg), Some(loc)) = (&message, info.location()) {
+                Some(format!("{msg} at {loc}"))
+            } else {
+                message
+            };
+
+            // Capture backtrace (respects RUST_BACKTRACE env var).
+            let backtrace = {
+                let bt = std::backtrace::Backtrace::force_capture();
+                let text = bt.to_string();
+                if text.is_empty() || text.contains("disabled") {
+                    None
+                } else {
+                    Some(text)
+                }
+            };
+
+            let report = roko_core::build_crash_report(
+                message,
+                backtrace,
+                env!("CARGO_PKG_VERSION"),
+                env!("ROKO_RUSTC_VERSION"),
+            );
+
+            // Try to find the `.roko/` directory: check cwd first, then
+            // ROKO_WORKDIR env, then fall back to `./`.
+            let roko_dir = std::env::var("ROKO_WORKDIR")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                .join(".roko");
+
+            roko_core::write_crash_report(&roko_dir, &report);
+
+            // Call the default handler so the process still prints the
+            // panic message and exits with the expected code.
+            default_hook(info);
+        }));
+    }
+
     let startup_env_redactions = match load_startup_env_files() {
         Ok(values) => values,
         Err(e) => {
@@ -3694,7 +3786,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             kind,
             payload,
             workdir,
-        } => commands::util::cmd_inject(cli, session, &kind, payload, workdir),
+        } => commands::util::cmd_inject(cli, session, &kind, payload, workdir).await,
         Command::Completions { shell } => {
             commands::util::print_completions(shell);
             Ok(EXIT_SUCCESS)
@@ -4912,55 +5004,100 @@ mod tests {
         assert!(matches!(cli.command, Some(Command::Inject { .. })));
     }
 
-    #[test]
-    fn inject_fail_closed_directive() {
+    #[tokio::test]
+    async fn inject_directive_writes_signal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roko_dir = tmp.path().join(".roko");
+        std::fs::create_dir_all(&roko_dir).unwrap();
         let cli = Cli::try_parse_from(["roko", "inject", "sess-1", "do something"]).unwrap();
         let code = commands::util::cmd_inject(
             &cli,
             "sess-1".into(),
             "directive",
             "do something".into(),
-            None,
+            Some(tmp.path().to_path_buf()),
         )
+        .await
         .unwrap();
-        assert_eq!(
-            code, EXIT_FAILURE,
-            "inject must return non-zero when no transport exists"
+        assert_eq!(code, EXIT_SUCCESS, "inject directive must succeed");
+        let log = std::fs::read_to_string(roko_dir.join("engrams.jsonl")).unwrap();
+        assert!(!log.is_empty(), "signal log must not be empty after inject");
+        assert!(
+            log.contains("inject.directive"),
+            "log must contain inject kind tag"
         );
+        assert!(log.contains("sess-1"), "log must contain session id");
     }
 
-    #[test]
-    fn inject_fail_closed_abort() {
+    #[tokio::test]
+    async fn inject_abort_writes_signal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roko_dir = tmp.path().join(".roko");
+        std::fs::create_dir_all(&roko_dir).unwrap();
         let cli =
             Cli::try_parse_from(["roko", "inject", "sess-1", "", "--kind", "abort"]).unwrap();
-        let code =
-            commands::util::cmd_inject(&cli, "sess-1".into(), "abort", String::new(), None)
-                .unwrap();
-        assert_eq!(
-            code, EXIT_FAILURE,
-            "inject abort must return non-zero when no transport exists"
-        );
+        let code = commands::util::cmd_inject(
+            &cli,
+            "sess-1".into(),
+            "abort",
+            String::new(),
+            Some(tmp.path().to_path_buf()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(code, EXIT_SUCCESS, "inject abort must succeed");
+        let log = std::fs::read_to_string(roko_dir.join("engrams.jsonl")).unwrap();
+        assert!(log.contains("inject.abort"), "log must contain abort kind");
     }
 
-    #[test]
-    fn inject_fail_closed_context() {
+    #[tokio::test]
+    async fn inject_context_writes_signal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roko_dir = tmp.path().join(".roko");
+        std::fs::create_dir_all(&roko_dir).unwrap();
         let cli = Cli::try_parse_from(["roko", "inject", "sess-1", "ctx data"]).unwrap();
         let code = commands::util::cmd_inject(
             &cli,
             "sess-1".into(),
             "context",
             "ctx data".into(),
-            None,
+            Some(tmp.path().to_path_buf()),
         )
+        .await
         .unwrap();
-        assert_eq!(
-            code, EXIT_FAILURE,
-            "inject context must return non-zero when no transport exists"
+        assert_eq!(code, EXIT_SUCCESS, "inject context must succeed");
+        let log = std::fs::read_to_string(roko_dir.join("engrams.jsonl")).unwrap();
+        assert!(
+            log.contains("context_pack"),
+            "log must contain context_pack kind"
         );
     }
 
-    #[test]
-    fn inject_fail_closed_json_has_code_and_message() {
+    #[tokio::test]
+    async fn inject_fails_without_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        // No .roko directory created — inject should fail.
+        let cli = Cli::try_parse_from(["roko", "inject", "sess-1", "payload"]).unwrap();
+        let code = commands::util::cmd_inject(
+            &cli,
+            "sess-1".into(),
+            "directive",
+            "payload".into(),
+            Some(tmp.path().to_path_buf()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            code, EXIT_FAILURE,
+            "inject must fail when no .roko directory exists"
+        );
+    }
+
+    #[tokio::test]
+    async fn inject_json_output_succeeds_with_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roko_dir = tmp.path().join(".roko");
+        std::fs::create_dir_all(&roko_dir).unwrap();
         let cli =
             Cli::try_parse_from(["roko", "--json", "inject", "sess-1", "payload"]).unwrap();
         assert!(cli.json, "json flag must be set");
@@ -4969,12 +5106,13 @@ mod tests {
             "sess-1".into(),
             "directive",
             "payload".into(),
-            None,
+            Some(tmp.path().to_path_buf()),
         )
+        .await
         .unwrap();
         assert_eq!(
-            code, EXIT_FAILURE,
-            "inject JSON must return non-zero when no transport exists"
+            code, EXIT_SUCCESS,
+            "inject JSON must succeed with workspace"
         );
     }
 
@@ -6302,6 +6440,7 @@ mod tests {
             last_success_at: Some(95_000),
             cooldown_until: Some(108_000),
             failure_window: std::collections::VecDeque::new(),
+            recent_outcomes: std::collections::VecDeque::new(),
         };
         let latency = ProviderLatencySummary {
             recent_latencies: vec![800.0, 1_200.0, 600.0],

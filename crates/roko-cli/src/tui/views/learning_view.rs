@@ -752,7 +752,7 @@ mod tests {
     fn router_empty_state_renders_placeholder() {
         let state = TuiState::new();
         let text = render_view(&state, 0, 100, 20);
-        assert!(text.contains("No cascade router data"), "missing:\n{text}");
+        assert!(text.contains("No learning data"), "missing:\n{text}");
     }
 
     #[test]

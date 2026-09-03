@@ -699,6 +699,7 @@ impl App {
         tui_state.invalidate_config_cache();
         tui_state.run_started = Some(Instant::now());
         tui_state.refresh_mcp_config_view();
+        tui_state.refresh_conductor_snapshot();
 
         let mut app = Self {
             workdir,
@@ -3697,6 +3698,9 @@ impl App {
         if self.tui_state.mcp_config_needs_refresh() {
             self.tui_state.refresh_mcp_config_view();
         }
+        if self.tui_state.conductor_snapshot_needs_refresh() {
+            self.tui_state.refresh_conductor_snapshot();
+        }
         self.last_refresh = Instant::now();
         self.clamp_signal_selection();
         self.clamp_gate_failure_selection();
@@ -3731,6 +3735,9 @@ impl App {
         }
         if self.tui_state.mcp_config_needs_refresh() {
             self.tui_state.refresh_mcp_config_view();
+        }
+        if self.tui_state.conductor_snapshot_needs_refresh() {
+            self.tui_state.refresh_conductor_snapshot();
         }
         self.last_refresh = Instant::now();
         self.clamp_signal_selection();
@@ -4571,6 +4578,7 @@ impl App {
         Terminal::new(CrosstermBackend::new(stdout)).context("create terminal")
     }
 
+    #[allow(dead_code)]
     fn leave_terminal() -> Result<()> {
         Self::cleanup_terminal()
     }
@@ -5508,7 +5516,7 @@ mod tests {
 
     #[test]
     fn dedup_suppresses_duplicate_within_2s() {
-        let mut notifications = Vec::new();
+        let mut notifications = std::collections::VecDeque::new();
         push_deduped_notification(
             &mut notifications,
             super::modals::Notification::info("same message"),
@@ -5547,6 +5555,7 @@ mod tests {
         use super::super::effects_config::EffectsPreset;
 
         let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".roko")).unwrap();
         let mut app = App::new(dir.path());
         app.fx_config = EffectsConfig::from_preset(EffectsPreset::Full);
         app.tui_state.agents.push(super::super::state::AgentRow {
@@ -5566,7 +5575,7 @@ mod tests {
         terminal.draw(|frame| app.draw(frame)).unwrap();
 
         let rendered = rendered_text(&terminal);
-        assert!(rendered.contains("parallel agents"));
+        assert!(rendered.contains("Agents (1 active)"));
         assert!(rendered.contains("agent output remains readable"));
         let braille_cells = rendered
             .chars()
@@ -5598,6 +5607,7 @@ mod tests {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
         let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".roko")).unwrap();
         let mut app = App::new(dir.path());
         assert_eq!(app.tui_state.plan_detail_tab, 0); // starts on Agents
 
@@ -5667,6 +5677,7 @@ mod tests {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
         let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".roko")).unwrap();
         let mut app = App::new(dir.path());
         assert!(!matches!(
             app.tui_state.active_modal,
@@ -5784,6 +5795,7 @@ mod tests {
     #[test]
     fn quit_opens_confirmation_modal_instead_of_exiting() {
         let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".roko")).unwrap();
         let mut app = App::new(dir.path());
         assert!(app.running);
         assert!(app.tui_state.active_modal.is_none());
@@ -5946,6 +5958,7 @@ mod tests {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
         let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".roko")).unwrap();
         let mut app = App::new(dir.path());
         assert!(app.fx_config.screen_postfx);
 

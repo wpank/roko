@@ -70,6 +70,10 @@ fn write_efficiency_jsonl(learn_dir: &std::path::Path) {
 #[test]
 fn connected_tui_renders_recorded_codex_efficiency_row() {
     let tmpdir = tempfile::tempdir().expect("tempdir");
+    // Create .roko/ dir and a minimal roko.toml so the Welcome modal is
+    // suppressed (it blocks tab rendering in headless mode).
+    std::fs::create_dir_all(tmpdir.path().join(".roko")).expect("create .roko");
+    std::fs::write(tmpdir.path().join("roko.toml"), "").expect("write roko.toml");
     write_efficiency_jsonl(&tmpdir.path().join(".roko").join("learn"));
 
     // -- 1. connected-mode pushes through the bridge ---------------------

@@ -256,6 +256,12 @@ pub struct RoleSystemPromptSpec {
     pub context_window_tokens: usize,
     /// Whether to include cache markers between stability tiers.
     pub cache_markers: bool,
+    /// Whether MCP server tools are actually available for this dispatch.
+    ///
+    /// When `false` (the default), the MCP tools stanza is omitted from the
+    /// rendered system prompt so agents are not told to use tools that do not
+    /// exist.
+    pub has_mcp_tools: bool,
 }
 
 impl RoleSystemPromptSpec {
@@ -277,6 +283,7 @@ impl RoleSystemPromptSpec {
             complexity: Complexity::Standard,
             context_window_tokens: REFERENCE_CONTEXT_WINDOW_TOKENS,
             cache_markers: false,
+            has_mcp_tools: false,
         }
     }
 
@@ -373,6 +380,17 @@ impl RoleSystemPromptSpec {
         self
     }
 
+    /// Declare that MCP server tools are available for this dispatch.
+    ///
+    /// When set, the rendered system prompt includes the MCP tools guidance
+    /// stanza so agents know they can use MCP tools instead of shelling out.
+    /// When not set (the default), the stanza is omitted.
+    #[must_use]
+    pub const fn with_mcp_tools(mut self) -> Self {
+        self.has_mcp_tools = true;
+        self
+    }
+
     fn conventions_text(&self) -> String {
         let mut out = format!("{CONTEXT_LAYOUT_STANZA}\n\n{DEFAULT_CONVENTIONS_SUFFIX}");
         if let Some(extra) = &self.extra_conventions {
@@ -404,7 +422,7 @@ impl RoleSystemPromptSpec {
     ) -> SystemPromptBuilder {
         let mut builder = SystemPromptBuilder::new(role_identity_for(self.role))
             .with_conventions(self.conventions_text())
-            .with_tools(tool_allowlist_instructions(&self.tool_allowlist_csv))
+            .with_tools(tool_allowlist_instructions(&self.tool_allowlist_csv, self.has_mcp_tools))
             .with_anti_patterns(self.anti_patterns())
             .with_affect_state(self.affect_state);
 
@@ -712,16 +730,24 @@ impl RoleSystemPromptSpec {
 }
 
 /// Render the tool allowlist guidance block from a comma-separated list.
+///
+/// The MCP tools stanza is included only when `has_mcp_tools` is `true` so
+/// agents are not instructed to use tools that are not actually registered.
 #[must_use]
-pub fn tool_allowlist_instructions(tools_csv: &str) -> String {
+pub fn tool_allowlist_instructions(tools_csv: &str, has_mcp_tools: bool) -> String {
     let csv = tools_csv.trim();
+    let mcp_prefix = if has_mcp_tools {
+        format!("{MCP_TOOLS_STANZA}\n")
+    } else {
+        String::new()
+    };
     if csv.is_empty() {
         format!(
-            "{MCP_TOOLS_STANZA}\nNo runtime tool allowlist was supplied. Use only the minimum tools required for the role."
+            "{mcp_prefix}No runtime tool allowlist was supplied. Use only the minimum tools required for the role."
         )
     } else {
         format!(
-            "{MCP_TOOLS_STANZA}\nRuntime tool allowlist: {csv}\n\nUse only the tools granted to your role."
+            "{mcp_prefix}Runtime tool allowlist: {csv}\n\nUse only the tools granted to your role."
         )
     }
 }
@@ -1036,7 +1062,7 @@ mod tests {
     #[test]
     fn built_prompt_includes_context_and_tool_guidance() {
         let ctx = TaskContext::new("Implement task wiring")
-            .with_plan_id("042-golem-mortality")
+            .with_plan_id("042-agent-lifecycle")
             .with_goal("keep routing and prompt composition aligned")
             .with_workspace("roko-cli orchestration")
             .with_context(
@@ -1046,7 +1072,7 @@ mod tests {
         let spec = RoleSystemPromptSpec::new(AgentRole::Implementer, ctx, "Read,Edit,Bash")
             .with_extra_conventions("Prefer additive changes.");
         let prompt = spec.build();
-        assert!(prompt.contains("Plan: 042-golem-mortality"));
+        assert!(prompt.contains("Plan: 042-agent-lifecycle"));
         assert!(prompt.contains("Goal: keep routing and prompt composition aligned"));
         assert!(prompt.contains("Task: Implement task wiring"));
         assert!(prompt.contains("Workspace: roko-cli orchestration"));

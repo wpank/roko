@@ -1711,6 +1711,12 @@ pub struct TuiState {
     /// Timestamp of the last MCP configuration refresh.
     pub mcp_config_refreshed_at: Option<Instant>,
 
+    // -- conductor panel cache --
+    /// Cached conductor snapshot for the F1:Dashboard Conductor sub-tab.
+    pub conductor_snapshot: super::widgets::conductor_panel::ConductorSnapshot,
+    /// Timestamp of the last conductor snapshot refresh.
+    pub conductor_snapshot_refreshed_at: Option<Instant>,
+
     cpu_pct_smoothed: SmoothedValue,
     token_rate_smoothed: SmoothedValue,
     cost_rate_smoothed: SmoothedValue,
@@ -1859,6 +1865,9 @@ impl Default for TuiState {
 
             mcp_config_view: McpConfigView::default(),
             mcp_config_refreshed_at: None,
+
+            conductor_snapshot: Default::default(),
+            conductor_snapshot_refreshed_at: None,
 
             agent_pane_group: 0,
 
@@ -2447,6 +2456,34 @@ impl TuiState {
             },
         };
         self.mcp_config_refreshed_at = Some(Instant::now());
+    }
+
+    /// Refresh the conductor snapshot from current alerts, diagnoses, and config.
+    ///
+    /// Called on a cadence (e.g. every 5 seconds) to avoid re-parsing config
+    /// every frame. The snapshot captures watcher health status, recent
+    /// interventions, circuit breaker state, and config thresholds.
+    pub fn refresh_conductor_snapshot(&mut self) {
+        let config_path = self.workdir.join("roko.toml");
+        let conductor_config = std::fs::read_to_string(&config_path)
+            .ok()
+            .and_then(|text| toml::from_str::<roko_core::config::schema::RokoConfig>(&text).ok())
+            .map(|c| c.conductor)
+            .unwrap_or_default();
+        self.conductor_snapshot =
+            super::widgets::conductor_panel::build_conductor_snapshot(
+                &self.conductor_alerts,
+                &self.diagnoses,
+                &conductor_config,
+            );
+        self.conductor_snapshot_refreshed_at = Some(Instant::now());
+    }
+
+    /// Whether the conductor snapshot is stale and needs a refresh.
+    #[must_use]
+    pub fn conductor_snapshot_needs_refresh(&self) -> bool {
+        self.conductor_snapshot_refreshed_at
+            .map_or(true, |t| t.elapsed() > Duration::from_secs(5))
     }
 
     // -- aggregate queries (used by header_bar, status_bar, etc.) -----------
@@ -5907,6 +5944,7 @@ tier = "focused"
             run_duration_ms: None,
             run_outcome: None,
             run_cleanup_degraded: false,
+            critical_path_eta_minutes: None,
             surviving_agent_pids: Vec::new(),
             plans: [
                 (

@@ -839,6 +839,7 @@ impl RokoConfig {
         if matches!(
             provider.kind,
             ProviderKind::ClaudeCli
+                | ProviderKind::CodexCli
                 | ProviderKind::CursorAcp
                 | ProviderKind::CursorCli
                 | ProviderKind::Hermes
@@ -846,6 +847,7 @@ impl RokoConfig {
         ) {
             let default_cmd = match provider.kind {
                 ProviderKind::ClaudeCli => "claude",
+                ProviderKind::CodexCli => "codex",
                 ProviderKind::CursorAcp | ProviderKind::CursorCli => "cursor",
                 ProviderKind::Hermes => "hermes",
                 ProviderKind::OpenClaw => "openclaw",
@@ -1189,7 +1191,7 @@ impl RokoConfig {
         let _ = writeln!(out, "# thresholds = {{ gate_pass_rate_floor = 0.65 }}");
         let _ = writeln!(
             out,
-            "# routing_overrides = {{ force_backend = \"claude\", force_tier = \"focused\" }}"
+            "# routing_overrides = {{ force_backend = \"claude\", force_tier = \"focused\" }}  # config-level role override (matches provider families, not model slugs)"
         );
         let _ = writeln!(out, "# legacy: turn_budget_usd = 5.0\n");
     }
@@ -1261,6 +1263,11 @@ impl RokoConfig {
         let _ = writeln!(out, "max_plan_usd = {:.1}", c.budget.max_plan_usd);
         let _ = writeln!(out, "max_task_usd = {:.1}", c.budget.max_task_usd);
         let _ = writeln!(out, "max_turn_usd = {:.1}", c.budget.max_turn_usd);
+        let _ = writeln!(
+            out,
+            "max_task_retry_usd = {:.1}",
+            c.budget.max_task_retry_usd
+        );
         let _ = writeln!(
             out,
             "prompt_token_budget = {}\n",
@@ -2166,7 +2173,7 @@ pub struct ResourcesConfig {
 
     /// Rotate `.roko/` JSONL log files when they exceed this size in MB.
     ///
-    /// Applies to `episodes.jsonl`, `signals.jsonl`, `efficiency.jsonl`,
+    /// Applies to `episodes.jsonl`, `engrams.jsonl`, `efficiency.jsonl`,
     /// and other JSONL files in the `learn/` directory. Default: 100 MB.
     #[serde(default = "ResourcesConfig::default_log_rotation_max_mb")]
     pub log_rotation_max_mb: u64,

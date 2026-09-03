@@ -31,7 +31,8 @@ use roko_core::agent::{AgentRole, ProviderKind, ResolvedModel, resolve_model};
 use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
 use roko_core::config::schema::{ModelProfile, RokoConfig};
 #[cfg(test)]
-use roko_core::defaults::{DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_REQUEST_TIMEOUT_MS};
+use roko_core::defaults::DEFAULT_CONNECT_TIMEOUT_MS;
+use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
 use roko_core::defaults::{DEFAULT_MAX_TOOL_ITERATIONS, DEFAULT_MCP_DISCOVERY_TIMEOUT_SECS};
 use roko_core::extension::CamelTaintLevel;
 use roko_core::foundation::{
@@ -551,7 +552,7 @@ fn maybe_spawn_dream_consolidation(workdir: &Path, config: &RokoConfig) {
             bare_mode: true,
             effort: "medium".to_string(),
             fallback_model: None,
-            timeout_ms: 120_000,
+            timeout_ms: DEFAULT_REQUEST_TIMEOUT_MS,
             env: Vec::new(),
         },
     };

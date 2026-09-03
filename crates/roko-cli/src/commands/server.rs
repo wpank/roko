@@ -251,6 +251,7 @@ pub(crate) async fn cmd_deploy(cli: &Cli, cmd: DeployCmd) -> Result<i32> {
             with_mirage,
             workers,
             unsafe_public,
+            ..
         } => cmd_deploy_railway(cli, workdir, with_mirage, workers, unsafe_public).await,
         DeployCmd::Fly {
             workdir,
@@ -284,6 +285,7 @@ pub(crate) async fn cmd_deploy(cli: &Cli, cmd: DeployCmd) -> Result<i32> {
             registry,
             push,
             unsafe_public,
+            ..
         } => cmd_deploy_docker(cli, workdir, registry, push, unsafe_public).await,
     }
 }

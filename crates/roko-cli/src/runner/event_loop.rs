@@ -561,6 +561,7 @@ pub(crate) fn gate_timeout(config: &RunConfig, rung: u32) -> Duration {
 }
 
 /// Resolve HTTP request timeout from `TimeoutConfig`.
+#[allow(dead_code)]
 pub(crate) fn http_request_timeout(config: &RunConfig) -> Duration {
     config.roko_config.as_deref().map_or_else(
         || roko_core::config::TimeoutConfig::default().http_request(),
@@ -569,6 +570,7 @@ pub(crate) fn http_request_timeout(config: &RunConfig) -> Duration {
 }
 
 /// Resolve health check timeout from `TimeoutConfig`.
+#[allow(dead_code)]
 pub(crate) fn health_check_timeout(config: &RunConfig) -> Duration {
     config.roko_config.as_deref().map_or_else(
         || roko_core::config::TimeoutConfig::default().health_check(),
@@ -1679,12 +1681,14 @@ struct RunContext<'a> {
     worktrees: &'a WorktreeManager,
     gate_thresholds: &'a GateThresholds,
     snapshot_writer: &'a SnapshotWriter,
+    #[allow(dead_code)]
     prompt_cache: &'a Arc<PromptCache>,
     factory: &'a SharedAgentFactory,
     task_capacity: &'a TaskCapacity,
     disk_budget: &'a mut DiskBudgetTracker,
     gate_sem: Arc<tokio::sync::Semaphore>,
     task_runtime_states: &'a mut HashMap<String, TaskRuntimeState>,
+    #[allow(dead_code)]
     legacy_gate_attempts: &'a mut HashMap<String, TaskAttemptRef>,
     preflight_attempted: &'a mut HashSet<TaskAttemptRef>,
     baseline_gate_failures: &'a mut HashMap<TaskAttemptRef, Vec<GateVerdictSummary>>,
@@ -2026,6 +2030,7 @@ async fn run_candidate_replay(
     }
 }
 
+#[allow(dead_code)]
 fn default_runner_worktree_manager(workdir: &Path) -> WorktreeManager {
     default_runner_worktree_manager_with_ttl(workdir, RUNNER_WORKTREE_IDLE_TTL_SECS)
 }
@@ -2398,6 +2403,7 @@ pub async fn run_with_tui_commands(
     if config.conductor.is_some() {
         if let Some(ring) = config.conductor_ring.clone() {
             use super::conductor_adapter::ConductorRingSink;
+            #[allow(unused_imports)]
             use crate::runtime_feedback::FeedbackFacade;
 
             let ring_sink = Arc::new(ConductorRingSink::new(ring));
@@ -2845,7 +2851,7 @@ pub async fn run_with_tui_commands(
     let sink = config.output_sink.as_ref();
 
     // E05-T08: Create a VerdictPublisher that graduates Pulse -> Signal and
-    // appends the result to signals.jsonl. This replaces the ad-hoc JSON
+    // appends the result to engrams.jsonl. This replaces the ad-hoc JSON
     // append to gate-verdicts.jsonl with canonical Kind::GateVerdict signals
     // that dashboard and query paths can consume.
     let signals_path = config.layout.engrams_path();
@@ -3878,7 +3884,7 @@ pub async fn run_with_tui_commands(
                         session_id,
                         total_cost_usd,
                         num_turns,
-                        is_error,
+                        is_error: _is_error,
                     } = &event
                     {
                         let agent_id = format!("{}/{}", state.plan_id, state.current_task);
@@ -4986,7 +4992,7 @@ pub async fn run_with_tui_commands(
                 // E05-T08: Live gate verdicts are now published as
                 // Kind::GateVerdict signals via VerdictPublisher (wired
                 // into gate_dispatch::run_gate_once). The canonical path
-                // is signals.jsonl. Legacy gate-verdicts.jsonl retained
+                // is engrams.jsonl. Legacy gate-verdicts.jsonl retained
                 // for backward-compatible tooling.
                 {
                     let verdict_json = serde_json::json!({
@@ -5874,7 +5880,7 @@ pub async fn run_with_tui_commands(
                         false
                     };
                     if !retry_started {
-                        let phase_durations = failure_phase_durations;
+                        let _phase_durations = failure_phase_durations;
                         state.task_failed();
                         // E48-T11: post-dispatch budget check after failed task.
                         check_budget_post_dispatch(
@@ -8513,6 +8519,7 @@ fn emit_runner_event(
 /// runner-level emits still cover the lifecycle events these helpers
 /// produce because the helpers themselves only emit on their plan's
 /// completion which is also republished from `run()`.
+#[allow(dead_code)]
 fn emit_runner_event_facadeless(
     paths: &PersistPaths,
     state: &mut RunState,
@@ -11015,7 +11022,7 @@ async fn dispatch_action(
                 AttemptPhase::Dispatching,
                 EffectRef(0),
             );
-            let active_task_key = task_key(plan_id, &task_id);
+            let _active_task_key = task_key(plan_id, &task_id);
             if ctx.attempt_ownership.contains_task(plan_id, &task_id) && !continuing_preflight {
                 debug!(
                     plan_id = %plan_id,
@@ -12047,6 +12054,9 @@ async fn dispatch_action(
                 role: role.to_string(),
                 workdir: plan_workdir.clone(),
                 model_hint: None,
+                // `cli_model_override` is set from `--model` / `--force-model`
+                // (global) or `--force-backend` (plan run subcommand). It is
+                // the highest-priority override in the model routing pipeline.
                 force_backend: ctx.config.cli_model_override.clone(),
                 budget_remaining_usd: if ctx.config.max_plan_usd > 0.0 {
                     (ctx.config.max_plan_usd - ctx.state.plan_cost(plan_id)).max(0.0)
@@ -12155,7 +12165,16 @@ async fn dispatch_action(
                 }
             }
             let mut dispatch_turn_limit = DEFAULT_AGENT_TURN_LIMIT;
-            let mut dispatch_effort = None;
+            // ── Per-role context effort (#181) ──────────────────────────────
+            //
+            // Seed dispatch_effort from the role override's effort /
+            // default_effort / built-in role defaults before daimon modulation
+            // so roles like researcher and implementer get "high" effort by
+            // default.  The daimon can still override this downstream.
+            let mut dispatch_effort: Option<String> =
+                ctx.config.roko_config.as_ref().map(|roko_cfg| {
+                    roko_cfg.agent.effort_for_role(&role).to_string()
+                });
             let daimon_modulation = daimon_hook.as_ref().and_then(|hook| {
                 daimon_dispatch_modulation(
                     ctx.config,
@@ -15137,6 +15156,7 @@ fn format_discovered_patterns_section(pattern_path: &std::path::Path) -> Option<
 /// Collect playbook rule IDs whose file-glob triggers match any of the given
 /// files in scope. Used during context assembly to surface relevant playbook
 /// rules in the agent system prompt.
+#[allow(dead_code)]
 pub(crate) fn collect_plan_playbook_scope(
     files_in_scope: &[String],
     playbook_rules: &[roko_learn::playbook_rules::Rule],
@@ -15203,7 +15223,7 @@ async fn compact_episodes_if_needed(episodes_path: &std::path::Path) {
 /// The threshold is read from `resources.log_rotation_max_mb` in `roko.toml`
 /// (default 100 MB via [`roko_core::config::ResourcesConfig`]).
 ///
-/// Checks `episodes.jsonl` and `signals.jsonl` (and the other canonical JSONL
+/// Checks `episodes.jsonl` and `engrams.jsonl` (and the other canonical JSONL
 /// paths tracked by `roko_fs::log_rotation::rotatable_jsonl_paths`). Each file
 /// that exceeds the threshold is atomically renamed to a timestamped archive and
 /// an empty replacement is created at the original path. Errors are logged but
@@ -15526,7 +15546,7 @@ pub struct CleanupSummary {
 ///
 /// Sub-steps:
 ///
-/// 1. **JSONL log rotation** — rotates `episodes.jsonl`, `signals.jsonl`,
+/// 1. **JSONL log rotation** — rotates `episodes.jsonl`, `engrams.jsonl`,
 ///    and other JSONL files if they exceed `resources.log_rotation_max_mb`.
 /// 2. **Filesystem GC** — prunes stale `.roko/` data (old runs, excess
 ///    episodes, cache) when `resources.gc_on_plan_end` is true.
@@ -16375,7 +16395,7 @@ async fn enforce_owned_deadlines_at(
         if let CancelAttemptOutcome::Confirmed(TaskAttemptOutcome::TimedOut) = settled {
             expired += 1;
             let plan_id = &candidate.attempt.plan_id;
-            let task_id = &candidate.attempt.task_id;
+            let _task_id = &candidate.attempt.task_id;
             let reason = format!("task timed out: {:?}", expiry.kind);
             if !ready_tasks_for_plan(task_dag, executor, task_index, state, plan_id).is_empty() {
                 if let Some(plan) = executor.plan_state_mut(plan_id) {
@@ -16479,6 +16499,7 @@ enum AttemptCleanupTerminal {
 
 #[derive(Debug)]
 struct CancelAttemptSummary {
+    #[allow(dead_code)]
     attempt: TaskAttemptRef,
     outcome: CancelAttemptOutcome,
 }

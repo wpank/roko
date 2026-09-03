@@ -1,9 +1,9 @@
-//! Verify-related free functions and types extracted from `orchestrate.rs`.
+//! Verify-related free functions and types extracted from the legacy orchestrator.
 //!
 //! This module contains gate helpers that do not require `&self` access to
 //! `PlanRunner`. The heavy gate methods (`run_gate_pipeline`, `run_gate_rung`,
 //! `gate_rung_config`, `enrich_rung_config`) remain on `PlanRunner` in
-//! `orchestrate.rs` since they deeply access runner state.
+//! `runner/event_loop.rs` since they deeply access runner state.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};

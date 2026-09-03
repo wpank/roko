@@ -33,7 +33,7 @@ use thiserror::Error;
 use tracing::info;
 
 use super::persist::{
-    JsonlRecovery, PersistPaths, RUN_STATE_SCHEMA_VERSION, ReplanLedgerSnapshot, RunStateSnapshot,
+    JsonlRecovery, PersistPaths, RUN_STATE_SCHEMA_VERSION, RunStateSnapshot,
     TaskDefFingerprint, load_run_state, load_state_snapshot, recover_jsonl,
 };
 use crate::task_parser::TaskDef;
@@ -330,6 +330,7 @@ pub(crate) fn snapshot_plan_ids(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::persist::ReplanLedgerSnapshot;
     use crate::task_parser::{TaskDef, VerifyStep};
     use std::collections::HashMap;
     use std::fs;

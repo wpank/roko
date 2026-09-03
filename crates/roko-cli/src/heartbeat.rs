@@ -37,7 +37,8 @@ pub enum HeartbeatProbeKind {
     GateFailurePresent,
     /// One or more trackers accumulated repeated gate failures.
     RepeatedGateFailures,
-    /// An explicit force-model override is armed.
+    /// An explicit model override is armed via `--model` / `--force-model`
+    /// / `--force-backend`, bypassing the cascade router.
     ForceModelOverrideArmed,
     /// The daimon confidence is low enough to justify a step-back.
     LowAffectConfidence,

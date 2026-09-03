@@ -473,7 +473,7 @@ mod tests {
         assert!(result.message.contains("stale"));
     }
 
-    // ---- Golem status ----
+    // ---- Agent status ----
 
     #[test]
     fn chain_disconnected_is_degraded() {

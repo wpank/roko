@@ -26,7 +26,7 @@ use std::time::Instant;
 use crate::agent_config::command_from_config;
 use crate::agent_exec::{
     AgentCrashClass, AgentExecEpisode, AgentExecOpts, classify_agent_crash,
-    persist_capture_episode, run_agent_capture_logged, run_agent_capture_silent, run_agent_logged,
+    persist_capture_episode, run_agent_capture_silent, run_agent_logged,
 };
 use crate::task_parser::TasksFile;
 use crate::workspace_paths::{
@@ -465,7 +465,7 @@ pub fn ensure_dirs(workdir: &Path) -> Result<()> {
 /// Parsed PRD frontmatter.
 #[derive(Debug, Default)]
 pub struct PrdMeta {
-    /// Stable PRD identifier (e.g. `prd-golem-memory`).
+    /// Stable PRD identifier (e.g. `prd-agent-memory`).
     pub id: String,
     /// Human-readable PRD title.
     pub title: String,
@@ -1341,7 +1341,7 @@ async fn generate_plan_from_prd_with_outcome(
             "prd plan: agent returned"
         );
         // ── Crash classification and retry for non-zero exit codes ──────
-        let (exit_code, output) = if exit_code != 0 {
+        let (_exit_code, output) = if exit_code != 0 {
             let crash_class = classify_agent_crash(&output);
             let _ = persist_capture_episode(
                 workdir_ref,
@@ -1708,7 +1708,7 @@ async fn generate_plan_from_prd_with_outcome(
         } else {
             // All attempts (initial + retries) failed to produce valid TOML.
             let final_err = validated_toml.unwrap_err();
-            let preview: String = output.chars().take(500).collect();
+            let _preview: String = output.chars().take(500).collect();
             let has_toml_like = output.contains("[meta]") || output.contains("[[task]]");
             let toml_hint = if has_toml_like {
                 "\nhint: The model output TOML without proper fencing. \
@@ -2429,6 +2429,7 @@ fn strsim_distance(a: &str, b: &str) -> usize {
 }
 
 /// Check whether a model identifier is present in the config model table.
+#[allow(dead_code)]
 fn model_in_config(
     model: &str,
     models: &IndexMap<String, roko_core::config::schema::ModelProfile>,
@@ -2450,8 +2451,8 @@ fn model_in_config(
 fn validate_and_fix_generated_plan(
     toml_str: &str,
     slug: &str,
-    models: &IndexMap<String, roko_core::config::schema::ModelProfile>,
-    default_model: Option<&str>,
+    _models: &IndexMap<String, roko_core::config::schema::ModelProfile>,
+    _default_model: Option<&str>,
 ) -> Result<String> {
     // 0. Deterministic repair before parsing
     let repaired = crate::task_parser::repair_toml(toml_str);

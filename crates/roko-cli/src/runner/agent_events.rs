@@ -431,6 +431,7 @@ fn quick_fixable_by_text(finding: &str) -> bool {
 /// This typed variant is used in tests and by code that has access to a
 /// full [`ReviewVerdict`] (not just the string evidence in
 /// [`ParsedReviewVerdict`]).
+#[allow(dead_code)]
 pub(crate) fn issue_category_is_quick_fixable(cat: &IssueCategory) -> bool {
     matches!(
         cat,

@@ -25,6 +25,10 @@ alloy-backend = [
     "roko-chain/alloy-backend",
     "roko-serve/alloy-backend",
 ]
+# PNG snapshot rendering and pixel-level screenshot diff comparison.
+# No heavy image dependencies yet — this gates the API surface and the
+# built-in bitmap rasterizer / text-based diff modules.
+tui-png = []
 
 [[bin]]
 name = "roko"

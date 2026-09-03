@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::block::{ToolBlockStatus, TranscriptBlock};
+use super::block::TranscriptBlock;
 
 // ─── FoldState ──────────────────────────────────────────────────────────
 

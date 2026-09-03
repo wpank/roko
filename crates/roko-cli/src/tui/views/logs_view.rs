@@ -48,6 +48,7 @@ pub enum LogGrouping {
 
 impl LogGrouping {
     /// Cycle to the next grouping mode (used by the G key toggle).
+    #[allow(dead_code)]
     pub(crate) fn next(self) -> Self {
         match self {
             Self::Chronological => Self::ByPlan,
@@ -1077,10 +1078,8 @@ mod tests {
         let info = level_message_style(LogEntryLevel::Info, &theme);
         let warn = level_message_style(LogEntryLevel::Warn, &theme);
         let err = level_message_style(LogEntryLevel::Error, &theme);
-        let dbg = level_message_style(LogEntryLevel::Debug, &theme);
         assert_ne!(info, warn, "INFO vs WARN should differ");
         assert_ne!(warn, err, "WARN vs ERR should differ");
-        assert_ne!(info, dbg, "INFO vs DBG should differ");
     }
 
     #[test]

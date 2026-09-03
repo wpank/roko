@@ -1102,7 +1102,7 @@ prunable
         assert_eq!(shorten_path("/short", 20), "/short");
         assert_eq!(
             shorten_path("/very/long/path/to/worktree", 20),
-            "...ong/path/to/worktree"
+            ".../path/to/worktree"
         );
     }
 

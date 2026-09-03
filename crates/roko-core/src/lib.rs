@@ -83,6 +83,8 @@ pub mod connector;
 pub mod context;
 /// Five-head lexicographic corrigibility ordering (Nayebi 2024).
 pub mod corrigibility;
+/// Durable crash report written by the global panic hook.
+pub mod crash_report;
 pub mod dashboard_snapshot;
 pub mod datum;
 pub mod decay;
@@ -241,6 +243,11 @@ pub use cognitive_workspace::{
     PolicyVersionRef, PromptSectionAudit, RewardObservation, TaskInvocationContract,
 };
 pub use conductor::{CognitiveSignal, ConductorDecision, ConductorEvaluation};
+pub use crash_report::{
+    CrashReport, build_crash_report, clear_active_plan, clear_active_provider, clear_active_task,
+    crash_report_path, has_recent_crash_report, read_crash_report, set_active_plan,
+    set_active_provider, set_active_task, write_crash_report, CRASH_REPORT_FILENAME,
+};
 pub use config::graduation::{GraduationConfig, GraduationPolicy};
 pub use connector::{
     ConnectorConfig, ConnectorHealth, ConnectorInfo, ConnectorKind, ConnectorRegistry,

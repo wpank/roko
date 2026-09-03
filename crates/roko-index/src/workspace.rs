@@ -220,13 +220,11 @@ impl IndexQuery {
         // reduce the result set rather than being ignored.
         let mut results = index.search(strategy, self.limit.saturating_mul(10).max(200));
 
-        if let Some(ref kind) = self.kind {
-            if self.strategy != "structural" {
+        if self.strategy != "structural" {
+            if let Some(ref kind) = self.kind {
                 results.retain(|r| r.symbol.id.kind == *kind);
             }
-        }
-        if let Some(ref pat) = self.file_pattern {
-            if self.strategy != "structural" {
+            if let Some(ref pat) = self.file_pattern {
                 results.retain(|r| matches_file_pattern(&r.symbol.id.file_path, pat));
             }
         }

@@ -11,7 +11,6 @@ use crate::output_format;
 use crate::state_hub::{StateHub, StateHubSender};
 use anyhow::{Context as _, Result, anyhow};
 use chrono::Utc;
-use roko_agent::AgentResult;
 use roko_agent::provider::is_known_protocol_command;
 use roko_core::AgentRole;
 use roko_core::agent::resolve_model;
@@ -71,6 +70,7 @@ impl RunReport {
 
     /// Return the first gate that failed, if any.
     #[must_use]
+    #[allow(dead_code)]
     pub(crate) fn first_failed_gate(&self) -> Option<&str> {
         self.gate_verdicts
             .iter()
@@ -687,6 +687,7 @@ pub async fn run_once(
     })
 }
 
+#[allow(dead_code)]
 fn parse_agent_role(role: &str) -> Option<AgentRole> {
     let normalized = role.trim().to_ascii_lowercase();
     let normalized = normalized
@@ -807,6 +808,7 @@ fn learning_episode_paths(workdir: &Path) -> Vec<PathBuf> {
     ]
 }
 
+#[allow(dead_code)]
 fn resolved_model(config: &Config) -> String {
     if let Some(model) = &config.agent.model {
         return model.clone();
@@ -825,6 +827,7 @@ fn resolved_model(config: &Config) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn dashboard_agent_model(config: &Config) -> String {
     let model = resolved_model(config);
     if !model.is_empty() {
@@ -835,6 +838,7 @@ fn dashboard_agent_model(config: &Config) -> String {
     command.to_string()
 }
 
+#[allow(dead_code)]
 fn infer_provider(config: &Config) -> String {
     let command = config.agent.command.trim();
     let model = resolved_model(config).to_ascii_lowercase();
@@ -855,6 +859,7 @@ fn infer_provider(config: &Config) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn normalized_role_label(role: &str) -> String {
     parse_agent_role(role).map_or_else(
         || role.trim().to_string(),
@@ -862,6 +867,7 @@ fn normalized_role_label(role: &str) -> String {
     )
 }
 
+#[allow(dead_code)]
 fn role_allows_dangerous_skip_permissions(role: &str) -> bool {
     parse_agent_role(role).is_none_or(|parsed| {
         let perms = parsed.tool_permissions();
@@ -869,6 +875,7 @@ fn role_allows_dangerous_skip_permissions(role: &str) -> bool {
     })
 }
 
+#[allow(dead_code)]
 fn optional_resume_session_id(config: &Config, resume_from_args: Option<String>) -> Option<String> {
     resume_from_args.or_else(|| {
         config
@@ -881,6 +888,7 @@ fn optional_resume_session_id(config: &Config, resume_from_args: Option<String>)
     })
 }
 
+#[allow(dead_code)]
 fn is_resume_env_key(key: &str) -> bool {
     key.eq_ignore_ascii_case("ROKO_RESUME")
         || key.eq_ignore_ascii_case("ROKO_SESSION_ID")
@@ -888,6 +896,7 @@ fn is_resume_env_key(key: &str) -> bool {
         || key.eq_ignore_ascii_case("CLAUDE_SESSION_ID")
 }
 
+#[allow(dead_code)]
 fn split_resume_arg(args: &[String]) -> (Vec<String>, Option<String>) {
     let mut cleaned = Vec::with_capacity(args.len());
     let mut resume = None;
@@ -923,6 +932,7 @@ fn split_resume_arg(args: &[String]) -> (Vec<String>, Option<String>) {
     (cleaned, resume)
 }
 
+#[allow(dead_code)]
 fn parse_build_system(s: &str) -> Result<BuildSystem, String> {
     match s.to_ascii_lowercase().as_str() {
         "cargo" => Ok(BuildSystem::Cargo),
@@ -938,6 +948,7 @@ fn parse_build_system(s: &str) -> Result<BuildSystem, String> {
 /// Extract model keys from the project's `roko.toml` for cascade router
 /// initialization. Returns an empty vec if the config is missing or has
 /// no models.
+#[allow(dead_code)]
 fn load_roko_config_models(workdir: &Path) -> Vec<String> {
     let config = match roko_core::config::loader::load_config_unified(workdir) {
         Ok(c) => c,

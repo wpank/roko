@@ -34,7 +34,7 @@ roko() {
 ### Core loop
 
 ```
-roko init [path]              # create .roko/signals.jsonl and a starter roko.toml
+roko init [path]              # create .roko/engrams.jsonl and a starter roko.toml
 roko run <prompt>             # run the universal loop once; prints prompt id, verdicts, episode id
 roko status                   # signal counts by kind, latest episode, gate pass/fail totals
 roko replay <hash>            # walk the lineage DAG rooted at a signal hash
@@ -213,7 +213,7 @@ The built-in `cat` fallback runs the full 7-primitive loop without any external 
 
 ## Signal layout
 
-A single `roko run` produces these signals under `.roko/signals.jsonl`, all linked via lineage:
+A single `roko run` produces these signals under `.roko/engrams.jsonl`, all linked via lineage:
 
 ```
 PromptSection(role)  ─┐

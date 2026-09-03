@@ -13,8 +13,8 @@ Every PRD you write MUST meet these standards:
 
 ### 1. Self-contained for a first-time reader
 Write as if the reader has ZERO context about this project. On first mention of every domain-specific term, provide a parenthetical definition. Example:
-- "the Grimoire (the agent's persistent knowledge base of episodes, insights, heuristics, and causal links)"
-- "the Heartbeat (the 9-step decision cycle that drives every Golem tick)"
+- "the Neuro store (the agent's persistent knowledge base of episodes, insights, heuristics, and causal links)"
+- "the Heartbeat (the 9-step decision cycle that drives every agent tick)"
 
 Include a "Reader orientation" callout at the top:
 > **Reader orientation:** This document specifies [what]. It belongs to the [which layer] of the system. The key concept before diving in: [one-sentence thesis].

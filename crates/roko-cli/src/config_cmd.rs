@@ -700,6 +700,7 @@ pub enum EditTarget {
 /// Returns `****` when the value is non-empty, so that `config show` never
 /// emits literal secret bytes.  Empty strings are left as-is because they
 /// convey "not configured" rather than a real secret.
+#[allow(dead_code)]
 fn redact_secret(value: &str) -> &str {
     if value.is_empty() { value } else { "****" }
 }

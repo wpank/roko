@@ -66,6 +66,7 @@ impl RunnerInlineTerminal {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn is_enabled(&self) -> bool {
         !matches!(self.target, InlineTarget::Disabled)
     }

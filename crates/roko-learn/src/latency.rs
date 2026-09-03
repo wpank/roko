@@ -68,7 +68,7 @@ impl LatencyStats {
     /// Recommended timeout = 2x the observed p95 latency, clamped to [5s, 300s].
     pub fn adaptive_timeout_ms(&self) -> u64 {
         if self.observations < 10 {
-            return 120_000;
+            return roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
         }
 
         let timeout = (self.p95_ms() * 2.0) as u64;

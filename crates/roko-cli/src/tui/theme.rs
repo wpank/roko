@@ -29,6 +29,7 @@ pub struct Theme {
     pub selection_foreground: Color,
 }
 
+#[allow(dead_code)]
 impl Theme {
     // -- Primaries (ROSEDUST v2 canonical) --
     pub(crate) const VOID: Color = Color::Rgb(0, 0, 0); // true black, matching Mori's canvas
@@ -605,6 +606,7 @@ pub(crate) fn gradient_ocean() -> Gradient {
 ///
 /// Used for sparklines and data visualization fills.
 #[must_use]
+#[allow(dead_code)]
 pub(crate) fn gradient_rose() -> Gradient {
     Gradient {
         start: (65.0, 36.0, 52.0),    // ROSE_DEEP
@@ -809,7 +811,7 @@ mod tests {
         // ROSE_DIM (155, 106, 124) should have >= 4.5:1 contrast against black.
         // Relative luminance: 0.2126*(155/255)^2.2 + 0.7152*(106/255)^2.2 + 0.0722*(124/255)^2.2
         // Approximate: L ~ 0.19, ratio = (0.19 + 0.05) / 0.05 = 4.8 > 4.5
-        if let Color::Rgb(r, g, b) = Theme::ROSE_DIM {
+        if let Color::Rgb(r, g, _b) = Theme::ROSE_DIM {
             assert!(r >= 150, "ROSE_DIM red channel should be >= 150 for AA");
             assert!(g >= 100, "ROSE_DIM green channel should be >= 100 for AA");
         } else {

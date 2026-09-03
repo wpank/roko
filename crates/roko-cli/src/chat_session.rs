@@ -32,7 +32,6 @@ use roko_core::foundation::{
 use roko_core::{Body, Context, Kind, OperatingFrequency, Signal};
 use roko_learn::cascade_router::CascadeRouter;
 use roko_learn::feedback_service::FeedbackService;
-use serde_yaml_ng as serde_yaml;
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command as TokioCommand;
@@ -443,10 +442,12 @@ impl ChatAgentSession {
     ///
     /// Non-CLI providers are rejected until the API chat path is wired.
     fn is_cli_provider(&self) -> bool {
-        self.model_selection.provider_kind == ProviderKind::ClaudeCli.label()
+        let kind = &self.model_selection.provider_kind;
+        kind == ProviderKind::ClaudeCli.label() || kind == ProviderKind::CodexCli.label()
     }
 
     /// Build the typed error used when an unsupported provider is requested.
+    #[allow(dead_code)]
     fn api_provider_not_implemented_error(&self) -> SessionError {
         let provider = self.model_selection.provider_kind.clone();
         let model = self.model.clone();
@@ -481,7 +482,7 @@ impl ChatAgentSession {
     fn resolve_api_key(&self) -> std::result::Result<String, SessionError> {
         if matches!(
             self.api_provider_kind(),
-            ProviderKind::ClaudeCli | ProviderKind::CursorAcp
+            ProviderKind::ClaudeCli | ProviderKind::CodexCli | ProviderKind::CursorAcp
         ) {
             return Ok(String::new());
         }
@@ -511,6 +512,7 @@ impl ChatAgentSession {
     /// the provider.  Maps the well-known error categories (auth, rate-limit,
     /// network) to typed variants so callers can distinguish them without
     /// parsing error messages.
+    #[allow(dead_code)]
     fn classify_http_error(&self, status: u16, body: &str) -> SessionError {
         let provider = self.model_selection.provider_kind.clone();
         match status {
@@ -552,6 +554,7 @@ impl ChatAgentSession {
             "cursor_cli" => ProviderKind::CursorCli,
             "hermes" => ProviderKind::Hermes,
             "openclaw" => ProviderKind::OpenClaw,
+            "codex_cli" | "codex" => ProviderKind::CodexCli,
             _ => ProviderKind::OpenAiCompat,
         }
     }
@@ -1817,7 +1820,7 @@ fn is_skipped_dir_name(name: &str) -> bool {
     SKIP_DIR_NAMES.contains(&name)
 }
 
-/// Discover MCP config file using the same resolution order as orchestrate.rs.
+/// Discover MCP config file using the same resolution order as the runner.
 ///
 /// Priority:
 /// 1. Explicit path in `config.agent.mcp_config`

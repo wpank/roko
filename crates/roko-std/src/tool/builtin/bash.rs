@@ -5,6 +5,7 @@
 //! Idempotent: no.
 
 use async_trait::async_trait;
+use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
 use roko_core::tool::{
     ToolCall, ToolCategory, ToolConcurrency, ToolContext, ToolDef, ToolError, ToolHandler,
     ToolPermission, ToolResult, ToolSchema,
@@ -45,7 +46,7 @@ pub fn tool_def() -> ToolDef {
     })))
     .with_concurrency(ToolConcurrency::Serial)
     .with_idempotent(false)
-    .with_timeout_ms(120_000)
+    .with_timeout_ms(DEFAULT_REQUEST_TIMEOUT_MS)
 }
 
 // Command-level safety (denylist, path confinement) is enforced by the

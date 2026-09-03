@@ -288,7 +288,7 @@ pre-commit checks in the Building section.
 | Crate | Path | What | Status |
 |---|---|---|---|
 | roko-core | `crates/roko-core/` | Signal + 12 traits, types, config, tools, errors | Kernel, stable |
-| roko-agent | `crates/roko-agent/` | 11 LLM provider kinds (AnthropicApi, ClaudeCli, OpenAiCompat, CursorAcp, CursorCli, PerplexityApi, GeminiApi, GeminiCli, CerebrasApi, Hermes, OpenClaw), pools, MCP, tool loop, safety | Dispatch wired, MCP passed |
+| roko-agent | `crates/roko-agent/` | 12 LLM provider kinds (AnthropicApi, ClaudeCli, CodexCli, OpenAiCompat, CursorAcp, CursorCli, PerplexityApi, GeminiApi, GeminiCli, CerebrasApi, Hermes, OpenClaw), pools, MCP, tool loop, safety | Dispatch wired, MCP passed |
 | roko-agent-server | `crates/roko-agent-server/` | Per-agent HTTP sidecar: `/message` (real LLM dispatch), `/stream` WS, `/predictions`, `/research`, `/tasks` | Wired |
 | roko-serve | `crates/roko-serve/` | HTTP control plane: ~378 REST routes + SSE + WebSocket on :6677 | Wired |
 | roko-gate | `crates/roko-gate/` | 19 gates, 7-rung pipeline, adaptive thresholds | Wired, called per-task |

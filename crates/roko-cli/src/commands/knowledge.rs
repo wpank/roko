@@ -8,16 +8,17 @@ use sha2::{Digest, Sha256};
 
 pub(crate) async fn dispatch_knowledge(cli: &Cli, cmd: KnowledgeCmd) -> Result<i32> {
     match cmd {
-        KnowledgeCmd::Query { topic, workdir } => {
-            cmd_neuro(cli, NeuroCmd::Query { topic, workdir }).await
+        KnowledgeCmd::Query { topic, workdir, .. } => {
+            cmd_neuro(cli, NeuroCmd::Query { topic, workdir, limit: 10 }).await
         }
         KnowledgeCmd::Stats { workdir } => cmd_neuro(cli, NeuroCmd::Stats { workdir }).await,
-        KnowledgeCmd::Gc { workdir } => cmd_neuro(cli, NeuroCmd::Gc { workdir }).await,
+        KnowledgeCmd::Gc { workdir, .. } => cmd_neuro(cli, NeuroCmd::Gc { workdir, threshold: None, dry_run: false }).await,
         KnowledgeCmd::Export {
             workdir,
             output,
             force,
             top_n,
+            ..
         } => {
             cmd_neuro(
                 cli,
@@ -26,6 +27,9 @@ pub(crate) async fn dispatch_knowledge(cli: &Cli, cmd: KnowledgeCmd) -> Result<i
                     output,
                     force,
                     top_n,
+                    min_confidence: None,
+                    types: None,
+                    exclude_tags: None,
                 },
             )
             .await
@@ -35,6 +39,7 @@ pub(crate) async fn dispatch_knowledge(cli: &Cli, cmd: KnowledgeCmd) -> Result<i
             input,
             decay_factor,
             legacy_raw,
+            ..
         } => {
             cmd_neuro(
                 cli,
@@ -43,6 +48,8 @@ pub(crate) async fn dispatch_knowledge(cli: &Cli, cmd: KnowledgeCmd) -> Result<i
                     input,
                     decay_factor,
                     legacy_raw,
+                    types: None,
+                    min_confidence: None,
                 },
             )
             .await
@@ -111,7 +118,7 @@ pub(crate) async fn dispatch_knowledge(cli: &Cli, cmd: KnowledgeCmd) -> Result<i
             dispatch_knowledge_custody(cli, cmd)?;
             Ok(EXIT_SUCCESS)
         }
-        KnowledgeCmd::Archive {
+        KnowledgeCmd::SignalArchive {
             older_than,
             batch_size,
             workdir,
@@ -159,7 +166,7 @@ async fn cmd_backfill_hdc(cli: &Cli, workdir: Option<PathBuf>) -> Result<i32> {
 
 pub(crate) async fn dispatch_knowledge_dream(cli: &Cli, cmd: KnowledgeDreamCmd) -> Result<i32> {
     match cmd {
-        KnowledgeDreamCmd::Run { workdir } => cmd_dream(cli, DreamCmdLegacy::Run { workdir }).await,
+        KnowledgeDreamCmd::Run { workdir, .. } => cmd_dream(cli, DreamCmdLegacy::Run { workdir, dry_run: false }).await,
         KnowledgeDreamCmd::Report { workdir } => {
             cmd_dream(cli, DreamCmdLegacy::Report { workdir }).await
         }
@@ -337,7 +344,7 @@ pub(crate) async fn cmd_archive(
 
 pub(crate) async fn cmd_neuro(cli: &Cli, cmd: NeuroCmd) -> Result<i32> {
     match cmd {
-        NeuroCmd::Query { topic, workdir } => {
+        NeuroCmd::Query { topic, workdir, .. } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             let topic = topic.join(" ");
             let topic = topic.trim().to_string();
@@ -469,7 +476,7 @@ pub(crate) async fn cmd_neuro(cli: &Cli, cmd: NeuroCmd) -> Result<i32> {
 
             Ok(EXIT_SUCCESS)
         }
-        NeuroCmd::Gc { workdir } => {
+        NeuroCmd::Gc { workdir, .. } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             let store = KnowledgeStore::for_workdir(&wd);
             let before = store.stats().with_context(|| {
@@ -515,6 +522,7 @@ pub(crate) async fn cmd_neuro(cli: &Cli, cmd: NeuroCmd) -> Result<i32> {
             output,
             force,
             top_n,
+            ..
         } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             if output.exists() && !force {
@@ -554,6 +562,7 @@ pub(crate) async fn cmd_neuro(cli: &Cli, cmd: NeuroCmd) -> Result<i32> {
             input,
             decay_factor,
             legacy_raw,
+            ..
         } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             let store = KnowledgeStore::for_workdir(&wd);
@@ -726,6 +735,9 @@ pub(crate) async fn cmd_neuro(cli: &Cli, cmd: NeuroCmd) -> Result<i32> {
 
             let mut sent_count = 0_usize;
             let mut received_count = 0_usize;
+            // Track the actual high-water mark of sent entries so we only
+            // advance the version vector to what was actually delivered.
+            let mut send_high_water: Option<u64> = None;
 
             if should_send {
                 // Build delta: entries newer than peer's last-seen sequence.
@@ -737,6 +749,11 @@ pub(crate) async fn cmd_neuro(cli: &Cli, cmd: NeuroCmd) -> Result<i32> {
                     .take(max_send)
                     .collect();
                 sent_count = delta.len();
+
+                // Record the highest index we actually prepared for sending.
+                if let Some(&(last_idx, _)) = delta.last() {
+                    send_high_water = Some(last_idx as u64);
+                }
 
                 // Write delta to an outbox file for the peer.
                 if !delta.is_empty() {
@@ -789,13 +806,28 @@ pub(crate) async fn cmd_neuro(cli: &Cli, cmd: NeuroCmd) -> Result<i32> {
                 }
             }
 
-            // Update version vector for this peer.
-            let new_seq = entries.len() as u64;
-            version_vectors.insert(peer.clone(), new_seq);
-            if let Some(parent) = vv_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::write(&vv_path, serde_json::to_string_pretty(&version_vectors)?)?;
+            // Only update the version vector when we actually sent data.
+            // The vector tracks what the peer has seen from us; advancing it
+            // without a send phase (e.g. receive-only sync) would silently
+            // skip entries on the next send, corrupting the delta stream.
+            // When max_send limits the batch, record only the actual high-water
+            // mark rather than entries.len() so unsent entries aren't skipped.
+            let new_seq = if let Some(hw) = send_high_water {
+                // We sent entries — advance to the highest index we delivered.
+                version_vectors.insert(peer.clone(), hw);
+                if let Some(parent) = vv_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&vv_path, serde_json::to_string_pretty(&version_vectors)?)?;
+                hw
+            } else if should_send {
+                // Send phase ran but there was nothing new to send — keep
+                // the existing vector value, no write needed.
+                peer_seq
+            } else {
+                // Receive-only: do not touch the version vector at all.
+                version_vectors.get(&peer).copied().unwrap_or(0)
+            };
 
             let direction_str = match direction {
                 KnowledgeSyncDirection::Send => "send",
@@ -828,7 +860,7 @@ pub(crate) async fn cmd_neuro(cli: &Cli, cmd: NeuroCmd) -> Result<i32> {
 
 pub(crate) async fn cmd_dream(cli: &Cli, cmd: DreamCmdLegacy) -> Result<i32> {
     match cmd {
-        DreamCmdLegacy::Run { workdir } => {
+        DreamCmdLegacy::Run { workdir, .. } => {
             let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
             prepare_runtime_hooks(&workdir, cli.quiet);
 

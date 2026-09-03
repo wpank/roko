@@ -4,6 +4,7 @@
 pub mod rosedust;
 
 pub mod braille;
+pub mod conductor_panel;
 pub mod cost_by_model;
 pub mod diff_panel;
 pub mod error_digest;

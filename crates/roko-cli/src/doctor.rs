@@ -208,6 +208,7 @@ pub async fn run_doctor(options: &DoctorOptions) -> Result<DoctorReport> {
     let (disk_health_check, disk_health) = check_disk_health(&workdir, &resources).await;
     checks.push(disk_health_check);
     checks.push(check_target_staleness(&workdir));
+    checks.push(check_crash_report(&workdir));
 
     let summary = DoctorSummary::from_checks(&checks);
     Ok(DoctorReport {
@@ -1008,7 +1009,10 @@ fn check_available_providers(loaded_config: &LoadedConfig) -> DoctorCheck {
             // CLI providers already handled above.
             if matches!(
                 provider.kind,
-                ProviderKind::ClaudeCli | ProviderKind::Hermes | ProviderKind::OpenClaw
+                ProviderKind::ClaudeCli
+                    | ProviderKind::CodexCli
+                    | ProviderKind::Hermes
+                    | ProviderKind::OpenClaw
             ) {
                 continue;
             }
@@ -1732,6 +1736,9 @@ fn check_mcp_allowlist(workdir: &Path, loaded_config: &LoadedConfig) -> Vec<Doct
 }
 
 /// Warn about orphaned `.tmp` files in `.roko/learn/` from crashed atomic writes.
+///
+/// Audit #80: only warn about files older than 1 hour to avoid false positives
+/// from in-flight atomic writes that have not yet been renamed.
 fn check_orphaned_tmp_files(workdir: &Path) -> DoctorCheck {
     let learn_dir = workdir.join(".roko").join("learn");
     if !learn_dir.is_dir() {
@@ -1746,20 +1753,30 @@ fn check_orphaned_tmp_files(workdir: &Path) -> DoctorCheck {
         };
     }
 
-    let tmp_count = std::fs::read_dir(&learn_dir)
+    let one_hour_ago = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(3600))
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+
+    let stale_tmp_count = std::fs::read_dir(&learn_dir)
         .map(|entries| {
             entries
                 .filter_map(Result::ok)
-                .filter(|e| e.path().extension().is_some_and(|ext| ext == "tmp"))
+                .filter(|e| {
+                    e.path().extension().is_some_and(|ext| ext == "tmp")
+                        && e.metadata()
+                            .ok()
+                            .and_then(|m| m.modified().ok())
+                            .is_some_and(|mtime| mtime < one_hour_ago)
+                })
                 .count()
         })
         .unwrap_or(0);
 
-    if tmp_count == 0 {
+    if stale_tmp_count == 0 {
         DoctorCheck {
             id: "orphaned_tmp_files".to_string(),
             status: DoctorStatus::Ok,
-            message: "no orphaned .tmp files in .roko/learn/".to_string(),
+            message: "no stale .tmp files in .roko/learn/".to_string(),
             detail: None,
             path: Some(learn_dir.display().to_string()),
             url: None,
@@ -1770,8 +1787,8 @@ fn check_orphaned_tmp_files(workdir: &Path) -> DoctorCheck {
             id: "orphaned_tmp_files".to_string(),
             status: DoctorStatus::Warn,
             message: format!(
-                "{tmp_count} orphaned .tmp file{} in .roko/learn/",
-                if tmp_count == 1 { "" } else { "s" }
+                "{stale_tmp_count} stale .tmp file{} in .roko/learn/ (older than 1 hour)",
+                if stale_tmp_count == 1 { "" } else { "s" }
             ),
             detail: Some(
                 "these are leftover from crashed atomic writes and can be safely removed"
@@ -2386,6 +2403,7 @@ pub(crate) fn endpoint_for_kind(kind: ProviderKind) -> Option<&'static str> {
         ProviderKind::PerplexityApi => Some("https://api.perplexity.ai"),
         ProviderKind::CerebrasApi => Some("https://api.cerebras.ai/v1"),
         ProviderKind::ClaudeCli
+        | ProviderKind::CodexCli
         | ProviderKind::CursorAcp
         | ProviderKind::GeminiCli
         | ProviderKind::CursorCli
@@ -2603,6 +2621,77 @@ pub async fn run_network_doctor(options: NetworkDoctorOptions) -> NetworkProbeRe
     NetworkProbeReport {
         summary: NetworkProbeSummary::from_checks(&checks),
         checks,
+    }
+}
+
+/// Check for a recent crash report in `.roko/crash-report.json`.
+///
+/// Warns if a crash report exists and was written within the last 24 hours.
+/// Older crash reports are treated as informational (ok status).
+fn check_crash_report(workdir: &Path) -> DoctorCheck {
+    let roko_dir = workdir.join(".roko");
+    let path = roko_core::crash_report_path(&roko_dir);
+
+    if !path.exists() {
+        return DoctorCheck {
+            id: "crash_report".to_string(),
+            status: DoctorStatus::Ok,
+            message: "no crash report found".to_string(),
+            detail: None,
+            path: None,
+            url: None,
+            fix: None,
+        };
+    }
+
+    // Read the crash report for details.
+    let report = roko_core::read_crash_report(&roko_dir);
+    let recent = roko_core::has_recent_crash_report(
+        &roko_dir,
+        Duration::from_secs(24 * 3600), // 24 hours
+    );
+
+    let detail = report.as_ref().map(|r| {
+        let mut parts = Vec::new();
+        parts.push(format!("crashed at {}", r.timestamp));
+        parts.push(format!("version {}", r.version));
+        if let Some(msg) = &r.panic_message {
+            // Truncate long messages for the summary.
+            let truncated: String = msg.chars().take(200).collect();
+            parts.push(format!("message: {truncated}"));
+        }
+        if let Some(plan) = &r.active_plan {
+            parts.push(format!("plan: {plan}"));
+        }
+        if let Some(task) = &r.active_task {
+            parts.push(format!("task: {task}"));
+        }
+        if let Some(provider) = &r.provider {
+            parts.push(format!("provider: {provider}"));
+        }
+        parts.join("; ")
+    });
+
+    if recent {
+        DoctorCheck {
+            id: "crash_report".to_string(),
+            status: DoctorStatus::Warn,
+            message: "recent crash report found (< 24h old)".to_string(),
+            detail,
+            path: Some(path.display().to_string()),
+            url: None,
+            fix: Some("review .roko/crash-report.json and rm it once investigated".to_string()),
+        }
+    } else {
+        DoctorCheck {
+            id: "crash_report".to_string(),
+            status: DoctorStatus::Ok,
+            message: "crash report found but is older than 24 hours".to_string(),
+            detail,
+            path: Some(path.display().to_string()),
+            url: None,
+            fix: Some("rm .roko/crash-report.json to clear stale crash data".to_string()),
+        }
     }
 }
 

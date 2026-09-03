@@ -40,6 +40,7 @@ const SUB_TAB_LABELS: &[(&str, &str)] = &[
     ("m", "MCP"),
     ("L", "Learning"),
     ("P", "Procs"),
+    ("C", "Cond"),
 ];
 
 // ---------------------------------------------------------------------------
@@ -482,6 +483,7 @@ fn render_right_panel_content(
         5 => render_sub_mcp(frame, area, data, tui_state, theme),
         6 => render_sub_learning(frame, area, data, tui_state, focused, theme),
         7 => render_sub_processes(frame, area, data, tui_state, focused, theme),
+        8 => render_sub_conductor(frame, area, tui_state, focused, theme),
         _ => {}
     }
 }
@@ -1505,6 +1507,28 @@ fn render_sub_processes(
             )
             .column_spacing(1),
         inner,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Sub-tab: Conductor -- watcher health, interventions, thresholds
+// ---------------------------------------------------------------------------
+
+fn render_sub_conductor(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    tui_state: &TuiState,
+    focused: bool,
+    theme: &Theme,
+) {
+    widgets::conductor_panel::render_conductor_panel(
+        frame,
+        area,
+        &tui_state.conductor_snapshot,
+        &tui_state.diagnoses,
+        &tui_state.conductor_alerts,
+        focused,
+        theme,
     );
 }
 
@@ -2734,7 +2758,7 @@ mod tests {
 
     #[test]
     fn one_route_is_visible_in_the_agents_buffer() {
-        let backend = TestBackend::new(100, 24);
+        let backend = TestBackend::new(100, 40);
         let mut terminal = Terminal::new(backend).unwrap();
         let data = DashboardData::default();
         let mut tui_state = TuiState::default();

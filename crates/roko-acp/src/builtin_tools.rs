@@ -14,6 +14,7 @@ use roko_agent::safety::network::check_url;
 
 use crate::bridge_events::CognitiveEvent;
 use crate::types::{ContentBlock, PermissionAction, ToolCallKind, ToolCallStatus};
+use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
 use roko_core::tool::{ToolCategory, ToolConcurrency, ToolDef, ToolPermission, ToolSchema};
 
 /// Derive the [`ToolPermission`] for a tool by name.
@@ -192,7 +193,7 @@ fn bash() -> ToolDef {
             "additionalProperties": false
         })))
         .with_concurrency(ToolConcurrency::Serial)
-        .with_timeout_ms(120_000)
+        .with_timeout_ms(DEFAULT_REQUEST_TIMEOUT_MS)
 }
 
 fn ls() -> ToolDef {
@@ -802,7 +803,7 @@ async fn manual_grep(path: &Path, pattern: &str) -> Result<String, String> {
 
 async fn exec_bash(args: &serde_json::Value, workdir: &Path) -> Result<String, String> {
     let command = require_str(args, "command")?;
-    let timeout_ms = opt_u64(args, "timeout").unwrap_or(120_000);
+    let timeout_ms = opt_u64(args, "timeout").unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS);
 
     // Safety gate: run command through the roko-agent bash denylist before
     // spawning. This ensures ACP sessions honor the same policy as the

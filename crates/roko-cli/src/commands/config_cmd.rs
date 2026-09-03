@@ -99,7 +99,7 @@ pub(crate) async fn dispatch_config(cli: &Cli, cmd: ConfigCmd) -> Result<()> {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             config_cmd::cmd_check_secrets(&wd)
         }
-        ConfigCmd::Export { workdir, env } => {
+        ConfigCmd::Export { workdir, env, .. } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             cmd_export(&wd, env.as_deref())?;
             Ok(())
@@ -173,6 +173,10 @@ pub(crate) async fn dispatch_config(cli: &Cli, cmd: ConfigCmd) -> Result<()> {
                 cmd_provider_catalog();
                 Ok(())
             }
+            ConfigProviderCmd::Validate { workdir } => {
+                let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+                config_cmd::cmd_validate(&wd).await
+            }
         },
         // ── Models ──────────────────────────────────────────────────
         ConfigCmd::Models { cmd } => match cmd {
@@ -245,6 +249,11 @@ pub(crate) async fn dispatch_config(cli: &Cli, cmd: ConfigCmd) -> Result<()> {
         // ── MCP (intercepted in dispatch_subcommand) ─────────────────
         ConfigCmd::Mcp { .. } => {
             unreachable!("mcp dispatched in dispatch_subcommand")
+        }
+        // ── Environment variables ──────────────────────────────────────
+        ConfigCmd::Env { json } => {
+            eprintln!("config env: not yet wired (json={json})");
+            Ok(())
         }
     }
 }
@@ -757,6 +766,7 @@ pub(crate) async fn cmd_provider_test(
                 },
             ),
             ProviderKind::ClaudeCli
+            | ProviderKind::CodexCli
             | ProviderKind::CursorAcp
             | ProviderKind::CursorCli
             | ProviderKind::Hermes
@@ -792,7 +802,7 @@ pub(crate) async fn cmd_provider_test(
             })?;
             run_anthropic_provider_test(&provider_name, provider, model, json).await?
         }
-        ProviderKind::ClaudeCli => {
+        ProviderKind::ClaudeCli | ProviderKind::CodexCli => {
             run_claude_cli_provider_test(&provider_name, provider, model.as_ref(), json).await?
         }
         ProviderKind::GeminiApi | ProviderKind::GeminiCli => {
@@ -1854,7 +1864,9 @@ pub(crate) async fn inspect_provider(
     provider: &ProviderConfig,
 ) -> ProviderListRow {
     match provider.kind {
-        ProviderKind::ClaudeCli => inspect_cli_provider(provider_name, provider),
+        ProviderKind::ClaudeCli | ProviderKind::CodexCli => {
+            inspect_cli_provider(provider_name, provider)
+        }
         _ => inspect_http_provider(client, provider_name, provider).await,
     }
 }

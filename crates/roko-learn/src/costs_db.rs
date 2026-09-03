@@ -936,6 +936,7 @@ mod tests {
             output_tokens: 200,
             cache_read_tokens: 100,
             cache_create_tokens: 50,
+            reasoning_tokens: 0,
             cost_usd: 0.0,
             wall_ms: 1_234,
         };

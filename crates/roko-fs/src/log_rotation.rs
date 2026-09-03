@@ -1,6 +1,6 @@
 //! Size-based JSONL log rotation for `.roko/` data files.
 //!
-//! When episodes.jsonl, signals.jsonl, efficiency.jsonl, or other JSONL files
+//! When episodes.jsonl, engrams.jsonl, efficiency.jsonl, or other JSONL files
 //! exceed a configurable size threshold, they are atomically renamed to a
 //! timestamped archive and a fresh empty live file is created.
 //!
@@ -490,7 +490,7 @@ mod tests {
     #[tokio::test]
     async fn rotation_preserves_complete_jsonl_lines() {
         let tmp = TempDir::new().expect("tempdir");
-        let path = tmp.path().join("signals.jsonl");
+        let path = tmp.path().join("engrams.jsonl");
 
         let mut data = String::new();
         for i in 0..100 {

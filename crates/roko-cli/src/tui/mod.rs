@@ -30,7 +30,11 @@ pub mod modals;
 pub mod pages;
 pub mod postfx;
 pub mod postfx_pipeline;
+#[cfg(feature = "tui-png")]
+pub mod png_renderer;
 pub mod scroll;
+#[cfg(feature = "tui-png")]
+pub mod screenshot_diff;
 pub mod segment;
 pub mod smoothing;
 pub mod snapshot;
@@ -41,6 +45,8 @@ pub mod theme;
 pub mod util;
 pub mod verdicts;
 pub mod views;
+#[cfg(feature = "tui-png")]
+pub mod visual_assessment;
 pub mod widgets;
 pub mod ws_client;
 

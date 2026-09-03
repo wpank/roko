@@ -777,7 +777,7 @@ fn build_runner_config(
         workdir: workdir.to_path_buf(),
         plan_dir: plan_dir.to_path_buf(),
         model,
-        cli_model_override: None,
+        cli_model_override: None, // serve runtime has no CLI model override
         timeout_secs: roko_config.timeouts.agent_dispatch_secs,
         plan_timeout_secs: roko_config.timeouts.plan_total_secs,
         max_retries: cli_config.executor.max_auto_fix_iterations,
@@ -794,6 +794,7 @@ fn build_runner_config(
         claude_program,
         max_plan_usd: f64::from(roko_config.budget.max_plan_usd),
         max_turn_usd: f64::from(roko_config.budget.max_turn_usd),
+        max_task_retry_usd: f64::from(roko_config.budget.max_task_retry_usd),
         budget_override: false,
         budget_ceiling_override: None,
         no_budget: false,

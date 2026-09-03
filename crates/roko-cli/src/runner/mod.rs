@@ -40,6 +40,7 @@ pub mod extension_loader;
 pub mod extension_registry;
 pub mod gate_dispatch;
 pub mod github_workflow;
+pub mod graph_tui_bridge;
 pub mod impact_analysis;
 pub mod inline_output;
 pub mod merge;

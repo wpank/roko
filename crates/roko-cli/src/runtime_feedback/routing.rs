@@ -28,7 +28,6 @@ use roko_learn::cascade_router::CascadeRouter;
 use roko_learn::model_router::RoutingContext;
 
 use super::{FeedbackEvent, FeedbackSink};
-#[cfg(test)]
 use crate::dispatch::ModelChoiceSource;
 use crate::runner::event_loop::compute_conductor_load;
 
@@ -76,10 +75,24 @@ impl FeedbackSink for RoutingObservationSink {
             return Ok(());
         };
 
-        // The model_source tag still flows through the per-sink event
-        // log so override-vs-router observations can be dampened
-        // downstream. See `.roko/GAPS.md`.
-        let _ = model_source;
+        let ctx = match routing_context {
+            Some(ctx) => ctx.clone(),
+            None => build_fallback_routing_context(&outcome.model),
+        };
+
+        // Audit #84: always record category-level stats (even for
+        // overrides) so confidence_scores can adjust per-category.
+        self.router
+            .record_category_outcome(&outcome.model, ctx.task_category, *succeeded);
+
+        // Audit #90: manual overrides must not pollute the bandit signal.
+        // Route them through the dampened `record_override_outcome` path
+        // instead of the full `observe_multi_objective` / confidence path.
+        if *model_source == ModelChoiceSource::Override {
+            self.router
+                .record_override_outcome(&outcome.model, &ctx, *succeeded, None);
+            return Ok(());
+        }
 
         // If the slug isn't tracked yet, fall back to the binary
         // outcome path so the trial counter still moves.
@@ -87,11 +100,6 @@ impl FeedbackSink for RoutingObservationSink {
             self.router
                 .record_confidence_outcome(&outcome.model, *succeeded);
             return Ok(());
-        };
-
-        let ctx = match routing_context {
-            Some(ctx) => ctx.clone(),
-            None => build_fallback_routing_context(&outcome.model),
         };
 
         if *succeeded {
@@ -228,7 +236,7 @@ mod tests {
             plan_id: "p".into(),
             task_id: "t".into(),
             outcome: outcome(false),
-            model_source: ModelChoiceSource::Override,
+            model_source: ModelChoiceSource::Router,
             succeeded: false,
             routing_context: None,
             prompt_text: None,
@@ -245,6 +253,33 @@ mod tests {
             r.total_observations(),
             0,
             "failures should not push LinUCB observations on the success-only path",
+        );
+    }
+
+    #[tokio::test]
+    async fn override_source_routes_through_dampened_path() {
+        // Audit #90: ModelChoiceSource::Override must use
+        // record_override_outcome (dampened) instead of the normal
+        // observe_multi_objective / confidence path.
+        let r = router();
+        let sink = RoutingObservationSink::new(r.clone());
+        let event = FeedbackEvent::TaskCompleted {
+            plan_id: "p".into(),
+            task_id: "t".into(),
+            outcome: outcome(true),
+            model_source: ModelChoiceSource::Override,
+            succeeded: true,
+            routing_context: None,
+            prompt_text: None,
+        };
+        sink.on_event(&event).await.unwrap();
+        // record_override_outcome uses observe_multi_objective with
+        // dampened quality (0.5), so LinUCB observations advance but
+        // the confidence_stats snapshot should NOT be touched by the
+        // override path (it only goes through the LinUCB bandit).
+        assert!(
+            r.total_observations() >= 1,
+            "override must still advance LinUCB observations via dampened path",
         );
     }
 

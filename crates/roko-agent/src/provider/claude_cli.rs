@@ -61,16 +61,6 @@ impl ProviderAdapter for ClaudeCliAdapter {
             .or(provider.timeout_ms)
             .unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS);
 
-        // Detect Codex CLI executable — use ExecAgent with codex-appropriate
-        // invocation flags instead of ClaudeCliAgent's Claude-specific protocol.
-        let exe_name = std::path::Path::new(command)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(command);
-        if exe_name.contains("codex") {
-            return Self::create_codex_agent(command, &current_dir, model, options, timeout_ms);
-        }
-
         let mut agent = ClaudeCliAgent::new(command, current_dir, model.slug.clone())
             .with_timeout_ms(timeout_ms)
             .with_settings_json(build_settings_json())
@@ -170,19 +160,50 @@ impl ProviderAdapter for ClaudeCliAdapter {
     }
 }
 
-impl ClaudeCliAdapter {
-    /// Create an `ExecAgent` configured for Codex CLI's `exec --json` protocol.
-    ///
-    /// Codex CLI uses `codex exec --json -` with the prompt on stdin, unlike
-    /// Claude CLI which uses `--print --output-format stream-json`. This
-    /// builder mirrors the invocation from `dispatch_v2::build_codex_invocation`.
-    fn create_codex_agent(
-        command: &str,
-        current_dir: &std::path::Path,
+/// Adapter for the `codex` CLI subprocess protocol (`codex exec --json`).
+///
+/// Previously, Codex CLI piggy-backed on [`ClaudeCliAdapter`] with
+/// executable-name sniffing. This adapter gives `CodexCli` its own
+/// first-class dispatch path so routing and capability logic can
+/// distinguish the two protocols at the type level.
+pub struct CodexCliAdapter;
+
+impl ProviderAdapter for CodexCliAdapter {
+    fn kind(&self) -> ProviderKind {
+        ProviderKind::CodexCli
+    }
+
+    fn create_agent(
+        &self,
+        provider: &ProviderConfig,
         model: &ModelProfile,
         options: &AgentOptions,
-        timeout_ms: u64,
     ) -> Result<Box<dyn Agent>, AgentCreationError> {
+        if provider.kind != self.kind() {
+            return Err(AgentCreationError::InvalidKind(provider.kind));
+        }
+
+        let command = provider
+            .command
+            .as_deref()
+            .map(str::trim)
+            .filter(|command| !command.is_empty())
+            .unwrap_or("codex");
+
+        // Verify the binary exists on PATH before attempting to spawn.
+        if !crate::provider::pre_flight::binary_on_path(command) {
+            return Err(AgentCreationError::BinaryNotFound(command.to_string()));
+        }
+
+        let current_dir = options
+            .working_dir
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        let timeout_ms = options
+            .timeout_ms
+            .or(provider.timeout_ms)
+            .unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS);
+
         let mut args = vec![
             "exec".to_string(),
             "--json".to_string(),
@@ -212,7 +233,7 @@ impl ClaudeCliAdapter {
 
         let mut agent = ExecAgent::new(command, args, safety)
             .with_timeout_ms(timeout_ms)
-            .with_current_dir(current_dir)
+            .with_current_dir(&current_dir)
             .with_extract_codex_jsonl(true);
 
         // Codex lacks --system-prompt; fold it into stdin prefix.
@@ -236,6 +257,12 @@ impl ClaudeCliAdapter {
         );
 
         Ok(Box::new(agent))
+    }
+
+    fn classify_error(&self, status: u16, body: &Value) -> ProviderError {
+        // Codex CLI errors look similar to Claude CLI errors (stderr text).
+        // Reuse the same classification logic.
+        ClaudeCliAdapter.classify_error(status, body)
     }
 }
 

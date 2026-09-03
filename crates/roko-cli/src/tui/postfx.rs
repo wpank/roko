@@ -219,6 +219,7 @@ fn write_blank_braille(cell: &mut Cell, bits: u8, fg: Color, bg: Color) {
 }
 
 /// Draw pulsing connector traces across empty regions.
+#[allow(dead_code)]
 fn guide_lines(area: Rect, buf: &mut Buffer, elapsed: f64, intensity: f64, seed: u64) {
     if area.width < 8 || area.height < 4 {
         return;

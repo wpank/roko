@@ -46,7 +46,7 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
                 cmd_learn(&wd, "router").await
             }
         }
-        LearnCmd::Experiments { workdir } => {
+        LearnCmd::Experiments { workdir, .. } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             if json {
                 cmd_learn_json(&wd, "experiments").await
@@ -54,7 +54,7 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
                 cmd_learn(&wd, "experiments").await
             }
         }
-        LearnCmd::Efficiency { workdir } => {
+        LearnCmd::Efficiency { workdir, .. } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             if json {
                 cmd_learn_json(&wd, "efficiency").await
@@ -62,7 +62,7 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
                 cmd_learn(&wd, "efficiency").await
             }
         }
-        LearnCmd::Episodes { workdir } => {
+        LearnCmd::Episodes { workdir, .. } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             if json {
                 cmd_learn_json(&wd, "episodes").await
@@ -76,6 +76,22 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
                 cmd_learn_json(&wd, "reflexes").await
             } else {
                 cmd_learn_reflexes(&wd).await
+            }
+        }
+        LearnCmd::Gates { workdir } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            if json {
+                cmd_learn_json(&wd, "gates").await
+            } else {
+                cmd_learn(&wd, "gates").await
+            }
+        }
+        LearnCmd::KnowledgeStats { workdir } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            if json {
+                cmd_learn_json(&wd, "knowledge").await
+            } else {
+                cmd_learn(&wd, "knowledge").await
             }
         }
         LearnCmd::Tune {

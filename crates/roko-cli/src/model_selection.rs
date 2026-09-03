@@ -340,6 +340,20 @@ pub fn resolve_effective_model_key(
     )
     .map_err(|err| anyhow::anyhow!("resolve model selection for {context}: {err}"))?;
     selection.print_stderr();
+    // #162: advisory capability-requirement check for the selected model.
+    if let Some(role_label) = role {
+        if let Some(role_override) = find_role_override(&config, role_label) {
+            if let Some(profile) = config.models.get(&selection.effective_model_key) {
+                if !role_override.capabilities_satisfied_by(profile) {
+                    tracing::warn!(
+                        role = role_label,
+                        model = %selection.effective_model_key,
+                        "selected model does not satisfy role capability requirements"
+                    );
+                }
+            }
+        }
+    }
     Ok(selection.effective_model_key)
 }
 
@@ -835,7 +849,7 @@ mod tests {
                 provider_kind,
                 suggestions: _,
                 ..
-            } if provider_kind == "openai_compat"
+            } if provider_kind == "codex_cli"
         ));
         assert!(
             err.to_string().contains("explicit [models.*]")

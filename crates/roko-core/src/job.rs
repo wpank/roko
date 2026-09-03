@@ -676,10 +676,12 @@ impl FileJobStore {
             if path.extension().and_then(|e| e.to_str()) != Some("json") {
                 continue;
             }
-            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                if stem.starts_with(prefix) {
-                    matches.push(stem.to_string());
-                }
+            if let Some(stem) = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .filter(|s| s.starts_with(prefix))
+            {
+                matches.push(stem.to_string());
             }
         }
         match matches.len() {

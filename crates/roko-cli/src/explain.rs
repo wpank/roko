@@ -129,7 +129,7 @@ pub static TOPICS: &[TopicEntry] = &[
                   parameters. They run when the system is idle, like sleep for AI.",
         detail: "A dream cycle has three phases: hypnagogia (light review of recent \
                  episodes), imagination (creative recombination of patterns), and \
-                 deep sleep (parameter consolidation). Use `roko dream run` to \
+                 deep sleep (parameter consolidation). Use `roko knowledge dream run` to \
                  trigger a cycle manually, or configure automatic scheduling in \
                  `roko.toml` under `[dreams]`.",
         internals: "Implementation lives in `crates/roko-dreams/`. The \
@@ -150,7 +150,7 @@ pub static TOPICS: &[TopicEntry] = &[
                  every decision and action. Use `roko replay <hash>` to walk the \
                  lineage DAG from any signal. Signals persist in `.roko/engrams.jsonl` \
                  via the `FileSubstrate` in `roko-fs`.",
-        internals: "The `Signal` type in `crates/roko-core/src/lib.rs` is the base \
+        internals: "The `Signal` type in `crates/roko-core/src/engram.rs` is the base \
                     signal structure. `FileSubstrate` in `crates/roko-fs/` handles \
                     JSONL persistence with append-only semantics. GC runs periodically \
                     to compact old entries. The DAG walker in `crates/roko-cli/` \

@@ -2,6 +2,7 @@
 #![allow(unused_imports)]
 
 use crate::*;
+use roko_cli::status::{StatusDiagnostic, collect_session_status};
 use roko_core::config::schema::RokoConfig;
 use roko_fs::RokoLayout;
 use std::io::IsTerminal;
@@ -1303,38 +1304,87 @@ pub(crate) async fn cmd_replay(
     Ok(EXIT_SUCCESS)
 }
 
-pub(crate) fn cmd_inject(
+pub(crate) async fn cmd_inject(
     cli: &Cli,
     session: String,
     kind_str: &str,
     payload: String,
     workdir: Option<PathBuf>,
 ) -> Result<i32> {
-    let kind = InjectKind::parse(kind_str).map_err(|e| anyhow!("{e}"))?;
+    use roko_core::{Body, Kind, Provenance};
+
+    let inject_kind = InjectKind::parse(kind_str).map_err(|e| anyhow!("{e}"))?;
     let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-    let request = InjectRequest::new(session, kind, payload, wd);
+    let request = InjectRequest::new(session.clone(), inject_kind.clone(), payload.clone(), wd.clone());
 
     // Validation errors (empty session, empty payload for directive/context) remain
-    // more specific than the transport-unavailable error below.
+    // more specific than the substrate-write error below.
     request.validate().map_err(|e| anyhow!("{e}"))?;
 
-    // No delivery backend exists yet (#361 owns the transport).
-    // Fail closed: never report success when nothing was delivered.
-    let code = "inject_transport_unavailable";
-    let message = "inject transport unavailable — no delivery backend is configured";
-    let hint =
-        "No live command transport is installed; use plan pause/cancel controls where applicable.";
+    // Map InjectKind to a Signal Kind.
+    let signal_kind = match inject_kind {
+        InjectKind::Directive => Kind::Custom("inject.directive".into()),
+        InjectKind::Abort => Kind::Custom("inject.abort".into()),
+        InjectKind::Context => Kind::ContextPack,
+    };
+
+    // Build the body: try to parse as JSON first, fall back to text.
+    let body = match serde_json::from_str::<serde_json::Value>(&payload) {
+        Ok(json_val) if json_val.is_object() || json_val.is_array() => Body::Json(json_val),
+        _ => Body::text(&payload),
+    };
+
+    // Create the signal with proper provenance tracking the injection source.
+    let signal = roko_core::Signal::builder(signal_kind)
+        .body(body)
+        .provenance(
+            Provenance::user("cli.inject")
+                .with_session(&session),
+        )
+        .tag("inject_kind", inject_kind.as_str())
+        .tag("inject_session", &session)
+        .build();
+
+    // Open the substrate and persist the signal.
+    let roko_dir = wd.join(".roko");
+    if !roko_dir.exists() {
+        if cli.json {
+            println!(
+                r#"{{"error":"no_workspace","message":"no .roko directory found at {}"}}"#,
+                roko_dir.display()
+            );
+        } else {
+            eprintln!(
+                "Error: no .roko directory at {} — run `roko init` first",
+                roko_dir.display()
+            );
+        }
+        return Ok(EXIT_FAILURE);
+    }
+
+    let substrate = FileSubstrate::open(&roko_dir)
+        .await
+        .map_err(|e| anyhow!("open substrate at {}: {e}", roko_dir.display()))?;
+
+    let hash = substrate
+        .put(signal)
+        .await
+        .map_err(|e| anyhow!("write signal to substrate: {e}"))?;
 
     if cli.json {
         println!(
-            r#"{{"code":"{code}","message":"{message}","hint":"{hint}"}}"#,
+            r#"{{"status":"injected","hash":"{}","session":"{}","kind":"{}"}}"#,
+            hash.to_hex(),
+            session,
+            inject_kind,
         );
     } else {
-        eprintln!("Error: {message}");
-        eprintln!("Hint: {hint}");
+        println!("injected {} -> session {}", inject_kind, session);
+        println!("  hash: {}", hash.to_hex());
+        println!("  log:  {}", roko_dir.join("engrams.jsonl").display());
     }
 
-    Ok(EXIT_FAILURE)
+    Ok(EXIT_SUCCESS)
 }
 
 pub(crate) fn cmd_index(cli: &Cli, cmd: IndexCmd) -> Result<i32> {
@@ -1489,7 +1539,7 @@ pub(crate) fn parse_symbol_kind(s: &str) -> Result<roko_core::language::SymbolKi
 #[derive(Debug, Clone)]
 pub(crate) struct CompletionNode {
     pub name: String,
-    pub children: Vec<CompletionNode>,
+    pub children: Vec<Self>,
     /// Long flags (e.g. `--workdir`).
     pub long_flags: Vec<String>,
     /// Short flags (e.g. `-q`).
@@ -2245,6 +2295,63 @@ fn binary_on_path(name: &str) -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+/// Check whether the selected model satisfies a role's capability requirements.
+///
+/// When the role has `capability_requirements` configured and the selected
+/// model's profile does not satisfy them, a warning is printed to stderr.
+/// This is advisory-only: it never blocks dispatch, because the model may
+/// still work even without the exact capability flags.
+pub(crate) fn warn_capability_mismatch(
+    config: &RokoConfig,
+    model_key: &str,
+    role_label: &str,
+) {
+    let role_override = match config.agent.roles.get(role_label) {
+        Some(r) => r,
+        None => return,
+    };
+    let requirements = match role_override.capability_requirements.as_deref() {
+        Some(reqs) if !reqs.is_empty() => reqs,
+        _ => return,
+    };
+    let profile = match config.models.get(model_key) {
+        Some(p) => p,
+        None => return,
+    };
+    if !role_override.capabilities_satisfied_by(profile) {
+        let missing: Vec<&str> = requirements
+            .iter()
+            .filter(|req| {
+                !match req.as_str() {
+                    "web_search" => profile.supports_web_search || profile.supports_search,
+                    "text_generation" => true,
+                    "code_execution" => profile.supports_code_execution,
+                    "tools" => profile.supports_tools,
+                    "thinking" => profile.supports_thinking,
+                    "vision" => profile.supports_vision,
+                    "grounding" => profile.supports_grounding,
+                    "caching" => profile.supports_caching,
+                    "citations" => profile.supports_citations,
+                    "mcp_tools" => profile.supports_mcp_tools,
+                    _ => true,
+                }
+            })
+            .map(String::as_str)
+            .collect();
+        if !missing.is_empty() {
+            eprintln!(
+                "WARNING: model '{}' selected for role '{}' does not satisfy capability \
+                 requirements: {}. Consider configuring a model with these capabilities \
+                 under [agent.roles.{}].",
+                model_key,
+                role_label,
+                missing.join(", "),
+                role_label,
+            );
+        }
+    }
 }
 
 // NOTE: `preflight_providers_aggregate` was removed — it emitted warnings for

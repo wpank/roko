@@ -11,10 +11,12 @@ use std::time::{Duration, Instant};
 
 use cargo_metadata::{Metadata, Package, PackageId, Target};
 use roko_core::config::GatesConfig;
+use roko_core::language::Visibility;
+use roko_index::workspace::{CodeIndex, WorkspaceIndex};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 use tokio::time::timeout;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 const MAX_GIT_OUTPUT: usize = 4 * 1024 * 1024;
 const MAX_METADATA_OUTPUT: usize = 16 * 1024 * 1024;
@@ -75,6 +77,37 @@ impl ImpactedTarget {
     }
 }
 
+/// Confidence level for the impact analysis, determined by the analysis
+/// strategy that was available and the completeness of the result.
+///
+/// - `High` — a symbol-level code index was consulted and confirmed which
+///   public symbols are actually referenced by downstream crates.
+/// - `Medium` — the conservative heuristic (diff-line classification +
+///   Cargo metadata reverse-dependency walk) ran successfully but no
+///   symbol-level index was available.
+/// - `Low` — the analysis fell back to full verification due to a timeout,
+///   ambiguous input, or an overflow cap.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ConfidenceLevel {
+    /// Full verification fallback; analysis could not narrow the scope.
+    #[default]
+    Low,
+    /// Conservative heuristic without symbol-level resolution.
+    Medium,
+    /// Symbol-level index confirmed cross-crate references.
+    High,
+}
+
+impl std::fmt::Display for ConfidenceLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Low => f.write_str("low"),
+            Self::Medium => f.write_str("medium"),
+            Self::High => f.write_str("high"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ImpactReport {
     pub changed_files: Vec<String>,
@@ -87,6 +120,15 @@ pub struct ImpactReport {
     pub high_impact_reasons: Vec<String>,
     pub fallback_reason: Option<String>,
     pub analysis_ms: u64,
+    /// How much trust the caller should place in the scope narrowing.
+    pub confidence: ConfidenceLevel,
+    /// Symbols confirmed as cross-crate-referenced by the index oracle.
+    /// Empty when the index was unavailable or no public symbols were found.
+    pub index_referenced_symbols: Vec<String>,
+    /// Whether a non-Rust schema file change was detected.
+    pub schema_change_detected: bool,
+    /// Whether a macro-generated API change was detected.
+    pub macro_api_change_detected: bool,
 }
 
 impl ImpactReport {
@@ -269,10 +311,16 @@ pub async fn analyze(
         return report;
     }
 
-    match public_surface_reasons(workdir, &report.changed_files, limit).await {
-        Ok(reasons) => {
-            report.high_impact = report.high_impact || !reasons.is_empty();
-            report.high_impact_reasons.extend(reasons);
+    match public_surface_classification(workdir, &report.changed_files, limit).await {
+        Ok(classification) => {
+            report.high_impact =
+                report.high_impact || !classification.reasons.is_empty();
+            report.high_impact_reasons.extend(classification.reasons);
+            report.macro_api_change_detected = classification.macro_api_detected;
+            report.schema_change_detected = classification.schema_change_detected;
+            if classification.schema_change_detected {
+                report.high_impact = true;
+            }
         }
         Err(error) => {
             report.fallback_reason = Some(error);
@@ -332,12 +380,34 @@ pub async fn analyze(
         return report;
     }
     report.targets = targets.into_iter().collect();
+
+    // --- Symbol-level oracle (optional, upgrades confidence to High) ---
+    let index_available = try_symbol_oracle(
+        workdir,
+        &report.changed_files,
+        &report.producer_packages,
+        &report.reverse_dependents,
+    );
+    if !index_available.is_empty() {
+        report.index_referenced_symbols = index_available;
+        report.confidence = ConfidenceLevel::High;
+        info!(
+            referenced_symbols = report.index_referenced_symbols.len(),
+            "symbol-level index oracle confirmed cross-crate references"
+        );
+    } else {
+        // No index available or no cross-crate references found; the
+        // conservative heuristic is still valid.
+        report.confidence = ConfidenceLevel::Medium;
+    }
+
     report.analysis_ms = elapsed_ms(started);
     info!(
         changed_files = report.changed_files.len(),
         targets = report.targets.len(),
         high_impact = report.high_impact,
         reverse_dependents = report.reverse_dependents.len(),
+        confidence = %report.confidence,
         analysis_ms = report.analysis_ms,
         "Cargo change-impact analysis complete"
     );
@@ -697,10 +767,10 @@ fn targets_for_path(workdir: &Path, changed: &str, package: &Package) -> Vec<Imp
 }
 
 /// Classify a single stripped code line (no `+`/`-` prefix) as a public-item
-/// change, a contract change, or both.
+/// change, a contract change, a macro-generated API change, or a combination.
 ///
-/// Returns `(public, contract)`.
-fn classify_code_line(code: &str) -> (bool, bool) {
+/// Returns `(public, contract, macro_api)`.
+fn classify_code_line(code: &str) -> (bool, bool, bool) {
     let public = code.starts_with("pub ")
         && !code.starts_with("pub(crate)")
         && !code.starts_with("pub(super)")
@@ -712,7 +782,25 @@ fn classify_code_line(code: &str) -> (bool, bool) {
         || code.contains("derive(Deserialize")
         || code.starts_with("#[repr(")
         || code.starts_with("#[macro_export]");
-    (public, contract)
+    // Detect macro-generated APIs: derive macros that produce public trait
+    // implementations (Clone, Debug, Hash, etc.) and procedural macro
+    // invocations that generate code from annotations.
+    let macro_api = code.contains("#[derive(")
+        || code.starts_with("#[proc_macro")
+        || code.starts_with("#[macro_export]")
+        || code.starts_with("#[macro_use]");
+    (public, contract, macro_api)
+}
+
+/// Result of classifying unified-diff text.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DiffClassification {
+    /// Deduplicated reason strings in sorted order.
+    pub reasons: Vec<String>,
+    /// Whether any macro-generated API change was detected.
+    pub macro_api_detected: bool,
+    /// Whether any non-Rust schema file change was detected.
+    pub schema_change_detected: bool,
 }
 
 /// Classify unified-diff text into public-surface-change reason strings.
@@ -721,29 +809,88 @@ fn classify_code_line(code: &str) -> (bool, bool) {
 /// inspected for public item signatures and contract annotations. Returns the
 /// deduplicated reason set in sorted order.
 pub fn classify_diff_lines(diff_text: &str) -> Vec<String> {
+    classify_diff(diff_text).reasons
+}
+
+/// Extended classification that also reports macro-API and schema changes.
+pub fn classify_diff(diff_text: &str) -> DiffClassification {
     let mut reasons = BTreeSet::new();
-    for line in diff_text.lines().filter(|line| {
-        (line.starts_with('+') || line.starts_with('-'))
+    let mut macro_api_detected = false;
+    let mut schema_change_detected = false;
+    let mut current_file: Option<&str> = None;
+
+    for line in diff_text.lines() {
+        // Track which file the diff hunk belongs to so we can detect
+        // non-Rust schema files.
+        if let Some(rest) = line.strip_prefix("+++ b/") {
+            current_file = Some(rest);
+            if is_schema_file(rest) {
+                schema_change_detected = true;
+                reasons.insert(format!("non-Rust schema file changed: {rest}"));
+            }
+            continue;
+        }
+
+        let is_hunk_line = (line.starts_with('+') || line.starts_with('-'))
             && !line.starts_with("+++")
-            && !line.starts_with("---")
-    }) {
+            && !line.starts_with("---");
+        if !is_hunk_line {
+            continue;
+        }
+
         let code = line[1..].trim_start();
-        let (public, contract) = classify_code_line(code);
+        let (public, contract, macro_api) = classify_code_line(code);
         if public {
             reasons.insert("public Rust item/signature changed".to_string());
         }
         if contract {
             reasons.insert("trait, re-export, or serialized contract changed".to_string());
         }
+        if macro_api {
+            macro_api_detected = true;
+            // Only add a separate reason when the derive is not already
+            // covered by the contract bucket (e.g. derive(Serialize/
+            // Deserialize)) AND the change is on a public item or lib.rs
+            // root. Internal derives do not affect downstream crates.
+            if !contract
+                && (public || current_file.is_some_and(|f| f.ends_with("lib.rs")))
+            {
+                reasons.insert("macro-generated API changed (derive/proc_macro)".to_string());
+            }
+        }
     }
-    reasons.into_iter().collect()
+    DiffClassification {
+        reasons: reasons.into_iter().collect(),
+        macro_api_detected,
+        schema_change_detected,
+    }
 }
 
-async fn public_surface_reasons(
+/// Whether a path refers to a non-Rust schema file whose changes can affect
+/// code generation, configuration parsing, or serialization contracts.
+fn is_schema_file(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    let basename = lower.rsplit('/').next().unwrap_or(&lower);
+    // Schema files that commonly drive codegen or config parsing.
+    (basename.ends_with(".toml") && basename != "cargo.toml")
+        || basename.ends_with(".json")
+        || basename.ends_with(".jsonschema")
+        || basename.ends_with(".schema.json")
+        || basename.ends_with(".yaml")
+        || basename.ends_with(".yml")
+        || basename.ends_with(".graphql")
+        || basename.ends_with(".proto")
+        || basename.ends_with(".capnp")
+        || basename.ends_with(".fbs")
+}
+
+async fn public_surface_classification(
     workdir: &Path,
     changed_files: &[String],
     limit: Duration,
-) -> Result<Vec<String>, String> {
+) -> Result<DiffClassification, String> {
+    // Include schema file extensions in the diff glob so `classify_diff` can
+    // detect non-Rust schema changes alongside Rust source changes.
     let diff = bounded_output(
         workdir,
         "git",
@@ -754,6 +901,11 @@ async fn public_surface_reasons(
             "--",
             ":(glob)**/*.rs",
             ":(glob)**/*.toml",
+            ":(glob)**/*.json",
+            ":(glob)**/*.yaml",
+            ":(glob)**/*.yml",
+            ":(glob)**/*.proto",
+            ":(glob)**/*.graphql",
         ],
         limit,
         MAX_GIT_OUTPUT,
@@ -800,7 +952,7 @@ async fn public_surface_reasons(
             text.push_str(line);
         }
     }
-    Ok(classify_diff_lines(&text))
+    Ok(classify_diff(&text))
 }
 
 fn reverse_dependents(
@@ -859,6 +1011,156 @@ fn reverse_dependents(
     }
     let overflow = selected.len() > cap;
     (selected.into_iter().take(cap).collect(), overflow)
+}
+
+// ─── Symbol-level index oracle ──────────────────────────────────────────
+
+/// Attempt to use the `roko-index` code intelligence index to identify which
+/// public symbols from the changed (producer) packages are actually referenced
+/// by downstream (consumer) crates.
+///
+/// Returns the list of confirmed cross-crate-referenced symbol names. If the
+/// index cannot be loaded (e.g. the workspace has not been indexed yet), this
+/// returns an empty list and the caller falls back to the conservative
+/// heuristic.
+fn try_symbol_oracle(
+    workdir: &Path,
+    changed_files: &[String],
+    producer_packages: &[String],
+    reverse_dependents: &[String],
+) -> Vec<String> {
+    if producer_packages.is_empty() || reverse_dependents.is_empty() {
+        return Vec::new();
+    }
+
+    let index = match WorkspaceIndex::load(workdir) {
+        Ok(index) => index,
+        Err(error) => {
+            debug!(
+                %error,
+                "code index unavailable; falling back to conservative analysis"
+            );
+            return Vec::new();
+        }
+    };
+
+    // Collect the public symbols defined in changed files that belong to
+    // producer packages.
+    let producer_prefixes: Vec<String> = producer_packages
+        .iter()
+        .map(|name| format!("crates/{name}/"))
+        .collect();
+
+    let mut public_symbols: BTreeSet<String> = BTreeSet::new();
+    for path in changed_files {
+        if !path.ends_with(".rs") {
+            continue;
+        }
+        let is_producer = producer_prefixes.iter().any(|prefix| path.starts_with(prefix));
+        if !is_producer {
+            continue;
+        }
+        if let Ok(file_ast) = index.file_ast(path) {
+            for symbol in &file_ast.symbols {
+                if symbol.visibility == Visibility::Public {
+                    public_symbols.insert(symbol.id.symbol_name.clone());
+                }
+            }
+        }
+    }
+
+    if public_symbols.is_empty() {
+        return Vec::new();
+    }
+
+    // For each public symbol, check whether any downstream (consumer) crate
+    // has a graph reference to it.
+    let consumer_prefixes: Vec<String> = reverse_dependents
+        .iter()
+        .map(|name| format!("crates/{name}/"))
+        .collect();
+
+    let mut referenced = Vec::new();
+    for symbol_name in &public_symbols {
+        let refs = match index.find_references(symbol_name, None, false) {
+            Ok(refs) => refs,
+            Err(_) => continue,
+        };
+        let cross_crate = refs.iter().any(|r| {
+            consumer_prefixes
+                .iter()
+                .any(|prefix| r.location.file.starts_with(prefix))
+        });
+        if cross_crate {
+            referenced.push(symbol_name.clone());
+        }
+    }
+
+    referenced
+}
+
+// ─── Test fixtures ──────────────────────────────────────────────────────
+
+/// Build a minimal mock `cargo_metadata::Metadata` for a multi-crate workspace.
+///
+/// This is a test helper used by both the inline unit tests and integration
+/// tests that exercise the impact analyzer against synthetic workspaces.
+#[cfg(test)]
+fn mock_workspace_metadata(
+    crates: &[(&str, &[&str])],
+) -> cargo_metadata::Metadata {
+    use serde_json::json;
+
+    let workspace_root = "/mock";
+    let mut workspace_members = Vec::new();
+    let mut packages = Vec::new();
+    let mut nodes = Vec::new();
+
+    for (name, deps) in crates {
+        let id = format!("{name} 0.1.0 (path+file:///mock/crates/{name})");
+        workspace_members.push(json!(id));
+
+        packages.push(json!({
+            "name": name,
+            "version": "0.1.0",
+            "id": id,
+            "manifest_path": format!("/mock/crates/{name}/Cargo.toml"),
+            "targets": [{
+                "kind": ["lib"],
+                "crate_types": ["lib"],
+                "name": name,
+                "src_path": format!("/mock/crates/{name}/src/lib.rs"),
+                "edition": "2021"
+            }],
+            "features": {},
+            "dependencies": []
+        }));
+
+        let dep_ids: Vec<serde_json::Value> = deps
+            .iter()
+            .map(|dep| json!(format!("{dep} 0.1.0 (path+file:///mock/crates/{dep})")))
+            .collect();
+
+        nodes.push(json!({
+            "id": id,
+            "dependencies": dep_ids,
+            "deps": [],
+            "features": []
+        }));
+    }
+
+    serde_json::from_value(json!({
+        "version": 1,
+        "workspace_root": workspace_root,
+        "target_directory": format!("{workspace_root}/target"),
+        "workspace_members": workspace_members,
+        "packages": packages,
+        "resolve": {
+            "root": null,
+            "nodes": nodes
+        }
+    }))
+    .expect("mock metadata must deserialize")
 }
 
 #[cfg(test)]
@@ -1107,5 +1409,258 @@ diff --git a/crates/roko-core/src/types.rs b/crates/roko-core/src/types.rs
             1,
             "both serde annotations should collapse to a single contract reason, got {serde_reasons:?}"
         );
+    }
+
+    #[test]
+    fn confidence_level_defaults_to_low() {
+        let report = ImpactReport::default();
+        assert_eq!(report.confidence, ConfidenceLevel::Low);
+        assert!(report.index_referenced_symbols.is_empty());
+        assert!(!report.schema_change_detected);
+        assert!(!report.macro_api_change_detected);
+    }
+
+    #[test]
+    fn confidence_level_ordering() {
+        assert!(ConfidenceLevel::Low < ConfidenceLevel::Medium);
+        assert!(ConfidenceLevel::Medium < ConfidenceLevel::High);
+    }
+
+    #[test]
+    fn confidence_level_display() {
+        assert_eq!(ConfidenceLevel::Low.to_string(), "low");
+        assert_eq!(ConfidenceLevel::Medium.to_string(), "medium");
+        assert_eq!(ConfidenceLevel::High.to_string(), "high");
+    }
+
+    #[test]
+    fn fallback_report_has_low_confidence() {
+        let report = ImpactReport {
+            fallback_reason: Some("something went wrong".into()),
+            ..Default::default()
+        };
+        assert_eq!(report.confidence, ConfidenceLevel::Low);
+    }
+
+    #[test]
+    fn derive_macro_detected_in_diff() {
+        let diff = "\
+diff --git a/crates/roko-core/src/lib.rs b/crates/roko-core/src/lib.rs
+--- a/crates/roko-core/src/lib.rs
++++ b/crates/roko-core/src/lib.rs
+@@ -10,0 +11,2 @@
++#[derive(Clone, Debug, Hash)]
++pub struct NewConfig {
+";
+        let classification = classify_diff(&diff);
+        assert!(
+            classification.macro_api_detected,
+            "derive(Clone, Debug, Hash) must trigger macro_api_detected"
+        );
+        assert!(
+            classification.reasons.iter().any(|r| r.contains("macro-generated")),
+            "public derive on lib.rs must produce macro-generated reason, got {:?}",
+            classification.reasons
+        );
+    }
+
+    #[test]
+    fn proc_macro_attribute_detected() {
+        let diff = "\
+diff --git a/crates/roko-macros/src/lib.rs b/crates/roko-macros/src/lib.rs
+--- a/crates/roko-macros/src/lib.rs
++++ b/crates/roko-macros/src/lib.rs
+@@ -5,0 +6,1 @@
++#[proc_macro_derive(MyTrait)]
+";
+        let classification = classify_diff(&diff);
+        assert!(
+            classification.macro_api_detected,
+            "proc_macro_derive must trigger macro_api_detected"
+        );
+    }
+
+    #[test]
+    fn schema_file_change_detected() {
+        let diff = "\
+diff --git a/config/schema.json b/config/schema.json
+--- a/config/schema.json
++++ b/config/schema.json
+@@ -5,1 +5,1 @@
+-  \"max_retries\": 3
++  \"max_retries\": 5
+";
+        let classification = classify_diff(&diff);
+        assert!(
+            classification.schema_change_detected,
+            "JSON schema file change must set schema_change_detected"
+        );
+        assert!(
+            classification.reasons.iter().any(|r| r.contains("non-Rust schema file")),
+            "schema file change must produce reason, got {:?}",
+            classification.reasons
+        );
+    }
+
+    #[test]
+    fn schema_detection_covers_multiple_formats() {
+        assert!(is_schema_file("config/settings.yaml"));
+        assert!(is_schema_file("schemas/api.proto"));
+        assert!(is_schema_file("models/query.graphql"));
+        assert!(is_schema_file("config.yml"));
+        assert!(is_schema_file("defs.fbs"));
+        assert!(is_schema_file("schema.capnp"));
+        // Cargo.toml is NOT a schema file (it is handled separately).
+        assert!(!is_schema_file("crates/foo/Cargo.toml"));
+        // Regular Rust source is not a schema file.
+        assert!(!is_schema_file("src/lib.rs"));
+    }
+
+    #[test]
+    fn mock_workspace_metadata_roundtrips() {
+        let metadata = mock_workspace_metadata(&[
+            ("core", &[]),
+            ("agent", &["core"]),
+            ("cli", &["core", "agent"]),
+        ]);
+        assert_eq!(metadata.workspace_members.len(), 3);
+        let names: Vec<String> = metadata
+            .packages
+            .iter()
+            .map(|p| p.name.to_string())
+            .collect();
+        assert!(names.contains(&"core".to_string()));
+        assert!(names.contains(&"agent".to_string()));
+        assert!(names.contains(&"cli".to_string()));
+
+        // Verify reverse dependents work with the helper.
+        let (deps, overflow) = reverse_dependents(
+            &metadata,
+            &["core".to_string()],
+            10,
+        );
+        assert!(!overflow);
+        // Both "agent" and "cli" depend on "core".
+        assert!(
+            deps.contains(&"agent".to_string()),
+            "agent must be a reverse dependent of core, got {deps:?}"
+        );
+        assert!(
+            deps.contains(&"cli".to_string()),
+            "cli must be a reverse dependent of core, got {deps:?}"
+        );
+    }
+
+    #[test]
+    fn public_struct_field_change_with_mock_workspace() {
+        // End-to-end: a public struct field change in "core" must cause
+        // the analyzer to flag both "agent" and "cli" as reverse dependents.
+        let diff = "\
+diff --git a/crates/core/src/config.rs b/crates/core/src/config.rs
+--- a/crates/core/src/config.rs
++++ b/crates/core/src/config.rs
+@@ -42,1 +42,1 @@
+-    pub enabled: bool,
++    pub enabled: Option<bool>,
+";
+        let reasons = classify_diff_lines(diff);
+        assert!(
+            reasons.iter().any(|r| r.contains("public Rust item/signature")),
+            "public struct field must be flagged, got {reasons:?}"
+        );
+
+        let metadata = mock_workspace_metadata(&[
+            ("core", &[]),
+            ("agent", &["core"]),
+            ("cli", &["core", "agent"]),
+        ]);
+        let (deps, overflow) = reverse_dependents(
+            &metadata,
+            &["core".to_string()],
+            10,
+        );
+        assert!(!overflow);
+        assert!(deps.len() >= 2, "expected >=2 reverse deps, got {deps:?}");
+        assert!(deps.contains(&"agent".to_string()));
+        assert!(deps.contains(&"cli".to_string()));
+    }
+
+    #[test]
+    fn transitive_reverse_dependents_via_mock() {
+        // "base" -> "mid" -> "leaf": changing "base" must transitively
+        // reach both "mid" and "leaf".
+        let metadata = mock_workspace_metadata(&[
+            ("base", &[]),
+            ("mid", &["base"]),
+            ("leaf", &["mid"]),
+        ]);
+        let (deps, overflow) = reverse_dependents(
+            &metadata,
+            &["base".to_string()],
+            10,
+        );
+        assert!(!overflow);
+        assert!(
+            deps.contains(&"mid".to_string()),
+            "mid must be a transitive reverse dependent of base"
+        );
+        assert!(
+            deps.contains(&"leaf".to_string()),
+            "leaf must be a transitive reverse dependent of base"
+        );
+    }
+
+    #[test]
+    fn no_reverse_dependents_for_leaf_crate() {
+        let metadata = mock_workspace_metadata(&[
+            ("base", &[]),
+            ("leaf", &["base"]),
+        ]);
+        let (deps, overflow) = reverse_dependents(
+            &metadata,
+            &["leaf".to_string()],
+            10,
+        );
+        assert!(!overflow);
+        assert!(
+            deps.is_empty(),
+            "leaf has no reverse dependents, got {deps:?}"
+        );
+    }
+
+    #[test]
+    fn internal_derive_does_not_produce_macro_reason() {
+        // A derive on a non-public item in a non-lib.rs file should flag
+        // macro_api_detected but should NOT produce a reason string.
+        let diff = "\
+diff --git a/crates/roko-cli/src/internal.rs b/crates/roko-cli/src/internal.rs
+--- a/crates/roko-cli/src/internal.rs
++++ b/crates/roko-cli/src/internal.rs
+@@ -3,0 +4,2 @@
++#[derive(Clone, Debug)]
++struct InternalHelper {
+";
+        let classification = classify_diff(&diff);
+        assert!(
+            classification.macro_api_detected,
+            "macro_api_detected should be true even for internal derives"
+        );
+        // No "macro-generated" reason since it is not on a pub item or lib.rs
+        assert!(
+            !classification.reasons.iter().any(|r| r.contains("macro-generated")),
+            "internal derive should not produce a macro-generated reason, got {:?}",
+            classification.reasons
+        );
+    }
+
+    #[test]
+    fn toml_config_not_treated_as_schema_when_its_cargo() {
+        // Cargo.toml changes are handled by the build-contract path, not the
+        // schema detector.
+        assert!(!is_schema_file("Cargo.toml"));
+        assert!(!is_schema_file("crates/roko-core/Cargo.toml"));
+        // But a non-Cargo TOML file should be detected.
+        assert!(is_schema_file("config/roko.toml"));
+        assert!(is_schema_file("settings.toml"));
     }
 }

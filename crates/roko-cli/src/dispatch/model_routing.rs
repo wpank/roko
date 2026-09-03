@@ -1,11 +1,26 @@
 //! Model routing — turn a task + dispatch context into a [`ModelSpec`].
 //!
+//! ## CLI flag disambiguation
+//!
+//! Three CLI names exist for model overrides:
+//!
+//! | Flag | Scope | Field | Notes |
+//! |------|-------|-------|-------|
+//! | `--model` | Global (before subcommand) | `Cli.model` | Primary name |
+//! | `--force-model` | Global (before subcommand) | `Cli.model` | Alias for `--model` |
+//! | `--force-backend` | `plan run` subcommand only | `PlanRun.force_backend` | Subcommand convenience; wins over global `--model` |
+//!
+//! All three ultimately populate `RunConfig.cli_model_override`, which the
+//! event loop copies into `DispatchContext.force_backend`. This module reads
+//! that field as the highest-priority input.
+//!
 //! ## Decision pipeline
 //!
-//! 1. **Manual override**. `force_backend` from CLI / config wins
-//!    unconditionally. This preserves the operator's ability to pin a
-//!    backend during incidents — and the choice is recorded so the
-//!    feedback loop can learn from operator preferences.
+//! 1. **Manual override**. `force_backend` from CLI (`--model` /
+//!    `--force-model` / `--force-backend`) wins unconditionally. This
+//!    preserves the operator's ability to pin a model during incidents —
+//!    and the choice is recorded so the feedback loop can learn from
+//!    operator preferences.
 //! 2. **Task hint**. `task_def.model_hint` (if any). Hints are author
 //!    intent — not learned policy — and always beat the router.
 //! 3. **CascadeRouter**. Only consulted when neither override nor hint
@@ -53,7 +68,8 @@ pub struct RoutingInputs {
     pub task_tier: String,
     /// Author-provided model hint (`task.model_hint`).
     pub task_model_hint: Option<String>,
-    /// Operator override (`force_backend` from config).
+    /// Operator override from CLI `--model` / `--force-model` / `--force-backend`.
+    /// Highest priority: when set, the router returns this slug immediately.
     pub force_backend: Option<String>,
     /// Remaining USD budget for the plan.
     pub budget_remaining_usd: f64,
@@ -98,7 +114,7 @@ impl RoutingInputs {
 /// Why the router picked this model — preserved for feedback writers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelChoiceSource {
-    /// `force_backend` override from CLI / config.
+    /// Operator override via `--model` / `--force-model` / `--force-backend`.
     Override,
     /// Author intent (`task.model_hint`).
     TaskHint,

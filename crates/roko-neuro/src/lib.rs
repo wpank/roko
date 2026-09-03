@@ -1494,6 +1494,8 @@ pub mod knowledge_store;
 pub mod lifecycle;
 /// Temporal knowledge topology -- Allen interval algebra over knowledge states.
 pub mod temporal;
+/// Transactional knowledge sync envelope and cursor protocol.
+pub mod sync_protocol;
 /// Tier progression from raw episodes to playbooks.
 pub mod tier_progression;
 
@@ -1530,6 +1532,11 @@ pub use lifecycle::{
 };
 pub use temporal::{
     AllenRelation, KnowledgeEpoch, TemporalIndex, TemporalInterval, TemporalRelation,
+};
+pub use sync_protocol::{
+    MeshLayout, PeerCursorV1, ReceiveResult, SendResult, SyncEntryV1, SyncEnvelopeV1,
+    compute_envelope_checksum, load_peer_cursor, receive_sync, send_sync, validate_peer_name,
+    verify_envelope_checksum,
 };
 pub use tier_progression::{
     DEFAULT_HEURISTIC_DEMOTIONS_FILE, DEFAULT_HEURISTIC_OBSERVATIONS_FILE, DEFAULT_HEURISTICS_FILE,

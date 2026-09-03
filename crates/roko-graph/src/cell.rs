@@ -38,6 +38,18 @@ pub struct CellContext {
     /// Effective capability intersection for this execution scope.
     /// `None` preserves the unscoped workspace behavior.
     pub capabilities: Option<roko_core::CapabilitySet>,
+    /// Zero-based wave index within the current graph execution.
+    ///
+    /// Set by the engine during parallel wave execution. `None` for
+    /// sequential execution or when the wave context is not available.
+    /// Added by #246; wired by #256.
+    pub wave_index: Option<u32>,
+    /// Total number of waves in the current graph execution.
+    ///
+    /// Set by the engine during parallel wave execution. `None` for
+    /// sequential execution or when the wave context is not available.
+    /// Added by #246; wired by #256.
+    pub total_waves: Option<u32>,
 }
 
 impl CellContext {
@@ -52,6 +64,8 @@ impl CellContext {
             parent_graph_id: None,
             cell_id: None,
             capabilities: None,
+            wave_index: None,
+            total_waves: None,
         }
     }
 

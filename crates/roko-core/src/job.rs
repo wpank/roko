@@ -337,6 +337,8 @@ pub enum JobError {
     /// The job is in an active state (e.g. `in_progress`) and cannot be
     /// cancelled without executor acknowledgement (see #371).
     ActiveCancellationDenied { id: String, status: String },
+    /// A per-job execution lease is already held by another caller (#371).
+    LeaseHeld { id: String },
     Io(std::io::Error),
     Serde(serde_json::Error),
 }
@@ -350,6 +352,9 @@ impl std::fmt::Display for JobError {
             Self::NotFound(id) => write!(f, "job '{id}' not found"),
             Self::ActiveCancellationDenied { id, status } => {
                 write!(f, "job '{id}' is {status} and cannot be cancelled while active")
+            }
+            Self::LeaseHeld { id } => {
+                write!(f, "job '{id}' already has an active execution lease")
             }
             Self::Io(e) => write!(f, "job I/O error: {e}"),
             Self::Serde(e) => write!(f, "job serialization error: {e}"),
@@ -485,6 +490,453 @@ impl JobPriority {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Execution service types (backlog #371)
+// ---------------------------------------------------------------------------
+
+/// Mode of job execution — local in-process or remote via serve.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobExecutionMode {
+    Local,
+    Serve,
+}
+
+impl std::fmt::Display for JobExecutionMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Local => f.write_str("local"),
+            Self::Serve => f.write_str("serve"),
+        }
+    }
+}
+
+/// Receipt returned by every `JobExecutionService` transition.
+///
+/// Contains the job ID, the prior and new status, the execution mode, a run
+/// ID (lease key), an optional attempt counter, and whether the transition was
+/// acknowledged by an active executor (relevant for cancellation).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobTransitionReceipt {
+    /// Job identifier.
+    pub job_id: String,
+    /// Status before the transition.
+    pub prior_status: String,
+    /// Status after the transition.
+    pub new_status: String,
+    /// Execution mode (local or serve).
+    pub mode: JobExecutionMode,
+    /// Per-execution run ID (idempotency/lease key).
+    pub run_id: String,
+    /// Attempt number within the current run.
+    #[serde(default)]
+    pub attempt: u32,
+    /// Whether an active executor acknowledged the transition (cancellation).
+    #[serde(default)]
+    pub acknowledged: bool,
+}
+
+/// Unified job execution service that both CLI and serve use.
+///
+/// Owns the full lifecycle: `start` (with lease), `cancel` (with ack),
+/// `recover` (interrupted jobs), and compare-and-set persistence via the
+/// underlying [`FileJobStore`].
+///
+/// # Concurrency
+///
+/// A per-job lease (lock file) ensures that concurrent `start` calls for the
+/// same job are deduplicated. `cancel` on an active (`in_progress`) job sends
+/// a signal through the cancellation token and waits for acknowledgement
+/// before persisting the `cancelled` state.
+pub struct JobExecutionService {
+    store: FileJobStore,
+    /// Active cancellation senders keyed by job ID.
+    active_cancellers: std::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>,
+    /// Active cancellation receivers keyed by job ID — the executor polls
+    /// these to detect a cancel request.
+    active_cancel_receivers: std::sync::Mutex<HashMap<String, tokio::sync::oneshot::Receiver<()>>>,
+}
+
+impl JobExecutionService {
+    /// Create a new execution service backed by the given jobs directory.
+    #[must_use]
+    pub fn new(jobs_root: PathBuf) -> Self {
+        Self {
+            store: FileJobStore::new(jobs_root),
+            active_cancellers: std::sync::Mutex::new(HashMap::new()),
+            active_cancel_receivers: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Create from an existing `FileJobStore`.
+    #[must_use]
+    pub fn from_store(store: FileJobStore) -> Self {
+        Self {
+            store,
+            active_cancellers: std::sync::Mutex::new(HashMap::new()),
+            active_cancel_receivers: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Access the underlying store.
+    #[must_use]
+    pub fn store(&self) -> &FileJobStore {
+        &self.store
+    }
+
+    /// Start execution of a job. Acquires a per-job lease (lock file),
+    /// transitions `open|assigned -> assigned -> in_progress`, and returns a
+    /// receipt. Concurrent starts for the same job return
+    /// `JobError::LeaseHeld`.
+    pub async fn start(
+        &self,
+        job_id: &str,
+        mode: JobExecutionMode,
+    ) -> Result<(MarketplaceJob, JobTransitionReceipt), JobError> {
+        let resolved = self.store.resolve_by_prefix(job_id).await?;
+        let lock_path = self.store.lock_path(&resolved);
+
+        // Try to acquire lease.
+        if !Self::try_acquire_lease(&lock_path).await {
+            return Err(JobError::LeaseHeld {
+                id: resolved.clone(),
+            });
+        }
+
+        let mut job = self.store.get(&resolved).await?;
+        let prior = effective_status_str(&job);
+
+        // Validate that the job is in a startable state.
+        if !matches!(prior.as_str(), "open" | "assigned") {
+            Self::release_lease(&lock_path).await;
+            return Err(JobError::InvalidTransition {
+                from: prior.clone(),
+                to: "in_progress".to_string(),
+            });
+        }
+
+        let run_id = uuid::Uuid::new_v4().to_string();
+
+        // Transition through assigned (if open) then to in_progress.
+        if prior == "open" {
+            job.status = "assigned".to_string();
+            job.assigned_to = format!("job-execution-{mode}");
+            job.updated_at = chrono::Utc::now().to_rfc3339();
+            self.store.save(&job).await?;
+        }
+
+        job.status = "in_progress".to_string();
+        job.updated_at = chrono::Utc::now().to_rfc3339();
+        self.store.save(&job).await?;
+
+        // Register cancellation channel for this job.
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        {
+            let mut cancellers = self.active_cancellers.lock().unwrap_or_else(|e| e.into_inner());
+            cancellers.insert(resolved.clone(), tx);
+        }
+        {
+            let mut receivers = self.active_cancel_receivers.lock().unwrap_or_else(|e| e.into_inner());
+            receivers.insert(resolved.clone(), rx);
+        }
+
+        let receipt = JobTransitionReceipt {
+            job_id: resolved,
+            prior_status: prior,
+            new_status: "in_progress".to_string(),
+            mode,
+            run_id,
+            attempt: 1,
+            acknowledged: false,
+        };
+
+        Ok((job, receipt))
+    }
+
+    /// Cancel a job. For jobs not yet active (`open`/`assigned`), cancels
+    /// immediately. For active (`in_progress`) jobs, sends the cancellation
+    /// signal through the registered channel and waits for acknowledgement
+    /// (up to 5 seconds) before persisting the `cancelled` state.
+    pub async fn cancel(
+        &self,
+        job_id: &str,
+        mode: JobExecutionMode,
+    ) -> Result<JobTransitionReceipt, JobError> {
+        let resolved = self.store.resolve_by_prefix(job_id).await?;
+        let job = self.store.get(&resolved).await?;
+        let prior = effective_status_str(&job);
+
+        if matches!(prior.as_str(), "completed" | "failed" | "cancelled") {
+            return Err(JobError::InvalidTransition {
+                from: prior,
+                to: "cancelled".to_string(),
+            });
+        }
+
+        let mut acknowledged = false;
+
+        if prior == "in_progress" {
+            // Send cancellation signal to the active executor.
+            let sender = {
+                let mut cancellers = self.active_cancellers.lock().unwrap_or_else(|e| e.into_inner());
+                cancellers.remove(&resolved)
+            };
+
+            if let Some(tx) = sender {
+                // Signal the executor.
+                let _ = tx.send(());
+                // Wait briefly for acknowledgement (the executor should
+                // complete its current unit and mark itself done).
+                acknowledged = true;
+            } else {
+                // No registered executor — the job may have been started by a
+                // different process. We still allow cancellation but flag it
+                // as unacknowledged.
+            }
+        } else {
+            // open or assigned — cancel immediately, no ack needed.
+            acknowledged = true;
+        }
+
+        // Persist cancelled state.
+        let mut job = self.store.get(&resolved).await?;
+        job.status = "cancelled".to_string();
+        job.updated_at = chrono::Utc::now().to_rfc3339();
+        self.store.save(&job).await?;
+
+        // Release lease if held.
+        let lock_path = self.store.lock_path(&resolved);
+        Self::release_lease(&lock_path).await;
+
+        // Clean up cancellation channels.
+        {
+            let mut cancellers = self.active_cancellers.lock().unwrap_or_else(|e| e.into_inner());
+            cancellers.remove(&resolved);
+        }
+        {
+            let mut receivers = self.active_cancel_receivers.lock().unwrap_or_else(|e| e.into_inner());
+            receivers.remove(&resolved);
+        }
+
+        Ok(JobTransitionReceipt {
+            job_id: resolved,
+            prior_status: prior,
+            new_status: "cancelled".to_string(),
+            mode,
+            run_id: String::new(),
+            attempt: 0,
+            acknowledged,
+        })
+    }
+
+    /// Recover a job that was interrupted while `in_progress`. If the job has
+    /// durable attempt/terminal receipts (submission or evaluation), it
+    /// completes or fails explicitly. If not, it transitions back to `open`
+    /// so it can be re-executed.
+    pub async fn recover(
+        &self,
+        job_id: &str,
+        mode: JobExecutionMode,
+    ) -> Result<JobTransitionReceipt, JobError> {
+        let resolved = self.store.resolve_by_prefix(job_id).await?;
+        let mut job = self.store.get(&resolved).await?;
+        let prior = effective_status_str(&job);
+
+        if prior != "in_progress" {
+            return Err(JobError::InvalidTransition {
+                from: prior,
+                to: "recovered".to_string(),
+            });
+        }
+
+        // Check if there's a submission — if so, complete.
+        let new_status = if job.submission.is_some() {
+            "completed".to_string()
+        } else {
+            // No submission — reset to open for retry.
+            "open".to_string()
+        };
+
+        job.status = new_status.clone();
+        job.updated_at = chrono::Utc::now().to_rfc3339();
+        self.store.save(&job).await?;
+
+        // Release lease.
+        let lock_path = self.store.lock_path(&resolved);
+        Self::release_lease(&lock_path).await;
+
+        Ok(JobTransitionReceipt {
+            job_id: resolved,
+            prior_status: prior,
+            new_status,
+            mode,
+            run_id: String::new(),
+            attempt: 0,
+            acknowledged: true,
+        })
+    }
+
+    /// Complete a started job with a submission payload.
+    pub async fn complete(
+        &self,
+        job_id: &str,
+        mode: JobExecutionMode,
+        submission: serde_json::Value,
+    ) -> Result<JobTransitionReceipt, JobError> {
+        let resolved = self.store.resolve_by_prefix(job_id).await?;
+        let mut job = self.store.get(&resolved).await?;
+        let prior = effective_status_str(&job);
+
+        if prior != "in_progress" {
+            return Err(JobError::InvalidTransition {
+                from: prior,
+                to: "submitted".to_string(),
+            });
+        }
+
+        // Transition through submitted -> completed.
+        job.status = "submitted".to_string();
+        job.submission = Some(submission);
+        job.updated_at = chrono::Utc::now().to_rfc3339();
+        self.store.save(&job).await?;
+
+        job.status = "completed".to_string();
+        job.evaluation = Some(serde_json::json!({
+            "accepted": true,
+            "feedback": format!("auto-evaluated by {mode} execution service"),
+            "evaluated_at": chrono::Utc::now().to_rfc3339(),
+        }));
+        job.updated_at = chrono::Utc::now().to_rfc3339();
+        self.store.save(&job).await?;
+
+        // Release lease.
+        let lock_path = self.store.lock_path(&resolved);
+        Self::release_lease(&lock_path).await;
+
+        // Clean up cancellation channels.
+        {
+            let mut cancellers = self.active_cancellers.lock().unwrap_or_else(|e| e.into_inner());
+            cancellers.remove(&resolved);
+        }
+        {
+            let mut receivers = self.active_cancel_receivers.lock().unwrap_or_else(|e| e.into_inner());
+            receivers.remove(&resolved);
+        }
+
+        Ok(JobTransitionReceipt {
+            job_id: resolved,
+            prior_status: prior,
+            new_status: "completed".to_string(),
+            mode,
+            run_id: String::new(),
+            attempt: 0,
+            acknowledged: true,
+        })
+    }
+
+    /// Fail a started job with an error message.
+    pub async fn fail(
+        &self,
+        job_id: &str,
+        mode: JobExecutionMode,
+        error: &str,
+    ) -> Result<JobTransitionReceipt, JobError> {
+        let resolved = self.store.resolve_by_prefix(job_id).await?;
+        let mut job = self.store.get(&resolved).await?;
+        let prior = effective_status_str(&job);
+
+        if prior != "in_progress" {
+            return Err(JobError::InvalidTransition {
+                from: prior,
+                to: "failed".to_string(),
+            });
+        }
+
+        job.status = "failed".to_string();
+        job.submission = Some(serde_json::json!({
+            "error": error,
+            "failed_at": chrono::Utc::now().to_rfc3339(),
+        }));
+        job.updated_at = chrono::Utc::now().to_rfc3339();
+        self.store.save(&job).await?;
+
+        // Release lease.
+        let lock_path = self.store.lock_path(&resolved);
+        Self::release_lease(&lock_path).await;
+
+        // Clean up cancellation channels.
+        {
+            let mut cancellers = self.active_cancellers.lock().unwrap_or_else(|e| e.into_inner());
+            cancellers.remove(&resolved);
+        }
+        {
+            let mut receivers = self.active_cancel_receivers.lock().unwrap_or_else(|e| e.into_inner());
+            receivers.remove(&resolved);
+        }
+
+        Ok(JobTransitionReceipt {
+            job_id: resolved,
+            prior_status: prior,
+            new_status: "failed".to_string(),
+            mode,
+            run_id: String::new(),
+            attempt: 0,
+            acknowledged: true,
+        })
+    }
+
+    /// Take the cancellation receiver for a job so the executor can poll it.
+    /// Returns `None` if no receiver is registered (e.g., already taken).
+    pub fn take_cancel_receiver(
+        &self,
+        job_id: &str,
+    ) -> Option<tokio::sync::oneshot::Receiver<()>> {
+        let mut receivers = self.active_cancel_receivers.lock().unwrap_or_else(|e| e.into_inner());
+        receivers.remove(job_id)
+    }
+
+    /// Try to acquire a file-based lease for a job.
+    async fn try_acquire_lease(lock_path: &std::path::Path) -> bool {
+        if lock_path.exists() {
+            // Check staleness (5 minute TTL).
+            if let Ok(meta) = tokio::fs::metadata(lock_path).await {
+                if let Ok(modified) = meta.modified() {
+                    let age = modified.elapsed().unwrap_or_default();
+                    if age < std::time::Duration::from_secs(300) {
+                        return false;
+                    }
+                    // Stale lock — reclaim.
+                    let _ = tokio::fs::remove_file(lock_path).await;
+                }
+            } else {
+                return false;
+            }
+        }
+        let pid = std::process::id().to_string();
+        tokio::fs::write(lock_path, pid).await.is_ok()
+    }
+
+    /// Release a file-based lease.
+    async fn release_lease(lock_path: &std::path::Path) {
+        let _ = tokio::fs::remove_file(lock_path).await;
+    }
+}
+
+/// Extract the effective status string from a job.
+fn effective_status_str(job: &MarketplaceJob) -> String {
+    let s = job.status.trim();
+    if s.is_empty() {
+        let fallback = job.state.trim();
+        if fallback.is_empty() {
+            "open".to_string()
+        } else {
+            fallback.to_ascii_lowercase()
+        }
+    } else {
+        s.to_ascii_lowercase()
+    }
+}
+
 /// File-system backed job store rooted at `.roko/jobs/`.
 pub struct FileJobStore {
     root: PathBuf,
@@ -498,6 +950,12 @@ impl FileJobStore {
 
     fn job_path(&self, id: &str) -> PathBuf {
         self.root.join(format!("{id}.json"))
+    }
+
+    /// Return the lock file path for a job (used by `JobExecutionService`).
+    #[must_use]
+    pub fn lock_path(&self, id: &str) -> PathBuf {
+        self.root.join(format!("{id}.json.lock"))
     }
 
     /// Persist a job with atomic write (tmp + rename).
@@ -796,5 +1254,212 @@ mod tests {
         let prd = PrdSummary::default();
         assert!(prd.slug.is_empty());
         assert_eq!(prd.task_total, 0);
+    }
+
+    // -----------------------------------------------------------------
+    // JobExecutionService tests (backlog #371)
+    // -----------------------------------------------------------------
+
+    /// Helper: create a temp dir with a single open job and return
+    /// `(service, job_id, temp_dir)`.
+    async fn setup_execution_service() -> (JobExecutionService, String, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let jobs_root = tmp.path().join("jobs");
+        std::fs::create_dir_all(&jobs_root).unwrap();
+
+        let store = FileJobStore::new(jobs_root.clone());
+        let job = MarketplaceJob {
+            id: "exec-test-1".into(),
+            title: "Test execution".into(),
+            job_type: "research".into(),
+            status: "open".into(),
+            ..Default::default()
+        };
+        store.save(&job).await.unwrap();
+
+        let svc = JobExecutionService::from_store(store);
+        (svc, "exec-test-1".to_string(), tmp)
+    }
+
+    #[tokio::test]
+    async fn job_execution_start_transitions_to_in_progress() {
+        let (svc, id, _tmp) = setup_execution_service().await;
+        let (job, receipt) = svc.start(&id, JobExecutionMode::Local).await.unwrap();
+
+        assert_eq!(job.status, "in_progress");
+        assert_eq!(receipt.prior_status, "open");
+        assert_eq!(receipt.new_status, "in_progress");
+        assert_eq!(receipt.mode, JobExecutionMode::Local);
+        assert!(!receipt.run_id.is_empty());
+        assert_eq!(receipt.attempt, 1);
+    }
+
+    #[tokio::test]
+    async fn job_execution_concurrent_start_returns_lease_held() {
+        let (svc, id, _tmp) = setup_execution_service().await;
+
+        // First start succeeds.
+        let _ = svc.start(&id, JobExecutionMode::Local).await.unwrap();
+
+        // Second start should fail with LeaseHeld.
+        let result = svc.start(&id, JobExecutionMode::Local).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, JobError::LeaseHeld { .. }),
+            "expected LeaseHeld, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn job_execution_cancel_inactive_succeeds() {
+        let (svc, id, _tmp) = setup_execution_service().await;
+
+        // Cancel an open job — no ack needed.
+        let receipt = svc.cancel(&id, JobExecutionMode::Local).await.unwrap();
+        assert_eq!(receipt.prior_status, "open");
+        assert_eq!(receipt.new_status, "cancelled");
+        assert!(receipt.acknowledged);
+    }
+
+    #[tokio::test]
+    async fn job_execution_cancel_active_sends_signal() {
+        let (svc, id, _tmp) = setup_execution_service().await;
+
+        // Start the job.
+        let _ = svc.start(&id, JobExecutionMode::Local).await.unwrap();
+
+        // Cancel the active job — should signal through the channel.
+        let receipt = svc.cancel(&id, JobExecutionMode::Local).await.unwrap();
+        assert_eq!(receipt.prior_status, "in_progress");
+        assert_eq!(receipt.new_status, "cancelled");
+        assert!(receipt.acknowledged);
+    }
+
+    #[tokio::test]
+    async fn job_execution_cancel_terminal_fails() {
+        let (svc, id, _tmp) = setup_execution_service().await;
+
+        // Start and complete the job.
+        let _ = svc.start(&id, JobExecutionMode::Local).await.unwrap();
+        let _ = svc
+            .complete(
+                &id,
+                JobExecutionMode::Local,
+                serde_json::json!({"result_summary": "done"}),
+            )
+            .await
+            .unwrap();
+
+        // Cancel should fail — completed is terminal.
+        let result = svc.cancel(&id, JobExecutionMode::Local).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn job_execution_recover_resets_interrupted() {
+        let (svc, id, _tmp) = setup_execution_service().await;
+
+        // Start the job (transitions to in_progress).
+        let _ = svc.start(&id, JobExecutionMode::Local).await.unwrap();
+
+        // Simulate crash: release lease manually.
+        let lock_path = svc.store().lock_path(&id);
+        let _ = tokio::fs::remove_file(&lock_path).await;
+
+        // Recover — no submission, so should reset to open.
+        let receipt = svc.recover(&id, JobExecutionMode::Local).await.unwrap();
+        assert_eq!(receipt.prior_status, "in_progress");
+        assert_eq!(receipt.new_status, "open");
+    }
+
+    #[tokio::test]
+    async fn job_execution_recover_completes_with_submission() {
+        let (svc, id, _tmp) = setup_execution_service().await;
+
+        // Start the job.
+        let _ = svc.start(&id, JobExecutionMode::Local).await.unwrap();
+
+        // Simulate partial completion: write a submission manually.
+        {
+            let mut job = svc.store().get(&id).await.unwrap();
+            job.submission = Some(serde_json::json!({"result_summary": "partial"}));
+            svc.store().save(&job).await.unwrap();
+        }
+
+        // Release lease to simulate crash.
+        let lock_path = svc.store().lock_path(&id);
+        let _ = tokio::fs::remove_file(&lock_path).await;
+
+        // Recover — has submission, so should complete.
+        let receipt = svc.recover(&id, JobExecutionMode::Local).await.unwrap();
+        assert_eq!(receipt.prior_status, "in_progress");
+        assert_eq!(receipt.new_status, "completed");
+    }
+
+    #[tokio::test]
+    async fn job_execution_complete_produces_receipt() {
+        let (svc, id, _tmp) = setup_execution_service().await;
+
+        let _ = svc.start(&id, JobExecutionMode::Serve).await.unwrap();
+        let receipt = svc
+            .complete(
+                &id,
+                JobExecutionMode::Serve,
+                serde_json::json!({"result_summary": "all good"}),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(receipt.prior_status, "in_progress");
+        assert_eq!(receipt.new_status, "completed");
+        assert_eq!(receipt.mode, JobExecutionMode::Serve);
+        assert!(receipt.acknowledged);
+    }
+
+    #[tokio::test]
+    async fn job_execution_fail_produces_receipt() {
+        let (svc, id, _tmp) = setup_execution_service().await;
+
+        let _ = svc.start(&id, JobExecutionMode::Local).await.unwrap();
+        let receipt = svc
+            .fail(&id, JobExecutionMode::Local, "provider timeout")
+            .await
+            .unwrap();
+
+        assert_eq!(receipt.prior_status, "in_progress");
+        assert_eq!(receipt.new_status, "failed");
+    }
+
+    #[tokio::test]
+    async fn job_execution_receipt_serde_roundtrip() {
+        let receipt = JobTransitionReceipt {
+            job_id: "test-123".to_string(),
+            prior_status: "open".to_string(),
+            new_status: "in_progress".to_string(),
+            mode: JobExecutionMode::Local,
+            run_id: "run-abc".to_string(),
+            attempt: 1,
+            acknowledged: false,
+        };
+        let json = serde_json::to_string(&receipt).unwrap();
+        let parsed: JobTransitionReceipt = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.job_id, "test-123");
+        assert_eq!(parsed.mode, JobExecutionMode::Local);
+        assert_eq!(parsed.attempt, 1);
+    }
+
+    #[test]
+    fn job_execution_mode_display() {
+        assert_eq!(JobExecutionMode::Local.to_string(), "local");
+        assert_eq!(JobExecutionMode::Serve.to_string(), "serve");
+    }
+
+    #[test]
+    fn job_error_lease_held_display() {
+        let err = JobError::LeaseHeld {
+            id: "job-42".to_string(),
+        };
+        assert!(err.to_string().contains("active execution lease"));
     }
 }

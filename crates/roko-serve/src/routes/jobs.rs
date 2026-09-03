@@ -1217,24 +1217,38 @@ async fn start_job(
 async fn cancel_job_endpoint(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
-) -> Result<Json<JobRecord>, ApiError> {
+) -> Result<impl IntoResponse, ApiError> {
     validate_path_segment(&id, "job id")?;
-    let path = job_path(&state.workdir, &id);
-    let mut job = load_job(&state.workdir, &id).await?;
-    let current = normalise_status(&job.status);
-    if is_terminal(&current) {
-        return Err(ApiError::unprocessable_with_hint(
-            format!("cannot cancel job '{id}': current status '{current}' is terminal"),
-            format!("'{current}' is a terminal state with no valid transitions"),
-        ));
-    }
-    let prev_status = job.status.clone();
-    job.status = "cancelled".to_string();
-    job.updated_at = Utc::now().to_rfc3339();
-    write_job(&path, &job).await?;
+
+    let svc = roko_core::JobExecutionService::new(jobs_dir(&state.workdir));
+    let receipt = svc
+        .cancel(&id, roko_core::JobExecutionMode::Serve)
+        .await
+        .map_err(|e| match &e {
+            roko_core::JobError::InvalidTransition { from, .. } => {
+                ApiError::unprocessable_with_hint(
+                    format!("cannot cancel job '{id}': current status '{from}' is terminal"),
+                    format!("'{from}' is a terminal state with no valid transitions"),
+                )
+            }
+            _ => ApiError::internal(e.to_string()),
+        })?;
+
+    // Re-load the job record for event publishing and response.
+    let job = load_job(&state.workdir, &id).await?;
     publish_job_event(&state, ServerEventKind::Updated, &job)?;
-    publish_transition(&state, &job, &prev_status);
-    Ok(Json(job))
+    publish_transition(&state, &job, &receipt.prior_status);
+
+    Ok((
+        axum::http::StatusCode::OK,
+        Json(serde_json::json!({
+            "id": id,
+            "status": "cancelled",
+            "prior_status": receipt.prior_status,
+            "mode": receipt.mode.to_string(),
+            "acknowledged": receipt.acknowledged,
+        })),
+    ))
 }
 
 async fn execute_job_endpoint(
@@ -1242,6 +1256,8 @@ async fn execute_job_endpoint(
     AxumPath(id): AxumPath<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     validate_path_segment(&id, "job id")?;
+
+    // Validate the job is in a startable state before spawning.
     let job = load_job(&state.workdir, &id).await?;
     let current = normalise_status(&job.status);
     if current != "open" && current != "assigned" {
@@ -1250,6 +1266,8 @@ async fn execute_job_endpoint(
             "only jobs in 'open' or 'assigned' state can be executed".to_string(),
         ));
     }
+
+    let run_id = uuid::Uuid::new_v4().to_string();
 
     let state_clone = Arc::clone(&state);
     let job_id = id.clone();
@@ -1263,7 +1281,9 @@ async fn execute_job_endpoint(
         axum::http::StatusCode::ACCEPTED,
         Json(serde_json::json!({
             "id": id,
-            "status": "executing"
+            "status": "executing",
+            "run_id": run_id,
+            "mode": "serve",
         })),
     ))
 }

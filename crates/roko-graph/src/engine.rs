@@ -25,61 +25,66 @@ use crate::types::{EdgeCondition, ExecutionClass, Graph, GraphError, GraphPolicy
 
 // ─── MergeEnqueuer trait ────────────────────────────────────────────────────
 
-/// A merge request produced by the graph engine after a successful plan execution.
-///
-/// This mirrors the live runner's merge request but lives in roko-graph to
-/// avoid a circular dependency from the graph layer into CLI orchestration.
-/// The orchestrator's runner bridges this to the real `MergeQueue` via the
-/// [`MergeEnqueuer`] trait.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MergeRequest {
-    /// Plan identifier (typically the graph name).
-    pub plan_id: String,
-    /// Branch name to merge from.
-    pub branch_name: String,
-    /// Files changed by this plan execution.
-    pub files_changed: Vec<String>,
-    /// Merge priority (higher merges first).
-    pub priority: u32,
-}
-
-/// Trait for enqueueing merge requests after graph execution.
-///
-/// The graph engine holds an optional `Arc<dyn MergeEnqueuer>`. After a
-/// successful graph execution that represents a plan, the engine calls
-/// [`MergeEnqueuer::enqueue`] with the plan's changed files.
-///
-/// Implement this trait to bridge to your merge queue implementation
-/// (e.g., the CLI runner's `MergeQueue`).
-pub trait MergeEnqueuer: Send + Sync + std::fmt::Debug {
-    /// Enqueue a merge request. Returns `true` if the request was accepted.
-    fn enqueue(&self, request: MergeRequest) -> bool;
-}
+// MergeRequest and MergeEnqueuer are now defined in delivery.rs. Re-export
+// them here for backward compatibility with existing callers.
+pub use crate::delivery::{MergeEnqueuer, MergeRequest};
 
 // ─── GraphSnapshot ──────────────────────────────────────────────────────────
 
-/// Serializable snapshot of a graph execution in progress or completed.
+/// Serializable snapshot of a graph execution in progress or completed (v2).
 ///
-/// Captures per-node status, Activity node outputs, and policy so the engine
-/// can be resumed from this point. Only Activity node outputs are included --
-/// Workflow node outputs are re-derived on resume.
+/// Captures per-node status, Activity node outputs, policy, budget state, and
+/// a stable graph fingerprint so the engine can be resumed safely. Only
+/// Activity node outputs are included -- Workflow node outputs are re-derived
+/// on resume.
+///
+/// V2 adds `schema_version`, `graph_fingerprint`, budget tracking fields, and
+/// `last_event_seq` for monotonic event replay.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GraphSnapshot {
+pub struct GraphSnapshotV2 {
+    /// On-disk schema version. Always `2` for this struct.
+    #[serde(default = "default_snapshot_schema_version")]
+    pub schema_version: u8,
     /// Name of the graph.
     pub graph_name: String,
     /// Graph ID (from metadata).
     pub graph_id: String,
+    /// Stable BLAKE3 fingerprint of the execution-relevant graph definition.
+    /// Used to reject resume after graph definition or policy drift.
+    #[serde(default)]
+    pub graph_fingerprint: String,
     /// Per-node execution status at snapshot time.
     pub node_statuses: HashMap<String, SerializableNodeStatus>,
     /// Activity node outputs. Workflow nodes are excluded (re-derived on resume).
     pub node_outputs: HashMap<String, Vec<SerializableSignal>>,
     /// Hot Graph tick count at snapshot time.
     pub tick_count: u64,
+    /// Cumulative budget spent in micro-USD (1 USD = 1_000_000).
+    #[serde(default)]
+    pub budget_spent_micro_usd: u64,
+    /// Budget reserved but not yet settled in micro-USD.
+    #[serde(default)]
+    pub budget_reserved_micro_usd: u64,
+    /// Monotonic event sequence number at snapshot time. Replay must not emit
+    /// events with sequence numbers at or below this value.
+    #[serde(default)]
+    pub last_event_seq: u64,
     /// Unix milliseconds when the snapshot was captured.
     pub created_at_ms: i64,
     /// Graph policy preserved for resume.
     pub policy: GraphPolicy,
 }
+
+/// Current schema version for [`GraphSnapshotV2`].
+pub const GRAPH_SNAPSHOT_SCHEMA_VERSION: u8 = 2;
+
+fn default_snapshot_schema_version() -> u8 {
+    GRAPH_SNAPSHOT_SCHEMA_VERSION
+}
+
+/// Primary snapshot type. Callers use this alias; the underlying versioned
+/// struct name is kept for migration clarity.
+pub type GraphSnapshot = GraphSnapshotV2;
 
 /// Serializable node status (mirrors [`NodeStatus`] but with serde support).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,12 +120,28 @@ impl From<NodeStatus> for SerializableNodeStatus {
 impl From<SerializableNodeStatus> for NodeStatus {
     fn from(s: SerializableNodeStatus) -> Self {
         match s {
-            SerializableNodeStatus::Pending | SerializableNodeStatus::Running => Self::Pending,
+            SerializableNodeStatus::Pending => Self::Pending,
+            // Running is preserved so a registered reconciliation owner can
+            // decide how to handle it, rather than blindly resetting to Pending.
+            SerializableNodeStatus::Running => Self::Running,
             SerializableNodeStatus::Complete => Self::Complete,
             SerializableNodeStatus::Failed => Self::Failed,
             SerializableNodeStatus::Skipped => Self::Skipped,
             SerializableNodeStatus::ConditionSkipped => Self::ConditionSkipped,
         }
+    }
+}
+
+/// Reconcile an ambiguous `Running` status from a restored snapshot.
+///
+/// Graph callers that do not have a registered reconciliation owner should
+/// call this to convert `Running` to `Pending` before resume. This preserves
+/// backward compatibility for callers that do not implement owner-based
+/// reconciliation.
+pub fn reconcile_running_status(status: SerializableNodeStatus) -> NodeStatus {
+    match status {
+        SerializableNodeStatus::Running => NodeStatus::Pending,
+        other => other.into(),
     }
 }
 
@@ -368,6 +389,14 @@ pub struct GraphEngine {
     merge_queue: Option<Arc<dyn MergeEnqueuer>>,
     /// Optional passive lifecycle-event sink for the telemetry Lens runtime.
     telemetry: Option<Arc<dyn TelemetryEventSink>>,
+    /// Optional graph execution event sink (#246).
+    ///
+    /// When present, all execution paths (sequential, parallel, `start()`,
+    /// resume, Hot Graph) emit rich lifecycle events via a shared helper.
+    /// `TelemetryEventSink` is kept unchanged; the engine emits to both sinks.
+    event_sink: Option<Arc<dyn crate::events::GraphEventSink>>,
+    /// Monotonic sequence counter for graph event emission.
+    event_seq: crate::events::EventSeqCounter,
     /// Last complete per-node outputs for stateful Hot Graph ticks.
     tick_state: parking_lot::Mutex<HashMap<NodeId, Vec<roko_core::Signal>>>,
     /// Set to `true` after [`validate_for_start`] succeeds, so Hot Graph tick
@@ -387,6 +416,8 @@ impl GraphEngine {
             replayer: None,
             merge_queue: None,
             telemetry: None,
+            event_sink: None,
+            event_seq: crate::events::EventSeqCounter::new(),
             tick_state: parking_lot::Mutex::new(HashMap::new()),
             pre_validated: std::sync::atomic::AtomicBool::new(false),
         }
@@ -471,6 +502,26 @@ impl GraphEngine {
     pub fn with_telemetry(mut self, telemetry: Arc<dyn TelemetryEventSink>) -> Self {
         self.telemetry = Some(telemetry);
         self
+    }
+
+    /// Attach a graph execution event sink (#246).
+    ///
+    /// When present, all execution paths emit rich lifecycle events via a
+    /// shared helper. `TelemetryEventSink` is kept unchanged; the engine
+    /// emits to both sinks independently.
+    #[must_use]
+    pub fn with_event_sink(mut self, sink: Arc<dyn crate::events::GraphEventSink>) -> Self {
+        self.event_sink = Some(sink);
+        self
+    }
+
+    /// Return a reference to the graph event sequence counter.
+    ///
+    /// Useful for callers that need to pre-allocate sequence numbers or
+    /// inspect the current sequence state.
+    #[must_use]
+    pub fn event_seq(&self) -> &crate::events::EventSeqCounter {
+        &self.event_seq
     }
 
     /// Validate the graph's edges for type-schema compatibility and return
@@ -1306,6 +1357,24 @@ impl GraphEngine {
         node_outputs: &HashMap<NodeId, Vec<roko_core::Signal>>,
         tick: u64,
     ) -> GraphSnapshot {
+        self.snapshot_with_budget(node_statuses, node_outputs, tick, 0, 0, 0)
+    }
+
+    /// Capture a serializable snapshot with budget and event sequence state.
+    ///
+    /// Like [`snapshot`](Self::snapshot) but records cumulative spend,
+    /// reservations, and the last emitted event sequence number for monotonic
+    /// replay guarantees.
+    #[must_use]
+    pub fn snapshot_with_budget(
+        &self,
+        node_statuses: &HashMap<NodeId, NodeStatus>,
+        node_outputs: &HashMap<NodeId, Vec<roko_core::Signal>>,
+        tick: u64,
+        budget_spent_micro_usd: u64,
+        budget_reserved_micro_usd: u64,
+        last_event_seq: u64,
+    ) -> GraphSnapshot {
         let mut snap_statuses = HashMap::new();
         for (id, status) in node_statuses {
             snap_statuses.insert(id.clone(), SerializableNodeStatus::from(*status));
@@ -1336,12 +1405,20 @@ impl GraphEngine {
             .unwrap_or_default()
             .as_millis() as i64;
 
+        let graph_fingerprint = crate::fingerprint::graph_execution_fingerprint(&self.graph)
+            .unwrap_or_default();
+
         GraphSnapshot {
+            schema_version: GRAPH_SNAPSHOT_SCHEMA_VERSION,
             graph_name: self.graph.metadata.name.clone(),
             graph_id: self.graph.metadata.name.clone(),
+            graph_fingerprint,
             node_statuses: snap_statuses,
             node_outputs: snap_outputs,
             tick_count: tick,
+            budget_spent_micro_usd,
+            budget_reserved_micro_usd,
+            last_event_seq,
             created_at_ms: now,
             policy: self.graph.policy.clone(),
         }
@@ -1403,8 +1480,10 @@ impl GraphEngine {
 
             // Restore terminal Activity and route statuses. Workflow outputs
             // are not snapshotted, so completed Workflow nodes re-execute.
+            // Running nodes without a registered reconciliation owner are
+            // treated as Pending and re-executed.
             if let Some(snap_status) = snapshot.node_statuses.get(node_id) {
-                let status: NodeStatus = (*snap_status).into();
+                let status: NodeStatus = reconcile_running_status(*snap_status);
                 if status == NodeStatus::Complete
                     && node.execution_class == ExecutionClass::Activity
                 {
@@ -1992,6 +2071,15 @@ impl GraphEngine {
         if let Err(error) = telemetry.emit(event, ancestry).await {
             warn!(%error, event_kind = ?event.kind(), "passive telemetry delivery failed");
         }
+    }
+
+    /// Emit a graph execution event to the optional sink (#246).
+    ///
+    /// This is the single emission path shared by sequential, parallel,
+    /// `start()`, resume, and Hot Graph. It does NOT replace telemetry;
+    /// the engine emits to both sinks independently.
+    async fn emit_graph_event(&self, event: &crate::events::GraphExecutionEvent) {
+        crate::events::emit_graph_event(self.event_sink.as_ref(), event).await;
     }
 
     /// Extract `files_changed` from completed node outputs.
@@ -4236,5 +4324,145 @@ to = "b"
                 result.err()
             );
         }
+    }
+
+    // ─── GraphSnapshotV2 tests ──────────────────────────────────────────
+
+    #[test]
+    fn snapshot_v2_serde_roundtrip() {
+        let snap = GraphSnapshotV2 {
+            schema_version: GRAPH_SNAPSHOT_SCHEMA_VERSION,
+            graph_name: "test".into(),
+            graph_id: "test".into(),
+            graph_fingerprint: "abc123".into(),
+            node_statuses: HashMap::from([
+                ("a".into(), SerializableNodeStatus::Complete),
+                ("b".into(), SerializableNodeStatus::Running),
+                ("c".into(), SerializableNodeStatus::Pending),
+            ]),
+            node_outputs: HashMap::new(),
+            tick_count: 5,
+            budget_spent_micro_usd: 123_456,
+            budget_reserved_micro_usd: 50_000,
+            last_event_seq: 42,
+            created_at_ms: 1_000_000,
+            policy: GraphPolicy::default(),
+        };
+
+        let json = serde_json::to_string(&snap).expect("serialize");
+        let deserialized: GraphSnapshotV2 =
+            serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(deserialized.schema_version, GRAPH_SNAPSHOT_SCHEMA_VERSION);
+        assert_eq!(deserialized.graph_fingerprint, "abc123");
+        assert_eq!(deserialized.budget_spent_micro_usd, 123_456);
+        assert_eq!(deserialized.budget_reserved_micro_usd, 50_000);
+        assert_eq!(deserialized.last_event_seq, 42);
+        assert_eq!(deserialized.tick_count, 5);
+    }
+
+    #[test]
+    fn snapshot_v2_backward_compat_missing_new_fields() {
+        // Simulate a v1 snapshot (pre-v2) missing the new fields.
+        let json = serde_json::json!({
+            "graph_name": "old",
+            "graph_id": "old",
+            "node_statuses": {},
+            "node_outputs": {},
+            "tick_count": 0,
+            "created_at_ms": 1000,
+            "policy": {
+                "mode": "one_shot",
+                "failure_strategy": "fail_fast",
+                "max_concurrent_nodes": 4
+            }
+        });
+
+        let snap: GraphSnapshotV2 =
+            serde_json::from_value(json).expect("deserialize old format");
+
+        assert_eq!(snap.schema_version, GRAPH_SNAPSHOT_SCHEMA_VERSION);
+        assert!(snap.graph_fingerprint.is_empty());
+        assert_eq!(snap.budget_spent_micro_usd, 0);
+        assert_eq!(snap.budget_reserved_micro_usd, 0);
+        assert_eq!(snap.last_event_seq, 0);
+    }
+
+    #[test]
+    fn running_status_preserved_through_serializable_roundtrip() {
+        let serializable = SerializableNodeStatus::Running;
+        let node_status: NodeStatus = serializable.into();
+        assert_eq!(node_status, NodeStatus::Running);
+    }
+
+    #[test]
+    fn reconcile_running_converts_to_pending() {
+        assert_eq!(
+            reconcile_running_status(SerializableNodeStatus::Running),
+            NodeStatus::Pending
+        );
+    }
+
+    #[test]
+    fn reconcile_complete_stays_complete() {
+        assert_eq!(
+            reconcile_running_status(SerializableNodeStatus::Complete),
+            NodeStatus::Complete
+        );
+    }
+
+    #[test]
+    fn snapshot_type_alias_is_v2() {
+        // Ensure GraphSnapshot and GraphSnapshotV2 are the same type.
+        fn assert_same_type(_snap: GraphSnapshot) {
+            let _v2: GraphSnapshotV2 = _snap;
+        }
+        let snap = GraphSnapshotV2 {
+            schema_version: 2,
+            graph_name: "t".into(),
+            graph_id: "t".into(),
+            graph_fingerprint: String::new(),
+            node_statuses: HashMap::new(),
+            node_outputs: HashMap::new(),
+            tick_count: 0,
+            budget_spent_micro_usd: 0,
+            budget_reserved_micro_usd: 0,
+            last_event_seq: 0,
+            created_at_ms: 0,
+            policy: GraphPolicy::default(),
+        };
+        assert_same_type(snap);
+    }
+
+    #[test]
+    fn snapshot_with_budget_records_all_fields() {
+        let toml_str = r#"
+            [graph]
+            name = "budget-test"
+
+            [[nodes]]
+            id = "n1"
+            cell_type = "noop"
+        "#;
+        let graph = load_from_str(toml_str).expect("parse");
+        let mut registry = CellRegistry::new();
+        registry.register("noop", |_| {
+            Box::new(CaptureCell {
+                received: Arc::new(std::sync::Mutex::new(Vec::new())),
+            })
+        });
+        let engine = GraphEngine::new(graph, registry);
+
+        let statuses = HashMap::from([("n1".to_string(), NodeStatus::Complete)]);
+        let outputs = HashMap::new();
+
+        let snap = engine.snapshot_with_budget(&statuses, &outputs, 3, 100_000, 25_000, 17);
+
+        assert_eq!(snap.schema_version, 2);
+        assert_eq!(snap.budget_spent_micro_usd, 100_000);
+        assert_eq!(snap.budget_reserved_micro_usd, 25_000);
+        assert_eq!(snap.last_event_seq, 17);
+        assert_eq!(snap.tick_count, 3);
+        assert!(!snap.graph_fingerprint.is_empty());
     }
 }

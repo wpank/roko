@@ -289,9 +289,9 @@ pub use forensic::{
 pub use foundation::{
     BoxModelStream, ChatMessage as FoundationChatMessage, Effect, EffectExecutor, EffectOutcome,
     EventConsumer, FeedbackEvent, FeedbackSink, GateClassification, GateConfig, GateReport,
-    GateRunner, GateVerdict, MessageRole, ModelCallRequest, ModelCallResponse, ModelCaller,
-    ModelInputBlock, ModelInputImage, ModelInputMessage, ModelStreamEvent, PromptAssembler,
-    PromptSpec, ShellGateCommand, TokenUsage, model_call_failure_to_stream,
+    GateRunner, GateVerdict, KnowledgeQuery, MessageRole, ModelCallRequest, ModelCallResponse,
+    ModelCaller, ModelInputBlock, ModelInputImage, ModelInputMessage, ModelStreamEvent,
+    PromptAssembler, PromptSpec, ShellGateCommand, TokenUsage, model_call_failure_to_stream,
     model_call_response_to_stream, validate_model_input_images, validate_model_input_messages,
 };
 pub use groups::{
@@ -379,10 +379,10 @@ pub use dashboard_snapshot::{
     TrendBuckets,
 };
 pub use job::{
-    CreateJobRequest, FileJobStore, JobError, JobEvaluation, JobFilter, JobGateResult,
-    JobPriority, JobProgressEntry, JobStats, JobStatus, JobSubmission, JobType,
-    LegacyMigrationDiagnostic, MalformedJobFile, MarketplaceJob, PrdSummary,
-    TaskSummary as JobTaskSummary,
+    CreateJobRequest, FileJobStore, JobError, JobEvaluation, JobExecutionMode,
+    JobExecutionService, JobFilter, JobGateResult, JobPriority, JobProgressEntry, JobStats,
+    JobStatus, JobSubmission, JobTransitionReceipt, JobType, LegacyMigrationDiagnostic,
+    MalformedJobFile, MarketplaceJob, PrdSummary, TaskSummary as JobTaskSummary,
 };
 pub use lens_registry::{LensConfig, LensRegistration, LensRegistry, parse_scope};
 pub use namespace::{

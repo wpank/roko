@@ -222,7 +222,7 @@ fn render_health_summary(
     );
 
     // Right column: C-Factor or cascade router summary
-    let right_lines = if let Some(ref cf) = tui_state.cfactor {
+    let mut right_lines = if let Some(ref cf) = tui_state.cfactor {
         let cf_style = if cf.overall >= 0.7 {
             theme.success()
         } else if cf.overall >= 0.4 {
@@ -275,6 +275,12 @@ fn render_health_summary(
             ]),
         ]
     };
+    if let Some(eta) = tui_state.critical_path_eta_minutes {
+        right_lines.push(Line::from(vec![
+            Span::styled("crit-path ETA: ", theme.muted()),
+            Span::styled(format!("{eta}m"), theme.info()),
+        ]));
+    }
     frame.render_widget(
         Paragraph::new(right_lines).wrap(Wrap { trim: false }),
         cols[2],
@@ -444,13 +450,16 @@ fn render_cost_by_model(
         entry.wall_time_ms += event.wall_time_ms;
     }
 
-    // Sort by cost descending
+    // Sort by cost descending, filter inactive models
     let mut sorted: Vec<(&String, &ModelCostAggregate)> = model_agg.iter().collect();
     sorted.sort_by(|a, b| {
         b.1.cost_usd
             .partial_cmp(&a.1.cost_usd)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
+    let total_before_filter = sorted.len();
+    sorted.retain(|(_m, agg)| agg.turns > 0 || agg.cost_usd > 0.0);
+    let hidden_models = total_before_filter - sorted.len();
 
     let rows: Vec<Row<'_>> = sorted
         .iter()
@@ -500,6 +509,13 @@ fn render_cost_by_model(
         ])
         .style(theme.accent()),
     );
+
+    if hidden_models > 0 {
+        all_rows.push(Row::new(vec![Cell::from(Span::styled(
+            format!("({hidden_models} inactive models hidden)"),
+            theme.muted(),
+        ))]));
+    }
 
     let widths = [
         Constraint::Min(12),
@@ -552,12 +568,25 @@ fn render_cascade_router(
             .wrap(Wrap { trim: false });
         frame.render_widget(empty, sections[0]);
     } else {
-        let rows: Vec<Row<'_>> = tui_state
+        let total_slugs = tui_state.cascade_router.model_slugs.len();
+        let active_slugs: Vec<&String> = tui_state
             .cascade_router
             .model_slugs
             .iter()
+            .filter(|slug| {
+                tui_state
+                    .cascade_router
+                    .confidence_stats
+                    .get(*slug)
+                    .map_or(false, |s| s.trials > 0)
+            })
+            .collect();
+        let hidden_cascade = total_slugs - active_slugs.len();
+
+        let mut rows: Vec<Row<'_>> = active_slugs
+            .iter()
             .map(|slug| {
-                let stats = tui_state.cascade_router.confidence_stats.get(slug);
+                let stats = tui_state.cascade_router.confidence_stats.get(*slug);
                 let trials = stats.map_or(0, |s| s.trials);
                 let successes = stats.map_or(0, |s| s.successes);
                 let rate = if trials > 0 {
@@ -582,6 +611,13 @@ fn render_cascade_router(
                 ])
             })
             .collect();
+
+        if hidden_cascade > 0 {
+            rows.push(Row::new(vec![Cell::from(Span::styled(
+                format!("({hidden_cascade} inactive hidden)"),
+                theme.muted(),
+            ))]));
+        }
 
         if rows.is_empty() {
             // Show sparklines from token burns instead
@@ -1119,7 +1155,7 @@ fn render_three_panel_inspect(
 /// and error messages, falling back to `InspectData.mcp` for tool/index counts.
 fn render_mcp_panel(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme: &Theme) {
     let block = Block::bordered()
-        .title(Span::styled(" MCP / Providers ", theme.accent()))
+        .title(Span::styled(" MCP / Providers ", theme.section_header()))
         .border_style(theme.accent());
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -1142,13 +1178,13 @@ fn render_mcp_panel(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, the
                 .map(|p| p.display().to_string())
         });
     lines.push(Line::from(vec![
-        Span::styled("config: ", theme.muted()),
+        Span::styled("config: ", theme.label()),
         if let Some(ref path) = config_label {
             Span::styled(truncate(path, max_label), theme.success())
         } else if mcp_stats.config_exists {
             Span::styled("roko.toml", theme.success())
         } else {
-            Span::styled("not configured", theme.muted())
+            Span::styled("not configured", theme.metadata())
         },
     ]));
 
@@ -1164,9 +1200,9 @@ fn render_mcp_panel(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, the
     if let Some(ref config) = mcp_config.config {
         let server_count = config.servers.len();
         lines.push(Line::from(vec![
-            Span::styled("servers:", theme.muted()),
+            Span::styled("servers:", theme.label()),
             Span::raw(" "),
-            Span::styled(server_count.to_string(), theme.info()),
+            Span::styled(server_count.to_string(), theme.value()),
         ]));
         let max_servers = inner.height.saturating_sub(6) as usize;
         for server in config.servers.iter().take(max_servers) {
@@ -1192,52 +1228,52 @@ fn render_mcp_panel(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, the
         if server_count > max_servers {
             lines.push(Line::from(Span::styled(
                 format!("  (+{} more)", server_count - max_servers),
-                theme.muted(),
+                theme.metadata(),
             )));
         }
     } else if !mcp_stats.servers.is_empty() {
         // Fall back to InspectData server names
         lines.push(Line::from(vec![
-            Span::styled("servers:", theme.muted()),
+            Span::styled("servers:", theme.label()),
             Span::raw(" "),
-            Span::styled(mcp_stats.servers.len().to_string(), theme.info()),
+            Span::styled(mcp_stats.servers.len().to_string(), theme.value()),
         ]));
         for name in mcp_stats.servers.iter().take(5) {
             lines.push(Line::from(vec![
-                Span::styled("  ? ", theme.muted()),
-                Span::styled(truncate(name, max_label), theme.muted()),
+                Span::styled("  ? ", theme.metadata()),
+                Span::styled(truncate(name, max_label), theme.metadata()),
             ]));
         }
         if mcp_stats.servers.len() > 5 {
             lines.push(Line::from(Span::styled(
                 format!("  (+{} more)", mcp_stats.servers.len() - 5),
-                theme.muted(),
+                theme.metadata(),
             )));
         }
     } else {
         lines.push(Line::from(Span::styled(
             "No MCP servers configured",
-            theme.muted(),
+            theme.metadata(),
         )));
     }
 
     // Tool and index stats
     lines.push(Line::raw(""));
     lines.push(Line::from(vec![
-        Span::styled("tools:  ", theme.muted()),
+        Span::styled("tools:  ", theme.label()),
         if mcp_stats.tool_count > 0 {
-            Span::styled(mcp_stats.tool_count.to_string(), theme.info())
+            Span::styled(mcp_stats.tool_count.to_string(), theme.value())
         } else {
-            Span::styled("0", theme.muted())
+            Span::styled("0", theme.metadata())
         },
-        Span::styled("   index: ", theme.muted()),
+        Span::styled("   index: ", theme.label()),
         if mcp_stats.index_file_count > 0 {
             Span::styled(
                 format!("{} files / {} sym", mcp_stats.index_file_count, mcp_stats.index_symbol_count),
-                theme.info(),
+                theme.value(),
             )
         } else {
-            Span::styled("not built", theme.muted())
+            Span::styled("not built", theme.metadata())
         },
     ]));
 
@@ -1250,7 +1286,7 @@ fn render_mcp_panel(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, the
 /// routing coverage, and gate thresholds with value-based coloring.
 fn render_learning_panel(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme: &Theme) {
     let block = Block::bordered()
-        .title(Span::styled(" Learning ", theme.accent()))
+        .title(Span::styled(" Learning ", theme.section_header()))
         .border_style(theme.accent());
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -1291,37 +1327,37 @@ fn render_learning_panel(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState
 
     let mut lines: Vec<Line<'_>> = vec![
         Line::from(vec![
-            Span::styled("episodes: ", theme.muted()),
-            Span::styled(ep_total.to_string(), theme.info()),
+            Span::styled("episodes: ", theme.label()),
+            Span::styled(ep_total.to_string(), theme.value()),
             Span::styled(
                 format!(" ({ep_passed}P/{ep_failed}F)"),
-                theme.muted(),
+                theme.metadata(),
             ),
         ]),
         Line::from(vec![
-            Span::styled("accuracy: ", theme.muted()),
+            Span::styled("accuracy: ", theme.label()),
             if ep_total > 0 {
                 Span::styled(format!("{accuracy:.1}%"), accuracy_style)
             } else {
-                Span::styled("-", theme.muted())
+                Span::styled("-", theme.metadata())
             },
         ]),
         Line::from(vec![
-            Span::styled("playbook: ", theme.muted()),
+            Span::styled("playbook: ", theme.label()),
             Span::styled(
                 format!("{} rules", learn.playbook_rule_count),
-                theme.info(),
+                theme.value(),
             ),
         ]),
         Line::from(vec![
-            Span::styled("routing:  ", theme.muted()),
+            Span::styled("routing:  ", theme.label()),
             Span::styled(
                 format!(
                     "{:.0}% ({} models)",
                     learn.routing_coverage_pct,
                     tui_state.cascade_router.model_slugs.len()
                 ),
-                theme.info(),
+                theme.value(),
             ),
         ]),
     ];
@@ -1341,15 +1377,15 @@ fn render_learning_panel(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState
             .count();
         let low_conf = total_k - high_conf - mid_conf;
         lines.push(Line::from(vec![
-            Span::styled("knowledge:", theme.muted()),
-            Span::styled(format!(" {total_k}"), theme.info()),
-            Span::styled(" (", theme.muted()),
+            Span::styled("knowledge:", theme.label()),
+            Span::styled(format!(" {total_k}"), theme.value()),
+            Span::styled(" (", theme.metadata()),
             Span::styled(format!("{high_conf}"), theme.success()),
-            Span::styled("/", theme.muted()),
+            Span::styled("/", theme.metadata()),
             Span::styled(format!("{mid_conf}"), theme.warning()),
-            Span::styled("/", theme.muted()),
+            Span::styled("/", theme.metadata()),
             Span::styled(format!("{low_conf}"), theme.danger()),
-            Span::styled(")", theme.muted()),
+            Span::styled(")", theme.metadata()),
         ]));
     }
 
@@ -1358,7 +1394,7 @@ fn render_learning_panel(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState
         !tui_state.experiment_winners.is_empty() || !tui_state.experiments.is_empty();
     if has_experiments {
         lines.push(Line::raw(""));
-        lines.push(Line::from(Span::styled("Experiments:", theme.accent())));
+        lines.push(Line::from(Span::styled("Experiments:", theme.section_header())));
         let max_experiments = (inner.height as usize).saturating_sub(lines.len() + 2);
         let mut shown = 0usize;
         // Active experiments first
@@ -1369,7 +1405,7 @@ fn render_learning_panel(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState
             lines.push(Line::from(vec![
                 Span::styled(
                     format!("  {}: ", truncate(&exp.experiment_id, 8)),
-                    theme.muted(),
+                    theme.label(),
                 ),
                 Span::styled(
                     format!("{} ({}t)", exp.status, exp.total_trials),
@@ -1391,11 +1427,11 @@ fn render_learning_panel(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState
             lines.push(Line::from(vec![
                 Span::styled(
                     format!("  {}: ", truncate(&w.experiment_id, 8)),
-                    theme.muted(),
+                    theme.label(),
                 ),
                 Span::styled(format!("+ {label}"), theme.success()),
                 if w.sample_size > 0 {
-                    Span::styled(format!(" n={}", w.sample_size), theme.muted())
+                    Span::styled(format!(" n={}", w.sample_size), theme.metadata())
                 } else {
                     Span::raw("")
                 },
@@ -1408,7 +1444,7 @@ fn render_learning_panel(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState
     let remaining_height = (inner.height as usize).saturating_sub(lines.len() + 1);
     if !learn.gate_thresholds.is_empty() && remaining_height > 2 {
         lines.push(Line::raw(""));
-        lines.push(Line::from(Span::styled("Gate Thresholds:", theme.accent())));
+        lines.push(Line::from(Span::styled("Gate Thresholds:", theme.section_header())));
         for (rung, t) in learn.gate_thresholds.iter().take(remaining_height.saturating_sub(1)) {
             let threshold_style = if *t >= 0.8 {
                 theme.success()
@@ -1418,7 +1454,7 @@ fn render_learning_panel(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState
                 theme.danger()
             };
             lines.push(Line::from(vec![
-                Span::styled(format!("  {}: ", truncate(rung, 10)), theme.muted()),
+                Span::styled(format!("  {}: ", truncate(rung, 10)), theme.label()),
                 Span::styled(format!("{t:.3}"), threshold_style),
             ]));
         }
@@ -1438,7 +1474,7 @@ fn render_prompt_stats_panel(
     theme: &Theme,
 ) {
     let block = Block::bordered()
-        .title(Span::styled(" Token / Cost ", theme.accent()))
+        .title(Span::styled(" Token / Cost ", theme.section_header()))
         .border_style(theme.accent());
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -1466,7 +1502,7 @@ fn render_prompt_stats_panel(
 
     let mut lines: Vec<Line<'_>> = vec![Line::from(Span::styled(
         "Per-Role Breakdown:",
-        theme.accent(),
+        theme.section_header(),
     ))];
 
     let remaining = (inner.height as usize).saturating_sub(6); // reserve for summary
@@ -1477,11 +1513,11 @@ fn render_prompt_stats_panel(
             "-".to_string()
         };
         lines.push(Line::from(vec![
-            Span::styled(format!(" {}: ", truncate(role, 8)), theme.muted()),
-            Span::styled(format_count(*inp), theme.info()),
-            Span::styled("/", theme.muted()),
-            Span::styled(format_count(*out), theme.info()),
-            Span::styled(format!(" {cache_pct}"), theme.muted()),
+            Span::styled(format!(" {}: ", truncate(role, 8)), theme.label()),
+            Span::styled(format_count(*inp), theme.value()),
+            Span::styled("/", theme.metadata()),
+            Span::styled(format_count(*out), theme.value()),
+            Span::styled(format!(" {cache_pct}"), theme.metadata()),
         ]));
         let _ = (turns, cost); // used below in totals
     }
@@ -1523,15 +1559,15 @@ fn render_prompt_stats_panel(
     };
 
     lines.push(Line::raw(""));
-    lines.push(Line::from(Span::styled("Summary:", theme.accent())));
+    lines.push(Line::from(Span::styled("Summary:", theme.section_header())));
     lines.push(Line::from(vec![
-        Span::styled(" in/out: ", theme.muted()),
-        Span::styled(format_count(total_in), theme.info()),
-        Span::styled(" / ", theme.muted()),
-        Span::styled(format_count(total_out), theme.info()),
+        Span::styled(" in/out: ", theme.label()),
+        Span::styled(format_count(total_in), theme.value()),
+        Span::styled(" / ", theme.metadata()),
+        Span::styled(format_count(total_out), theme.value()),
     ]));
     lines.push(Line::from(vec![
-        Span::styled(" cache:  ", theme.muted()),
+        Span::styled(" cache:  ", theme.label()),
         Span::styled(
             format!("{cache_ratio:.1}%"),
             if cache_ratio > 50.0 {
@@ -1540,18 +1576,18 @@ fn render_prompt_stats_panel(
                 theme.info()
             },
         ),
-        Span::styled("   cost: ", theme.muted()),
+        Span::styled("   cost: ", theme.label()),
         Span::styled(format!("${total_cost:.4}"), theme.warning()),
     ]));
     lines.push(Line::from(vec![
-        Span::styled(" ctx:    ", theme.muted()),
+        Span::styled(" ctx:    ", theme.label()),
         Span::styled(
             format!("{utilization_pct:.0}%"),
             util_style,
         ),
         Span::styled(
             format!(" ({}/{})", format_count(avg_input_per_turn), format_count(ctx_limit)),
-            theme.muted(),
+            theme.metadata(),
         ),
     ]));
 

@@ -7,6 +7,15 @@
 //! - Verify results from signal data
 //!
 //! Each source is color-coded by type and severity.
+//!
+//! Features:
+//! - Error context lines below failure entries (dimmed, indented)
+//! - Grouping modes: chronological (default), by-plan, by-task (toggle with G)
+//! - Entry detail expansion on Enter (full payload, ms timestamp, source, IDs)
+//! - Error Digest sub-view (sub-tab 2 / Alt+3)
+//! - Severity-appropriate styling with source-type icons
+
+use std::collections::BTreeMap;
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
@@ -20,6 +29,41 @@ use crate::tui::input::FocusZone;
 use crate::tui::input::LogFilterLevel;
 use crate::tui::state::{LogEntry, LogEntryLevel, SearchMode, TuiState};
 use crate::tui::util::truncate_middle;
+
+// ---------------------------------------------------------------------------
+// Grouping mode
+// ---------------------------------------------------------------------------
+
+/// How log entries are organized in the view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LogGrouping {
+    /// Flat chronological list (default).
+    #[default]
+    Chronological,
+    /// Entries grouped under collapsible plan headers.
+    ByPlan,
+    /// Entries grouped under task headers.
+    ByTask,
+}
+
+impl LogGrouping {
+    /// Cycle to the next grouping mode (used by the G key toggle).
+    pub(crate) fn next(self) -> Self {
+        match self {
+            Self::Chronological => Self::ByPlan,
+            Self::ByPlan => Self::ByTask,
+            Self::ByTask => Self::Chronological,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Chronological => "chrono",
+            Self::ByPlan => "by-plan",
+            Self::ByTask => "by-task",
+        }
+    }
+}
 
 /// Render the full logs view.
 pub(crate) fn render(
@@ -106,6 +150,9 @@ fn render_with_entries(
             level_filtered
         };
 
+    // Resolve grouping mode from TUI state.
+    let grouping = tui_state.log_grouping;
+
     // Status bar with source counts
     let signal_count = tui_state.recent_signals.len();
     let episode_count = tui_state.episodes_cache.len();
@@ -159,6 +206,18 @@ fn render_with_entries(
             style,
         ));
     }
+
+    // Grouping indicator
+    if grouping != LogGrouping::Chronological {
+        status_spans.extend([
+            Span::styled("  ", theme.muted()),
+            Span::styled(
+                format!("[{}]", grouping.label()),
+                Style::default().fg(Theme::DREAM).add_modifier(Modifier::BOLD),
+            ),
+        ]);
+    }
+
     if sections[0].width >= 104 {
         status_spans.extend([
             Span::styled("  \u{00b7}  ", theme.muted()),
@@ -220,23 +279,78 @@ fn render_with_entries(
         return;
     }
 
+    // Build lines based on grouping mode.
+    let lines = match grouping {
+        LogGrouping::Chronological => build_chronological_lines(
+            &filtered_entries,
+            view_state,
+            tui_state,
+            inner.width,
+            theme,
+        ),
+        LogGrouping::ByPlan => build_grouped_lines(
+            &filtered_entries,
+            view_state,
+            tui_state,
+            inner.width,
+            theme,
+            GroupBy::Plan,
+        ),
+        LogGrouping::ByTask => build_grouped_lines(
+            &filtered_entries,
+            view_state,
+            tui_state,
+            inner.width,
+            theme,
+            GroupBy::Task,
+        ),
+    };
+
+    let row_offsets = wrapped_row_offsets(&lines, inner.width);
+    let total_rendered_rows = row_offsets.last().copied().unwrap_or(0);
+    let max_scroll = total_rendered_rows.saturating_sub(inner.height as usize);
+    let max_scroll = max_scroll.min(u16::MAX as usize) as u16;
+    let scroll = if view_state.auto_tail {
+        max_scroll
+    } else {
+        (view_state.scroll).min(max_scroll)
+    };
+
+    let paragraph = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0));
+    frame.render_widget(paragraph, inner);
+}
+
+// ---------------------------------------------------------------------------
+// Line builders
+// ---------------------------------------------------------------------------
+
+/// Build chronological lines with context lines under error entries and
+/// inline detail expansion for the selected row.
+fn build_chronological_lines<'a>(
+    filtered_entries: &[&LogEntry],
+    view_state: &ViewState,
+    tui_state: &TuiState,
+    width: u16,
+    theme: &Theme,
+) -> Vec<Line<'a>> {
+    let search = &tui_state.log_search;
+
     let row_focus_idx = if view_state.auto_tail {
         filtered_entries.len().saturating_sub(1)
     } else {
         (view_state.scroll as usize).min(filtered_entries.len().saturating_sub(1))
     };
 
-    // Build a highlight style for search matches (DREAM bg, TEXT_STRONG fg).
-    let highlight_style = ratatui::style::Style::default()
+    let highlight_style = Style::default()
         .fg(Theme::TEXT_STRONG)
         .bg(Theme::DREAM);
-    // Stronger highlight for the current n/N target match.
-    let current_match_hl_style = ratatui::style::Style::default()
+    let current_match_hl_style = Style::default()
         .fg(Theme::BONE_BRIGHT)
         .bg(Theme::DREAM_BRIGHT)
         .add_modifier(Modifier::BOLD);
 
-    // Current match index for extra emphasis (selection highlight on n/N target).
     let current_match_filtered_idx = if search.active && !search.match_indices.is_empty() {
         if search.mode == SearchMode::Filter {
             Some(
@@ -251,97 +365,399 @@ fn render_with_entries(
         None
     };
 
-    let source_width = match inner.width {
+    let source_width = match width {
         0..=63 => 10,
         64..=99 => 14,
         100..=139 => 20,
         _ => 28,
     };
-    let show_timestamp = inner.width >= 58;
-    let lines: Vec<Line<'_>> = filtered_entries
-        .iter()
-        .enumerate()
-        .map(|(idx, entry)| {
-            let selected = idx == row_focus_idx;
-            let is_current_match = current_match_filtered_idx == Some(idx);
-            let row_bg = if is_current_match {
-                // Current search target gets a brighter bg.
-                Some(Theme::DREAM_DEEP)
-            } else if selected {
-                Some(theme.selection_background)
-            } else {
-                None
-            };
-            let prefix_style = if selected {
-                theme.selection()
-            } else {
-                theme.muted()
-            };
-            let badge_style = style_with_bg(level_badge_style(entry.level, theme), row_bg);
-            let src_style = style_with_bg(source_style(&entry.source, theme), row_bg);
-            let message_style = style_with_bg(
-                level_style(entry.level, theme).remove_modifier(Modifier::BOLD),
-                row_bg,
-            );
-            let ts_style = style_with_bg(theme.muted(), row_bg);
-            let icon_style = style_with_bg(source_style(&entry.source, theme), row_bg);
+    let show_timestamp = width >= 58;
+    let expanded_idx = tui_state.log_expanded_idx;
 
-            // Pick highlight style: current match gets brighter emphasis.
-            let match_hl = if is_current_match {
-                current_match_hl_style
-            } else {
-                highlight_style
-            };
+    let mut lines: Vec<Line<'a>> = Vec::new();
+    for (idx, entry) in filtered_entries.iter().enumerate() {
+        let selected = idx == row_focus_idx;
+        let is_current_match = current_match_filtered_idx == Some(idx);
+        let row_bg = if is_current_match {
+            Some(Theme::DREAM_DEEP)
+        } else if selected {
+            Some(theme.selection_background)
+        } else {
+            None
+        };
 
-            // In Highlight mode, split the message into matching/non-matching spans.
-            let message_spans: Vec<Span<'_>> = if search.active
-                && search.mode == SearchMode::Highlight
-                && search.compiled.is_some()
-            {
-                let re = search.compiled.as_ref().unwrap();
-                highlight_spans(&entry.message, re, message_style, match_hl)
-            } else {
-                vec![Span::styled(entry.message.clone(), message_style)]
-            };
+        lines.push(build_entry_line(
+            entry,
+            selected,
+            is_current_match,
+            row_bg,
+            source_width,
+            show_timestamp,
+            search,
+            &highlight_style,
+            &current_match_hl_style,
+            theme,
+        ));
 
-            let icon = source_icon(&entry.source);
-            let mut spans = vec![
-                Span::styled(if selected { "▶" } else { " " }, prefix_style),
-                Span::styled(icon, icon_style),
-            ];
-            if show_timestamp {
-                spans.push(Span::styled(entry.timestamp.clone(), ts_style));
-                spans.push(Span::raw(" "));
+        // Error context line: show detail below failure entries.
+        if matches!(entry.level, LogEntryLevel::Error | LogEntryLevel::Warn) {
+            if let Some(ctx) = extract_error_context(entry) {
+                let dim_style = Style::default()
+                    .fg(Theme::TEXT_GHOST)
+                    .add_modifier(Modifier::ITALIC);
+                let ctx_text = if ctx.len() > 100 { &ctx[..100] } else { &ctx };
+                lines.push(Line::from(vec![
+                    Span::styled("    ", dim_style),
+                    Span::styled(ctx_text.to_owned(), dim_style),
+                ]));
             }
-            spans.extend([
-                Span::styled(format!("[{}]", entry.level.label()), badge_style),
-                Span::raw(" "),
-                Span::styled(truncate_middle(&entry.source, source_width), src_style),
-                Span::raw(" · "),
-            ]);
-            spans.extend(message_spans);
-            Line::from(spans)
-        })
-        .collect();
+        }
 
-    let row_offsets = wrapped_row_offsets(&lines, inner.width);
-    let total_rendered_rows = row_offsets.last().copied().unwrap_or(0);
-    let max_scroll = total_rendered_rows.saturating_sub(inner.height as usize);
-    let max_scroll = max_scroll.min(u16::MAX as usize) as u16;
-    let scroll = if view_state.auto_tail {
-        max_scroll
+        // Inline detail expansion for the selected row when Enter was pressed.
+        if expanded_idx == Some(idx) {
+            let detail_lines = build_detail_expansion(entry, width, theme);
+            lines.extend(detail_lines);
+        }
+    }
+
+    lines
+}
+
+/// Build a single entry line with all styling applied.
+fn build_entry_line<'a>(
+    entry: &LogEntry,
+    selected: bool,
+    is_current_match: bool,
+    row_bg: Option<ratatui::style::Color>,
+    source_width: usize,
+    show_timestamp: bool,
+    search: &crate::tui::state::LogSearchState,
+    highlight_style: &Style,
+    current_match_hl_style: &Style,
+    theme: &Theme,
+) -> Line<'a> {
+    let prefix_style = if selected {
+        theme.selection()
     } else {
-        row_offsets
-            .get(row_focus_idx)
-            .copied()
-            .unwrap_or(0)
-            .min(max_scroll as usize) as u16
+        theme.muted()
+    };
+    let badge_style = style_with_bg(level_badge_style(entry.level, theme), row_bg);
+    let src_style = style_with_bg(source_style(&entry.source, theme), row_bg);
+    let message_style = style_with_bg(
+        level_message_style(entry.level, theme),
+        row_bg,
+    );
+    let ts_style = style_with_bg(theme.label(), row_bg);
+    let icon_style = style_with_bg(source_style(&entry.source, theme), row_bg);
+
+    let match_hl = if is_current_match {
+        *current_match_hl_style
+    } else {
+        *highlight_style
     };
 
-    let paragraph = Paragraph::new(lines)
-        .wrap(Wrap { trim: false })
-        .scroll((scroll, 0));
-    frame.render_widget(paragraph, inner);
+    let message_spans: Vec<Span<'a>> = if search.active && search.compiled.is_some() {
+        let re = search.compiled.as_ref().unwrap();
+        highlight_spans(&entry.message, re, message_style, match_hl)
+    } else {
+        vec![Span::styled(entry.message.clone(), message_style)]
+    };
+
+    let icon = source_icon(&entry.source);
+    let mut spans = vec![
+        Span::styled(if selected { "\u{25b6}" } else { " " }, prefix_style),
+        Span::styled(icon, icon_style),
+    ];
+    if show_timestamp {
+        spans.push(Span::styled(entry.timestamp.clone(), ts_style));
+        spans.push(Span::raw(" "));
+    }
+    spans.extend([
+        Span::styled(format!("[{}]", entry.level.label()), badge_style),
+        Span::raw(" "),
+        Span::styled(truncate_middle(&entry.source, source_width), src_style),
+        Span::raw(" \u{00b7} "),
+    ]);
+    spans.extend(message_spans);
+    Line::from(spans)
+}
+
+// ---------------------------------------------------------------------------
+// Grouped rendering (by-plan / by-task)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy)]
+enum GroupBy {
+    Plan,
+    Task,
+}
+
+/// Extract a grouping key from a log entry.
+fn group_key(entry: &LogEntry, by: GroupBy) -> String {
+    match by {
+        GroupBy::Plan => {
+            // Try to find plan= or plan_id in the message.
+            if let Some(pos) = entry.message.find("plan=") {
+                let rest = &entry.message[pos + 5..];
+                rest.split_whitespace()
+                    .next()
+                    .unwrap_or("unknown")
+                    .to_string()
+            } else if entry.source.contains(':') {
+                // Fall back to the source prefix as group.
+                entry.source.split(':').next().unwrap_or("other").to_string()
+            } else {
+                "ungrouped".to_string()
+            }
+        }
+        GroupBy::Task => {
+            if let Some(pos) = entry.message.find("task=") {
+                let rest = &entry.message[pos + 5..];
+                rest.split_whitespace()
+                    .next()
+                    .unwrap_or("unknown")
+                    .to_string()
+            } else {
+                "ungrouped".to_string()
+            }
+        }
+    }
+}
+
+/// Build lines with entries grouped under collapsible headers.
+fn build_grouped_lines<'a>(
+    filtered_entries: &[&LogEntry],
+    _view_state: &ViewState,
+    tui_state: &TuiState,
+    width: u16,
+    theme: &Theme,
+    by: GroupBy,
+) -> Vec<Line<'a>> {
+    let search = &tui_state.log_search;
+    let source_width = match width {
+        0..=63 => 10,
+        64..=99 => 14,
+        100..=139 => 20,
+        _ => 28,
+    };
+    let show_timestamp = width >= 58;
+    let highlight_style = Style::default()
+        .fg(Theme::TEXT_STRONG)
+        .bg(Theme::DREAM);
+    let current_match_hl_style = Style::default()
+        .fg(Theme::BONE_BRIGHT)
+        .bg(Theme::DREAM_BRIGHT)
+        .add_modifier(Modifier::BOLD);
+    let expanded_idx = tui_state.log_expanded_idx;
+
+    // Collect entries into ordered groups preserving first-seen order.
+    let mut groups: BTreeMap<String, Vec<(usize, &LogEntry)>> = BTreeMap::new();
+    for (idx, entry) in filtered_entries.iter().enumerate() {
+        let key = group_key(entry, by);
+        groups.entry(key).or_default().push((idx, entry));
+    }
+
+    let mut lines: Vec<Line<'a>> = Vec::new();
+    let collapsed = &tui_state.log_collapsed_groups;
+
+    for (group_name, group_entries) in &groups {
+        let is_collapsed = collapsed.contains(group_name);
+        let arrow = if is_collapsed { "\u{25b6}" } else { "\u{25bc}" };
+        let err_count = group_entries
+            .iter()
+            .filter(|(_, e)| matches!(e.level, LogEntryLevel::Error))
+            .count();
+        let mut header_spans = vec![
+            Span::styled(
+                format!("{arrow} {group_name}"),
+                theme.section_header(),
+            ),
+            Span::styled(
+                format!(" ({} entries", group_entries.len()),
+                theme.muted(),
+            ),
+        ];
+        if err_count > 0 {
+            header_spans.push(Span::styled(
+                format!(", {err_count} errors"),
+                theme.danger(),
+            ));
+        }
+        header_spans.push(Span::styled(")", theme.muted()));
+        lines.push(Line::from(header_spans));
+
+        if is_collapsed {
+            continue;
+        }
+
+        for (idx, entry) in group_entries {
+            lines.push(build_entry_line(
+                entry,
+                false,
+                false,
+                None,
+                source_width,
+                show_timestamp,
+                search,
+                &highlight_style,
+                &current_match_hl_style,
+                theme,
+            ));
+
+            // Error context for grouped entries too.
+            if matches!(entry.level, LogEntryLevel::Error | LogEntryLevel::Warn) {
+                if let Some(ctx) = extract_error_context(entry) {
+                    let dim_style = Style::default()
+                        .fg(Theme::TEXT_GHOST)
+                        .add_modifier(Modifier::ITALIC);
+                    let ctx_text = if ctx.len() > 100 { &ctx[..100] } else { &ctx };
+                    lines.push(Line::from(vec![
+                        Span::styled("    ", dim_style),
+                        Span::styled(ctx_text.to_owned(), dim_style),
+                    ]));
+                }
+            }
+
+            if expanded_idx == Some(*idx) {
+                let detail_lines = build_detail_expansion(entry, width, theme);
+                lines.extend(detail_lines);
+            }
+        }
+
+        // Spacer between groups.
+        lines.push(Line::from(""));
+    }
+
+    lines
+}
+
+// ---------------------------------------------------------------------------
+// Error context extraction
+// ---------------------------------------------------------------------------
+
+/// Extract a short context string from error/warn entries for display below
+/// the main log line.
+fn extract_error_context(entry: &LogEntry) -> Option<String> {
+    let msg = &entry.message;
+
+    // Gate failures: show the excerpt after "FAILED".
+    if entry.source.starts_with("gate:") && msg.contains("FAILED") {
+        if let Some(pos) = msg.find("FAILED") {
+            let rest = msg[pos + 6..].trim();
+            if !rest.is_empty() {
+                return Some(rest.to_string());
+            }
+        }
+    }
+
+    // Episode failures: extract the failure reason.
+    if entry.source.starts_with("episode:") && msg.contains("[FAIL]") {
+        if let Some(pos) = msg.find("task=") {
+            let rest = msg[pos..].trim();
+            return Some(rest.to_string());
+        }
+    }
+
+    // Event errors: the message itself is the context.
+    if entry.source.starts_with("event:")
+        && matches!(entry.level, LogEntryLevel::Error)
+        && msg.len() > 20
+    {
+        // Already shown in main line; extract bracketed task if present.
+        if msg.starts_with('[') {
+            if let Some(end) = msg.find(']') {
+                let detail = msg[end + 1..].trim();
+                if !detail.is_empty() && detail.len() > 10 {
+                    return Some(detail.to_string());
+                }
+            }
+        }
+    }
+
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Detail expansion (Enter key)
+// ---------------------------------------------------------------------------
+
+/// Build detail expansion lines for a log entry when Enter is pressed.
+fn build_detail_expansion<'a>(entry: &LogEntry, _width: u16, theme: &Theme) -> Vec<Line<'a>> {
+    let dim = Style::default()
+        .fg(Theme::TEXT_DIM)
+        .add_modifier(Modifier::ITALIC);
+    let label_style = theme.label();
+    let value_style = theme.value();
+
+    let mut lines = Vec::new();
+
+    // Separator.
+    lines.push(Line::from(Span::styled(
+        "    \u{2500}\u{2500}\u{2500} expanded detail \u{2500}\u{2500}\u{2500}",
+        dim,
+    )));
+
+    // Timestamp with full precision.
+    lines.push(Line::from(vec![
+        Span::styled("    timestamp: ", label_style),
+        Span::styled(entry.timestamp.clone(), value_style),
+    ]));
+
+    // Source component.
+    lines.push(Line::from(vec![
+        Span::styled("    source:    ", label_style),
+        Span::styled(entry.source.clone(), value_style),
+    ]));
+
+    // Severity.
+    lines.push(Line::from(vec![
+        Span::styled("    severity:  ", label_style),
+        Span::styled(
+            entry.level.label().to_string(),
+            level_badge_style(entry.level, theme),
+        ),
+    ]));
+
+    // Extract IDs from message.
+    let msg = &entry.message;
+    if let Some(pos) = msg.find("task=") {
+        let rest = &msg[pos + 5..];
+        let task_id = rest.split_whitespace().next().unwrap_or("");
+        lines.push(Line::from(vec![
+            Span::styled("    task:      ", label_style),
+            Span::styled(task_id.to_string(), value_style),
+        ]));
+    }
+    if let Some(pos) = msg.find("plan=") {
+        let rest = &msg[pos + 5..];
+        let plan_id = rest.split_whitespace().next().unwrap_or("");
+        lines.push(Line::from(vec![
+            Span::styled("    plan:      ", label_style),
+            Span::styled(plan_id.to_string(), value_style),
+        ]));
+    }
+    if let Some(pos) = msg.find("model=") {
+        let rest = &msg[pos + 6..];
+        let model = rest.split_whitespace().next().unwrap_or("");
+        lines.push(Line::from(vec![
+            Span::styled("    model:     ", label_style),
+            Span::styled(model.to_string(), value_style),
+        ]));
+    }
+
+    // Full message payload.
+    lines.push(Line::from(vec![
+        Span::styled("    message:   ", label_style),
+        Span::styled(msg.clone(), Style::default().fg(Theme::BONE)),
+    ]));
+
+    // End separator.
+    lines.push(Line::from(Span::styled(
+        "    \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
+        dim,
+    )));
+
+    lines
 }
 
 /// Return the rendered-row offset of every logical line plus one terminal
@@ -364,32 +780,46 @@ fn wrapped_row_offsets(lines: &[Line<'_>], width: u16) -> Vec<usize> {
     offsets
 }
 
-/// Color style for log levels.
-fn level_style(level: LogEntryLevel, theme: &Theme) -> ratatui::style::Style {
+// ---------------------------------------------------------------------------
+// Severity styling
+// ---------------------------------------------------------------------------
+
+/// Message body style for log levels -- uses severity-appropriate colors.
+///
+/// - INFO: default text (no emphasis)
+/// - WARN: WARNING color (amber)
+/// - ERR: EMBER color (red) + bold
+/// - DEBUG: TEXT_DIM (ghost)
+fn level_message_style(level: LogEntryLevel, theme: &Theme) -> Style {
     match level {
         LogEntryLevel::Debug => Style::default()
-            .fg(Theme::TEXT_GHOST)
-            .add_modifier(Modifier::ITALIC),
+            .fg(Theme::TEXT_DIM),
         LogEntryLevel::Info => theme.muted(),
-        LogEntryLevel::Warn => theme.warning(),
-        LogEntryLevel::Error => theme.danger(),
+        LogEntryLevel::Warn => Style::default().fg(Theme::WARNING),
+        LogEntryLevel::Error => Style::default()
+            .fg(Theme::EMBER)
+            .add_modifier(Modifier::BOLD),
     }
 }
 
 /// Distinct badge style for the `[LVL]` bracket -- slightly stronger than the
 /// message body style so the level tag stands out from the message text.
-fn level_badge_style(level: LogEntryLevel, theme: &Theme) -> ratatui::style::Style {
+fn level_badge_style(level: LogEntryLevel, theme: &Theme) -> Style {
     match level {
         LogEntryLevel::Debug => Style::default()
             .fg(Theme::TEXT_GHOST)
             .add_modifier(Modifier::ITALIC),
         LogEntryLevel::Info => theme.text(),
-        LogEntryLevel::Warn => theme.warning(),
-        LogEntryLevel::Error => theme.danger(),
+        LogEntryLevel::Warn => Style::default()
+            .fg(Theme::WARNING)
+            .add_modifier(Modifier::BOLD),
+        LogEntryLevel::Error => Style::default()
+            .fg(Theme::EMBER)
+            .add_modifier(Modifier::BOLD),
     }
 }
 
-fn level_filter_style(level: LogFilterLevel, theme: &Theme) -> ratatui::style::Style {
+fn level_filter_style(level: LogFilterLevel, theme: &Theme) -> Style {
     match level {
         LogFilterLevel::Debug => theme.muted(),
         LogFilterLevel::Info => theme.text(),
@@ -399,7 +829,7 @@ fn level_filter_style(level: LogFilterLevel, theme: &Theme) -> ratatui::style::S
 }
 
 /// Color style for log sources.
-fn source_style(source: &str, theme: &Theme) -> ratatui::style::Style {
+fn source_style(source: &str, theme: &Theme) -> Style {
     if source.starts_with("signal:") {
         theme.info()
     } else if source.starts_with("episode:") {
@@ -417,6 +847,8 @@ fn source_style(source: &str, theme: &Theme) -> ratatui::style::Style {
 }
 
 /// Return a type-indicator icon for the log source prefix.
+///
+/// Icons: `\u{25c6}`(signal) `\u{25cf}`(episode) `\u{25a0}`(gate) `\u{25b8}`(event)
 fn source_icon(source: &str) -> &'static str {
     if source.starts_with("signal:") {
         "\u{25c6}" // diamond
@@ -434,9 +866,9 @@ fn source_icon(source: &str) -> &'static str {
 }
 
 fn style_with_bg(
-    style: ratatui::style::Style,
+    style: Style,
     bg: Option<ratatui::style::Color>,
-) -> ratatui::style::Style {
+) -> Style {
     if let Some(bg) = bg {
         style.bg(bg)
     } else {
@@ -448,8 +880,8 @@ fn style_with_bg(
 fn highlight_spans<'a>(
     text: &str,
     re: &regex::Regex,
-    normal_style: ratatui::style::Style,
-    hl_style: ratatui::style::Style,
+    normal_style: Style,
+    hl_style: Style,
 ) -> Vec<Span<'a>> {
     let mut spans = Vec::new();
     let mut last_end = 0;
@@ -606,8 +1038,69 @@ mod tests {
     fn level_badge_info_stronger_than_body() {
         let theme = Theme::dark();
         let badge = level_badge_style(LogEntryLevel::Info, &theme);
-        let body = level_style(LogEntryLevel::Info, &theme);
+        let body = level_message_style(LogEntryLevel::Info, &theme);
         // Badge uses theme.text() (TEXT), body uses theme.muted() (TEXT_DIM).
         assert_ne!(badge, body, "INFO badge should be brighter than body text");
+    }
+
+    #[test]
+    fn error_context_extraction() {
+        let gate_entry = LogEntry::new(
+            "12:00:00".into(),
+            LogEntryLevel::Error,
+            "gate:compile".into(),
+            "FAILED task=t1 cannot find crate `foo`".into(),
+        );
+        let ctx = extract_error_context(&gate_entry);
+        assert!(ctx.is_some());
+        assert!(ctx.unwrap().contains("task=t1"));
+
+        let info_entry = LogEntry::new(
+            "12:00:01".into(),
+            LogEntryLevel::Info,
+            "event:dispatch".into(),
+            "all good".into(),
+        );
+        assert!(extract_error_context(&info_entry).is_none());
+    }
+
+    #[test]
+    fn grouping_mode_cycles() {
+        assert_eq!(LogGrouping::Chronological.next(), LogGrouping::ByPlan);
+        assert_eq!(LogGrouping::ByPlan.next(), LogGrouping::ByTask);
+        assert_eq!(LogGrouping::ByTask.next(), LogGrouping::Chronological);
+    }
+
+    #[test]
+    fn severity_styles_are_distinct() {
+        let theme = Theme::dark();
+        let info = level_message_style(LogEntryLevel::Info, &theme);
+        let warn = level_message_style(LogEntryLevel::Warn, &theme);
+        let err = level_message_style(LogEntryLevel::Error, &theme);
+        let dbg = level_message_style(LogEntryLevel::Debug, &theme);
+        assert_ne!(info, warn, "INFO vs WARN should differ");
+        assert_ne!(warn, err, "WARN vs ERR should differ");
+        assert_ne!(info, dbg, "INFO vs DBG should differ");
+    }
+
+    #[test]
+    fn detail_expansion_builds_lines() {
+        let theme = Theme::dark();
+        let entry = LogEntry::new(
+            "12:34:56".into(),
+            LogEntryLevel::Error,
+            "gate:compile".into(),
+            "FAILED task=do-thing model=claude-3 plan=my-plan some error output".into(),
+        );
+        let lines = build_detail_expansion(&entry, 120, &theme);
+        assert!(lines.len() >= 5, "detail expansion should have multiple lines");
+        // Check that IDs were extracted.
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+        assert!(text.contains("do-thing"), "should extract task ID");
+        assert!(text.contains("claude-3"), "should extract model");
+        assert!(text.contains("my-plan"), "should extract plan ID");
     }
 }

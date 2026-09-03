@@ -13,6 +13,7 @@ pub mod parallel_pool;
 pub mod phase_compact;
 pub mod plan_tree;
 pub mod status_bar;
+pub mod stream_output;
 pub mod sys_metrics;
 pub mod task_progress;
 pub mod token_sparkline;

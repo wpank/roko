@@ -16,6 +16,7 @@ pub mod dashboard;
 pub mod dashboard_gen;
 pub mod display_utils;
 pub mod effects_config;
+pub mod empty_state;
 pub mod event;
 pub mod fs_watch;
 pub(crate) mod git_watch;

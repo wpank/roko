@@ -1564,8 +1564,15 @@ impl App {
                     match modal {
                         ModalState::WaveOverview { scroll_offset, .. }
                         | ModalState::AgentPool { scroll_offset, .. }
-                        | ModalState::BatchReview { scroll_offset, .. }
-                        | ModalState::NotificationHistory { scroll_offset } => {
+                        | ModalState::BatchReview { scroll_offset, .. } => {
+                            *scroll_offset = scroll_offset.saturating_sub(1);
+                        }
+                        ModalState::NotificationHistory {
+                            scroll_offset,
+                            selected_index,
+                            ..
+                        } => {
+                            *selected_index = selected_index.saturating_sub(1);
                             *scroll_offset = scroll_offset.saturating_sub(1);
                         }
                         ModalState::QueueOverview {
@@ -1589,8 +1596,15 @@ impl App {
                     match modal {
                         ModalState::WaveOverview { scroll_offset, .. }
                         | ModalState::AgentPool { scroll_offset, .. }
-                        | ModalState::BatchReview { scroll_offset, .. }
-                        | ModalState::NotificationHistory { scroll_offset } => {
+                        | ModalState::BatchReview { scroll_offset, .. } => {
+                            *scroll_offset = scroll_offset.saturating_add(1);
+                        }
+                        ModalState::NotificationHistory {
+                            scroll_offset,
+                            selected_index,
+                            ..
+                        } => {
+                            *selected_index = selected_index.saturating_add(1);
                             *scroll_offset = scroll_offset.saturating_add(1);
                         }
                         ModalState::QueueOverview {
@@ -2093,7 +2107,140 @@ impl App {
                     self.tui_state.active_modal = None;
                 } else {
                     self.tui_state.active_modal =
-                        Some(ModalState::NotificationHistory { scroll_offset: 0 });
+                        Some(ModalState::NotificationHistory {
+                            scroll_offset: 0,
+                            selected_index: 0,
+                            filter: super::modals::LevelFilter::default(),
+                        });
+                }
+            }
+            TuiAction::NotifFilterToggle(key) => {
+                if let Some(ModalState::NotificationHistory { filter, selected_index, .. }) =
+                    self.tui_state.active_modal.as_mut()
+                {
+                    filter.toggle(key);
+                    // Reset selection when filters change.
+                    *selected_index = 0;
+                }
+            }
+            TuiAction::NotifPageUp => {
+                if let Some(ModalState::NotificationHistory {
+                    scroll_offset,
+                    selected_index,
+                    ..
+                }) = self.tui_state.active_modal.as_mut()
+                {
+                    let page = 10u16;
+                    *scroll_offset = scroll_offset.saturating_sub(page);
+                    *selected_index = selected_index.saturating_sub(page as usize);
+                }
+            }
+            TuiAction::NotifPageDown => {
+                if let Some(ModalState::NotificationHistory {
+                    scroll_offset,
+                    selected_index,
+                    ..
+                }) = self.tui_state.active_modal.as_mut()
+                {
+                    let page = 10u16;
+                    *scroll_offset = scroll_offset.saturating_add(page);
+                    *selected_index = selected_index.saturating_add(page as usize);
+                }
+            }
+            TuiAction::NotifHome => {
+                if let Some(ModalState::NotificationHistory {
+                    scroll_offset,
+                    selected_index,
+                    ..
+                }) = self.tui_state.active_modal.as_mut()
+                {
+                    *scroll_offset = 0;
+                    *selected_index = 0;
+                }
+            }
+            TuiAction::NotifEnd => {
+                // Compute count first to avoid double-borrow of tui_state.
+                let count = if let Some(ModalState::NotificationHistory { filter, .. }) =
+                    &self.tui_state.active_modal
+                {
+                    Some(
+                        self.tui_state
+                            .notification_history
+                            .iter()
+                            .filter(|e| filter.accepts(e.level))
+                            .count(),
+                    )
+                } else {
+                    None
+                };
+                if let (
+                    Some(count),
+                    Some(ModalState::NotificationHistory {
+                        scroll_offset,
+                        selected_index,
+                        ..
+                    }),
+                ) = (count, self.tui_state.active_modal.as_mut())
+                {
+                    *selected_index = count.saturating_sub(1);
+                    *scroll_offset = count.saturating_sub(1) as u16;
+                }
+            }
+            TuiAction::NotifJumpToRelated => {
+                // Extract the related target from the selected notification to
+                // avoid holding a borrow on active_modal while mutating it.
+                let jump_target = if let Some(ModalState::NotificationHistory {
+                    selected_index,
+                    filter,
+                    ..
+                }) = &self.tui_state.active_modal
+                {
+                    let filtered: Vec<&super::modals::NotificationRecord> = self
+                        .tui_state
+                        .notification_history
+                        .iter()
+                        .rev()
+                        .filter(|e| filter.accepts(e.level))
+                        .collect();
+                    filtered.get(*selected_index).map(|entry| {
+                        (entry.related_task.clone(), entry.related_run.clone())
+                    })
+                } else {
+                    None
+                };
+                if let Some((related_task, related_run)) = jump_target {
+                    if let Some(task_id) = related_task {
+                        if let Some(idx) = self
+                            .tui_state
+                            .current_task_checklist
+                            .iter()
+                            .position(|t| t.id == task_id)
+                        {
+                            self.tui_state.active_modal = Some(ModalState::TaskDetail {
+                                task_idx: idx,
+                                scroll_offset: 0,
+                            });
+                        } else {
+                            self.notifications.push_back(super::modals::Notification::warn(
+                                format!("Task {task_id} not found (may be stale)"),
+                            ));
+                        }
+                    } else if let Some(run_id) = related_run {
+                        if let Some(idx) = self
+                            .tui_state
+                            .plans
+                            .iter()
+                            .position(|p| p.id == run_id)
+                        {
+                            self.tui_state.active_modal = Some(ModalState::PlanDetail {
+                                plan_id: self.tui_state.plans[idx].id.clone(),
+                            });
+                        } else {
+                            self.notifications.push_back(super::modals::Notification::warn(
+                                format!("Run {run_id} not found (may be stale)"),
+                            ));
+                        }
+                    }
                 }
             }
             TuiAction::ToggleAgentPaneGroup => {
@@ -2424,6 +2571,19 @@ impl App {
                     SearchMode::Filter => SearchMode::Highlight,
                 };
                 self.refresh_log_search_matches();
+            }
+            TuiAction::YankLogEntry => {
+                let entries = self.tui_state.unified_log_entries().to_vec();
+                let idx = if self.tui_state.log_auto_tail {
+                    entries.len().saturating_sub(1)
+                } else {
+                    (self.tui_state.log_scroll).min(entries.len().saturating_sub(1))
+                };
+                if let Some(entry) = entries.get(idx) {
+                    let text = format!("[{}] {} {}", entry.timestamp, entry.source, entry.message);
+                    // TODO: clipboard integration (arboard/copypasta)
+                    let _ = text; // Suppress unused warning until clipboard is wired
+                }
             }
 
             // -- Plan tree filter (#219) --
@@ -2867,13 +3027,10 @@ impl App {
                 self.tui_state.diff_scroll = (current + delta).max(0) as usize;
             }
             // Per-tab detail zones: each routes to its own dedicated scroll field.
+            // NOTE: Logs/Marketplace/Atelier handled by wildcard arms above.
             (Tab::Git, FocusZone::GitDetail) => {
                 let current = self.tui_state.git_detail_scroll as i32;
                 self.tui_state.git_detail_scroll = (current + delta).max(0) as usize;
-            }
-            (Tab::Logs, FocusZone::LogDetail) => {
-                let current = self.tui_state.log_detail_scroll as i32;
-                self.tui_state.log_detail_scroll = (current + delta).max(0) as usize;
             }
             (Tab::Config, FocusZone::ConfigValues) => {
                 let current = self.tui_state.config_values_scroll as i32;
@@ -2882,14 +3039,6 @@ impl App {
             (Tab::Inspect, FocusZone::InspectDetail) => {
                 let current = self.tui_state.inspect_detail_scroll as i32;
                 self.tui_state.inspect_detail_scroll = (current + delta).max(0) as usize;
-            }
-            (Tab::Marketplace, FocusZone::MarketDetail) => {
-                let current = self.tui_state.marketplace_detail_scroll as i32;
-                self.tui_state.marketplace_detail_scroll = (current + delta).max(0) as usize;
-            }
-            (Tab::Atelier, FocusZone::AtelierDetail) => {
-                let current = self.tui_state.atelier_detail_scroll as i32;
-                self.tui_state.atelier_detail_scroll = (current + delta).max(0) as usize;
             }
             (Tab::Learning, FocusZone::LearningDetail) => {
                 let current = self.tui_state.learning_detail_scroll as i32;
@@ -2992,11 +3141,9 @@ impl App {
                 self.tui_state.diff_scroll = offset;
             }
             // Per-tab detail zones: each routes to its own dedicated scroll field.
+            // NOTE: Logs/Marketplace/Atelier handled by wildcard arms above.
             (Tab::Git, FocusZone::GitDetail) => {
                 self.tui_state.git_detail_scroll = offset;
-            }
-            (Tab::Logs, FocusZone::LogDetail) => {
-                self.tui_state.log_detail_scroll = offset;
             }
             (Tab::Config, FocusZone::ConfigValues) => {
                 self.tui_state.config_values_scroll = offset;
@@ -3006,12 +3153,6 @@ impl App {
             }
             (Tab::Inspect, FocusZone::InspectDetail) => {
                 self.tui_state.inspect_detail_scroll = offset;
-            }
-            (Tab::Marketplace, FocusZone::MarketDetail) => {
-                self.tui_state.marketplace_detail_scroll = offset;
-            }
-            (Tab::Atelier, FocusZone::AtelierDetail) => {
-                self.tui_state.atelier_detail_scroll = offset;
             }
             (Tab::Learning, FocusZone::LearningDetail) => {
                 self.tui_state.learning_detail_scroll = offset;
@@ -3489,19 +3630,24 @@ impl App {
         }
     }
 
-    /// Push a notification into the retained history, evicting old entries
-    /// when the 200-entry cap is reached.
+    /// Push a notification into the retained history ring buffer, evicting
+    /// the oldest entry when the 200-entry cap is reached.
     fn push_notification_history(&mut self, notif: super::modals::Notification) {
-        const MAX_HISTORY: usize = 200;
-        self.tui_state
-            .notification_history
-            .push(super::modals::HistoryEntry {
-                created: notif.created,
-                message: notif.message,
-                level: notif.level,
-            });
-        while self.tui_state.notification_history.len() > MAX_HISTORY {
-            self.tui_state.notification_history.remove(0);
+        let id = self.tui_state.notification_next_id;
+        self.tui_state.notification_next_id += 1;
+        let record = super::modals::NotificationRecord {
+            id,
+            created_at: notif.created,
+            level: notif.level,
+            source: String::new(),
+            message: super::modals::redact_message(&notif.message),
+            related_run: None,
+            related_task: None,
+            dismissed_at: None,
+        };
+        self.tui_state.notification_history.push_back(record);
+        while self.tui_state.notification_history.len() > super::modals::MAX_HISTORY {
+            self.tui_state.notification_history.pop_front();
             self.tui_state.notification_evicted_count += 1;
         }
     }

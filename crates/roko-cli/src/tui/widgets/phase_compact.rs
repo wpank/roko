@@ -1,8 +1,8 @@
-//! Compact 2-line phase widget with segmented phase bar.
+//! Compact phase widget with segmented bar, colored badges, and flow diagram.
 //!
-//! Line 1: Segmented 8-phase bar — each phase gets a fixed-width cell,
-//!         colored by status (Done=SAGE, Active=WARNING+spinner, Pending=dashes).
-//! Line 2: Active phase detail (icon + name + pct + elapsed + ETA) or error state.
+//! Line 1: Segmented phase bar — each phase gets a fixed-width cell,
+//!         colored by status (Done=SAGE, Active=gradient+spinner, Pending=dashes).
+//! Line 2: Active phase detail with badge, elapsed time, and phase flow transitions.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -66,13 +66,20 @@ pub fn render_phase_compact(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
         return;
     }
 
-    let title = if let Some(idx) = active_idx {
-        format!("Phase \u{00b7} {}", state.phase_pipeline[idx].name)
+    let theme = Theme::dark();
+    let active_phase_name = active_idx.map(|idx| state.phase_pipeline[idx].name.as_str());
+
+    let title_spans = if let Some(name) = active_phase_name {
+        let badge = phase_badge(name);
+        vec![
+            Span::styled("Phase ", theme.section_header()),
+            badge,
+        ]
     } else {
-        "Phase".to_string()
+        vec![Span::styled("Phase", theme.section_header())]
     };
 
-    let (border_style, ttl_style) = if focused {
+    let (border_style, _ttl_style) = if focused {
         (Theme::focused_border_style(), Theme::focused_title_style())
     } else {
         (
@@ -83,10 +90,9 @@ pub fn render_phase_compact(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(title)
+        .title(Line::from(title_spans))
         .style(Theme::block_style())
-        .border_style(border_style)
-        .title_style(ttl_style);
+        .border_style(border_style);
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -112,16 +118,33 @@ pub fn render_phase_compact(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
             seg_width
         };
 
+        // Progress fraction for gradient coloring within active segment.
+        let seg_frac = (i as f64) / (total_phases as f64).max(1.0);
+
         match step.status {
             PhaseStatus::Done => {
-                let fill: String = "\u{2588}".repeat(w);
-                bar_spans.push(Span::styled(fill, Style::default().fg(Theme::SAGE)));
+                // Gradient fill: earlier phases are warmer, later phases greener.
+                for col in 0..w {
+                    let t = seg_frac + (col as f64 / (inner_w as f64).max(1.0));
+                    let color = Theme::progress_gradient(t.min(1.0));
+                    bar_spans.push(Span::styled(
+                        "\u{2588}",
+                        Style::default().fg(color),
+                    ));
+                }
             }
             PhaseStatus::Active => {
                 if w > 0 {
+                    // Gradient fill for completed portion of active segment.
                     let fill_count = w.saturating_sub(1);
-                    let fill: String = "\u{2588}".repeat(fill_count);
-                    bar_spans.push(Span::styled(fill, Style::default().fg(Theme::WARNING)));
+                    for col in 0..fill_count {
+                        let t = seg_frac + (col as f64 / (inner_w as f64).max(1.0));
+                        let color = Theme::progress_gradient(t.min(1.0));
+                        bar_spans.push(Span::styled(
+                            "\u{2588}",
+                            Style::default().fg(color),
+                        ));
+                    }
                     bar_spans.push(Span::styled(
                         spinner_ch.to_string(),
                         Style::default()
@@ -157,16 +180,21 @@ pub fn render_phase_compact(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
         .iter()
         .position(|s| s.status == PhaseStatus::Failed)
     {
-        let name = &state.phase_pipeline[idx].name;
-        Line::from(vec![
+        let step = &state.phase_pipeline[idx];
+        let mut spans = vec![
             Span::styled(
-                "HALTED ",
-                Style::default()
-                    .fg(Theme::EMBER)
-                    .add_modifier(Modifier::BOLD),
+                " HALTED ",
+                theme.badge_failed(),
             ),
-            Span::styled(format!("at {name}"), Style::default().fg(Theme::EMBER)),
-        ])
+            Span::styled(format!(" at {}", step.name), Style::default().fg(Theme::EMBER)),
+        ];
+        if step.elapsed_secs > 0.0 {
+            spans.push(Span::styled(
+                format!("  {}", format_elapsed(step.elapsed_secs)),
+                Style::default().fg(Theme::TEXT_DIM),
+            ));
+        }
+        Line::from(spans)
     } else if let Some(idx) = active_idx {
         build_active_detail(&state.phase_pipeline[idx], atm, inner_w)
     } else {
@@ -176,10 +204,13 @@ pub fn render_phase_compact(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
             .iter()
             .all(|s| s.status == PhaseStatus::Done);
         if all_done && !state.phase_pipeline.is_empty() {
-            Line::from(Span::styled(
-                "all phases complete",
-                Style::default().fg(Theme::SAGE),
-            ))
+            Line::from(vec![
+                Span::styled(
+                    " COMPLETE ",
+                    theme.badge_complete(),
+                ),
+                Span::styled(" all phases done", Style::default().fg(Theme::SAGE)),
+            ])
         } else if state.phase_pipeline.is_empty() {
             Line::from(Span::styled(
                 "no phases configured",
@@ -201,7 +232,7 @@ pub fn render_phase_compact(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Build the active-phase detail line: icon + name + pct + elapsed + flow.
+/// Build the active-phase detail line: badge + name + pct + elapsed.
 fn build_active_detail(
     step: &super::super::state::PhaseStep,
     atm: &Atmosphere,
@@ -209,8 +240,10 @@ fn build_active_detail(
 ) -> Line<'static> {
     let pulse_color = pulse_active(atm.heartbeat());
     let icon = atm.spinner_ethereal().to_string();
+    let badge = phase_badge(&step.name);
 
     let mut spans = vec![
+        badge,
         Span::styled(
             icon,
             Style::default()
@@ -225,22 +258,18 @@ fn build_active_detail(
         ),
     ];
 
-    // Percentage
+    // Percentage with gradient color
     if step.pct > 0.0 {
+        let pct_color = Theme::progress_gradient(step.pct as f64 / 100.0);
         spans.push(Span::styled(
             format!(" {:.0}%", step.pct.min(99.0)),
-            Style::default().fg(Theme::DREAM),
+            Style::default().fg(pct_color),
         ));
     }
 
     // Elapsed time
     if step.elapsed_secs > 0.0 {
-        let secs = step.elapsed_secs as u64;
-        let time_str = if secs >= 3600 {
-            format!(" {}h{}m", secs / 3600, (secs % 3600) / 60)
-        } else {
-            format!(" {}m{:02}s", secs / 60, secs % 60)
-        };
+        let time_str = format!(" {}", format_elapsed(step.elapsed_secs));
         let time_style = {
             let pulse = atm.heartbeat();
             let base_r = 170.0_f64;
@@ -262,27 +291,108 @@ fn build_active_detail(
     Line::from(spans)
 }
 
-/// Build a phase flow line showing phase transitions: "dispatch > gate > merge".
+/// Build a phase flow line: `impl -> gate -> done` with colored arrows.
 fn build_phase_flow(pipeline: &[super::super::state::PhaseStep]) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     for (i, step) in pipeline.iter().enumerate() {
         if i > 0 {
+            // Arrow color matches the outcome of the *previous* step.
+            let prev = &pipeline[i - 1];
+            let arrow_color = match prev.status {
+                PhaseStatus::Done => Theme::SAGE,
+                PhaseStatus::Failed => Theme::EMBER,
+                _ => Theme::TEXT_GHOST,
+            };
             spans.push(Span::styled(
-                " \u{203a} ",
-                Style::default().fg(Theme::TEXT_GHOST),
+                " \u{2192} ",
+                Style::default().fg(arrow_color),
             ));
         }
-        let style = match step.status {
-            PhaseStatus::Done => Style::default().fg(Theme::SAGE),
-            PhaseStatus::Active => Style::default()
-                .fg(Theme::WARNING)
-                .add_modifier(Modifier::BOLD),
-            PhaseStatus::Failed => Style::default().fg(Theme::EMBER),
-            PhaseStatus::Pending => Style::default().fg(Theme::TEXT_DIM),
+        // Phase name or completion checkmark.
+        let (label, style) = match step.status {
+            PhaseStatus::Done => (
+                "\u{2713}".to_string(),
+                Style::default().fg(Theme::SAGE),
+            ),
+            PhaseStatus::Active => (
+                step.name.clone(),
+                Style::default()
+                    .fg(Theme::WARNING)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            PhaseStatus::Failed => (
+                step.name.clone(),
+                Style::default()
+                    .fg(Theme::EMBER)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            PhaseStatus::Pending => (
+                step.name.clone(),
+                Style::default().fg(Theme::TEXT_DIM),
+            ),
         };
-        spans.push(Span::styled(step.name.clone(), style));
+        spans.push(Span::styled(label, style));
     }
     Line::from(spans)
+}
+
+/// Return a colored badge span for the given phase name.
+///
+/// Maps phase names to abbreviated badges:
+/// `[IMPL]` green, `[GATE]` yellow, `[REPLAN]` red, `[COMPLETE]` bright green,
+/// `[HALTED]` red. Falls back to a dim generic badge.
+fn phase_badge(phase_name: &str) -> Span<'static> {
+    let theme = Theme::dark();
+    let lower = phase_name.to_ascii_lowercase();
+    if lower.contains("implement") || lower.contains("dispatch") || lower.contains("exec") {
+        Span::styled(" IMPL ", theme.badge_running())
+    } else if lower.contains("gate") || lower.contains("compil") || lower.contains("test")
+        || lower.contains("verify")
+    {
+        Span::styled(" GATE ", theme.badge_pending())
+    } else if lower.contains("replan") || lower.contains("fail") {
+        Span::styled(" REPLAN ", theme.badge_failed())
+    } else if lower.contains("complete") || lower.contains("done") {
+        Span::styled(" DONE ", theme.badge_complete())
+    } else if lower.contains("halt") {
+        Span::styled(" HALTED ", theme.badge_failed())
+    } else if lower.contains("preflight") || lower.contains("prep") {
+        Span::styled(
+            " PREP ",
+            Style::default()
+                .fg(Theme::VOID)
+                .bg(Theme::TEXT_DIM)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else if lower.contains("review") || lower.contains("critic") {
+        Span::styled(
+            " REVIEW ",
+            Style::default()
+                .fg(Theme::VOID)
+                .bg(Theme::BONE_DIM)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::styled(
+            format!(" {} ", &phase_name.to_ascii_uppercase().chars().take(4).collect::<String>()),
+            Style::default()
+                .fg(Theme::VOID)
+                .bg(Theme::TEXT_DIM)
+                .add_modifier(Modifier::BOLD),
+        )
+    }
+}
+
+/// Format elapsed seconds into a human-readable compact string.
+fn format_elapsed(secs: f64) -> String {
+    let s = secs as u64;
+    if s >= 3600 {
+        format!("{}h{}m", s / 3600, (s % 3600) / 60)
+    } else if s >= 60 {
+        format!("{}m{:02}s", s / 60, s % 60)
+    } else {
+        format!("{}s", s)
+    }
 }
 
 /// Modulate a base rose color with heartbeat pulse.

@@ -342,15 +342,16 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         format!("  {done}/{total} tasks")
     };
     let progress_style = if has_failures {
+        // ERR uses danger() — EMBER + BOLD + UNDERLINED for urgency
         Style::default()
             .fg(Theme::EMBER)
-            .add_modifier(Modifier::BOLD)
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
     } else if all_done && total > 0 {
         Style::default()
             .fg(Theme::SAGE)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Theme::semantic_color(fill_pct))
+        Style::default().fg(Theme::progress_gradient(fill_pct))
     };
     spans.push(Span::styled(
         progress_text,
@@ -363,7 +364,7 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         spans.push(Span::styled(
             format!("  {pct}%"),
             Style::default()
-                .fg(Theme::semantic_color(fill_pct))
+                .fg(Theme::progress_gradient(fill_pct))
                 .bg(Theme::BG_SECONDARY),
         ));
     }
@@ -658,15 +659,26 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
 
     // Render F-key indicators with active tab highlighting and badges
     let mut fkey_spans: Vec<Span<'static>> = Vec::new();
+    let theme = Theme::dark();
     for ((key, color, label, tab), &badge) in fkey_items.iter().zip(badges.iter()) {
         let is_active = *tab == current_tab;
         if is_active {
+            // Breathing glow on the active tab: subtle brightness pulse.
+            let glow = super::super::theme::brighten(*color, state.atmosphere.breathing_brightness());
+            // Active tab: inverted key + section_header label with underline
             fkey_spans.push(Span::styled(
-                format!("{key}:{label}"),
+                key.to_string(),
                 Style::default()
                     .fg(Theme::VOID)
-                    .bg(*color)
+                    .bg(glow)
                     .add_modifier(Modifier::BOLD),
+            ));
+            fkey_spans.push(Span::styled(
+                format!(":{label}"),
+                theme
+                    .section_header()
+                    .bg(Theme::BG_SECONDARY)
+                    .add_modifier(Modifier::UNDERLINED),
             ));
         } else {
             fkey_spans.push(Span::styled(
@@ -676,16 +688,20 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
                     .bg(Theme::BG_SECONDARY)
                     .add_modifier(Modifier::BOLD),
             ));
+            // Inactive tab label uses metadata (ghost) style
             fkey_spans.push(Span::styled(
                 format!(":{label}"),
-                Style::default().fg(Theme::FG_DIM).bg(Theme::BG_SECONDARY),
+                theme.metadata().bg(Theme::BG_SECONDARY),
             ));
-            // Append badge count when > 0
+            // Append badge count when > 0 — uses value() style (TEXT_STRONG + BOLD)
             if badge > 0 {
                 let badge_color = tab_badge_color(*tab);
                 fkey_spans.push(Span::styled(
                     format!("({badge})"),
-                    Style::default().fg(badge_color).bg(Theme::BG_SECONDARY),
+                    theme
+                        .value()
+                        .fg(badge_color)
+                        .bg(Theme::BG_SECONDARY),
                 ));
             }
         }

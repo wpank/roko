@@ -1413,6 +1413,13 @@ impl DashboardSnapshot {
                         agent.active = true;
                         if !role.is_empty() {
                             agent.role.clone_from(role);
+                        } else if agent.role.is_empty() {
+                            // Fallback: use model name so Token Burn doesn't show "unknown".
+                            if !model.is_empty() {
+                                agent.role.clone_from(model);
+                            } else {
+                                agent.role = "impl".to_string();
+                            }
                         }
                         if !model.is_empty() {
                             agent.model.clone_from(model);
@@ -1437,9 +1444,18 @@ impl DashboardSnapshot {
                     }
                     std::collections::hash_map::Entry::Vacant(e) => {
                         self.stats.agents_active += 1;
+                        let effective_role = if role.is_empty() {
+                            if !model.is_empty() {
+                                model.clone()
+                            } else {
+                                "impl".to_string()
+                            }
+                        } else {
+                            role.clone()
+                        };
                         e.insert(AgentState {
                             agent_id: agent_id.clone(),
-                            role: role.clone(),
+                            role: effective_role,
                             active: true,
                             output_bytes: 0,
                             model: model.clone(),

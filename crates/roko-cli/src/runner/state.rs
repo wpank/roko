@@ -364,7 +364,9 @@ impl RunState {
             task.next_attempt = task
                 .next_attempt
                 .max(task.current_attempt.saturating_add(1));
-            self.iterations.insert(key, task.current_attempt);
+        }
+        if let Some(val) = self.task_lifecycle_mut(task_id, &key).map(|t| t.current_attempt) {
+            self.iterations.insert(key, val);
         }
     }
 
@@ -733,7 +735,9 @@ impl RunState {
             task.next_attempt = task
                 .next_attempt
                 .max(task.current_attempt.saturating_add(1));
-            self.iterations.insert(key, task.current_attempt);
+        }
+        if let Some(val) = self.task_lifecycle_mut(&attempt.task_id, &key).map(|t| t.current_attempt) {
+            self.iterations.insert(key, val);
         }
     }
 
@@ -782,7 +786,8 @@ impl RunState {
         timestamp_ms: u64,
     ) {
         self.ensure_task_lifecycle(&attempt.plan_id, &attempt.task_id, 0);
-        if let Some(task) = self.task_lifecycle_mut(&attempt.task_id, &attempt.task_key()) {
+        let task_key = attempt.task_key();
+        if let Some(task) = self.task_lifecycle_mut(&attempt.task_id, &task_key) {
             task.latest_failure_kind = Some(decision.failure_kind);
             match decision.action {
                 RetryAction::RetryAfterBackoff | RetryAction::Replan => {
@@ -795,8 +800,6 @@ impl RunState {
                     task.next_attempt = task
                         .next_attempt
                         .max(task.current_attempt.saturating_add(1));
-                    self.iterations
-                        .insert(attempt.task_key(), task.current_attempt.max(1));
                 }
                 RetryAction::Exhausted => {
                     task.status = TaskLifecycleStatus::Exhausted;
@@ -806,6 +809,11 @@ impl RunState {
                     task.status = TaskLifecycleStatus::Failed;
                     task.completed_at_ms = Some(timestamp_ms);
                 }
+            }
+        }
+        if let Some(val) = self.task_lifecycle_mut(&attempt.task_id, &task_key).map(|t| t.current_attempt.max(1)) {
+            if matches!(decision.action, RetryAction::RetryAfterBackoff | RetryAction::Replan) {
+                self.iterations.insert(task_key, val);
             }
         }
     }

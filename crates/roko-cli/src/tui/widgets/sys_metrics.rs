@@ -132,6 +132,7 @@ pub fn render_sys_metrics(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
     let spark_w = w.saturating_sub(12 + gauge_w + 1) / 2;
     let breathing = state.atmosphere.breathing_brightness();
 
+    let theme = Theme::dark();
     let mut lines = Vec::new();
 
     // CPU
@@ -142,8 +143,8 @@ pub fn render_sys_metrics(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         let color = pct_color(pct);
         let data: Vec<f32> = state.sys.cpu_history.iter().copied().collect();
         let mut spans = vec![
-            Span::styled("CPU ", Style::default().fg(Theme::TEXT_DIM)),
-            Span::styled(val, Style::default().fg(color)),
+            Span::styled("CPU ", theme.label()),
+            Span::styled(val, theme.value().fg(color)),
             Span::styled(" ", Style::default()),
         ];
         spans.extend(render_mini_gauge(gauge_w, pct, color, breathing));
@@ -163,8 +164,8 @@ pub fn render_sys_metrics(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         let color = pct_color(mem_frac);
         let data: Vec<f32> = state.sys.mem_history.iter().copied().collect();
         let mut spans = vec![
-            Span::styled("MEM ", Style::default().fg(Theme::TEXT_DIM)),
-            Span::styled(val, Style::default().fg(color)),
+            Span::styled("MEM ", theme.label()),
+            Span::styled(val, theme.value().fg(color)),
             Span::styled(" ", Style::default()),
         ];
         spans.extend(render_mini_gauge(gauge_w, mem_frac, color, breathing));
@@ -178,46 +179,44 @@ pub fn render_sys_metrics(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         let down = fmt_rate(state.sys.net_down_bytes_sec as f64);
         let up = fmt_rate(state.sys.net_up_bytes_sec as f64);
         let spans = vec![
-            Span::styled("NET ", Style::default().fg(Theme::TEXT_DIM)),
+            Span::styled("NET ", theme.label()),
             Span::styled(
-                format!("\u{2193}{down:>4}"),
+                format!("\u{2193}{down:>5}"),
                 Style::default().fg(Theme::DREAM),
             ),
             Span::styled(" ", Style::default()),
             Span::styled(
-                format!("\u{2191}{up:>4}"),
-                Style::default().fg(Theme::BONE_DIM),
+                format!("\u{2191}{up:>5}"),
+                Style::default().fg(Theme::SAGE),
             ),
         ];
         lines.push(Line::from(spans));
     }
 
-    // DSK — I/O rate + capacity
+    // DSK — free space with low-space warning
     if inner.height >= 4 {
-        let read = fmt_rate(state.sys.disk_read_bytes_sec as f64);
-        let write = fmt_rate(state.sys.disk_write_bytes_sec as f64);
         let free = fmt_bytes(state.sys.disk_free_bytes);
-        let mut spans = vec![
-            Span::styled("DSK ", Style::default().fg(Theme::TEXT_DIM)),
-            Span::styled(
-                format!("R{read:>4}"),
-                Style::default().fg(Theme::DREAM),
-            ),
-            Span::styled(" ", Style::default()),
-            Span::styled(
-                format!("W{write:>4}"),
-                Style::default().fg(Theme::BONE_DIM),
-            ),
-            Span::styled(format!(" {free:>5}f"), Style::default().fg(Theme::TEXT_DIM)),
-        ];
-        // Warn when disk is low
-        let disk_frac = if state.sys.disk_total_bytes > 0 {
-            1.0 - (state.sys.disk_free_bytes as f64 / state.sys.disk_total_bytes as f64)
+        let disk_free_frac = if state.sys.disk_total_bytes > 0 {
+            state.sys.disk_free_bytes as f64 / state.sys.disk_total_bytes as f64
         } else {
-            0.0
+            1.0
         };
-        if disk_frac >= 0.9 {
-            spans.push(Span::styled("!", Style::default().fg(Theme::EMBER)));
+        let free_color = if disk_free_frac < 0.1 {
+            Theme::EMBER
+        } else if disk_free_frac < 0.2 {
+            Theme::WARNING
+        } else {
+            Theme::SAGE
+        };
+        let mut spans = vec![
+            Span::styled("DSK ", theme.label()),
+            Span::styled(
+                format!("{free:>6} free"),
+                Style::default().fg(free_color),
+            ),
+        ];
+        if disk_free_frac < 0.1 {
+            spans.push(Span::styled(" !", Style::default().fg(Theme::EMBER)));
         }
         lines.push(Line::from(spans));
     }
@@ -225,16 +224,14 @@ pub fn render_sys_metrics(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
     // FPS
     if inner.height >= 5 {
         let fps = state.atmosphere.fps();
-        let fps_color = if fps >= 50.0 {
-            Theme::SAGE
-        } else if fps >= 25.0 {
+        let fps_color = if fps < 24.0 {
             Theme::WARNING
         } else {
-            Theme::EMBER
+            Theme::TEXT_GHOST
         };
         lines.push(Line::from(vec![
-            Span::styled("FPS ", Style::default().fg(Theme::TEXT_DIM)),
-            Span::styled(format!("{:>5.1}", fps), Style::default().fg(fps_color)),
+            Span::styled("FPS ", theme.label()),
+            Span::styled(format!("{:>5.1}", fps), theme.metadata().fg(fps_color)),
         ]));
     }
 

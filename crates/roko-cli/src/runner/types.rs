@@ -764,6 +764,8 @@ pub struct TimeoutAgentSnapshot {
     #[serde(default)]
     pub cache_write_tokens: u64,
     #[serde(default)]
+    pub reasoning_tokens: u64,
+    #[serde(default)]
     pub cost_usd: f64,
 }
 
@@ -1139,6 +1141,12 @@ pub struct TaskLifecycle {
     pub latest_failure_kind: Option<RunnerFailureKind>,
 }
 
+/// The well-known task ID used for synthetic plan-verification operations.
+///
+/// Plan-verify entries live in `RunnerLifecycleProjection::plan_verification`,
+/// not in the executable `tasks` map, so they never inflate `total_tasks`.
+pub const PLAN_VERIFY_TASK_ID: &str = "plan-verify";
+
 /// Materialized lifecycle projection updated from typed runner events.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunnerLifecycleProjection {
@@ -1151,6 +1159,11 @@ pub struct RunnerLifecycleProjection {
     pub plans: std::collections::HashMap<String, PlanLifecycleStatus>,
     #[serde(default)]
     pub tasks: std::collections::HashMap<String, TaskLifecycle>,
+    /// Synthetic plan-verification lifecycle entries, keyed by `plan_id:plan-verify`.
+    ///
+    /// Separated from `tasks` so they never count against `total_tasks`.
+    #[serde(default)]
+    pub plan_verification: std::collections::HashMap<String, TaskLifecycle>,
     #[serde(default)]
     pub task_attempts: std::collections::HashMap<String, TaskAttemptLifecycle>,
     #[serde(default)]
@@ -1171,6 +1184,7 @@ impl RunnerLifecycleProjection {
             resumed: false,
             plans: std::collections::HashMap::new(),
             tasks: std::collections::HashMap::new(),
+            plan_verification: std::collections::HashMap::new(),
             task_attempts: std::collections::HashMap::new(),
             last_resume_marker: None,
             global_timeout: None,

@@ -135,6 +135,15 @@ pub enum ResumeError {
     /// Plan present in snapshot but missing from the current run.
     #[error("plan `{plan_id}` is in snapshot but not in the current run")]
     PlanMissing { plan_id: String },
+    /// The authoritative snapshot and all backups are corrupt or unreadable.
+    /// The corrupt file is preserved at `snapshot_path` for diagnosis.
+    #[error("state recovery required: {reason}")]
+    StateRecoveryRequired {
+        /// Path to the corrupt authoritative snapshot (left in place for diagnosis).
+        snapshot_path: std::path::PathBuf,
+        /// Human-readable explanation of the failure.
+        reason: String,
+    },
     /// Filesystem / parser failure surfacing as anyhow.
     #[error(transparent)]
     Other(#[from] anyhow::Error),

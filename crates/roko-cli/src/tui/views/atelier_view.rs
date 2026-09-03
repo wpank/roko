@@ -12,6 +12,7 @@ use ratatui::widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Tab
 
 use super::{SubView, ViewState};
 use crate::tui::dashboard::{DashboardData, Theme};
+use crate::tui::empty_state;
 use crate::tui::state::TuiState;
 use crate::tui::tabs::Tab;
 
@@ -114,7 +115,7 @@ pub(crate) fn render(
     render_stats_bar(frame, rows[1], prds, data, theme);
 
     if prds.is_empty() {
-        render_empty(frame, rows[2], theme);
+        empty_state::render_empty_state(frame, rows[2], Tab::Atelier, &tui_state.atmosphere);
         return;
     }
 
@@ -179,66 +180,34 @@ fn render_stats_bar(
     ])
     .split(inner);
 
-    let stat = |label: &str, value: String, style| {
+    let stat = |label_text: &str, value: String, style| {
         Paragraph::new(Line::from(vec![
-            Span::styled(format!("{label}: "), theme.muted()),
+            Span::styled(format!("{label_text}: "), theme.label()),
             Span::styled(value, style),
         ]))
         .alignment(Alignment::Center)
     };
 
-    frame.render_widget(stat("PRDs", prds.len().to_string(), theme.text()), cols[0]);
+    frame.render_widget(
+        stat("PRDs", prds.len().to_string(), theme.value()),
+        cols[0],
+    );
     frame.render_widget(stat("Plans", plan_count.to_string(), theme.info()), cols[1]);
     frame.render_widget(
         stat("Tasks", format!("{done_tasks}/{total_tasks}"), tasks_style),
         cols[2],
     );
     frame.render_widget(
-        stat("Agents", data.agents.len().to_string(), theme.text()),
+        stat("Agents", data.agents.len().to_string(), theme.value()),
         cols[3],
     );
     frame.render_widget(
         stat(
             "Episodes",
             data.efficiency.event_count.to_string(),
-            theme.muted(),
+            theme.metadata(),
         ),
         cols[4],
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Empty state
-// ---------------------------------------------------------------------------
-
-fn render_empty(frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
-    let block = Block::bordered()
-        .title(Span::styled(
-            " Atelier ",
-            theme.accent().add_modifier(Modifier::BOLD),
-        ))
-        .border_style(theme.accent());
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let lines = vec![
-        Line::from(""),
-        Line::from(Span::styled("No PRDs found.", theme.muted())),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Create one with: roko prd idea \"your idea\"",
-            theme.muted(),
-        )),
-        Line::from(Span::styled(
-            "Then draft: roko prd draft new \"your-slug\"",
-            theme.muted(),
-        )),
-    ];
-    frame.render_widget(
-        Paragraph::new(lines)
-            .alignment(Alignment::Center)
-            .wrap(Wrap { trim: false }),
-        inner,
     );
 }
 
@@ -282,10 +251,10 @@ fn render_prd_list(
             let is_sel = i == selected;
             let status = PrdStatus::from_str(&prd.status);
             let badge_style = match status {
-                PrdStatus::Idea => theme.muted(),
-                PrdStatus::Draft => theme.warning(),
-                PrdStatus::Published => theme.success(),
-                PrdStatus::Planned => theme.info(),
+                PrdStatus::Idea => theme.badge_pending(),
+                PrdStatus::Draft => theme.badge_running(),
+                PrdStatus::Published => theme.badge_complete(),
+                PrdStatus::Planned => theme.badge_complete(),
             };
 
             let progress = if prd.task_total > 0 {
@@ -298,11 +267,14 @@ fn render_prd_list(
             let row_style = if is_sel {
                 theme.selection()
             } else {
-                theme.text()
+                ratatui::style::Style::default()
+                    .fg(Theme::BONE_BRIGHT)
+                    .add_modifier(Modifier::BOLD)
             };
 
             let mut spans = vec![
                 Span::styled(format!(" {} ", status.badge()), badge_style),
+                Span::raw(" "),
                 Span::styled(truncate(&prd.title, title_max), row_style),
             ];
 
@@ -344,7 +316,9 @@ fn render_plan_detail(
     let block = Block::bordered()
         .title(Span::styled(
             format!(" {} ", truncate(&prd.title, 40)),
-            theme.accent().add_modifier(Modifier::BOLD),
+            ratatui::style::Style::default()
+                .fg(Theme::BONE_BRIGHT)
+                .add_modifier(Modifier::BOLD),
         ))
         .border_style(theme.accent());
     let inner = block.inner(area);
@@ -357,21 +331,27 @@ fn render_plan_detail(
     // Compute how many lines the actions section needs.
     let status = PrdStatus::from_str(&prd.status);
     let actions_height: u16 = match status {
-        PrdStatus::Idea | PrdStatus::Draft => 4,
-        PrdStatus::Published => 4,
-        PrdStatus::Planned => 3,
+        PrdStatus::Idea | PrdStatus::Draft => 5,
+        PrdStatus::Published => 5,
+        PrdStatus::Planned => 4,
     };
 
     let sections = Layout::vertical([
-        Constraint::Length(5),              // PRD metadata
-        Constraint::Length(actions_height), // CLI actions
+        Constraint::Length(6),              // PRD metadata + separator
+        Constraint::Length(actions_height), // CLI actions + separator
         Constraint::Min(0),                 // Task list
         Constraint::Length(1),              // Keybinding hints
     ])
     .split(inner);
 
     // PRD metadata
-    let status_style = match status {
+    let status_badge_style = match status {
+        PrdStatus::Idea => theme.badge_pending(),
+        PrdStatus::Draft => theme.badge_running(),
+        PrdStatus::Published => theme.badge_complete(),
+        PrdStatus::Planned => theme.badge_complete(),
+    };
+    let status_text_style = match status {
         PrdStatus::Idea => theme.muted(),
         PrdStatus::Draft => theme.warning(),
         PrdStatus::Published => theme.success(),
@@ -386,42 +366,42 @@ fn render_plan_detail(
         "\u{2014}".to_string() // em dash
     };
 
-    // Build available-actions hint based on current status.
-    let action_hint = match status {
-        PrdStatus::Idea | PrdStatus::Draft => "p:publish",
-        PrdStatus::Published => "g:generate plan",
-        PrdStatus::Planned => "(complete)",
-    };
+    let sep_width = inner.width as usize;
+    let separator = "\u{2500}".repeat(sep_width.min(120));
+    let sep_line =
+        Line::from(Span::styled(separator.clone(), ratatui::style::Style::default().fg(Theme::SEPARATOR)));
 
     let meta_lines = vec![
         Line::from(vec![
-            Span::styled("slug:       ", theme.muted()),
-            Span::styled(&prd.slug, theme.text()),
+            Span::styled("slug:       ", theme.label()),
+            Span::styled(&prd.slug, theme.value()),
         ]),
         Line::from(vec![
-            Span::styled("status:     ", theme.muted()),
-            Span::styled(status.label(), status_style),
-            Span::styled(format!("  [{action_hint}]"), theme.accent()),
+            Span::styled("status:     ", theme.label()),
+            Span::styled(format!(" {} ", status.badge()), status_badge_style),
+            Span::raw(" "),
+            Span::styled(status.label(), status_text_style),
         ]),
         Line::from(vec![
-            Span::styled("tasks:      ", theme.muted()),
+            Span::styled("tasks:      ", theme.label()),
             Span::styled(
                 format!("{}/{}", prd.task_done, prd.task_total),
-                theme.text(),
+                theme.value(),
             ),
-            Span::styled(format!("  ({completion})"), theme.muted()),
+            Span::styled(format!("  ({completion})"), theme.metadata()),
         ]),
         Line::from(vec![
-            Span::styled("failed:     ", theme.muted()),
+            Span::styled("failed:     ", theme.label()),
             Span::styled(
                 prd.task_failed.to_string(),
                 if prd.task_failed > 0 {
                     theme.danger()
                 } else {
-                    theme.muted()
+                    theme.metadata()
                 },
             ),
         ]),
+        sep_line.clone(),
     ];
     frame.render_widget(
         Paragraph::new(meta_lines).wrap(Wrap { trim: false }),
@@ -429,43 +409,45 @@ fn render_plan_detail(
     );
 
     // CLI actions block: show actionable commands based on PRD status.
-    let action_lines: Vec<Line<'_>> = match status {
-        PrdStatus::Idea | PrdStatus::Draft => vec![
-            Line::from(Span::styled("Actions:", theme.accent())),
-            Line::from(Span::styled(
+    let mut action_lines: Vec<Line<'_>> = vec![Line::from(Span::styled(
+        "Actions",
+        theme.section_header(),
+    ))];
+    match status {
+        PrdStatus::Idea | PrdStatus::Draft => {
+            action_lines.push(Line::from(Span::styled(
                 "  roko prd draft promote    # publish this draft".to_string(),
-                theme.muted(),
-            )),
-            Line::from(Span::styled(
+                theme.metadata(),
+            )));
+            action_lines.push(Line::from(Span::styled(
                 format!(
                     "  roko prd plan {:<12}# generate implementation plan",
                     &prd.slug
                 ),
-                theme.muted(),
-            )),
-        ],
-        PrdStatus::Published => vec![
-            Line::from(Span::styled("Actions:", theme.accent())),
-            Line::from(Span::styled(
+                theme.metadata(),
+            )));
+        }
+        PrdStatus::Published => {
+            action_lines.push(Line::from(Span::styled(
                 format!(
                     "  roko prd plan {:<12}# generate implementation plan",
                     &prd.slug
                 ),
-                theme.muted(),
-            )),
-            Line::from(Span::styled(
+                theme.metadata(),
+            )));
+            action_lines.push(Line::from(Span::styled(
                 "  roko plan run plans/      # execute generated plan".to_string(),
-                theme.muted(),
-            )),
-        ],
-        PrdStatus::Planned => vec![
-            Line::from(Span::styled("Actions:", theme.accent())),
-            Line::from(Span::styled(
+                theme.metadata(),
+            )));
+        }
+        PrdStatus::Planned => {
+            action_lines.push(Line::from(Span::styled(
                 "  roko plan run plans/      # execute the plan".to_string(),
-                theme.muted(),
-            )),
-        ],
-    };
+                theme.metadata(),
+            )));
+        }
+    }
+    action_lines.push(sep_line);
     frame.render_widget(
         Paragraph::new(action_lines).wrap(Wrap { trim: false }),
         sections[1],
@@ -491,8 +473,8 @@ fn render_plan_detail(
     };
     let task_block = Block::default()
         .borders(Borders::TOP)
-        .title(Span::styled(task_title, theme.muted()))
-        .border_style(theme.muted());
+        .title(Span::styled(task_title, theme.section_header()))
+        .border_style(ratatui::style::Style::default().fg(Theme::SEPARATOR));
     let task_inner = task_block.inner(sections[2]);
     frame.render_widget(task_block, sections[2]);
 
@@ -519,9 +501,9 @@ fn render_plan_detail(
             };
             Row::new(vec![
                 Cell::from(Span::styled(status.icon(), icon_style)),
-                Cell::from(Span::styled(truncate(&task.id, 8), theme.muted())),
-                Cell::from(Span::styled(truncate(&task.title, title_max), theme.text())),
-                Cell::from(Span::styled(truncate(&task.agent, 12), theme.muted())),
+                Cell::from(Span::styled(truncate(&task.id, 8), theme.metadata())),
+                Cell::from(Span::styled(truncate(&task.title, title_max), theme.value())),
+                Cell::from(Span::styled(truncate(&task.agent, 12), theme.metadata())),
             ])
         })
         .collect();
@@ -534,10 +516,7 @@ fn render_plan_detail(
     ];
     frame.render_widget(
         Table::new(rows, widths)
-            .header(
-                Row::new(["", "id", "title", "agent"])
-                    .style(theme.accent().add_modifier(Modifier::BOLD)),
-            )
+            .header(Row::new(["", "id", "title", "agent"]).style(theme.label()))
             .column_spacing(1),
         task_inner,
     );

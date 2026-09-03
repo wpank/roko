@@ -146,32 +146,42 @@ pub fn render_notifications(
 
         frame.render_widget(Clear, toast_area);
 
-        let (border_style, icon, tag, tag_style) = match notif.level {
+        let (base_border_color, icon, tag, tag_style) = match notif.level {
             NotificationLevel::Info => (
-                theme.info(),
+                theme.info,
                 "\u{2139}",  // i
                 " INFO ",
                 theme.info(),
             ),
             NotificationLevel::Warn => (
-                theme.warning(),
+                theme.warning,
                 "\u{26a0}",  // warning sign
                 " WARN ",
                 theme.warning().add_modifier(Modifier::BOLD),
             ),
             NotificationLevel::Error => (
-                theme.danger(),
+                theme.danger,
                 "\u{2717}",  // X mark
                 " ERR  ",
                 theme.danger().add_modifier(Modifier::BOLD | Modifier::REVERSED),
             ),
             NotificationLevel::Debug => (
-                theme.muted(),
+                theme.muted,
                 "\u{2022}",  // bullet
                 " DBG  ",
                 theme.muted(),
             ),
         };
+
+        // Pulse the border color during the first second for new notifications.
+        let age = notif.created.elapsed().as_secs_f64();
+        let border_color = if age < 1.0 {
+            let pulse = ((age * std::f64::consts::PI * 4.0).sin() * 0.5 + 0.5).clamp(0.0, 1.0);
+            Theme::notification_pulse(base_border_color, pulse)
+        } else {
+            base_border_color
+        };
+        let border_style = ratatui::style::Style::default().fg(border_color);
 
         let block = Block::default()
             .borders(Borders::ALL)

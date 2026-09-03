@@ -169,6 +169,8 @@ pub mod obs {
 }
 pub mod operating_frequency;
 pub mod phase;
+/// Executor-neutral plan mutation contract (v1) — deterministic DAG mutation kernel.
+pub mod plan_mutation;
 pub mod plugin;
 pub mod policy_manifest;
 pub mod polyglot;
@@ -318,6 +320,11 @@ pub use operating_frequency::{
     OperatingFrequencyScheduler,
 };
 pub use phase::{FailureKind, PhaseKind, PlanPhase, is_monotonic_progression, valid_transitions};
+pub use plan_mutation::{
+    MutationAuthorKind, MutationAuthorV1, MutationEvidenceV1, MutablePlanV1, MutableTaskV1,
+    PlanMutationErrorV1, PlanMutationOpV1, PlanMutationResultV1, PlanMutationV1, apply_mutation,
+    canonical_fingerprint,
+};
 pub use policy_manifest::{
     BUILTIN_ROLE_POLICY_MANIFEST_PATH, BUILTIN_ROLE_POLICY_MANIFEST_TOML,
     CURRENT_POLICY_MANIFEST_SCHEMA_VERSION, CapabilityDeclaration, ContextPolicyRef,

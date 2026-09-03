@@ -417,6 +417,11 @@ pub(crate) async fn cmd_status(
 ) -> Result<i32> {
     let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
 
+    // Acquire a shared lock so read-only status can coexist with other
+    // readers but will wait/fail if an exclusive writer holds the lock.
+    let _lock =
+        roko_cli::workspace_lock::acquire_workspace_lock_shared(&workdir.join(".roko"))?;
+
     // --quick: compact 3-line health summary, no substrate I/O.
     if quick {
         let auth = roko_cli::auth_detect::detect_auth_from_config(&workdir);
@@ -1311,80 +1316,33 @@ pub(crate) async fn cmd_inject(
     payload: String,
     workdir: Option<PathBuf>,
 ) -> Result<i32> {
-    use roko_core::{Body, Kind, Provenance};
-
     let inject_kind = InjectKind::parse(kind_str).map_err(|e| anyhow!("{e}"))?;
     let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-    let request = InjectRequest::new(session.clone(), inject_kind.clone(), payload.clone(), wd.clone());
+    let request = InjectRequest::new(session.clone(), inject_kind.clone(), payload.clone(), wd);
 
     // Validation errors (empty session, empty payload for directive/context) remain
-    // more specific than the substrate-write error below.
+    // more specific than the transport-unavailable error below.
     request.validate().map_err(|e| anyhow!("{e}"))?;
 
-    // Map InjectKind to a Signal Kind.
-    let signal_kind = match inject_kind {
-        InjectKind::Directive => Kind::Custom("inject.directive".into()),
-        InjectKind::Abort => Kind::Custom("inject.abort".into()),
-        InjectKind::Context => Kind::ContextPack,
-    };
-
-    // Build the body: try to parse as JSON first, fall back to text.
-    let body = match serde_json::from_str::<serde_json::Value>(&payload) {
-        Ok(json_val) if json_val.is_object() || json_val.is_array() => Body::Json(json_val),
-        _ => Body::text(&payload),
-    };
-
-    // Create the signal with proper provenance tracking the injection source.
-    let signal = roko_core::Signal::builder(signal_kind)
-        .body(body)
-        .provenance(
-            Provenance::user("cli.inject")
-                .with_session(&session),
-        )
-        .tag("inject_kind", inject_kind.as_str())
-        .tag("inject_session", &session)
-        .build();
-
-    // Open the substrate and persist the signal.
-    let roko_dir = wd.join(".roko");
-    if !roko_dir.exists() {
-        if cli.json {
-            println!(
-                r#"{{"error":"no_workspace","message":"no .roko directory found at {}"}}"#,
-                roko_dir.display()
-            );
-        } else {
-            eprintln!(
-                "Error: no .roko directory at {} — run `roko init` first",
-                roko_dir.display()
-            );
-        }
-        return Ok(EXIT_FAILURE);
-    }
-
-    let substrate = FileSubstrate::open(&roko_dir)
-        .await
-        .map_err(|e| anyhow!("open substrate at {}: {e}", roko_dir.display()))?;
-
-    let hash = substrate
-        .put(signal)
-        .await
-        .map_err(|e| anyhow!("write signal to substrate: {e}"))?;
-
+    // No live command transport is installed (#361 owns the canonical daemon
+    // transport). Until then every syntactically valid request must fail closed
+    // rather than silently discarding the signal.
     if cli.json {
         println!(
-            r#"{{"status":"injected","hash":"{}","session":"{}","kind":"{}"}}"#,
-            hash.to_hex(),
-            session,
-            inject_kind,
+            r#"{{"code":"inject_transport_unavailable","message":"no live command transport is installed","hint":"No live command transport is installed; use plan pause/cancel controls where applicable.","kind":"{}","session":"{}"}}"#,
+            inject_kind, session,
         );
     } else {
-        println!("injected {} -> session {}", inject_kind, session);
-        println!("  hash: {}", hash.to_hex());
-        println!("  log:  {}", roko_dir.join("engrams.jsonl").display());
+        eprintln!(
+            "Error: no live command transport is installed for inject {} -> session {}",
+            inject_kind, session,
+        );
+        eprintln!(
+            "Hint: No live command transport is installed; use plan pause/cancel controls where applicable."
+        );
     }
 
-    Ok(EXIT_SUCCESS)
+    Ok(EXIT_FAILURE)
 }
 
 pub(crate) fn cmd_index(cli: &Cli, cmd: IndexCmd) -> Result<i32> {

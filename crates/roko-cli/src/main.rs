@@ -5004,8 +5004,12 @@ mod tests {
         assert!(matches!(cli.command, Some(Command::Inject { .. })));
     }
 
+    // -- inject fail-closed tests (#325) --
+    // No live command transport exists, so all valid inject requests must return
+    // non-zero exit and never write to the substrate.
+
     #[tokio::test]
-    async fn inject_directive_writes_signal() {
+    async fn inject_fail_closed_directive() {
         let tmp = tempfile::tempdir().unwrap();
         let roko_dir = tmp.path().join(".roko");
         std::fs::create_dir_all(&roko_dir).unwrap();
@@ -5019,21 +5023,20 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(code, EXIT_SUCCESS, "inject directive must succeed");
-        let log = std::fs::read_to_string(roko_dir.join("engrams.jsonl")).unwrap();
-        assert!(!log.is_empty(), "signal log must not be empty after inject");
-        assert!(
-            log.contains("inject.directive"),
-            "log must contain inject kind tag"
+        assert_eq!(
+            code, EXIT_FAILURE,
+            "inject directive must fail while no transport exists"
         );
-        assert!(log.contains("sess-1"), "log must contain session id");
+        // No signal log should be created.
+        assert!(
+            !roko_dir.join("engrams.jsonl").exists(),
+            "no substrate write should occur"
+        );
     }
 
     #[tokio::test]
-    async fn inject_abort_writes_signal() {
+    async fn inject_fail_closed_abort() {
         let tmp = tempfile::tempdir().unwrap();
-        let roko_dir = tmp.path().join(".roko");
-        std::fs::create_dir_all(&roko_dir).unwrap();
         let cli =
             Cli::try_parse_from(["roko", "inject", "sess-1", "", "--kind", "abort"]).unwrap();
         let code = commands::util::cmd_inject(
@@ -5045,16 +5048,15 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(code, EXIT_SUCCESS, "inject abort must succeed");
-        let log = std::fs::read_to_string(roko_dir.join("engrams.jsonl")).unwrap();
-        assert!(log.contains("inject.abort"), "log must contain abort kind");
+        assert_eq!(
+            code, EXIT_FAILURE,
+            "inject abort must fail while no transport exists"
+        );
     }
 
     #[tokio::test]
-    async fn inject_context_writes_signal() {
+    async fn inject_fail_closed_context() {
         let tmp = tempfile::tempdir().unwrap();
-        let roko_dir = tmp.path().join(".roko");
-        std::fs::create_dir_all(&roko_dir).unwrap();
         let cli = Cli::try_parse_from(["roko", "inject", "sess-1", "ctx data"]).unwrap();
         let code = commands::util::cmd_inject(
             &cli,
@@ -5065,39 +5067,40 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(code, EXIT_SUCCESS, "inject context must succeed");
-        let log = std::fs::read_to_string(roko_dir.join("engrams.jsonl")).unwrap();
-        assert!(
-            log.contains("context_pack"),
-            "log must contain context_pack kind"
+        assert_eq!(
+            code, EXIT_FAILURE,
+            "inject context must fail while no transport exists"
         );
     }
 
     #[tokio::test]
-    async fn inject_fails_without_workspace() {
+    async fn inject_fail_closed_validation_more_specific() {
+        // Malformed input (empty session) should still produce a validation
+        // error, not the generic transport-unavailable error.
         let tmp = tempfile::tempdir().unwrap();
-        // No .roko directory created — inject should fail.
         let cli = Cli::try_parse_from(["roko", "inject", "sess-1", "payload"]).unwrap();
-        let code = commands::util::cmd_inject(
+        let result = commands::util::cmd_inject(
             &cli,
-            "sess-1".into(),
+            String::new(), // empty session
             "directive",
             "payload".into(),
             Some(tmp.path().to_path_buf()),
         )
-        .await
-        .unwrap();
-        assert_eq!(
-            code, EXIT_FAILURE,
-            "inject must fail when no .roko directory exists"
+        .await;
+        assert!(
+            result.is_err(),
+            "empty session must produce an error, not a transport failure"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("session_id"),
+            "error must mention session_id: {msg}"
         );
     }
 
     #[tokio::test]
-    async fn inject_json_output_succeeds_with_workspace() {
+    async fn inject_fail_closed_json_output() {
         let tmp = tempfile::tempdir().unwrap();
-        let roko_dir = tmp.path().join(".roko");
-        std::fs::create_dir_all(&roko_dir).unwrap();
         let cli =
             Cli::try_parse_from(["roko", "--json", "inject", "sess-1", "payload"]).unwrap();
         assert!(cli.json, "json flag must be set");
@@ -5111,8 +5114,8 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            code, EXIT_SUCCESS,
-            "inject JSON must succeed with workspace"
+            code, EXIT_FAILURE,
+            "inject JSON must fail while no transport exists"
         );
     }
 

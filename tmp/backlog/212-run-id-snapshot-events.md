@@ -16,7 +16,20 @@
 > active event-log writer locks both fail closed). The live two-run identity fixture remains the
 > terminal proof.
 
-**Status**: Verification only; do not rebuild the source implementation unless the checklist's current-source/live proof fails
+> **Verification (2026-09-03):** Source-level verification confirms all three claimed behaviors.
+> (1) `RunnerEvent` has 26 variants, every one carries a direct `run_id: String` field, and
+> `RunnerEvent::run_id() -> &str` is an exhaustive match over all 26 arms (types.rs lines
+> 1199-1595). (2) `RunStateSnapshot` owns `pub run_id: String` at line 104 of persist.rs.
+> (3) Per-run indexing is wired: `append_runner_event` calls `append_run_scoped_event` which
+> calls `append_buffered_run_index`, writing to hashed `<stem>-by-run/<sha256(run_id)>.jsonl`
+> paths via `roko_fs::run_index`. The `roko run-index repair` CLI command with bounded
+> dry-run/apply, truncation, and active-lock-refusal tests is present (7 test functions in
+> `commands/run_index.rs`). `StructuredLogger::log` serializes `RunnerEvent` directly with
+> no envelope wrapper. The `new_run_id()` function generates `run-<timestamp_millis>`.
+> Verification checklist items for truncation and active-lock refusal are confirmed present.
+> Only the live two-run identity fixture remains open.
+
+**Status**: Verified (2026-09-03) — run_id on events, snapshots, per-run index
 **Priority**: P2 — events from multiple runs are indistinguishable and snapshots cannot be correlated with events without a run_id
 **Size**: XS (2-4 hours)
 **Crates**: `roko-cli`
@@ -79,7 +92,10 @@ This is a prerequisite for #215 (HTTP run-scoped event queries).
 - [ ] Manual: run a second plan, inspect events — the two runs have different `run_id` values
 - [x] Manual: exercise offline repair dry-run/apply with valid, malformed, invalid-ID, and cross-run
       records against a disposable historical fixture.
-- [ ] Manual: add explicit truncation and active-lock-refusal repair cases.
+- [x] Manual: add explicit truncation and active-lock-refusal repair cases.
+      Verified 2026-09-03: `partial_record_at_eof_is_counted_and_preceding_records_are_indexed`,
+      `active_workspace_lock_refuses_apply`, `active_repair_lease_refuses_concurrent_repair`,
+      and `active_event_log_writer_lock_refuses_repair` all exist in `commands/run_index.rs`.
 - [x] No envelope migration is required because the implementation kept the direct event schema;
       pre-index historical repair is tracked separately.
 

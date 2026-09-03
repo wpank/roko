@@ -10,16 +10,6 @@
 
 #![allow(clippy::module_name_repetitions)]
 #![allow(missing_docs)]
-#![cfg_attr(
-    clippy,
-    allow(
-        clippy::all,
-        clippy::pedantic,
-        clippy::nursery,
-        clippy::restriction,
-        missing_docs
-    )
-)]
 
 extern crate self as roko_cli;
 
@@ -55,7 +45,6 @@ pub mod chat_session;
 pub mod clean;
 pub mod config;
 pub mod config_cmd;
-#[allow(dead_code)]
 pub mod config_helpers;
 pub mod context_loader;
 pub mod credentials;
@@ -65,8 +54,6 @@ pub mod demo_cmd;
 pub mod demo_seed;
 pub mod deployment;
 pub mod dispatch;
-#[allow(dead_code)]
-pub(crate) mod dispatch_helpers;
 pub mod dispatch_v2;
 pub mod doctor;
 pub mod dry_run;
@@ -75,17 +62,14 @@ pub mod event_sources;
 pub mod execution_control;
 pub mod exit_codes;
 pub mod explain;
-#[allow(dead_code)]
 pub(crate) mod gate_runner;
 pub mod github_ops;
 pub mod github_ops_impl;
 pub mod graph_checkpoint;
-#[allow(dead_code)]
 #[path = "commands/graph.rs"]
 pub(crate) mod graph_command;
+pub mod graph_execution;
 pub mod graph_task_dispatch;
-#[allow(dead_code)]
-mod heartbeat;
 pub mod hints;
 pub mod index;
 pub mod inference_observer;
@@ -93,11 +77,9 @@ pub mod inference_observer;
 pub mod init;
 pub mod inject;
 pub mod inline;
-#[allow(dead_code)]
 pub(crate) mod knowledge_helpers;
 #[path = "../../../scripts/layer_check.rs"]
 pub mod layer_check;
-#[allow(dead_code)]
 pub mod learning_helpers;
 pub mod model_selection;
 pub mod note_cluster;
@@ -106,21 +88,20 @@ pub mod oneshot;
 // The v2 event_loop.rs in runner/ is the sole execution engine.
 pub mod cli_output;
 pub mod orchestrator;
-#[allow(dead_code)]
 pub mod output_format;
 pub mod pipe;
 pub mod plan;
 pub mod plan_generate;
+pub mod plan_generator;
 pub mod plan_policy;
 pub mod prd;
 pub mod prd_prompt;
 pub mod projection;
-#[allow(dead_code)]
-pub mod prompt_helpers;
 pub mod prompting;
 pub mod repl;
 pub mod repo_context;
 pub mod research;
+pub mod resolved_overrides;
 pub mod run;
 pub mod run_inline;
 pub mod runner;
@@ -135,7 +116,6 @@ pub mod spinner;
 pub mod status;
 pub mod subscriptions;
 pub mod surface_inventory;
-#[allow(dead_code)]
 pub mod task_helpers;
 pub mod task_parser;
 pub mod transcript;

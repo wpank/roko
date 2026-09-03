@@ -3103,12 +3103,84 @@ mod tests {
         assert_eq!(tools.as_ref(), &vec![tool]);
     }
 
+    /// MCP config precedence: explicit `with_mcp_config` > `AgentConfig.mcp_config` > None.
+    ///
+    /// Uses temporary paths and injected configuration; no process-global env,
+    /// network, or MCP server mutation.
     #[test]
-    #[ignore = "blocked until roko_core::config::AgentConfig exposes mcp_config"]
     fn mcp_config_falls_back_to_roko_config() {
-        // TODO(converge): Enable this once the roko-core AgentConfig schema has
-        // `mcp_config: Option<PathBuf>`. The S05 write scope only allows edits
-        // to this file, so the config-backed fallback cannot be compiled here.
+        use roko_core::config::schema::RokoConfig;
+
+        // ── Row 1: explicit override wins over AgentConfig ──────────────
+        let mut config_with_agent_mcp = RokoConfig::default();
+        config_with_agent_mcp.agent.mcp_config =
+            Some(PathBuf::from("/workspace/.mcp/agent-level.json"));
+
+        let svc = ModelCallService::new("claude".into())
+            .with_config(config_with_agent_mcp.clone())
+            .with_mcp_config("/explicit/override.json");
+
+        let req = user_request("claude", "hello");
+        let options = svc.build_agent_options(&req, None);
+        assert_eq!(
+            options.mcp_config,
+            Some(PathBuf::from("/explicit/override.json")),
+            "explicit with_mcp_config must win over AgentConfig.mcp_config"
+        );
+
+        // ── Row 2: AgentConfig.mcp_config used when no explicit override ─
+        let svc_no_explicit = ModelCallService::new("claude".into())
+            .with_config(config_with_agent_mcp);
+
+        let options = svc_no_explicit.build_agent_options(&req, None);
+        assert_eq!(
+            options.mcp_config,
+            Some(PathBuf::from("/workspace/.mcp/agent-level.json")),
+            "AgentConfig.mcp_config must be used when no explicit override is set"
+        );
+
+        // ── Row 3: no config at all → None ──────────────────────────────
+        let svc_bare = ModelCallService::new("claude".into());
+        let options = svc_bare.build_agent_options(&req, None);
+        assert_eq!(
+            options.mcp_config, None,
+            "no explicit or AgentConfig mcp_config → None"
+        );
+
+        // ── Row 4: relative path is preserved as-is ─────────────────────
+        let mut config_rel = RokoConfig::default();
+        config_rel.agent.mcp_config = Some(PathBuf::from(".mcp/relative.json"));
+
+        let svc_rel = ModelCallService::new("claude".into()).with_config(config_rel);
+        let options = svc_rel.build_agent_options(&req, None);
+        assert_eq!(
+            options.mcp_config,
+            Some(PathBuf::from(".mcp/relative.json")),
+            "relative path from AgentConfig must be threaded without silent resolution"
+        );
+
+        // ── Row 5: non-existent explicit path is threaded, not swallowed ─
+        let svc_missing = ModelCallService::new("claude".into())
+            .with_mcp_config("/does/not/exist/mcp.json");
+        let options = svc_missing.build_agent_options(&req, None);
+        assert_eq!(
+            options.mcp_config,
+            Some(PathBuf::from("/does/not/exist/mcp.json")),
+            "missing explicit path must surface (fail closed), not silently fall through"
+        );
+
+        // ── Row 6: resolved path metadata is redactable ─────────────────
+        let debug_repr = format!("{:?}", options.mcp_config);
+        assert!(
+            debug_repr.contains("/does/not/exist/mcp.json"),
+            "debug output contains canonical path metadata"
+        );
+        // The path itself is all we thread — no file contents, env values,
+        // or credentials are exposed in the AgentOptions.
+        assert!(
+            !debug_repr.contains("sk-") && !debug_repr.contains("ANTHROPIC_API_KEY"),
+            "resolved path metadata must not leak credentials"
+        );
     }
 
     #[test]

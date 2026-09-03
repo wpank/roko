@@ -1,5 +1,4 @@
 //! util command handlers.
-#![allow(unused_imports)]
 
 use crate::*;
 use roko_cli::status::{StatusDiagnostic, collect_session_status};

@@ -1,5 +1,4 @@
 //! config_cmd command handlers.
-#![allow(unused_imports)]
 
 use crate::*;
 use indexmap::IndexMap;

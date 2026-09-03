@@ -202,7 +202,7 @@ pub use test_gate::{TestGate, parse_test_counts};
 pub use verdict_publisher::VerdictPublisher;
 
 // ─── Production pipeline types (#250 / #275) ────────────────────────────────
-pub use graph_cell::{GatePipelineCell, GatePipelineCellInput};
+pub use graph_cell::{GatePipelineCell, GatePipelineCellInput, GraphEventProgressSink};
 pub use production_request::{GateTaskContextSpec, ProductionGateRequest, VerifyStepSpec};
 pub use production_service::{
     GatePipelineProgress, NoopProgressSink, ProductionGateRunner, ProductionGateService,

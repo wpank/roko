@@ -197,6 +197,21 @@ impl ProductionGateVerdictV1 {
             .collect()
     }
 
+    /// Concise one-line diagnostic summary for logging and telemetry.
+    ///
+    /// Format: `"outcome(executed/total rungs, N failed) in Xs"`.
+    #[must_use]
+    pub fn concise_diagnostic(&self) -> String {
+        format!(
+            "{:?}({}/{} rungs, {} failed) in {:.1}s",
+            self.outcome,
+            self.executed_rung_count(),
+            self.rung_verdicts.len(),
+            self.failed_rung_count(),
+            self.total_duration.as_secs_f64(),
+        )
+    }
+
     /// Aggregate test counts across all rungs that reported them.
     #[must_use]
     pub fn aggregate_test_counts(&self) -> Option<TestCount> {
@@ -368,5 +383,45 @@ mod tests {
             let back: PipelineOutcome = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(back, outcome);
         }
+    }
+
+    #[test]
+    fn concise_diagnostic_format() {
+        let verdict = ProductionGateVerdictV1 {
+            schema_version: VERDICT_SCHEMA_VERSION,
+            request_fingerprint: String::new(),
+            workspace_fingerprint: String::new(),
+            rung_verdicts: vec![
+                make_rung_verdict(Rung::Compile, RungState::Passed),
+                make_rung_verdict(Rung::Lint, RungState::Skipped),
+                make_rung_verdict(Rung::Test, RungState::Failed),
+            ],
+            outcome: PipelineOutcome::Failed,
+            mostly_passing: false,
+            total_duration: Duration::from_millis(1500),
+            adaptive_snapshot: None,
+        };
+        let diag = verdict.concise_diagnostic();
+        assert!(diag.contains("Failed"));
+        assert!(diag.contains("2/3 rungs")); // 2 executed out of 3
+        assert!(diag.contains("1 failed"));
+        assert!(diag.contains("1.5s"));
+    }
+
+    #[test]
+    fn concise_diagnostic_passed() {
+        let verdict = ProductionGateVerdictV1 {
+            schema_version: VERDICT_SCHEMA_VERSION,
+            request_fingerprint: String::new(),
+            workspace_fingerprint: String::new(),
+            rung_verdicts: vec![make_rung_verdict(Rung::Compile, RungState::Passed)],
+            outcome: PipelineOutcome::Passed,
+            mostly_passing: false,
+            total_duration: Duration::from_secs(2),
+            adaptive_snapshot: None,
+        };
+        let diag = verdict.concise_diagnostic();
+        assert!(diag.contains("Passed"));
+        assert!(diag.contains("0 failed"));
     }
 }

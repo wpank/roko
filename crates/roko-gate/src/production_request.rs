@@ -157,6 +157,20 @@ pub struct ProductionGateRequest {
     pub adaptive_thresholds: Option<AdaptiveThresholds>,
 }
 
+impl ProductionGateRequest {
+    /// Compute a composite request identity fingerprint for correlation.
+    ///
+    /// This is echoed in the verdict's `request_fingerprint` field so
+    /// downstream consumers can match verdicts to requests.
+    #[must_use]
+    pub fn request_fingerprint(&self) -> String {
+        format!(
+            "{}:{}:{}:{}",
+            self.run_id, self.plan_id, self.task_id, self.attempt
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,5 +229,26 @@ mod tests {
         assert_eq!(req.attempt, 0);
         assert_eq!(req.changed_files.len(), 1);
         assert_eq!(req.verify_steps.len(), 1);
+    }
+
+    #[test]
+    fn request_fingerprint_format() {
+        let req = ProductionGateRequest {
+            run_id: "run-42".into(),
+            plan_id: "plan-x".into(),
+            task_id: "task-y".into(),
+            attempt: 3,
+            workspace: PathBuf::from("/tmp/ws"),
+            workspace_fingerprint: "fp".into(),
+            changed_files: Vec::new(),
+            verify_steps: Vec::new(),
+            gates_config: GatesConfig::default(),
+            task_context: GateTaskContextSpec::default(),
+            timeout_secs: 60,
+            cancel: CancellationToken::new(),
+            baseline_fingerprint: None,
+            adaptive_thresholds: None,
+        };
+        assert_eq!(req.request_fingerprint(), "run-42:plan-x:task-y:3");
     }
 }

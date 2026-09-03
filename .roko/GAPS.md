@@ -1016,7 +1016,7 @@ These findings from the audits are not currently tracked as named entries in GAP
 | 8 `#[deprecated]` items with zero callers | Low | Safe to remove outright | cli-audit/23-deprecated-legacy.md |
 | Budget enforcement disabled | Low | `max_plan_usd = 0.0` and `max_turn_usd = 0.0` in default config | cli-audit/21-config-schema.md |
 | `chain` feature never enabled on roko-std | Low | 17 chain tool handlers are compiled out in all default builds | cli-audit/19-feature-flags.md |
-| ~50+ undocumented environment variables | Low | Operator knobs like `ROKO_BUDGET_USD`, `ROKO_SKIP_TESTS`, `ROKO__*` hierarchical overrides | cli-audit/20-environment-variables.md |
+| ~50+ undocumented environment variables | Low | **Mostly resolved**: `env_registry.rs` covers 105+ vars, `roko config env list [--json]` wired, shared parsers and alias deprecation helpers added. Remaining: consumer call-site migration to shared parsers, generated `docs/v2/ENVIRONMENT.md`, and CI source-comparison check. | cli-audit/20-environment-variables.md |
 | ~15 undocumented CLI subcommands/verbs | Low | `roko job match`, `roko do`, hidden deprecated commands, knowledge export/import/backfill-hdc, plan pause/resume/cancel/retry/status/queue | cli-audit/00-main-structure.md |
 
 #### From Engine audit (`tmp/engine-audit/SUMMARY.md`)

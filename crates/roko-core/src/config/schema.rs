@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 pub use super::agent::*;
 pub use super::budget::*;
 pub use super::chain::*;
+pub use super::execution::*;
 pub use super::gates::*;
 pub use super::graduation::*;
 pub use super::learning::*;
@@ -173,6 +174,15 @@ pub struct RokoConfig {
     /// Disk budget, thresholds, and GC policy for resource-aware execution.
     #[serde(default)]
     pub resources: ResourcesConfig,
+    /// Automatic dream-cycle scheduling for daemon mode.
+    #[serde(default)]
+    pub dreams: DreamScheduleConfig,
+    /// Daimon affect-engine configuration.
+    #[serde(default)]
+    pub daimon: DaimonConfig,
+    /// Per-repository configuration blocks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repos: Vec<RepoConfig>,
 }
 
 /// Composition strategy for allocating prompt token budget across candidate sections.
@@ -443,6 +453,9 @@ impl Default for RokoConfig {
             cold_storage: ColdStorageConfig::default(),
             prompt: PromptConfig::default(),
             resources: ResourcesConfig::default(),
+            dreams: DreamScheduleConfig::default(),
+            daimon: DaimonConfig::default(),
+            repos: Vec::new(),
         }
     }
 }
@@ -1912,7 +1925,12 @@ const fn default_agent_enabled() -> bool {
 
 // ---- utility functions ---------------------------------------------------
 
-fn parse_bool_env(s: &str) -> bool {
+/// Parse a boolean environment variable value.
+///
+/// Accepts `1/true/yes/on` (case-insensitive) as truthy.
+/// Everything else (including empty string) is falsy.
+/// This is the canonical boolean parser for all env var reads.
+pub fn parse_bool_env(s: &str) -> bool {
     matches!(
         s.trim().to_ascii_lowercase().as_str(),
         "1" | "true" | "yes" | "on"

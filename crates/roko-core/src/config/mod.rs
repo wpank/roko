@@ -15,6 +15,8 @@ pub mod budget;
 pub mod cache;
 pub mod chain;
 pub mod compat;
+pub mod env_registry;
+pub mod execution;
 pub mod gates;
 pub mod graduation;
 pub mod hot_reload;
@@ -60,15 +62,16 @@ pub use schema::{
     AgentBudget, AgentConfig, AgentDefinition, AgentMode, AgentThresholds, ApiKeyEntry,
     BudgetConfig, CURRENT_SCHEMA_VERSION, ChainConfig, ColdStorageConfig, CompileFailRepeatConfig,
     ConductorConfig, ContextWindowPressureConfig, CoreRunnerConfig, CostOverrunConfig,
-    DataLlmConfig, DeployConfig, DomainProfile, EnforcementMode, GateMode, GateProfileConfig,
-    GateRungConfig, GatesConfig, GeminiConfig, GhostTurnConfig, GithubWebhookConfig,
-    GraduationConfig, GraduationPolicy, IterationLoopConfig, JwksProvider, LearningConfig,
-    ModelProfile, PerplexityConfig, PipelineBandConfig, PipelineConfig, PipelineReviewerMode,
-    PrdConfig, ProjectConfig, ProviderConfig, ProviderRouting, RelayConfig, ResourcesConfig,
-    ReviewLoopConfig, RewardWeights, RokoConfig, RoleOverride, RoutingAlgorithm, RoutingConfig,
-    RoutingOverrides, RoutingRewardWeightsConfig, SafetySetting, SchedulerConfig,
-    SchedulerCronConfig, ServeAuthConfig, ServeConfig, ServeDeployConfig, ServeDeployWebhookConfig,
-    ServerConfig, SpecDriftConfig, StateHubConfig, StuckPatternConfig, SubscriptionConfig,
+    DaimonConfig, DataLlmConfig, DeployConfig, DomainProfile, DreamScheduleConfig,
+    EnforcementMode, GateMode, GateProfileConfig, GateRungConfig, GatesConfig, GeminiConfig,
+    GhostTurnConfig, GithubWebhookConfig, GraduationConfig, GraduationPolicy,
+    IterationLoopConfig, JwksProvider, LearningConfig, ModelProfile, PerplexityConfig,
+    PipelineBandConfig, PipelineConfig, PipelineReviewerMode, PrdConfig, ProjectConfig,
+    ProviderConfig, ProviderRouting, RelayConfig, RepoConfig, ResourcesConfig, ReviewLoopConfig,
+    RewardWeights, RokoConfig, RoleOverride, RoutingAlgorithm, RoutingConfig, RoutingOverrides,
+    RoutingRewardWeightsConfig, SafetySetting, SchedulerConfig, SchedulerCronConfig,
+    ServeAuthConfig, ServeConfig, ServeDeployConfig, ServeDeployWebhookConfig, ServerConfig,
+    SpecDriftConfig, StateHubConfig, StrategySpaceConfig, StuckPatternConfig, SubscriptionConfig,
     SubscriptionFilterConfig, SubscriptionTrigger, TestFailureBudgetConfig, TimeOverrunConfig,
     ToolProfileConfig, ToolsConfig, TracingConfig, TuiConfig, ValidationConfig, WatcherConfig,
     WatcherPathConfig, WatcherThresholds, WebhooksConfig, WorktreeCountConfig, builtin_profiles,

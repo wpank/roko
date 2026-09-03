@@ -252,7 +252,7 @@ pub(crate) async fn dispatch_config(cli: &Cli, cmd: ConfigCmd) -> Result<()> {
         }
         // ── Environment variables ──────────────────────────────────────
         ConfigCmd::Env { json } => {
-            eprintln!("config env: not yet wired (json={json})");
+            roko_core::config::env_registry::print_env_list(json);
             Ok(())
         }
     }

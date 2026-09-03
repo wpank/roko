@@ -45,7 +45,7 @@ use roko_core::{Body, Kind, Provenance, Signal, ToolPermissions};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::safety::{CorrigibilityHook, HookDecision, SafetyLayer, TaintLevelHook};
+use crate::safety::{HookDecision, SafetyLayer};
 use crate::tool_immune::{
     check_tool_control, is_untrusted_source, screen_tool_result, validate_tool_call_identity,
 };
@@ -57,6 +57,7 @@ pub mod dedup_cache;
 pub mod emit_metric;
 pub mod hook_chain;
 pub mod parallel;
+pub mod production_safety_chain;
 /// Cache primitives for explicit higher-level use. The dispatcher itself does
 /// not cache: every call must reach current authorization, durable immune
 /// control, screening, finalization, and terminal audit state.
@@ -307,11 +308,15 @@ pub struct ToolDispatcher {
     /// When present, each tool call passes through every hook in order
     /// before the handler executes. Rejections short-circuit the chain.
     hook_chain: Option<hook_chain::SafetyHookChain>,
-    /// Mandatory IFC/corrigibility hooks derived from the active contract.
+    /// Mandatory production safety chain with frozen 9-stage enforcement (#350).
+    ///
+    /// Non-optional for production constructors. Contains stages 5-7 as hooks
+    /// (hallucination detector, taint ceiling, corrigibility) and stage 9 as
+    /// the post-handler result filter. Stages 1-4 are inline in `SafetyLayer`.
     ///
     /// Kept separate from the extension hook chain so callers cannot replace
     /// production safety hooks by attaching a custom chain.
-    production_hook_chain: Option<hook_chain::SafetyHookChain>,
+    production_safety_chain: Option<production_safety_chain::ProductionSafetyChain>,
     /// Optional profile-based tool selector (TOOL-03).
     ///
     /// When set, tool calls are filtered against the selector before dispatch.
@@ -328,17 +333,24 @@ pub struct ToolDispatcher {
 impl ToolDispatcher {
     /// Construct a dispatcher backed by the given tool registry and
     /// handler resolver.
+    ///
+    /// The production safety chain is built from the default `SafetyLayer`
+    /// and the provided registry. The chain is non-optional: every
+    /// production dispatcher carries the frozen 9-stage enforcement.
     #[must_use]
     pub fn new(registry: Arc<dyn ToolRegistry>, resolver: Arc<dyn HandlerResolver>) -> Self {
         let safety = SafetyLayer::with_defaults();
-        let production_hook_chain = Some(production_hook_chain(&safety));
+        let chain = production_safety_chain::ProductionSafetyChain::build(
+            &safety,
+            registry.as_ref(),
+        );
         Self {
             registry,
             resolver,
             max_result_bytes: DEFAULT_MAX_RESULT_BYTES,
             safety,
             hook_chain: None,
-            production_hook_chain,
+            production_safety_chain: Some(chain),
             tool_selector: None,
             safety_denial_callback: None,
         }
@@ -362,7 +374,7 @@ impl ToolDispatcher {
             max_result_bytes: DEFAULT_MAX_RESULT_BYTES,
             safety: SafetyLayer::permissive(),
             hook_chain: None,
-            production_hook_chain: None,
+            production_safety_chain: None,
             tool_selector: None,
             safety_denial_callback: None,
         }
@@ -377,9 +389,17 @@ impl ToolDispatcher {
 
     /// Attach a [`SafetyLayer`] so every dispatched call passes through
     /// pre-execution safety checks and post-execution output scrubbing.
+    ///
+    /// Rebuilds the production safety chain from the new layer and the
+    /// existing registry.
     #[must_use]
     pub fn with_safety(mut self, layer: SafetyLayer) -> Self {
-        self.production_hook_chain = Some(production_hook_chain(&layer));
+        self.production_safety_chain = Some(
+            production_safety_chain::ProductionSafetyChain::build(
+                &layer,
+                self.registry.as_ref(),
+            ),
+        );
         self.safety = layer;
         self
     }
@@ -437,7 +457,7 @@ impl ToolDispatcher {
             policy_owner: policy_owner.into(),
             selector_active: self.tool_selector.is_some(),
             hook_chain_active: self.hook_chain.is_some(),
-            production_hooks_active: self.production_hook_chain.is_some(),
+            production_hooks_active: self.production_safety_chain.is_some(),
         }
     }
 
@@ -461,10 +481,24 @@ impl ToolDispatcher {
         self.hook_chain.as_ref()
     }
 
-    /// Returns the mandatory production safety hooks, if enforcement is active.
+    /// Returns the mandatory production safety chain, if enforcement is active.
     #[must_use]
-    pub const fn production_hook_chain(&self) -> Option<&hook_chain::SafetyHookChain> {
-        self.production_hook_chain.as_ref()
+    pub const fn production_safety_chain(
+        &self,
+    ) -> Option<&production_safety_chain::ProductionSafetyChain> {
+        self.production_safety_chain.as_ref()
+    }
+
+    /// Returns the pre-handler hook chain from the production safety chain,
+    /// if enforcement is active.
+    ///
+    /// This is the compatibility accessor for callers that previously
+    /// inspected the production hook chain directly.
+    #[must_use]
+    pub fn production_hook_chain(&self) -> Option<&hook_chain::SafetyHookChain> {
+        self.production_safety_chain
+            .as_ref()
+            .map(|c| c.pre_handler_hooks())
     }
 
     /// Configured aggregate byte cap for one result and its artifacts.
@@ -689,9 +723,12 @@ impl ToolDispatcher {
         {
             return ToolResult::err(err);
         }
-        // 3c. The production hooks always evaluate the final parameters.
-        if let Some(ref chain) = self.production_hook_chain
-            && let Err(err) = self.apply_hook_chain(chain, def, call, ctx).await
+        // 3c. The production safety chain (stages 5-7) always evaluates the
+        //     final parameters: hallucination detector, taint ceiling, corrigibility.
+        if let Some(ref chain) = self.production_safety_chain
+            && let Err(err) = self
+                .apply_hook_chain(chain.pre_handler_hooks(), def, call, ctx)
+                .await
         {
             return ToolResult::err(err);
         }
@@ -800,7 +837,15 @@ impl ToolDispatcher {
         ctx.raise_taint(result_taint);
         // 6. Truncate oversized output.
         let result = truncate_result(result, result_limit);
-        // 7. Scrub secrets from output.
+        // 6b. Stage 9: production result filter (size/source annotation)
+        //     runs before the deep secret scrub so that its annotations
+        //     are themselves scrubbed by the final pass.
+        let result = if let Some(ref chain) = self.production_safety_chain {
+            apply_production_result_filter(chain, result, &call.name)
+        } else {
+            result
+        };
+        // 7. Scrub secrets from output (final deep scrub).
         let result = scrub_complete_result(&self.safety, result, is_untrusted_source(def));
         // Redaction markers may be longer than the matched secret. Reapply the
         // aggregate cap before recovery and immune screening.
@@ -1210,6 +1255,39 @@ const fn tool_error_kind(err: &ToolError) -> &'static str {
     }
 }
 
+/// Apply production stage-9 result filtering (size/source annotation).
+///
+/// Runs on both success and error payloads. The result is then passed to
+/// the deep secret scrub as the final step.
+fn apply_production_result_filter(
+    chain: &production_safety_chain::ProductionSafetyChain,
+    result: ToolResult,
+    tool_name: &str,
+) -> ToolResult {
+    match result {
+        ToolResult::Ok {
+            content,
+            is_structured,
+            artifacts,
+        } => {
+            let filtered = chain.filter_result(&content, tool_name);
+            ToolResult::Ok {
+                content: filtered,
+                is_structured,
+                artifacts,
+            }
+        }
+        ToolResult::Err(err) => {
+            // Post-handler filters run even on error payloads per spec:
+            // "Post-handler filters run even when a handler returns an error payload."
+            let filtered_msg = chain.filter_result(&err.to_string(), tool_name);
+            // Reconstruct the error with filtered text. We use the same
+            // error variant but with sanitized content.
+            ToolResult::Err(ToolError::Other(filtered_msg))
+        }
+    }
+}
+
 fn scrub_complete_result(
     safety: &SafetyLayer,
     result: ToolResult,
@@ -1341,19 +1419,9 @@ impl std::fmt::Debug for ToolDispatcher {
             .field("resolver", &"Arc<dyn HandlerResolver>")
             .field("safety", &"active")
             .field("hook_chain", &self.hook_chain)
-            .field("production_hook_chain", &self.production_hook_chain)
+            .field("production_safety_chain", &self.production_safety_chain)
             .finish()
     }
-}
-
-fn production_hook_chain(layer: &SafetyLayer) -> hook_chain::SafetyHookChain {
-    let mut chain = hook_chain::SafetyHookChain::new();
-    chain.push(
-        "taint_level_hook",
-        Arc::new(TaintLevelHook::new(layer.contract.max_taint_level)),
-    );
-    chain.push("corrigibility_hook", Arc::new(CorrigibilityHook));
-    chain
 }
 
 #[cfg(test)]
@@ -2461,7 +2529,7 @@ mod tests {
         assert!(matches!(
             write_result,
             ToolResult::Err(ToolError::PermissionDenied(message))
-                if message.contains("taint_level_hook")
+                if message.contains("stage:6:taint_ceiling")
                     && message.contains("exceeds maximum")
         ));
     }
@@ -2480,7 +2548,11 @@ mod tests {
         contract.max_taint_level = CamelTaintLevel::External;
         let dispatcher = ToolDispatcher::new(registry, resolver)
             .with_safety(SafetyLayer::permissive().with_contract(contract));
-        assert_eq!(dispatcher.production_hook_chain().unwrap().len(), 2);
+        assert_eq!(
+            dispatcher.production_hook_chain().unwrap().len(),
+            3,
+            "stages 5 (hallucination), 6 (taint), 7 (corrigibility)"
+        );
         assert!(dispatcher.hook_chain().is_none());
 
         let audit_sink = Arc::new(CollectAuditSink::default());
@@ -2502,20 +2574,33 @@ mod tests {
         assert!(matches!(
             result,
             ToolResult::Err(ToolError::PermissionDenied(message))
-                if message.contains("taint_level_hook")
+                if message.contains("stage:6:taint_ceiling")
                     && message.contains("exceeds maximum")
         ));
         let signals = audit_sink.snapshot();
         let audits = hook_audits(&signals);
-        assert_eq!(audits.len(), 1, "taint rejection must short-circuit");
-        assert_eq!(audits[0]["status"], "rejected");
-        assert_eq!(audits[0]["details"]["hook"], "taint_level_hook");
-        assert_eq!(audits[0]["details"]["decision"], "reject");
-        assert!(
-            audits[0]["details"]["params_hash"]
-                .as_str()
-                .is_some_and(|hash| hash.starts_with("hash:") && hash.len() == 69)
+        // Stage 5 (hallucination) allows, stage 6 (taint) rejects.
+        assert_eq!(audits.len(), 2, "taint rejection must short-circuit after stage 5");
+        assert_eq!(audits[0]["status"], "allow");
+        assert_eq!(
+            audits[0]["details"]["hook"],
+            production_safety_chain::stage_id::KNOWN_TOOL_SANITY
         );
+        assert_eq!(audits[1]["status"], "rejected");
+        assert_eq!(
+            audits[1]["details"]["hook"],
+            production_safety_chain::stage_id::TAINT_CEILING
+        );
+        assert_eq!(audits[1]["details"]["decision"], "reject");
+        // Both audit records must use hashed params, not raw values.
+        for audit in &audits {
+            assert!(
+                audit["details"]["params_hash"]
+                    .as_str()
+                    .is_some_and(|hash| hash.starts_with("hash:") && hash.len() == 69),
+                "audit record must hash params"
+            );
+        }
         assert!(
             signals.iter().all(|signal| !signal
                 .body
@@ -2565,18 +2650,31 @@ mod tests {
         assert!(matches!(
             result,
             ToolResult::Err(ToolError::PermissionDenied(message))
-                if message.contains("corrigibility_hook") && message.contains("Switch")
+                if message.contains("stage:7:corrigibility") && message.contains("Switch")
         ));
         let audits = hook_audits(&audit_sink.snapshot());
-        assert_eq!(audits.len(), 3);
+        // 1 extension hook + 3 production hooks (stages 5,6,7) = 4 total,
+        // but stage 7 rejects so it short-circuits there.
+        assert_eq!(audits.len(), 4);
         assert_eq!(audits[0]["details"]["hook"], "adversarial_modifier");
         assert_eq!(audits[0]["details"]["decision"], "modified");
-        assert_eq!(audits[1]["details"]["hook"], "taint_level_hook");
+        assert_eq!(
+            audits[1]["details"]["hook"],
+            production_safety_chain::stage_id::KNOWN_TOOL_SANITY
+        );
         assert_eq!(audits[1]["details"]["decision"], "allow");
-        assert_eq!(audits[2]["details"]["hook"], "corrigibility_hook");
-        assert_eq!(audits[2]["details"]["decision"], "reject");
+        assert_eq!(
+            audits[2]["details"]["hook"],
+            production_safety_chain::stage_id::TAINT_CEILING
+        );
+        assert_eq!(audits[2]["details"]["decision"], "allow");
+        assert_eq!(
+            audits[3]["details"]["hook"],
+            production_safety_chain::stage_id::CORRIGIBILITY
+        );
+        assert_eq!(audits[3]["details"]["decision"], "reject");
         assert_ne!(
-            audits[0]["details"]["params_hash"], audits[2]["details"]["params_hash"],
+            audits[0]["details"]["params_hash"], audits[3]["details"]["params_hash"],
             "audit hashes must follow parameter replacement"
         );
     }

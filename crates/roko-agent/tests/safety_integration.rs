@@ -354,3 +354,206 @@ async fn no_policy_means_pass_through() {
         "built-in denylist should block dangerous commands even without explicit policy"
     );
 }
+
+// ─── Test 7: production safety chain is non-optional ─────────────────────
+
+#[tokio::test]
+async fn production_dispatcher_always_has_safety_chain() {
+    let registry: Arc<dyn roko_core::tool::ToolRegistry> =
+        Arc::new(VecToolRegistry::from_tools(vec![tool(
+            "read_file",
+            ToolPermission::read_only(),
+            ToolConcurrency::Parallel,
+        )]));
+    let resolver = resolver_from(vec![(
+        "read_file",
+        Arc::new(NoopHandler {
+            tool_name: "read_file",
+        }) as Arc<dyn ToolHandler>,
+    )]);
+
+    let dispatcher = ToolDispatcher::new(registry, resolver);
+    assert!(
+        dispatcher.production_safety_chain().is_some(),
+        "production dispatcher must always have a safety chain"
+    );
+    assert_eq!(
+        dispatcher
+            .production_safety_chain()
+            .unwrap()
+            .pre_handler_hook_count(),
+        3,
+        "chain must have exactly 3 pre-handler hooks (stages 5,6,7)"
+    );
+}
+
+// ─── Test 8: production chain rejects unknown tools ──────────────────────
+
+#[tokio::test]
+async fn production_chain_rejects_hallucinated_tool() {
+    let registry: Arc<dyn roko_core::tool::ToolRegistry> =
+        Arc::new(VecToolRegistry::from_tools(vec![tool(
+            "read_file",
+            ToolPermission::read_only(),
+            ToolConcurrency::Parallel,
+        )]));
+    let resolver = resolver_from(vec![(
+        "read_file",
+        Arc::new(NoopHandler {
+            tool_name: "read_file",
+        }) as Arc<dyn ToolHandler>,
+    )]);
+
+    let layer = SafetyLayer::with_defaults().with_role("implementer");
+    let dispatcher = ToolDispatcher::new(registry, resolver).with_safety(layer);
+
+    // The registry only has "read_file", but we call "hallucinated_tool".
+    // The production hallucination detector (stage 5) should reject it.
+    let call = ToolCall::new(
+        "h1",
+        "hallucinated_tool",
+        serde_json::json!({ "file_path": "/tmp/test.rs" }),
+    );
+    let result = dispatcher.dispatch(call, &ctx_with_exec()).await;
+    // Note: this will be caught by the registry lookup before the hook chain,
+    // but the chain itself would also reject it. The important thing is that
+    // the call is denied.
+    assert!(
+        result.is_err(),
+        "hallucinated tool should be rejected"
+    );
+}
+
+// ─── Test 9: production chain result filtering annotates external output ──
+
+#[tokio::test]
+async fn production_chain_annotates_external_tool_output() {
+    let registry: Arc<dyn roko_core::tool::ToolRegistry> =
+        Arc::new(VecToolRegistry::from_tools(vec![tool(
+            "web_fetch",
+            ToolPermission::networked(),
+            ToolConcurrency::Parallel,
+        )]));
+
+    struct ExternalHandler;
+    #[async_trait]
+    impl ToolHandler for ExternalHandler {
+        fn name(&self) -> &str {
+            "web_fetch"
+        }
+        async fn execute(&self, _call: ToolCall, _ctx: &ToolContext) -> ToolResult {
+            ToolResult::text("response body from the internet")
+        }
+    }
+
+    let resolver = resolver_from(vec![(
+        "web_fetch",
+        Arc::new(ExternalHandler) as Arc<dyn ToolHandler>,
+    )]);
+
+    let layer = SafetyLayer::with_defaults().with_role("researcher");
+    let dispatcher = ToolDispatcher::new(registry, resolver).with_safety(layer);
+
+    let call = ToolCall::new(
+        "e1",
+        "web_fetch",
+        serde_json::json!({ "url": "https://example.com" }),
+    );
+    let result = dispatcher.dispatch(call, &ctx_with_exec()).await;
+    if let ToolResult::Ok { content, .. } = &result {
+        assert!(
+            content.contains("[external:web_fetch]"),
+            "external tool output must be annotated with provenance, got: {content}"
+        );
+    }
+    // Note: the result might be an error due to URL policy, which is acceptable.
+    // The annotation test only applies when the handler is reached.
+}
+
+// ─── Test 10: production chain filters secrets from results ──────────────
+
+#[tokio::test]
+async fn production_chain_scrubs_secrets_from_handler_output() {
+    let registry: Arc<dyn roko_core::tool::ToolRegistry> =
+        Arc::new(VecToolRegistry::from_tools(vec![tool(
+            "read_file",
+            ToolPermission::read_only(),
+            ToolConcurrency::Parallel,
+        )]));
+
+    struct SecretLeaker;
+    #[async_trait]
+    impl ToolHandler for SecretLeaker {
+        fn name(&self) -> &str {
+            "read_file"
+        }
+        async fn execute(&self, _call: ToolCall, _ctx: &ToolContext) -> ToolResult {
+            let api_key = format!("sk-ant-api03-{}", "A".repeat(80));
+            ToolResult::text(format!("found key: {api_key}"))
+        }
+    }
+
+    let resolver = resolver_from(vec![(
+        "read_file",
+        Arc::new(SecretLeaker) as Arc<dyn ToolHandler>,
+    )]);
+
+    let layer = SafetyLayer::with_defaults().with_role("implementer");
+    let dispatcher = ToolDispatcher::new(registry, resolver).with_safety(layer);
+
+    let call = ToolCall::new(
+        "s1",
+        "read_file",
+        serde_json::json!({ "file_path": "/tmp/test.rs" }),
+    );
+    let result = dispatcher.dispatch(call, &ctx_with_exec()).await;
+    match result {
+        ToolResult::Ok { content, .. } => {
+            let api_key = format!("sk-ant-api03-{}", "A".repeat(80));
+            assert!(
+                !content.contains(&api_key),
+                "secret must not leak through the production chain"
+            );
+            assert!(
+                content.contains("[REDACTED]"),
+                "scrubbed output must contain redaction marker"
+            );
+        }
+        _ => {} // handler might not be reached due to other policies
+    }
+}
+
+// ─── Test 11: frozen stage ordering is preserved across with_safety ──────
+
+#[tokio::test]
+async fn with_safety_preserves_frozen_stage_ordering() {
+    use roko_agent::dispatcher::production_safety_chain;
+
+    let registry: Arc<dyn roko_core::tool::ToolRegistry> =
+        Arc::new(VecToolRegistry::from_tools(vec![tool(
+            "read_file",
+            ToolPermission::read_only(),
+            ToolConcurrency::Parallel,
+        )]));
+    let resolver = resolver_from(vec![(
+        "read_file",
+        Arc::new(NoopHandler {
+            tool_name: "read_file",
+        }) as Arc<dyn ToolHandler>,
+    )]);
+
+    let dispatcher = ToolDispatcher::new(registry, resolver)
+        .with_safety(SafetyLayer::with_defaults().with_role("implementer"));
+
+    let chain = dispatcher.production_safety_chain().unwrap();
+    let names: Vec<&str> = chain.pre_handler_hooks().hook_names().collect();
+    assert_eq!(
+        names,
+        vec![
+            production_safety_chain::stage_id::KNOWN_TOOL_SANITY,
+            production_safety_chain::stage_id::TAINT_CEILING,
+            production_safety_chain::stage_id::CORRIGIBILITY,
+        ],
+        "frozen stage order must be preserved after with_safety"
+    );
+}

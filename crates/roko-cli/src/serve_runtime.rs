@@ -660,9 +660,8 @@ fn load_effective_roko_config(
             .unwrap_or_default()
     };
 
-    if let Err(e) = roko_core::config::loader::merge_global_into(&mut config) {
-        tracing::warn!(error = %e, "global config merge failed");
-    }
+    roko_core::config::loader::merge_global_into(&mut config)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     config.apply_process_env();
     Ok(config)
 }

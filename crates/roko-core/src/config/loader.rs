@@ -526,9 +526,7 @@ fn resolve_runtime_layers_with_context(
 
     if opts.merge_global {
         let before = config.clone();
-        if let Err(e) = merge_global_into(&mut config) {
-            tracing::warn!(error = %e, "global config merge failed; continuing with project config only");
-        }
+        merge_global_into(&mut config)?;
         if let Some(fields) = explicit_fields {
             reapply_explicit_fields(&mut config, &before, fields);
         }
@@ -1397,6 +1395,9 @@ pub fn global_config_path() -> Option<PathBuf> {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .ok()?;
+    if home.is_empty() {
+        return None;
+    }
 
     let canonical = PathBuf::from(&home).join(".roko").join("config.toml");
 
@@ -1438,7 +1439,7 @@ pub fn global_config_path() -> Option<PathBuf> {
 /// slug shadows a differently-keyed global model with the same slug. This
 /// keeps the merged registry consistent with dispatch validation, where a slug
 /// may have only one owner.
-pub fn merge_global_into(config: &mut RokoConfig) -> Result<(), String> {
+pub fn merge_global_into(config: &mut RokoConfig) -> Result<(), super::LoadConfigError> {
     let Some(global_path) = global_config_path() else {
         return Ok(());
     };
@@ -1448,28 +1449,31 @@ pub fn merge_global_into(config: &mut RokoConfig) -> Result<(), String> {
 
     let text = match std::fs::read_to_string(&global_path) {
         Ok(t) => t,
-        Err(e) => {
-            tracing::warn!(
+        Err(source) => {
+            tracing::error!(
                 path = %global_path.display(),
-                error = %e,
-                "failed to read global config"
+                error = %source,
+                "global config file exists but could not be read"
             );
-            return Ok(());
+            return Err(super::LoadConfigError::GlobalConfigRead {
+                path: global_path.clone(),
+                source,
+            });
         }
     };
 
     let global = match deserialize_migrated_toml(&text) {
         Ok(g) => g,
-        Err(e) => {
+        Err(source) => {
             tracing::error!(
                 path = %global_path.display(),
-                error = %e,
-                "failed to parse global config"
+                error = %source,
+                "global config file exists but could not be parsed"
             );
-            return Err(format!(
-                "failed to parse global config {}: {e}",
-                global_path.display()
-            ));
+            return Err(super::LoadConfigError::GlobalConfigParse {
+                path: global_path.clone(),
+                source,
+            });
         }
     };
 
@@ -2766,8 +2770,8 @@ strict_validation = true
         assert!(result.is_err(), "expected Err on invalid TOML, got Ok");
         let err = result.unwrap_err();
         assert!(
-            err.contains("failed to parse"),
-            "error should mention parse failure: {err}"
+            matches!(err, super::LoadConfigError::GlobalConfigParse { .. }),
+            "expected GlobalConfigParse error, got: {err}"
         );
 
         // Restore HOME.

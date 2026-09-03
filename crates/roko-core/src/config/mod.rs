@@ -151,6 +151,22 @@ pub enum LoadConfigError {
         /// Migration failure details.
         message: String,
     },
+    /// Reading the global config file (`~/.roko/config.toml`) failed.
+    #[error("read global config {path}: {source}")]
+    GlobalConfigRead {
+        /// Global config file path.
+        path: std::path::PathBuf,
+        /// Underlying I/O error.
+        source: std::io::Error,
+    },
+    /// Parsing the global config file (`~/.roko/config.toml`) failed.
+    #[error("parse global config {path}: {source}")]
+    GlobalConfigParse {
+        /// Global config file path.
+        path: std::path::PathBuf,
+        /// Parse error detail.
+        source: String,
+    },
 }
 
 /// Trust level for workspace config loading.

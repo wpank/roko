@@ -3053,10 +3053,13 @@ pub fn global_config_path() -> Option<PathBuf> {
 /// Any provider/model in the global file that is *not* already in `config`
 /// gets inserted. This lets project `roko.toml` files override specific
 /// entries while inheriting the rest from `~/.roko/config.toml`.
-pub fn merge_global_providers(config: &mut roko_core::config::schema::RokoConfig) {
-    if let Err(e) = roko_core::config::loader::merge_global_into(config) {
-        tracing::warn!(error = %e, "global config merge failed during provider merge");
-    }
+///
+/// Returns an error if the global config file exists but cannot be read or
+/// parsed. Callers should treat this as fatal before constructing providers.
+pub fn merge_global_providers(
+    config: &mut roko_core::config::schema::RokoConfig,
+) -> Result<(), roko_core::config::LoadConfigError> {
+    roko_core::config::loader::merge_global_into(config)
 }
 
 /// Walk up from `start` looking for `roko.toml`. Returns the first hit.

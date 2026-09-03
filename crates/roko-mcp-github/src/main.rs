@@ -13,7 +13,7 @@ use reqwest::StatusCode;
 use reqwest::blocking::{Client, RequestBuilder, Response};
 use reqwest::header::{ACCEPT, HeaderMap, HeaderValue, RETRY_AFTER, USER_AGENT};
 use roko_mcp_github::GitHubClient;
-use roko_mcp_stdio::{JsonRpcError, JsonRpcRequest, serve_stdio};
+use roko_mcp_stdio::{JsonRpcError, JsonRpcRequest, MCP_PROTOCOL_VERSION, serve_stdio};
 use serde::Deserialize;
 use serde_json::Value;
 use std::env;
@@ -466,7 +466,7 @@ fn handle_request(request: JsonRpcRequest) -> Result<Value, JsonRpcError> {
 
 fn handle_initialize() -> Value {
     serde_json::json!({
-        "protocolVersion": "2024-11-05",
+        "protocolVersion": MCP_PROTOCOL_VERSION,
         "capabilities": {
             "tools": {}
         },
@@ -2025,7 +2025,7 @@ mod tests {
     fn initialize_returns_server_capabilities() {
         let result = handle_initialize();
 
-        assert_eq!(result["protocolVersion"], "2024-11-05");
+        assert_eq!(result["protocolVersion"], MCP_PROTOCOL_VERSION);
         assert_eq!(result["capabilities"]["tools"], json!({}));
         assert_eq!(result["serverInfo"]["name"], "roko-mcp-github");
         assert_eq!(result["serverInfo"]["version"], env!("CARGO_PKG_VERSION"));

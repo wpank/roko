@@ -248,6 +248,7 @@ CaMeL capability-tagged IFC on Extensions. Nayebi 5-head lexicographic corrigibi
 | **[28](28-ROADMAP.md)** | Roadmap | Phased delivery. Implementation priorities. Phase dependencies. Current state reconciliation. |
 | **[29](29-FAST-DEVELOPMENT.md)** | FAST Development | Opt-in bounded self-development lane: task-owned verification, deadlines, evidence, trust boundaries, validation status, and deferred work. |
 | **[30](30-EVIDENCE-BUNDLES.md)** | Run Evidence Bundles | Run-scoped status/log capture, safe GET and optional visual hooks, metrics, scorecards, deterministic debriefs, and strict portable-bundle validation. |
+| **[31](31-ENGINE-CONVERGENCE-CONTRACT.md)** | Engine Convergence Contract | Frozen boundary types, golden fixture schema, phase/symbol/receipt table, capability matrix, Workflow/Activity classification, cutover invariants. Backlog #242. |
 
 ---
 
@@ -373,7 +374,7 @@ CaMeL capability-tagged IFC on Extensions. Nayebi 5-head lexicographic corrigibi
 15–18. Telemetry, Security, Auth, Payments.
 
 ### Everything else
-19–30. Config, Surfaces, Marketplace, Registries, Arenas, DeFi, Deployment, Cross-Cuts, Orchestrator, Roadmap, FAST Development, Run Evidence Bundles.
+19–31. Config, Surfaces, Marketplace, Registries, Arenas, DeFi, Deployment, Cross-Cuts, Orchestrator, Roadmap, FAST Development, Run Evidence Bundles, Engine Convergence Contract.
 
 ---
 

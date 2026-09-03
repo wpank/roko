@@ -1,0 +1,93 @@
+# Diamond DAG: A -> {B, C} -> D
+# Equivalent authored graph for the diamond_success plan fixture.
+
+[graph]
+name = "diamond-success"
+description = "Diamond DAG: A -> {B, C} -> D. All tasks succeed."
+version = "1.0.0"
+
+[graph.policy]
+mode = "one_shot"
+failure_strategy = "fail_fast"
+max_concurrent_nodes = 2
+
+[graph.labels]
+source = "fixture"
+fixture_id = "diamond_success"
+plan_id = "diamond-success"
+
+[[nodes]]
+id = "A"
+cell_type = "task-executor"
+execution_class = "activity"
+[nodes.config]
+plan_id = "diamond-success"
+plan_dir = "fixtures/engine_convergence/diamond_success"
+title = "Root task"
+role = "implementer"
+tier = "mechanical"
+timeout_secs = 300
+max_retries = 2
+sequence = 0
+files = ["src/root.rs"]
+
+[[nodes]]
+id = "B"
+cell_type = "task-executor"
+execution_class = "activity"
+[nodes.config]
+plan_id = "diamond-success"
+plan_dir = "fixtures/engine_convergence/diamond_success"
+title = "Left branch"
+role = "implementer"
+tier = "mechanical"
+timeout_secs = 300
+max_retries = 2
+sequence = 1
+files = ["src/left.rs"]
+
+[[nodes]]
+id = "C"
+cell_type = "task-executor"
+execution_class = "activity"
+[nodes.config]
+plan_id = "diamond-success"
+plan_dir = "fixtures/engine_convergence/diamond_success"
+title = "Right branch"
+role = "implementer"
+tier = "mechanical"
+timeout_secs = 300
+max_retries = 2
+sequence = 2
+files = ["src/right.rs"]
+
+[[nodes]]
+id = "D"
+cell_type = "task-executor"
+execution_class = "activity"
+[nodes.config]
+plan_id = "diamond-success"
+plan_dir = "fixtures/engine_convergence/diamond_success"
+title = "Join task"
+role = "implementer"
+tier = "focused"
+timeout_secs = 300
+max_retries = 2
+sequence = 3
+files = ["src/join.rs"]
+
+[[edges]]
+from = "A"
+to = "B"
+
+[[edges]]
+from = "A"
+to = "C"
+
+[[edges]]
+from = "B"
+to = "D"
+
+[[edges]]
+from = "C"
+to = "D"

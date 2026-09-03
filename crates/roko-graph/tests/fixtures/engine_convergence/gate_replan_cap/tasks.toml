@@ -1,0 +1,23 @@
+# Gate failure with replan and cap exhaustion.
+# T1 succeeds, gate fails, replan produces T1-fix, second gate fails, cap hit.
+
+[meta]
+plan = "gate-replan-cap"
+max_parallel = 1
+
+[[task]]
+id = "T1"
+title = "Initial implementation"
+role = "implementer"
+status = "pending"
+tier = "focused"
+files = ["src/feature.rs"]
+
+[[task]]
+id = "T1-fix"
+title = "Structural replan fix"
+role = "implementer"
+status = "pending"
+tier = "mechanical"
+depends_on = ["T1"]
+files = ["src/feature.rs"]

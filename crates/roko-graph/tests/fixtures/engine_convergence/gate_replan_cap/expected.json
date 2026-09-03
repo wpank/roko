@@ -1,0 +1,131 @@
+{
+  "schema_version": 1,
+  "fixture_id": "gate_replan_cap",
+  "graph_fingerprint": "COMPUTE_AT_LOAD",
+  "request_fingerprints": [
+    "req-T1",
+    "req-T1-fix"
+  ],
+  "prompt_fingerprints": [
+    "prompt-T1",
+    "prompt-T1-fix"
+  ],
+  "tasks": [
+    {
+      "task_id": "T1",
+      "dependencies": [],
+      "status": "completed",
+      "attempts": 1,
+      "provider": "fixture-provider",
+      "model": "fixture-model",
+      "role": "implementer",
+      "effort": "focused",
+      "workspace_fingerprint": "ws-fixture-0001",
+      "input_tokens": 2500,
+      "output_tokens": 1800,
+      "cost_micro_usd": 950
+    },
+    {
+      "task_id": "T1-fix",
+      "dependencies": ["T1"],
+      "status": "completed",
+      "attempts": 1,
+      "provider": "fixture-provider",
+      "model": "fixture-model",
+      "role": "implementer",
+      "effort": "mechanical",
+      "workspace_fingerprint": "ws-fixture-0002",
+      "input_tokens": 1800,
+      "output_tokens": 1200,
+      "cost_micro_usd": 680
+    }
+  ],
+  "events": [
+    {
+      "sequence": 0,
+      "event_type": "plan.started",
+      "source": "runner",
+      "payload": {}
+    },
+    {
+      "sequence": 1,
+      "event_type": "task.dispatched",
+      "source": "runner",
+      "payload": { "task_id": "T1" }
+    },
+    {
+      "sequence": 2,
+      "event_type": "task.completed",
+      "source": "runner",
+      "payload": { "task_id": "T1" }
+    },
+    {
+      "sequence": 3,
+      "event_type": "gate.failed",
+      "source": "runner",
+      "payload": { "task_id": "T1", "mostly_passing": false, "rung": 2 }
+    },
+    {
+      "sequence": 4,
+      "event_type": "replan.structural",
+      "source": "runner",
+      "payload": { "original_task_id": "T1", "new_task_id": "T1-fix" }
+    },
+    {
+      "sequence": 5,
+      "event_type": "task.dispatched",
+      "source": "runner",
+      "payload": { "task_id": "T1-fix" }
+    },
+    {
+      "sequence": 6,
+      "event_type": "task.completed",
+      "source": "runner",
+      "payload": { "task_id": "T1-fix" }
+    },
+    {
+      "sequence": 7,
+      "event_type": "gate.failed",
+      "source": "runner",
+      "payload": { "task_id": "T1-fix", "mostly_passing": false, "rung": 1 }
+    },
+    {
+      "sequence": 8,
+      "event_type": "replan.cap_exhausted",
+      "source": "runner",
+      "payload": { "task_id": "T1-fix", "cap": 1 }
+    },
+    {
+      "sequence": 9,
+      "event_type": "plan.failed",
+      "source": "runner",
+      "payload": { "reason": "replan cap exhausted" }
+    }
+  ],
+  "receipts": [
+    {
+      "idempotency_key": "gate-T1-rung2-att0",
+      "owner": "gate-pipeline",
+      "state": "failed",
+      "evidence_fingerprint": "gate-evidence-T1-001"
+    },
+    {
+      "idempotency_key": "gate-T1-fix-rung1-att0",
+      "owner": "gate-pipeline",
+      "state": "failed",
+      "evidence_fingerprint": "gate-evidence-T1-fix-001"
+    }
+  ],
+  "final": {
+    "plan_status": "failed",
+    "completed_task_ids": ["T1", "T1-fix"],
+    "skipped_task_ids": [],
+    "failed_task_ids": [],
+    "total_input_tokens": 4300,
+    "total_output_tokens": 3000,
+    "total_cost_micro_usd": 1630,
+    "merge_state": "not_attempted",
+    "publication_state": "not_attempted",
+    "terminal_event_id": "evt-9"
+  }
+}

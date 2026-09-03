@@ -1,0 +1,33 @@
+# Cancel, resume, and budget boundary.
+# A completes, B is cancelled mid-flight, resume skips A,
+# C is blocked at its budget boundary.
+
+[meta]
+plan = "cancel-resume-budget"
+max_parallel = 1
+
+[[task]]
+id = "A"
+title = "First task"
+role = "implementer"
+status = "pending"
+tier = "mechanical"
+files = ["src/first.rs"]
+
+[[task]]
+id = "B"
+title = "Second task (will be cancelled)"
+role = "implementer"
+status = "pending"
+tier = "focused"
+depends_on = ["A"]
+files = ["src/second.rs"]
+
+[[task]]
+id = "C"
+title = "Third task (budget blocked)"
+role = "implementer"
+status = "pending"
+tier = "focused"
+depends_on = ["B"]
+files = ["src/third.rs"]

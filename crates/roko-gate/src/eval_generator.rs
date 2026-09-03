@@ -11,6 +11,7 @@
 //! registered with the `GeneratedTestGate` artifact store.
 
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 /// Strategy for generating evaluation test cases.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -22,6 +23,65 @@ pub enum EvalStrategy {
     PropertyBased,
     /// Mutation-based: ensure the implementation detects seeded faults.
     MutationBased,
+}
+
+/// Error returned when eval generation fails validation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EvalGenerationError {
+    /// A `PropertyBased` template requires a non-empty, non-vacuous `property_body`.
+    MissingPropertyBody {
+        /// The template name that failed.
+        template_name: String,
+    },
+    /// The supplied property body is vacuous (comments-only, `assert!(true)`,
+    /// `todo!()`, `unimplemented!()`).
+    VacuousPropertyBody {
+        /// The template name that failed.
+        template_name: String,
+        /// Human-readable explanation of the rejection.
+        reason: String,
+    },
+}
+
+impl fmt::Display for EvalGenerationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingPropertyBody { template_name } => {
+                write!(
+                    f,
+                    "property template '{template_name}' requires a non-empty property_body"
+                )
+            }
+            Self::VacuousPropertyBody {
+                template_name,
+                reason,
+            } => {
+                write!(
+                    f,
+                    "property template '{template_name}' has vacuous body: {reason}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for EvalGenerationError {}
+
+/// Structured request for checked eval generation.
+#[derive(Clone, Debug)]
+pub struct EvalGenerationRequest {
+    /// The task being evaluated.
+    pub task_title: String,
+    /// The gate type to generate evaluations for (e.g. `"compile"`, `"test"`).
+    pub gate_type: String,
+    /// The crate under test.
+    pub crate_name: String,
+    /// Relevant source files.
+    pub files: Vec<String>,
+    /// For `PropertyBased` templates, the executable assertion body to
+    /// substitute into the `{property_body}` placeholder. Must be non-empty
+    /// and non-vacuous for property templates.
+    pub property_body: Option<String>,
 }
 
 /// A single evaluation template that can generate test cases for a gate type.
@@ -87,6 +147,10 @@ impl EvalGenerator {
     ///
     /// Returns all evaluations matching the gate type, with placeholders
     /// filled from `task_title`, `crate_name`, and `files`.
+    ///
+    /// **Compatibility note:** This method skips `PropertyBased` templates
+    /// entirely -- they must go through [`generate_checked`] with a validated
+    /// `property_body`. Non-property templates are unaffected.
     #[must_use]
     pub fn generate(
         &self,
@@ -98,6 +162,8 @@ impl EvalGenerator {
         self.templates
             .iter()
             .filter(|template| template.gate_type == gate_type)
+            // Compatibility: skip property templates from the old path.
+            .filter(|template| template.strategy != EvalStrategy::PropertyBased)
             .map(|template| {
                 let files_str = files.join(", ");
                 let test_source = template
@@ -122,6 +188,9 @@ impl EvalGenerator {
     }
 
     /// Generate evaluations for all gate types relevant to a task.
+    ///
+    /// **Compatibility note:** `PropertyBased` templates are skipped. Use
+    /// [`generate_checked`] for property generation.
     #[must_use]
     pub fn generate_all(
         &self,
@@ -142,6 +211,190 @@ impl EvalGenerator {
             .flat_map(|gate_type| self.generate(task_title, gate_type, crate_name, files))
             .collect()
     }
+
+    /// Generate evaluations with full validation. `PropertyBased` templates
+    /// require a non-empty, non-vacuous `property_body` in the request.
+    ///
+    /// Returns an error on the first template that fails validation rather
+    /// than silently emitting a vacuous test.
+    pub fn generate_checked(
+        &self,
+        request: &EvalGenerationRequest,
+    ) -> Result<Vec<Evaluation>, EvalGenerationError> {
+        let mut evals = Vec::new();
+        let files_str = request.files.join(", ");
+
+        for template in &self.templates {
+            if template.gate_type != request.gate_type {
+                continue;
+            }
+
+            if template.strategy == EvalStrategy::PropertyBased {
+                // Property templates require a validated body.
+                let body = match &request.property_body {
+                    Some(b) if !b.trim().is_empty() => b,
+                    _ => {
+                        return Err(EvalGenerationError::MissingPropertyBody {
+                            template_name: template.name.clone(),
+                        });
+                    }
+                };
+
+                // Validate the body is not vacuous.
+                if let Some(reason) = detect_vacuous_body(body) {
+                    return Err(EvalGenerationError::VacuousPropertyBody {
+                        template_name: template.name.clone(),
+                        reason,
+                    });
+                }
+
+                let test_source = template
+                    .template_body
+                    .replace("{task_title}", &request.task_title)
+                    .replace("{crate_name}", &request.crate_name)
+                    .replace("{files}", &files_str)
+                    .replace("{property_body}", body);
+
+                // Validate the fully rendered source for vacuity as well.
+                if let Some(reason) = detect_vacuous_rendered(&test_source) {
+                    return Err(EvalGenerationError::VacuousPropertyBody {
+                        template_name: template.name.clone(),
+                        reason,
+                    });
+                }
+
+                evals.push(Evaluation {
+                    name: format!(
+                        "gen_{}_{}",
+                        template.name.replace('-', "_"),
+                        sanitize(&request.task_title)
+                    ),
+                    gate_type: template.gate_type.clone(),
+                    strategy: template.strategy.clone(),
+                    test_source,
+                    expect_pre_failure: true,
+                });
+            } else {
+                // Non-property templates pass through unchanged.
+                let test_source = template
+                    .template_body
+                    .replace("{task_title}", &request.task_title)
+                    .replace("{crate_name}", &request.crate_name)
+                    .replace("{files}", &files_str);
+
+                evals.push(Evaluation {
+                    name: format!(
+                        "gen_{}_{}",
+                        template.name.replace('-', "_"),
+                        sanitize(&request.task_title)
+                    ),
+                    gate_type: template.gate_type.clone(),
+                    strategy: template.strategy.clone(),
+                    test_source,
+                    expect_pre_failure: true,
+                });
+            }
+        }
+
+        Ok(evals)
+    }
+}
+
+// ─── Vacuity detection ──────────────────────────────────────────────────────
+
+/// Strip line/block comments and check if anything executable remains.
+fn strip_comments(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let mut in_block = false;
+    let mut chars = src.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if in_block {
+            if c == '*' && chars.peek() == Some(&'/') {
+                chars.next();
+                in_block = false;
+            }
+            continue;
+        }
+        if c == '/' {
+            match chars.peek() {
+                Some('/') => {
+                    // Line comment -- skip to end of line.
+                    for c2 in chars.by_ref() {
+                        if c2 == '\n' {
+                            out.push('\n');
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                Some('*') => {
+                    chars.next();
+                    in_block = true;
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Detect a vacuous property body (before template substitution).
+///
+/// Returns `Some(reason)` if the body is vacuous, `None` if acceptable.
+fn detect_vacuous_body(body: &str) -> Option<String> {
+    let stripped = strip_comments(body);
+    let trimmed = stripped.trim();
+
+    if trimmed.is_empty() {
+        return Some("body is empty or comments-only".into());
+    }
+
+    // Normalise whitespace for pattern matching.
+    let normalised: String = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    // Tautological assertions.
+    if normalised.contains("assert!(true)")
+        || normalised.contains("assert_eq!(true, true)")
+        || normalised.contains("assert_eq!(1, 1)")
+    {
+        return Some("body contains only tautological assertions".into());
+    }
+
+    // Placeholder macros.
+    if normalised == "todo!()" || normalised == "todo! ()" || normalised.starts_with("todo!(\"") {
+        return Some("body is a todo!() placeholder".into());
+    }
+    if normalised == "unimplemented!()"
+        || normalised == "unimplemented! ()"
+        || normalised.starts_with("unimplemented!(\"")
+    {
+        return Some("body is an unimplemented!() placeholder".into());
+    }
+
+    None
+}
+
+/// Detect vacuity in a fully rendered test source.
+///
+/// This catches cases where the body was fine in isolation but the final
+/// rendered source has no assertions beyond boilerplate.
+fn detect_vacuous_rendered(source: &str) -> Option<String> {
+    let stripped = strip_comments(source);
+
+    // Check if any fn body contains only vacuous content.
+    // Look for test function bodies that contain only comments/whitespace
+    // after removing boilerplate.
+    if stripped.contains("todo!()") || stripped.contains("todo! ()") {
+        return Some("rendered source contains todo!()".into());
+    }
+    if stripped.contains("unimplemented!()") || stripped.contains("unimplemented! ()") {
+        return Some("rendered source contains unimplemented!()".into());
+    }
+
+    None
 }
 
 /// Sanitize a task title into a valid Rust identifier fragment.
@@ -224,8 +477,7 @@ fn builtin_templates() -> Vec<EvalTemplate> {
                 "// Strategy: property-based (verify invariants hold)\n",
                 "#[test]\n",
                 "fn gen_property_invariant() {\n",
-                "    // TODO: LLM-generated property assertions go here.\n",
-                "    // For now, this is a template placeholder.\n",
+                "    {property_body}\n",
                 "}\n",
             )
             .into(),
@@ -258,10 +510,21 @@ mod tests {
         let generator = EvalGenerator::new();
         let evals =
             generator.generate_all("Wire foraging", "roko-compose", &["foraging.rs".into()]);
-        assert!(evals.len() >= 3);
+        // Should have compile (1) + clippy (1) + test (1, non-property) = 3.
+        // The property template is excluded by the compatibility filter.
+        assert!(evals.len() >= 3, "got {} evals", evals.len());
         let gate_types: Vec<&str> = evals.iter().map(|e| e.gate_type.as_str()).collect();
         assert!(gate_types.contains(&"compile"));
         assert!(gate_types.contains(&"test"));
+    }
+
+    #[test]
+    fn generate_skips_property_templates() {
+        let generator = EvalGenerator::new();
+        let evals = generator.generate("Task", "test", "roko-core", &[]);
+        // Only the ExampleBased "test-pass" template, not the PropertyBased one.
+        assert_eq!(evals.len(), 1);
+        assert_eq!(evals[0].strategy, EvalStrategy::ExampleBased);
     }
 
     #[test]
@@ -282,5 +545,229 @@ mod tests {
     fn sanitize_title() {
         assert_eq!(sanitize("Add Demurrage trait"), "add_demurrage_trait");
         assert_eq!(sanitize("fix: bug #123"), "fix__bug__123");
+    }
+
+    // ─── generate_checked tests ─────────────────────────────────────
+
+    #[test]
+    fn generate_checked_with_valid_property_body() {
+        let generator = EvalGenerator::new();
+        let request = EvalGenerationRequest {
+            task_title: "Add bounds check".into(),
+            gate_type: "test".into(),
+            crate_name: "roko-core".into(),
+            files: vec!["bounds.rs".into()],
+            property_body: Some("assert!(value >= 0 && value < max);".into()),
+        };
+        let evals = generator.generate_checked(&request).unwrap();
+        // Should have both the ExampleBased test-pass and the PropertyBased
+        // property-invariant templates.
+        assert_eq!(evals.len(), 2);
+        let property = evals
+            .iter()
+            .find(|e| e.strategy == EvalStrategy::PropertyBased)
+            .expect("property eval");
+        assert!(
+            property.test_source.contains("assert!(value >= 0"),
+            "body should be substituted into source"
+        );
+        assert!(
+            !property.test_source.contains("{property_body}"),
+            "placeholder must be replaced"
+        );
+    }
+
+    #[test]
+    fn generate_checked_missing_property_body_errors() {
+        let generator = EvalGenerator::new();
+        let request = EvalGenerationRequest {
+            task_title: "Task".into(),
+            gate_type: "test".into(),
+            crate_name: "roko-core".into(),
+            files: vec![],
+            property_body: None,
+        };
+        let err = generator.generate_checked(&request).unwrap_err();
+        assert!(
+            matches!(err, EvalGenerationError::MissingPropertyBody { .. }),
+            "expected MissingPropertyBody, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn generate_checked_empty_body_errors() {
+        let generator = EvalGenerator::new();
+        let request = EvalGenerationRequest {
+            task_title: "Task".into(),
+            gate_type: "test".into(),
+            crate_name: "roko-core".into(),
+            files: vec![],
+            property_body: Some("   ".into()),
+        };
+        let err = generator.generate_checked(&request).unwrap_err();
+        assert!(matches!(err, EvalGenerationError::MissingPropertyBody { .. }));
+    }
+
+    #[test]
+    fn generate_checked_comments_only_body_errors() {
+        let generator = EvalGenerator::new();
+        let request = EvalGenerationRequest {
+            task_title: "Task".into(),
+            gate_type: "test".into(),
+            crate_name: "roko-core".into(),
+            files: vec![],
+            property_body: Some("// just a comment\n/* another */".into()),
+        };
+        let err = generator.generate_checked(&request).unwrap_err();
+        assert!(
+            matches!(err, EvalGenerationError::VacuousPropertyBody { .. }),
+            "expected VacuousPropertyBody, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn generate_checked_assert_true_errors() {
+        let generator = EvalGenerator::new();
+        let request = EvalGenerationRequest {
+            task_title: "Task".into(),
+            gate_type: "test".into(),
+            crate_name: "roko-core".into(),
+            files: vec![],
+            property_body: Some("assert!(true)".into()),
+        };
+        let err = generator.generate_checked(&request).unwrap_err();
+        assert!(
+            matches!(err, EvalGenerationError::VacuousPropertyBody { .. }),
+            "expected VacuousPropertyBody, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn generate_checked_todo_body_errors() {
+        let generator = EvalGenerator::new();
+        let request = EvalGenerationRequest {
+            task_title: "Task".into(),
+            gate_type: "test".into(),
+            crate_name: "roko-core".into(),
+            files: vec![],
+            property_body: Some("todo!()".into()),
+        };
+        let err = generator.generate_checked(&request).unwrap_err();
+        assert!(matches!(err, EvalGenerationError::VacuousPropertyBody { .. }));
+    }
+
+    #[test]
+    fn generate_checked_unimplemented_body_errors() {
+        let generator = EvalGenerator::new();
+        let request = EvalGenerationRequest {
+            task_title: "Task".into(),
+            gate_type: "test".into(),
+            crate_name: "roko-core".into(),
+            files: vec![],
+            property_body: Some("unimplemented!()".into()),
+        };
+        let err = generator.generate_checked(&request).unwrap_err();
+        assert!(matches!(err, EvalGenerationError::VacuousPropertyBody { .. }));
+    }
+
+    #[test]
+    fn generate_checked_non_property_gate_ignores_body() {
+        // When targeting compile gate, the property_body is not needed.
+        let generator = EvalGenerator::new();
+        let request = EvalGenerationRequest {
+            task_title: "Task".into(),
+            gate_type: "compile".into(),
+            crate_name: "roko-core".into(),
+            files: vec![],
+            property_body: None,
+        };
+        let evals = generator.generate_checked(&request).unwrap();
+        assert_eq!(evals.len(), 1);
+        assert_eq!(evals[0].strategy, EvalStrategy::ExampleBased);
+    }
+
+    // ─── vacuity detection unit tests ───────────────────────────────
+
+    #[test]
+    fn detect_vacuous_empty() {
+        assert!(detect_vacuous_body("").is_some());
+        assert!(detect_vacuous_body("   ").is_some());
+    }
+
+    #[test]
+    fn detect_vacuous_comments_only() {
+        assert!(detect_vacuous_body("// line comment").is_some());
+        assert!(detect_vacuous_body("/* block */").is_some());
+        assert!(detect_vacuous_body("// line\n/* block */\n// more").is_some());
+    }
+
+    #[test]
+    fn detect_vacuous_assert_true() {
+        assert!(detect_vacuous_body("assert!(true)").is_some());
+        assert!(detect_vacuous_body("  assert!(true)  ").is_some());
+    }
+
+    #[test]
+    fn detect_vacuous_todo() {
+        assert!(detect_vacuous_body("todo!()").is_some());
+        assert!(detect_vacuous_body("todo!(\"later\")").is_some());
+    }
+
+    #[test]
+    fn detect_vacuous_unimplemented() {
+        assert!(detect_vacuous_body("unimplemented!()").is_some());
+    }
+
+    #[test]
+    fn detect_vacuous_real_assertion_passes() {
+        assert!(detect_vacuous_body("assert_eq!(result, 42);").is_none());
+        assert!(detect_vacuous_body("let x = compute(); assert!(x > 0);").is_none());
+    }
+
+    #[test]
+    fn strip_comments_removes_line_and_block() {
+        let src = "code // comment\n/* block */ more";
+        let stripped = strip_comments(src);
+        assert!(!stripped.contains("comment"));
+        assert!(!stripped.contains("block"));
+        assert!(stripped.contains("code"));
+        assert!(stripped.contains("more"));
+    }
+
+    // ─── property template no longer has TODO ───────────────────────
+
+    #[test]
+    fn builtin_property_template_has_placeholder_not_todo() {
+        let templates = builtin_templates();
+        let prop = templates
+            .iter()
+            .find(|t| t.strategy == EvalStrategy::PropertyBased)
+            .expect("property template");
+        assert!(
+            !prop.template_body.contains("TODO"),
+            "property template must not contain TODO placeholder"
+        );
+        assert!(
+            prop.template_body.contains("{property_body}"),
+            "property template must contain {{property_body}} placeholder"
+        );
+    }
+
+    // ─── EvalGenerationError Display ────────────────────────────────
+
+    #[test]
+    fn eval_generation_error_display() {
+        let missing = EvalGenerationError::MissingPropertyBody {
+            template_name: "test".into(),
+        };
+        assert!(missing.to_string().contains("test"));
+        assert!(missing.to_string().contains("non-empty"));
+
+        let vacuous = EvalGenerationError::VacuousPropertyBody {
+            template_name: "prop".into(),
+            reason: "todo!()".into(),
+        };
+        assert!(vacuous.to_string().contains("vacuous"));
+        assert!(vacuous.to_string().contains("todo!()"));
     }
 }

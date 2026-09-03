@@ -156,7 +156,10 @@ pub use error_patterns::{
     FailurePatternRecord, error_key, extract_error_digest, records_from_classification,
     records_from_parsed_review_verdict,
 };
-pub use eval_generator::{EvalGenerator, EvalStrategy, EvalTemplate, Evaluation};
+pub use eval_generator::{
+    EvalGenerationError, EvalGenerationRequest, EvalGenerator, EvalStrategy, EvalTemplate,
+    Evaluation,
+};
 pub use fact_check::{FactCheckGate, SearchHit, SearchOracle};
 pub use feedback::{FeedbackItem, GateFeedback, Severity, feedback_for_agent};
 pub use forensic::{

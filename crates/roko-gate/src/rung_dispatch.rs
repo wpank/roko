@@ -70,10 +70,18 @@ pub struct RungExecutionConfig {
     pub fact_check_oracle: Option<Arc<dyn SearchOracle>>,
     /// Fact-check confidence threshold. Defaults to the gate's builtin value.
     pub fact_check_min_confidence: Option<f64>,
+    /// When `true`, a selected fact-check gate with no configured oracle or
+    /// input produces a **failure** verdict instead of `Skipped`. Defaults to
+    /// `false` so existing callers are unaffected.
+    pub fact_check_required: bool,
     /// Judge oracle for `LlmJudgeGate`.
     pub llm_judge_oracle: Option<Arc<dyn JudgeOracle>>,
     /// Judge threshold. Defaults to `0.8`.
     pub llm_judge_min_score: Option<f32>,
+    /// When `true`, a selected LLM-judge gate with no configured oracle or
+    /// input produces a **failure** verdict instead of `Skipped`. Defaults to
+    /// `false` so existing callers are unaffected.
+    pub llm_judge_required: bool,
     /// Build-system-specific integration test pattern to run on rung 6.
     pub integration_test_pattern: Option<String>,
     /// Build system for the integration scenario. Defaults to cargo.
@@ -317,6 +325,17 @@ fn stub_verdict(gate: &str, detail: impl Into<String>) -> Verdict {
     Verdict::skip(gate.to_string(), message.clone()).with_detail(message)
 }
 
+/// Return a hard failure when the oracle is `required`, or the normal
+/// `stub_verdict` skip when it is optional.
+fn required_or_stub(required: bool, gate: &str, detail: impl Into<String>) -> Verdict {
+    let detail_str = detail.into();
+    if required {
+        Verdict::fail(gate, format!("required oracle missing: {detail_str}"))
+    } else {
+        stub_verdict(gate, detail_str)
+    }
+}
+
 async fn run_symbol_gate(
     ctx: &Context,
     inputs: &RungExecutionInputs,
@@ -385,10 +404,18 @@ async fn run_fact_check_gate(
     config: &RungExecutionConfig,
 ) -> Verdict {
     let Some(signal) = inputs.fact_check_signal.as_ref() else {
-        return stub_verdict("fact_check", "no fact-check content wired into rung 5");
+        return required_or_stub(
+            config.fact_check_required,
+            "fact_check",
+            "no fact-check content wired into rung 5",
+        );
     };
     let Some(oracle) = config.fact_check_oracle.clone() else {
-        return stub_verdict("fact_check", "no fact-check oracle configured");
+        return required_or_stub(
+            config.fact_check_required,
+            "fact_check",
+            "no fact-check oracle configured",
+        );
     };
     let min_confidence = config
         .fact_check_min_confidence
@@ -416,10 +443,18 @@ async fn run_llm_judge_gate(
     config: &RungExecutionConfig,
 ) -> Verdict {
     let Some(signal) = inputs.llm_judge_signal.as_ref() else {
-        return stub_verdict("llm_judge", "no judge payload wired into rung 6");
+        return required_or_stub(
+            config.llm_judge_required,
+            "llm_judge",
+            "no judge payload wired into rung 6",
+        );
     };
     let Some(oracle) = config.llm_judge_oracle.clone() else {
-        return stub_verdict("llm_judge", "no judge oracle configured");
+        return required_or_stub(
+            config.llm_judge_required,
+            "llm_judge",
+            "no judge oracle configured",
+        );
     };
     let min_score = config.llm_judge_min_score.unwrap_or(0.8);
     LlmJudgeGate::new(oracle, min_score)
@@ -677,6 +712,102 @@ mod tests {
         let agg = aggregate_rung_verdict("rung:test", &verdicts);
         assert!(!agg.skipped);
         assert!(!agg.passed);
+    }
+
+    // ─── required/optional oracle semantics ──────────────────────────
+
+    #[test]
+    fn optional_missing_oracle_is_skipped() {
+        let v = required_or_stub(false, "fact_check", "no oracle");
+        assert!(!v.passed);
+        assert!(v.skipped);
+        assert!(v.reason.contains("stub/not wired"));
+    }
+
+    #[test]
+    fn required_missing_oracle_is_failure() {
+        let v = required_or_stub(true, "fact_check", "no oracle");
+        assert!(!v.passed);
+        assert!(!v.skipped);
+        assert!(v.reason.contains("required oracle missing"));
+    }
+
+    #[test]
+    fn required_missing_judge_is_failure() {
+        let v = required_or_stub(true, "llm_judge", "no judge oracle configured");
+        assert!(!v.passed);
+        assert!(!v.skipped);
+        assert!(v.reason.contains("required oracle missing"));
+        assert!(v.reason.contains("no judge oracle configured"));
+    }
+
+    #[tokio::test]
+    async fn fact_check_required_no_oracle_fails() {
+        let config = RungExecutionConfig {
+            fact_check_required: true,
+            ..Default::default()
+        };
+        let inputs = RungExecutionInputs {
+            fact_check_signal: Some(
+                Signal::builder(roko_core::Kind::Task)
+                    .body(roko_core::Body::text("some claim text"))
+                    .build(),
+            ),
+            ..Default::default()
+        };
+        let verdict = run_fact_check_gate(&Context::at(0), &inputs, &config).await;
+        assert!(!verdict.passed);
+        assert!(!verdict.skipped);
+        assert!(verdict.reason.contains("required oracle missing"));
+    }
+
+    #[tokio::test]
+    async fn fact_check_required_no_signal_fails() {
+        let config = RungExecutionConfig {
+            fact_check_required: true,
+            ..Default::default()
+        };
+        let inputs = RungExecutionInputs::default();
+        let verdict = run_fact_check_gate(&Context::at(0), &inputs, &config).await;
+        assert!(!verdict.passed);
+        assert!(!verdict.skipped);
+    }
+
+    #[tokio::test]
+    async fn judge_required_no_oracle_fails() {
+        let config = RungExecutionConfig {
+            llm_judge_required: true,
+            ..Default::default()
+        };
+        let inputs = RungExecutionInputs {
+            llm_judge_signal: Some(
+                Signal::builder(roko_core::Kind::Task)
+                    .body(roko_core::Body::text("some diff"))
+                    .build(),
+            ),
+            ..Default::default()
+        };
+        let verdict = run_llm_judge_gate(&Context::at(0), &inputs, &config).await;
+        assert!(!verdict.passed);
+        assert!(!verdict.skipped);
+        assert!(verdict.reason.contains("required oracle missing"));
+    }
+
+    #[tokio::test]
+    async fn judge_optional_no_oracle_skips() {
+        let config = RungExecutionConfig::default();
+        let inputs = RungExecutionInputs {
+            llm_judge_signal: Some(
+                Signal::builder(roko_core::Kind::Task)
+                    .body(roko_core::Body::text("some diff"))
+                    .build(),
+            ),
+            ..Default::default()
+        };
+        let verdict = run_llm_judge_gate(&Context::at(0), &inputs, &config).await;
+        assert!(!verdict.passed);
+        assert!(verdict.skipped);
+        assert!(verdict.reason.contains("stub/not wired"));
     }
 }
 

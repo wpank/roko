@@ -14,7 +14,8 @@ workspace = true
 roko-core = { path = "../roko-core" }
 roko-agent = { path = "../roko-agent" }
 async-trait = "0.1"
-tokio = { workspace = true, features = ["process", "time", "rt", "macros"] }
+tokio = { workspace = true, features = ["process", "time", "rt", "rt-multi-thread", "macros", "sync"] }
+futures = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

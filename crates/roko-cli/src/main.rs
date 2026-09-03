@@ -34,6 +34,10 @@ use roko_cli::{
     run_init_wizard, run_once,
 };
 pub use roko_cli::{model_selection, repo_context};
+use roko_cli::resolved_overrides::{
+    ConfigEditTarget, ConfigSetInput, DoInput, GlobalCliFlags, LearnTuneInput, PlanRunInput,
+    ResolvedExecutionOverrides,
+};
 use roko_core::agent::{AgentRole, ProviderKind};
 use roko_core::config::ServeDeployWebhookConfig;
 use roko_core::config::schema::{ModelProfile, ProviderConfig, RokoConfig};
@@ -3268,6 +3272,15 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             provider,
             max_retries,
         } => {
+            // Resolve typed overrides before any side effects (#262).
+            let _resolved = ResolvedExecutionOverrides::for_run(
+                &global_cli_flags(cli),
+                provider.clone(),
+                serve || share,
+                max_retries,
+            );
+            tracing::debug!(?_resolved, "resolved execution overrides for `run`");
+
             if !serve && !share && max_retries.is_none() {
                 return commands::do_cmd::cmd_do(
                     cli,
@@ -3302,6 +3315,20 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             context,
             prompt,
         } => {
+            // Resolve typed overrides before any side effects (#262).
+            let _resolved = ResolvedExecutionOverrides::for_do(
+                &global_cli_flags(cli),
+                &DoInput {
+                    dry_run,
+                    ghost,
+                    yes,
+                    no_cascade,
+                    provider: provider.clone(),
+                    context: context.clone(),
+                },
+            );
+            tracing::debug!(?_resolved, "resolved execution overrides for `do`");
+
             commands::do_cmd::cmd_do(
                 cli,
                 workdir,
@@ -3867,6 +3894,32 @@ fn resolve_workdir(cli: &Cli) -> PathBuf {
     }
 
     resolved
+}
+
+/// Extract typed global CLI flags for resolved override construction.
+///
+/// This borrows from the parsed `Cli` struct to avoid requiring downstream
+/// callers to depend on the full clap type. Used by
+/// [`ResolvedExecutionOverrides`] constructors.
+fn global_cli_flags(cli: &Cli) -> GlobalCliFlags<'_> {
+    GlobalCliFlags {
+        model: cli.model.as_deref(),
+        role: cli.role.as_deref(),
+        effort: cli.effort.as_ref().map(|e| match e {
+            Effort::Low => "low",
+            Effort::Medium => "medium",
+            Effort::High => "high",
+            Effort::Max => "max",
+        }),
+        resume: cli.resume.as_deref(),
+        json: cli.json,
+        quiet: cli.quiet,
+        no_replan: cli.no_replan,
+        skip_validate: cli.skip_validate,
+        headless: cli.headless,
+        no_serve: cli.no_serve,
+        color_enabled: cli.color.should_color(),
+    }
 }
 
 /// Resolve the plans directory, preferring top-level `./plans/` and falling back to `.roko/plans/`.
@@ -7552,5 +7605,199 @@ mod tests {
             }
             other => panic!("unexpected command variant: {other:?}"),
         }
+    }
+
+    // ── #262: CLI flag resolution contract tests ────────────────────
+
+    use roko_cli::resolved_overrides::{
+        CascadePolicy, ConfigEditTarget, ConfigSetInput, DryRunPolicy, GlobalCliFlags,
+        InteractionMode, LearnTuneInput, PlanRunInput, PresentationMode, ReplanPolicy,
+        ResolvedExecutionOverrides, ServePolicy, ValidationPolicy,
+    };
+
+    #[test]
+    fn cli_flags_model_alias_equivalence() {
+        let cli_model = Cli::try_parse_from(["roko", "--model", "sonnet", "status"]).unwrap();
+        let cli_force =
+            Cli::try_parse_from(["roko", "--force-model", "sonnet", "status"]).unwrap();
+        assert_eq!(cli_model.model, cli_force.model);
+        assert_eq!(cli_model.model.as_deref(), Some("sonnet"));
+    }
+
+    #[test]
+    fn cli_flags_no_replan_resolves() {
+        let cli = Cli::try_parse_from(["roko", "--no-replan", "status"]).unwrap();
+        let flags = global_cli_flags(&cli);
+        let overrides =
+            ResolvedExecutionOverrides::for_do(&flags, &DoInput::default());
+        assert_eq!(overrides.replan, ReplanPolicy::DisabledByUser);
+    }
+
+    #[test]
+    fn cli_flags_skip_validate_resolves() {
+        let cli = Cli::try_parse_from(["roko", "--skip-validate", "status"]).unwrap();
+        let flags = global_cli_flags(&cli);
+        let overrides = ResolvedExecutionOverrides::for_plan_run(
+            &flags,
+            &PlanRunInput::default(),
+        );
+        assert_eq!(overrides.validation, ValidationPolicy::SkipStructureOnly);
+    }
+
+    #[test]
+    fn cli_flags_headless_resolves() {
+        let cli = Cli::try_parse_from(["roko", "--headless", "status"]).unwrap();
+        let flags = global_cli_flags(&cli);
+        let overrides =
+            ResolvedExecutionOverrides::for_do(&flags, &DoInput::default());
+        assert_eq!(overrides.interaction_mode, InteractionMode::Headless);
+    }
+
+    #[test]
+    fn cli_flags_plan_run_force_backend_wins_model() {
+        let cli = Cli::try_parse_from(["roko", "--model", "opus", "status"]).unwrap();
+        let flags = global_cli_flags(&cli);
+        let plan = PlanRunInput {
+            force_backend: Some("sonnet".into()),
+            ..PlanRunInput::default()
+        };
+        let overrides = ResolvedExecutionOverrides::for_plan_run(&flags, &plan);
+        assert_eq!(
+            overrides.model.as_deref(),
+            Some("sonnet"),
+            "--force-backend must win over --model"
+        );
+    }
+
+    #[test]
+    fn cli_flags_do_ghost_is_dry_run() {
+        let cli = Cli::try_parse_from(["roko", "status"]).unwrap();
+        let flags = global_cli_flags(&cli);
+        let input = DoInput {
+            ghost: true,
+            ..DoInput::default()
+        };
+        let overrides = ResolvedExecutionOverrides::for_do(&flags, &input);
+        assert_eq!(overrides.dry_run, DryRunPolicy::ReadOnlyNoMutation);
+    }
+
+    #[test]
+    fn cli_flags_no_cascade_resolves() {
+        let cli = Cli::try_parse_from(["roko", "status"]).unwrap();
+        let flags = global_cli_flags(&cli);
+        let input = DoInput {
+            no_cascade: true,
+            ..DoInput::default()
+        };
+        let overrides = ResolvedExecutionOverrides::for_do(&flags, &input);
+        assert_eq!(overrides.cascade_policy, CascadePolicy::DisabledByUser);
+    }
+
+    #[test]
+    fn cli_flags_serve_required() {
+        let cli = Cli::try_parse_from(["roko", "status"]).unwrap();
+        let flags = global_cli_flags(&cli);
+        let overrides =
+            ResolvedExecutionOverrides::for_run(&flags, None, true, None);
+        assert_eq!(overrides.serve_policy, ServePolicy::Required);
+    }
+
+    #[test]
+    fn cli_flags_no_serve_disabled() {
+        let cli = Cli::try_parse_from(["roko", "--no-serve", "status"]).unwrap();
+        let flags = global_cli_flags(&cli);
+        let overrides =
+            ResolvedExecutionOverrides::for_run(&flags, None, false, None);
+        assert_eq!(overrides.serve_policy, ServePolicy::Disabled);
+    }
+
+    #[test]
+    fn cli_flags_plan_run_tui_presentation() {
+        let cli = Cli::try_parse_from(["roko", "status"]).unwrap();
+        let flags = global_cli_flags(&cli);
+        let plan_tui = PlanRunInput {
+            approval: true,
+            ..PlanRunInput::default()
+        };
+        let plan_no_tui = PlanRunInput {
+            no_tui: true,
+            ..PlanRunInput::default()
+        };
+        let plan_auto = PlanRunInput::default();
+
+        assert_eq!(
+            ResolvedExecutionOverrides::for_plan_run(&flags, &plan_tui).presentation,
+            PresentationMode::Tui,
+        );
+        assert_eq!(
+            ResolvedExecutionOverrides::for_plan_run(&flags, &plan_no_tui).presentation,
+            PresentationMode::Text,
+        );
+        assert_eq!(
+            ResolvedExecutionOverrides::for_plan_run(&flags, &plan_auto).presentation,
+            PresentationMode::Auto,
+        );
+    }
+
+    #[test]
+    fn cli_flags_config_set_targets() {
+        assert_eq!(
+            ResolvedExecutionOverrides::resolve_config_edit_target(&ConfigSetInput {
+                global: false,
+                project: false,
+            }),
+            ConfigEditTarget::Global,
+            "no flags defaults to Global for config set"
+        );
+        assert_eq!(
+            ResolvedExecutionOverrides::resolve_config_edit_target(&ConfigSetInput {
+                global: false,
+                project: true,
+            }),
+            ConfigEditTarget::Project,
+        );
+    }
+
+    #[test]
+    fn cli_flags_learn_tune_dry_run() {
+        assert_eq!(
+            ResolvedExecutionOverrides::resolve_tune_dry_run(&LearnTuneInput { dry_run: true }),
+            DryRunPolicy::ReadOnlyNoMutation,
+        );
+        assert_eq!(
+            ResolvedExecutionOverrides::resolve_tune_dry_run(&LearnTuneInput { dry_run: false }),
+            DryRunPolicy::Execute,
+        );
+    }
+
+    #[test]
+    fn cli_flags_global_flags_helper_roundtrip() {
+        let cli = Cli::try_parse_from([
+            "roko",
+            "--model",
+            "opus",
+            "--role",
+            "architect",
+            "--effort",
+            "high",
+            "--json",
+            "--quiet",
+            "--no-replan",
+            "--skip-validate",
+            "--headless",
+            "--no-serve",
+            "status",
+        ])
+        .unwrap();
+        let flags = global_cli_flags(&cli);
+        assert_eq!(flags.model, Some("opus"));
+        assert_eq!(flags.role, Some("architect"));
+        assert_eq!(flags.effort, Some("high"));
+        assert!(flags.json);
+        assert!(flags.quiet);
+        assert!(flags.no_replan);
+        assert!(flags.skip_validate);
+        assert!(flags.headless);
+        assert!(flags.no_serve);
     }
 }

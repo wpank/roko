@@ -493,4 +493,218 @@ mod tests {
         assert!(!report.has_errors());
         assert!(report.findings.iter().any(|f| f.code == "plans_ok"));
     }
+
+    // ── Fixed adapter matrix tests (#279) ────────────────────────────────
+
+    #[test]
+    fn check_id_all_contains_exactly_eleven_ids() {
+        assert_eq!(
+            DiagnosticCheckId::ALL.len(),
+            11,
+            "spec requires exactly 11 shared check IDs"
+        );
+        let all_set: BTreeSet<DiagnosticCheckId> =
+            DiagnosticCheckId::ALL.iter().copied().collect();
+        assert_eq!(
+            all_set.len(),
+            11,
+            "ALL slice must not contain duplicates"
+        );
+    }
+
+    #[test]
+    fn check_id_as_str_matches_spec_names() {
+        // The spec mandates exactly these 11 snake_case names.
+        let expected = [
+            "config",
+            "credentials",
+            "disk",
+            "git",
+            "lock",
+            "models",
+            "plans",
+            "providers",
+            "schema_version",
+            "toolchain",
+            "workspace",
+        ];
+        let mut actual: Vec<&str> = DiagnosticCheckId::ALL
+            .iter()
+            .map(|id| id.as_str())
+            .collect();
+        actual.sort();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn preflight_matrix_selects_seven_checks() {
+        // Fixed adapter matrix: plan preflight selects exactly these 7.
+        let preflight_ids: BTreeSet<DiagnosticCheckId> = [
+            DiagnosticCheckId::Config,
+            DiagnosticCheckId::Credentials,
+            DiagnosticCheckId::Disk,
+            DiagnosticCheckId::Git,
+            DiagnosticCheckId::Plans,
+            DiagnosticCheckId::Toolchain,
+            DiagnosticCheckId::Lock,
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(preflight_ids.len(), 7);
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let request = DiagnosticRequest {
+            workdir: dir.path().to_path_buf(),
+            selected: preflight_ids.clone(),
+            profile: None,
+            allow_repairs: false,
+        };
+        let report = DiagnosticService::run(&request);
+
+        // Every finding must belong to one of the preflight IDs.
+        for finding in &report.findings {
+            assert!(
+                preflight_ids.contains(&finding.check_id),
+                "unexpected check_id {:?} in preflight report",
+                finding.check_id
+            );
+        }
+    }
+
+    #[test]
+    fn config_doctor_matrix_selects_four_checks() {
+        // Fixed adapter matrix: config doctor selects exactly these 4.
+        let config_ids: BTreeSet<DiagnosticCheckId> = [
+            DiagnosticCheckId::Config,
+            DiagnosticCheckId::SchemaVersion,
+            DiagnosticCheckId::Providers,
+            DiagnosticCheckId::Models,
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(config_ids.len(), 4);
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let request = DiagnosticRequest {
+            workdir: dir.path().to_path_buf(),
+            selected: config_ids.clone(),
+            profile: None,
+            allow_repairs: false,
+        };
+        let report = DiagnosticService::run(&request);
+
+        for finding in &report.findings {
+            assert!(
+                config_ids.contains(&finding.check_id),
+                "unexpected check_id {:?} in config doctor report",
+                finding.check_id
+            );
+        }
+    }
+
+    #[test]
+    fn chat_doctor_matrix_selects_four_checks() {
+        // Fixed adapter matrix: chat /doctor selects exactly these 4.
+        let chat_ids: BTreeSet<DiagnosticCheckId> = [
+            DiagnosticCheckId::Config,
+            DiagnosticCheckId::Workspace,
+            DiagnosticCheckId::Git,
+            DiagnosticCheckId::Credentials,
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(chat_ids.len(), 4);
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let request = DiagnosticRequest {
+            workdir: dir.path().to_path_buf(),
+            selected: chat_ids.clone(),
+            profile: None,
+            allow_repairs: false,
+        };
+        let report = DiagnosticService::run(&request);
+
+        for finding in &report.findings {
+            assert!(
+                chat_ids.contains(&finding.check_id),
+                "unexpected check_id {:?} in chat doctor report",
+                finding.check_id
+            );
+        }
+    }
+
+    #[test]
+    fn full_doctor_matrix_runs_all_eleven() {
+        // Fixed adapter matrix: full doctor runs all 11 shared checks.
+        let all_ids: BTreeSet<DiagnosticCheckId> =
+            DiagnosticCheckId::ALL.iter().copied().collect();
+        assert_eq!(all_ids.len(), 11);
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let request = DiagnosticRequest {
+            workdir: dir.path().to_path_buf(),
+            selected: all_ids,
+            profile: None,
+            allow_repairs: false,
+        };
+        let report = DiagnosticService::run(&request);
+
+        // Every check ID should produce at least one finding.
+        let found_ids: BTreeSet<DiagnosticCheckId> =
+            report.findings.iter().map(|f| f.check_id).collect();
+        for id in DiagnosticCheckId::ALL {
+            assert!(
+                found_ids.contains(id),
+                "check {:?} produced no findings in full doctor run",
+                id
+            );
+        }
+    }
+
+    #[test]
+    fn run_is_read_only_when_repairs_disabled() {
+        // Spec: DiagnosticService::run is read-only when allow_repairs=false.
+        // Graph preflight always passes false. Verify no mutations occur.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let roko_dir = dir.path().join(".roko").join("runtime");
+        std::fs::create_dir_all(&roko_dir).expect("create dir");
+        // Place a stale lock file.
+        std::fs::write(roko_dir.join("roko.lock"), "999999999\n").expect("write lock");
+
+        let request = DiagnosticRequest {
+            workdir: dir.path().to_path_buf(),
+            selected: DiagnosticCheckId::ALL.iter().copied().collect(),
+            profile: None,
+            allow_repairs: false,
+        };
+        let _report = DiagnosticService::run(&request);
+
+        // The lock file must still exist (no mutation).
+        assert!(
+            roko_dir.join("roko.lock").exists(),
+            "run() with allow_repairs=false must not remove the stale lock"
+        );
+    }
+
+    #[test]
+    fn remediation_has_stable_codes_across_calls() {
+        // Acceptance: all surfaces report stable codes.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let request = DiagnosticRequest {
+            workdir: dir.path().to_path_buf(),
+            selected: DiagnosticCheckId::ALL.iter().copied().collect(),
+            profile: None,
+            allow_repairs: false,
+        };
+
+        let report1 = DiagnosticService::run(&request);
+        let report2 = DiagnosticService::run(&request);
+
+        let codes1: Vec<&str> = report1.findings.iter().map(|f| f.code.as_str()).collect();
+        let codes2: Vec<&str> = report2.findings.iter().map(|f| f.code.as_str()).collect();
+        assert_eq!(
+            codes1, codes2,
+            "stable codes must be deterministic across runs"
+        );
+    }
 }

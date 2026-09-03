@@ -1,0 +1,44 @@
+[package]
+name = "roko-execution"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Shared diagnostic, preflight, replan, and execution services for the roko workspace."
+
+[package.metadata.roko]
+layer = 3
+
+[lints]
+workspace = true
+
+[dependencies]
+roko-core = { path = "../roko-core" }
+roko-agent = { path = "../roko-agent" }
+roko-gate = { path = "../roko-gate" }
+roko-learn = { path = "../roko-learn" }
+roko-compose = { path = "../roko-compose" }
+roko-conductor = { path = "../roko-conductor" }
+roko-graph = { path = "../roko-graph" }
+roko-runtime = { path = "../roko-runtime" }
+roko-neuro = { path = "../roko-neuro" }
+roko-daimon = { path = "../roko-daimon" }
+roko-fs = { path = "../roko-fs" }
+roko-plugin = { path = "../roko-plugin" }
+
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+toml = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+parking_lot = { workspace = true }
+tokio-util = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+insta = { version = "1", features = ["json"] }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

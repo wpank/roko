@@ -17,13 +17,15 @@
 //! - [`diagnostics`] -- Shared diagnostic and preflight service (#279).
 //! - [`replan_controller`] -- Durable Graph gate-failure replan controller (#252).
 //! - [`profiles`] -- RuntimeProfile enum and profile bundle matrix.
-//! - [`builder`] -- RuntimeServicesBuilder and service bundle types.
-//! - [`lifecycle`] -- Runner lifecycle event types for #208 envelope.
+//! - [`runtime_services`] -- Non-plan runtime service facade (#245).
+//!   Consumer-side contracts for workflow, chat, and ACP surfaces.
+//! - [`workflow`] -- Workflow graph cells and templates (#257).
 
 pub mod diagnostics;
 pub mod profiles;
 pub mod replan_controller;
 pub mod runtime_services;
+pub mod workflow;
 
 pub use profiles::{
     BundleRequirement, ProfileMatrix, RuntimeProfile, ServiceBundleId,

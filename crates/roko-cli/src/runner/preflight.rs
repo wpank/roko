@@ -496,4 +496,29 @@ mod tests {
         assert!(shared_names.contains(&"toolchain"));
         assert!(shared_names.contains(&"lock"));
     }
+
+    #[test]
+    fn preflight_is_read_only() {
+        // Spec acceptance: preflight failure launches zero provider/git mutation.
+        let workdir = tempdir().expect("tempdir");
+        let plans_dir = workdir.path().join("plans");
+        std::fs::create_dir_all(&plans_dir).expect("create plans dir");
+        // Write a marker file that must survive unchanged.
+        let marker = workdir.path().join("marker.txt");
+        std::fs::write(&marker, "before").expect("write marker");
+
+        let _ = run_preflight_checks(None, &plans_dir, workdir.path());
+
+        // Verify the workspace was not mutated.
+        let contents = std::fs::read_to_string(&marker).expect("read marker");
+        assert_eq!(contents, "before", "preflight must not mutate the workspace");
+    }
+
+    #[test]
+    fn preflight_severity_mapping_is_consistent() {
+        // Verify that severity_to_status maps correctly for all variants.
+        assert_eq!(severity_to_status(DiagnosticSeverity::Info), PreflightStatus::Pass);
+        assert_eq!(severity_to_status(DiagnosticSeverity::Warning), PreflightStatus::Warn);
+        assert_eq!(severity_to_status(DiagnosticSeverity::Error), PreflightStatus::Fail);
+    }
 }

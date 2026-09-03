@@ -108,7 +108,7 @@ impl {struct_name} {{
 impl Verify for {struct_name} {{
     async fn check(&self, signal: &Signal, ctx: &Context) -> Result<bool> {{
         // TODO: implement your gate logic here.
-        // Return true if the engram passes, false if it should be rejected.
+        // Return true if the signal passes, false if it should be rejected.
         let _ = ctx;
         Ok(signal.score >= self.threshold)
     }}
@@ -142,14 +142,14 @@ mod tests {{
     #[tokio::test]
     async fn passes_above_threshold() {{
         let gate = {struct_name}::new(0.5);
-        let engram = test_engram(0.8);
+        let signal = test_signal(0.8);
         assert!(gate.check(&signal, &test_ctx()).await.unwrap());
     }}
 
     #[tokio::test]
     async fn rejects_below_threshold() {{
         let gate = {struct_name}::new(0.5);
-        let engram = test_engram(0.2);
+        let signal = test_signal(0.2);
         assert!(!gate.check(&signal, &test_ctx()).await.unwrap());
     }}
 }}
@@ -209,7 +209,7 @@ mod tests {{
     #[tokio::test]
     async fn scores_signal() {{
         let scorer = {struct_name};
-        let engram = test_engram(0.75);
+        let signal = test_signal(0.75);
         let score = scorer.score(&signal, &Context::default()).await.unwrap();
         assert!((score - 0.75).abs() < f32::EPSILON);
     }}
@@ -280,7 +280,7 @@ mod tests {{
     #[tokio::test]
     async fn routes_to_default() {{
         let router = {struct_name}::new("default");
-        let route = router.route(&test_engram(), &Context::default()).await.unwrap();
+        let route = router.route(&test_signal(), &Context::default()).await.unwrap();
         assert_eq!(route, "default");
     }}
 }}
@@ -340,7 +340,7 @@ mod tests {{
     #[tokio::test]
     async fn permits_by_default() {{
         let policy = {struct_name};
-        assert!(policy.evaluate(&test_engram(), &Context::default()).await.unwrap());
+        assert!(policy.evaluate(&test_signal(), &Context::default()).await.unwrap());
     }}
 }}
 "#
@@ -388,8 +388,8 @@ impl Default for {struct_name} {{
 #[async_trait]
 impl Store for {struct_name} {{
     async fn put(&self, signal: Signal) -> Result<ContentHash> {{
-        let hash = engram.hash.clone();
-        self.store.lock().unwrap().insert(hash.clone(), engram);
+        let hash = signal.hash.clone();
+        self.store.lock().unwrap().insert(hash.clone(), signal);
         Ok(hash)
     }}
 
@@ -438,8 +438,8 @@ mod tests {{
     #[tokio::test]
     async fn put_and_get() {{
         let substrate = {struct_name}::new();
-        let engram = test_engram();
-        let hash = substrate.put(engram.clone()).await.unwrap();
+        let signal = test_signal();
+        let hash = substrate.put(signal.clone()).await.unwrap();
         let retrieved = substrate.get(&hash).await.unwrap();
         assert!(retrieved.is_some());
     }}
@@ -591,7 +591,7 @@ mod tests {{
     #[tokio::test]
     async fn gate_passes_positive_score() {{
         let gate = {pascal}Verify;
-        let engram = Signal {{
+        let signal = Signal {{
             hash: ContentHash::from_bytes(b"test"),
             kind: Kind::Signal,
             body: Body::Text("test".into()),

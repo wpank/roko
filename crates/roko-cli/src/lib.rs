@@ -3,7 +3,6 @@
 //! This crate wires Roko's primitives (Store, Compose, Agent, Verify,
 //! React) into a one-shot CLI loop. It does **not** implement a plan runner
 //! or DAG executor — it drives a single prompt through the universal loop
-#![allow(dead_code, unused_imports, unused_variables)]
 //! and writes the resulting signals to disk.
 //!
 //! See [`run_once`] for the core loop and [`Config`] for the `roko.toml`

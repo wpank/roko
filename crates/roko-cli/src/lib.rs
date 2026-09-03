@@ -160,7 +160,7 @@ pub use plan::{Plan, PlanSummary, PlanTask};
 pub use repl::{ReplCommand, ReplMode, WorkspaceContext};
 pub use run::{RunReport, RunUsage, run_once};
 pub use secrets::SecretsCmd;
-pub use status::SessionStatus;
+pub use status::{SessionStatus, StatusDiagnostic, collect_session_status};
 pub use tui::{
     DashboardData, DashboardScaffold, DashboardSummary, PageId, PageScaffold, Theme, WidgetScaffold,
 };

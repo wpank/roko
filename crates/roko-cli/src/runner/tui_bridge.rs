@@ -128,6 +128,7 @@ impl TuiBridge {
         model: &str,
         provider: &str,
     ) {
+        let role = if role.is_empty() { "impl" } else { role };
         self.sender.publish(DashboardEvent::AgentSpawned {
             agent_id: agent_id.to_string(),
             plan_id: plan_id.to_string(),

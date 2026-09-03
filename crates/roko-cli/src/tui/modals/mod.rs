@@ -29,7 +29,10 @@ pub use confirm::{ConfirmAction, render_confirm};
 pub use help::render_help_modal;
 pub use inject::render_inject;
 pub use notification::{Notification, NotificationLevel, render_notifications};
-pub use notification_history::{HistoryEntry, render_notification_history};
+pub use notification_history::{
+    HistoryEntry, LevelFilter, NotificationRecord, render_notification_history, redact_message,
+    MAX_HISTORY,
+};
 pub use plan_detail::render_plan_detail_modal;
 pub use queue_overview::{Milestone, QueueTask, render_queue_overview};
 pub use quit::render_quit;
@@ -115,6 +118,8 @@ pub enum ModalState {
     /// Notification history browser.
     NotificationHistory {
         scroll_offset: u16,
+        selected_index: usize,
+        filter: LevelFilter,
     },
 
     /// First-run welcome / workspace initialization.
@@ -148,6 +153,7 @@ pub fn render_modal(
                 area,
                 plan_id,
                 plan,
+                tui_state,
                 tui_state.plan_detail_scroll as u16,
                 theme,
             );
@@ -244,13 +250,19 @@ pub fn render_modal(
         } => {
             render_batch_review(frame, area, batch_name, results, *scroll_offset, theme);
         }
-        ModalState::NotificationHistory { scroll_offset } => {
+        ModalState::NotificationHistory {
+            scroll_offset,
+            selected_index,
+            filter,
+        } => {
             render_notification_history(
                 frame,
                 area,
                 &tui_state.notification_history,
                 *scroll_offset,
+                *selected_index,
                 tui_state.notification_evicted_count,
+                filter,
                 theme,
             );
         }

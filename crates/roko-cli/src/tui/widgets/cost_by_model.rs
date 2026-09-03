@@ -80,7 +80,7 @@ pub fn render_cost_by_model_table(
         .borders(Borders::ALL)
         .title(Span::styled(
             format!(" Cost by Model [s:sort by {sort_label}] "),
-            Theme::title_style(),
+            theme.section_header(),
         ))
         .border_style(Theme::unfocused_border_style())
         .style(Theme::block_style());
@@ -177,6 +177,21 @@ pub fn render_cost_by_model_table(
         return;
     }
 
+    // Filter inactive models (0 tasks AND 0 cost).
+    let mut inactive_count = 0usize;
+    let active_models: BTreeMap<String, ModelCostEntry> = models
+        .into_iter()
+        .filter(|(_, entry)| {
+            if entry.tasks == 0 && entry.total_cost_usd < 0.001 {
+                inactive_count += 1;
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
+    let models = active_models;
+
     // Sort models according to the active sort mode.
     let mut sorted: Vec<(String, ModelCostEntry)> = models.into_iter().collect();
     match tui_state.cost_sort_mode {
@@ -205,17 +220,36 @@ pub fn render_cost_by_model_table(
         pt.total_duration_ms += entry.total_duration_ms;
     }
 
-    // Compute max cost for relative bar sizing.
+    // Compute max cost for relative bar sizing and most-expensive model highlighting.
     let max_cost = sorted
         .iter()
         .map(|(_, e)| e.total_cost_usd)
         .fold(0.01_f64, f64::max);
+    let most_expensive_model: Option<String> = if sorted.len() > 1 {
+        sorted
+            .iter()
+            .max_by(|a, b| {
+                a.1.total_cost_usd
+                    .partial_cmp(&b.1.total_cost_usd)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .filter(|(_, e)| e.total_cost_usd >= 0.001)
+            .map(|(name, _)| name.clone())
+    } else {
+        None
+    };
 
-    // Column sort indicator.
+    // Column sort indicator with directional arrow.
     let sort_indicator = |col: &str, mode: CostSortMode| -> Span<'static> {
         let active = tui_state.cost_sort_mode == mode;
         let label = if active {
-            format!("{col} \u{25bc}")
+            // Name sorts ascending (A-Z), others sort descending (highest first).
+            let arrow = if mode == CostSortMode::Name {
+                "\u{25b2}"
+            } else {
+                "\u{25bc}"
+            };
+            format!("{col} {arrow}")
         } else {
             col.to_string()
         };
@@ -226,7 +260,7 @@ pub fn render_cost_by_model_table(
                     .fg(theme.accent)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(theme.muted)
+                theme.label()
             },
         )
     };
@@ -234,16 +268,13 @@ pub fn render_cost_by_model_table(
     // Build table rows with inline cost distribution bars.
     let header = Row::new(vec![
         Cell::from(sort_indicator("Model", CostSortMode::Name)),
-        Cell::from(Span::styled("Provider", Style::default().fg(theme.muted))),
+        Cell::from(Span::styled("Provider", theme.label())),
         Cell::from(sort_indicator("Tasks", CostSortMode::Tasks)),
         Cell::from(sort_indicator("Pass%", CostSortMode::PassRate)),
-        Cell::from(Span::styled("Avg Dur", Style::default().fg(theme.muted))),
+        Cell::from(Span::styled("Avg Dur", theme.label())),
         Cell::from(sort_indicator("Cost", CostSortMode::Cost)),
-        Cell::from(Span::styled("$/Task", Style::default().fg(theme.muted))),
-        Cell::from(Span::styled(
-            "Distribution",
-            Style::default().fg(theme.muted),
-        )),
+        Cell::from(Span::styled("$/Task", theme.label())),
+        Cell::from(Span::styled("Distribution", theme.label())),
     ])
     .height(1);
 
@@ -284,6 +315,8 @@ pub fn render_cost_by_model_table(
             theme.muted()
         };
 
+        let is_most_expensive =
+            most_expensive_model.as_deref() == Some(model.as_str());
         let model_display = truncate_model(model, 24);
         let provider_display = truncate_model(&entry.provider, 12);
 
@@ -315,34 +348,49 @@ pub fn render_cost_by_model_table(
                 "\u{2588}".repeat(filled),
                 "\u{2500}".repeat(empty),
             );
-            Cell::from(Span::styled(bar_str, cost_style(entry.total_cost_usd, theme)))
+            Cell::from(Span::styled(
+                bar_str,
+                cost_gradient_style(cost_frac, theme),
+            ))
         };
 
+        // Model name: bold if most expensive.
+        let model_style = if is_most_expensive {
+            Style::default()
+                .fg(theme.foreground)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.foreground)
+        };
+
+        // Cost value: gradient color, bold if most expensive.
+        let mut row_cost_style = cost_gradient_style(cost_frac, theme);
+        if is_most_expensive {
+            row_cost_style = row_cost_style.add_modifier(Modifier::BOLD);
+        }
+
         all_rows.push(Row::new(vec![
-            Cell::from(Span::styled(
-                model_display,
-                Style::default().fg(theme.foreground),
-            )),
+            Cell::from(Span::styled(model_display, model_style)),
             Cell::from(Span::styled(
                 provider_display,
                 Style::default().fg(theme.muted),
             )),
             Cell::from(Span::styled(
                 format!("{:>5}", entry.tasks),
-                Style::default().fg(theme.foreground),
+                theme.value(),
             )),
             Cell::from(Span::styled(format!("{pass_pct:>5.1}%"), pass_style)),
             Cell::from(Span::styled(
                 format_duration(entry.avg_duration_ms()),
-                Style::default().fg(theme.foreground),
+                theme.value(),
             )),
             Cell::from(Span::styled(
                 format_cost(entry.total_cost_usd),
-                cost_style(entry.total_cost_usd, theme),
+                row_cost_style,
             )),
             Cell::from(Span::styled(
                 format_cost(entry.cost_per_task()),
-                Style::default().fg(theme.muted),
+                theme.value(),
             )),
             distribution_cell,
         ]));
@@ -356,6 +404,41 @@ pub fn render_cost_by_model_table(
             }
         }
     }
+
+    // Separator line above TOTAL row.
+    let sep_line = "\u{2500}".repeat(6);
+    all_rows.push(Row::new(vec![
+        Cell::from(Span::styled(
+            sep_line.clone(),
+            Style::default().fg(Theme::TEXT_PHANTOM),
+        )),
+        Cell::from(Span::styled("", Style::default())),
+        Cell::from(Span::styled(
+            sep_line.clone(),
+            Style::default().fg(Theme::TEXT_PHANTOM),
+        )),
+        Cell::from(Span::styled(
+            sep_line.clone(),
+            Style::default().fg(Theme::TEXT_PHANTOM),
+        )),
+        Cell::from(Span::styled(
+            sep_line.clone(),
+            Style::default().fg(Theme::TEXT_PHANTOM),
+        )),
+        Cell::from(Span::styled(
+            sep_line.clone(),
+            Style::default().fg(Theme::TEXT_PHANTOM),
+        )),
+        Cell::from(Span::styled(
+            sep_line.clone(),
+            Style::default().fg(Theme::TEXT_PHANTOM),
+        )),
+        Cell::from(Span::styled(
+            sep_line,
+            Style::default().fg(Theme::TEXT_PHANTOM),
+        )),
+    ])
+    .height(1));
 
     // Add a totals row.
     let total_tasks: u64 = sorted.iter().map(|(_, e)| e.tasks).sum();
@@ -398,9 +481,7 @@ pub fn render_cost_by_model_table(
             Cell::from(Span::styled("", Style::default())),
             Cell::from(Span::styled(
                 format!("{total_tasks:>5}"),
-                Style::default()
-                    .fg(theme.foreground)
-                    .add_modifier(Modifier::BOLD),
+                theme.value(),
             )),
             Cell::from(Span::styled(
                 format!("{overall_pass_pct:>5.1}%"),
@@ -408,15 +489,15 @@ pub fn render_cost_by_model_table(
             )),
             Cell::from(Span::styled(
                 format_duration(overall_avg_dur),
-                Style::default().fg(theme.foreground),
+                theme.value(),
             )),
             Cell::from(Span::styled(
                 format_cost(total_cost),
-                cost_style(total_cost, theme).add_modifier(Modifier::BOLD),
+                theme.value().fg(theme.accent),
             )),
             Cell::from(Span::styled(
                 format_cost(overall_cpt),
-                Style::default().fg(theme.muted),
+                theme.value(),
             )),
             Cell::from(Span::styled(
                 "\u{2588}".repeat(bar_col_width),
@@ -427,6 +508,16 @@ pub fn render_cost_by_model_table(
         ])
         .style(Style::default().add_modifier(Modifier::BOLD)),
     );
+
+    // Inactive models footer.
+    if inactive_count > 0 {
+        all_rows.push(Row::new(vec![Cell::from(Span::styled(
+            format!("({inactive_count} inactive models hidden)"),
+            Style::default()
+                .fg(Theme::TEXT_GHOST)
+                .add_modifier(Modifier::DIM),
+        ))]));
+    }
 
     let widths = [
         ratatui::layout::Constraint::Min(16),
@@ -556,14 +647,12 @@ fn format_cost(usd: f64) -> String {
     }
 }
 
-fn cost_style(usd: f64, theme: &Theme) -> Style {
-    if usd >= 5.0 {
-        theme.danger()
-    } else if usd >= 1.0 {
-        theme.warning()
-    } else {
-        Style::default().fg(theme.foreground)
-    }
+/// Gradient cost style: green (low fraction) -> red (high fraction).
+/// `frac` is the cost fraction relative to the max cost (0.0..1.0).
+fn cost_gradient_style(frac: f64, _theme: &Theme) -> Style {
+    // Interpolate SAGE (green) -> WARNING (amber) -> EMBER (red).
+    let color = Theme::progress_gradient(1.0 - frac);
+    Style::default().fg(color)
 }
 
 // ---------------------------------------------------------------------------

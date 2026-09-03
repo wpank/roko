@@ -65,50 +65,44 @@ fn render_router(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme:
 
     if router.model_slugs.is_empty() {
         let block = Block::bordered()
-            .title(Span::styled(
-                " Cascade Route ",
-                theme.accent().add_modifier(Modifier::BOLD),
-            ))
-            .border_style(theme.accent());
+            .title(Span::styled(" Cascade Route ", theme.section_header()))
+            .border_style(theme.muted());
         let inner = block.inner(area);
         frame.render_widget(block, area);
-        let lines = vec![
-            Line::from(""),
-            Line::from(Span::styled("No cascade router data.", theme.muted())),
-            Line::from(""),
-            Line::from(Span::styled(
-                "The cascade router learns model performance from task completions.",
-                theme.muted(),
-            )),
-            Line::from(Span::styled(
-                "Run tasks to populate: roko plan run plans/ --engine runner-v2",
-                theme.muted(),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(
-                "Stages: Static (0-9) -> Confidence (10-29) -> UCB (30+)",
-                theme.muted(),
-            )),
-        ];
-        frame.render_widget(
-            Paragraph::new(lines)
-                .alignment(Alignment::Center)
-                .wrap(Wrap { trim: false }),
+        crate::tui::empty_state::render_empty_state(
+            frame,
             inner,
+            crate::tui::tabs::Tab::Learning,
+            &tui_state.atmosphere,
         );
         return;
     }
 
     let chunks = Layout::vertical([
         Constraint::Length(5), // stage indicator
+        Constraint::Length(1), // separator
         Constraint::Min(6),    // model stats table
+        Constraint::Length(1), // separator
         Constraint::Length(6), // bar chart
     ])
     .split(area);
 
     render_stage_indicator(frame, chunks[0], tui_state, theme);
-    render_model_table(frame, chunks[1], tui_state, theme);
-    render_selection_bars(frame, chunks[2], tui_state, theme);
+    render_separator(frame, chunks[1], theme);
+    render_model_table(frame, chunks[2], tui_state, theme);
+    render_separator(frame, chunks[3], theme);
+    render_selection_bars(frame, chunks[4], tui_state, theme);
+}
+
+fn render_separator(frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
+    let width = area.width as usize;
+    let line = "\u{2500}".repeat(width);
+    let p = Paragraph::new(Line::from(Span::styled(
+        line,
+        Style::default().fg(Theme::SEPARATOR),
+    )));
+    frame.render_widget(p, area);
+    let _ = theme;
 }
 
 fn render_stage_indicator(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme: &Theme) {
@@ -123,24 +117,13 @@ fn render_stage_indicator(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiStat
         ("UCB (LinUCB)", Theme::STAGE_UCB, u64::MAX)
     };
 
-    let progress_line = if next_threshold == u64::MAX {
-        format!("  Observations: {total_trials} (fully adaptive)")
-    } else {
-        format!(
-            "  Observations: {total_trials} / {next_threshold} (next stage at {next_threshold})"
-        )
-    };
-
     let block = Block::bordered()
-        .title(Span::styled(
-            " Cascade Stage ",
-            theme.accent().add_modifier(Modifier::BOLD),
-        ))
-        .border_style(theme.accent());
+        .title(Span::styled(" Cascade Stage ", theme.section_header()))
+        .border_style(theme.muted());
 
     let text = vec![
         Line::from(vec![
-            Span::styled("  Stage: ", theme.muted()),
+            Span::styled("  Stage: ", theme.label()),
             Span::styled(
                 stage_label,
                 Style::default()
@@ -148,8 +131,21 @@ fn render_stage_indicator(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiStat
                     .add_modifier(Modifier::BOLD),
             ),
         ]),
-        Line::from(progress_line),
-        Line::from(format!("  Models: {}", router.model_slugs.len())),
+        Line::from(vec![
+            Span::styled("  Observations: ", theme.label()),
+            Span::styled(
+                if next_threshold == u64::MAX {
+                    format!("{total_trials} (fully adaptive)")
+                } else {
+                    format!("{total_trials} / {next_threshold} (next stage at {next_threshold})")
+                },
+                theme.value(),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  Models: ", theme.label()),
+            Span::styled(router.model_slugs.len().to_string(), theme.value()),
+        ]),
     ];
 
     let paragraph = Paragraph::new(text).block(block);
@@ -160,13 +156,17 @@ fn render_model_table(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, t
     let router = &tui_state.cascade_router;
 
     let header = Row::new(vec![
-        Cell::from("Model"),
-        Cell::from("Trials"),
-        Cell::from("Successes"),
-        Cell::from("Pass Rate"),
-        Cell::from("Sparkline"),
+        Cell::from(Span::styled("Model", theme.label())),
+        Cell::from(Line::from(Span::styled("Trials", theme.label())).alignment(Alignment::Right)),
+        Cell::from(
+            Line::from(Span::styled("Successes", theme.label())).alignment(Alignment::Right),
+        ),
+        Cell::from(
+            Line::from(Span::styled("Pass Rate", theme.label())).alignment(Alignment::Right),
+        ),
+        Cell::from(Span::styled("Sparkline", theme.label())),
     ])
-    .style(theme.accent().add_modifier(Modifier::BOLD));
+    .style(Style::default().add_modifier(Modifier::BOLD));
 
     let mut rows = Vec::new();
     for slug in &router.model_slugs {
@@ -191,10 +191,19 @@ fn render_model_table(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, t
         };
 
         rows.push(Row::new(vec![
-            Cell::from(slug.as_str()),
-            Cell::from(trials.to_string()),
-            Cell::from(successes.to_string()),
-            Cell::from(pass_rate).style(Style::default().fg(rate_color)),
+            Cell::from(Span::styled(slug.as_str(), theme.value())),
+            Cell::from(
+                Line::from(Span::styled(trials.to_string(), theme.value()))
+                    .alignment(Alignment::Right),
+            ),
+            Cell::from(
+                Line::from(Span::styled(successes.to_string(), theme.value()))
+                    .alignment(Alignment::Right),
+            ),
+            Cell::from(
+                Line::from(Span::styled(pass_rate, Style::default().fg(rate_color)))
+                    .alignment(Alignment::Right),
+            ),
             Cell::from(spark),
         ]));
     }
@@ -212,7 +221,7 @@ fn render_model_table(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, t
     .header(header)
     .block(
         Block::bordered()
-            .title(Span::styled(" Per-Model Stats ", theme.muted()))
+            .title(Span::styled(" Per-Model Stats ", theme.section_header()))
             .border_style(theme.muted()),
     );
 
@@ -298,7 +307,7 @@ fn render_selection_bars(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState
     let bar_chart = BarChart::default()
         .block(
             Block::bordered()
-                .title(Span::styled(" Selection Frequency ", theme.muted()))
+                .title(Span::styled(" Selection Frequency ", theme.section_header()))
                 .border_style(theme.muted()),
         )
         .data(BarGroup::default().bars(&bars))
@@ -365,11 +374,8 @@ fn render_history(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme
         )));
     } else {
         lines.push(Line::from(vec![
-            Span::raw("  Current observations: "),
-            Span::styled(
-                total_trials.to_string(),
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
+            Span::styled("  Current observations: ", theme.label()),
+            Span::styled(total_trials.to_string(), theme.value()),
         ]));
         lines.push(Line::from(""));
 
@@ -407,8 +413,15 @@ fn render_history(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme
             ]));
         }
 
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled("  Stage Progression:", theme.text())));
+        let sep_width = area.width.saturating_sub(6) as usize;
+        lines.push(Line::from(Span::styled(
+            format!("  {}", "\u{2500}".repeat(sep_width)),
+            Style::default().fg(Theme::SEPARATOR),
+        )));
+        lines.push(Line::from(Span::styled(
+            "  Stage Progression:",
+            theme.section_header(),
+        )));
         lines.push(Line::from(""));
 
         let bar_width = area.width.saturating_sub(8) as usize;
@@ -460,9 +473,9 @@ fn render_history(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme
     let block = Block::bordered()
         .title(Span::styled(
             " Stage Transition History ",
-            theme.accent().add_modifier(Modifier::BOLD),
+            theme.section_header(),
         ))
-        .border_style(theme.accent());
+        .border_style(theme.muted());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -479,11 +492,8 @@ fn render_efficiency(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, th
 
     if events.is_empty() {
         let block = Block::bordered()
-            .title(Span::styled(
-                " Model Efficiency ",
-                theme.accent().add_modifier(Modifier::BOLD),
-            ))
-            .border_style(theme.accent());
+            .title(Span::styled(" Model Efficiency ", theme.section_header()))
+            .border_style(theme.muted());
         let inner = block.inner(area);
         frame.render_widget(block, area);
         let lines = vec![
@@ -527,20 +537,25 @@ fn render_efficiency(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, th
 
     let chunks = Layout::vertical([
         Constraint::Min(6),    // stats table
+        Constraint::Length(1), // separator
         Constraint::Length(8), // cost bar chart
     ])
     .split(area);
 
     // -- Stats table --
     let header = Row::new(vec![
-        Cell::from("Model"),
-        Cell::from("Events"),
-        Cell::from("Passed"),
-        Cell::from("Pass %"),
-        Cell::from("Avg Cost"),
-        Cell::from("Avg Latency"),
+        Cell::from(Span::styled("Model", theme.label())),
+        Cell::from(Line::from(Span::styled("Events", theme.label())).alignment(Alignment::Right)),
+        Cell::from(Line::from(Span::styled("Passed", theme.label())).alignment(Alignment::Right)),
+        Cell::from(Line::from(Span::styled("Pass %", theme.label())).alignment(Alignment::Right)),
+        Cell::from(
+            Line::from(Span::styled("Avg Cost", theme.label())).alignment(Alignment::Right),
+        ),
+        Cell::from(
+            Line::from(Span::styled("Avg Latency", theme.label())).alignment(Alignment::Right),
+        ),
     ])
-    .style(theme.accent().add_modifier(Modifier::BOLD));
+    .style(Style::default().add_modifier(Modifier::BOLD));
 
     let mut sorted_models: Vec<_> = model_stats.iter().collect();
     sorted_models.sort_by(|a, b| b.1.count.cmp(&a.1.count));
@@ -575,12 +590,30 @@ fn render_efficiency(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, th
             };
 
             Row::new(vec![
-                Cell::from(display_model(Some(model.as_str()))),
-                Cell::from(stats.count.to_string()),
-                Cell::from(stats.passed.to_string()),
-                Cell::from(pass_pct).style(Style::default().fg(rate_color)),
-                Cell::from(avg_cost),
-                Cell::from(avg_latency),
+                Cell::from(Span::styled(
+                    display_model(Some(model.as_str())),
+                    theme.value(),
+                )),
+                Cell::from(
+                    Line::from(Span::styled(stats.count.to_string(), theme.value()))
+                        .alignment(Alignment::Right),
+                ),
+                Cell::from(
+                    Line::from(Span::styled(stats.passed.to_string(), theme.value()))
+                        .alignment(Alignment::Right),
+                ),
+                Cell::from(
+                    Line::from(Span::styled(pass_pct, Style::default().fg(rate_color)))
+                        .alignment(Alignment::Right),
+                ),
+                Cell::from(
+                    Line::from(Span::styled(avg_cost, theme.metadata()))
+                        .alignment(Alignment::Right),
+                ),
+                Cell::from(
+                    Line::from(Span::styled(avg_latency, theme.metadata()))
+                        .alignment(Alignment::Right),
+                ),
             ])
         })
         .collect();
@@ -599,11 +632,15 @@ fn render_efficiency(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, th
     .header(header)
     .block(
         Block::bordered()
-            .title(Span::styled(" Model Efficiency Stats ", theme.muted()))
+            .title(Span::styled(
+                " Model Efficiency Stats ",
+                theme.section_header(),
+            ))
             .border_style(theme.muted()),
     );
 
     frame.render_widget(table, chunks[0]);
+    render_separator(frame, chunks[1], theme);
 
     // -- Cost bar chart --
     let colors = Theme::SERIES_COLORS;
@@ -633,13 +670,13 @@ fn render_efficiency(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, th
                 Block::bordered()
                     .title(Span::styled(
                         " Avg Cost (\u{00d7}10\u{207b}\u{2074} $) ",
-                        theme.muted(),
+                        theme.section_header(),
                     ))
                     .border_style(theme.muted()),
             )
             .data(BarGroup::default().bars(&bars))
             .bar_width(
-                chunks[1]
+                chunks[2]
                     .width
                     .saturating_sub(4)
                     .checked_div(bars.len().max(1) as u16)
@@ -649,7 +686,7 @@ fn render_efficiency(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, th
             )
             .bar_gap(1);
 
-        frame.render_widget(bar_chart, chunks[1]);
+        frame.render_widget(bar_chart, chunks[2]);
     }
 }
 

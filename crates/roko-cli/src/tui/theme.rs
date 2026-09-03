@@ -427,6 +427,116 @@ impl Theme {
     pub(crate) fn progress_color(fraction: f64) -> Color {
         gradient_fire().sample(fraction)
     }
+
+    /// Rose gradient sparkline color on a 0..1 scale.
+    ///
+    /// Maps values through a ROSEDUST-tinted gradient from deep rose
+    /// through dream to rose-bright for sparkline/bar chart fills.
+    #[must_use]
+    pub(crate) fn sparkline_gradient(t: f64) -> Color {
+        gradient_rose().sample(t)
+    }
+
+    /// Notification pulse color for toast/badge animations.
+    ///
+    /// Returns a color that oscillates between the base notification
+    /// color and a brighter variant based on the pulse parameter (0..1).
+    #[must_use]
+    pub(crate) fn notification_pulse(level_color: Color, pulse: f64) -> Color {
+        let factor = 0.7 + 0.3 * pulse.clamp(0.0, 1.0);
+        brighten(level_color, factor)
+    }
+
+    // -- Visual weight hierarchy --
+
+    /// Bold section header style for panel/section titles.
+    #[must_use]
+    pub(crate) fn section_header(self) -> Style {
+        Style::default()
+            .fg(Self::BONE)
+            .add_modifier(Modifier::BOLD)
+    }
+
+    /// Dim label style for field names like "Status:", "Cost:".
+    #[must_use]
+    pub(crate) fn label(self) -> Style {
+        Style::default().fg(Self::TEXT_DIM)
+    }
+
+    /// Strong value style for data content beside labels.
+    #[must_use]
+    pub(crate) fn value(self) -> Style {
+        Style::default()
+            .fg(Self::TEXT_STRONG)
+            .add_modifier(Modifier::BOLD)
+    }
+
+    /// Ghost metadata style for timestamps, hashes, and secondary info.
+    #[must_use]
+    pub(crate) fn metadata(self) -> Style {
+        Style::default().fg(Self::TEXT_GHOST)
+    }
+
+    // -- Status badges --
+
+    /// Pending badge: warning background with void text.
+    #[must_use]
+    pub(crate) fn badge_pending(self) -> Style {
+        Style::default()
+            .fg(Self::VOID)
+            .bg(Self::WARNING)
+            .add_modifier(Modifier::BOLD)
+    }
+
+    /// Running badge: dream background with void text.
+    #[must_use]
+    pub(crate) fn badge_running(self) -> Style {
+        Style::default()
+            .fg(Self::VOID)
+            .bg(Self::DREAM)
+            .add_modifier(Modifier::BOLD)
+    }
+
+    /// Complete badge: sage background with void text.
+    #[must_use]
+    pub(crate) fn badge_complete(self) -> Style {
+        Style::default()
+            .fg(Self::VOID)
+            .bg(Self::SAGE)
+            .add_modifier(Modifier::BOLD)
+    }
+
+    /// Failed badge: ember background with bone text.
+    #[must_use]
+    pub(crate) fn badge_failed(self) -> Style {
+        Style::default()
+            .fg(Self::BONE)
+            .bg(Self::EMBER)
+            .add_modifier(Modifier::BOLD)
+    }
+
+    // -- Code block --
+
+    /// Code block style: raised background with standard text.
+    #[must_use]
+    pub(crate) fn code_block(self) -> Style {
+        Style::default().fg(Self::TEXT).bg(Self::BG_RAISED)
+    }
+
+    // -- Discrete progress tiers --
+
+    /// Returns a discrete tier color for a progress percentage (0.0-1.0):
+    /// ember (<25%) -> warning (25-75%) -> sage (>=75%).
+    #[must_use]
+    pub(crate) fn progress_tier(self, pct: f64) -> Color {
+        if pct < 0.25 {
+            Self::EMBER
+        } else if pct < 0.75 {
+            Self::WARNING
+        } else {
+            Self::SAGE
+        }
+    }
 }
 
 impl Default for Theme {
@@ -488,6 +598,18 @@ pub(crate) fn gradient_ocean() -> Gradient {
         start: (30.0, 40.0, 120.0),
         mid: (40.0, 120.0, 150.0),
         end: (80.0, 190.0, 210.0),
+    }
+}
+
+/// Rose gradient: deep rose -> dream -> rose-bright.
+///
+/// Used for sparklines and data visualization fills.
+#[must_use]
+pub(crate) fn gradient_rose() -> Gradient {
+    Gradient {
+        start: (65.0, 36.0, 52.0),    // ROSE_DEEP
+        mid: (120.0, 115.0, 165.0),   // DREAM
+        end: (220.0, 155.0, 180.0),   // ROSE_BRIGHT
     }
 }
 
@@ -654,6 +776,32 @@ mod tests {
     fn gradient_progress_midpoint_is_warning() {
         // 0.5 should be WARNING
         assert_eq!(Theme::progress_gradient(0.5), Theme::WARNING);
+    }
+
+    #[test]
+    fn rose_gradient_samples() {
+        let g = gradient_rose();
+        let _ = g.sample(0.0);
+        let _ = g.sample(0.5);
+        let _ = g.sample(1.0);
+    }
+
+    #[test]
+    fn sparkline_gradient_maps_zero_and_one() {
+        let low = Theme::sparkline_gradient(0.0);
+        let high = Theme::sparkline_gradient(1.0);
+        assert_ne!(low, high);
+    }
+
+    #[test]
+    fn notification_pulse_stays_in_range() {
+        let base = Theme::EMBER;
+        let dimmed = Theme::notification_pulse(base, 0.0);
+        let bright = Theme::notification_pulse(base, 1.0);
+        // The bright variant should have at least one channel >= the dimmed variant.
+        if let (Color::Rgb(dr, dg, db), Color::Rgb(br, bg, bb)) = (dimmed, bright) {
+            assert!(br >= dr || bg >= dg || bb >= db);
+        }
     }
 
     #[test]

@@ -63,6 +63,21 @@ impl ScrollAccel {
     }
 }
 
+/// Returns the scroll offset for tail mode given total lines and viewport height.
+/// When auto_tail is true, always returns the offset that shows the last viewport_height lines.
+pub fn tail_offset(total_lines: usize, viewport_height: usize) -> usize {
+    total_lines.saturating_sub(viewport_height)
+}
+
+/// Returns a scroll position string like "[42/200]" or "TAIL" for status display.
+pub fn scroll_indicator(offset: usize, total: usize, auto_tail: bool) -> String {
+    if auto_tail {
+        "TAIL".into()
+    } else {
+        format!("[{}/{}]", offset, total)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,5 +116,24 @@ mod tests {
         accel.push(1);
         accel.reset();
         assert_eq!(accel.push(1), 1);
+    }
+
+    #[test]
+    fn tail_offset_basic() {
+        assert_eq!(tail_offset(200, 40), 160);
+        assert_eq!(tail_offset(10, 40), 0);
+        assert_eq!(tail_offset(40, 40), 0);
+        assert_eq!(tail_offset(0, 40), 0);
+    }
+
+    #[test]
+    fn scroll_indicator_tail_mode() {
+        assert_eq!(scroll_indicator(160, 200, true), "TAIL");
+    }
+
+    #[test]
+    fn scroll_indicator_manual() {
+        assert_eq!(scroll_indicator(42, 200, false), "[42/200]");
+        assert_eq!(scroll_indicator(0, 0, false), "[0/0]");
     }
 }

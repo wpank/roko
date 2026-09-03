@@ -81,9 +81,10 @@ pub(crate) fn handle_agent_event(
             if state.agent_output.len() > MAX_AGENT_OUTPUT {
                 let trim_point = state.agent_output.len() - MAX_AGENT_OUTPUT / 2;
                 let boundary = state.agent_output.ceil_char_boundary(trim_point);
+                let omitted_lines = state.agent_output[..boundary].lines().count();
                 state.agent_output = format!(
-                    "[...truncated {}B...]\n{}",
-                    boundary,
+                    "[output truncated: {} lines omitted]\n{}",
+                    omitted_lines,
                     &state.agent_output[boundary..],
                 );
                 debug!(
@@ -114,16 +115,19 @@ pub(crate) fn handle_agent_event(
             let (truncated, state_was_truncated) = bounded_utf8(output, limit);
             state.agent_output.push_str(truncated);
             if state_was_truncated {
-                state
-                    .agent_output
-                    .push_str("\n[...tool output truncated...]\n");
+                let omitted_lines = output[truncated.len()..].lines().count();
+                state.agent_output.push_str(&format!(
+                    "\n[output truncated: {omitted_lines} lines omitted]\n"
+                ));
             }
             state.agent_output.push('\n');
 
             let (visible, visible_was_truncated) = bounded_utf8(output, MAX_TUI_TOOL_OUTPUT);
             let mut dashboard_output = visible.to_string();
             if visible_was_truncated {
-                dashboard_output.push_str("\n[...tool output truncated for TUI...]\n");
+                let omitted_lines = output[visible.len()..].lines().count();
+                dashboard_output
+                    .push_str(&format!("\n[output truncated: {omitted_lines} lines omitted]\n"));
             } else if !dashboard_output.ends_with('\n') {
                 dashboard_output.push('\n');
             }
@@ -568,7 +572,7 @@ mod tests {
                 .map_or(false, |v| {
                     v["payload"]["output"]
                         .as_str()
-                        .map_or(false, |s| s.contains("truncated for TUI"))
+                        .map_or(false, |s| s.contains("output truncated:"))
                 })
         });
         assert!(

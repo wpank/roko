@@ -882,7 +882,15 @@ fn build_unified_log_cache(tui_state: &TuiState) -> Vec<LogEntry> {
             if signal.payload_preview.contains("passed") {
                 LogEntryLevel::Info
             } else {
-                LogEntryLevel::Warn
+                // Gate failures are ERR severity.
+                LogEntryLevel::Error
+            }
+        } else if signal.kind.contains("model_select") || signal.kind.contains("model_route") {
+            // Model selection events are DEBUG unless there was a fallback.
+            if signal.payload_preview.contains("fallback") {
+                LogEntryLevel::Info
+            } else {
+                LogEntryLevel::Debug
             }
         } else if signal.kind.contains("debug") {
             LogEntryLevel::Debug
@@ -911,10 +919,13 @@ fn build_unified_log_cache(tui_state: &TuiState) -> Vec<LogEntry> {
     for episode in &tui_state.episodes_cache {
         let ts_ms = episode.timestamp.timestamp_millis();
         let level = if !episode.success {
+            // Agent crashes/errors and gate failures are ERR.
             LogEntryLevel::Error
         } else if episode.kind == "gate" {
-            LogEntryLevel::Warn
+            // Successful gates are INFO, not WARN.
+            LogEntryLevel::Info
         } else {
+            // Task completions are INFO.
             LogEntryLevel::Info
         };
         let duration_str = if episode.duration_secs > 0.0 {
@@ -1304,7 +1315,9 @@ pub struct TuiState {
     // -- critical path ETA --
     /// Remaining ETA minutes computed from the critical path of the task DAG.
     /// Updated when a critical-path task completes. `None` when not yet computed.
-    pub critical_path_eta_minutes: Option<u32>,
+    pub critical_path_eta_minutes: Option<f64>,
+    /// Computed C-factor value for status bar display.
+    pub c_factor: Option<f64>,
 
     // -- task checklist --
     /// Task rows for the task_progress widget.
@@ -1355,6 +1368,8 @@ pub struct TuiState {
     pub active_tab: Tab,
     /// Selected plan index (legacy, may differ from current_plan_idx during browsing).
     pub selected_plan_idx: usize,
+    /// Cached full name of the selected plan for status bar display.
+    pub selected_plan_name: Option<String>,
     /// Selected agent index in the agent roster.
     pub selected_agent: usize,
     /// Selected agent sub-tab index.
@@ -1441,6 +1456,12 @@ pub struct TuiState {
     pub log_auto_tail: bool,
     /// Active log levels shown in the Logs tab.
     pub log_filter_levels: HashSet<LogFilterLevel>,
+    /// Log grouping mode (chronological, by-plan, by-task).
+    pub log_grouping: super::views::logs_view::LogGrouping,
+    /// Index of the currently expanded log entry (Enter key toggles).
+    pub log_expanded_idx: Option<usize>,
+    /// Set of collapsed group names in grouped log views.
+    pub log_collapsed_groups: std::collections::HashSet<String>,
 
     // -- approval / confirm --
     /// Pending agent command approval, if any.
@@ -1503,6 +1524,10 @@ pub struct TuiState {
     pub cost_rate: f64,
     /// Cumulative cost in USD for header_bar display.
     pub cost_dollars: f64,
+    /// Live token burn rate (tokens per minute) for status bar display.
+    pub token_rate_per_min: f64,
+    /// Projected total cost based on current burn rate. `None` when not yet computed.
+    pub projected_cost: Option<f64>,
     /// Per-process metrics for the dashboard Procs sub-tab.
     pub process_metrics: Vec<ProcessMetrics>,
 
@@ -1600,6 +1625,8 @@ pub struct TuiState {
     // -- log search (#217) --
     /// Log search/filter state for regex highlighting and filtering.
     pub log_search: LogSearchState,
+    /// Last yanked (copied) log entry text, set by `y` key on Logs tab.
+    pub yanked_text: Option<String>,
 
     // -- plan tree filter (#219) --
     /// Plan tree filter state for F2:Plans tab.
@@ -1622,9 +1649,11 @@ pub struct TuiState {
 
     // -- notification history --
     /// Retained history of expired/dismissed notifications (bounded to 200).
-    pub notification_history: Vec<super::modals::HistoryEntry>,
+    pub notification_history: VecDeque<super::modals::NotificationRecord>,
     /// Count of entries evicted from history due to the 200-entry cap.
     pub notification_evicted_count: usize,
+    /// Monotonic counter for assigning notification IDs.
+    pub notification_next_id: u64,
 
     // -- knowledge browse --
     /// Knowledge entries for the Inspect tab's KnowledgeBrowse sub-view.
@@ -1705,6 +1734,7 @@ impl Default for TuiState {
             execution_waves: Vec::new(),
             collapsed_waves: HashSet::new(),
             critical_path_eta_minutes: None,
+            c_factor: None,
             current_task_checklist: Vec::new(),
             task_progress_smooth: super::smoothing::SmoothedValue::new(0.15),
             gate_results: Vec::new(),
@@ -1727,6 +1757,7 @@ impl Default for TuiState {
             agent_streams: HashMap::new(),
             active_tab: Tab::default(),
             selected_plan_idx: 0,
+            selected_plan_name: None,
             selected_agent: 0,
             selected_agent_tab: 0,
             dashboard_sub_tab: 0,
@@ -1767,6 +1798,9 @@ impl Default for TuiState {
             agent_topology_scroll_offset: 0,
             log_auto_tail: true,
             log_filter_levels: LogFilterLevel::all().into_iter().collect(),
+            log_grouping: super::views::logs_view::LogGrouping::default(),
+            log_expanded_idx: None,
+            log_collapsed_groups: std::collections::HashSet::new(),
 
             pending_approval: None,
             pending_confirm: None,
@@ -1798,6 +1832,8 @@ impl Default for TuiState {
             token_rate: 0.0,
             cost_rate: 0.0,
             cost_dollars: 0.0,
+            token_rate_per_min: 0.0,
+            projected_cost: None,
             process_metrics: Vec::new(),
 
             sys: SysMetrics::default(),
@@ -1855,6 +1891,7 @@ impl Default for TuiState {
             cached_unified_log: Vec::new(),
 
             log_search: LogSearchState::default(),
+            yanked_text: None,
             plan_tree_filter: PlanTreeFilter::default(),
 
             agents_online: 0,
@@ -1864,8 +1901,9 @@ impl Default for TuiState {
             warnings_dismissed: false,
             dismissed_warning_keys: HashSet::new(),
 
-            notification_history: Vec::new(),
+            notification_history: VecDeque::new(),
             notification_evicted_count: 0,
+            notification_next_id: 0,
 
             knowledge_entries: Vec::new(),
 
@@ -3428,7 +3466,7 @@ impl TuiState {
         self.gate_trends = snap.gate_trends.clone();
         self.gate_recent_failures = snap.gate_recent_failures.clone();
         self.affect = snap.affect.clone();
-        self.critical_path_eta_minutes = snap.critical_path_eta_minutes;
+        self.critical_path_eta_minutes = snap.critical_path_eta_minutes.map(|v| v as f64);
         if !snap.agent_topology.is_empty() {
             self.agent_topology = snap.agent_topology.clone();
             self.agent_topology_status = AgentTopologyStatus::Ready;

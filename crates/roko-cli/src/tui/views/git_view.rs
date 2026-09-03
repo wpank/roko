@@ -152,7 +152,7 @@ fn render_branch_tree(
             if focused {
                 Theme::focused_title_style()
             } else {
-                theme.accent().add_modifier(Modifier::BOLD)
+                theme.section_header()
             },
         ))
         .border_style(if focused {
@@ -187,7 +187,9 @@ fn render_branch_tree(
             let style = if i == view_state.selected {
                 theme.selection()
             } else if branch.is_current {
-                theme.accent_bold()
+                Style::default()
+                    .fg(Theme::SAGE)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 theme.text()
             };
@@ -195,7 +197,7 @@ fn render_branch_tree(
             ListItem::new(Line::from(vec![
                 Span::raw(format!("{indent}{marker}")),
                 Span::styled(&branch.name, style),
-                Span::styled(ahead_behind, theme.muted()),
+                Span::styled(ahead_behind, theme.metadata()),
             ]))
         })
         .collect();
@@ -219,13 +221,13 @@ fn render_worktree_list(
             if focused {
                 Theme::focused_title_style()
             } else {
-                theme.muted()
+                theme.section_header()
             },
         ))
         .border_style(if focused {
             Theme::focused_border_style()
         } else {
-            theme.muted()
+            Theme::unfocused_border_style()
         });
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -248,8 +250,11 @@ fn render_worktree_list(
                 _ => theme.success(),
             };
             Row::new(vec![
-                Cell::from(shorten_path(&wt.path, inner.width.saturating_sub(26) as usize)),
-                Cell::from(wt.branch.as_str()),
+                Cell::from(Span::styled(
+                    shorten_path(&wt.path, inner.width.saturating_sub(26) as usize),
+                    theme.metadata(),
+                )),
+                Cell::from(Span::styled(wt.branch.as_str(), theme.value())),
                 Cell::from(Span::styled(wt.status.as_str(), status_style)),
             ])
         })
@@ -262,8 +267,7 @@ fn render_worktree_list(
     ];
     let table = Table::new(rows, widths)
         .header(
-            Row::new(["path", "branch", "status"])
-                .style(theme.accent().add_modifier(Modifier::BOLD)),
+            Row::new(["path", "branch", "status"]).style(theme.label()),
         )
         .column_spacing(1);
     frame.render_widget(table, inner);
@@ -290,13 +294,13 @@ fn render_status(
             if focused {
                 Theme::focused_title_style()
             } else {
-                theme.muted()
+                theme.section_header()
             },
         ))
         .border_style(if focused {
             Theme::focused_border_style()
         } else {
-            theme.muted()
+            Theme::unfocused_border_style()
         });
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -445,11 +449,11 @@ fn render_commit_graph(
     let block = Block::default()
         .borders(Borders::ALL)
         .title(Span::styled(
-            format!(" Commit Graph ({}) ", git_data.commits.len()),
+            format!(" Recent Commits ({}) ", git_data.commits.len()),
             if focused {
                 Theme::focused_title_style()
             } else {
-                theme.accent().add_modifier(Modifier::BOLD)
+                theme.section_header()
             },
         ))
         .border_style(if focused {
@@ -474,10 +478,10 @@ fn render_commit_graph(
         .map(|commit| {
             Line::from(vec![
                 Span::styled(&commit.graph_prefix, theme.muted()),
-                Span::styled(format!(" {} ", commit.hash_short), theme.warning()),
+                Span::styled(format!(" {} ", commit.hash_short), theme.value()),
                 Span::styled(&commit.subject, theme.text()),
-                Span::styled(format!(" {}", commit.age), theme.muted()),
-                Span::styled(format!("  ({})", commit.author), theme.muted()),
+                Span::styled(format!(" {}", commit.age), theme.metadata()),
+                Span::styled(format!("  ({})", commit.author), theme.metadata()),
             ])
         })
         .collect();
@@ -511,7 +515,7 @@ fn render_diff_viewer(
             if focused {
                 Theme::focused_title_style()
             } else {
-                theme.accent().add_modifier(Modifier::BOLD)
+                theme.section_header()
             },
         ))
         .border_style(if focused {
@@ -563,13 +567,13 @@ fn render_branch_info(
             if focused {
                 Theme::focused_title_style()
             } else {
-                theme.muted()
+                theme.section_header()
             },
         ))
         .border_style(if focused {
             Theme::focused_border_style()
         } else {
-            theme.muted()
+            Theme::unfocused_border_style()
         });
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -601,60 +605,74 @@ fn render_branch_info(
             (a + add, d + del)
         });
 
+    let sep_width = inner.width as usize;
+    let separator =
+        Line::from(Span::styled("─".repeat(sep_width), Style::default().fg(Theme::SEPARATOR)));
+
     let mut lines = vec![
         Line::from(vec![
-            Span::styled("branch:   ", theme.muted()),
-            Span::styled(current, theme.accent_bold()),
+            Span::styled("branch:   ", theme.label()),
+            Span::styled(
+                current,
+                Style::default()
+                    .fg(Theme::SAGE)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]),
         Line::from(vec![
-            Span::styled("remote:   ", theme.muted()),
-            Span::raw(if git_data.remote_url.is_empty() {
-                "(none)"
-            } else {
-                git_data.remote_url.as_str()
-            }),
+            Span::styled("remote:   ", theme.label()),
+            Span::styled(
+                if git_data.remote_url.is_empty() {
+                    "(none)"
+                } else {
+                    git_data.remote_url.as_str()
+                },
+                theme.value(),
+            ),
         ]),
         Line::from(vec![
-            Span::styled("tracking: ", theme.muted()),
-            Span::raw(tracking_display),
+            Span::styled("tracking: ", theme.label()),
+            Span::styled(tracking_display, theme.value()),
         ]),
+        separator.clone(),
         Line::from(vec![
-            Span::styled("ahead:    ", theme.muted()),
+            Span::styled("ahead:    ", theme.label()),
             Span::styled(
                 current_node.map_or("0".to_string(), |n| n.ahead.to_string()),
                 theme.success(),
             ),
             Span::raw("  "),
-            Span::styled("behind: ", theme.muted()),
+            Span::styled("behind: ", theme.label()),
             Span::styled(
                 current_node.map_or("0".to_string(), |n| n.behind.to_string()),
                 theme.warning(),
             ),
         ]),
         Line::from(vec![
-            Span::styled("branches: ", theme.muted()),
-            Span::raw(git_data.branches.len().to_string()),
+            Span::styled("branches: ", theme.label()),
+            Span::styled(git_data.branches.len().to_string(), theme.value()),
             Span::raw("  "),
-            Span::styled("worktrees: ", theme.muted()),
-            Span::raw(git_data.worktrees.len().to_string()),
+            Span::styled("worktrees: ", theme.label()),
+            Span::styled(git_data.worktrees.len().to_string(), theme.value()),
         ]),
         Line::from(vec![
-            Span::styled("modified: ", theme.muted()),
-            Span::raw(git_data.status_lines.len().to_string()),
-            Span::styled(" files", theme.muted()),
+            Span::styled("modified: ", theme.label()),
+            Span::styled(git_data.status_lines.len().to_string(), theme.value()),
+            Span::styled(" files", theme.metadata()),
         ]),
     ];
 
     // Add diff summary if we have numstat data.
     if total_add > 0 || total_del > 0 {
+        lines.push(separator);
         lines.push(Line::from(vec![
-            Span::styled("changes:  ", theme.muted()),
+            Span::styled("changes:  ", theme.label()),
             Span::styled(format!("+{total_add}"), theme.success()),
-            Span::raw(" / "),
+            Span::styled(" / ", theme.metadata()),
             Span::styled(format!("-{total_del}"), theme.danger()),
             Span::styled(
                 format!(" across {} files", git_data.numstat.len()),
-                theme.muted(),
+                theme.metadata(),
             ),
         ]));
     }

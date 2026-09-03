@@ -37,6 +37,7 @@ pub mod dreams_functor;
 pub mod enrichment;
 pub mod foraging;
 pub mod gate_feedback;
+pub mod graph_cells;
 pub mod memory_functor;
 pub mod natural_transforms;
 pub mod prompt;

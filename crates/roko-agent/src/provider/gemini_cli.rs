@@ -103,7 +103,7 @@ impl ProviderAdapter for GeminiCliAdapter {
         let mut agent = ExecAgent::new(
             command,
             extra_args,
-            crate::safety::SafetyLayer::with_defaults(),
+            crate::safety::SafetyLayer::with_defaults().with_role("implementer"),
         )
         .with_timeout_ms(timeout_ms)
         .with_name(name)

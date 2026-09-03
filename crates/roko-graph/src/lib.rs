@@ -61,9 +61,10 @@ pub mod types;
 pub use cell::{Cell, CellContext, CellVersion};
 pub use engine::{
     FlowHandle, FlowStatus, GraphEngine, GraphOutput, GraphSnapshot, MergeEnqueuer, MergeRequest,
-    NodeResult, NodeStatus, SerializableNodeStatus, SerializableSignal, default_registry,
+    NodeResult, NodeStatus, SerializableNodeStatus, SerializableSignal, ValidatedGraph,
+    default_registry,
 };
-pub use registry::{CellFactory, CellRegistry};
+pub use registry::{CellDescriptor, CellFactory, CellRegistry};
 pub use types::{
     Edge, EdgeCondition, EdgeValidationError, ExecutionClass, FailureStrategy, Graph, GraphConfig,
     GraphError, GraphMetadata, GraphMode, GraphNodeIdx, GraphPolicy, Node, NodeId, NodeOutput,

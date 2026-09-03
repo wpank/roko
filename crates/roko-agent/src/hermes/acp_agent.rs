@@ -76,6 +76,8 @@ pub struct HermesAcpAgent {
     config: HermesAcpConfig,
     capabilities: HarnessCapabilities,
     name: String,
+    /// Safety layer for output scrubbing (secret leak prevention).
+    safety: crate::safety::SafetyLayer,
 }
 
 impl HermesAcpAgent {
@@ -91,6 +93,7 @@ impl HermesAcpAgent {
             capabilities: Self::build_capabilities(),
             name: "hermes-acp".to_string(),
             config,
+            safety: crate::safety::SafetyLayer::with_defaults().with_role("implementer"),
         }
     }
 
@@ -104,6 +107,7 @@ impl HermesAcpAgent {
             capabilities: Self::build_capabilities(),
             name: "hermes-acp".to_string(),
             config,
+            safety: crate::safety::SafetyLayer::with_defaults().with_role("implementer"),
         }
     }
 
@@ -426,7 +430,8 @@ impl Agent for HermesAcpAgent {
             }
         };
 
-        let output = self.build_output(input, &output_text);
+        let scrubbed_output = self.safety.scrub_text(&output_text);
+        let output = self.build_output(input, &scrubbed_output);
         AgentResult::ok(output).with_usage(usage)
     }
 
@@ -658,7 +663,8 @@ impl Agent for HermesAcpAgent {
             }
         };
 
-        let output = self.build_output(input, &output_text);
+        let scrubbed_output = self.safety.scrub_text(&output_text);
+        let output = self.build_output(input, &scrubbed_output);
         AgentResult::ok(output).with_usage(usage)
     }
 }

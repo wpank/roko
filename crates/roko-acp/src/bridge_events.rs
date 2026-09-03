@@ -64,7 +64,7 @@ use tokio::{
 };
 use tracing::{debug, error, info, warn};
 
-use crate::builtin_tools::{acp_builtin_tools, tool_permission_request};
+use crate::builtin_tools::{acp_builtin_tools, filter_tools_by_ceiling, tool_permission_request};
 use crate::event_forward::AcpEventForwarder;
 use crate::knowledge::{DispatchKnowledge, append_context, query_dispatch_knowledge};
 use crate::runner::run_with_workflow_engine;
@@ -2503,7 +2503,9 @@ async fn run_anthropic_cognitive_task(
         .with_immune_root(workdir)
         .with_provider_outcome_recorder(provider_health)
         .with_rate_limiter(rate_limiter);
-    let tools = tools_enabled.then(acp_builtin_tools).unwrap_or_default();
+    let tools = tools_enabled
+        .then(|| filter_tools_by_ceiling(acp_builtin_tools(), &tool_capabilities))
+        .unwrap_or_default();
     let request = model_call_request_from_acp_messages(model_key, messages, tools)
         .map_err(BridgeEventsError::UnsupportedPromptContent)?;
     stream_model_call_to_cognitive_events(session_id, &caller, request, cancel_token, event_sender)
@@ -2587,7 +2589,7 @@ async fn run_anthropic_tool_loop(
     let mut tools = Vec::new();
     let mut handlers: HashMap<String, Arc<dyn ToolHandler>> = HashMap::new();
     if tools_enabled {
-        tools = acp_builtin_tools();
+        tools = filter_tools_by_ceiling(acp_builtin_tools(), &tool_capabilities);
         for tool in &tools {
             handlers.insert(
                 tool.name.clone(),
@@ -3081,7 +3083,9 @@ async fn run_openai_compat_cognitive_task(
     if let Some(mcp_path) = resolved_mcp_path {
         caller = caller.with_mcp_config(mcp_path);
     }
-    let tools = tools_enabled.then(acp_builtin_tools).unwrap_or_default();
+    let tools = tools_enabled
+        .then(|| filter_tools_by_ceiling(acp_builtin_tools(), &tool_capabilities))
+        .unwrap_or_default();
     let request = model_call_request_from_acp_messages(model_key, messages, tools)
         .map_err(BridgeEventsError::UnsupportedPromptContent)?;
     stream_model_call_to_cognitive_events(session_id, &caller, request, cancel_token, event_sender)
@@ -3344,8 +3348,10 @@ async fn run_openai_compat_builtin_tool_loop(
         return Ok(false);
     };
 
-    // Build builtin tool definitions and handler map.
-    let tools = acp_builtin_tools();
+    // Build builtin tool definitions and handler map, filtered by the
+    // session's capability ceiling so restricted modes (e.g. research)
+    // cannot invoke write or exec tools.
+    let tools = filter_tools_by_ceiling(acp_builtin_tools(), &tool_capabilities);
     if tools.is_empty() {
         return Ok(false);
     }

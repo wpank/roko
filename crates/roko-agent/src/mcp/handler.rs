@@ -9,12 +9,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use roko_core::plugin::PluginTier;
 use roko_core::tool::{ToolCall, ToolContext, ToolError, ToolHandler, ToolResult};
 
 use super::client::{McpContent, McpError, McpToolResult};
 use super::error_accumulator::McpErrorAccumulator;
 use super::{McpClient, Transport};
 use crate::dispatcher::HandlerResolver;
+use crate::safety::capabilities::{Capability, check_plugin_tier};
 
 const MCP_TOOL_SEPARATOR: &str = ".";
 
@@ -24,6 +26,9 @@ pub struct McpHandlerResolver<T: Transport> {
     static_resolver: Arc<dyn HandlerResolver>,
     mcp_clients: HashMap<String, Arc<McpClient<T>>>,
     error_accumulator: Option<McpErrorAccumulator>,
+    /// Per-server trust tiers. When set, `resolve` checks the tier before
+    /// returning a handler. Unknown servers default to `Sandboxed`.
+    server_tiers: Option<HashMap<String, PluginTier>>,
 }
 
 impl<T: Transport> McpHandlerResolver<T> {
@@ -38,6 +43,7 @@ impl<T: Transport> McpHandlerResolver<T> {
             static_resolver,
             mcp_clients,
             error_accumulator: None,
+            server_tiers: None,
         }
     }
 
@@ -49,6 +55,18 @@ impl<T: Transport> McpHandlerResolver<T> {
     #[must_use]
     pub fn with_error_accumulator(mut self, accumulator: McpErrorAccumulator) -> Self {
         self.error_accumulator = Some(accumulator);
+        self
+    }
+
+    /// Attach per-server trust tiers for dispatch-time capability checks.
+    ///
+    /// When set, `resolve` verifies that the server's tier permits the
+    /// capability implied by the tool name. Unknown servers default to
+    /// [`PluginTier::Sandboxed`]. If the tier check fails, a
+    /// [`DeniedToolHandler`] is returned instead of the live MCP handler.
+    #[must_use]
+    pub fn with_server_tiers(mut self, tiers: HashMap<String, PluginTier>) -> Self {
+        self.server_tiers = Some(tiers);
         self
     }
 
@@ -68,6 +86,25 @@ impl<T: Transport + 'static> HandlerResolver for McpHandlerResolver<T> {
         let (server_name, remote_name) = split_prefixed_tool_name(name)?;
         let client = self.mcp_clients.get(server_name)?;
 
+        // Tier check: when server tiers are configured, verify the server's
+        // trust level permits the capability implied by the tool name.
+        if let Some(ref tiers) = self.server_tiers {
+            let tier = tiers
+                .get(server_name)
+                .copied()
+                .unwrap_or(PluginTier::Sandboxed);
+            let capability = capability_for_tool(remote_name);
+            if let Err(reason) = check_plugin_tier(tier, &capability) {
+                tracing::warn!(
+                    server = server_name,
+                    tool = name,
+                    %reason,
+                    "MCP tier check denied tool"
+                );
+                return Some(Arc::new(DeniedToolHandler::new(name, reason)));
+            }
+        }
+
         Some(Arc::new(
             McpToolHandler::new(
                 Arc::clone(client),
@@ -76,6 +113,66 @@ impl<T: Transport + 'static> HandlerResolver for McpHandlerResolver<T> {
             )
             .with_error_accumulator_opt(self.error_accumulator.clone()),
         ))
+    }
+}
+
+// ─── Tier-check helpers ─────────────────────────────────────────────
+
+/// Map a remote MCP tool name to the primary [`Capability`] it requires.
+///
+/// Write-oriented tools map to [`Capability::WritePath`], execution tools
+/// to [`Capability::Exec`], network tools to [`Capability::Network`], and
+/// everything else to [`Capability::ReadPath`] (the least-privilege default).
+#[must_use]
+pub fn capability_for_tool(tool_name: &str) -> Capability {
+    let lower = tool_name.to_ascii_lowercase();
+    if lower.contains("write") || lower.contains("edit") || lower.contains("create") {
+        Capability::WritePath(std::path::PathBuf::from("/"))
+    } else if lower.contains("bash")
+        || lower.contains("exec")
+        || lower.contains("run")
+        || lower.contains("shell")
+        || lower.contains("command")
+    {
+        Capability::Exec("*".into())
+    } else if lower.contains("fetch") || lower.contains("http") || lower.contains("request") {
+        Capability::Network {
+            host: "*".into(),
+            port: 0,
+        }
+    } else {
+        Capability::ReadPath(std::path::PathBuf::from("/"))
+    }
+}
+
+/// A [`ToolHandler`] that always returns [`ToolError::PermissionDenied`].
+///
+/// Returned by [`McpHandlerResolver`] when a server's [`PluginTier`] does
+/// not permit the capability required by the requested tool.
+pub struct DeniedToolHandler {
+    tool_name: String,
+    reason: String,
+}
+
+impl DeniedToolHandler {
+    /// Create a handler that will deny with the given reason.
+    #[must_use]
+    pub fn new(tool_name: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            tool_name: tool_name.into(),
+            reason: reason.into(),
+        }
+    }
+}
+
+#[async_trait]
+impl ToolHandler for DeniedToolHandler {
+    fn name(&self) -> &str {
+        &self.tool_name
+    }
+
+    async fn execute(&self, _call: ToolCall, _ctx: &ToolContext) -> ToolResult {
+        ToolResult::err(ToolError::PermissionDenied(self.reason.clone()))
     }
 }
 
@@ -444,5 +541,186 @@ mod tests {
 
         assert_eq!(result, ToolResult::text("file contents here"));
         assert!(accumulator.is_empty());
+    }
+
+    // ─── Tier check tests ───────────────────────────────────────────
+
+    #[test]
+    fn sandboxed_server_denies_write_tool() {
+        let transport = Arc::new(MockTransport::new(Vec::new()));
+        let client = Arc::new(McpClient::new(transport));
+        let resolver = McpHandlerResolver::new(
+            Arc::new(|_: &str| None),
+            HashMap::from([("fs".to_string(), client)]),
+        )
+        .with_server_tiers(HashMap::from([(
+            "fs".to_string(),
+            PluginTier::Sandboxed,
+        )]));
+
+        let handler = resolver.resolve("fs.write_file").expect("should return DeniedToolHandler");
+        assert_eq!(handler.name(), "fs.write_file");
+    }
+
+    #[tokio::test]
+    async fn sandboxed_server_write_tool_returns_permission_denied() {
+        let transport = Arc::new(MockTransport::new(Vec::new()));
+        let client = Arc::new(McpClient::new(transport));
+        let resolver = McpHandlerResolver::new(
+            Arc::new(|_: &str| None),
+            HashMap::from([("fs".to_string(), client)]),
+        )
+        .with_server_tiers(HashMap::from([(
+            "fs".to_string(),
+            PluginTier::Sandboxed,
+        )]));
+
+        let handler = resolver.resolve("fs.write_file").expect("handler");
+        let call = ToolCall::new("tier-deny", "fs.write_file", json!({"path": "/tmp/x"}));
+        let result = handler
+            .execute(call, &ToolContext::testing("/tmp/mcp-tier-test"))
+            .await;
+
+        assert!(
+            matches!(result, ToolResult::Err(ToolError::PermissionDenied(_))),
+            "expected PermissionDenied, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn untrusted_server_denies_exec_tool() {
+        let transport = Arc::new(MockTransport::new(Vec::new()));
+        let client = Arc::new(McpClient::new(transport));
+        let resolver = McpHandlerResolver::new(
+            Arc::new(|_: &str| None),
+            HashMap::from([("ci".to_string(), client)]),
+        )
+        .with_server_tiers(HashMap::from([(
+            "ci".to_string(),
+            PluginTier::Untrusted,
+        )]));
+
+        let handler = resolver.resolve("ci.run_command").expect("should return DeniedToolHandler");
+        assert_eq!(handler.name(), "ci.run_command");
+    }
+
+    #[test]
+    fn trusted_server_allows_write_tool() {
+        let transport = Arc::new(MockTransport::new(Vec::new()));
+        let client = Arc::new(McpClient::new(transport));
+        let resolver = McpHandlerResolver::new(
+            Arc::new(|_: &str| None),
+            HashMap::from([("fs".to_string(), client)]),
+        )
+        .with_server_tiers(HashMap::from([(
+            "fs".to_string(),
+            PluginTier::Trusted,
+        )]));
+
+        // Trusted tier permits writes, so this should return a real McpToolHandler.
+        let handler = resolver.resolve("fs.write_file").expect("handler");
+        assert_eq!(handler.name(), "fs.write_file");
+    }
+
+    #[test]
+    fn unknown_server_defaults_to_sandboxed() {
+        let transport = Arc::new(MockTransport::new(Vec::new()));
+        let client = Arc::new(McpClient::new(transport));
+        // Empty tier map but with_server_tiers enabled -- unknown defaults to Sandboxed.
+        let resolver = McpHandlerResolver::new(
+            Arc::new(|_: &str| None),
+            HashMap::from([("rogue".to_string(), client)]),
+        )
+        .with_server_tiers(HashMap::new());
+
+        // Sandboxed denies writes, so write_file should be denied.
+        let handler = resolver
+            .resolve("rogue.write_file")
+            .expect("should return DeniedToolHandler");
+        assert_eq!(handler.name(), "rogue.write_file");
+    }
+
+    #[test]
+    fn no_server_tiers_skips_tier_check() {
+        let transport = Arc::new(MockTransport::new(Vec::new()));
+        let client = Arc::new(McpClient::new(transport));
+        // Without with_server_tiers, all tools pass through (existing behavior).
+        let resolver = McpHandlerResolver::new(
+            Arc::new(|_: &str| None),
+            HashMap::from([("fs".to_string(), client)]),
+        );
+
+        let handler = resolver.resolve("fs.write_file").expect("handler");
+        assert_eq!(handler.name(), "fs.write_file");
+    }
+
+    // ─── capability_for_tool tests ──────────────────────────────────
+
+    #[test]
+    fn capability_for_write_tools() {
+        assert!(matches!(
+            capability_for_tool("write_file"),
+            Capability::WritePath(_)
+        ));
+        assert!(matches!(
+            capability_for_tool("edit_file"),
+            Capability::WritePath(_)
+        ));
+        assert!(matches!(
+            capability_for_tool("create_dir"),
+            Capability::WritePath(_)
+        ));
+    }
+
+    #[test]
+    fn capability_for_exec_tools() {
+        assert!(matches!(
+            capability_for_tool("bash"),
+            Capability::Exec(_)
+        ));
+        assert!(matches!(
+            capability_for_tool("run_command"),
+            Capability::Exec(_)
+        ));
+        assert!(matches!(
+            capability_for_tool("exec_script"),
+            Capability::Exec(_)
+        ));
+        assert!(matches!(
+            capability_for_tool("shell"),
+            Capability::Exec(_)
+        ));
+    }
+
+    #[test]
+    fn capability_for_network_tools() {
+        assert!(matches!(
+            capability_for_tool("web_fetch"),
+            Capability::Network { .. }
+        ));
+        assert!(matches!(
+            capability_for_tool("http_get"),
+            Capability::Network { .. }
+        ));
+        assert!(matches!(
+            capability_for_tool("request"),
+            Capability::Network { .. }
+        ));
+    }
+
+    #[test]
+    fn capability_for_read_tools() {
+        assert!(matches!(
+            capability_for_tool("read_file"),
+            Capability::ReadPath(_)
+        ));
+        assert!(matches!(
+            capability_for_tool("list_dir"),
+            Capability::ReadPath(_)
+        ));
+        assert!(matches!(
+            capability_for_tool("grep"),
+            Capability::ReadPath(_)
+        ));
     }
 }

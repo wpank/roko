@@ -280,9 +280,9 @@ impl Graph {
     /// Validate all edges for TypeSchema compatibility between source output and
     /// target input schemas.
     ///
-    /// Iterates every edge in the graph and checks that the source node's cell
-    /// `output_schema` is compatible with the target node's cell `input_schema`
-    /// (using [`TypeSchema::is_compatible_with`]).
+    /// Uses side-effect-free [`CellDescriptor`] introspection from the registry
+    /// rather than constructing live Cell instances. This ensures validation
+    /// never triggers factory side effects.
     ///
     /// Rules:
     /// - Edges where either cell is missing from the registry produce an error.
@@ -331,12 +331,10 @@ impl Graph {
                 }
             };
 
-            // Instantiate source cell from registry.
-            let source_cell = match registry
-                .create(&source_cell_type, toml::Value::Table(toml::map::Map::new()))
-            {
-                Ok(c) => c,
-                Err(_) => {
+            // Retrieve source descriptor (side-effect-free, no Cell construction).
+            let source_desc = match registry.descriptor(&source_cell_type) {
+                Some(d) => d,
+                None => {
                     errors.push(EdgeValidationError {
                         edge_from: from_id.clone(),
                         edge_to: to_id.clone(),
@@ -350,12 +348,10 @@ impl Graph {
                 }
             };
 
-            // Instantiate target cell from registry.
-            let target_cell = match registry
-                .create(&target_cell_type, toml::Value::Table(toml::map::Map::new()))
-            {
-                Ok(c) => c,
-                Err(_) => {
+            // Retrieve target descriptor (side-effect-free, no Cell construction).
+            let target_desc = match registry.descriptor(&target_cell_type) {
+                Some(d) => d,
+                None => {
                     errors.push(EdgeValidationError {
                         edge_from: from_id.clone(),
                         edge_to: to_id.clone(),
@@ -369,9 +365,9 @@ impl Graph {
                 }
             };
 
-            // Get schemas. None means untyped (Any) — always valid.
-            let source_schema = source_cell.output_schema().cloned();
-            let target_schema = target_cell.input_schema().cloned();
+            // Get schemas from descriptors. None means untyped (Any) — always valid.
+            let source_schema = source_desc.output_schema.clone();
+            let target_schema = target_desc.input_schema.clone();
 
             let compatible = match (&source_schema, &target_schema) {
                 // Either side is None (untyped / Any) -> always valid.
@@ -477,6 +473,14 @@ pub enum GraphError {
     InvalidGraph {
         /// What is wrong with the graph.
         reason: String,
+    },
+    /// One or more edges failed type-schema validation.
+    #[error("edge validation failed ({count} error(s)): {first_error}")]
+    EdgeValidationFailed {
+        /// Number of invalid edges detected.
+        count: usize,
+        /// Human-readable description of the first error (for Display).
+        first_error: String,
     },
 }
 
@@ -774,74 +778,23 @@ mod tests {
 
     use roko_core::TypeSchema;
 
-    use crate::cell::CellContext;
-    use crate::registry::CellRegistry;
+    use crate::registry::{CellDescriptor, CellRegistry};
 
-    /// Cell with no schemas (untyped / Any).
-    struct UntypedCell;
+    /// Dummy noop cell used only to satisfy the factory requirement.
+    struct DummyCell;
 
     #[async_trait::async_trait]
-    impl crate::cell::Cell for UntypedCell {
+    impl crate::cell::Cell for DummyCell {
         fn cell_id(&self) -> &str {
-            "untyped"
+            "dummy"
         }
         fn cell_name(&self) -> &str {
-            "UntypedCell"
+            "DummyCell"
         }
         async fn execute(
             &self,
             input: Vec<roko_core::Signal>,
-            _ctx: &CellContext,
-        ) -> roko_core::error::Result<Vec<roko_core::Signal>> {
-            Ok(input)
-        }
-    }
-
-    /// Cell that outputs a given schema.
-    struct SchemaOutputCell {
-        schema: TypeSchema,
-    }
-
-    #[async_trait::async_trait]
-    impl crate::cell::Cell for SchemaOutputCell {
-        fn cell_id(&self) -> &str {
-            "schema-out"
-        }
-        fn cell_name(&self) -> &str {
-            "SchemaOutputCell"
-        }
-        fn output_schema(&self) -> Option<&TypeSchema> {
-            Some(&self.schema)
-        }
-        async fn execute(
-            &self,
-            input: Vec<roko_core::Signal>,
-            _ctx: &CellContext,
-        ) -> roko_core::error::Result<Vec<roko_core::Signal>> {
-            Ok(input)
-        }
-    }
-
-    /// Cell that requires a given input schema.
-    struct SchemaInputCell {
-        schema: TypeSchema,
-    }
-
-    #[async_trait::async_trait]
-    impl crate::cell::Cell for SchemaInputCell {
-        fn cell_id(&self) -> &str {
-            "schema-in"
-        }
-        fn cell_name(&self) -> &str {
-            "SchemaInputCell"
-        }
-        fn input_schema(&self) -> Option<&TypeSchema> {
-            Some(&self.schema)
-        }
-        async fn execute(
-            &self,
-            input: Vec<roko_core::Signal>,
-            _ctx: &CellContext,
+            _ctx: &crate::cell::CellContext,
         ) -> roko_core::error::Result<Vec<roko_core::Signal>> {
             Ok(input)
         }
@@ -869,7 +822,8 @@ mod tests {
     #[test]
     fn validate_edges_no_schemas_always_valid() {
         let mut registry = CellRegistry::new();
-        registry.register("untyped", |_| Box::new(UntypedCell));
+        // Untyped descriptor (no schemas) -- always valid.
+        registry.register("untyped", |_| Box::new(DummyCell));
 
         let mut graph = Graph::new(GraphMetadata::default());
         graph.add_node(make_test_node("a", "untyped")).unwrap();
@@ -886,16 +840,26 @@ mod tests {
     #[test]
     fn validate_edges_incompatible_schemas_produces_error() {
         let mut registry = CellRegistry::new();
-        registry.register("task-out", |_| {
-            Box::new(SchemaOutputCell {
-                schema: TypeSchema::OfKind(roko_core::Kind::Task),
-            })
-        });
-        registry.register("episode-in", |_| {
-            Box::new(SchemaInputCell {
-                schema: TypeSchema::OfKind(roko_core::Kind::Episode),
-            })
-        });
+        registry.register_with_descriptor(
+            "task-out",
+            CellDescriptor::new(
+                "task-out",
+                (0, 1, 0),
+                None,
+                Some(TypeSchema::OfKind(roko_core::Kind::Task)),
+            ),
+            |_| Box::new(DummyCell),
+        );
+        registry.register_with_descriptor(
+            "episode-in",
+            CellDescriptor::new(
+                "episode-in",
+                (0, 1, 0),
+                Some(TypeSchema::OfKind(roko_core::Kind::Episode)),
+                None,
+            ),
+            |_| Box::new(DummyCell),
+        );
 
         let mut graph = Graph::new(GraphMetadata::default());
         graph.add_node(make_test_node("src", "task-out")).unwrap();
@@ -929,16 +893,26 @@ mod tests {
     #[test]
     fn validate_edges_compatible_same_kind_no_error() {
         let mut registry = CellRegistry::new();
-        registry.register("task-out", |_| {
-            Box::new(SchemaOutputCell {
-                schema: TypeSchema::OfKind(roko_core::Kind::Task),
-            })
-        });
-        registry.register("task-in", |_| {
-            Box::new(SchemaInputCell {
-                schema: TypeSchema::OfKind(roko_core::Kind::Task),
-            })
-        });
+        registry.register_with_descriptor(
+            "task-out",
+            CellDescriptor::new(
+                "task-out",
+                (0, 1, 0),
+                None,
+                Some(TypeSchema::OfKind(roko_core::Kind::Task)),
+            ),
+            |_| Box::new(DummyCell),
+        );
+        registry.register_with_descriptor(
+            "task-in",
+            CellDescriptor::new(
+                "task-in",
+                (0, 1, 0),
+                Some(TypeSchema::OfKind(roko_core::Kind::Task)),
+                None,
+            ),
+            |_| Box::new(DummyCell),
+        );
 
         let mut graph = Graph::new(GraphMetadata::default());
         graph.add_node(make_test_node("src", "task-out")).unwrap();
@@ -955,16 +929,26 @@ mod tests {
     #[test]
     fn validate_edges_collects_all_errors() {
         let mut registry = CellRegistry::new();
-        registry.register("task-out", |_| {
-            Box::new(SchemaOutputCell {
-                schema: TypeSchema::OfKind(roko_core::Kind::Task),
-            })
-        });
-        registry.register("episode-in", |_| {
-            Box::new(SchemaInputCell {
-                schema: TypeSchema::OfKind(roko_core::Kind::Episode),
-            })
-        });
+        registry.register_with_descriptor(
+            "task-out",
+            CellDescriptor::new(
+                "task-out",
+                (0, 1, 0),
+                None,
+                Some(TypeSchema::OfKind(roko_core::Kind::Task)),
+            ),
+            |_| Box::new(DummyCell),
+        );
+        registry.register_with_descriptor(
+            "episode-in",
+            CellDescriptor::new(
+                "episode-in",
+                (0, 1, 0),
+                Some(TypeSchema::OfKind(roko_core::Kind::Episode)),
+                None,
+            ),
+            |_| Box::new(DummyCell),
+        );
 
         let mut graph = Graph::new(GraphMetadata::default());
         graph.add_node(make_test_node("a", "task-out")).unwrap();

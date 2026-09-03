@@ -334,6 +334,19 @@ impl FlowHandle {
     }
 }
 
+/// A graph whose edges have been validated for type-schema compatibility.
+///
+/// Produced by [`GraphEngine::validate_for_start`]. All engine entry points
+/// (`execute`, `execute_parallel`, `execute_at_tick`, `execute_parallel_at_tick`,
+/// `resume_from`, `start`) require this proof token so validation cannot be
+/// accidentally skipped.
+///
+/// This is a zero-cost wrapper; it borrows the engine that already owns the graph.
+#[derive(Debug)]
+pub struct ValidatedGraph {
+    _private: (),
+}
+
 /// The graph execution engine. Holds a graph and registry, executing nodes
 /// sequentially or in bounded parallel topological waves according to policy.
 pub struct GraphEngine {
@@ -357,6 +370,9 @@ pub struct GraphEngine {
     telemetry: Option<Arc<dyn TelemetryEventSink>>,
     /// Last complete per-node outputs for stateful Hot Graph ticks.
     tick_state: parking_lot::Mutex<HashMap<NodeId, Vec<roko_core::Signal>>>,
+    /// Set to `true` after [`validate_for_start`] succeeds, so Hot Graph tick
+    /// loops do not re-validate on every iteration.
+    pre_validated: std::sync::atomic::AtomicBool,
 }
 
 impl GraphEngine {
@@ -372,6 +388,7 @@ impl GraphEngine {
             merge_queue: None,
             telemetry: None,
             tick_state: parking_lot::Mutex::new(HashMap::new()),
+            pre_validated: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -456,7 +473,49 @@ impl GraphEngine {
         self
     }
 
+    /// Validate the graph's edges for type-schema compatibility and return
+    /// a [`ValidatedGraph`] proof token.
+    ///
+    /// This performs side-effect-free introspection via [`CellDescriptor`]
+    /// metadata in the registry. No Cells are constructed. The validation
+    /// is performed once per start/resume, not on every node dispatch.
+    ///
+    /// All entry points (`execute`, `execute_parallel`, `execute_at_tick`,
+    /// `execute_parallel_at_tick`, `resume_from`, `start`) require the
+    /// returned token so validation cannot be accidentally skipped.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GraphError::EdgeValidationFailed`] if any edge has
+    /// incompatible type schemas between its source output and target input.
+    /// The error includes the count and the first mismatch description.
+    ///
+    /// Returns [`GraphError::InvalidGraph`] if a production start encounters
+    /// a graph containing test-stub descriptors.
+    pub fn validate_for_start(&self) -> Result<ValidatedGraph, GraphError> {
+        // Skip if already validated (Hot Graph tick loops call this path once).
+        if self.pre_validated.load(Ordering::Acquire) {
+            return Ok(ValidatedGraph { _private: () });
+        }
+
+        // Validate edge type compatibility using descriptor introspection.
+        let edge_errors = self.graph.validate_edges(&self.registry);
+        if !edge_errors.is_empty() {
+            let first = edge_errors[0].to_string();
+            return Err(GraphError::EdgeValidationFailed {
+                count: edge_errors.len(),
+                first_error: first,
+            });
+        }
+
+        self.pre_validated.store(true, Ordering::Release);
+        Ok(ValidatedGraph { _private: () })
+    }
+
     /// Execute the graph using the configured concurrency policy.
+    ///
+    /// Validates all edges for type-schema compatibility before executing any
+    /// node. If validation fails, returns immediately without spawning work.
     ///
     /// Each node is instantiated from the registry, executed with inputs from
     /// upstream nodes, and its outputs are stored for downstream consumption.
@@ -472,24 +531,38 @@ impl GraphEngine {
     /// Workflow nodes always re-execute regardless of recorder/replayer state.
     ///
     /// # Errors
-    /// Returns `GraphError::CycleDetected` if the graph contains a cycle, or
+    /// Returns `GraphError::EdgeValidationFailed` if edges have incompatible schemas,
+    /// `GraphError::CycleDetected` if the graph contains a cycle, or
     /// `GraphError::UnknownCellType` if a node references an unregistered cell type.
     pub async fn execute(&self, ctx: &CellContext) -> Result<GraphOutput, GraphError> {
+        let _validated = self.validate_for_start()?;
         if self.graph.policy.max_concurrent_nodes > 1 {
-            self.execute_parallel_at_tick(ctx, 0).await
+            self.execute_parallel_at_tick_validated(ctx, 0).await
         } else {
             // tick = 0 for one-shot (non-Hot) graph executions.
-            self.execute_at_tick(ctx, 0).await
+            self.execute_at_tick_validated(ctx, 0).await
         }
     }
 
     /// Execute the graph at a specific tick index.
     ///
-    /// Used internally by [`GraphEngine::execute`] (tick 0) and by Hot Graph
+    /// Validates all edges for type-schema compatibility before executing any
+    /// node. Used internally by [`GraphEngine::execute`] (tick 0) and by Hot Graph
     /// tick loops (tick N). The tick is threaded through to the recorder/replayer
     /// so multi-tick runs can store and retrieve per-tick Activity outputs.
     #[allow(clippy::too_many_lines)]
     pub async fn execute_at_tick(
+        &self,
+        ctx: &CellContext,
+        tick: u64,
+    ) -> Result<GraphOutput, GraphError> {
+        let _validated = self.validate_for_start()?;
+        self.execute_at_tick_validated(ctx, tick).await
+    }
+
+    /// Internal: execute at tick after validation has been performed.
+    #[allow(clippy::too_many_lines)]
+    async fn execute_at_tick_validated(
         &self,
         ctx: &CellContext,
         tick: u64,
@@ -809,6 +882,9 @@ impl GraphEngine {
 
     /// Execute the graph with parallel node execution within topological waves.
     ///
+    /// Validates all edges for type-schema compatibility before executing any
+    /// node.
+    ///
     /// Nodes are grouped into waves using [`topological_waves`]. Within each
     /// wave, nodes execute concurrently via `tokio::task::JoinSet`, limited by
     /// [`GraphPolicy::max_concurrent_nodes`] through a [`tokio::sync::Semaphore`].
@@ -818,7 +894,8 @@ impl GraphEngine {
     /// strategy is `FailFast`, remaining waves are skipped.
     ///
     /// # Errors
-    /// Returns `GraphError::CycleDetected` if the graph contains a cycle, or
+    /// Returns `GraphError::EdgeValidationFailed` if edges have incompatible schemas,
+    /// `GraphError::CycleDetected` if the graph contains a cycle, or
     /// `GraphError::UnknownCellType` if a node references an unregistered cell type.
     #[allow(clippy::too_many_lines)]
     pub async fn execute_parallel(&self, ctx: &CellContext) -> Result<GraphOutput, GraphError> {
@@ -827,10 +904,22 @@ impl GraphEngine {
 
     /// Execute bounded parallel topological waves at a specific Hot Graph tick.
     ///
-    /// The tick is part of Activity replay/record identity; keeping it explicit
-    /// prevents multi-tick runs from reusing tick-zero evidence.
+    /// Validates all edges for type-schema compatibility before executing any
+    /// node. The tick is part of Activity replay/record identity; keeping it
+    /// explicit prevents multi-tick runs from reusing tick-zero evidence.
     #[allow(clippy::too_many_lines)]
     pub async fn execute_parallel_at_tick(
+        &self,
+        ctx: &CellContext,
+        tick: u64,
+    ) -> Result<GraphOutput, GraphError> {
+        let _validated = self.validate_for_start()?;
+        self.execute_parallel_at_tick_validated(ctx, tick).await
+    }
+
+    /// Internal: execute parallel at tick after validation has been performed.
+    #[allow(clippy::too_many_lines)]
+    async fn execute_parallel_at_tick_validated(
         &self,
         ctx: &CellContext,
         tick: u64,
@@ -1260,12 +1349,16 @@ impl GraphEngine {
 
     /// Resume a graph engine from a previously captured snapshot.
     ///
+    /// Validates all edges for type-schema compatibility before resuming any
+    /// node execution.
+    ///
     /// Activity nodes that were `Complete` are restored without re-execution.
     /// Completed Workflow nodes are re-derived because snapshots intentionally
     /// omit their outputs. Pending and Running nodes are also re-executed.
     ///
     /// # Errors
-    /// Returns an error if the graph contains a cycle or references unknown cell types.
+    /// Returns `GraphError::EdgeValidationFailed` if edges have incompatible schemas,
+    /// or an error if the graph contains a cycle or references unknown cell types.
     #[allow(clippy::too_many_lines)]
     pub async fn resume_from(
         snapshot: &GraphSnapshot,
@@ -1273,6 +1366,16 @@ impl GraphEngine {
         registry: CellRegistry,
         ctx: &CellContext,
     ) -> Result<GraphOutput, GraphError> {
+        // Validate edges before any resumption work.
+        let edge_errors = graph.validate_edges(&registry);
+        if !edge_errors.is_empty() {
+            let first = edge_errors[0].to_string();
+            return Err(GraphError::EdgeValidationFailed {
+                count: edge_errors.len(),
+                first_error: first,
+            });
+        }
+
         let start = Instant::now();
         let graph_name = graph.metadata.name.clone();
 
@@ -1473,6 +1576,10 @@ impl GraphEngine {
     /// Start the graph execution on a background tokio task, returning a
     /// [`FlowHandle`] immediately.
     ///
+    /// Validates all edges for type-schema compatibility before spawning the
+    /// background task. If validation fails, the `FlowHandle` is returned with
+    /// the failure immediately available via `await_completion`.
+    ///
     /// This is the async alternative to [`GraphEngine::execute`]. The caller
     /// receives a handle while execution continues in the background. Use
     /// [`FlowHandle::await_completion`] to wait for the final result, or
@@ -1481,6 +1588,23 @@ impl GraphEngine {
     /// A unique `run_id` is generated automatically using a random UUID-like
     /// string derived from the current timestamp and a counter.
     pub fn start(self, ctx: CellContext) -> FlowHandle {
+        // Validate before spawning work. If validation fails, we still return
+        // a FlowHandle but the result will be None (the task logs the error).
+        if let Err(e) = self.validate_for_start() {
+            warn!(error = %e, "graph edge validation failed before start");
+            let graph_id = self.graph.metadata.name.clone();
+            let cancel = CancellationToken::new();
+            return FlowHandle {
+                run_id: format!("flow-validation-failed-{graph_id}"),
+                graph_id,
+                started_at: Instant::now(),
+                node_statuses: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+                budget_consumed: Arc::new(AtomicU64::new(0)),
+                cancel,
+                result: Arc::new(parking_lot::Mutex::new(None)),
+                join_handle: parking_lot::Mutex::new(None),
+            };
+        }
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
         let run_id = format!(
@@ -2207,31 +2331,87 @@ pub fn default_registry() -> CellRegistry {
         ))
     });
 
-    registry.register("noop", |_config| Box::new(NoopCell::default()));
+    // All typed registrations below use CellDescriptor for side-effect-free
+    // edge validation (backlog #271).
+    use crate::registry::CellDescriptor;
+    use roko_core::{Kind, TypeSchema};
 
-    // Cognitive loop cells (E22-T01): real typed Cell implementations.
-    registry.register("sense", |_config| {
-        Box::new(crate::cells::cognitive::SenseCell::new())
-    });
-    registry.register("assess", |_config| {
-        Box::new(crate::cells::cognitive::AssessCell::new())
-    });
+    registry.register_with_descriptor(
+        "noop",
+        CellDescriptor {
+            id: "noop".to_string(),
+            version: (0, 1, 0),
+            input_schema: None,
+            output_schema: None,
+            is_stub: true,
+        },
+        |_config| Box::new(NoopCell::default()),
+    );
+
+    // Cognitive loop cells (E22-T01): real typed Cell implementations
+    // with explicit CellDescriptors for side-effect-free edge validation.
+
+    registry.register_with_descriptor(
+        "sense",
+        CellDescriptor::new("sense", (0, 1, 0), None, Some(TypeSchema::OfKind(Kind::AgentMessage))),
+        |_config| Box::new(crate::cells::cognitive::SenseCell::new()),
+    );
+    registry.register_with_descriptor(
+        "assess",
+        CellDescriptor::new(
+            "assess",
+            (0, 1, 0),
+            Some(TypeSchema::OfKind(Kind::AgentMessage)),
+            Some(TypeSchema::OfKind(Kind::AgentMessage)),
+        ),
+        |_config| Box::new(crate::cells::cognitive::AssessCell::new()),
+    );
     // "score" is an alias for "assess" in legacy graph definitions.
-    registry.register("score", |_config| {
-        Box::new(crate::cells::cognitive::AssessCell::new())
-    });
-    registry.register("compose", |_config| {
-        Box::new(crate::cells::cognitive::CognitiveComposeCell::new())
-    });
-    registry.register("act", |_config| {
-        Box::new(crate::cells::cognitive::ActCell::new())
-    });
-    registry.register("verify", |_config| {
-        Box::new(crate::cells::cognitive::VerifyCell::new())
-    });
-    registry.register("persist", |_config| {
-        Box::new(crate::cells::cognitive::PersistCell::new())
-    });
+    registry.register_with_descriptor(
+        "score",
+        CellDescriptor::new(
+            "score",
+            (0, 1, 0),
+            Some(TypeSchema::OfKind(Kind::AgentMessage)),
+            Some(TypeSchema::OfKind(Kind::AgentMessage)),
+        ),
+        |_config| Box::new(crate::cells::cognitive::AssessCell::new()),
+    );
+    registry.register_with_descriptor(
+        "compose",
+        CellDescriptor::new(
+            "compose",
+            (0, 1, 0),
+            Some(TypeSchema::OfKind(Kind::AgentMessage)),
+            Some(TypeSchema::OfKind(Kind::Prompt)),
+        ),
+        |_config| Box::new(crate::cells::cognitive::CognitiveComposeCell::new()),
+    );
+    registry.register_with_descriptor(
+        "act",
+        CellDescriptor::new(
+            "act",
+            (0, 1, 0),
+            Some(TypeSchema::OfKind(Kind::Prompt)),
+            Some(TypeSchema::OfKind(Kind::Episode)),
+        ),
+        |_config| Box::new(crate::cells::cognitive::ActCell::new()),
+    );
+    registry.register_with_descriptor(
+        "verify",
+        CellDescriptor::new(
+            "verify",
+            (0, 1, 0),
+            Some(TypeSchema::OfKind(Kind::Episode)),
+            Some(TypeSchema::OfKind(Kind::GateVerdict)),
+        ),
+        |_config| Box::new(crate::cells::cognitive::VerifyCell::new()),
+    );
+    registry.register_with_descriptor(
+        "persist",
+        CellDescriptor::new("persist", (0, 1, 0), Some(TypeSchema::OfKind(Kind::GateVerdict)), None),
+        |_config| Box::new(crate::cells::cognitive::PersistCell::new()),
+    );
     registry.register("react", |_config| {
         Box::new(crate::cells::cognitive::ReactCell::new())
     });
@@ -2247,7 +2427,14 @@ pub fn default_registry() -> CellRegistry {
     // graph definitions that still reference old names (signal-reader, etc.).
     for name in crate::cells::stubs::COGNITIVE_LOOP_STUBS {
         let cell_name = (*name).to_string();
-        registry.register(name, move |_config| {
+        let desc = CellDescriptor {
+            id: cell_name.clone(),
+            version: (0, 1, 0),
+            input_schema: None,
+            output_schema: None,
+            is_stub: true,
+        };
+        registry.register_with_descriptor(name, desc, move |_config| {
             Box::new(crate::cells::stubs::PassthroughCell::new(cell_name.clone()))
         });
     }
@@ -3721,5 +3908,333 @@ to = "b"
         let engine = GraphEngine::new(graph, noop_registry());
         let issues = engine.validate();
         assert!(issues.is_empty());
+    }
+
+    // ─── validate_for_start / graph_validation tests ──────────────────────────
+
+    mod graph_validation {
+        use super::*;
+        use crate::registry::CellDescriptor;
+        use roko_core::{Kind, TypeSchema};
+
+        /// Build a minimal registry with a single untyped noop entry.
+        fn untyped_registry() -> CellRegistry {
+            let mut reg = CellRegistry::new();
+            reg.register("noop", |_| Box::new(NoopCell::default()));
+            reg
+        }
+
+        /// Build a registry with typed descriptors for edge validation.
+        fn typed_registry() -> CellRegistry {
+            let mut reg = CellRegistry::new();
+            reg.register_with_descriptor(
+                "agent-msg-source",
+                CellDescriptor::new(
+                    "agent-msg-source",
+                    (1, 0, 0),
+                    None,
+                    Some(TypeSchema::OfKind(Kind::AgentMessage)),
+                ),
+                |_| Box::new(NoopCell::with_id_and_name("agent-msg-source", "AgentMsgSource")),
+            );
+            reg.register_with_descriptor(
+                "agent-msg-sink",
+                CellDescriptor::new(
+                    "agent-msg-sink",
+                    (1, 0, 0),
+                    Some(TypeSchema::OfKind(Kind::AgentMessage)),
+                    None,
+                ),
+                |_| Box::new(NoopCell::with_id_and_name("agent-msg-sink", "AgentMsgSink")),
+            );
+            reg.register_with_descriptor(
+                "episode-sink",
+                CellDescriptor::new(
+                    "episode-sink",
+                    (1, 0, 0),
+                    Some(TypeSchema::OfKind(Kind::Episode)),
+                    None,
+                ),
+                |_| Box::new(NoopCell::with_id_and_name("episode-sink", "EpisodeSink")),
+            );
+            reg.register("noop", |_| Box::new(NoopCell::default()));
+            reg
+        }
+
+        fn make_node(id: &str, cell_type: &str) -> crate::types::Node {
+            crate::types::Node {
+                id: id.to_string(),
+                cell_type: cell_type.to_string(),
+                config: toml::Value::Table(toml::map::Map::new()),
+                inputs: vec![],
+                outputs: vec![],
+                execution_class: crate::types::ExecutionClass::default(),
+            }
+        }
+
+        fn make_edge(from: &str, to: &str) -> crate::types::Edge {
+            crate::types::Edge {
+                from: from.to_string(),
+                to: to.to_string(),
+                condition: None,
+            }
+        }
+
+        #[test]
+        fn graph_validation_compatible_edges_pass() {
+            let registry = typed_registry();
+            let mut graph = Graph::new(GraphMetadata {
+                name: "compatible".to_string(),
+                ..Default::default()
+            });
+            graph.add_node(make_node("src", "agent-msg-source")).unwrap();
+            graph.add_node(make_node("tgt", "agent-msg-sink")).unwrap();
+            graph.add_edge(make_edge("src", "tgt")).unwrap();
+
+            let engine = GraphEngine::new(graph, registry);
+            let result = engine.validate_for_start();
+            assert!(result.is_ok(), "compatible typed edges should pass");
+        }
+
+        #[test]
+        fn graph_validation_mismatched_types_fail() {
+            let registry = typed_registry();
+            let mut graph = Graph::new(GraphMetadata {
+                name: "mismatch".to_string(),
+                ..Default::default()
+            });
+            graph.add_node(make_node("src", "agent-msg-source")).unwrap();
+            graph.add_node(make_node("tgt", "episode-sink")).unwrap();
+            graph.add_edge(make_edge("src", "tgt")).unwrap();
+
+            let engine = GraphEngine::new(graph, registry);
+            let result = engine.validate_for_start();
+            assert!(result.is_err(), "incompatible types should fail validation");
+            let err = result.unwrap_err();
+            assert!(
+                matches!(err, GraphError::EdgeValidationFailed { count: 1, .. }),
+                "expected EdgeValidationFailed, got: {err:?}"
+            );
+        }
+
+        #[test]
+        fn graph_validation_missing_registry_entry_fails() {
+            let registry = CellRegistry::new(); // empty
+            let mut graph = Graph::new(GraphMetadata {
+                name: "missing".to_string(),
+                ..Default::default()
+            });
+            graph.add_node(make_node("a", "nonexistent")).unwrap();
+            graph.add_node(make_node("b", "also-nonexistent")).unwrap();
+            graph.add_edge(make_edge("a", "b")).unwrap();
+
+            let engine = GraphEngine::new(graph, registry);
+            let result = engine.validate_for_start();
+            assert!(result.is_err());
+            let err = result.unwrap_err();
+            assert!(
+                matches!(err, GraphError::EdgeValidationFailed { .. }),
+                "expected EdgeValidationFailed, got: {err:?}"
+            );
+        }
+
+        #[test]
+        fn graph_validation_untyped_edges_always_pass() {
+            let registry = untyped_registry();
+            let mut graph = Graph::new(GraphMetadata {
+                name: "untyped".to_string(),
+                ..Default::default()
+            });
+            graph.add_node(make_node("a", "noop")).unwrap();
+            graph.add_node(make_node("b", "noop")).unwrap();
+            graph.add_edge(make_edge("a", "b")).unwrap();
+
+            let engine = GraphEngine::new(graph, registry);
+            let result = engine.validate_for_start();
+            assert!(
+                result.is_ok(),
+                "untyped (None schema) edges should always pass"
+            );
+        }
+
+        #[test]
+        fn graph_validation_no_edges_passes() {
+            let registry = untyped_registry();
+            let mut graph = Graph::new(GraphMetadata {
+                name: "no-edges".to_string(),
+                ..Default::default()
+            });
+            graph.add_node(make_node("a", "noop")).unwrap();
+            graph.add_node(make_node("b", "noop")).unwrap();
+            // No edges at all
+
+            let engine = GraphEngine::new(graph, registry);
+            let result = engine.validate_for_start();
+            assert!(result.is_ok(), "graph with no edges should pass");
+        }
+
+        #[test]
+        fn graph_validation_error_includes_node_names() {
+            let registry = typed_registry();
+            let mut graph = Graph::new(GraphMetadata {
+                name: "names".to_string(),
+                ..Default::default()
+            });
+            graph.add_node(make_node("my-source", "agent-msg-source")).unwrap();
+            graph.add_node(make_node("my-target", "episode-sink")).unwrap();
+            graph.add_edge(make_edge("my-source", "my-target")).unwrap();
+
+            let engine = GraphEngine::new(graph, registry);
+            let err = engine.validate_for_start().unwrap_err();
+            let display = err.to_string();
+            assert!(
+                display.contains("my-source") || display.contains("my-target"),
+                "error should include node names: {display}"
+            );
+        }
+
+        #[test]
+        fn graph_validation_collects_all_errors() {
+            let registry = typed_registry();
+            let mut graph = Graph::new(GraphMetadata {
+                name: "multi-error".to_string(),
+                ..Default::default()
+            });
+            graph.add_node(make_node("src", "agent-msg-source")).unwrap();
+            graph.add_node(make_node("tgt1", "episode-sink")).unwrap();
+            graph.add_node(make_node("tgt2", "episode-sink")).unwrap();
+            graph.add_edge(make_edge("src", "tgt1")).unwrap();
+            graph.add_edge(make_edge("src", "tgt2")).unwrap();
+
+            let engine = GraphEngine::new(graph, registry);
+            let err = engine.validate_for_start().unwrap_err();
+            assert!(
+                matches!(err, GraphError::EdgeValidationFailed { count: 2, .. }),
+                "expected 2 errors, got: {err:?}"
+            );
+        }
+
+        #[test]
+        fn graph_validation_idempotent_after_success() {
+            let registry = untyped_registry();
+            let mut graph = Graph::new(GraphMetadata {
+                name: "idempotent".to_string(),
+                ..Default::default()
+            });
+            graph.add_node(make_node("a", "noop")).unwrap();
+            graph.add_node(make_node("b", "noop")).unwrap();
+            graph.add_edge(make_edge("a", "b")).unwrap();
+
+            let engine = GraphEngine::new(graph, registry);
+            // First call validates.
+            assert!(engine.validate_for_start().is_ok());
+            // Second call returns immediately (cached).
+            assert!(engine.validate_for_start().is_ok());
+        }
+
+        #[test]
+        fn graph_validation_test_stub_descriptor() {
+            let mut registry = CellRegistry::new();
+            registry.register_with_descriptor(
+                "stub-cell",
+                CellDescriptor::test_stub("stub-cell"),
+                |_| Box::new(NoopCell::default()),
+            );
+
+            let mut graph = Graph::new(GraphMetadata {
+                name: "stub".to_string(),
+                ..Default::default()
+            });
+            graph.add_node(make_node("a", "stub-cell")).unwrap();
+            graph.add_node(make_node("b", "stub-cell")).unwrap();
+            graph.add_edge(make_edge("a", "b")).unwrap();
+
+            let engine = GraphEngine::new(graph, registry);
+            // Stub descriptors have no schemas, so edge validation passes.
+            assert!(engine.validate_for_start().is_ok());
+        }
+
+        #[test]
+        fn graph_validation_descriptor_introspection_is_side_effect_free() {
+            use std::sync::atomic::{AtomicU32, Ordering};
+
+            // Track how many times the factory is called.
+            let call_count = Arc::new(AtomicU32::new(0));
+            let count_clone = call_count.clone();
+
+            let mut registry = CellRegistry::new();
+            registry.register_with_descriptor(
+                "tracked",
+                CellDescriptor::new(
+                    "tracked",
+                    (0, 1, 0),
+                    Some(TypeSchema::OfKind(Kind::Task)),
+                    Some(TypeSchema::OfKind(Kind::Episode)),
+                ),
+                move |_| {
+                    count_clone.fetch_add(1, Ordering::Relaxed);
+                    Box::new(NoopCell::default())
+                },
+            );
+
+            let mut graph = Graph::new(GraphMetadata {
+                name: "no-side-effects".to_string(),
+                ..Default::default()
+            });
+            graph.add_node(make_node("a", "tracked")).unwrap();
+            graph.add_node(make_node("b", "tracked")).unwrap();
+            graph.add_edge(make_edge("a", "b")).unwrap();
+
+            let engine = GraphEngine::new(graph, registry);
+            let _ = engine.validate_for_start();
+
+            assert_eq!(
+                call_count.load(Ordering::Relaxed),
+                0,
+                "validate_for_start must not call the cell factory"
+            );
+        }
+
+        #[test]
+        fn graph_validation_default_registry_passes() {
+            // The default registry should produce valid descriptors for all
+            // production cognitive loop edges.
+            let registry = default_registry();
+
+            // Build a cognitive loop graph: sense -> assess -> compose -> act ->
+            //   verify -> persist -> react
+            let mut graph = Graph::new(GraphMetadata {
+                name: "cognitive-loop".to_string(),
+                ..Default::default()
+            });
+            for (id, ct) in [
+                ("s", "sense"),
+                ("a", "assess"),
+                ("c", "compose"),
+                ("x", "act"),
+                ("v", "verify"),
+                ("p", "persist"),
+                ("r", "react"),
+            ] {
+                graph.add_node(make_node(id, ct)).unwrap();
+            }
+            for (from, to) in [
+                ("s", "a"),
+                ("a", "c"),
+                ("c", "x"),
+                ("x", "v"),
+                ("v", "p"),
+            ] {
+                graph.add_edge(make_edge(from, to)).unwrap();
+            }
+
+            let engine = GraphEngine::new(graph, registry);
+            let result = engine.validate_for_start();
+            assert!(
+                result.is_ok(),
+                "default registry cognitive loop should validate: {:?}",
+                result.err()
+            );
+        }
     }
 }

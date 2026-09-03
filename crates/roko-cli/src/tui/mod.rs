@@ -57,7 +57,9 @@ pub use dashboard::{DashboardData, DashboardScaffold, DashboardSummary};
 pub use dashboard_gen::{DashboardGenerationState, DurableDashboardGenerationCounter};
 pub use effects_config::EffectsConfig;
 pub use event::{Event, EventHandler, FrameStats, RenderDirty, TickPolicy};
-pub use hit_test::HitZones;
+pub use hit_test::{
+    ClickTarget, HitRegion, HitRegionRegistry, HitZones, ScrollTarget, Z_MODAL, Z_PANEL,
+};
 pub use input::{ConfirmAction, FocusZone, InputMode, TuiAction};
 pub use layout::{centered_rect, responsive_outer_margin};
 pub use modals::{ModalState, Notification, NotificationLevel, render_modals};

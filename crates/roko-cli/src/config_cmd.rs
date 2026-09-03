@@ -282,6 +282,44 @@ pub fn cmd_doctor(workdir: &Path) -> Result<()> {
         config.runner.dangerously_skip_permissions
     );
 
+    // Run the shared diagnostic checks for config doctor (#279).
+    use roko_execution::diagnostics::{
+        DiagnosticCheckId, DiagnosticRequest, DiagnosticService, DiagnosticSeverity,
+    };
+
+    let selected = [
+        DiagnosticCheckId::Config,
+        DiagnosticCheckId::SchemaVersion,
+        DiagnosticCheckId::Providers,
+        DiagnosticCheckId::Models,
+    ]
+    .into_iter()
+    .collect();
+
+    let report = DiagnosticService::run(&DiagnosticRequest {
+        workdir: workdir.to_path_buf(),
+        selected,
+        profile: None,
+        allow_repairs: false,
+    });
+
+    if !report.findings.is_empty() {
+        println!("---");
+        for finding in &report.findings {
+            let label = match finding.severity {
+                DiagnosticSeverity::Info => "ok",
+                DiagnosticSeverity::Warning => "warn",
+                DiagnosticSeverity::Error => "FAIL",
+            };
+            println!("[{label}] {}: {}", finding.check_id, finding.message);
+            if let Some(ref remediation) = finding.remediation {
+                if let Some(ref cmd) = remediation.command {
+                    println!("    fix: {cmd}");
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 

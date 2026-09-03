@@ -9,6 +9,15 @@
 //! - **[`graph`]** — Directed symbol dependency graph with `PageRank` scoring.
 //! - **[`hdc`]** — 10,240-bit hyperdimensional fingerprints for similarity
 //!   search.
+//! - **[`sqlite`]** *(feature `sqlite`)* — Versioned persistent index store
+//!   backed by SQLite at `<root>/.roko/index.db`.
+//!
+//! # Feature disposition (backlog #362)
+//!
+//! - **SQLite** (`sqlite`): canonical CLI persistence. Enabled by `roko-cli`.
+//! - **rkyv** (`rkyv`): library-only opt-in. CLI does not enable it.
+//! - **tree-sitter** (`roko-lang-rust/tree-sitter`): disabled, experimental.
+//! - **HDC search**: library-only per backlog #335.
 
 #![allow(
     clippy::cast_precision_loss,
@@ -44,4 +53,8 @@ pub use workspace::{
     IndexStats, KeywordQuery, PrivacyConfig, ReferenceKind, ReferenceMatch, SearchResult,
     SearchScope, SearchStrategy, StructuralQuery, SymbolContext, SymbolInfo, WorkspaceIndex,
     WorkspaceMap, WorkspaceMapEntry,
+};
+#[cfg(feature = "sqlite")]
+pub use sqlite::{
+    FileRecord, IndexMeta, IndexStore, IndexStoreError, SqliteIndex, UpdateStats,
 };

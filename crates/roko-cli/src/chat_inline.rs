@@ -3225,35 +3225,42 @@ fn handle_slash_command(
             ])?;
         }
         "/doctor" => {
-            let checks = [
-                ("roko.toml", std::path::Path::new("roko.toml").exists()),
-                (".roko/", std::path::Path::new(".roko").exists()),
-                ("git", std::path::Path::new(".git").exists()),
-                ("ZAI_API_KEY", std::env::var("ZAI_API_KEY").is_ok()),
-                (
-                    "ANTHROPIC_API_KEY",
-                    std::env::var("ANTHROPIC_API_KEY").is_ok(),
-                ),
-                ("OPENAI_API_KEY", std::env::var("OPENAI_API_KEY").is_ok()),
-                ("GEMINI_API_KEY", std::env::var("GEMINI_API_KEY").is_ok()),
-                (
-                    "MOONSHOT_API_KEY",
-                    std::env::var("MOONSHOT_API_KEY").is_ok(),
-                ),
-                (
-                    "PERPLEXITY_API_KEY",
-                    std::env::var("PERPLEXITY_API_KEY").is_ok(),
-                ),
-            ];
+            // Use the shared diagnostic service for chat /doctor checks.
+            // Fixed adapter matrix: config, workspace, git, credentials.
+            use roko_execution::diagnostics::{
+                DiagnosticCheckId, DiagnosticRequest, DiagnosticService, DiagnosticSeverity,
+            };
+
+            let selected = [
+                DiagnosticCheckId::Config,
+                DiagnosticCheckId::Workspace,
+                DiagnosticCheckId::Git,
+                DiagnosticCheckId::Credentials,
+            ]
+            .into_iter()
+            .collect();
+
+            let report = DiagnosticService::run(&DiagnosticRequest {
+                workdir: std::env::current_dir().unwrap_or_default(),
+                selected,
+                profile: None,
+                allow_repairs: false,
+            });
+
             let mut lines = vec![styled::section_start(
                 theme,
                 "doctor",
                 "workspace health",
                 None,
             )];
-            for (name, ok) in &checks {
-                let icon = if *ok { symbols::PASS } else { symbols::FAIL };
-                lines.push(styled::continuation(theme, icon, name, None));
+            for finding in &report.findings {
+                let icon = match finding.severity {
+                    DiagnosticSeverity::Info => symbols::PASS,
+                    DiagnosticSeverity::Warning => symbols::WARN,
+                    DiagnosticSeverity::Error => symbols::FAIL,
+                };
+                let label = format!("{}: {}", finding.check_id, finding.message);
+                lines.push(styled::continuation(theme, icon, &label, None));
             }
             lines.push(Line::from(vec![Span::styled(
                 symbols::END.to_string(),

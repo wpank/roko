@@ -1,5 +1,4 @@
 //! dashboard command handlers.
-#![allow(unused_imports)]
 
 use crate::*;
 use roko_fs::RokoLayout;
@@ -32,11 +31,15 @@ pub(crate) async fn cmd_dashboard(
 
     if !text && !list_pages && std::io::stdout().is_terminal() {
         // Use the Mori-style interactive TUI with 60fps event loop.
-        let app = if let Some(state_hub) = state_hub.as_ref() {
+        let mut app = if let Some(state_hub) = state_hub.as_ref() {
             App::new_connected_with_page(&workdir, initial_page, state_hub)
         } else {
             App::new_with_page(&workdir, initial_page)
         };
+        // --no-mouse disables terminal mouse capture (#368).
+        if std::env::var("ROKO_NO_MOUSE").is_ok() {
+            app = app.without_mouse_capture();
+        }
         let tui_result = tokio::task::spawn_blocking(move || app.run())
             .await
             .context("dashboard TUI worker failed")?;

@@ -83,6 +83,20 @@ impl SymbolGraph {
         self.forward.values().map(Vec::len).sum()
     }
 
+    /// Return all edges as `SymbolEdge` triples.
+    pub fn all_edges(&self) -> Vec<SymbolEdge> {
+        self.forward
+            .iter()
+            .flat_map(|(from, edges)| {
+                edges.iter().map(move |(to, kind)| SymbolEdge {
+                    from_id: from.clone(),
+                    to_id: to.clone(),
+                    kind: kind.clone(),
+                })
+            })
+            .collect()
+    }
+
     /// Number of edges in the graph for one edge kind.
     pub fn edge_count_by_kind(&self, kind: EdgeKind) -> usize {
         self.forward

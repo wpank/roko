@@ -1103,6 +1103,25 @@ impl WorkspaceIndex {
         &self.root
     }
 
+    /// All indexed symbols, in no particular order.
+    pub fn all_symbols(&self) -> Vec<SymbolInfo> {
+        self.symbols_by_id.values().cloned().collect()
+    }
+
+    /// All indexed edges as (from, to, kind) triples.
+    pub fn all_edges(&self) -> Vec<(SymbolId, SymbolId, EdgeKind)> {
+        self.graph
+            .all_edges()
+            .into_iter()
+            .map(|e| (e.from_id, e.to_id, e.kind))
+            .collect()
+    }
+
+    /// All indexed source files with their paths and content.
+    pub fn all_source_files(&self) -> Vec<&SourceFile> {
+        self.files_by_path.values().collect()
+    }
+
     fn from_source_files_with_root(root: PathBuf, files: Vec<SourceFile>) -> Self {
         let graph = build_graph(&files);
         let pagerank_scores = pagerank(&graph, 30, 0.85);

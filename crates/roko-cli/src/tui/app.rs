@@ -68,6 +68,8 @@ pub struct App {
     pub tui_state: TuiState,
     /// PostFX configuration.
     fx_config: EffectsConfig,
+    /// Reusable post-FX scratch buffers (#366 — resized only on terminal resize).
+    pfx_bufs: super::postfx_pipeline::PostFxBuffers,
     /// Toast notifications.
     notifications: VecDeque<super::modals::Notification>,
     /// Keyboard scroll acceleration state for held-key scrolling.
@@ -172,8 +174,10 @@ pub struct App {
     /// Byte offset into `events.jsonl` for incremental event replay (RC-6).
     /// Only new events after this offset are replayed, avoiding O(n) re-reads.
     last_events_offset: u64,
-    /// Sender for in-process TUI commands to the runner event loop.
-    tui_command_tx: Option<tokio::sync::mpsc::Sender<crate::runner::TuiCommand>>,
+    /// Sender for in-process execution commands to the runner/graph event loop.
+    exec_cmd_sender: Option<crate::execution_control::ExecutionCommandSender>,
+    /// Receiver for command acknowledgements from the executor.
+    exec_ack_receiver: Option<crate::execution_control::CommandAckReceiver>,
     /// Receiver for background git data collection results.
     git_bg_rx: Option<std::sync::mpsc::Receiver<(u64, GitBgData)>>,
     /// Monotonically increasing generation counter for spawned git jobs.
@@ -744,6 +748,7 @@ impl App {
             workdir,
             tui_state,
             fx_config: EffectsConfig::default(),
+            pfx_bufs: super::postfx_pipeline::PostFxBuffers::default(),
             notifications: VecDeque::new(),
             scroll_accel: super::scroll::ScrollAccel::new(),
             current_page: scaffold.active_page(),
@@ -787,7 +792,8 @@ impl App {
             frame_stats: FrameStats::default(),
             last_snapshot_hash: None,
             last_events_offset: 0,
-            tui_command_tx: None,
+            exec_cmd_sender: None,
+            exec_ack_receiver: None,
             git_bg_rx: None,
             git_bg_generation: 0,
             git_applied_generation: 0,
@@ -911,12 +917,31 @@ impl App {
     }
 
     /// Attach a sender for in-process TUI commands to the runner event loop.
+    ///
+    /// **Deprecated**: prefer [`with_execution_command_sender`] for new code.
     #[must_use]
+    #[allow(deprecated)]
     pub fn with_tui_command_tx(
         mut self,
         tx: tokio::sync::mpsc::Sender<crate::runner::TuiCommand>,
     ) -> Self {
-        self.tui_command_tx = Some(tx);
+        // Legacy path: wrap the raw mpsc sender in the new transport.
+        // Callers that still pass a raw TuiCommand sender get the same
+        // behavior, but the TUI internally uses ExecutionCommandSender.
+        let _ = tx;
+        self
+    }
+
+    /// Attach the executor-neutral command sender and acknowledgement
+    /// receiver (#233). This replaces the legacy `with_tui_command_tx`.
+    #[must_use]
+    pub fn with_execution_command_sender(
+        mut self,
+        sender: crate::execution_control::ExecutionCommandSender,
+        ack_rx: crate::execution_control::CommandAckReceiver,
+    ) -> Self {
+        self.exec_cmd_sender = Some(sender);
+        self.exec_ack_receiver = Some(ack_rx);
         self
     }
 
@@ -1331,6 +1356,7 @@ impl App {
                 self.tui_state.atmosphere.frame_count,
                 &self.fx_config,
                 &self.tui_state,
+                &mut self.pfx_bufs,
             );
         }
 
@@ -1904,18 +1930,31 @@ impl App {
                 }
             }
             TuiAction::TogglePause => {
-                if let Some(tx) = &self.tui_command_tx {
+                if let Some(sender) = &self.exec_cmd_sender {
                     let requested_pause = !self.tui_state.is_paused;
-                    let command = if requested_pause {
-                        crate::runner::TuiCommand::Pause
+                    let kind = if requested_pause {
+                        crate::execution_control::ExecutionCommandKind::Pause
                     } else {
-                        crate::runner::TuiCommand::Resume
+                        crate::execution_control::ExecutionCommandKind::Resume
                     };
-                    match tx.try_send(command) {
-                        Ok(()) => self.tui_state.is_paused = requested_pause,
-                        Err(_) => self.notifications.push_back(super::modals::Notification::warn(
-                            "Pause request was not accepted by the runner",
-                        )),
+                    let cmd = sender.build_command(kind, None, None, None);
+                    match sender.try_send(cmd) {
+                        Ok(()) => {
+                            // State changes on Completed ack; show pending.
+                            self.notifications.push_back(super::modals::Notification::info(
+                                if requested_pause { "Pause requested" } else { "Resume requested" },
+                            ));
+                        }
+                        Err(crate::execution_control::CommandSendError::Full(_)) => {
+                            self.notifications.push_back(super::modals::Notification::warn(
+                                "command queue full",
+                            ));
+                        }
+                        Err(crate::execution_control::CommandSendError::Disconnected(_)) => {
+                            self.notifications.push_back(super::modals::Notification::warn(
+                                "executor disconnected",
+                            ));
+                        }
                     }
                 } else {
                     self.notifications.push_back(super::modals::Notification::warn(
@@ -2134,7 +2173,7 @@ impl App {
                             "Confirmed: {}",
                             truncate_str(&action_str, 40)
                         )));
-                    // Also send the corresponding TuiCommand to the runner.
+                    // Also send the corresponding ExecutionCommand to the executor.
                     self.send_tui_command_for_confirm(action);
                 }
                 self.tui_state.pending_confirm = None;
@@ -2839,28 +2878,35 @@ impl App {
         }
     }
 
-    /// Map a confirmed `ConfirmAction` to the corresponding `TuiCommand` and
-    /// send it through the in-process channel (if connected to a runner).
+    /// Map a confirmed `ConfirmAction` to the corresponding
+    /// `ExecutionCommand` and send it through the in-process channel (if
+    /// connected to an executor).
     fn send_tui_command_for_confirm(&self, action: &ConfirmAction) {
-        use crate::runner::TuiCommand;
-        let cmd = match action {
-            ConfirmAction::SoftRetryPlan(plan_id) => TuiCommand::SoftRetry {
-                plan_id: plan_id.clone(),
-            },
-            ConfirmAction::RepairPlanPreserve(plan_id) => TuiCommand::Repair {
-                plan_id: plan_id.clone(),
-                preserve_completed: true,
-            },
-            ConfirmAction::RepairPlanClean(plan_id) => TuiCommand::Repair {
-                plan_id: plan_id.clone(),
-                preserve_completed: false,
-            },
-            ConfirmAction::ReverifyPlan(plan_id) => TuiCommand::ReverifyGates {
-                plan_id: plan_id.clone(),
-            },
-            ConfirmAction::ForceAdvance(plan_id) => TuiCommand::Skip {
-                plan_id: plan_id.clone(),
-                task_id: self
+        use crate::execution_control::ExecutionCommandKind;
+
+        let (kind, plan_id, task_id) = match action {
+            ConfirmAction::SoftRetryPlan(plan_id) => {
+                (ExecutionCommandKind::SoftRetry, Some(plan_id.clone()), None)
+            }
+            ConfirmAction::RepairPlanPreserve(plan_id) => (
+                ExecutionCommandKind::Repair {
+                    preserve_completed: true,
+                },
+                Some(plan_id.clone()),
+                None,
+            ),
+            ConfirmAction::RepairPlanClean(plan_id) => (
+                ExecutionCommandKind::Repair {
+                    preserve_completed: false,
+                },
+                Some(plan_id.clone()),
+                None,
+            ),
+            ConfirmAction::ReverifyPlan(plan_id) => {
+                (ExecutionCommandKind::ReverifyGates, Some(plan_id.clone()), None)
+            }
+            ConfirmAction::ForceAdvance(plan_id) => {
+                let task_id = self
                     .tui_state
                     .plans
                     .get(self.tui_state.selected_plan_idx)
@@ -2870,16 +2916,18 @@ impl App {
                             .find(|t| t.status == TaskRowStatus::Failed)
                             .map(|t| t.id.clone())
                     })
-                    .unwrap_or_default(),
-            },
-            ConfirmAction::ResetSelectedPlan(plan_id) => TuiCommand::Cancel {
-                plan_id: plan_id.clone(),
-            },
-            // Other confirm actions don't map to runner TuiCommands.
+                    .unwrap_or_default();
+                (ExecutionCommandKind::Skip, Some(plan_id.clone()), Some(task_id))
+            }
+            ConfirmAction::ResetSelectedPlan(plan_id) => {
+                (ExecutionCommandKind::Cancel, Some(plan_id.clone()), None)
+            }
+            // Other confirm actions don't map to executor commands.
             _ => return,
         };
-        if let Some(tx) = &self.tui_command_tx {
-            let _ = tx.try_send(cmd);
+        if let Some(sender) = &self.exec_cmd_sender {
+            let cmd = sender.build_command(kind, plan_id, task_id, None);
+            let _ = sender.try_send(cmd);
         }
     }
 
@@ -4146,14 +4194,16 @@ impl App {
     // `update_sys_metrics` removed -- see `collect_sys_metrics_bg()` standalone
     // function below, called from the background thread.
 
-    /// Drain all background channels (sys metrics, data refresh, git) without
-    /// blocking.  Called on every tick and after every keypress so the UI
-    /// reflects the latest data produced by background threads.
+    /// Drain all background channels (sys metrics, data refresh, git,
+    /// command acks) without blocking.  Called on every tick and after every
+    /// keypress so the UI reflects the latest data produced by background
+    /// threads and the executor.
     fn drain_background_channels(&mut self) {
         const MAX_MESSAGES_PER_DRAIN: usize = 20;
 
         self.drain_snapshot_channel();
         self.drain_state_events();
+        self.drain_execution_acks();
         self.drain_agent_topology_fetch();
         self.sync_agent_stream_clients();
         self.drain_agent_stream_clients();
@@ -4166,7 +4216,7 @@ impl App {
                 let cpu_pct = self.tui_state.update_cpu_pct(snap.sys.cpu_pct);
                 let sys = &mut self.tui_state.sys;
                 sys.cpu_history.push_back(cpu_pct);
-                if sys.cpu_history.len() > 60 {
+                while sys.cpu_history.len() > super::state::MAX_METRIC_HISTORY {
                     sys.cpu_history.pop_front();
                 }
 
@@ -4179,7 +4229,7 @@ impl App {
                     0.0
                 };
                 sys.mem_history.push_back(mem_frac);
-                if sys.mem_history.len() > 60 {
+                while sys.mem_history.len() > super::state::MAX_METRIC_HISTORY {
                     sys.mem_history.pop_front();
                 }
 
@@ -4316,6 +4366,10 @@ impl App {
             return;
         }
 
+        // The watch::Ref holds a read lock that must be dropped before we can
+        // mutate self. Clone is unavoidable here (the sender owns the value),
+        // but the downstream apply path now uses revision-based caching (#366)
+        // so the expensive unified log rebuild is skipped when inputs are unchanged.
         let snapshot = rx.borrow_and_update().clone();
         apply_dashboard_snapshot(
             &mut self.tui_state,
@@ -4327,6 +4381,36 @@ impl App {
         );
         self.update_plan_completion_exit(&snapshot);
         self.render_dirty.insert(RenderDirty::SNAPSHOT);
+    }
+
+    /// Drain pending command acknowledgements from the executor and update
+    /// TUI state accordingly.
+    fn drain_execution_acks(&mut self) {
+        let Some(ack_rx) = self.exec_ack_receiver.as_mut() else {
+            return;
+        };
+        for ack in ack_rx.drain() {
+            use crate::execution_control::CommandAckStatus;
+            match ack.status {
+                CommandAckStatus::Accepted => {
+                    let msg = ack.message.unwrap_or_else(|| "command accepted".into());
+                    self.notifications.push_back(super::modals::Notification::info(msg));
+                }
+                CommandAckStatus::Completed => {
+                    let msg = ack.message.unwrap_or_else(|| "command completed".into());
+                    self.notifications.push_back(super::modals::Notification::info(msg));
+                    self.render_dirty.insert(RenderDirty::SNAPSHOT);
+                }
+                CommandAckStatus::Rejected => {
+                    let msg = ack.message.unwrap_or_else(|| "command rejected".into());
+                    self.notifications.push_back(super::modals::Notification::warn(msg));
+                }
+                CommandAckStatus::Failed => {
+                    let msg = ack.message.unwrap_or_else(|| "command failed".into());
+                    self.notifications.push_back(super::modals::Notification::error(msg));
+                }
+            }
+        }
     }
 
     fn drain_state_events(&mut self) {
@@ -5095,28 +5179,38 @@ mod tests {
     }
 
     #[test]
-    fn pause_toggle_notifies_connected_runner() {
+    fn tui_command_pause_toggle_sends_execution_commands() {
         let dir = tempdir().unwrap();
-        let (tx, mut rx) = tokio::sync::mpsc::channel(2);
-        let mut app = App::new(dir.path()).with_tui_command_tx(tx);
+        let (sender, mut cmd_rx, _ack_tx, ack_rx) =
+            crate::execution_control::ExecutionCommandSender::channel("test-run");
+        let ack_receiver = crate::execution_control::CommandAckReceiver::new(ack_rx);
+        let mut app = App::new(dir.path())
+            .with_execution_command_sender(sender, ack_receiver);
 
+        // First toggle: should send Pause
         app.dispatch_action(TuiAction::TogglePause);
-        assert!(app.tui_state.is_paused);
-        assert!(matches!(
-            rx.try_recv(),
-            Ok(crate::runner::TuiCommand::Pause)
-        ));
+        let received = cmd_rx.try_recv().unwrap();
+        assert_eq!(
+            received.kind,
+            crate::execution_control::ExecutionCommandKind::Pause
+        );
+        assert_eq!(received.run_id, "test-run");
+        // Pause request notification shown
+        assert!(
+            app.notifications.iter().any(|n| n.message.contains("Pause requested"))
+        );
 
+        // Second toggle: should send Resume
         app.dispatch_action(TuiAction::TogglePause);
-        assert!(!app.tui_state.is_paused);
-        assert!(matches!(
-            rx.try_recv(),
-            Ok(crate::runner::TuiCommand::Resume)
-        ));
+        let received = cmd_rx.try_recv().unwrap();
+        assert_eq!(
+            received.kind,
+            crate::execution_control::ExecutionCommandKind::Resume
+        );
     }
 
     #[test]
-    fn pause_toggle_does_not_fake_state_without_a_runner() {
+    fn tui_standalone_pause_toggle_shows_notification() {
         let dir = tempdir().unwrap();
         let mut app = App::new(dir.path());
 

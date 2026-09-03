@@ -132,7 +132,8 @@ fn push_gradient_bar(spans: &mut Vec<Span<'static>>, width: usize, fraction: f64
 ///
 /// Falls back to single-line ribbon when height == 1.
 pub fn render_wave_progress(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
-    let theme = Theme::from_env();
+    // #366: Use the cached dark theme instead of calling from_env() per draw.
+    let theme = Theme::dark();
 
     if state.execution_waves.is_empty() {
         let placeholder = Line::from(Span::styled("No execution waves", theme.label()));

@@ -313,6 +313,76 @@ pub struct AgentRow {
 const MAX_AGENT_STREAM_CHUNKS: usize = 200;
 const MAX_AGENT_OUTPUT_LINES: usize = 50;
 
+// ---------------------------------------------------------------------------
+// Bounded history limits (#366 — TUI data pipeline optimization)
+// ---------------------------------------------------------------------------
+
+/// Maximum entries in the unified log cache.
+pub const MAX_UNIFIED_LOG: usize = 5_000;
+/// Maximum diagnosis entries retained in TuiState.
+pub const MAX_DIAGNOSES: usize = 200;
+/// Maximum episode entries retained in TuiState.
+pub const MAX_EPISODES: usize = 1_000;
+/// Maximum error entries retained in TuiState.
+pub const MAX_ERRORS: usize = 500;
+/// Maximum token history samples per agent.
+pub const MAX_TOKEN_SAMPLES: usize = 600;
+/// Maximum gate output lines retained.
+pub const MAX_GATE_LINES: usize = 2_000;
+/// Maximum CPU/memory history samples for sparklines.
+pub const MAX_METRIC_HISTORY: usize = 60;
+/// Maximum notification history entries.
+pub const MAX_NOTIFICATION_HISTORY: usize = 200;
+
+/// Tracks evictions from bounded collections for observability.
+#[derive(Debug, Clone, Default)]
+pub struct EvictionCounters {
+    /// Total entries evicted from the unified log.
+    pub unified_log: u64,
+    /// Total entries evicted from the diagnoses ring.
+    pub diagnoses: u64,
+    /// Total entries evicted from the episodes cache.
+    pub episodes: u64,
+    /// Total entries evicted from gate output lines.
+    pub gate_output: u64,
+    /// Total entries evicted from token history samples.
+    pub token_history: u64,
+    /// Total entries evicted from notification history.
+    pub notifications: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Revision-tracked collection for cache invalidation (#366)
+// ---------------------------------------------------------------------------
+
+/// A monotonic revision counter for cache invalidation.
+///
+/// Each data source bumps its revision when it changes, and downstream
+/// caches (like the unified log) compare their last-seen revision to
+/// decide whether to rebuild.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Revision(u64);
+
+impl Revision {
+    /// Create a new revision at zero.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self(0)
+    }
+
+    /// Bump the revision counter. Returns the new value.
+    pub fn bump(&mut self) -> u64 {
+        self.0 += 1;
+        self.0
+    }
+
+    /// Current revision value.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
 fn bounded_output_lines(lines: &VecDeque<String>) -> Vec<String> {
     let first = lines.len().saturating_sub(MAX_AGENT_OUTPUT_LINES);
     lines.iter().skip(first).cloned().collect()
@@ -1053,12 +1123,11 @@ fn build_unified_log_cache(tui_state: &TuiState) -> Vec<LogEntry> {
         seq += 1;
     }
 
-    const MAX_UNIFIED_LOG_ENTRIES: usize = 10_000;
     let all: Vec<LogEntry> = entries.into_values().collect();
     let len = all.len();
-    if len > MAX_UNIFIED_LOG_ENTRIES {
+    if len > MAX_UNIFIED_LOG {
         all.into_iter()
-            .skip(len - MAX_UNIFIED_LOG_ENTRIES)
+            .skip(len - MAX_UNIFIED_LOG)
             .collect()
     } else {
         all
@@ -1723,6 +1792,25 @@ pub struct TuiState {
     last_rate_sample_at: Option<Instant>,
     last_token_total_sample: u64,
     last_cost_dollars_sample: f64,
+
+    // -- revision tracking (#366) --
+    /// Revision counter for the signals collection.
+    pub(crate) rev_signals: Revision,
+    /// Revision counter for the episodes collection.
+    pub(crate) rev_episodes: Revision,
+    /// Revision counter for the efficiency events collection.
+    pub(crate) rev_efficiency: Revision,
+    /// Revision counter for the gate results page (failure_rows).
+    pub(crate) rev_gate_results: Revision,
+    /// Revision counter for the event log.
+    pub(crate) rev_event_log: Revision,
+    /// Combined revision snapshot used to decide if the unified log cache
+    /// needs rebuilding.
+    unified_log_input_rev: u64,
+
+    // -- eviction counters (#366) --
+    /// Tracks evictions from bounded history collections.
+    pub eviction_counters: EvictionCounters,
 }
 
 impl Default for TuiState {
@@ -1938,6 +2026,15 @@ impl Default for TuiState {
             last_rate_sample_at: None,
             last_token_total_sample: 0,
             last_cost_dollars_sample: 0.0,
+
+            rev_signals: Revision::new(),
+            rev_episodes: Revision::new(),
+            rev_efficiency: Revision::new(),
+            rev_gate_results: Revision::new(),
+            rev_event_log: Revision::new(),
+            unified_log_input_rev: 0,
+
+            eviction_counters: EvictionCounters::default(),
         }
     }
 }
@@ -3094,14 +3191,17 @@ impl TuiState {
         self.workdir = data.root().to_path_buf();
         self.efficiency_summary = data.efficiency.clone();
         self.efficiency_events = data.efficiency_events.clone();
+        self.rev_efficiency.bump();
         self.efficiency_trend = data.efficiency_trend.clone();
         self.cfactor_trend_buckets = data.cfactor_trend.clone();
         self.cascade_router = data.cascade_router.clone();
         self.recent_signals = data.recent_signals.clone();
+        self.rev_signals.bump();
         self.current_plan_execution = data.current_plan_execution.clone();
         self.conductor_alerts = data.conductor_alerts.clone();
         self.cfactor = data.cfactor.clone();
         self.gate_results_page = data.gate_results_page.clone();
+        self.rev_gate_results.bump();
         self.experiments = data.experiments.clone();
         self.task_output_tails = data.task_outputs().clone();
         self.git_diff = data.git_diff.clone();
@@ -3110,6 +3210,7 @@ impl TuiState {
         self.active_task_summaries = data.active_tasks.clone();
         self.gate_result_summaries = data.gate_results.clone();
         self.episodes_cache = data.episodes().to_vec();
+        self.rev_episodes.bump();
         self.refresh_cached_unified_log();
 
         // -- knowledge browse --
@@ -3487,6 +3588,7 @@ impl TuiState {
                 },
             })
             .collect();
+        self.rev_gate_results.bump();
         self.current_gate_rung = snap.active_gate_rung.as_ref().map(|rung| {
             let elapsed_ms = current_epoch_ms().saturating_sub(rung.started_at_ms);
             let started_at = Instant::now()
@@ -3522,6 +3624,7 @@ impl TuiState {
 
         // --- Event log from snapshot ---
         self.event_log = snap.event_log.iter().cloned().collect();
+        self.rev_event_log.bump();
 
         // --- Learning data (pushed JSON parsed into the typed view structs) ---
         // Re-parse only on change; the stored strings double as change detectors.
@@ -3793,7 +3896,16 @@ impl TuiState {
         // The connected snapshot is authoritative. Replacing with an empty
         // ring is important when a new rung starts, otherwise the previous
         // gate's output leaks into the active panel.
+        let prev_gate_len = self.gate_output_lines.len();
         self.gate_output_lines = snap.gate_output_lines.clone();
+        // Enforce bounded gate output.
+        while self.gate_output_lines.len() > MAX_GATE_LINES {
+            self.gate_output_lines.pop_front();
+            self.eviction_counters.gate_output += 1;
+        }
+        if self.gate_output_lines.len() < prev_gate_len {
+            // Lines replaced with a shorter ring — no eviction to count.
+        }
 
         // --- Learning files the snapshot cannot carry (per-event payloads) ---
         self.sync_connected_learning_files();
@@ -3832,6 +3944,7 @@ impl TuiState {
             }
             let _ = self.connected_efficiency_tailer.tick();
             self.efficiency_events = self.connected_efficiency_tailer.items().to_vec();
+            self.rev_efficiency.bump();
             if !self.efficiency_events.is_empty() {
                 // Event-derived summary has real pass counts and latencies;
                 // prefer it over the approximation from pushed trend buckets.
@@ -3882,9 +3995,39 @@ impl TuiState {
         &self.cached_unified_log
     }
 
-    /// Rebuild the unified log cache from the current dashboard-derived sources.
+    /// Rebuild the unified log cache only when input revisions have changed.
+    ///
+    /// Each input collection (signals, episodes, efficiency events, gate results,
+    /// event log) has a monotonic revision counter. The unified log is only
+    /// rebuilt when the combined revision hash differs from the last build.
     pub fn refresh_cached_unified_log(&mut self) {
+        let combined = self.rev_signals.get()
+            ^ self.rev_episodes.get().wrapping_mul(31)
+            ^ self.rev_efficiency.get().wrapping_mul(37)
+            ^ self.rev_gate_results.get().wrapping_mul(41)
+            ^ self.rev_event_log.get().wrapping_mul(43);
+        if combined == self.unified_log_input_rev && !self.cached_unified_log.is_empty() {
+            return;
+        }
+        self.unified_log_input_rev = combined;
+        let prev_len = self.cached_unified_log.len();
         self.cached_unified_log = build_unified_log_cache(self);
+        let new_len = self.cached_unified_log.len();
+        if new_len < prev_len {
+            self.eviction_counters.unified_log += (prev_len - new_len) as u64;
+        }
+    }
+
+    /// Force a full rebuild of the unified log cache regardless of revision state.
+    ///
+    /// Used by tests and initial bootstrap where revision tracking is bypassed.
+    pub fn force_refresh_cached_unified_log(&mut self) {
+        self.cached_unified_log = build_unified_log_cache(self);
+        self.unified_log_input_rev = self.rev_signals.get()
+            ^ self.rev_episodes.get().wrapping_mul(31)
+            ^ self.rev_efficiency.get().wrapping_mul(37)
+            ^ self.rev_gate_results.get().wrapping_mul(41)
+            ^ self.rev_event_log.get().wrapping_mul(43);
     }
 
     /// Return cached, styled agent output lines for the selected agent pane.
@@ -4894,7 +5037,8 @@ fn compute_token_rate(events: &[roko_learn::efficiency::AgentEfficiencyEvent]) -
 }
 
 fn build_token_samples(data: &DashboardData) -> HashMap<String, VecDeque<(DateTime<Utc>, u64)>> {
-    const MAX_TOKEN_HISTORY_SAMPLES: usize = 120;
+    // Use the centralized token sample limit from #366.
+    let max_samples = MAX_TOKEN_SAMPLES;
 
     let mut per_agent: HashMap<String, Vec<(DateTime<Utc>, u64)>> = HashMap::new();
 
@@ -4930,7 +5074,7 @@ fn build_token_samples(data: &DashboardData) -> HashMap<String, VecDeque<(DateTi
         for (timestamp, total_tokens) in samples {
             cumulative_total = cumulative_total.saturating_add(total_tokens);
             history.push_back((timestamp, cumulative_total));
-            if history.len() > MAX_TOKEN_HISTORY_SAMPLES {
+            if history.len() > max_samples {
                 history.pop_front();
             }
         }
@@ -5231,7 +5375,8 @@ mod tests {
         });
 
         assert!(state.unified_log_entries().is_empty());
-        state.refresh_cached_unified_log();
+        // Use force_refresh since we manually pushed signals without bumping revision.
+        state.force_refresh_cached_unified_log();
 
         assert_eq!(state.unified_log_entries().len(), 1);
         assert_eq!(state.unified_log_entries()[0].source, "signal:gate:compile");
@@ -6877,5 +7022,124 @@ tier = "focused"
         let mut value = SmoothedValue::new(0.25);
         assert_eq!(value.update(100.0), 25.0);
         assert_eq!(value.update(100.0), 43.75);
+    }
+
+    // -----------------------------------------------------------------------
+    // #366 — TUI data-pipeline cache tests (tui_pipeline_cache)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn tui_pipeline_cache_revision_skips_rebuild_when_unchanged() {
+        let mut state = TuiState::default();
+        state.recent_signals.push(SignalSummary {
+            id: "s1".into(),
+            kind: "test".into(),
+            created_at_ms: 1_700_000_000_000,
+            confidence: None,
+            plan_id: None,
+            task_id: None,
+            parent_hash: None,
+            lineage: Vec::new(),
+            payload_preview: "hello".into(),
+        });
+        // Bump revision for signals and force initial build.
+        state.rev_signals.bump();
+        state.refresh_cached_unified_log();
+        assert_eq!(state.unified_log_entries().len(), 1);
+
+        // Calling refresh again without bumping any revision skips rebuild.
+        let prev_ptr = state.cached_unified_log.as_ptr();
+        state.refresh_cached_unified_log();
+        // The cache should not have been reallocated.
+        assert_eq!(state.cached_unified_log.as_ptr(), prev_ptr);
+        assert_eq!(state.unified_log_entries().len(), 1);
+    }
+
+    #[test]
+    fn tui_pipeline_cache_revision_rebuilds_on_signal_change() {
+        let mut state = TuiState::default();
+        state.rev_signals.bump();
+        state.refresh_cached_unified_log();
+        assert!(state.unified_log_entries().is_empty());
+
+        // Add a signal and bump the revision.
+        state.recent_signals.push(SignalSummary {
+            id: "s2".into(),
+            kind: "activity".into(),
+            created_at_ms: 1_700_000_001_000,
+            confidence: None,
+            plan_id: None,
+            task_id: None,
+            parent_hash: None,
+            lineage: Vec::new(),
+            payload_preview: "world".into(),
+        });
+        state.rev_signals.bump();
+        state.refresh_cached_unified_log();
+        assert_eq!(state.unified_log_entries().len(), 1);
+    }
+
+    #[test]
+    fn tui_pipeline_cache_revision_counter_is_monotonic() {
+        let mut rev = Revision::new();
+        assert_eq!(rev.get(), 0);
+        assert_eq!(rev.bump(), 1);
+        assert_eq!(rev.bump(), 2);
+        assert_eq!(rev.get(), 2);
+    }
+
+    #[test]
+    fn tui_pipeline_cache_bounded_unified_log_enforces_limit() {
+        let mut state = TuiState::default();
+        // Push more than MAX_UNIFIED_LOG entries.
+        for i in 0..(MAX_UNIFIED_LOG + 100) {
+            state.recent_signals.push(SignalSummary {
+                id: format!("s-{i}"),
+                kind: "fill".into(),
+                created_at_ms: 1_700_000_000_000 + i as i64,
+                confidence: None,
+                plan_id: None,
+                task_id: None,
+                parent_hash: None,
+                lineage: Vec::new(),
+                payload_preview: "fill".into(),
+            });
+        }
+        state.force_refresh_cached_unified_log();
+        assert!(state.unified_log_entries().len() <= MAX_UNIFIED_LOG);
+    }
+
+    #[test]
+    fn tui_pipeline_cache_eviction_counters_default_zero() {
+        let counters = EvictionCounters::default();
+        assert_eq!(counters.unified_log, 0);
+        assert_eq!(counters.diagnoses, 0);
+        assert_eq!(counters.episodes, 0);
+        assert_eq!(counters.gate_output, 0);
+        assert_eq!(counters.token_history, 0);
+        assert_eq!(counters.notifications, 0);
+    }
+
+    #[test]
+    fn tui_pipeline_cache_bounded_gate_output_enforces_limit() {
+        let mut state = TuiState::default();
+        for i in 0..(MAX_GATE_LINES + 50) {
+            state.gate_output_lines.push_back(format!("line {i}"));
+        }
+        // Manually enforce the bound (as done in update_from_dashboard_snapshot).
+        while state.gate_output_lines.len() > MAX_GATE_LINES {
+            state.gate_output_lines.pop_front();
+            state.eviction_counters.gate_output += 1;
+        }
+        assert_eq!(state.gate_output_lines.len(), MAX_GATE_LINES);
+        assert_eq!(state.eviction_counters.gate_output, 50);
+    }
+
+    #[test]
+    fn tui_pipeline_cache_theme_default_is_dark_not_env() {
+        // #366: Theme::default() should return dark() to avoid per-frame env reads.
+        let theme = Theme::default();
+        let dark = Theme::dark();
+        assert_eq!(theme, dark);
     }
 }

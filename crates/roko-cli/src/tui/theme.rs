@@ -541,8 +541,12 @@ impl Theme {
 }
 
 impl Default for Theme {
+    /// Default is the canonical dark palette. Use `from_env()` explicitly
+    /// when you need to honor `NO_COLOR` / `ROKO_HIGH_CONTRAST` env vars.
+    /// #366: avoids per-frame env lookups in any code path that constructs
+    /// a Theme via `Default::default()`.
     fn default() -> Self {
-        Self::from_env()
+        Self::dark()
     }
 }
 

@@ -228,6 +228,25 @@ pub enum ObjectType {
     Config,
 }
 
+// -- KnowledgeQuery --
+
+/// Object-safe, read-only knowledge query contract.
+///
+/// This narrow trait allows crates that do not depend on `roko-neuro` (which
+/// defines the full `NeuroStore: Sized` trait) to query knowledge entries
+/// through a trait object. Entries are returned as `serde_json::Value` so the
+/// contract stays independent of `roko-neuro` types.
+///
+/// Implementors: `roko-neuro::NeuroStore` backends via the blanket impl in
+/// `roko-compose` or a closure adapter in `roko-agent`.
+pub trait KnowledgeQuery: Send + Sync {
+    /// Query a topic for relevant knowledge entries.
+    ///
+    /// Returns up to `limit` entries serialized as JSON values. Implementations
+    /// should return `Ok(vec![])` when no entries match rather than erroring.
+    fn query_knowledge(&self, topic: &str, limit: usize) -> Result<Vec<serde_json::Value>>;
+}
+
 // -- ModelCaller --
 
 /// Request to call an LLM model.
@@ -286,6 +305,41 @@ pub struct ModelCallRequest {
     /// Empty means no tools are sent.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolDef>,
+    /// Per-request generation settings that override service defaults.
+    ///
+    /// When `Some`, these settings are threaded through to the provider
+    /// adapter, overriding model-profile defaults for max tokens,
+    /// temperature, top-p, and stop sequences.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation_settings: Option<GenerationSettings>,
+    /// Per-request MCP configuration path.
+    ///
+    /// When `Some`, overrides the service-level `mcp_config` for this
+    /// single request, allowing callers to specify alternative tool
+    /// sources per call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_config: Option<PathBuf>,
+}
+
+/// Per-request generation settings that override service/model-profile
+/// defaults.
+///
+/// All fields are optional: `None` means "use the service default".
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct GenerationSettings {
+    /// Maximum tokens to generate (overrides `ModelCallRequest::max_tokens`
+    /// and `ModelProfile::max_output` when set).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    /// Sampling temperature (0.0-2.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    /// Nucleus sampling threshold (0.0-1.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f32>,
+    /// Stop sequences that terminate generation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stop_sequences: Vec<String>,
 }
 
 /// Caller-surface constants for `ModelCallRequest::caller`.
@@ -342,8 +396,26 @@ pub enum GatewayError {
 
 impl From<GatewayError> for RokoError {
     fn from(error: GatewayError) -> Self {
-        // TODO(converge): Map to RokoError::Other once that variant exists in roko-core.
-        RokoError::invalid(error.to_string())
+        match &error {
+            GatewayError::ProviderError(_) => {
+                RokoError::gateway("provider", true, error.to_string())
+            }
+            GatewayError::BudgetExceeded { .. } => {
+                RokoError::gateway("budget", false, error.to_string())
+            }
+            GatewayError::RateLimited { .. } => {
+                RokoError::gateway("rate_limit", true, error.to_string())
+            }
+            GatewayError::CacheError(_) => {
+                RokoError::gateway("cache", true, error.to_string())
+            }
+            GatewayError::Cancelled => {
+                RokoError::gateway("cancelled", false, error.to_string())
+            }
+            GatewayError::ConvergenceDetected { .. } => {
+                RokoError::gateway("convergence", false, error.to_string())
+            }
+        }
     }
 }
 

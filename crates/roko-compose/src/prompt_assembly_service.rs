@@ -28,19 +28,40 @@ const SOURCE_SCAN_MAX_FILES: usize = 500;
 
 type ModelContextWindowResolver = dyn Fn(AgentRole) -> usize + Send + Sync;
 
-// TODO(converge): roko_neuro::NeuroStore currently has a `Sized` supertrait,
-// so it cannot be stored directly as `dyn NeuroStore`. Keep this object-safe
-// adapter local until roko-neuro exposes an object-safe query trait.
-trait PromptKnowledgeStore {
+/// Local adapter that bridges `roko_core::KnowledgeQuery` (returns
+/// `serde_json::Value`) to the typed `KnowledgeEntry` interface needed by
+/// prompt assembly.
+trait PromptKnowledgeStore: Send + Sync {
     fn query(&self, topic: &str, limit: usize) -> Vec<KnowledgeEntry>;
 }
 
+/// Blanket impl: any `KnowledgeQuery` can serve as a `PromptKnowledgeStore`
+/// by deserializing the JSON values back into `KnowledgeEntry`.
 impl<T> PromptKnowledgeStore for T
+where
+    T: roko_core::KnowledgeQuery,
+{
+    fn query(&self, topic: &str, limit: usize) -> Vec<KnowledgeEntry> {
+        self.query_knowledge(topic, limit)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|v| serde_json::from_value(v).ok())
+            .collect()
+    }
+}
+
+/// Blanket impl: any `NeuroStore` also implements `KnowledgeQuery` by
+/// serializing its entries to JSON values.
+impl<T> roko_core::KnowledgeQuery for T
 where
     T: NeuroStore + Send + Sync,
 {
-    fn query(&self, topic: &str, limit: usize) -> Vec<KnowledgeEntry> {
-        NeuroStore::query(self, topic, limit).unwrap_or_default()
+    fn query_knowledge(&self, topic: &str, limit: usize) -> roko_core::Result<Vec<serde_json::Value>> {
+        let entries = NeuroStore::query(self, topic, limit)?;
+        Ok(entries
+            .into_iter()
+            .filter_map(|e| serde_json::to_value(e).ok())
+            .collect())
     }
 }
 

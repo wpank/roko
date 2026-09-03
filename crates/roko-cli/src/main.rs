@@ -7,7 +7,6 @@
 //! `--resume`, `--repo`, `--no-replan`, and a positional `[prompt]` for
 //! one-shot mode).
 
-#![allow(clippy::too_many_lines)]
 #![allow(missing_docs)]
 
 mod agent_serve;

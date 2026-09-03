@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -19,7 +20,10 @@ use crate::provider::{
     map_provider_error, tool_loop_max_iterations_for_profile,
 };
 use crate::rate_limit::ProviderRateLimiter;
-use crate::tool_loop::{LlmBackend, LlmError, MultimodalInputFormat, ToolLoop, ToolLoopAgent};
+use crate::tool_loop::{
+    LlmBackend, LlmError, MultimodalInputFormat, StreamEvent, StreamEventKind, ToolLoop,
+    ToolLoopAgent, TurnConfig,
+};
 use crate::translate::{
     BackendResponse, RenderedResults, RenderedTools, SessionState, Translator, TranslatorError,
 };
@@ -27,6 +31,13 @@ use roko_core::agent::ProviderKind;
 use roko_core::config::schema::{ModelProfile, ProviderConfig};
 use roko_core::defaults::{DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_REQUEST_TIMEOUT_MS};
 use roko_core::tool::{ToolCall, ToolDef, ToolFormat, ToolResult};
+
+/// Time-to-first-semantic-event timeout for SSE streaming (30 seconds).
+const STREAM_TTFT_TIMEOUT_MS: u64 = 30_000;
+
+/// Maximum idle time between SSE events before the stream is considered
+/// stalled (60 seconds).
+const STREAM_IDLE_TIMEOUT_MS: u64 = 60_000;
 
 pub(super) fn create_tool_loop_agent(
     api_key: String,
@@ -362,6 +373,64 @@ impl AnthropicMessagesBackend {
         headers
     }
 
+    /// Build the JSON body with `stream: true` for SSE streaming.
+    fn build_streaming_body(
+        &self,
+        messages: &[Value],
+        tools: &RenderedTools,
+    ) -> Result<Vec<u8>, LlmError> {
+        let RenderedTools::JsonArray(tools) = tools else {
+            return Err(LlmError::Backend("expected json tool array".into()));
+        };
+
+        let mut system_prompt = Vec::new();
+        let mut anthropic_messages = Vec::with_capacity(messages.len());
+
+        for message in messages {
+            let Some(role) = message.get("role").and_then(Value::as_str) else {
+                anthropic_messages.push(message.clone());
+                continue;
+            };
+
+            if role == "system" {
+                if let Some(content) = message.get("content") {
+                    if let Some(text) = content.as_str() {
+                        system_prompt.push(text.to_string());
+                    } else if let Some(parts) = content.as_array() {
+                        system_prompt.extend(parts.iter().filter_map(|part| {
+                            (part.get("type").and_then(Value::as_str) == Some("text"))
+                                .then(|| part.get("text").and_then(Value::as_str))
+                                .flatten()
+                                .map(str::to_string)
+                        }));
+                    }
+                }
+                continue;
+            }
+
+            anthropic_messages.push(message.clone());
+        }
+
+        crate::translate::claude::inject_cache_markers(&mut anthropic_messages);
+
+        let mut body = json!({
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "messages": anthropic_messages,
+            "tools": tools,
+            "stream": true,
+        });
+
+        if !system_prompt.is_empty() {
+            let mut system = Value::String(system_prompt.join("\n"));
+            let _ = crate::translate::claude::inject_cache_markers_into_content(&mut system);
+            body["system"] = system;
+        }
+
+        serde_json::to_vec(&body)
+            .map_err(|err| LlmError::Backend(format!("serialize streaming body: {err}")))
+    }
+
     fn build_body(&self, messages: &[Value], tools: &RenderedTools) -> Result<Vec<u8>, LlmError> {
         let RenderedTools::JsonArray(tools) = tools else {
             return Err(LlmError::Backend("expected json tool array".into()));
@@ -542,6 +611,207 @@ impl LlmBackend for AnthropicMessagesBackend {
             recorder.record_provider_success(&self.provider_id);
         }
         Ok(response)
+    }
+
+    async fn stream_turn(
+        &self,
+        messages: &[Value],
+        tools: &RenderedTools,
+        _session: &SessionState,
+        config: &TurnConfig,
+    ) -> Result<futures::stream::BoxStream<'static, Result<StreamEvent, LlmError>>, LlmError> {
+        let _permit = match (&self.provider_id, &self.provider_semaphores) {
+            (provider_id, Some(provider_semaphores)) => {
+                provider_semaphores.acquire(provider_id).await.ok()
+            }
+            _ => None,
+        };
+
+        let body_bytes = self.build_streaming_body(messages, tools)?;
+
+        if let Some(limiter) = &self.rate_limiter
+            && limiter.try_acquire(&self.provider_id).await.is_err()
+        {
+            return Err(LlmError::Provider(ProviderError::RateLimit {
+                retry_after_ms: None,
+            }));
+        }
+
+        let request_timeout = config.request_timeout;
+        let mut req = crate::provider::shared_http_client()
+            .post(self.endpoint())
+            .timeout(request_timeout);
+        for (key, value) in &self.headers() {
+            req = req.header(key.as_str(), value.as_str());
+        }
+
+        let response = req
+            .body(body_bytes)
+            .send()
+            .await
+            .map_err(|e| {
+                let mapped = LlmError::Network(format!("request failed: {e}"));
+                self.record_failure(&mapped);
+                mapped
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let retry_after = crate::http::extract_retry_after_from_response(&response);
+            let text = response
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("read error body: {e}"));
+
+            let mapped = if status.as_u16() == 429 || status.as_u16() == 529 {
+                LlmError::Provider(ProviderError::RateLimit {
+                    retry_after_ms: retry_after.map(|s| s * 1000),
+                })
+            } else {
+                let raw_err = crate::http::HttpPostError::http_with_retry_after(
+                    status.as_u16(),
+                    text,
+                    retry_after,
+                );
+                LlmError::Network(map_provider_error(
+                    ProviderKind::AnthropicApi,
+                    &self.provider_id,
+                    self.api_key_env.as_deref(),
+                    Some(&self.base_url),
+                    &raw_err,
+                ))
+            };
+            self.record_failure(&mapped);
+            return Err(mapped);
+        }
+
+        // Spawn a background task that reads SSE chunks from the HTTP
+        // response, decodes them through the Anthropic stream parser, and
+        // sends canonical StreamEvent values through a channel.
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<StreamEvent, LlmError>>(256);
+        let endpoint = self.endpoint();
+
+        let ttft_timeout = Duration::from_millis(
+            config.ttft_timeout.as_millis().min(STREAM_TTFT_TIMEOUT_MS as u128) as u64,
+        );
+        let idle_timeout = Duration::from_millis(STREAM_IDLE_TIMEOUT_MS);
+
+        tokio::spawn(async move {
+            use super::stream::{AnthropicStreamState, SseLineDecoder, parse_sse_frames};
+
+            let mut response = response;
+            let mut decoder = SseLineDecoder::new();
+            let mut state = AnthropicStreamState::new();
+            let mut first_chunk = true;
+            let mut first_semantic_event = true;
+
+            loop {
+                let chunk_fut = response.chunk();
+                let timeout = if first_chunk {
+                    first_chunk = false;
+                    ttft_timeout
+                } else {
+                    idle_timeout
+                };
+
+                let chunk = match tokio::time::timeout(timeout, chunk_fut).await {
+                    Ok(Ok(Some(bytes))) => bytes,
+                    Ok(Ok(None)) => {
+                        // Stream ended normally.
+                        break;
+                    }
+                    Ok(Err(e)) => {
+                        let _ = tx
+                            .send(Err(LlmError::Network(format!(
+                                "read SSE chunk: {e}"
+                            ))))
+                            .await;
+                        return;
+                    }
+                    Err(_) => {
+                        let kind = if first_semantic_event {
+                            "TTFT"
+                        } else {
+                            "idle"
+                        };
+                        let _ = tx
+                            .send(Err(LlmError::Timeout(format!(
+                                "{kind} timeout on {endpoint}: no data within {}ms",
+                                timeout.as_millis()
+                            ))))
+                            .await;
+                        return;
+                    }
+                };
+
+                if let Err(e) = decoder.push(&chunk) {
+                    let _ = tx.send(Err(e)).await;
+                    return;
+                }
+
+                let lines = decoder.drain_lines();
+                let frames = parse_sse_frames(&lines);
+
+                for (event_type, data) in frames {
+                    match state.process_sse_event(&event_type, &data) {
+                        Ok(events) => {
+                            for event in events {
+                                if first_semantic_event {
+                                    let is_semantic = matches!(
+                                        event.kind,
+                                        StreamEventKind::TextDelta(_)
+                                            | StreamEventKind::ReasoningDelta(_)
+                                            | StreamEventKind::ToolCallStart { .. }
+                                    );
+                                    if is_semantic {
+                                        first_semantic_event = false;
+                                    }
+                                }
+                                if tx.send(Ok(event)).await.is_err() {
+                                    // Receiver dropped -- cancel the stream promptly.
+                                    return;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            let _ = tx.send(Err(e)).await;
+                            return;
+                        }
+                    }
+                }
+            }
+
+            // Flush any remaining unterminated data.
+            if let Some(remaining) = decoder.flush() {
+                let lines = vec![remaining];
+                let frames = parse_sse_frames(&lines);
+                for (event_type, data) in frames {
+                    match state.process_sse_event(&event_type, &data) {
+                        Ok(events) => {
+                            for event in events {
+                                if tx.send(Ok(event)).await.is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            let _ = tx.send(Err(e)).await;
+                            return;
+                        }
+                    }
+                }
+            }
+
+            // If the stream ended without a Done event (truncation),
+            // do NOT emit a synthetic Done -- the spec says truncation
+            // must never emit Done.
+        });
+
+        // Convert tokio mpsc::Receiver into a futures::Stream.
+        let stream = futures::stream::unfold(rx, |mut rx| async move {
+            rx.recv().await.map(|item| (item, rx))
+        });
+        Ok(Box::pin(stream))
     }
 
     fn extract_session(&self, response: &BackendResponse) -> SessionState {
@@ -1005,5 +1275,498 @@ mod tests {
             ),
             "expected Provider(RateLimit {{ None }}), got {err:?}"
         );
+    }
+
+    // ─── stream_turn integration tests (backlog #192) ─────────────────
+
+    /// Helper: spawn a local TCP server that sends an SSE response.
+    ///
+    /// The caller provides the raw SSE body (with `event:` and `data:` lines).
+    /// The server writes HTTP/1.1 200 with `Content-Type: text/event-stream`.
+    fn spawn_sse_server(sse_body: String) -> String {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let addr = listener.local_addr().expect("server addr");
+
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept request");
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .expect("set read timeout");
+
+            // Consume the full request before responding.
+            let mut buf = Vec::new();
+            let mut header_end = None;
+            let mut content_length = None;
+            loop {
+                let mut chunk = [0_u8; 4096];
+                let n = stream.read(&mut chunk).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                if header_end.is_none() {
+                    if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        header_end = Some(pos + 4);
+                        let headers = String::from_utf8_lossy(&buf[..pos + 4]);
+                        content_length = headers.lines().find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        });
+                    }
+                }
+                if let (Some(he), Some(cl)) = (header_end, content_length) {
+                    if buf.len() >= he + cl {
+                        break;
+                    }
+                }
+            }
+
+            let response = format!(
+                "HTTP/1.1 200 OK\r\n\
+                 Content-Type: text/event-stream\r\n\
+                 Transfer-Encoding: chunked\r\n\
+                 Connection: close\r\n\
+                 \r\n"
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write response headers");
+
+            // Write SSE body in HTTP chunked encoding.
+            let body_bytes = sse_body.as_bytes();
+            let chunk_header = format!("{:x}\r\n", body_bytes.len());
+            stream
+                .write_all(chunk_header.as_bytes())
+                .expect("write chunk header");
+            stream.write_all(body_bytes).expect("write chunk body");
+            stream.write_all(b"\r\n").expect("write chunk crlf");
+            // Final empty chunk to signal end of response.
+            stream.write_all(b"0\r\n\r\n").expect("write final chunk");
+            stream.flush().expect("flush response");
+        });
+
+        format!("http://{}", addr)
+    }
+
+    /// Collect all events from a `stream_turn` call into a `Vec`.
+    async fn collect_events(
+        mut stream: futures::stream::BoxStream<'static, Result<StreamEvent, LlmError>>,
+    ) -> Result<Vec<StreamEvent>, LlmError> {
+        use futures::StreamExt;
+        let mut events = Vec::new();
+        while let Some(item) = stream.next().await {
+            events.push(item?);
+        }
+        Ok(events)
+    }
+
+    #[tokio::test]
+    async fn anthropic_stream_text_response() {
+        let sse = "\
+event: message_start\n\
+data: {\"message\":{\"id\":\"msg_s1\",\"usage\":{\"input_tokens\":20,\"cache_read_input_tokens\":3,\"cache_creation_input_tokens\":0}}}\n\
+\n\
+event: content_block_start\n\
+data: {\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\
+\n\
+event: content_block_delta\n\
+data: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\
+\n\
+event: content_block_delta\n\
+data: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\", world!\"}}\n\
+\n\
+event: content_block_stop\n\
+data: {\"index\":0}\n\
+\n\
+event: message_delta\n\
+data: {\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":8}}\n\
+\n\
+event: message_stop\n\
+data: {}\n\
+\n";
+
+        let base_url = spawn_sse_server(sse.to_string());
+
+        let backend = AnthropicMessagesBackend::new("test-key", "claude-sonnet-4-6")
+            .with_base_url(base_url);
+
+        let stream = backend
+            .stream_turn(
+                &[json!({"role": "user", "content": "hi"})],
+                &RenderedTools::JsonArray(json!([])),
+                &SessionState::default(),
+                &TurnConfig::default(),
+            )
+            .await
+            .expect("stream_turn");
+
+        let events = collect_events(stream).await.expect("collect events");
+
+        // First text event emitted before response completion
+        let first_text = events
+            .iter()
+            .find(|e| matches!(e.kind, StreamEventKind::TextDelta(_)));
+        assert!(first_text.is_some(), "should have text delta");
+
+        let text: String = events
+            .iter()
+            .filter_map(|e| {
+                if let StreamEventKind::TextDelta(t) = &e.kind {
+                    Some(t.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(text, "Hello, world!");
+
+        // Usage equals fixture totals without duplication
+        let final_usage = events
+            .iter()
+            .filter_map(|e| {
+                if let StreamEventKind::Usage(u) = &e.kind {
+                    Some(u)
+                } else {
+                    None
+                }
+            })
+            .last()
+            .expect("should have usage");
+        assert_eq!(final_usage.input_tokens, 20);
+        assert_eq!(final_usage.output_tokens, 8);
+        assert_eq!(final_usage.cache_read_tokens, 3);
+
+        // Exactly one Done event
+        let done_count = events
+            .iter()
+            .filter(|e| matches!(e.kind, StreamEventKind::Done { .. }))
+            .count();
+        assert_eq!(done_count, 1);
+    }
+
+    #[tokio::test]
+    async fn anthropic_stream_parallel_tool_calls() {
+        let sse = "\
+event: message_start\n\
+data: {\"message\":{\"id\":\"msg_s2\",\"usage\":{\"input_tokens\":40,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0}}}\n\
+\n\
+event: content_block_start\n\
+data: {\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_a\",\"name\":\"read_file\"}}\n\
+\n\
+event: content_block_start\n\
+data: {\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_b\",\"name\":\"write_file\"}}\n\
+\n\
+event: content_block_delta\n\
+data: {\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\":\"}}\n\
+\n\
+event: content_block_delta\n\
+data: {\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\":\"}}\n\
+\n\
+event: content_block_delta\n\
+data: {\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"foo.txt\\\"}\"}}\n\
+\n\
+event: content_block_delta\n\
+data: {\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"bar.txt\\\",\\\"content\\\":\\\"hello\\\"}\"}}\n\
+\n\
+event: content_block_stop\n\
+data: {\"index\":0}\n\
+\n\
+event: content_block_stop\n\
+data: {\"index\":1}\n\
+\n\
+event: message_delta\n\
+data: {\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":22}}\n\
+\n\
+event: message_stop\n\
+data: {}\n\
+\n";
+
+        let base_url = spawn_sse_server(sse.to_string());
+
+        let backend = AnthropicMessagesBackend::new("test-key", "claude-sonnet-4-6")
+            .with_base_url(base_url);
+
+        let stream = backend
+            .stream_turn(
+                &[json!({"role": "user", "content": "use tools"})],
+                &RenderedTools::JsonArray(json!([])),
+                &SessionState::default(),
+                &TurnConfig::default(),
+            )
+            .await
+            .expect("stream_turn");
+
+        let events = collect_events(stream).await.expect("collect events");
+
+        // Verify one start/end pair per tool
+        let starts: Vec<_> = events
+            .iter()
+            .filter_map(|e| {
+                if let StreamEventKind::ToolCallStart { id, name } = &e.kind {
+                    Some((id.as_str(), name.as_str()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(starts.len(), 2);
+        assert_eq!(starts[0], ("call_a", "read_file"));
+        assert_eq!(starts[1], ("call_b", "write_file"));
+
+        let ends: Vec<_> = events
+            .iter()
+            .filter_map(|e| {
+                if let StreamEventKind::ToolCallEnd { id, name, args } = &e.kind {
+                    Some((id.as_str(), name.as_str(), args.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(ends.len(), 2);
+        assert_eq!(ends[0].0, "call_a");
+        assert_eq!(ends[0].1, "read_file");
+        assert_eq!(ends[0].2, json!({"path": "foo.txt"}));
+        assert_eq!(ends[1].0, "call_b");
+        assert_eq!(ends[1].1, "write_file");
+        assert_eq!(ends[1].2, json!({"path": "bar.txt", "content": "hello"}));
+
+        // Verify usage
+        let final_usage = events
+            .iter()
+            .filter_map(|e| {
+                if let StreamEventKind::Usage(u) = &e.kind {
+                    Some(u)
+                } else {
+                    None
+                }
+            })
+            .last()
+            .expect("should have usage");
+        assert_eq!(final_usage.input_tokens, 40);
+        assert_eq!(final_usage.output_tokens, 22);
+
+        // Verify finish reason
+        let done = events
+            .iter()
+            .find(|e| matches!(e.kind, StreamEventKind::Done { .. }))
+            .expect("should have done");
+        assert!(matches!(
+            &done.kind,
+            StreamEventKind::Done { finish_reason } if finish_reason == "tool_calls"
+        ));
+    }
+
+    #[tokio::test]
+    async fn anthropic_stream_error_frame_no_done() {
+        let sse = "\
+event: message_start\n\
+data: {\"message\":{\"id\":\"msg_s3\",\"usage\":{\"input_tokens\":10,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0}}}\n\
+\n\
+event: content_block_start\n\
+data: {\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\
+\n\
+event: content_block_delta\n\
+data: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}\n\
+\n\
+event: error\n\
+data: {\"error\":{\"type\":\"overloaded_error\",\"message\":\"API is overloaded\"}}\n\
+\n";
+
+        let base_url = spawn_sse_server(sse.to_string());
+
+        let backend = AnthropicMessagesBackend::new("test-key", "claude-sonnet-4-6")
+            .with_base_url(base_url);
+
+        let stream = backend
+            .stream_turn(
+                &[json!({"role": "user", "content": "hi"})],
+                &RenderedTools::JsonArray(json!([])),
+                &SessionState::default(),
+                &TurnConfig::default(),
+            )
+            .await
+            .expect("stream_turn should succeed (error is in-stream)");
+
+        // Collect events -- should get some events before the error.
+        use futures::StreamExt;
+        let mut stream = stream;
+        let mut events = Vec::new();
+        let mut error = None;
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(event) => events.push(event),
+                Err(e) => {
+                    error = Some(e);
+                    break;
+                }
+            }
+        }
+
+        // Earlier deltas should be observable.
+        let text: Vec<_> = events
+            .iter()
+            .filter_map(|e| {
+                if let StreamEventKind::TextDelta(t) = &e.kind {
+                    Some(t.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(text, vec!["partial"]);
+
+        // Error should be present.
+        assert!(error.is_some(), "should have error from stream");
+        assert!(
+            error.unwrap().to_string().contains("API is overloaded"),
+            "error should contain overloaded message"
+        );
+
+        // Done should NOT have been emitted.
+        let done_count = events
+            .iter()
+            .filter(|e| matches!(e.kind, StreamEventKind::Done { .. }))
+            .count();
+        assert_eq!(done_count, 0, "error/truncation must never emit Done");
+    }
+
+    #[tokio::test]
+    async fn anthropic_stream_body_includes_stream_true() {
+        let backend = AnthropicMessagesBackend::new("test-key", "claude-sonnet-4-6");
+        let body_bytes = backend
+            .build_streaming_body(
+                &[json!({"role": "user", "content": "hi"})],
+                &RenderedTools::JsonArray(json!([])),
+            )
+            .expect("build streaming body");
+        let body: Value = serde_json::from_slice(&body_bytes).expect("parse body");
+        assert_eq!(body["stream"], true, "streaming body must include stream: true");
+        assert_eq!(body["model"], "claude-sonnet-4-6");
+    }
+
+    #[tokio::test]
+    async fn anthropic_stream_cancellation_closes_stream() {
+        // Test that dropping the receiver ends the spawned task promptly.
+        let sse = "\
+event: message_start\n\
+data: {\"message\":{\"id\":\"msg_s4\",\"usage\":{\"input_tokens\":5,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0}}}\n\
+\n\
+event: content_block_start\n\
+data: {\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\
+\n\
+event: content_block_delta\n\
+data: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"content\"}}\n\
+\n\
+event: message_delta\n\
+data: {\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\
+\n\
+event: message_stop\n\
+data: {}\n\
+\n";
+
+        let base_url = spawn_sse_server(sse.to_string());
+
+        let backend = AnthropicMessagesBackend::new("test-key", "claude-sonnet-4-6")
+            .with_base_url(base_url);
+
+        let stream = backend
+            .stream_turn(
+                &[json!({"role": "user", "content": "hi"})],
+                &RenderedTools::JsonArray(json!([])),
+                &SessionState::default(),
+                &TurnConfig::default(),
+            )
+            .await
+            .expect("stream_turn");
+
+        // Drop the stream immediately -- the spawned task should exit
+        // without waiting for the request timeout.
+        drop(stream);
+
+        // Give a brief moment for the task to clean up.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // If we get here without hanging, cancellation worked.
+    }
+
+    #[tokio::test]
+    async fn anthropic_stream_thinking_deltas() {
+        let sse = "\
+event: message_start\n\
+data: {\"message\":{\"id\":\"msg_s5\",\"usage\":{\"input_tokens\":15,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0}}}\n\
+\n\
+event: content_block_start\n\
+data: {\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\
+\n\
+event: content_block_delta\n\
+data: {\"index\":0,\"delta\":{\"type\":\"thinking\",\"thinking\":\"Let me think.\"}}\n\
+\n\
+event: content_block_stop\n\
+data: {\"index\":0}\n\
+\n\
+event: content_block_start\n\
+data: {\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\
+\n\
+event: content_block_delta\n\
+data: {\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"The answer.\"}}\n\
+\n\
+event: content_block_stop\n\
+data: {\"index\":1}\n\
+\n\
+event: message_delta\n\
+data: {\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":10}}\n\
+\n\
+event: message_stop\n\
+data: {}\n\
+\n";
+
+        let base_url = spawn_sse_server(sse.to_string());
+
+        let backend = AnthropicMessagesBackend::new("test-key", "claude-sonnet-4-6")
+            .with_base_url(base_url);
+
+        let stream = backend
+            .stream_turn(
+                &[json!({"role": "user", "content": "think"})],
+                &RenderedTools::JsonArray(json!([])),
+                &SessionState::default(),
+                &TurnConfig::default(),
+            )
+            .await
+            .expect("stream_turn");
+
+        let events = collect_events(stream).await.expect("collect events");
+
+        // Reasoning deltas should be present
+        let reasoning: Vec<_> = events
+            .iter()
+            .filter_map(|e| {
+                if let StreamEventKind::ReasoningDelta(t) = &e.kind {
+                    Some(t.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(reasoning, vec!["Let me think."]);
+
+        // Text deltas should also be present
+        let text: Vec<_> = events
+            .iter()
+            .filter_map(|e| {
+                if let StreamEventKind::TextDelta(t) = &e.kind {
+                    Some(t.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(text, vec!["The answer."]);
     }
 }

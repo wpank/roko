@@ -39,6 +39,7 @@
 //! Then add a model entry pointing to it (with `tool_format = "anthropic_blocks"`).
 //! Run `cargo test -p roko-agent -- anthropic` to verify the adapter before enabling.
 
+pub mod stream;
 pub mod tool_loop;
 
 use crate::Agent;

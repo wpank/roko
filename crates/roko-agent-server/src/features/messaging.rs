@@ -269,8 +269,6 @@ mod tests {
     };
     use futures::SinkExt;
     use roko_agent::chat_types::{ChatResponse, FinishReason};
-    use roko_agent::dispatcher::{HandlerResolver, ToolDispatcher};
-    use roko_core::tool::{ToolHandler, ToolRegistry, VecToolRegistry};
     use tokio::{net::TcpListener, task::JoinHandle};
     use tokio_tungstenite::{
         MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message as ClientMessage,
@@ -315,13 +313,6 @@ mod tests {
         }
     }
 
-    fn tool_dispatcher() -> Arc<ToolDispatcher> {
-        let registry: Arc<dyn ToolRegistry> = Arc::new(VecToolRegistry::new());
-        let resolver: Arc<dyn HandlerResolver> =
-            Arc::new(|_name: &str| -> Option<Arc<dyn ToolHandler>> { None });
-        Arc::new(ToolDispatcher::new(registry, resolver))
-    }
-
     fn chat_response(content: &str) -> ChatResponse {
         ChatResponse {
             content: content.to_string(),
@@ -330,10 +321,7 @@ mod tests {
         }
     }
 
-    fn test_state(
-        with_tool_dispatcher: bool,
-        dispatcher: Option<Arc<dyn DispatchLike>>,
-    ) -> Arc<AgentState> {
+    fn test_state(dispatcher: Option<Arc<dyn DispatchLike>>) -> Arc<AgentState> {
         let mut state = AgentState::new(
             "agent-1".to_string(),
             None,
@@ -343,9 +331,6 @@ mod tests {
             None,
             None,
         );
-        if with_tool_dispatcher {
-            state = state.with_dispatcher(tool_dispatcher());
-        }
         if let Some(dispatcher) = dispatcher {
             state = state.with_message_dispatcher(dispatcher);
         }
@@ -395,14 +380,11 @@ mod tests {
 
     #[tokio::test]
     async fn message_with_mock_dispatcher_returns_real_content() {
-        let state = test_state(
-            true,
-            Some(Arc::new(MockDispatcher {
-                response: chat_response("Hello, test"),
-                stream_chunks: Vec::new(),
-                error: None,
-            })),
-        );
+        let state = test_state(Some(Arc::new(MockDispatcher {
+            response: chat_response("Hello, test"),
+            stream_chunks: Vec::new(),
+            error: None,
+        })));
         let response = router()
             .with_state(state)
             .oneshot(message_request_json(json!({ "prompt": "ping" })))
@@ -418,7 +400,7 @@ mod tests {
     #[tokio::test]
     async fn message_without_dispatcher_returns_503() {
         let response = router()
-            .with_state(test_state(false, None))
+            .with_state(test_state(None))
             .oneshot(message_request_json(json!({ "prompt": "ping" })))
             .await
             .expect("response");
@@ -435,14 +417,11 @@ mod tests {
 
     #[tokio::test]
     async fn message_dispatch_error_returns_502() {
-        let state = test_state(
-            true,
-            Some(Arc::new(MockDispatcher {
-                response: ChatResponse::default(),
-                stream_chunks: Vec::new(),
-                error: Some(SidecarDispatchError::DispatchFailed("boom".to_string())),
-            })),
-        );
+        let state = test_state(Some(Arc::new(MockDispatcher {
+            response: ChatResponse::default(),
+            stream_chunks: Vec::new(),
+            error: Some(SidecarDispatchError::DispatchFailed("boom".to_string())),
+        })));
         let response = router()
             .with_state(state)
             .oneshot(message_request_json(json!({ "prompt": "ping" })))
@@ -461,14 +440,11 @@ mod tests {
 
     #[tokio::test]
     async fn message_preserves_context() {
-        let state = test_state(
-            true,
-            Some(Arc::new(MockDispatcher {
-                response: chat_response("Hello, test"),
-                stream_chunks: Vec::new(),
-                error: None,
-            })),
-        );
+        let state = test_state(Some(Arc::new(MockDispatcher {
+            response: chat_response("Hello, test"),
+            stream_chunks: Vec::new(),
+            error: None,
+        })));
         let response = router()
             .with_state(state)
             .oneshot(message_request_json(json!({
@@ -485,14 +461,11 @@ mod tests {
 
     #[tokio::test]
     async fn stream_with_mock_dispatcher_streams_chunks() {
-        let state = test_state(
-            true,
-            Some(Arc::new(MockDispatcher {
-                response: chat_response("Hello, world"),
-                stream_chunks: vec!["Hello".to_string(), ", ".to_string(), "world".to_string()],
-                error: None,
-            })),
-        );
+        let state = test_state(Some(Arc::new(MockDispatcher {
+            response: chat_response("Hello, world"),
+            stream_chunks: vec!["Hello".to_string(), ", ".to_string(), "world".to_string()],
+            error: None,
+        })));
         let (addr, handle) = spawn_ws_server(state).await;
         let url = format!("ws://{addr}/stream");
         let (mut socket, _) = connect_async(&url).await.expect("connect websocket");

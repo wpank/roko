@@ -14,7 +14,6 @@ use roko_agent::chat_types::{
     ChatRequest, ChatResponse, FinishReason, RequestOptions, ResponseMetadata, SessionState,
     ToolChoice,
 };
-use roko_agent::dispatcher::ToolDispatcher;
 use roko_agent::streaming::StreamChunk;
 use roko_agent::tool_loop::LlmBackend;
 use roko_agent::translate::{BackendResponse, RenderedTools, normalize_finish_reason};
@@ -475,7 +474,6 @@ pub struct AgentState {
     #[allow(dead_code)]
     llm_backend: Option<Arc<dyn LlmBackend>>,
     message_dispatcher: Option<Arc<dyn DispatchLike>>,
-    dispatcher: Option<Arc<ToolDispatcher>>,
     #[allow(dead_code)]
     knowledge_store: Option<Arc<KnowledgeStore>>,
     predictions: Mutex<Vec<AgentPrediction>>,
@@ -513,7 +511,6 @@ impl AgentState {
             chain_client,
             llm_backend,
             message_dispatcher,
-            dispatcher: None,
             knowledge_store,
             predictions: Mutex::new(Vec::new()),
             tasks: Mutex::new(VecDeque::new()),
@@ -608,19 +605,6 @@ impl AgentState {
     pub fn with_log_path(mut self, log_path: impl Into<PathBuf>) -> Self {
         self.log_path = log_path.into();
         self
-    }
-
-    /// Attach a dispatcher used to service agent messages.
-    #[must_use]
-    pub fn with_dispatcher(mut self, dispatcher: Arc<ToolDispatcher>) -> Self {
-        self.dispatcher = Some(dispatcher);
-        self
-    }
-
-    /// Borrow the configured dispatcher, if one is attached.
-    #[must_use]
-    pub const fn dispatcher(&self) -> Option<&Arc<ToolDispatcher>> {
-        self.dispatcher.as_ref()
     }
 
     /// Build the public capabilities manifest.

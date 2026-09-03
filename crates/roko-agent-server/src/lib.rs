@@ -15,7 +15,6 @@ use tokio::net::TcpListener;
 use tokio::time::MissedTickBehavior;
 use tower_http::trace::TraceLayer;
 
-use roko_agent::dispatcher::ToolDispatcher;
 use roko_agent::tool_loop::LlmBackend;
 use roko_chain::ChainClient;
 use roko_neuro::KnowledgeStore;
@@ -178,7 +177,6 @@ pub struct AgentServerBuilder {
     chain_client: Option<Arc<dyn ChainClient>>,
     llm_backend: Option<Arc<dyn LlmBackend>>,
     knowledge_store: Option<Arc<KnowledgeStore>>,
-    dispatcher: Option<Arc<ToolDispatcher>>,
     message_dispatcher: Option<Arc<dyn DispatchLike>>,
     features: FeatureFlags,
     on_start: Option<StartHook>,
@@ -242,13 +240,6 @@ impl AgentServerBuilder {
     #[must_use]
     pub fn chain_client(mut self, client: Arc<dyn ChainClient>) -> Self {
         self.chain_client = Some(client);
-        self
-    }
-
-    /// Attach an optional tool dispatcher for message handling.
-    #[must_use]
-    pub fn with_dispatcher(mut self, dispatcher: Arc<ToolDispatcher>) -> Self {
-        self.dispatcher = Some(dispatcher);
         self
     }
 
@@ -359,9 +350,6 @@ impl AgentServerBuilder {
         );
         if let Some(log_path) = self.log_path {
             state = state.with_log_path(log_path);
-        }
-        if let Some(dispatcher) = self.dispatcher {
-            state = state.with_dispatcher(dispatcher);
         }
         if let Some(dispatcher) = self.message_dispatcher {
             state = state.with_message_dispatcher(dispatcher);

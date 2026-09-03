@@ -68,20 +68,24 @@ pub static TOPICS: &[TopicEntry] = &[
         name: "cognitive",
         title: "Cognitive Architecture",
         summary: "Roko's cognitive architecture is built around one noun (Signal) and \
-                  six verb traits: Store, Score, Verify, Route, Compose, and \
-                  React. Every operation follows the universal loop: query, score, \
-                  route, compose, act, verify, write, react.",
-        detail: "The six traits define the contract for each phase of processing. \
-                 `Store` handles storage, `Score` evaluates quality, `Verify` \
-                 validates correctness, `Route` selects models/agents, `Compose` \
-                 assembles prompts, and `React` governs agent behavior. The \
+                  twelve kernel traits: Store, ColdStore, Score, Verify, Route, Compose, \
+                  React, Bus, Observe, Connect, Trigger, and Substrate. Every operation \
+                  follows the universal loop: query, score, route, compose, act, verify, \
+                  write, react.",
+        detail: "The twelve traits define the contract for each phase of processing. \
+                 `Store` and `ColdStore` handle hot and cold storage, `Score` evaluates \
+                 quality, `Verify` validates correctness, `Route` selects models/agents, \
+                 `Compose` assembles prompts, `React` governs agent behavior, `Bus` \
+                 provides event distribution, `Observe` enables telemetry, `Connect` \
+                 manages relay transport, `Trigger` drives declarative event sources, \
+                 and `Substrate` handles signal persistence. The \
                  `SystemPromptBuilder` in `roko-compose` assembles 9-layer prompts \
                  from role templates, domain context, and runtime state.",
         internals: "Trait definitions live in `crates/roko-core/src/lib.rs`. The \
-                    universal loop is wired in `crates/roko-cli/src/run.rs` via \
-                    `run_once()`. Prompt assembly uses `RoleSystemPromptSpec` in \
-                    `orchestrate.rs`. Templates are in \
-                    `crates/roko-compose/src/templates/` (9 role templates).",
+                    runner-v2 event loop is wired in \
+                    `crates/roko-cli/src/runner/event_loop.rs`. Prompt assembly uses \
+                    `RoleSystemPromptSpec` in the runner module. Templates are in \
+                    `crates/roko-compose/src/templates/` (11 role templates).",
     },
     TopicEntry {
         name: "neuro",
@@ -93,7 +97,7 @@ pub static TOPICS: &[TopicEntry] = &[
                  distillation pipeline extracts key insights from completed episodes \
                  and stores them with embeddings for retrieval. Tier progression \
                  (novice -> competent -> proficient -> expert) tracks mastery of \
-                 topics. Use `roko neuro search <query>` to query the knowledge base.",
+                 topics. Use `roko knowledge query <query>` to search the knowledge base.",
         internals: "Implementation lives in `crates/roko-neuro/`. Signals persist as \
                     JSONL in `.roko/neuro/`. The knowledge graph uses HDC vectors \
                     from `roko-primitives` for similarity search. Distillation runs \
@@ -182,10 +186,10 @@ pub static TOPICS: &[TopicEntry] = &[
                  (implementer, reviewer, architect), runs through gates, and persists \
                  results. Use `roko plan run <dir>` to execute, `--resume` to \
                  continue from a snapshot.",
-        internals: "Plan execution lives in `crates/roko-cli/src/orchestrate.rs` via \
-                    `PlanRunner`. DAG scheduling is owned by `crates/roko-cli/src/orchestrator/`. \
-                    Snapshots persist at `.roko/state/executor.json` for resumability. \
-                    The merge queue handles concurrent task outputs. Process \
+        internals: "Plan execution lives in `crates/roko-cli/src/runner/event_loop.rs` \
+                    via the runner-v2 event loop. DAG scheduling is owned by the runner \
+                    module. Snapshots persist at `.roko/state/state-snapshot.json` for \
+                    resumability. The merge queue handles concurrent task outputs. Process \
                     supervision via `roko-runtime` tracks agent lifecycles.",
     },
     TopicEntry {

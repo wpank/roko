@@ -100,7 +100,16 @@ impl SqliteIndex {
                 UNIQUE(from_file, from_name, from_kind, to_file, to_name, to_kind, edge_kind)
             );
             CREATE INDEX IF NOT EXISTS idx_edges_from ON edges(from_file, from_name);
-            CREATE INDEX IF NOT EXISTS idx_edges_to ON edges(to_file, to_name);",
+            CREATE INDEX IF NOT EXISTS idx_edges_to ON edges(to_file, to_name);
+
+            CREATE TABLE IF NOT EXISTS rankings (
+                file_path TEXT NOT NULL,
+                name      TEXT NOT NULL,
+                kind      TEXT NOT NULL,
+                score     REAL NOT NULL,
+                UNIQUE(file_path, name, kind)
+            );
+            CREATE INDEX IF NOT EXISTS idx_rankings_score ON rankings(score DESC);",
         )?;
         self.create_fts_table()?;
         Ok(())
@@ -338,6 +347,72 @@ impl SqliteIndex {
         Ok(stats)
     }
 
+    /// Insert or replace a ranking score for a symbol.
+    pub fn insert_ranking(&self, id: &SymbolId, score: f64) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO rankings (file_path, name, kind, score)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                id.file_path,
+                id.symbol_name,
+                format!("{:?}", id.kind),
+                score,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Query the top-N ranked symbols by PageRank score.
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    pub fn top_rankings(&self, limit: usize) -> Result<Vec<(SymbolId, f64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT file_path, name, kind, score FROM rankings
+             ORDER BY score DESC
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            let file_path: String = row.get(0)?;
+            let name: String = row.get(1)?;
+            let kind_str: String = row.get(2)?;
+            let score: f64 = row.get(3)?;
+            Ok((file_path, name, kind_str, score))
+        })?;
+        let mut results = Vec::new();
+        for row in rows {
+            let (file_path, name, kind_str, score) = row?;
+            let kind = parse_symbol_kind(&kind_str);
+            results.push((SymbolId::new(file_path, name, kind), score));
+        }
+        Ok(results)
+    }
+
+    /// Look up the stored ranking score for a specific symbol.
+    pub fn ranking_for(&self, id: &SymbolId) -> Result<Option<f64>> {
+        let result = self.conn.query_row(
+            "SELECT score FROM rankings WHERE file_path = ?1 AND name = ?2 AND kind = ?3",
+            params![
+                id.file_path,
+                id.symbol_name,
+                format!("{:?}", id.kind),
+            ],
+            |row| row.get(0),
+        );
+        match result {
+            Ok(score) => Ok(Some(score)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Total number of ranking entries stored.
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    pub fn ranking_count(&self) -> Result<usize> {
+        let count: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM rankings", [], |row| row.get(0))?;
+        Ok(count.max(0) as usize)
+    }
+
     /// Total number of symbols stored.
     #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
     pub fn symbol_count(&self) -> Result<usize> {
@@ -398,7 +473,8 @@ fn parse_visibility(s: &str) -> Visibility {
 // ─── IndexStore facade ──────────────────────────────────────────────────
 
 /// Current schema version. Bump whenever the table layout changes.
-const SCHEMA_VERSION: i64 = 1;
+/// v2: added `rankings` table for PageRank score persistence (#362).
+const SCHEMA_VERSION: i64 = 2;
 
 /// Busy timeout in milliseconds for concurrent access.
 const BUSY_TIMEOUT_MS: u64 = 5_000;
@@ -549,6 +625,21 @@ impl IndexStore {
         edges: &[(SymbolId, SymbolId, EdgeKind)],
         file_records: &[FileRecord],
     ) -> Result<Self> {
+        Self::build_with_rankings(root, symbols, edges, file_records, &[])
+    }
+
+    /// Build a new index database with ranking data, atomically replacing any
+    /// existing one.
+    ///
+    /// Like [`build`](Self::build) but additionally persists PageRank scores
+    /// in the `rankings` table.
+    pub fn build_with_rankings(
+        root: &Path,
+        symbols: &[SymbolInfo],
+        edges: &[(SymbolId, SymbolId, EdgeKind)],
+        file_records: &[FileRecord],
+        rankings: &[RankingRecord],
+    ) -> Result<Self> {
         let root = std::fs::canonicalize(root)
             .with_context(|| format!("canonicalize root {}", root.display()))?;
         let db_path = Self::db_path_for(&root);
@@ -641,6 +732,20 @@ impl IndexStore {
                         to.symbol_name,
                         format!("{:?}", to.kind),
                         format!("{:?}", kind),
+                    ],
+                )?;
+            }
+
+            // Insert ranking scores (PageRank).
+            for ranking in rankings {
+                tx.execute(
+                    "INSERT OR REPLACE INTO rankings (file_path, name, kind, score)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![
+                        ranking.id.file_path,
+                        ranking.id.symbol_name,
+                        format!("{:?}", ranking.id.kind),
+                        ranking.score,
                     ],
                 )?;
             }
@@ -913,6 +1018,15 @@ pub struct FileRecord {
     pub path: String,
     /// Raw file content (used for content hashing).
     pub content: String,
+}
+
+/// A symbol's ranking score for persistence.
+#[derive(Clone, Debug)]
+pub struct RankingRecord {
+    /// Symbol identifier.
+    pub id: SymbolId,
+    /// PageRank score.
+    pub score: f64,
 }
 
 #[cfg(test)]
@@ -1277,5 +1391,117 @@ mod tests {
         assert_eq!(results1.len(), 1);
         assert_eq!(results2.len(), 1);
         assert_eq!(results1[0].line, results2[0].line);
+    }
+
+    // ── Ranking tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn insert_and_query_rankings() {
+        let db = SqliteIndex::open_in_memory().expect("open in-memory db");
+
+        let id1 = SymbolId::new("lib.rs", "main", SymbolKind::Function);
+        let id2 = SymbolId::new("lib.rs", "Config", SymbolKind::Struct);
+        db.insert_ranking(&id1, 0.42).expect("insert ranking 1");
+        db.insert_ranking(&id2, 0.85).expect("insert ranking 2");
+
+        assert_eq!(db.ranking_count().expect("count"), 2);
+
+        let top = db.top_rankings(10).expect("top rankings");
+        assert_eq!(top.len(), 2);
+        // Highest score first.
+        assert_eq!(top[0].0.symbol_name, "Config");
+        assert!((top[0].1 - 0.85).abs() < 1e-9);
+        assert_eq!(top[1].0.symbol_name, "main");
+        assert!((top[1].1 - 0.42).abs() < 1e-9);
+    }
+
+    #[test]
+    fn ranking_for_specific_symbol() {
+        let db = SqliteIndex::open_in_memory().expect("open in-memory db");
+
+        let id = SymbolId::new("a.rs", "foo", SymbolKind::Function);
+        assert!(db.ranking_for(&id).expect("lookup").is_none());
+
+        db.insert_ranking(&id, 0.123).expect("insert");
+        let score = db.ranking_for(&id).expect("lookup").expect("present");
+        assert!((score - 0.123).abs() < 1e-9);
+    }
+
+    #[test]
+    fn ranking_upsert_replaces_score() {
+        let db = SqliteIndex::open_in_memory().expect("open in-memory db");
+
+        let id = SymbolId::new("a.rs", "bar", SymbolKind::Function);
+        db.insert_ranking(&id, 0.5).expect("insert");
+        db.insert_ranking(&id, 0.9).expect("upsert");
+
+        assert_eq!(db.ranking_count().expect("count"), 1);
+        let score = db.ranking_for(&id).expect("lookup").expect("present");
+        assert!((score - 0.9).abs() < 1e-9);
+    }
+
+    #[test]
+    fn sqlite_store_build_with_rankings_persists_scores() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".roko")).unwrap();
+
+        let sym = test_symbol("lib.rs", "main", SymbolKind::Function, 1);
+        let fr = FileRecord {
+            path: "lib.rs".into(),
+            content: "fn main() {}".into(),
+        };
+        let ranking = RankingRecord {
+            id: SymbolId::new("lib.rs", "main", SymbolKind::Function),
+            score: 0.75,
+        };
+
+        let store = IndexStore::build_with_rankings(
+            root, &[sym], &[], &[fr], &[ranking],
+        )
+        .expect("build with rankings");
+
+        assert_eq!(store.inner().ranking_count().expect("count"), 1);
+        let top = store.inner().top_rankings(10).expect("top");
+        assert_eq!(top.len(), 1);
+        assert_eq!(top[0].0.symbol_name, "main");
+        assert!((top[0].1 - 0.75).abs() < 1e-9);
+    }
+
+    #[test]
+    fn sqlite_store_rankings_survive_readonly_reopen() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".roko")).unwrap();
+
+        let sym = test_symbol("lib.rs", "main", SymbolKind::Function, 1);
+        let fr = FileRecord {
+            path: "lib.rs".into(),
+            content: "fn main() {}".into(),
+        };
+        let ranking = RankingRecord {
+            id: SymbolId::new("lib.rs", "main", SymbolKind::Function),
+            score: 0.63,
+        };
+        IndexStore::build_with_rankings(root, &[sym], &[], &[fr], &[ranking]).expect("build");
+
+        // Reopen read-only and verify rankings are intact.
+        let store2 = IndexStore::open_readonly(root).expect("open readonly");
+        let top = store2.inner().top_rankings(10).expect("top");
+        assert_eq!(top.len(), 1);
+        assert_eq!(top[0].0.symbol_name, "main");
+        assert!((top[0].1 - 0.63).abs() < 1e-9);
+    }
+
+    #[test]
+    fn sqlite_store_schema_version_is_two() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".roko")).unwrap();
+
+        let store = IndexStore::build(root, &[], &[], &[]).expect("build");
+        let meta = store.meta().expect("meta");
+        assert_eq!(meta.schema_version, SCHEMA_VERSION);
+        assert_eq!(meta.schema_version, 2);
     }
 }

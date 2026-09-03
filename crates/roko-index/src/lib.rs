@@ -56,5 +56,5 @@ pub use workspace::{
 };
 #[cfg(feature = "sqlite")]
 pub use sqlite::{
-    FileRecord, IndexMeta, IndexStore, IndexStoreError, SqliteIndex, UpdateStats,
+    FileRecord, IndexMeta, IndexStore, IndexStoreError, RankingRecord, SqliteIndex, UpdateStats,
 };

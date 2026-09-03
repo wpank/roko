@@ -1657,5 +1657,306 @@ mod tests {
             let _ = client.list_channels(None);
             // wiremock will assert the expectation when dropped.
         }
+
+        // ── Malformed JSON responses (#356) ──────────────────────────────
+
+        #[tokio::test]
+        async fn post_message_malformed_json() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/chat.postMessage"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_string("{not valid json!!!"),
+                )
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client
+                .post_message("C123", "hello", None)
+                .expect_err("should fail on malformed JSON");
+            assert!(err.message.contains("invalid slack response"));
+        }
+
+        #[tokio::test]
+        async fn list_channels_malformed_json() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/conversations.list"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_string("<<garbage>>"),
+                )
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client
+                .list_channels(None)
+                .expect_err("should fail on malformed JSON");
+            assert!(err.message.contains("invalid slack response"));
+        }
+
+        #[tokio::test]
+        async fn get_thread_malformed_json() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/conversations.replies"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_string("not json"),
+                )
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client
+                .get_thread("C123", "1000.0")
+                .expect_err("should fail");
+            assert!(err.message.contains("invalid slack response"));
+        }
+
+        #[tokio::test]
+        async fn add_reaction_malformed_json() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/reactions.add"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_string("{{}}"),
+                )
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client
+                .add_reaction("C123", "1234.5678", "thumbsup")
+                .expect_err("should fail on malformed JSON");
+            assert!(err.message.contains("invalid slack response"));
+        }
+
+        #[tokio::test]
+        async fn update_message_malformed_json() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/chat.update"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_string("[invalid"),
+                )
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client
+                .update_message("C123", "1.0", "new text")
+                .expect_err("should fail on malformed JSON");
+            assert!(err.message.contains("invalid slack response"));
+        }
+
+        #[tokio::test]
+        async fn lookup_user_email_malformed_json() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/users.lookupByEmail"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_string("broken"),
+                )
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client
+                .lookup_user("alice@example.com")
+                .expect_err("should fail on malformed JSON");
+            assert!(err.message.contains("invalid slack response"));
+        }
+
+        #[tokio::test]
+        async fn lookup_user_list_malformed_json() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/users.list"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_string("nope"),
+                )
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client
+                .lookup_user("bob")
+                .expect_err("should fail on malformed JSON");
+            assert!(err.message.contains("invalid slack response"));
+        }
+
+        #[tokio::test]
+        async fn open_dm_channel_malformed_json() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/conversations.open"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_string("{{"),
+                )
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client
+                .open_dm_channel("U999")
+                .expect_err("should fail on malformed JSON");
+            assert!(err.message.contains("invalid slack response"));
+        }
+
+        #[tokio::test]
+        async fn get_channel_history_malformed_json() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/conversations.history"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_string("bad"),
+                )
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client
+                .get_channel_history("C123", None, None, None)
+                .expect_err("should fail on malformed JSON");
+            assert!(err.message.contains("invalid slack response"));
+        }
+
+        // ── Missing required fields in responses (#356) ──────────────────
+
+        #[tokio::test]
+        async fn post_message_missing_channel_and_ts() {
+            let server = MockServer::start().await;
+            // ok:true but no channel or ts fields -- should fail when extracting.
+            Mock::given(method("POST"))
+                .and(path("/chat.postMessage"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": true
+                })))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let resp = client.post_message("C123", "hello", None).expect("ok response");
+            // The method returns the struct but channel/ts are None.
+            assert!(resp.channel.is_none());
+            assert!(resp.ts.is_none());
+        }
+
+        #[tokio::test]
+        async fn open_dm_missing_channel_in_response() {
+            let server = MockServer::start().await;
+            // ok:true but missing the channel field entirely.
+            Mock::given(method("POST"))
+                .and(path("/conversations.open"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": true
+                })))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client
+                .open_dm_channel("U123")
+                .expect_err("should fail with missing channel");
+            assert!(err.message.contains("missing channel"));
+        }
+
+        #[tokio::test]
+        async fn lookup_user_email_missing_user_field() {
+            let server = MockServer::start().await;
+            // ok:true but missing the user field.
+            Mock::given(method("GET"))
+                .and(path("/users.lookupByEmail"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": true
+                })))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client
+                .lookup_user("alice@example.com")
+                .expect_err("should fail with missing user");
+            assert!(err.message.contains("missing user"));
+        }
+
+        // ── ok:false with missing error field ────────────────────────────
+
+        #[tokio::test]
+        async fn post_message_ok_false_without_error_field() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/chat.postMessage"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": false
+                })))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client
+                .post_message("C123", "hello", None)
+                .expect_err("should fail");
+            // Falls back to "unknown" when error field is missing.
+            assert!(err.message.contains("unknown"));
+        }
+
+        #[tokio::test]
+        async fn list_channels_ok_false_without_error_field() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/conversations.list"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": false
+                })))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client
+                .list_channels(None)
+                .expect_err("should fail");
+            assert!(err.message.contains("unknown"));
+        }
+
+        // ── HTTP 429 (rate limit) ────────────────────────────────────────
+
+        #[tokio::test]
+        async fn post_message_http_429_returns_error() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/chat.postMessage"))
+                .respond_with(ResponseTemplate::new(429).set_body_string("Too Many Requests"))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client
+                .post_message("C123", "hello", None)
+                .expect_err("should fail on 429");
+            assert!(err.message.contains("invalid slack response"));
+        }
+
+        // ── Empty body ───────────────────────────────────────────────────
+
+        #[tokio::test]
+        async fn post_message_empty_body() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/chat.postMessage"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(""))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client
+                .post_message("C123", "hello", None)
+                .expect_err("should fail on empty body");
+            assert!(err.message.contains("invalid slack response"));
+        }
     }
 }

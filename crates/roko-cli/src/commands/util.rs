@@ -330,7 +330,9 @@ pub(crate) async fn cmd_run(
     let enabled_gates = roko_cli::run::workflow_enabled_gate_names(&config.gates);
     let shell_gates = roko_cli::run::workflow_shell_gate_commands(&config.gates);
 
-    let result = roko_cli::run::run_workflow_engine_report_with_hub(
+    let route = roko_cli::run::WorkflowExecutionRoute::LegacyDefault;
+    let result = roko_cli::run::run_workflow_report(
+        route,
         &prompt,
         &workdir,
         template,
@@ -1199,113 +1201,98 @@ pub(crate) fn format_cost_breakdown(costs: &HashMap<String, f64>, limit: usize) 
 }
 
 pub(crate) async fn cmd_replay(
+    cli: &Cli,
     workdir: Option<PathBuf>,
     hash: String,
     forensic: bool,
+    from_event: Option<String>,
     as_of: Option<String>,
     format: String,
 ) -> Result<i32> {
-    let workdir = workdir.unwrap_or_else(|| PathBuf::from("."));
-    let substrate = FileSubstrate::open(workdir.join(".roko"))
-        .await
-        .map_err(|e| anyhow!("open substrate: {e}"))?;
+    use roko_cli::replay::{
+        self, ReplayFormat, ReplayResult, REPLAY_EXIT_SUCCESS,
+    };
+
+    // Resolve workdir: subcommand --workdir takes precedence over global --repo.
+    let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
+
+    // Resolve the event filter, preferring --from-event over --as-of.
+    // If --as-of is used, emit a deprecation warning on stderr.
+    let filter_value = if let Some(ref fe) = from_event {
+        Some(fe.as_str())
+    } else if let Some(ref ao) = as_of {
+        eprintln!("warning: --as-of is deprecated; use --from-event instead");
+        Some(ao.as_str())
+    } else {
+        None
+    };
+    let event_filter = replay::parse_event_filter(filter_value);
+
+    // Resolve output format: global --json and --format must agree.
+    let output_format = ReplayFormat::resolve(&format, cli.json)
+        .map_err(|msg| anyhow!("{msg}"))?;
+
+    // Validate and parse the root hash.
     let start = ContentHash::from_hex(&hash)
         .ok_or_else(|| anyhow!("invalid hash (expected 64 hex chars): {hash}"))?;
 
-    // Parse --as-of filter: skip signals until this depth/index.
-    let skip_until: usize = as_of
-        .as_deref()
-        .and_then(|s| {
-            // Accept "step 5", "step05", "5", "#5"
-            let stripped = s.trim_start_matches("step").trim_start_matches('#').trim();
-            stripped.parse().ok()
-        })
-        .unwrap_or(0);
+    // Open the substrate and load all signals into memory for traversal.
+    let substrate = FileSubstrate::open(workdir.join(".roko"))
+        .await
+        .map_err(|e| anyhow!("open substrate: {e}"))?;
 
-    let is_json = format == "json";
+    // Build the lookup map by querying for the root and traversing.
+    // We need the full in-memory index; collect all reachable signals.
+    let mut lookup = std::collections::HashMap::new();
+    let mut visit_queue = std::collections::VecDeque::new();
+    let mut seen = std::collections::HashSet::new();
+    visit_queue.push_back(start);
 
-    let mut visited = std::collections::HashSet::new();
-    let mut queue = vec![(start, 0usize)];
-    let mut printed = 0usize;
-    let mut index = 0usize;
-
-    while let Some((id, depth)) = queue.pop() {
-        if !visited.insert(id) {
+    while let Some(id) = visit_queue.pop_front() {
+        if !seen.insert(id) {
             continue;
         }
         if let Some(sig) = substrate.get(&id).await.map_err(|e| anyhow!("get: {e}"))? {
-            index += 1;
-
-            // Apply --as-of filter: skip events before the target index.
-            if index < skip_until {
-                for parent in &sig.lineage {
-                    queue.push((*parent, depth + 1));
-                }
-                continue;
-            }
-
-            if is_json {
-                // JSON output: one JSON object per line.
-                let mut obj = serde_json::Map::new();
-                obj.insert("event".into(), serde_json::json!(index));
-                obj.insert("hash".into(), serde_json::json!(sig.id.to_string()));
-                obj.insert("kind".into(), serde_json::json!(sig.kind.to_string()));
-                obj.insert("author".into(), serde_json::json!(sig.provenance.author));
-                obj.insert("created_at_ms".into(), serde_json::json!(sig.created_at_ms));
-                if !sig.tags.is_empty() {
-                    obj.insert("tags".into(), serde_json::json!(sig.tags));
-                }
-                if let Ok(text) = sig.body.as_text() {
-                    let preview: String = text.chars().take(500).collect();
-                    obj.insert("body".into(), serde_json::json!(preview));
-                }
-                println!("{}", serde_json::Value::Object(obj));
-            } else if forensic {
-                let indent = "  ".repeat(depth);
-                println!("{indent}{} {}", sig.kind, sig.id);
-                println!("{indent}  event:     {index}");
-                println!("{indent}  hash:      {}", sig.id);
-                println!("{indent}  author:    {}", sig.provenance.author);
-                println!("{indent}  created:   {}", sig.created_at_ms);
-                println!(
-                    "{indent}  lineage:   [{}]",
-                    sig.lineage
-                        .iter()
-                        .map(|h| h.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                );
-                if !sig.tags.is_empty() {
-                    println!("{indent}  tags:      {:?}", sig.tags);
-                }
-                if let Ok(text) = sig.body.as_text() {
-                    let body_preview: String = text.chars().take(120).collect();
-                    println!("{indent}  body:      {body_preview}");
-                }
-                println!();
-            } else {
-                let indent = "  ".repeat(depth);
-                println!(
-                    "{indent}{} {}  (event={index}, author={})",
-                    sig.kind, sig.id, sig.provenance.author
-                );
-            }
             for parent in &sig.lineage {
-                queue.push((*parent, depth + 1));
+                visit_queue.push_back(*parent);
             }
-            printed += 1;
-        } else if !is_json {
-            let indent = "  ".repeat(depth);
-            println!("{indent}<missing {id}>");
+            lookup.insert(sig.id, sig);
         }
     }
-    if printed == 0 {
-        if !is_json {
-            println!("signal {hash} not found in substrate");
+
+    // Run the pure traversal.
+    let result = replay::traverse_dag(&start, &lookup, event_filter);
+
+    match result {
+        ReplayResult::Ok(records) => {
+            if records.is_empty() && event_filter > 0 {
+                // All records were filtered out; still a success.
+                return Ok(REPLAY_EXIT_SUCCESS);
+            }
+            // Render output.
+            let lines = match (output_format, forensic) {
+                (ReplayFormat::Json, _) => replay::render_json(&records),
+                (ReplayFormat::Tree, true) => replay::render_forensic_text(&records),
+                (ReplayFormat::Tree, false) => replay::render_tree_text(&records),
+            };
+            for line in &lines {
+                println!("{line}");
+            }
+            Ok(REPLAY_EXIT_SUCCESS)
         }
-        return Ok(EXIT_AGENT_FAILURE);
+        ReplayResult::Err(err) => {
+            let exit_code = err.exit_code();
+            match output_format {
+                ReplayFormat::Json => {
+                    println!("{}", err.to_json());
+                }
+                ReplayFormat::Tree => {
+                    eprintln!("{}", err.to_text());
+                }
+            }
+            Ok(exit_code)
+        }
     }
-    Ok(EXIT_SUCCESS)
 }
 
 pub(crate) async fn cmd_inject(
@@ -1354,10 +1341,33 @@ pub(crate) fn cmd_index(cli: &Cli, cmd: IndexCmd) -> Result<i32> {
                 .with_context(|| format!("build index for {}", target.display()))?;
             let elapsed = start.elapsed();
             let stats = idx.stats();
-            println!("Index built in {:.2}s", elapsed.as_secs_f64());
+
+            // Persist to SQLite via IndexStore (atomic temp + rename).
+            let persist_start = Instant::now();
+            let file_records = index_file_records(&idx);
+            let rankings = index_ranking_records(&idx);
+            let store = roko_index::IndexStore::build_with_rankings(
+                idx.root(),
+                &idx.all_symbols(),
+                &idx.all_edges(),
+                &file_records,
+                &rankings,
+            )
+            .with_context(|| {
+                format!(
+                    "persist index to {}",
+                    roko_index::IndexStore::db_path_for(idx.root()).display()
+                )
+            })?;
+            let persist_elapsed = persist_start.elapsed();
+
+            println!("Index built in {:.2}s (SQLite persisted in {:.2}s)",
+                elapsed.as_secs_f64(), persist_elapsed.as_secs_f64());
+            println!("  DB:      {}", store.db_path().display());
             println!("  Files:   {}", stats.indexed_files);
             println!("  Symbols: {}", stats.total_symbols);
             println!("  Edges:   {}", stats.total_edges);
+            println!("  Rankings: {}", rankings.len());
             for (lang, count) in &stats.languages {
                 println!("  {lang}: {count} files");
             }
@@ -1365,23 +1375,57 @@ pub(crate) fn cmd_index(cli: &Cli, cmd: IndexCmd) -> Result<i32> {
         }
         IndexCmd::Rebuild { path } => {
             let target = path.unwrap_or_else(|| workdir.clone());
-            // Remove the existing index database if present.
-            let db_path = target.join(".roko").join("index.db");
-            if db_path.exists() {
-                std::fs::remove_file(&db_path)
-                    .with_context(|| format!("remove old index at {}", db_path.display()))?;
-                println!("Removed old index: {}", db_path.display());
+            // Safely remove the existing index database and its SQLite
+            // sidecars using root-validated deletion (backlog #362).
+            match roko_index::IndexStore::rebuild(&target) {
+                Ok(()) => {
+                    println!(
+                        "Removed old index: {}",
+                        roko_index::IndexStore::db_path_for(&target).display()
+                    );
+                }
+                Err(e) => {
+                    // If the DB does not exist, canonicalize may fail. That
+                    // is fine — there is nothing to remove.
+                    let db_path = roko_index::IndexStore::db_path_for(&target);
+                    if db_path.exists() {
+                        return Err(e).with_context(|| {
+                            format!("remove old index at {}", db_path.display())
+                        });
+                    }
+                }
             }
+
             // Rebuild from scratch.
             let start = Instant::now();
             let idx = roko_index::WorkspaceIndex::load(&target)
                 .with_context(|| format!("rebuild index for {}", target.display()))?;
+
+            // Persist the rebuilt index.
+            let file_records = index_file_records(&idx);
+            let rankings = index_ranking_records(&idx);
+            let store = roko_index::IndexStore::build_with_rankings(
+                idx.root(),
+                &idx.all_symbols(),
+                &idx.all_edges(),
+                &file_records,
+                &rankings,
+            )
+            .with_context(|| {
+                format!(
+                    "persist rebuilt index to {}",
+                    roko_index::IndexStore::db_path_for(idx.root()).display()
+                )
+            })?;
+
             let elapsed = start.elapsed();
             let stats = idx.stats();
             println!("Index rebuilt in {:.2}s", elapsed.as_secs_f64());
+            println!("  DB:      {}", store.db_path().display());
             println!("  Files:   {}", stats.indexed_files);
             println!("  Symbols: {}", stats.total_symbols);
             println!("  Edges:   {}", stats.total_edges);
+            println!("  Rankings: {}", rankings.len());
             for (lang, count) in &stats.languages {
                 println!("  {lang}: {count} files");
             }
@@ -1396,8 +1440,16 @@ pub(crate) fn cmd_index(cli: &Cli, cmd: IndexCmd) -> Result<i32> {
             path,
         } => {
             let target = path.unwrap_or_else(|| workdir.clone());
-            let idx = roko_index::WorkspaceIndex::load(&target)
-                .with_context(|| format!("build index for {}", target.display()))?;
+
+            // Try to reuse an existing persistent index first.
+            let idx = match index_load_or_build(&target) {
+                Ok(idx) => idx,
+                Err(e) => {
+                    return Err(e).with_context(|| {
+                        format!("load or build index for {}", target.display())
+                    });
+                }
+            };
 
             let sym_kind = if let Some(ref k) = kind {
                 Some(parse_symbol_kind(k)?)
@@ -1434,11 +1486,37 @@ pub(crate) fn cmd_index(cli: &Cli, cmd: IndexCmd) -> Result<i32> {
         }
         IndexCmd::Stats { path } => {
             let target = path.unwrap_or_else(|| workdir.clone());
-            let idx = roko_index::WorkspaceIndex::load(&target)
-                .with_context(|| format!("build index for {}", target.display()))?;
+
+            // Try to reuse an existing persistent index first.
+            let idx = match index_load_or_build(&target) {
+                Ok(idx) => idx,
+                Err(e) => {
+                    return Err(e).with_context(|| {
+                        format!("load or build index for {}", target.display())
+                    });
+                }
+            };
             let stats = idx.stats();
 
-            println!("=== Index Statistics ===\n");
+            // Show persistent DB metadata if available.
+            let db_path = roko_index::IndexStore::db_path_for(&target);
+            if db_path.exists() {
+                println!("=== Index Statistics (persistent) ===\n");
+                println!("Database:       {}", db_path.display());
+                if let Ok(store) = roko_index::IndexStore::open_readonly(&target) {
+                    if let Ok(meta) = store.meta() {
+                        println!("Schema version:  {}", meta.schema_version);
+                        println!("Index version:   {}", meta.index_version);
+                        println!("Features:        {}", meta.feature_fingerprint);
+                    }
+                    if let Ok(count) = store.inner().ranking_count() {
+                        println!("Rankings:        {count}");
+                    }
+                }
+            } else {
+                println!("=== Index Statistics (in-memory) ===\n");
+            }
+
             println!("Files indexed:  {}", stats.indexed_files);
             println!("Total symbols:  {}", stats.total_symbols);
             println!("Total edges:    {}", stats.total_edges);
@@ -1469,6 +1547,73 @@ pub(crate) fn cmd_index(cli: &Cli, cmd: IndexCmd) -> Result<i32> {
             Ok(EXIT_SUCCESS)
         }
     }
+}
+
+/// Convert the in-memory workspace index into [`roko_index::FileRecord`]s for
+/// SQLite persistence.
+fn index_file_records(idx: &roko_index::WorkspaceIndex) -> Vec<roko_index::FileRecord> {
+    idx.all_source_files()
+        .iter()
+        .map(|sf| roko_index::FileRecord {
+            path: sf.path.clone(),
+            content: sf.content.clone(),
+        })
+        .collect()
+}
+
+/// Convert the in-memory PageRank scores into [`roko_index::RankingRecord`]s
+/// for SQLite persistence.
+fn index_ranking_records(idx: &roko_index::WorkspaceIndex) -> Vec<roko_index::RankingRecord> {
+    idx.all_pagerank_scores()
+        .iter()
+        .map(|(id, &score)| roko_index::RankingRecord {
+            id: id.clone(),
+            score,
+        })
+        .collect()
+}
+
+/// Try to open a compatible persistent index read-only. On version/root
+/// mismatch or corruption, print a rebuild hint and fall back to a full
+/// in-memory build. On lock contention, return an error immediately rather
+/// than silently falling back.
+fn index_load_or_build(target: &std::path::Path) -> Result<roko_index::WorkspaceIndex> {
+    let db_path = roko_index::IndexStore::db_path_for(target);
+    if db_path.exists() {
+        match roko_index::IndexStore::open_readonly(target) {
+            Ok(_store) => {
+                // The persistent DB is compatible — the in-memory index still
+                // needs to be built for full query support (PageRank, HDC, etc.)
+                // but the DB's existence confirms unchanged files can be
+                // skipped in future incremental updates.
+                tracing::debug!("persistent index is compatible: {}", db_path.display());
+            }
+            Err(roko_index::IndexStoreError::VersionMismatch { stored, expected }) => {
+                eprintln!(
+                    "index: schema version mismatch (stored {stored}, expected {expected}); \
+                     rebuild with `roko index rebuild`"
+                );
+            }
+            Err(roko_index::IndexStoreError::RootMismatch { stored, requested }) => {
+                eprintln!(
+                    "index: root mismatch (stored '{stored}', requested '{requested}'); \
+                     rebuild with `roko index rebuild`"
+                );
+            }
+            Err(roko_index::IndexStoreError::Corrupt(msg)) => {
+                eprintln!("index: database corrupt ({msg}); rebuild with `roko index rebuild`");
+            }
+            Err(roko_index::IndexStoreError::Locked(msg)) => {
+                anyhow::bail!("index database locked: {msg}");
+            }
+            Err(roko_index::IndexStoreError::Other(e)) => {
+                eprintln!("index: {e}; falling back to full build");
+            }
+        }
+    }
+
+    roko_index::WorkspaceIndex::load(target)
+        .with_context(|| format!("build index for {}", target.display()))
 }
 
 pub(crate) fn parse_symbol_kind(s: &str) -> Result<roko_core::language::SymbolKind> {

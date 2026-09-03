@@ -1122,6 +1122,11 @@ impl WorkspaceIndex {
         self.files_by_path.values().collect()
     }
 
+    /// All computed PageRank scores as (symbol_id, score) pairs.
+    pub fn all_pagerank_scores(&self) -> &HashMap<SymbolId, f64> {
+        &self.pagerank_scores
+    }
+
     fn from_source_files_with_root(root: PathBuf, files: Vec<SourceFile>) -> Self {
         let graph = build_graph(&files);
         let pagerank_scores = pagerank(&graph, 30, 0.85);

@@ -1,0 +1,21 @@
+[package]
+name = "roko-eval"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Unified evaluation framework: EvidenceCollector, Criterion, and Profile traits with bridge adapters to the existing gate pipeline."
+
+[lints]
+workspace = true
+
+[dependencies]
+roko-core = { path = "../roko-core" }
+async-trait = "0.1"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }

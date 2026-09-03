@@ -11,6 +11,8 @@ members = [
     "crates/roko-std",
     # Concrete Gate impls (ShellGate, CompileGate, ...)
     "crates/roko-gate",
+    # Unified evaluation framework: EvidenceCollector, Criterion, Profile traits.
+    "crates/roko-eval",
     # Filesystem-backed Substrate (.roko/signals.jsonl)
     "crates/roko-fs",
     # Composer impls (PromptComposer, SectionScorer)

@@ -2812,10 +2812,13 @@ enum ConfigMcpCmd {
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
-    /// Test whether a named MCP server starts successfully.
+    /// Test a named MCP server by performing a real initialize + tools/list handshake.
     Test {
-        /// MCP server name (currently only "roko" is used).
+        /// MCP server name from the MCP config.
         name: String,
+        /// Per-stage timeout in seconds (applied to initialize and tools/list independently).
+        #[arg(long, default_value_t = roko_core::defaults::DEFAULT_MCP_DISCOVERY_TIMEOUT_SECS, value_parser = clap::value_parser!(u64).range(1..=60))]
+        timeout_secs: u64,
         /// Directory containing `.roko/mcp-config.json` (default: cwd).
         #[arg(long)]
         workdir: Option<PathBuf>,
@@ -3439,7 +3442,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
                 }
                 ConfigCmd::Mcp { cmd: mcp_cmd } => {
                     let workdir = resolve_workdir(cli);
-                    dispatch_mcp_cmd(&mcp_cmd, &workdir)?;
+                    dispatch_mcp_cmd(&mcp_cmd, &workdir, cli.json).await?;
                     return Ok(EXIT_SUCCESS);
                 }
                 other => {
@@ -4246,7 +4249,7 @@ fn load_env_file(path: &Path) -> Result<Vec<(String, String)>> {
 
 /// Dispatch `roko config mcp` subcommands inline (avoids the `unreachable!` in
 /// `dispatch_config` which is reserved for arms intercepted before reaching it).
-fn dispatch_mcp_cmd(cmd: &ConfigMcpCmd, workdir: &Path) -> Result<()> {
+async fn dispatch_mcp_cmd(cmd: &ConfigMcpCmd, workdir: &Path, json_mode: bool) -> Result<()> {
     match cmd {
         ConfigMcpCmd::List {
             workdir: wd_override,
@@ -4272,6 +4275,7 @@ fn dispatch_mcp_cmd(cmd: &ConfigMcpCmd, workdir: &Path) -> Result<()> {
         }
         ConfigMcpCmd::Test {
             name,
+            timeout_secs,
             workdir: wd_override,
         } => {
             let wd = wd_override.as_deref().unwrap_or(workdir);
@@ -4284,12 +4288,33 @@ fn dispatch_mcp_cmd(cmd: &ConfigMcpCmd, workdir: &Path) -> Result<()> {
             }
             let cfg = roko_agent::mcp::McpConfig::load(&path)
                 .map_err(|e| anyhow!("parse MCP config at {}: {}", path.display(), e))?;
-            if cfg.servers.iter().any(|s| s.name == *name) {
-                println!("ok: server '{}' found in {}", name, path.display());
+
+            let report = roko_agent::mcp::test_mcp_server(
+                &cfg,
+                name,
+                std::time::Duration::from_secs(*timeout_secs),
+                &path,
+            )
+            .await;
+
+            if json_mode {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&report).context("serialize test report")?
+                );
             } else {
-                return Err(anyhow!("server '{}' not found in {}", name, path.display()));
+                print_mcp_test_report(&report);
             }
-            Ok(())
+
+            if report.status == "ok" {
+                Ok(())
+            } else {
+                Err(anyhow!(
+                    "MCP server '{}' test failed at stage: {}",
+                    name,
+                    report.failed_stage.as_deref().unwrap_or("unknown")
+                ))
+            }
         }
         ConfigMcpCmd::Add {
             name,
@@ -4336,6 +4361,58 @@ fn dispatch_mcp_cmd(cmd: &ConfigMcpCmd, workdir: &Path) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// Render an [`McpTestReport`] as human-readable text to stdout.
+fn print_mcp_test_report(report: &roko_agent::mcp::McpTestReport) {
+    println!("MCP test: {}", report.server);
+    println!("  config: {}", report.config_path);
+    println!("  command available: {}", report.command_available);
+
+    if let Some(ref init) = report.initialize {
+        let status_icon = if init.ok { "ok" } else { "FAIL" };
+        println!(
+            "  initialize: {} ({:.0}ms)",
+            status_icon,
+            init.latency_ms,
+        );
+        if let Some(ref err) = init.error {
+            println!("    error: {err}");
+        }
+    } else {
+        println!("  initialize: skipped");
+    }
+
+    if let Some(ref tl) = report.tools_list {
+        let status_icon = if tl.ok { "ok" } else { "FAIL" };
+        println!(
+            "  tools/list: {} ({:.0}ms)",
+            status_icon,
+            tl.latency_ms,
+        );
+        if let Some(ref err) = tl.error {
+            println!("    error: {err}");
+        }
+    } else {
+        println!("  tools/list: skipped");
+    }
+
+    if let Some(ref ver) = report.protocol_version {
+        println!("  protocol version: {ver}");
+    }
+
+    println!("  tool count: {}", report.tool_count);
+    if !report.tool_names.is_empty() {
+        println!("  tools: {}", report.tool_names.join(", "));
+    }
+
+    if let Some(ref stderr) = report.stderr_summary {
+        if !stderr.is_empty() {
+            println!("  stderr (redacted): {stderr}");
+        }
+    }
+
+    println!("  status: {}", report.status);
 }
 
 /// Resolve the MCP config path using the following chain:
@@ -5672,10 +5749,101 @@ mod tests {
             cli.command,
             Some(Command::Config {
                 cmd: ConfigCmd::Mcp {
-                    cmd: ConfigMcpCmd::Test { name, .. }
+                    cmd: ConfigMcpCmd::Test { name, timeout_secs, .. }
                 }
-            }) if name == "roko"
+            }) if name == "roko" && timeout_secs == roko_core::defaults::DEFAULT_MCP_DISCOVERY_TIMEOUT_SECS
         ));
+    }
+
+    #[test]
+    fn cli_mcp_test_timeout_default_is_5() {
+        let cli = Cli::try_parse_from(["roko", "config", "mcp", "test", "srv"]).unwrap();
+        if let Some(Command::Config {
+            cmd: ConfigCmd::Mcp {
+                cmd: ConfigMcpCmd::Test { timeout_secs, .. },
+            },
+        }) = cli.command
+        {
+            assert_eq!(timeout_secs, 5, "default timeout must be 5 seconds");
+        } else {
+            panic!("expected ConfigMcpCmd::Test");
+        }
+    }
+
+    #[test]
+    fn cli_mcp_test_timeout_accepts_1() {
+        let cli = Cli::try_parse_from([
+            "roko",
+            "config",
+            "mcp",
+            "test",
+            "srv",
+            "--timeout-secs",
+            "1",
+        ])
+        .unwrap();
+        if let Some(Command::Config {
+            cmd: ConfigCmd::Mcp {
+                cmd: ConfigMcpCmd::Test { timeout_secs, .. },
+            },
+        }) = cli.command
+        {
+            assert_eq!(timeout_secs, 1);
+        } else {
+            panic!("expected ConfigMcpCmd::Test");
+        }
+    }
+
+    #[test]
+    fn cli_mcp_test_timeout_accepts_60() {
+        let cli = Cli::try_parse_from([
+            "roko",
+            "config",
+            "mcp",
+            "test",
+            "srv",
+            "--timeout-secs",
+            "60",
+        ])
+        .unwrap();
+        if let Some(Command::Config {
+            cmd: ConfigCmd::Mcp {
+                cmd: ConfigMcpCmd::Test { timeout_secs, .. },
+            },
+        }) = cli.command
+        {
+            assert_eq!(timeout_secs, 60);
+        } else {
+            panic!("expected ConfigMcpCmd::Test");
+        }
+    }
+
+    #[test]
+    fn cli_mcp_test_timeout_rejects_0() {
+        let result = Cli::try_parse_from([
+            "roko",
+            "config",
+            "mcp",
+            "test",
+            "srv",
+            "--timeout-secs",
+            "0",
+        ]);
+        assert!(result.is_err(), "timeout-secs=0 must be rejected");
+    }
+
+    #[test]
+    fn cli_mcp_test_timeout_rejects_61() {
+        let result = Cli::try_parse_from([
+            "roko",
+            "config",
+            "mcp",
+            "test",
+            "srv",
+            "--timeout-secs",
+            "61",
+        ]);
+        assert!(result.is_err(), "timeout-secs=61 must be rejected");
     }
 
     #[test]

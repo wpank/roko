@@ -7,18 +7,20 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
 use roko_core::tool::{ToolDef, ToolSource};
+use serde::{Deserialize, Serialize};
 use tokio::time::{Duration, timeout};
 
 use super::{
     McpClient, McpConfig, McpHandlerResolver, McpTransportConfig, StdioTransport, Transport,
-    dedup_tools, mcp_to_tool_def,
+    dedup_tools, is_command_on_path, mcp_to_tool_def,
 };
 use crate::dispatcher::HandlerResolver;
-use crate::mcp::client::McpError;
+use crate::mcp::client::{McpError, McpRequest, McpResponse};
 
 const MCP_DISCOVERY_TIMEOUT: Duration =
     Duration::from_secs(roko_core::defaults::DEFAULT_MCP_DISCOVERY_TIMEOUT_SECS);
@@ -320,6 +322,425 @@ pub async fn discover_mcp_tools(config: &McpConfig) -> Result<Vec<ToolDef>, McpB
         .map(|runtime| runtime.tools().as_ref().clone())
 }
 
+// ── Diagnostic test report ──────────────────────────────────────────────
+
+/// Per-stage result included in [`McpTestReport`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpStageResult {
+    /// Whether the stage succeeded.
+    pub ok: bool,
+    /// Wall-clock latency in milliseconds.
+    pub latency_ms: f64,
+    /// Error message if the stage failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Report produced by [`test_mcp_server`].
+///
+/// Designed for both human-readable rendering and JSON serialization.
+/// Secrets and raw stderr are redacted before inclusion.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpTestReport {
+    /// Path to the MCP config file that was consulted.
+    pub config_path: String,
+    /// Server name that was tested.
+    pub server: String,
+    /// Whether the server's command binary was found on PATH.
+    pub command_available: bool,
+    /// Result of the `initialize` handshake (absent if skipped).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub initialize: Option<McpStageResult>,
+    /// Result of `tools/list` (absent if skipped due to earlier failure).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools_list: Option<McpStageResult>,
+    /// MCP protocol version returned by the server, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol_version: Option<String>,
+    /// Number of tools discovered.
+    pub tool_count: usize,
+    /// Tool names (descriptions are excluded for safety).
+    pub tool_names: Vec<String>,
+    /// Bounded, redacted stderr summary (at most 4 KiB before redaction).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stderr_summary: Option<String>,
+    /// Overall result: `"ok"` or `"failed"`.
+    pub status: String,
+    /// Name of the first stage that failed, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failed_stage: Option<String>,
+}
+
+/// Maximum stderr bytes captured from the diagnostic child.
+const MAX_STDERR_BYTES: usize = 4096;
+
+/// Redact values that look like secrets from an MCP server's stderr output.
+///
+/// Strips:
+/// 1. Any configured env values that are non-empty and not env-var references.
+/// 2. Assignments matching `KEY=value` where KEY matches sensitive patterns.
+///
+/// Never returns raw env values or credentials.
+pub fn redact_stderr(raw: &str, env: &HashMap<String, String>) -> String {
+    let mut redacted = raw.to_string();
+
+    // Redact configured env values (non-reference, non-empty).
+    for value in env.values() {
+        if !value.is_empty() && !value.starts_with('$') && value.len() >= 4 {
+            redacted = redacted.replace(value, "[REDACTED]");
+        }
+    }
+
+    // Redact KEY=value patterns for sensitive keys.
+    let re_pattern = regex::Regex::new(
+        r"(?i)(SECRET|TOKEN|KEY|PASSWORD|CREDENTIAL|AUTH|PRIVATE|API_KEY|APIKEY)\s*[=:]\s*\S+",
+    )
+    .expect("valid regex");
+    redacted = re_pattern
+        .replace_all(&redacted, |caps: &regex::Captures<'_>| {
+            let full = caps.get(0).map_or("", |m| m.as_str());
+            if let Some(eq_pos) = full.find(['=', ':']) {
+                let (key_part, _) = full.split_at(eq_pos + 1);
+                format!("{key_part}[REDACTED]")
+            } else {
+                "[REDACTED]".to_string()
+            }
+        })
+        .to_string();
+
+    redacted
+}
+
+/// Test a single MCP server end-to-end and return a diagnostic report.
+///
+/// Performs the following stages:
+/// 1. Resolve the named server from the config.
+/// 2. Check that the command binary exists on PATH.
+/// 3. Spawn the server process (capturing stderr).
+/// 4. Send `initialize` with the given per-stage timeout.
+/// 5. Send `tools/list` with the same per-stage timeout.
+/// 6. Cleanly terminate the child process.
+pub async fn test_mcp_server(
+    config: &McpConfig,
+    name: &str,
+    stage_timeout: Duration,
+    config_path: &Path,
+) -> McpTestReport {
+    let config_path_str = config_path.display().to_string();
+    let fail = |stage: &str| McpTestReport {
+        config_path: config_path_str.clone(),
+        server: name.to_string(),
+        command_available: false,
+        initialize: None,
+        tools_list: None,
+        protocol_version: None,
+        tool_count: 0,
+        tool_names: Vec::new(),
+        stderr_summary: None,
+        status: "failed".to_string(),
+        failed_stage: Some(stage.to_string()),
+    };
+
+    let server = match config.servers.iter().find(|s| s.name == name) {
+        Some(s) => s,
+        None => return fail("resolve"),
+    };
+
+    let command_available = is_command_on_path(&server.command);
+    if !command_available {
+        return fail("command");
+    }
+
+    let transport = match DiagnosticTransport::spawn(&server.command, &server.args, &server.env) {
+        Ok(t) => t,
+        Err(e) => {
+            return McpTestReport {
+                config_path: config_path_str,
+                server: name.to_string(),
+                command_available: true,
+                initialize: Some(McpStageResult {
+                    ok: false,
+                    latency_ms: 0.0,
+                    error: Some(format!("spawn failed: {e}")),
+                }),
+                tools_list: None,
+                protocol_version: None,
+                tool_count: 0,
+                tool_names: Vec::new(),
+                stderr_summary: None,
+                status: "failed".to_string(),
+                failed_stage: Some("spawn".to_string()),
+            };
+        }
+    };
+
+    let transport = Arc::new(transport);
+    let client = McpClient::new(Arc::clone(&transport));
+
+    // Stage 1: initialize
+    let init_start = Instant::now();
+    let init_result = timeout(stage_timeout, client.initialize()).await;
+    let init_elapsed = init_start.elapsed();
+
+    let (init_stage, init_caps) = match init_result {
+        Ok(Ok(caps)) => (
+            McpStageResult {
+                ok: true,
+                latency_ms: init_elapsed.as_secs_f64() * 1000.0,
+                error: None,
+            },
+            Some(caps),
+        ),
+        Ok(Err(e)) => {
+            let stderr = transport.drain_stderr().await;
+            let redacted = redact_stderr(&stderr, &server.env);
+            transport.shutdown().await;
+            return McpTestReport {
+                config_path: config_path_str,
+                server: name.to_string(),
+                command_available: true,
+                initialize: Some(McpStageResult {
+                    ok: false,
+                    latency_ms: init_elapsed.as_secs_f64() * 1000.0,
+                    error: Some(e.to_string()),
+                }),
+                tools_list: None,
+                protocol_version: None,
+                tool_count: 0,
+                tool_names: Vec::new(),
+                stderr_summary: Some(redacted),
+                status: "failed".to_string(),
+                failed_stage: Some("initialize".to_string()),
+            };
+        }
+        Err(_) => {
+            let stderr = transport.drain_stderr().await;
+            let redacted = redact_stderr(&stderr, &server.env);
+            transport.shutdown().await;
+            return McpTestReport {
+                config_path: config_path_str,
+                server: name.to_string(),
+                command_available: true,
+                initialize: Some(McpStageResult {
+                    ok: false,
+                    latency_ms: init_elapsed.as_secs_f64() * 1000.0,
+                    error: Some(format!("initialize timed out after {}s", stage_timeout.as_secs())),
+                }),
+                tools_list: None,
+                protocol_version: None,
+                tool_count: 0,
+                tool_names: Vec::new(),
+                stderr_summary: Some(redacted),
+                status: "failed".to_string(),
+                failed_stage: Some("initialize".to_string()),
+            };
+        }
+    };
+
+    let protocol_version = init_caps
+        .as_ref()
+        .and_then(|c| c.get("protocolVersion"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    // Stage 2: tools/list
+    let tl_start = Instant::now();
+    let tl_result = timeout(stage_timeout, client.list_tools()).await;
+    let tl_elapsed = tl_start.elapsed();
+
+    let (tl_stage, tools) = match tl_result {
+        Ok(Ok(tools)) => (
+            McpStageResult {
+                ok: true,
+                latency_ms: tl_elapsed.as_secs_f64() * 1000.0,
+                error: None,
+            },
+            tools,
+        ),
+        Ok(Err(e)) => {
+            let stderr = transport.drain_stderr().await;
+            let redacted = redact_stderr(&stderr, &server.env);
+            transport.shutdown().await;
+            return McpTestReport {
+                config_path: config_path_str,
+                server: name.to_string(),
+                command_available: true,
+                initialize: Some(init_stage),
+                tools_list: Some(McpStageResult {
+                    ok: false,
+                    latency_ms: tl_elapsed.as_secs_f64() * 1000.0,
+                    error: Some(e.to_string()),
+                }),
+                protocol_version,
+                tool_count: 0,
+                tool_names: Vec::new(),
+                stderr_summary: Some(redacted),
+                status: "failed".to_string(),
+                failed_stage: Some("tools_list".to_string()),
+            };
+        }
+        Err(_) => {
+            let stderr = transport.drain_stderr().await;
+            let redacted = redact_stderr(&stderr, &server.env);
+            transport.shutdown().await;
+            return McpTestReport {
+                config_path: config_path_str,
+                server: name.to_string(),
+                command_available: true,
+                initialize: Some(init_stage),
+                tools_list: Some(McpStageResult {
+                    ok: false,
+                    latency_ms: tl_elapsed.as_secs_f64() * 1000.0,
+                    error: Some(format!("tools/list timed out after {}s", stage_timeout.as_secs())),
+                }),
+                protocol_version,
+                tool_count: 0,
+                tool_names: Vec::new(),
+                stderr_summary: Some(redacted),
+                status: "failed".to_string(),
+                failed_stage: Some("tools_list".to_string()),
+            };
+        }
+    };
+
+    let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
+    let tool_count = tools.len();
+    let stderr = transport.drain_stderr().await;
+    let redacted = redact_stderr(&stderr, &server.env);
+    transport.shutdown().await;
+
+    McpTestReport {
+        config_path: config_path_str,
+        server: name.to_string(),
+        command_available: true,
+        initialize: Some(init_stage),
+        tools_list: Some(tl_stage),
+        protocol_version,
+        tool_count,
+        tool_names,
+        stderr_summary: if redacted.is_empty() { None } else { Some(redacted) },
+        status: "ok".to_string(),
+        failed_stage: None,
+    }
+}
+
+// ── Diagnostic transport ────────────────────────────────────────────────
+
+struct DiagnosticTransport {
+    stdin: tokio::sync::Mutex<tokio::io::BufWriter<tokio::process::ChildStdin>>,
+    stdout: tokio::sync::Mutex<tokio::io::BufReader<tokio::process::ChildStdout>>,
+    stderr: tokio::sync::Mutex<tokio::process::ChildStderr>,
+    child: tokio::sync::Mutex<tokio::process::Child>,
+}
+
+impl DiagnosticTransport {
+    fn spawn(command: &str, args: &[String], env: &HashMap<String, String>) -> Result<Self, McpError> {
+        let resolved_env: HashMap<String, String> = env
+            .iter()
+            .map(|(k, v)| (k.clone(), resolve_env_value(v)))
+            .collect();
+
+        let mut child = tokio::process::Command::new(command)
+            .args(args)
+            .envs(resolved_env)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| McpError::Transport(format!("failed to spawn {command}: {e}")))?;
+
+        let stdin = child.stdin.take().ok_or_else(|| McpError::Transport("child stdin not available".into()))?;
+        let stdout = child.stdout.take().ok_or_else(|| McpError::Transport("child stdout not available".into()))?;
+        let stderr = child.stderr.take().ok_or_else(|| McpError::Transport("child stderr not available".into()))?;
+
+        Ok(Self {
+            stdin: tokio::sync::Mutex::new(tokio::io::BufWriter::new(stdin)),
+            stdout: tokio::sync::Mutex::new(tokio::io::BufReader::new(stdout)),
+            stderr: tokio::sync::Mutex::new(stderr),
+            child: tokio::sync::Mutex::new(child),
+        })
+    }
+
+    async fn drain_stderr(&self) -> String {
+        use tokio::io::AsyncReadExt;
+        let mut stderr = self.stderr.lock().await;
+        let mut buf = vec![0u8; MAX_STDERR_BYTES];
+        let read_result = timeout(Duration::from_millis(200), async {
+            let mut total = 0usize;
+            loop {
+                if total >= MAX_STDERR_BYTES { break total; }
+                match stderr.read(&mut buf[total..]).await {
+                    Ok(0) => break total,
+                    Ok(n) => total += n,
+                    Err(_) => break total,
+                }
+            }
+        }).await;
+        let n = read_result.unwrap_or(0);
+        String::from_utf8_lossy(&buf[..n]).to_string()
+    }
+
+    async fn shutdown(&self) {
+        let mut child = self.child.lock().await;
+        let wait_result = timeout(Duration::from_secs(2), child.wait()).await;
+        if wait_result.is_err() {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Transport for DiagnosticTransport {
+    async fn roundtrip(&self, request: &McpRequest) -> Result<McpResponse, McpError> {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+
+        let mut line = serde_json::to_string(request)?;
+        line.push('\n');
+
+        let write_result = timeout(Duration::from_secs(5), async {
+            let mut stdin = self.stdin.lock().await;
+            stdin.write_all(line.as_bytes()).await?;
+            stdin.flush().await?;
+            Ok::<(), std::io::Error>(())
+        }).await;
+
+        match write_result {
+            Err(_) => return Err(McpError::Transport("MCP server stdin write timed out after 5s".into())),
+            Ok(Err(e)) => return Err(McpError::Transport(format!("write to stdin: {e}"))),
+            Ok(Ok(())) => {}
+        }
+
+        let read_result = timeout(Duration::from_secs(30), async {
+            let mut stdout = self.stdout.lock().await;
+            let mut response_line = String::new();
+            stdout.read_line(&mut response_line).await?;
+            Ok::<String, std::io::Error>(response_line)
+        }).await;
+
+        let response_line = match read_result {
+            Err(_) => return Err(McpError::Transport("MCP server response timed out after 30s".into())),
+            Ok(Err(e)) => return Err(McpError::Transport(format!("read from stdout: {e}"))),
+            Ok(Ok(line)) => line,
+        };
+
+        if response_line.is_empty() {
+            return Err(McpError::Transport("child process closed stdout (EOF)".into()));
+        }
+
+        let resp: McpResponse = serde_json::from_str(&response_line)?;
+        Ok(resp)
+    }
+}
+
+fn resolve_env_value(value: &str) -> String {
+    let Some(name) = value.strip_prefix("${").and_then(|rest| rest.strip_suffix('}')) else {
+        return value.to_string();
+    };
+    std::env::var(name).unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,5 +775,107 @@ mod tests {
         .await
         .expect_err("duplicate name");
         assert!(matches!(error, McpBridgeError::DuplicateServerName { .. }));
+    }
+
+    #[test]
+    fn mcp_test_report_roundtrips_through_json() {
+        let report = McpTestReport {
+            config_path: "/tmp/mcp.json".to_string(),
+            server: "test-server".to_string(),
+            command_available: true,
+            initialize: Some(McpStageResult { ok: true, latency_ms: 42.5, error: None }),
+            tools_list: Some(McpStageResult { ok: true, latency_ms: 12.3, error: None }),
+            protocol_version: Some("2025-11-25".to_string()),
+            tool_count: 2,
+            tool_names: vec!["read_file".to_string(), "search".to_string()],
+            stderr_summary: None,
+            status: "ok".to_string(),
+            failed_stage: None,
+        };
+        let json = serde_json::to_string_pretty(&report).unwrap();
+        let parsed: McpTestReport = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.server, "test-server");
+        assert_eq!(parsed.status, "ok");
+        assert_eq!(parsed.tool_count, 2);
+        assert!(parsed.initialize.as_ref().unwrap().ok);
+        assert!(!json.contains("stderr_summary"));
+        assert!(!json.contains("failed_stage"));
+    }
+
+    #[test]
+    fn mcp_test_report_failed_serializes_stage() {
+        let report = McpTestReport {
+            config_path: "/tmp/mcp.json".to_string(),
+            server: "broken".to_string(),
+            command_available: false,
+            initialize: None, tools_list: None, protocol_version: None,
+            tool_count: 0, tool_names: Vec::new(), stderr_summary: None,
+            status: "failed".to_string(),
+            failed_stage: Some("command".to_string()),
+        };
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains("\"failed_stage\":\"command\""));
+        assert!(json.contains("\"status\":\"failed\""));
+    }
+
+    #[test]
+    fn mcp_test_redact_stderr_strips_env_values() {
+        let mut env = HashMap::new();
+        env.insert("API_KEY".to_string(), "sk-secret-abc123xyz".to_string());
+        let raw = "error: failed to auth with sk-secret-abc123xyz on port 8080";
+        let redacted = redact_stderr(raw, &env);
+        assert!(!redacted.contains("sk-secret-abc123xyz"));
+        assert!(redacted.contains("[REDACTED]"));
+        assert!(redacted.contains("port 8080"));
+    }
+
+    #[test]
+    fn mcp_test_redact_stderr_strips_key_value_assignments() {
+        let env = HashMap::new();
+        let raw = "debug: TOKEN=ghp_verysecrettoken123 loaded";
+        let redacted = redact_stderr(raw, &env);
+        assert!(!redacted.contains("ghp_verysecrettoken123"));
+        assert!(redacted.contains("TOKEN="));
+    }
+
+    #[test]
+    fn mcp_test_redact_stderr_ignores_short_env_values() {
+        let mut env = HashMap::new();
+        env.insert("SHORT".to_string(), "ab".to_string());
+        let raw = "ab is everywhere: ab ab ab";
+        let redacted = redact_stderr(raw, &env);
+        assert_eq!(redacted, raw);
+    }
+
+    #[test]
+    fn mcp_test_redact_stderr_preserves_safe_output() {
+        let env = HashMap::new();
+        let raw = "MCP server started on port 3000";
+        assert_eq!(redact_stderr(raw, &env), raw);
+    }
+
+    #[tokio::test]
+    async fn mcp_test_server_not_found_in_config() {
+        let config = McpConfig {
+            servers: vec![McpServerConfig { name: "other".to_string(), ..Default::default() }],
+        };
+        let report = test_mcp_server(&config, "nonexistent", Duration::from_secs(5), std::path::Path::new("/tmp/mcp.json")).await;
+        assert_eq!(report.status, "failed");
+        assert_eq!(report.failed_stage.as_deref(), Some("resolve"));
+    }
+
+    #[tokio::test]
+    async fn mcp_test_server_command_not_found() {
+        let config = McpConfig {
+            servers: vec![McpServerConfig {
+                name: "bad-cmd".to_string(),
+                command: "__roko_nonexistent_binary_xyz_9999__".to_string(),
+                ..Default::default()
+            }],
+        };
+        let report = test_mcp_server(&config, "bad-cmd", Duration::from_secs(5), std::path::Path::new("/tmp/mcp.json")).await;
+        assert_eq!(report.status, "failed");
+        assert_eq!(report.failed_stage.as_deref(), Some("command"));
+        assert!(!report.command_available);
     }
 }

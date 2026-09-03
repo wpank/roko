@@ -1,5 +1,4 @@
 //! research command handlers.
-#![allow(unused_imports)]
 
 use crate::*;
 use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;

@@ -1,5 +1,4 @@
 //! server command handlers.
-#![allow(unused_imports)]
 
 use crate::*;
 

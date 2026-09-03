@@ -1,5 +1,4 @@
 //! think command handler.
-#![allow(unused_imports)]
 
 use crate::*;
 use serde::Serialize;

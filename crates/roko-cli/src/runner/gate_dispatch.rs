@@ -3640,6 +3640,7 @@ path = "src/shared.rs"
             None,
             None, // main_target_dir
             None, // expected_input_fingerprint
+            None, // gate_adapter
         );
         (handle, start, rx)
     }
@@ -3772,6 +3773,7 @@ path = "src/shared.rs"
             None,
             None, // main_target_dir
             None, // expected_input_fingerprint
+            None, // gate_adapter
         );
 
         start.send(()).expect("owner starts producer");

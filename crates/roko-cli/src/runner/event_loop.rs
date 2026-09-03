@@ -1730,6 +1730,10 @@ struct RunContext<'a> {
     github_workflow: &'a GitHubWorkflow,
     /// FAST-only absolute hard-run deadline carried into awaited dispatch work.
     dispatch_deadline: Option<DispatchDeadline>,
+    /// #275: shared gate adapter for routing gate execution through the
+    /// production service. When `Some`, `spawn_gate` delegates through the
+    /// adapter instead of calling `run_gate_once` inline.
+    gate_adapter: Option<Arc<gate_dispatch::RunnerProductionGateAdapter>>,
 }
 
 #[derive(Debug, Clone)]
@@ -1781,6 +1785,9 @@ struct CandidateReplaySpec {
     main_target_dir: Option<PathBuf>,
     allow_empty_delta: bool,
     cancel: CancellationToken,
+    /// #275: shared gate adapter for routing gate execution through the
+    /// production service during reflex replay.
+    gate_adapter: Option<Arc<gate_dispatch::RunnerProductionGateAdapter>>,
 }
 
 struct ReflexReplayLease(std::fs::File);
@@ -1979,24 +1986,45 @@ async fn run_candidate_replay(
         let mut gates_config = spec.gates_config;
         gates_config.cargo_fix_enabled = false;
         let rung = spec.max_gate_rung;
-        let completion = gate_dispatch::run_gate_once(
-            new_gate_effect(spec.attempt.clone(), GateCompletionKind::Gate, rung),
-            spec.attempt.plan_id.clone(),
-            spec.attempt.task_id.clone(),
-            rung,
-            replay_workdir.clone(),
-            gates_config.clone(),
-            spec.complexity,
-            spec.task.verify.clone(),
-            None,
-            spec.timeout.as_secs().max(1),
-            spec.target_crates.clone(),
-            None,
-            spec.task_context.clone(),
-            None,
-            spec.main_target_dir.clone(),
-        )
-        .await;
+        // #275 redirect #1: when a shared gate adapter is available,
+        // delegate through it instead of calling run_gate_once inline.
+        let completion = if let Some(ref adapter) = spec.gate_adapter {
+            adapter
+                .run(
+                    new_gate_effect(spec.attempt.clone(), GateCompletionKind::Gate, rung),
+                    spec.attempt.plan_id.clone(),
+                    spec.attempt.task_id.clone(),
+                    rung,
+                    replay_workdir.clone(),
+                    gates_config.clone(),
+                    spec.complexity,
+                    spec.task.verify.clone(),
+                    None,
+                    spec.timeout.as_secs().max(1),
+                    spec.target_crates.clone(),
+                    spec.task_context.clone(),
+                )
+                .await
+        } else {
+            gate_dispatch::run_gate_once(
+                new_gate_effect(spec.attempt.clone(), GateCompletionKind::Gate, rung),
+                spec.attempt.plan_id.clone(),
+                spec.attempt.task_id.clone(),
+                rung,
+                replay_workdir.clone(),
+                gates_config.clone(),
+                spec.complexity,
+                spec.task.verify.clone(),
+                None,
+                spec.timeout.as_secs().max(1),
+                spec.target_crates.clone(),
+                None,
+                spec.task_context.clone(),
+                None,
+                spec.main_target_dir.clone(),
+            )
+            .await
+        };
         if !completion.passed {
             return Err(format!(
                 "isolated reflex replay gate rung {rung} failed: {}",
@@ -4175,6 +4203,9 @@ pub async fn run_with_tui_commands(
                                             ),
                                             allow_empty_delta,
                                             cancel: cancel.clone(),
+                                            gate_adapter: Some(Arc::new(
+                                                gate_dispatch::default_gate_adapter(),
+                                            )),
                                             task,
                                         };
                                         let replay_tx = candidate_replay_tx.clone();
@@ -6162,6 +6193,7 @@ pub async fn run_with_tui_commands(
                                 deadline_tracker.hard_run_deadline(deadline_policy),
                             )
                         }),
+                        gate_adapter: Some(Arc::new(gate_dispatch::default_gate_adapter())),
                     };
                     let dispatch_outcome = dispatch_action(&action, &mut ctx).await;
                     if wake_driven_scheduler
@@ -11635,6 +11667,7 @@ async fn dispatch_action(
                         Some(Arc::clone(ctx.telemetry_sink)),
                         Some(ctx.config.workdir.join("target")),
                         None,
+                        ctx.gate_adapter.clone(),
                     );
                     let AgentRuntimeResource::AwaitingGate { permit } = gate_claim
                         .replace_resource(AgentRuntimeResource::AwaitingGate { permit: None })
@@ -13701,6 +13734,7 @@ async fn dispatch_action(
                     Some(Arc::clone(ctx.telemetry_sink)),
                     Some(ctx.config.workdir.join("target")),
                     expected_salvage_input,
+                    ctx.gate_adapter.clone(),
                 )
             };
             let AgentRuntimeResource::AwaitingGate { permit } =
@@ -20625,6 +20659,7 @@ mod tests {
             main_target_dir: None,
             allow_empty_delta: false,
             cancel: CancellationToken::new(),
+            gate_adapter: None,
         }
     }
 
@@ -21817,6 +21852,7 @@ slug = "fixture-model"
             github_ops: &github_ops,
             github_workflow: &github_workflow,
             dispatch_deadline: None,
+            gate_adapter: None,
         };
         let action = ExecutorAction::SpawnAgent {
             plan_id: "plan".to_string(),
@@ -22060,6 +22096,7 @@ slug = "fixture-model"
                 github_ops: &github_ops,
                 github_workflow: &github_workflow,
                 dispatch_deadline: None,
+                gate_adapter: None,
             };
             dispatch_action(
                 &ExecutorAction::SpawnAgent {

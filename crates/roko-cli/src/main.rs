@@ -4831,6 +4831,172 @@ mod tests {
         ));
     }
 
+    // ── #311: learn inspect / config preset parser tests ──────────
+
+    #[test]
+    fn cli_parses_learn_inspect_gates() {
+        let cli = Cli::try_parse_from(["roko", "learn", "inspect", "gates"])
+            .expect("parse learn inspect gates");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Learn {
+                cmd: LearnCmd::Inspect {
+                    subsystem: InspectSubsystem::Gates { workdir: None },
+                },
+            })
+        ));
+    }
+
+    #[test]
+    fn cli_parses_learn_inspect_routing_with_workdir() {
+        let cli = Cli::try_parse_from([
+            "roko",
+            "learn",
+            "inspect",
+            "routing",
+            "--workdir",
+            "/tmp/proj",
+        ])
+        .expect("parse learn inspect routing --workdir");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Learn {
+                cmd: LearnCmd::Inspect {
+                    subsystem: InspectSubsystem::Routing { workdir: Some(ref wd) },
+                },
+            }) if wd == std::path::Path::new("/tmp/proj")
+        ));
+    }
+
+    #[test]
+    fn cli_parses_learn_inspect_budget() {
+        let cli = Cli::try_parse_from(["roko", "learn", "inspect", "budget"])
+            .expect("parse learn inspect budget");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Learn {
+                cmd: LearnCmd::Inspect {
+                    subsystem: InspectSubsystem::Budget { workdir: None },
+                },
+            })
+        ));
+    }
+
+    #[test]
+    fn cli_parses_learn_tune_deprecated_alias() {
+        let cli = Cli::try_parse_from(["roko", "learn", "tune", "routing"])
+            .expect("parse learn tune routing");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Learn {
+                cmd: LearnCmd::Tune {
+                    ref subsystem,
+                    dry_run: false,
+                    workdir: None,
+                },
+            }) if subsystem == "routing"
+        ));
+    }
+
+    #[test]
+    fn cli_parses_learn_tune_dry_run_flag() {
+        let cli = Cli::try_parse_from(["roko", "learn", "tune", "--dry-run", "gates"])
+            .expect("parse learn tune --dry-run");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Learn {
+                cmd: LearnCmd::Tune {
+                    ref subsystem,
+                    dry_run: true,
+                    workdir: None,
+                },
+            }) if subsystem == "gates"
+        ));
+    }
+
+    #[test]
+    fn cli_parses_config_preset_gates() {
+        let cli =
+            Cli::try_parse_from(["roko", "config", "preset", "gates"]).expect("parse config preset gates");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Config {
+                cmd: ConfigCmd::Preset {
+                    cmd: ConfigPresetCmd::Gates {
+                        dry_run: false,
+                        yes: false,
+                        global: false,
+                        ..
+                    },
+                },
+            })
+        ));
+    }
+
+    #[test]
+    fn cli_parses_config_preset_routing_dry_run() {
+        let cli = Cli::try_parse_from(["roko", "config", "preset", "routing", "--dry-run"])
+            .expect("parse config preset routing --dry-run");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Config {
+                cmd: ConfigCmd::Preset {
+                    cmd: ConfigPresetCmd::Routing {
+                        dry_run: true,
+                        yes: false,
+                        ..
+                    },
+                },
+            })
+        ));
+    }
+
+    #[test]
+    fn cli_parses_config_preset_model_with_name() {
+        let cli = Cli::try_parse_from(["roko", "config", "preset", "model", "sonnet", "--yes"])
+            .expect("parse config preset model sonnet --yes");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Config {
+                cmd: ConfigCmd::Preset {
+                    cmd: ConfigPresetCmd::Model {
+                        ref name,
+                        yes: true,
+                        dry_run: false,
+                        ..
+                    },
+                },
+            }) if name == "sonnet"
+        ));
+    }
+
+    #[test]
+    fn cli_parses_config_preset_budget_global() {
+        let cli = Cli::try_parse_from(["roko", "config", "preset", "budget", "--global"])
+            .expect("parse config preset budget --global");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Config {
+                cmd: ConfigCmd::Preset {
+                    cmd: ConfigPresetCmd::Budget {
+                        global: true,
+                        ..
+                    },
+                },
+            })
+        ));
+    }
+
+    #[test]
+    fn cli_parses_top_level_tune_deprecated() {
+        let cli =
+            Cli::try_parse_from(["roko", "tune", "gates"]).expect("parse top-level tune gates");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Tune(TuneCmd::Gates { workdir: None }))
+        ));
+    }
+
     #[test]
     fn force_model_alias_arms_the_existing_highest_precedence_override() {
         let cli = Cli::try_parse_from(["roko", "--force-model", "model-b", "status"])

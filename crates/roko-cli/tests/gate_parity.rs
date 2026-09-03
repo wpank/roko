@@ -419,3 +419,217 @@ async fn evidence_fingerprints_preserved() {
         "rung_index should be populated for compile rung"
     );
 }
+
+// ─── Graph GatePipelineCell parity tests ─────────────────────────────────
+
+/// For each fixture case, run the fake gate runner through the Graph
+/// `GatePipelineCell` and verify the resulting verdict Signal matches the
+/// expected normalized outcome. This is the Graph side of the convergence
+/// contract: Runner and Graph must produce equivalent verdicts for the same
+/// fake rung executor.
+#[tokio::test]
+async fn graph_cell_matches_fixture_expectations() {
+    let fixtures = load_fixtures();
+
+    for case in &fixtures.cases {
+        let runner = FixtureGateRunner {
+            rungs: case.rungs.clone(),
+            cancelled: case.expected.outcome == "cancelled",
+            timed_out: case.expected.outcome == "timed_out",
+        };
+
+        let cell = roko_gate::GatePipelineCell::new(Arc::new(runner));
+
+        // Build the input signal using GatePipelineCellInput.
+        let cell_input = roko_gate::GatePipelineCellInput {
+            run_id: "run-parity".into(),
+            plan_id: "plan-1".into(),
+            task_id: "task-1".into(),
+            attempt: 0,
+            workspace: PathBuf::from("/tmp/ws"),
+            workspace_fingerprint: "fp-parity".into(),
+            changed_files: vec!["src/lib.rs".into()],
+            verify_steps: vec![],
+            gates_config: roko_core::config::GatesConfig::default(),
+            task_context: roko_gate::GateTaskContextSpec::default(),
+            timeout_secs: 600,
+            baseline_fingerprint: None,
+        };
+        let body =
+            roko_core::Body::from_json(&cell_input).expect("serialize cell input");
+        let signal = roko_core::Signal::builder(roko_core::Kind::Task)
+            .body(body)
+            .build();
+
+        let output = cell
+            .execute_gate(signal)
+            .await
+            .expect(&format!("case '{}': cell should complete", case.id));
+
+        // Decode the verdict from the output signal.
+        let verdict: roko_gate::ProductionGateVerdictV1 = output
+            .body
+            .as_json()
+            .expect(&format!("case '{}': decode verdict", case.id));
+
+        // Verify the selected rungs match.
+        let selected: Vec<String> = verdict
+            .rung_verdicts
+            .iter()
+            .filter(|rv| !rv.skipped())
+            .map(|rv| rv.rung.label().to_string())
+            .collect();
+        assert_eq!(
+            selected, case.expected.selected_rungs,
+            "case '{}': graph cell selected_rungs mismatch",
+            case.id
+        );
+
+        // Verify rung count for non-timeout cases.
+        if case.expected.outcome != "timed_out" {
+            assert_eq!(
+                verdict.rung_verdicts.len(),
+                case.rungs.len(),
+                "case '{}': graph cell verdict count mismatch",
+                case.id
+            );
+        }
+
+        // Verify pass/fail parity with the runner adapter.
+        if case.expected.outcome == "timed_out" || case.expected.outcome == "cancelled" {
+            assert!(
+                !verdict.passed(),
+                "case '{}': timed-out/cancelled should not pass (graph cell)",
+                case.id
+            );
+        } else {
+            assert_eq!(
+                verdict.passed(),
+                case.expected.passed,
+                "case '{}': graph cell passed mismatch",
+                case.id
+            );
+        }
+    }
+}
+
+/// Verify that for each fixture case, the Runner adapter and Graph cell
+/// produce equivalent normalized verdicts (the convergence contract).
+#[tokio::test]
+async fn runner_and_graph_verdicts_converge() {
+    let fixtures = load_fixtures();
+
+    for case in &fixtures.cases {
+        // --- Runner adapter path ---
+        let runner_runner = FixtureGateRunner {
+            rungs: case.rungs.clone(),
+            cancelled: case.expected.outcome == "cancelled",
+            timed_out: case.expected.outcome == "timed_out",
+        };
+        let adapter = roko_cli::runner::gate_dispatch::RunnerProductionGateAdapter::new(
+            Arc::new(runner_runner),
+        );
+        let effect = make_gate_effect();
+        let completion = adapter
+            .run(
+                effect,
+                "plan-1".into(),
+                "task-1".into(),
+                2,
+                PathBuf::from("/tmp/ws"),
+                roko_core::config::GatesConfig::default(),
+                roko_gate::PlanComplexity::Trivial,
+                vec![],
+                None,
+                600,
+                vec![],
+                None,
+            )
+            .await;
+
+        // --- Graph cell path ---
+        let graph_runner = FixtureGateRunner {
+            rungs: case.rungs.clone(),
+            cancelled: case.expected.outcome == "cancelled",
+            timed_out: case.expected.outcome == "timed_out",
+        };
+        let cell = roko_gate::GatePipelineCell::new(Arc::new(graph_runner));
+        let cell_input = roko_gate::GatePipelineCellInput {
+            run_id: "run-converge".into(),
+            plan_id: "plan-1".into(),
+            task_id: "task-1".into(),
+            attempt: 0,
+            workspace: PathBuf::from("/tmp/ws"),
+            workspace_fingerprint: "fp-converge".into(),
+            changed_files: vec!["src/lib.rs".into()],
+            verify_steps: vec![],
+            gates_config: roko_core::config::GatesConfig::default(),
+            task_context: roko_gate::GateTaskContextSpec::default(),
+            timeout_secs: 600,
+            baseline_fingerprint: None,
+        };
+        let body =
+            roko_core::Body::from_json(&cell_input).expect("serialize cell input");
+        let signal = roko_core::Signal::builder(roko_core::Kind::Task)
+            .body(body)
+            .build();
+        let output = cell
+            .execute_gate(signal)
+            .await
+            .expect(&format!("case '{}': convergence cell failed", case.id));
+        let verdict: roko_gate::ProductionGateVerdictV1 = output.body.as_json().unwrap();
+
+        // --- Convergence assertions ---
+        // Both paths should agree on pass/fail.
+        assert_eq!(
+            completion.passed,
+            verdict.passed(),
+            "case '{}': runner/graph pass convergence mismatch",
+            case.id
+        );
+
+        // Both should agree on verdict count (for non-timeout cases).
+        if case.expected.outcome != "timed_out" {
+            assert_eq!(
+                completion.verdicts.len(),
+                verdict.rung_verdicts.len(),
+                "case '{}': runner/graph verdict count convergence mismatch",
+                case.id
+            );
+        }
+
+        // Selected rungs must match.
+        let graph_selected: Vec<String> = verdict
+            .rung_verdicts
+            .iter()
+            .filter(|rv| !rv.skipped())
+            .map(|rv| rv.rung.label().to_string())
+            .collect();
+        assert_eq!(
+            completion.selected_rungs, graph_selected,
+            "case '{}': runner/graph selected_rungs convergence mismatch",
+            case.id
+        );
+
+        // Per-rung pass/fail/skipped state must match.
+        if case.expected.outcome != "timed_out" {
+            for (i, rv) in verdict.rung_verdicts.iter().enumerate() {
+                let summary = &completion.verdicts[i];
+                assert_eq!(
+                    summary.passed,
+                    rv.passed(),
+                    "case '{}' rung {}: runner/graph passed convergence mismatch",
+                    case.id,
+                    i
+                );
+                assert_eq!(
+                    summary.skipped,
+                    rv.skipped(),
+                    "case '{}' rung {}: runner/graph skipped convergence mismatch",
+                    case.id,
+                    i
+                );
+            }
+        }
+    }
+}

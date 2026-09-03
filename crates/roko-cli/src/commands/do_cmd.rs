@@ -196,8 +196,9 @@ pub(crate) async fn cmd_do(
         return cmd_do_resume_hint(&workdir);
     }
 
-    // If the prompt is a single word (no spaces), check if it matches an
-    // existing plan slug before treating it as a prompt.
+    // If the prompt is a single word matching an existing plan directory,
+    // instruct the user to use `roko plan run` instead of silently executing.
+    // This prevents filesystem-sensitive routing (#278 frozen routing table).
     if !prompt.contains(' ') {
         let plan_slug = &prompt;
         let candidates = [
@@ -209,10 +210,21 @@ pub(crate) async fn cmd_do(
             workdir.join("plans").join(plan_slug).join("tasks.toml"),
         ];
         if let Some(found) = candidates.iter().find(|p| p.is_file()) {
-            let _lock = roko_cli::workspace_lock::acquire_workspace_lock(&workdir.join(".roko"))?;
             let plan_dir = found.parent().expect("tasks.toml has parent dir");
-            roko_cli::output_format::step("Found plan", &plan_dir.display().to_string());
-            return run_plan_execution(cli, &workdir, plan_dir, no_cascade, provider).await;
+            let out = roko_cli::cli_output::CliOutput::new(cli.quiet);
+            out.step(
+                "Plan found",
+                &format!(
+                    "\"{}\" matches plan at {}",
+                    plan_slug,
+                    plan_dir.display()
+                ),
+            );
+            out.step(
+                "Run with",
+                &format!("roko plan run {}", plan_dir.display()),
+            );
+            return Ok(EXIT_SUCCESS);
         }
     }
 
@@ -277,37 +289,93 @@ pub(crate) async fn cmd_do(
     let forced = complexity_override.is_some();
     let dry_preview = dry_run || ghost;
 
-    if dry_preview || compare {
-        print_do_preview(
-            &prompt,
-            complexity,
-            forced,
-            yes,
-            no_cascade,
-            &preview_config,
-        );
-        if compare {
-            println!("compare     : cascade-enabled vs --no-cascade");
-            println!("execution   : skipped; compare mode is a dry preview in this worktree");
+    // ── Deterministic route resolution (#278) ───────────────────────
+    let route_input = DoRouteInput {
+        complexity,
+        complexity_forced: forced,
+        plan_flag: plan,
+        dry_preview,
+        compare,
+        is_tty: roko_cli::stdin_is_tty(),
+    };
+    let route = resolve_do_route(&route_input);
+
+    tracing::debug!(
+        ?route,
+        template = route.template_name(),
+        cost_band = route.cost_band(),
+        "resolved do route"
+    );
+
+    match route {
+        DoRoute::DryRun { ref inner } => {
+            print_do_preview(
+                &prompt,
+                complexity,
+                forced,
+                yes,
+                no_cascade,
+                &preview_config,
+                inner,
+            );
+            if compare {
+                println!("compare     : cascade-enabled vs --no-cascade");
+                println!("execution   : skipped; compare mode is a dry preview in this worktree");
+            }
+            return Ok(EXIT_SUCCESS);
         }
-        return Ok(EXIT_SUCCESS);
+        DoRoute::RejectNonTty => {
+            roko_cli::output_format::error(
+                "non-TTY input requires --complexity <level> or --plan to avoid silent dispatch",
+            );
+            roko_cli::output_format::step(
+                "Hint",
+                "roko do --complexity simple \"your prompt\" or roko do --plan \"your prompt\"",
+            );
+            return Ok(EXIT_AGENT_FAILURE);
+        }
+        DoRoute::PlanHint { ref slug } => {
+            // This path is unreachable in normal flow (handled earlier), but
+            // included for completeness.
+            roko_cli::output_format::step(
+                "Plan found",
+                &format!("use `roko plan run <path>` to execute plan \"{slug}\""),
+            );
+            return Ok(EXIT_SUCCESS);
+        }
+        DoRoute::Research | DoRoute::PlanGenerate => {
+            // These are handled before complexity classification.
+            unreachable!("research/plan-generate routes are resolved before resolve_do_route");
+        }
+        _ => {}
     }
 
     // A `do` execution owns the workspace's mutable runtime state for its
     // complete lifetime (including plan generation and runner dispatch).
     let _lock = roko_cli::workspace_lock::acquire_workspace_lock(&workdir.join(".roko"))?;
 
-    // Route based on classified complexity.
-    match complexity {
-        PlanComplexity::Trivial | PlanComplexity::Simple => {
+    // Route based on resolved route.
+    match route {
+        DoRoute::Mechanical | DoRoute::Focused => {
             run_simple_path(cli, &workdir, &prompt, complexity, no_cascade, provider).await
         }
-        PlanComplexity::Standard => {
+        DoRoute::Integrative => {
+            // --plan with trivial/simple: run through integrative template.
+            run_simple_path(cli, &workdir, &prompt, PlanComplexity::Standard, no_cascade, provider)
+                .await
+        }
+        DoRoute::PromptPlan => {
             run_standard_path(cli, &workdir, &prompt, no_cascade, provider, &context).await
         }
-        PlanComplexity::Complex => {
+        DoRoute::PrdPlan => {
             run_complex_path(cli, &workdir, &prompt, no_cascade, provider, &context).await
         }
+        // Already handled above.
+        DoRoute::DryRun { .. }
+        | DoRoute::RejectNonTty
+        | DoRoute::PlanHint { .. }
+        | DoRoute::Research
+        | DoRoute::PlanGenerate => unreachable!(),
     }
 }
 

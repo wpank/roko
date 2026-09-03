@@ -1,4 +1,4 @@
-//! Configuration and path helpers extracted from `orchestrate.rs`.
+//! Configuration and path helpers extracted from the legacy orchestrator.
 //!
 //! This module contains:
 //! - `.roko/` layout path constructors
@@ -9,7 +9,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context as _, Result};
 use roko_agent::safety::provenance::CustodyLogger;
 use roko_agent::task_runner::CostTable as RunnerCostTable;
 use roko_agent::task_runner::ModelPricing as RunnerModelPricing;
@@ -208,6 +207,15 @@ pub(crate) fn resolved_role_label(config: &RokoConfig, role_label: &str) -> Stri
         .unwrap_or_else(|| role_label.to_string())
 }
 
+/// Resolve the effective reasoning effort for a role, consulting role-override
+/// config then falling back to built-in per-role defaults.
+///
+/// Precedence: role override `effort` > role override `default_effort` >
+/// built-in role default > `agent.default_effort`.
+pub(crate) fn role_effort_for<'a>(config: &'a RokoConfig, role_label: &str) -> &'a str {
+    config.agent.effort_for_role(role_label)
+}
+
 pub(crate) fn model_matches_forced_backend(
     config: &RokoConfig,
     model_providers: &HashMap<String, String>,
@@ -267,6 +275,10 @@ pub(crate) fn apply_role_routing_override(
             return Some((model.clone(), "role_force_tier".to_string()));
         }
 
+        // NB: this is the **config-file** `routing_overrides.force_backend`
+        // (matches provider families like "claude"), NOT the CLI
+        // `--force-backend` flag (which sets a model slug and lives in
+        // `DispatchContext.force_backend`).
         if let Some(force_backend) = routing_overrides.force_backend.as_deref()
             && let Some(model) = candidates
                 .iter()

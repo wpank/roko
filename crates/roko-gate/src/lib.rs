@@ -135,7 +135,7 @@ pub use acceptance_contract::{
     ReviewVerdictEvidence, ReviewVerdictRequirement, StructuredAgentOutputRequirement,
     StructuredOutputEvidence,
 };
-pub use adaptive_threshold::{AdaptiveThresholds, RungStats};
+pub use adaptive_threshold::{AdaptiveThresholds, RungStats, TOTAL_RUNGS};
 pub use artifact_store::ArtifactStore;
 pub use clippy_gate::ClippyGate;
 pub use code_exec::{

@@ -137,8 +137,9 @@ impl FocusZone {
                 _ => Self::PlanTree,
             },
             Tab::Plans => match self {
-                Self::RightPanel => Self::PlanTree,
-                _ => Self::RightPanel,
+                Self::PlanTree => Self::TaskProgress,
+                Self::TaskProgress => Self::RightPanel,
+                _ => Self::PlanTree,
             },
             Tab::Agents => match self {
                 Self::AgentOutput => Self::RightPanel,
@@ -158,6 +159,7 @@ impl FocusZone {
             },
             Tab::Inspect => match self {
                 Self::InspectTree => Self::InspectDetail,
+                Self::InspectDetail => Self::RightPanel,
                 _ => Self::InspectTree,
             },
             Tab::Marketplace => match self {
@@ -187,8 +189,9 @@ impl FocusZone {
                 _ => Self::CommandOutput,
             },
             Tab::Plans => match self {
-                Self::RightPanel => Self::PlanTree,
-                _ => Self::RightPanel,
+                Self::PlanTree => Self::RightPanel,
+                Self::TaskProgress => Self::PlanTree,
+                _ => Self::TaskProgress,
             },
             Tab::Agents => match self {
                 Self::AgentOutput => Self::RightPanel,
@@ -207,6 +210,7 @@ impl FocusZone {
                 _ => Self::ConfigValues,
             },
             Tab::Inspect => match self {
+                Self::InspectTree => Self::RightPanel,
                 Self::InspectDetail => Self::InspectTree,
                 _ => Self::InspectDetail,
             },
@@ -407,6 +411,18 @@ pub enum TuiAction {
     // -- notifications --
     DismissNotification,
     ShowNotificationHistory,
+    /// Toggle a notification history level filter (1=info, 2=warn, 3=error, 4=debug).
+    NotifFilterToggle(u8),
+    /// Jump to the related run/task of the selected notification.
+    NotifJumpToRelated,
+    /// Page up in the notification history modal.
+    NotifPageUp,
+    /// Page down in the notification history modal.
+    NotifPageDown,
+    /// Jump to the top of the notification history.
+    NotifHome,
+    /// Jump to the bottom of the notification history.
+    NotifEnd,
 
     // -- config editor --
     ConfigUp,
@@ -455,6 +471,8 @@ pub enum TuiAction {
     PrevLogMatch,
     /// Toggle between highlight and filter mode for log search.
     ToggleLogFilterMode,
+    /// Yank (copy) the currently selected log entry text.
+    YankLogEntry,
 
     // -- plan tree filter (#219) --
     /// Enter plan tree filter mode on F2:Plans tab.
@@ -525,13 +543,13 @@ pub enum TuiAction {
 // Key dispatch
 // ---------------------------------------------------------------------------
 
-/// Top-level key dispatch with modal intercept priority.
+/// Top-level key dispatch with exhaustive 4-step priority (#365).
 ///
 /// Priority order (highest first):
-/// 1. Help / approval / detail modals
-/// 2. Confirm dialog
-/// 3. Inject / filter text input
-/// 4. Normal per-tab navigation
+/// 1. Ctrl-C emergency quit (always, regardless of mode or modal).
+/// 2. Non-normal `InputMode` handler (text input captures keystrokes).
+/// 3. Active modal handler (when mode is `Normal` and a modal is open).
+/// 4. Global keys, then per-tab keys.
 pub fn handle_key(
     key: KeyEvent,
     mode: InputMode,
@@ -539,11 +557,31 @@ pub fn handle_key(
     focus: FocusZone,
     modals: &ModalVisibility,
 ) -> TuiAction {
+    // Step 1: Ctrl-C emergency quit — always takes precedence.
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
         return TuiAction::QuitConfirmed;
     }
 
-    // Modal intercepts (highest priority first).
+    // Step 2: Non-normal InputMode handlers consume keystrokes first.
+    // When a text-input mode is active the user is typing; all keys belong
+    // to that mode until it is dismissed.
+    match mode {
+        InputMode::Normal => {} // fall through to step 3
+        InputMode::Confirm => return handle_confirm_key(key),
+        InputMode::Inject => return handle_inject_key(key),
+        InputMode::Filter => return handle_filter_key(key),
+        InputMode::ConfigEdit => return handle_config_edit_key(key),
+        InputMode::LogSearch => return handle_log_search_key(key),
+        InputMode::PlanFilter => return handle_plan_filter_key(key),
+    }
+
+    // Step 2b: F-keys always switch tabs, even when a modal is open.
+    // Only Ctrl-C (step 1) and text-input modes (step 2) take precedence.
+    if let Some(tab) = Tab::from_key(key.code) {
+        return TuiAction::SwitchTab(tab);
+    }
+
+    // Step 3: Active modal handler (Normal mode only).
     // Every ModalState variant MUST have an explicit arm -- no catch-all -- so the
     // compiler rejects any future variant added without a handler.
     if let Some(modal) = modals.active_modal {
@@ -564,34 +602,11 @@ pub fn handle_key(
         };
     }
 
-    // Confirm dialog
-    if mode == InputMode::Confirm {
-        return handle_confirm_key(key);
-    }
-
-    // Text input modes
-    if mode == InputMode::ConfigEdit {
-        return handle_config_edit_key(key);
-    }
-    if mode == InputMode::Inject {
-        return handle_inject_key(key);
-    }
-    if mode == InputMode::Filter {
-        return handle_filter_key(key);
-    }
-    if mode == InputMode::LogSearch {
-        return handle_log_search_key(key);
-    }
-    if mode == InputMode::PlanFilter {
-        return handle_plan_filter_key(key);
-    }
-
-    // Global keys that work in any tab
+    // Step 4: Global keys that work in any tab, then per-tab dispatch.
     if let Some(action) = handle_global_key(key, active_tab) {
         return action;
     }
 
-    // Per-tab dispatch
     match active_tab {
         Tab::Dashboard => handle_dashboard_key(key, focus),
         Tab::Plans => handle_plans_key(key, focus),
@@ -662,6 +677,9 @@ fn handle_plan_detail_key(key: KeyEvent) -> TuiAction {
         KeyCode::Esc => TuiAction::ClosePlanDetail,
         KeyCode::Up | KeyCode::Char('k') => TuiAction::ScrollDetailUp,
         KeyCode::Down | KeyCode::Char('j') => TuiAction::ScrollDetailDown,
+        KeyCode::Tab => TuiAction::SwitchDetailTab(0), // next detail sub-tab
+        KeyCode::PageUp => TuiAction::ScrollPageUp,
+        KeyCode::PageDown => TuiAction::ScrollPageDown,
         _ => TuiAction::None,
     }
 }
@@ -682,6 +700,8 @@ fn handle_task_detail_key(key: KeyEvent) -> TuiAction {
         KeyCode::Up | KeyCode::Char('k') => TuiAction::ScrollDetailUp,
         KeyCode::Down | KeyCode::Char('j') => TuiAction::ScrollDetailDown,
         KeyCode::Tab => TuiAction::SwitchDetailTab(0), // next detail sub-tab
+        KeyCode::PageUp => TuiAction::ScrollPageUp,
+        KeyCode::PageDown => TuiAction::ScrollPageDown,
         _ => TuiAction::None,
     }
 }
@@ -717,6 +737,15 @@ fn handle_notification_history_key(key: KeyEvent) -> TuiAction {
         KeyCode::Esc | KeyCode::Char('q') => TuiAction::CloseModal,
         KeyCode::Up | KeyCode::Char('k') => TuiAction::ModalScrollUp,
         KeyCode::Down | KeyCode::Char('j') => TuiAction::ModalScrollDown,
+        KeyCode::PageUp => TuiAction::NotifPageUp,
+        KeyCode::PageDown => TuiAction::NotifPageDown,
+        KeyCode::Home => TuiAction::NotifHome,
+        KeyCode::End => TuiAction::NotifEnd,
+        KeyCode::Char('1') => TuiAction::NotifFilterToggle(1),
+        KeyCode::Char('2') => TuiAction::NotifFilterToggle(2),
+        KeyCode::Char('3') => TuiAction::NotifFilterToggle(3),
+        KeyCode::Char('4') => TuiAction::NotifFilterToggle(4),
+        KeyCode::Enter => TuiAction::NotifJumpToRelated,
         _ => TuiAction::None,
     }
 }
@@ -738,8 +767,9 @@ fn handle_batch_review_key(key: KeyEvent) -> TuiAction {
         KeyCode::Esc | KeyCode::Char('q') => TuiAction::CloseModal,
         KeyCode::Up | KeyCode::Char('k') => TuiAction::ModalScrollUp,
         KeyCode::Down | KeyCode::Char('j') => TuiAction::ModalScrollDown,
-        KeyCode::Char('a') => TuiAction::ConfirmYes,
-        KeyCode::Char('r') => TuiAction::ConfirmNo,
+        KeyCode::Char('a') => TuiAction::ConfirmYes,  // approve
+        KeyCode::Char('r') => TuiAction::ConfirmNo,   // reject
+        KeyCode::Char('s') => TuiAction::CloseModal,  // skip (dismiss without action)
         _ => TuiAction::None,
     }
 }
@@ -838,7 +868,9 @@ fn handle_global_key(key: KeyEvent, active_tab: Tab) -> Option<TuiAction> {
         // `q` is global quit, except on Plans tab where it opens queue overview.
         KeyCode::Char('q') if active_tab != Tab::Plans => Some(TuiAction::Quit),
         KeyCode::Char('?') => Some(TuiAction::ShowHelp),
-        KeyCode::Char('n') => Some(TuiAction::DismissNotification),
+        // `n` dismisses notifications globally, except on Logs tab where
+        // it navigates to the next search match.
+        KeyCode::Char('n') if active_tab != Tab::Logs => Some(TuiAction::DismissNotification),
         KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             Some(TuiAction::Refresh)
         }
@@ -923,6 +955,7 @@ fn handle_dashboard_key(key: KeyEvent, focus: FocusZone) -> TuiAction {
         KeyCode::Char('m') => TuiAction::SwitchDetailTab(5), // MCP
         KeyCode::Char('L') => TuiAction::SwitchDetailTab(6), // Learning
         KeyCode::Char('P') => TuiAction::SwitchDetailTab(7), // Processes
+        KeyCode::Char('C') => TuiAction::SwitchDetailTab(8), // Conductor
 
         // Modal triggers
         KeyCode::Char('w') => TuiAction::ShowWaveOverview,
@@ -1070,6 +1103,8 @@ fn handle_logs_key(key: KeyEvent, _focus: FocusZone) -> TuiAction {
         KeyCode::Char('n') => TuiAction::NextLogMatch,
         KeyCode::Char('N') => TuiAction::PrevLogMatch,
         KeyCode::Char('f') => TuiAction::ToggleLogFilterMode,
+        // Yank selected log entry text
+        KeyCode::Char('y') => TuiAction::YankLogEntry,
         _ => TuiAction::None,
     }
 }
@@ -1198,15 +1233,26 @@ mod tests {
     }
 
     #[test]
-    fn global_n_dismisses_notifications_on_any_tab() {
+    fn global_n_dismisses_notifications_except_logs_tab() {
+        // On most tabs, `n` dismisses notifications.
         let action = handle_key(
             key(KeyCode::Char('n')),
             InputMode::Normal,
-            Tab::Logs,
+            Tab::Dashboard,
             FocusZone::PlanTree,
             &modals(None),
         );
         assert_eq!(action, TuiAction::DismissNotification);
+
+        // On Logs tab, `n` navigates to the next search match instead.
+        let action = handle_key(
+            key(KeyCode::Char('n')),
+            InputMode::Normal,
+            Tab::Logs,
+            FocusZone::LogList,
+            &modals(None),
+        );
+        assert_eq!(action, TuiAction::NextLogMatch);
     }
 
     #[test]
@@ -1556,6 +1602,7 @@ mod tests {
         );
         assert_eq!(action, TuiAction::ScrollDetailDown);
 
+        // Tab cycles detail sub-tabs within the plan detail modal.
         let action = handle_key(
             key(KeyCode::Tab),
             InputMode::Normal,
@@ -1563,7 +1610,7 @@ mod tests {
             FocusZone::PlanTree,
             &vis,
         );
-        assert_eq!(action, TuiAction::None);
+        assert_eq!(action, TuiAction::SwitchDetailTab(0));
     }
 
     #[test]
@@ -1924,5 +1971,405 @@ mod tests {
             action,
             TuiAction::RequestConfirm(ConfirmAction::GitReconcile)
         );
+    }
+
+    // =================================================================
+    // #365 — modal input precedence tests
+    // =================================================================
+
+    #[test]
+    fn input_mode_takes_precedence_over_active_modal() {
+        // When InputMode is non-Normal AND a modal is open, InputMode wins.
+        let modal = ModalState::Help;
+        let vis = modals(Some(&modal));
+
+        // Inject mode captures 'x' even with Help modal open.
+        let action = handle_key(
+            key(KeyCode::Char('x')),
+            InputMode::Inject,
+            Tab::Dashboard,
+            FocusZone::PlanTree,
+            &vis,
+        );
+        assert_eq!(action, TuiAction::InputChar('x'));
+    }
+
+    #[test]
+    fn confirm_mode_takes_precedence_over_active_modal() {
+        let modal = ModalState::PlanDetail {
+            plan_id: "p1".to_string(),
+        };
+        let vis = modals(Some(&modal));
+
+        let action = handle_key(
+            key(KeyCode::Char('y')),
+            InputMode::Confirm,
+            Tab::Plans,
+            FocusZone::PlanTree,
+            &vis,
+        );
+        assert_eq!(action, TuiAction::ConfirmYes);
+    }
+
+    #[test]
+    fn log_search_mode_takes_precedence_over_modal() {
+        let modal = ModalState::Help;
+        let vis = modals(Some(&modal));
+
+        let action = handle_key(
+            key(KeyCode::Char('a')),
+            InputMode::LogSearch,
+            Tab::Logs,
+            FocusZone::LogList,
+            &vis,
+        );
+        assert_eq!(action, TuiAction::InputChar('a'));
+    }
+
+    #[test]
+    fn modal_allows_fkey_tab_switching() {
+        // F-keys always switch tabs, even when a modal is open.
+        let modal = ModalState::BatchReview {
+            batch_name: "b".to_string(),
+            results: Vec::new(),
+            scroll_offset: 0,
+        };
+        let vis = modals(Some(&modal));
+
+        // F3 should switch tabs even with a modal open.
+        let action = handle_key(
+            key(KeyCode::F(3)),
+            InputMode::Normal,
+            Tab::Dashboard,
+            FocusZone::PlanTree,
+            &vis,
+        );
+        assert_eq!(action, TuiAction::SwitchTab(Tab::Agents));
+    }
+
+    #[test]
+    fn modal_blocks_tab_and_number_navigation() {
+        // Tab and number keys are blocked by modals (only F-keys pass through).
+        let modal = ModalState::BatchReview {
+            batch_name: "b".to_string(),
+            results: Vec::new(),
+            scroll_offset: 0,
+        };
+        let vis = modals(Some(&modal));
+
+        // Tab should NOT cycle focus; swallowed by modal.
+        let action = handle_key(
+            key(KeyCode::Tab),
+            InputMode::Normal,
+            Tab::Dashboard,
+            FocusZone::PlanTree,
+            &vis,
+        );
+        assert_eq!(action, TuiAction::None);
+
+        // Number keys should NOT switch tabs.
+        let action = handle_key(
+            key(KeyCode::Char('3')),
+            InputMode::Normal,
+            Tab::Dashboard,
+            FocusZone::PlanTree,
+            &vis,
+        );
+        assert_eq!(action, TuiAction::None);
+    }
+
+    #[test]
+    fn batch_review_skip_key() {
+        let modal = ModalState::BatchReview {
+            batch_name: "test".to_string(),
+            results: Vec::new(),
+            scroll_offset: 0,
+        };
+        let vis = modals(Some(&modal));
+
+        let action = handle_key(
+            key(KeyCode::Char('s')),
+            InputMode::Normal,
+            Tab::Dashboard,
+            FocusZone::PlanTree,
+            &vis,
+        );
+        assert_eq!(action, TuiAction::CloseModal);
+    }
+
+    #[test]
+    fn batch_review_approve_and_reject() {
+        let modal = ModalState::BatchReview {
+            batch_name: "test".to_string(),
+            results: Vec::new(),
+            scroll_offset: 0,
+        };
+        let vis = modals(Some(&modal));
+
+        let approve = handle_key(
+            key(KeyCode::Char('a')),
+            InputMode::Normal,
+            Tab::Dashboard,
+            FocusZone::PlanTree,
+            &vis,
+        );
+        assert_eq!(approve, TuiAction::ConfirmYes);
+
+        let reject = handle_key(
+            key(KeyCode::Char('r')),
+            InputMode::Normal,
+            Tab::Dashboard,
+            FocusZone::PlanTree,
+            &vis,
+        );
+        assert_eq!(reject, TuiAction::ConfirmNo);
+    }
+
+    // =================================================================
+    // #237 — focus zone cycling tests
+    // =================================================================
+
+    #[test]
+    fn plans_tab_focus_cycles_three_zones() {
+        // F2 Plans: PlanTree -> TaskProgress -> RightPanel -> PlanTree
+        let z1 = FocusZone::PlanTree;
+        let z2 = z1.next(Tab::Plans);
+        assert_eq!(z2, FocusZone::TaskProgress);
+
+        let z3 = z2.next(Tab::Plans);
+        assert_eq!(z3, FocusZone::RightPanel);
+
+        let z4 = z3.next(Tab::Plans);
+        assert_eq!(z4, FocusZone::PlanTree);
+    }
+
+    #[test]
+    fn plans_tab_focus_cycles_three_zones_reverse() {
+        let z1 = FocusZone::PlanTree;
+        let z2 = z1.prev(Tab::Plans);
+        assert_eq!(z2, FocusZone::RightPanel);
+
+        let z3 = z2.prev(Tab::Plans);
+        assert_eq!(z3, FocusZone::TaskProgress);
+
+        let z4 = z3.prev(Tab::Plans);
+        assert_eq!(z4, FocusZone::PlanTree);
+    }
+
+    #[test]
+    fn inspect_tab_focus_cycles_three_zones() {
+        // F7 Inspect: InspectTree -> InspectDetail -> RightPanel -> InspectTree
+        let z1 = FocusZone::InspectTree;
+        let z2 = z1.next(Tab::Inspect);
+        assert_eq!(z2, FocusZone::InspectDetail);
+
+        let z3 = z2.next(Tab::Inspect);
+        assert_eq!(z3, FocusZone::RightPanel);
+
+        let z4 = z3.next(Tab::Inspect);
+        assert_eq!(z4, FocusZone::InspectTree);
+    }
+
+    #[test]
+    fn inspect_tab_focus_cycles_three_zones_reverse() {
+        let z1 = FocusZone::InspectTree;
+        let z2 = z1.prev(Tab::Inspect);
+        assert_eq!(z2, FocusZone::RightPanel);
+
+        let z3 = z2.prev(Tab::Inspect);
+        assert_eq!(z3, FocusZone::InspectDetail);
+
+        let z4 = z3.prev(Tab::Inspect);
+        assert_eq!(z4, FocusZone::InspectTree);
+    }
+
+    #[test]
+    fn quit_modal_confirm_y_confirms() {
+        let modal = ModalState::Quit;
+        let vis = modals(Some(&modal));
+
+        let action = handle_key(
+            key(KeyCode::Char('y')),
+            InputMode::Normal,
+            Tab::Dashboard,
+            FocusZone::PlanTree,
+            &vis,
+        );
+        assert_eq!(action, TuiAction::ConfirmYes);
+    }
+
+    #[test]
+    fn quit_modal_n_cancels() {
+        let modal = ModalState::Quit;
+        let vis = modals(Some(&modal));
+
+        let action = handle_key(
+            key(KeyCode::Char('n')),
+            InputMode::Normal,
+            Tab::Dashboard,
+            FocusZone::PlanTree,
+            &vis,
+        );
+        assert_eq!(action, TuiAction::ConfirmNo);
+    }
+
+    #[test]
+    fn notification_history_modal_dismisses_on_esc() {
+        let modal = ModalState::NotificationHistory {
+            scroll_offset: 0,
+            selected_index: 0,
+            filter: super::super::modals::LevelFilter::default(),
+        };
+        let vis = modals(Some(&modal));
+
+        let action = handle_key(
+            key(KeyCode::Esc),
+            InputMode::Normal,
+            Tab::Dashboard,
+            FocusZone::PlanTree,
+            &vis,
+        );
+        assert_eq!(action, TuiAction::CloseModal);
+    }
+
+    #[test]
+    fn notification_history_filter_keys() {
+        let modal = ModalState::NotificationHistory {
+            scroll_offset: 0,
+            selected_index: 0,
+            filter: super::super::modals::LevelFilter::default(),
+        };
+        let vis = modals(Some(&modal));
+
+        let action = handle_key(
+            key(KeyCode::Char('1')),
+            InputMode::Normal,
+            Tab::Dashboard,
+            FocusZone::PlanTree,
+            &vis,
+        );
+        assert_eq!(action, TuiAction::NotifFilterToggle(1));
+
+        let action = handle_key(
+            key(KeyCode::Char('2')),
+            InputMode::Normal,
+            Tab::Dashboard,
+            FocusZone::PlanTree,
+            &vis,
+        );
+        assert_eq!(action, TuiAction::NotifFilterToggle(2));
+
+        let action = handle_key(
+            key(KeyCode::Char('3')),
+            InputMode::Normal,
+            Tab::Dashboard,
+            FocusZone::PlanTree,
+            &vis,
+        );
+        assert_eq!(action, TuiAction::NotifFilterToggle(3));
+
+        let action = handle_key(
+            key(KeyCode::Char('4')),
+            InputMode::Normal,
+            Tab::Dashboard,
+            FocusZone::PlanTree,
+            &vis,
+        );
+        assert_eq!(action, TuiAction::NotifFilterToggle(4));
+    }
+
+    #[test]
+    fn notification_history_page_navigation() {
+        let modal = ModalState::NotificationHistory {
+            scroll_offset: 0,
+            selected_index: 0,
+            filter: super::super::modals::LevelFilter::default(),
+        };
+        let vis = modals(Some(&modal));
+
+        let action = handle_key(
+            key(KeyCode::PageUp),
+            InputMode::Normal,
+            Tab::Dashboard,
+            FocusZone::PlanTree,
+            &vis,
+        );
+        assert_eq!(action, TuiAction::NotifPageUp);
+
+        let action = handle_key(
+            key(KeyCode::PageDown),
+            InputMode::Normal,
+            Tab::Dashboard,
+            FocusZone::PlanTree,
+            &vis,
+        );
+        assert_eq!(action, TuiAction::NotifPageDown);
+
+        let action = handle_key(
+            key(KeyCode::Home),
+            InputMode::Normal,
+            Tab::Dashboard,
+            FocusZone::PlanTree,
+            &vis,
+        );
+        assert_eq!(action, TuiAction::NotifHome);
+
+        let action = handle_key(
+            key(KeyCode::End),
+            InputMode::Normal,
+            Tab::Dashboard,
+            FocusZone::PlanTree,
+            &vis,
+        );
+        assert_eq!(action, TuiAction::NotifEnd);
+    }
+
+    #[test]
+    fn notification_history_enter_jumps() {
+        let modal = ModalState::NotificationHistory {
+            scroll_offset: 0,
+            selected_index: 0,
+            filter: super::super::modals::LevelFilter::default(),
+        };
+        let vis = modals(Some(&modal));
+
+        let action = handle_key(
+            key(KeyCode::Enter),
+            InputMode::Normal,
+            Tab::Dashboard,
+            FocusZone::PlanTree,
+            &vis,
+        );
+        assert_eq!(action, TuiAction::NotifJumpToRelated);
+    }
+
+    #[test]
+    fn welcome_modal_enter_initializes() {
+        let modal = ModalState::Welcome { initialized: false };
+        let vis = modals(Some(&modal));
+
+        let action = handle_key(
+            key(KeyCode::Enter),
+            InputMode::Normal,
+            Tab::Dashboard,
+            FocusZone::PlanTree,
+            &vis,
+        );
+        assert_eq!(action, TuiAction::WelcomeInit);
+    }
+
+    #[test]
+    fn welcome_modal_any_key_dismisses_after_init() {
+        let modal = ModalState::Welcome { initialized: true };
+        let vis = modals(Some(&modal));
+
+        let action = handle_key(
+            key(KeyCode::Char('x')),
+            InputMode::Normal,
+            Tab::Dashboard,
+            FocusZone::PlanTree,
+            &vis,
+        );
+        assert_eq!(action, TuiAction::WelcomeDismiss);
     }
 }

@@ -2,16 +2,18 @@
 //!
 //! Displays compile/test/clippy output as it streams from gate execution,
 //! with an animated spinner and elapsed time in the title when a gate is
-//! running.
+//! running. Rung transitions are detected from the output stream and rendered
+//! as separator headers. After gate completion, a verdict summary line shows
+//! pass/fail status and duration for each rung.
 
 use std::collections::VecDeque;
 use std::time::Instant;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 
 use crate::tui::Theme;
 use crate::tui::state::TuiState;
@@ -96,6 +98,7 @@ fn kind_style(kind: LineKind, _theme: &Theme) -> Style {
         LineKind::Success => Style::default().fg(Theme::SAGE),
         LineKind::Error => Style::default()
             .fg(Theme::EMBER)
+            .bg(Theme::ROSE_EMBER)
             .add_modifier(Modifier::BOLD),
         LineKind::Warning => Style::default()
             .fg(Theme::WARNING)
@@ -131,9 +134,12 @@ fn style_line<'a>(raw: &str, max_w: usize) -> Vec<Span<'a>> {
             let result_style = if result_part.contains("FAILED") || result_part.contains("FAIL") {
                 Style::default()
                     .fg(Theme::EMBER)
+                    .bg(Theme::ROSE_EMBER)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Theme::SAGE)
+                Style::default()
+                    .fg(Theme::SAGE)
+                    .add_modifier(Modifier::BOLD)
             };
             let leading_ws: String = raw.chars().take_while(|c| c.is_whitespace()).collect();
             return vec![
@@ -170,23 +176,26 @@ fn style_line<'a>(raw: &str, max_w: usize) -> Vec<Span<'a>> {
         ];
     }
 
-    // Error lines: bold label, normal message
+    // Error lines: bold label, normal message, subtle red background
     if trimmed.starts_with("error") {
         if let Some(colon) = trimmed.find(':') {
             let label = &trimmed[..=colon];
             let msg = &trimmed[colon + 1..];
             let leading_ws: String = raw.chars().take_while(|c| c.is_whitespace()).collect();
             return vec![
-                Span::styled(leading_ws, Style::default()),
+                Span::styled(leading_ws, Style::default().bg(Theme::ROSE_EMBER)),
                 Span::styled(
                     label.to_owned(),
                     Style::default()
                         .fg(Theme::EMBER)
+                        .bg(Theme::ROSE_EMBER)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     msg.to_owned(),
-                    Style::default().fg(Theme::EMBER),
+                    Style::default()
+                        .fg(Theme::EMBER)
+                        .bg(Theme::ROSE_EMBER),
                 ),
             ];
         }
@@ -197,24 +206,35 @@ fn style_line<'a>(raw: &str, max_w: usize) -> Vec<Span<'a>> {
     vec![Span::styled(display, kind_style(kind, &theme))]
 }
 
+/// Map a rung name to its semantic theme color.
+fn rung_color(name: &str) -> Color {
+    match name {
+        n if n.contains("compile") || n.contains("build") || n.contains("check") => Theme::SAGE,
+        n if n.contains("test") => Theme::DREAM,
+        n if n.contains("lint") || n.contains("clippy") => Theme::WARNING,
+        _ => Theme::ROSE_BRIGHT,
+    }
+}
+
 /// Build a rung header line that separates gate stages in the output.
+///
+/// Renders as: `═══ ⚙ compile ══════════════════════`
+/// with per-rung color (compile=SAGE, test=DREAM, clippy=WARNING).
 fn rung_header_line(rung_name: &str, width: usize) -> Line<'static> {
     let icon = rung_icon(rung_name);
     let label = format!(" {icon} {rung_name} ");
-    let pad_len = width.saturating_sub(label.chars().count()).saturating_sub(2);
-    let left_pad = pad_len / 2;
-    let right_pad = pad_len - left_pad;
-    let bar: String = format!(
-        "\u{2500}{}\u{2500}{}{}",
-        "\u{2500}".repeat(left_pad),
+    let label_len = label.chars().count();
+    // 3 chars for leading "═══", rest for trailing fill
+    let trail_len = width.saturating_sub(label_len).saturating_sub(3);
+    let bar = format!(
+        "\u{2550}\u{2550}\u{2550}{}{}\u{2550}",
         label,
-        "\u{2500}".repeat(right_pad),
+        "\u{2550}".repeat(trail_len.saturating_sub(1)),
     );
+    let color = rung_color(rung_name);
     Line::from(Span::styled(
         bar,
-        Style::default()
-            .fg(Theme::ROSE_BRIGHT)
-            .add_modifier(Modifier::BOLD),
+        Style::default().fg(color).add_modifier(Modifier::BOLD),
     ))
 }
 
@@ -231,18 +251,128 @@ fn rung_icon(name: &str) -> &'static str {
 }
 
 // ---------------------------------------------------------------------------
+// Rung detection from output content
+// ---------------------------------------------------------------------------
+
+/// Detect the rung that a line belongs to based on its content.
+/// Returns `Some("rung_name")` when the line signals the start of a new rung.
+fn detect_rung_transition(line: &str) -> Option<&'static str> {
+    let trimmed = line.trim();
+    // `Compiling` / `Checking` indicate compile rung
+    if trimmed.starts_with("Compiling ") || trimmed.starts_with("Checking ") {
+        return Some("compile");
+    }
+    // `running N tests` indicates test rung
+    if trimmed.starts_with("running ") && trimmed.contains("test") {
+        return Some("test");
+    }
+    // Clippy warnings with `clippy::` or `Checking` after compile finished
+    if trimmed.contains("clippy::") {
+        return Some("clippy");
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Verdict summary
+// ---------------------------------------------------------------------------
+
+/// Build a verdict summary line from completed gate results.
+///
+/// Format: `[check] compile 0.5s | [check] test 12.3s | [x] clippy 2.1s (3 warnings)`
+fn verdict_summary_line<'a>(
+    summaries: &[super::super::dashboard::GateResultSummary],
+    selected_plan: Option<&str>,
+    width: usize,
+) -> Option<Line<'a>> {
+    let relevant: Vec<_> = summaries
+        .iter()
+        .filter(|s| match selected_plan {
+            Some(pid) => s.plan_id == pid,
+            None => true,
+        })
+        .collect();
+
+    if relevant.is_empty() {
+        return None;
+    }
+
+    let mut spans: Vec<Span<'a>> = Vec::new();
+    spans.push(Span::styled(
+        " ".to_owned(),
+        Style::default(),
+    ));
+
+    for (i, s) in relevant.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(
+                " \u{2502} ".to_owned(), // │
+                Style::default().fg(Theme::TEXT_GHOST),
+            ));
+        }
+        let (icon, icon_style) = if s.passed {
+            (
+                "\u{2713}",
+                Style::default().fg(Theme::SAGE),
+            )
+        } else {
+            (
+                "\u{2717}",
+                Style::default()
+                    .fg(Theme::EMBER)
+                    .add_modifier(Modifier::BOLD),
+            )
+        };
+        spans.push(Span::styled(icon.to_owned(), icon_style));
+        spans.push(Span::styled(
+            format!(" {} ", s.gate_name),
+            Style::default().fg(Theme::BONE),
+        ));
+
+        let dur_secs = s.duration_ms as f64 / 1000.0;
+        let dur_str = if dur_secs >= 60.0 {
+            format!("{:.0}m{:.0}s", dur_secs / 60.0, dur_secs % 60.0)
+        } else {
+            format!("{dur_secs:.1}s")
+        };
+        spans.push(Span::styled(
+            dur_str,
+            Style::default().fg(Theme::TEXT_DIM),
+        ));
+
+        if !s.summary.is_empty() {
+            spans.push(Span::styled(
+                format!(" ({})", s.summary),
+                Style::default().fg(if s.passed {
+                    Theme::TEXT_DIM
+                } else {
+                    Theme::EMBER
+                }),
+            ));
+        }
+    }
+
+    // Truncate if too wide
+    let total_chars: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+    if total_chars > width {
+        // Just let ratatui handle clipping
+    }
+
+    Some(Line::from(spans))
+}
+
+// ---------------------------------------------------------------------------
 // Title builder
 // ---------------------------------------------------------------------------
 
 fn build_title<'a>(
     current_gate_rung: Option<&(String, Instant)>,
     atmosphere: &crate::tui::atmosphere::Atmosphere,
+    theme: &Theme,
 ) -> Vec<Span<'a>> {
     let mut spans = vec![Span::styled(
         " Gate Output",
-        Style::default()
-            .fg(Theme::ROSE_BRIGHT)
-            .add_modifier(Modifier::BOLD),
+        theme.section_header(),
     )];
 
     if let Some((rung_name, started_at)) = current_gate_rung {
@@ -257,7 +387,7 @@ fn build_title<'a>(
     } else {
         spans.push(Span::styled(
             format!(" {MIDDLE_DOT} idle "),
-            Style::default().fg(Theme::TEXT_GHOST),
+            theme.label(),
         ));
     }
 
@@ -280,6 +410,14 @@ fn compact_elapsed(secs: u64) -> String {
     }
 }
 
+/// Number of decimal digits needed to display `n`.
+fn digit_count(n: usize) -> usize {
+    if n == 0 {
+        return 1;
+    }
+    ((n as f64).log10().floor() as usize) + 1
+}
+
 // ---------------------------------------------------------------------------
 // Public render entry-point
 // ---------------------------------------------------------------------------
@@ -288,8 +426,18 @@ fn compact_elapsed(secs: u64) -> String {
 ///
 /// Shows color-coded gate rung output with an animated title when a gate is
 /// running. Falls back to an idle placeholder when no output is available.
-pub fn render_gate_output(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme: &Theme) {
-    let mut title_spans = build_title(tui_state.current_gate_rung.as_ref(), &tui_state.atmosphere);
+///
+/// When `selected_plan_id` is `Some`, only gate results for that plan are
+/// included in the verdict summary. The streaming output lines are always
+/// shown (they are already scoped to the active gate run by the snapshot).
+pub fn render_gate_output(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    tui_state: &TuiState,
+    theme: &Theme,
+    selected_plan_id: Option<&str>,
+) {
+    let mut title_spans = build_title(tui_state.current_gate_rung.as_ref(), &tui_state.atmosphere, theme);
     let is_running = tui_state.current_gate_rung.is_some();
     let border_color = if is_running {
         Theme::WARNING
@@ -329,8 +477,28 @@ pub fn render_gate_output(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiStat
 
     let lines = &tui_state.gate_output_lines;
     if lines.is_empty() {
+        // Improved waiting state: show spinner + elapsed time when running.
         let placeholder = if is_running {
-            format!(" {} waiting for output...", tui_state.atmosphere.spinner())
+            if let Some((_rung, started_at)) = &tui_state.current_gate_rung {
+                let elapsed = started_at.elapsed().as_secs();
+                let elapsed_str = compact_elapsed(elapsed);
+                format!(
+                    " {} waiting for output... ({elapsed_str})",
+                    tui_state.atmosphere.spinner()
+                )
+            } else {
+                format!(" {} waiting for output...", tui_state.atmosphere.spinner())
+            }
+        } else if !tui_state.gate_result_summaries.is_empty() {
+            // Gate is not running but we have completed results — show verdict.
+            let max_w = inner.width as usize;
+            if let Some(verdict) =
+                verdict_summary_line(&tui_state.gate_result_summaries, selected_plan_id, max_w)
+            {
+                frame.render_widget(Paragraph::new(vec![verdict]), inner);
+                return;
+            }
+            " Waiting for gate results...".to_string()
         } else {
             " Waiting for gate results...".to_string()
         };
@@ -338,26 +506,72 @@ pub fn render_gate_output(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiStat
         return;
     }
 
-    let max_line_w = inner.width as usize;
+    // Reserve gutter width for line numbers (dim, left margin).
+    let line_count = lines.len();
+    let gutter_w = if line_count > 0 {
+        // Width of the largest line number + 1 space separator.
+        digit_count(line_count) + 1
+    } else {
+        0
+    };
+    let content_w = (inner.width as usize).saturating_sub(gutter_w);
 
-    // Build styled output with a rung header at the top.
-    let mut styled_lines: Vec<Line<'_>> = Vec::with_capacity(lines.len() + 1);
+    // Build styled output with rung headers inserted at transition points.
+    let mut styled_lines: Vec<Line<'_>> = Vec::with_capacity(lines.len() + 4);
 
-    // Insert a rung header at the top when we know the rung name.
+    // Track the current detected rung to insert headers on transition.
+    let mut current_detected_rung: Option<&'static str> = None;
+
+    // If we know the active rung from the state and there are lines but no
+    // rung transition was detected yet, insert a header at the top.
+    let mut inserted_initial_header = false;
     if let Some((rung_name, _)) = &tui_state.current_gate_rung {
-        styled_lines.push(rung_header_line(rung_name, max_line_w));
+        styled_lines.push(rung_header_line(rung_name, inner.width as usize));
+        inserted_initial_header = true;
+        // Map the state rung name to our detection categories to avoid
+        // a duplicate header when the first line also triggers detection.
+        current_detected_rung = detect_rung_transition(rung_name);
     }
 
-    for raw in lines.iter() {
-        let spans = style_line(raw, max_line_w);
+    let num_width = digit_count(line_count);
+    for (idx, raw) in lines.iter().enumerate() {
+        // Check for rung transition and insert a separator header.
+        if let Some(new_rung) = detect_rung_transition(raw) {
+            if current_detected_rung != Some(new_rung) {
+                // Don't insert a duplicate if we already put the initial header
+                // and this is the same rung.
+                let skip = inserted_initial_header && styled_lines.len() == 1;
+                if !skip {
+                    styled_lines.push(rung_header_line(new_rung, inner.width as usize));
+                }
+                current_detected_rung = Some(new_rung);
+            }
+        }
+
+        // Prepend dim line number.
+        let mut spans = vec![Span::styled(
+            format!("{:>width$} ", idx + 1, width = num_width),
+            Style::default().fg(Theme::TEXT_PHANTOM),
+        )];
+        spans.extend(style_line(raw, content_w));
         styled_lines.push(Line::from(spans));
+    }
+
+    // Append verdict summary after the output when the gate has completed.
+    if !is_running && !tui_state.gate_result_summaries.is_empty() {
+        if let Some(verdict) =
+            verdict_summary_line(&tui_state.gate_result_summaries, selected_plan_id, inner.width as usize)
+        {
+            styled_lines.push(Line::default()); // blank separator
+            styled_lines.push(verdict);
+        }
     }
 
     let total = styled_lines.len();
     let visible = inner.height as usize;
 
     // Auto-scroll to bottom (follow tail), clamped by gate_output_scroll.
-    let scroll = if tui_state.gate_output_scroll == 0 {
+    let scroll_offset = if tui_state.gate_output_scroll == 0 {
         // Auto-tail: show the latest lines.
         total.saturating_sub(visible) as u16
     } else {
@@ -368,9 +582,20 @@ pub fn render_gate_output(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiStat
     frame.render_widget(
         Paragraph::new(styled_lines)
             .style(Style::default().fg(Theme::TEXT_DIM))
-            .scroll((scroll, 0)),
+            .scroll((scroll_offset, 0)),
         inner,
     );
+
+    // Scrollbar when content exceeds viewport.
+    if total > visible && visible > 0 {
+        let mut sb_state = ScrollbarState::new(total).position(scroll_offset as usize);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .thumb_style(Style::default().fg(Theme::ROSE))
+            .track_style(Style::default().fg(Theme::TEXT_PHANTOM))
+            .begin_symbol(Some("\u{25b2}"))
+            .end_symbol(Some("\u{25bc}"));
+        frame.render_stateful_widget(scrollbar, inner, &mut sb_state);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -455,5 +680,123 @@ mod tests {
         let line = rung_header_line("compile", 40);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("compile"), "header should contain rung name");
+        // Should use double-line box chars
+        assert!(text.contains('\u{2550}'), "header should use double-line border");
+    }
+
+    #[test]
+    fn rung_color_maps_correctly() {
+        assert_eq!(rung_color("compile"), Theme::SAGE);
+        assert_eq!(rung_color("build"), Theme::SAGE);
+        assert_eq!(rung_color("test"), Theme::DREAM);
+        assert_eq!(rung_color("clippy"), Theme::WARNING);
+        assert_eq!(rung_color("lint"), Theme::WARNING);
+        assert_eq!(rung_color("other"), Theme::ROSE_BRIGHT);
+    }
+
+    #[test]
+    fn digit_count_values() {
+        assert_eq!(digit_count(0), 1);
+        assert_eq!(digit_count(1), 1);
+        assert_eq!(digit_count(9), 1);
+        assert_eq!(digit_count(10), 2);
+        assert_eq!(digit_count(99), 2);
+        assert_eq!(digit_count(100), 3);
+        assert_eq!(digit_count(1000), 4);
+    }
+
+    #[test]
+    fn detect_rung_transition_compile() {
+        assert_eq!(detect_rung_transition("   Compiling roko-core v0.1.0"), Some("compile"));
+        assert_eq!(detect_rung_transition("   Checking roko-core"), Some("compile"));
+    }
+
+    #[test]
+    fn detect_rung_transition_test() {
+        assert_eq!(detect_rung_transition("running 42 tests"), Some("test"));
+        assert_eq!(detect_rung_transition("running 1 test"), Some("test"));
+    }
+
+    #[test]
+    fn detect_rung_transition_clippy() {
+        assert_eq!(
+            detect_rung_transition("warning: clippy::needless_return"),
+            Some("clippy")
+        );
+    }
+
+    #[test]
+    fn detect_rung_transition_none() {
+        assert_eq!(detect_rung_transition("some random output"), None);
+        assert_eq!(detect_rung_transition("error: something"), None);
+    }
+
+    #[test]
+    fn verdict_summary_with_results() {
+        use crate::tui::dashboard::GateResultSummary;
+        let summaries = vec![
+            GateResultSummary {
+                plan_id: "plan-a".into(),
+                gate_name: "compile".into(),
+                passed: true,
+                rung: 1,
+                duration_ms: 500,
+                summary: String::new(),
+            },
+            GateResultSummary {
+                plan_id: "plan-a".into(),
+                gate_name: "test".into(),
+                passed: false,
+                rung: 2,
+                duration_ms: 12300,
+                summary: "3 failures".into(),
+            },
+        ];
+        let line = verdict_summary_line(&summaries, None, 120);
+        assert!(line.is_some());
+        let line = line.unwrap();
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("compile"), "should contain compile rung");
+        assert!(text.contains("test"), "should contain test rung");
+        assert!(text.contains("3 failures"), "should contain failure summary");
+    }
+
+    #[test]
+    fn verdict_summary_filters_by_plan() {
+        use crate::tui::dashboard::GateResultSummary;
+        let summaries = vec![
+            GateResultSummary {
+                plan_id: "plan-a".into(),
+                gate_name: "compile".into(),
+                passed: true,
+                rung: 1,
+                duration_ms: 500,
+                summary: String::new(),
+            },
+            GateResultSummary {
+                plan_id: "plan-b".into(),
+                gate_name: "test".into(),
+                passed: true,
+                rung: 2,
+                duration_ms: 1000,
+                summary: String::new(),
+            },
+        ];
+        let line = verdict_summary_line(&summaries, Some("plan-a"), 120);
+        assert!(line.is_some());
+        let text: String = line
+            .unwrap()
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(text.contains("compile"), "should contain plan-a's gate");
+        assert!(!text.contains("test"), "should not contain plan-b's gate");
+    }
+
+    #[test]
+    fn verdict_summary_empty_returns_none() {
+        let line = verdict_summary_line(&[], None, 120);
+        assert!(line.is_none());
     }
 }

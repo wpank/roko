@@ -88,7 +88,7 @@ fn scaffold_gate(name: &str, output_dir: &Path) -> Result<Vec<PathBuf>> {
         r#"//! {struct_name} — custom gate implementation.
 
 use async_trait::async_trait;
-use roko_core::{{Body, Context, Signal, Kind, Result}};
+use roko_core::{{Body, Cell, Context, Signal, Kind, Verdict}};
 use roko_core::traits::Verify;
 
 /// {struct_name} validates signals against custom criteria.
@@ -104,16 +104,27 @@ impl {struct_name} {{
     }}
 }}
 
+impl Cell for {struct_name} {{
+    fn cell_id(&self) -> &str {{
+        "{mod_name}_gate"
+    }}
+    fn cell_name(&self) -> &str {{
+        "{struct_name}"
+    }}
+}}
+
 #[async_trait]
 impl Verify for {struct_name} {{
-    async fn check(&self, signal: &Signal, ctx: &Context) -> Result<bool> {{
+    async fn verify(&self, signal: &Signal, _ctx: &Context) -> Verdict {{
         // TODO: implement your gate logic here.
-        // Return true if the engram passes, false if it should be rejected.
-        let _ = ctx;
-        Ok(signal.score >= self.threshold)
+        if signal.score >= self.threshold {{
+            Verdict::pass("{mod_name}_gate")
+        }} else {{
+            Verdict::fail("{mod_name}_gate", "score below threshold")
+        }}
     }}
 
-    fn name(&self) -> &'static str {{
+    fn name(&self) -> &str {{
         "{mod_name}_gate"
     }}
 }}
@@ -135,22 +146,20 @@ mod tests {{
         }}
     }}
 
-    fn test_ctx() -> Context {{
-        Context::default()
-    }}
-
     #[tokio::test]
     async fn passes_above_threshold() {{
         let gate = {struct_name}::new(0.5);
-        let engram = test_engram(0.8);
-        assert!(gate.check(&signal, &test_ctx()).await.unwrap());
+        let signal = test_signal(0.8);
+        let verdict = gate.verify(&signal, &Context::default()).await;
+        assert!(verdict.passed);
     }}
 
     #[tokio::test]
     async fn rejects_below_threshold() {{
         let gate = {struct_name}::new(0.5);
-        let engram = test_engram(0.2);
-        assert!(!gate.check(&signal, &test_ctx()).await.unwrap());
+        let signal = test_signal(0.2);
+        let verdict = gate.verify(&signal, &Context::default()).await;
+        assert!(!verdict.passed);
     }}
 }}
 "#
@@ -168,20 +177,32 @@ fn scaffold_scorer(name: &str, output_dir: &Path) -> Result<Vec<PathBuf>> {
     let content = format!(
         r#"//! {struct_name} — custom scorer implementation.
 
-use async_trait::async_trait;
-use roko_core::{{Context, Signal, Result}};
-use roko_core::traits::Score as ScoreFn;
+use roko_core::{{Cell, Context, Signal, Score as ScoreValue}};
+use roko_core::traits::Score as ScoreTrait;
 
 /// {struct_name} assigns relevance scores to signals.
 pub struct {struct_name};
 
-#[async_trait]
-impl ScoreFn for {struct_name} {{
-    async fn score(&self, signal: &Signal, ctx: &Context) -> Result<f32> {{
+impl Cell for {struct_name} {{
+    fn cell_id(&self) -> &str {{
+        "{mod_name}_scorer"
+    }}
+    fn cell_name(&self) -> &str {{
+        "{struct_name}"
+    }}
+}}
+
+impl ScoreTrait for {struct_name} {{
+    fn score(&self, signal: &Signal, _ctx: &Context) -> ScoreValue {{
         // TODO: implement your scoring logic here.
-        // Return a value in [0.0, 1.0] indicating relevance.
-        let _ = ctx;
-        Ok(signal.score)
+        // Return a ScoreValue with confidence, novelty, utility, etc.
+        ScoreValue {{
+            confidence: signal.score,
+            novelty: 0.5,
+            utility: 0.5,
+            reputation: 1.0,
+            ..Default::default()
+        }}
     }}
 
     fn name(&self) -> &'static str {{
@@ -206,12 +227,12 @@ mod tests {{
         }}
     }}
 
-    #[tokio::test]
-    async fn scores_signal() {{
+    #[test]
+    fn scores_signal() {{
         let scorer = {struct_name};
-        let engram = test_engram(0.75);
-        let score = scorer.score(&signal, &Context::default()).await.unwrap();
-        assert!((score - 0.75).abs() < f32::EPSILON);
+        let signal = test_signal(0.75);
+        let result = scorer.score(&signal, &Context::default());
+        assert!((result.confidence - 0.75).abs() < f32::EPSILON);
     }}
 }}
 "#
@@ -229,33 +250,33 @@ fn scaffold_router(name: &str, output_dir: &Path) -> Result<Vec<PathBuf>> {
     let content = format!(
         r#"//! {struct_name} — custom router implementation.
 
-use async_trait::async_trait;
-use roko_core::{{Context, Signal, Result}};
+use roko_core::{{Cell, Context, Outcome, Selection, Signal}};
 use roko_core::traits::Route;
 
 /// {struct_name} routes signals to appropriate handlers.
-pub struct {struct_name} {{
-    /// Default route label when no specific route matches.
-    pub default_route: String,
-}}
+pub struct {struct_name};
 
-impl {struct_name} {{
-    /// Create a new {struct_name} with the given default route.
-    pub fn new(default_route: impl Into<String>) -> Self {{
-        Self {{ default_route: default_route.into() }}
+impl Cell for {struct_name} {{
+    fn cell_id(&self) -> &str {{
+        "{mod_name}_router"
+    }}
+    fn cell_name(&self) -> &str {{
+        "{struct_name}"
     }}
 }}
 
-#[async_trait]
 impl Route for {struct_name} {{
-    async fn route(&self, signal: &Signal, ctx: &Context) -> Result<String> {{
+    fn select(&self, candidates: &[Signal], _ctx: &Context) -> Option<Selection> {{
         // TODO: implement your routing logic here.
-        // Return a route label string identifying the target handler.
-        let _ = (signal, ctx);
-        Ok(self.default_route.clone())
+        // Return a Selection identifying the chosen candidate, or None.
+        candidates.first().map(|s| Selection::new(s.hash.clone(), "{mod_name}_router"))
     }}
 
-    fn name(&self) -> &'static str {{
+    fn feedback(&self, _outcome: &Outcome) {{
+        // TODO: learn from selection outcomes to improve future routing.
+    }}
+
+    fn name(&self) -> &str {{
         "{mod_name}_router"
     }}
 }}
@@ -277,11 +298,19 @@ mod tests {{
         }}
     }}
 
-    #[tokio::test]
-    async fn routes_to_default() {{
-        let router = {struct_name}::new("default");
-        let route = router.route(&test_engram(), &Context::default()).await.unwrap();
-        assert_eq!(route, "default");
+    #[test]
+    fn selects_first_candidate() {{
+        let router = {struct_name};
+        let candidates = vec![test_signal()];
+        let selection = router.select(&candidates, &Context::default());
+        assert!(selection.is_some());
+    }}
+
+    #[test]
+    fn returns_none_for_empty_candidates() {{
+        let router = {struct_name};
+        let selection = router.select(&[], &Context::default());
+        assert!(selection.is_none());
     }}
 }}
 "#
@@ -299,23 +328,31 @@ fn scaffold_policy(name: &str, output_dir: &Path) -> Result<Vec<PathBuf>> {
     let content = format!(
         r#"//! {struct_name} — custom policy implementation.
 
-use async_trait::async_trait;
-use roko_core::{{Context, Signal, Result}};
+use roko_core::{{Cell, Context, Signal}};
 use roko_core::traits::React;
 
-/// {struct_name} decides whether an action should proceed.
+/// {struct_name} reacts to the signal stream and produces interventions.
 pub struct {struct_name};
 
-#[async_trait]
+impl Cell for {struct_name} {{
+    fn cell_id(&self) -> &str {{
+        "{mod_name}_policy"
+    }}
+    fn cell_name(&self) -> &str {{
+        "{struct_name}"
+    }}
+}}
+
 impl React for {struct_name} {{
-    async fn evaluate(&self, signal: &Signal, ctx: &Context) -> Result<bool> {{
+    fn decide(&self, stream: &[Signal], _ctx: &Context) -> Vec<Signal> {{
         // TODO: implement your policy logic here.
-        // Return true to permit the action, false to deny.
-        let _ = (signal, ctx);
-        Ok(true)
+        // Examine the signal stream and return new signals as interventions.
+        // Return an empty vec for no intervention.
+        let _ = stream;
+        Vec::new()
     }}
 
-    fn name(&self) -> &'static str {{
+    fn name(&self) -> &str {{
         "{mod_name}_policy"
     }}
 }}
@@ -337,10 +374,12 @@ mod tests {{
         }}
     }}
 
-    #[tokio::test]
-    async fn permits_by_default() {{
+    #[test]
+    fn produces_no_interventions_by_default() {{
         let policy = {struct_name};
-        assert!(policy.evaluate(&test_engram(), &Context::default()).await.unwrap());
+        let stream = vec![test_signal()];
+        let result = policy.decide(&stream, &Context::default());
+        assert!(result.is_empty());
     }}
 }}
 "#
@@ -362,7 +401,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use roko_core::{{Body, ContentHash, Context, Signal, Kind, Query, Result}};
+use roko_core::{{Body, ContentHash, Context, Kind, Query, Result, Signal}};
 use roko_core::traits::Store;
 
 /// {struct_name} stores signals in memory.
@@ -388,8 +427,8 @@ impl Default for {struct_name} {{
 #[async_trait]
 impl Store for {struct_name} {{
     async fn put(&self, signal: Signal) -> Result<ContentHash> {{
-        let hash = engram.hash.clone();
-        self.store.lock().unwrap().insert(hash.clone(), engram);
+        let hash = signal.hash.clone();
+        self.store.lock().unwrap().insert(hash.clone(), signal);
         Ok(hash)
     }}
 
@@ -438,8 +477,8 @@ mod tests {{
     #[tokio::test]
     async fn put_and_get() {{
         let substrate = {struct_name}::new();
-        let engram = test_engram();
-        let hash = substrate.put(engram.clone()).await.unwrap();
+        let signal = test_signal();
+        let hash = substrate.put(signal.clone()).await.unwrap();
         let retrieved = substrate.get(&hash).await.unwrap();
         assert!(retrieved.is_some());
     }}
@@ -465,27 +504,48 @@ fn scaffold_composer(name: &str, output_dir: &Path) -> Result<Vec<PathBuf>> {
     let content = format!(
         r#"//! {struct_name} — custom composer implementation.
 
-use async_trait::async_trait;
-use roko_core::{{Context, Signal, Result}};
-use roko_core::traits::Compose;
+use roko_core::{{Body, Budget, Cell, Context, ContentHash, Kind, Provenance, Result, Signal}};
+use roko_core::traits::{{Compose, Score as ScoreTrait}};
 
 /// {struct_name} assembles context from signal history.
 pub struct {struct_name};
 
-#[async_trait]
+impl Cell for {struct_name} {{
+    fn cell_id(&self) -> &str {{
+        "{mod_name}_composer"
+    }}
+    fn cell_name(&self) -> &str {{
+        "{struct_name}"
+    }}
+}}
+
 impl Compose for {struct_name} {{
-    async fn compose(&self, signals: &[Signal], ctx: &Context) -> Result<String> {{
+    fn compose(
+        &self,
+        signals: &[Signal],
+        _budget: &Budget,
+        _scorer: &dyn ScoreTrait,
+        _ctx: &Context,
+    ) -> Result<Signal> {{
         // TODO: implement your composition logic here.
-        // Combine the signals into a prompt string for the model.
-        let _ = ctx;
-        let parts: Vec<&str> = signals
+        // Combine the input signals into a single composed signal.
+        let parts: Vec<String> = signals
             .iter()
-            .filter_map(|e| e.body.as_text())
+            .filter_map(|e| e.body.as_text().ok().map(|s| s.to_string()))
             .collect();
-        Ok(parts.join("\n\n"))
+        let combined = parts.join("\n\n");
+        Ok(Signal {{
+            hash: ContentHash::from_bytes(combined.as_bytes()),
+            kind: Kind::Signal,
+            body: Body::Text(combined),
+            score: 1.0,
+            provenance: Provenance::default(),
+            parents: signals.iter().map(|s| s.hash.clone()).collect(),
+            created_ms: 0,
+        }})
     }}
 
-    fn name(&self) -> &'static str {{
+    fn name(&self) -> &str {{
         "{mod_name}_composer"
     }}
 }}
@@ -493,7 +553,6 @@ impl Compose for {struct_name} {{
 #[cfg(test)]
 mod tests {{
     use super::*;
-    use roko_core::{{Body, ContentHash, Signal, Kind, Provenance}};
 
     fn test_signals() -> Vec<Signal> {{
         vec![
@@ -518,12 +577,29 @@ mod tests {{
         ]
     }}
 
-    #[tokio::test]
-    async fn composes_signals() {{
+    /// Minimal scorer for testing — returns a default ScoreValue.
+    struct TestScorer;
+    impl Cell for TestScorer {{
+        fn cell_id(&self) -> &str {{ "test" }}
+        fn cell_name(&self) -> &str {{ "TestScorer" }}
+    }}
+    impl ScoreTrait for TestScorer {{
+        fn score(&self, _signal: &Signal, _ctx: &Context) -> roko_core::Score {{
+            roko_core::Score::default()
+        }}
+    }}
+
+    #[test]
+    fn composes_signals() {{
         let composer = {struct_name};
-        let result = composer.compose(&test_signals(), &Context::default()).await.unwrap();
-        assert!(result.contains("first"));
-        assert!(result.contains("second"));
+        let scorer = TestScorer;
+        let budget = Budget::default();
+        let result = composer
+            .compose(&test_signals(), &budget, &scorer, &Context::default())
+            .unwrap();
+        let text = result.body.as_text().unwrap();
+        assert!(text.contains("first"));
+        assert!(text.contains("second"));
     }}
 }}
 "#
@@ -566,19 +642,32 @@ pub const DOMAIN_NAME: &str = "{snake}";
         r#"//! {pascal} domain gate.
 
 use async_trait::async_trait;
-use roko_core::{{Context, Signal, Result}};
+use roko_core::{{Cell, Context, Signal, Verdict}};
 use roko_core::traits::Verify;
 
 /// Verify for the {pascal} domain.
 pub struct {pascal}Verify;
 
+impl Cell for {pascal}Verify {{
+    fn cell_id(&self) -> &str {{
+        "{snake}_domain_gate"
+    }}
+    fn cell_name(&self) -> &str {{
+        "{pascal}Verify"
+    }}
+}}
+
 #[async_trait]
 impl Verify for {pascal}Verify {{
-    async fn check(&self, signal: &Signal, _ctx: &Context) -> Result<bool> {{
-        Ok(signal.score > 0.0)
+    async fn verify(&self, signal: &Signal, _ctx: &Context) -> Verdict {{
+        if signal.score > 0.0 {{
+            Verdict::pass("{snake}_domain_gate")
+        }} else {{
+            Verdict::fail("{snake}_domain_gate", "score must be positive")
+        }}
     }}
 
-    fn name(&self) -> &'static str {{
+    fn name(&self) -> &str {{
         "{snake}_domain_gate"
     }}
 }}
@@ -591,7 +680,7 @@ mod tests {{
     #[tokio::test]
     async fn gate_passes_positive_score() {{
         let gate = {pascal}Verify;
-        let engram = Signal {{
+        let signal = Signal {{
             hash: ContentHash::from_bytes(b"test"),
             kind: Kind::Signal,
             body: Body::Text("test".into()),
@@ -600,7 +689,8 @@ mod tests {{
             parents: vec![],
             created_ms: 0,
         }};
-        assert!(gate.check(&signal, &Context::default()).await.unwrap());
+        let verdict = gate.verify(&signal, &Context::default()).await;
+        assert!(verdict.passed);
     }}
 }}
 "#
@@ -803,6 +893,7 @@ mod tests {
         let content = std::fs::read_to_string(&files[0]).unwrap();
         assert!(content.contains("MyCustomVerify"));
         assert!(content.contains("impl Verify for"));
+        assert!(content.contains("impl Cell for"));
         assert!(content.contains("#[cfg(test)]"));
         assert!(content.contains("passes_above_threshold"));
     }
@@ -814,7 +905,8 @@ mod tests {
         assert_eq!(files.len(), 1);
         let content = std::fs::read_to_string(&files[0]).unwrap();
         assert!(content.contains("RelevanceScorer"));
-        assert!(content.contains("impl ScoreFn for"));
+        assert!(content.contains("impl ScoreTrait for"));
+        assert!(content.contains("impl Cell for"));
     }
 
     #[test]
@@ -825,6 +917,7 @@ mod tests {
         let content = std::fs::read_to_string(&files[0]).unwrap();
         assert!(content.contains("PriorityRoute"));
         assert!(content.contains("impl Route for"));
+        assert!(content.contains("impl Cell for"));
     }
 
     #[test]
@@ -835,6 +928,7 @@ mod tests {
         let content = std::fs::read_to_string(&files[0]).unwrap();
         assert!(content.contains("BudgetReact"));
         assert!(content.contains("impl React for"));
+        assert!(content.contains("impl Cell for"));
     }
 
     #[test]
@@ -855,6 +949,7 @@ mod tests {
         let content = std::fs::read_to_string(&files[0]).unwrap();
         assert!(content.contains("SummaryCompose"));
         assert!(content.contains("impl Compose for"));
+        assert!(content.contains("impl Cell for"));
     }
 
     #[test]

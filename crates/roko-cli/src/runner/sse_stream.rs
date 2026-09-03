@@ -217,6 +217,7 @@ fn exponential_backoff(attempt: u32) -> Duration {
 /// Parse a single SSE frame from raw text. Returns `(id, data)` pairs.
 ///
 /// This is exposed for unit testing the SSE parser logic.
+#[allow(dead_code)]
 pub(crate) fn parse_sse_frames(text: &str) -> Vec<(Option<String>, String)> {
     let mut frames = Vec::new();
     let mut current_id: Option<String> = None;

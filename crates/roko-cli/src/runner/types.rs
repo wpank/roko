@@ -764,6 +764,8 @@ pub struct TimeoutAgentSnapshot {
     #[serde(default)]
     pub cache_write_tokens: u64,
     #[serde(default)]
+    pub reasoning_tokens: u64,
+    #[serde(default)]
     pub cost_usd: f64,
 }
 
@@ -1139,6 +1141,12 @@ pub struct TaskLifecycle {
     pub latest_failure_kind: Option<RunnerFailureKind>,
 }
 
+/// The well-known task ID used for synthetic plan-verification operations.
+///
+/// Plan-verify entries live in `RunnerLifecycleProjection::plan_verification`,
+/// not in the executable `tasks` map, so they never inflate `total_tasks`.
+pub const PLAN_VERIFY_TASK_ID: &str = "plan-verify";
+
 /// Materialized lifecycle projection updated from typed runner events.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunnerLifecycleProjection {
@@ -1151,6 +1159,11 @@ pub struct RunnerLifecycleProjection {
     pub plans: std::collections::HashMap<String, PlanLifecycleStatus>,
     #[serde(default)]
     pub tasks: std::collections::HashMap<String, TaskLifecycle>,
+    /// Synthetic plan-verification lifecycle entries, keyed by `plan_id:plan-verify`.
+    ///
+    /// Separated from `tasks` so they never count against `total_tasks`.
+    #[serde(default)]
+    pub plan_verification: std::collections::HashMap<String, TaskLifecycle>,
     #[serde(default)]
     pub task_attempts: std::collections::HashMap<String, TaskAttemptLifecycle>,
     #[serde(default)]
@@ -1171,6 +1184,7 @@ impl RunnerLifecycleProjection {
             resumed: false,
             plans: std::collections::HashMap::new(),
             tasks: std::collections::HashMap::new(),
+            plan_verification: std::collections::HashMap::new(),
             task_attempts: std::collections::HashMap::new(),
             last_resume_marker: None,
             global_timeout: None,
@@ -2351,7 +2365,16 @@ pub struct RunConfig {
     pub plan_dir: PathBuf,
     /// Default model to use when task has no model_hint.
     pub model: String,
-    /// Hard CLI model override. Beats task model hints when present.
+    /// Hard CLI model override. Beats task model hints and the cascade
+    /// router when present.
+    ///
+    /// Set from:
+    /// - the global `--model` / `--force-model` flag, **or**
+    /// - the `plan run`-level `--force-backend` flag (which wins when both
+    ///   are specified).
+    ///
+    /// The event loop copies this into `DispatchContext.force_backend`,
+    /// which the model router reads as the highest-priority override.
     pub cli_model_override: Option<String>,
     /// Per-task timeout in seconds.
     pub timeout_secs: u64,
@@ -2388,6 +2411,11 @@ pub struct RunConfig {
     pub max_plan_usd: f64,
     /// Maximum USD spend per single agent turn (0 = unlimited). From `[budget]`.
     pub max_turn_usd: f64,
+    /// Maximum cumulative USD spend across all retry attempts for a single
+    /// task (0 = unlimited). From `[budget].max_task_retry_usd`. When the
+    /// sum of all previous attempts for a task exceeds this value, the retry
+    /// is suppressed and the task is marked failed.
+    pub max_task_retry_usd: f64,
     /// When `true`, allows execution to continue past `BudgetAction::Block` with
     /// a warning. Derived from `--budget-override` / `--no-budget` CLI flags.
     /// Default: `false`.
@@ -2620,6 +2648,7 @@ impl RunConfig {
                 .unwrap_or_else(|| PathBuf::from("claude")),
             max_plan_usd: f64::from(roko_config.budget.max_plan_usd),
             max_turn_usd: f64::from(roko_config.budget.max_turn_usd),
+            max_task_retry_usd: f64::from(roko_config.budget.max_task_retry_usd),
             budget_override: false,
             budget_ceiling_override: None,
             no_budget: false,
@@ -2681,6 +2710,7 @@ impl Default for RunConfig {
             claude_program: PathBuf::from("claude"),
             max_plan_usd: 0.0,
             max_turn_usd: 0.0,
+            max_task_retry_usd: 0.0,
             budget_override: false,
             budget_ceiling_override: None,
             no_budget: false,
@@ -2731,6 +2761,7 @@ impl std::fmt::Debug for RunConfig {
             .field("max_gate_rung", &self.max_gate_rung)
             .field("max_plan_usd", &self.max_plan_usd)
             .field("max_turn_usd", &self.max_turn_usd)
+            .field("max_task_retry_usd", &self.max_task_retry_usd)
             .field("budget_override", &self.budget_override)
             .field("budget_ceiling_override", &self.budget_ceiling_override)
             .field("no_budget", &self.no_budget)

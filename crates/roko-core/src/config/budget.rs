@@ -32,6 +32,12 @@ pub struct BudgetConfig {
     /// Per-turn cost ceiling in USD. `0.0` means unlimited.
     #[serde(default)]
     pub max_turn_usd: f32,
+    /// Maximum cumulative cost across all retry attempts for a single task,
+    /// in USD. `0.0` means unlimited. When the total cost of all attempts
+    /// for one task exceeds this value, the next retry is suppressed and the
+    /// task is marked failed with reason "cumulative cost cap exceeded".
+    #[serde(default)]
+    pub max_task_retry_usd: f32,
     /// Token budget for prompt composition.
     #[serde(default = "default_prompt_token_budget")]
     pub prompt_token_budget: usize,
@@ -95,6 +101,7 @@ impl Default for BudgetConfig {
             max_plan_usd: 0.0,
             max_task_usd: 0.0,
             max_turn_usd: 0.0,
+            max_task_retry_usd: 0.0,
             prompt_token_budget: default_prompt_token_budget(),
             tier_multipliers: TaskBudgetMultipliers::default(),
         }

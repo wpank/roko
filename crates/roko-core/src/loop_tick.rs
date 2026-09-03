@@ -19,87 +19,13 @@
 //!   if passed: substrate.put(composed) + policy.decide(stream, ctx)
 //! ```
 //!
-//! The historical [`loop_tick`] name is retained as a deprecated compatibility
-//! alias. New code should call [`select_compose_verify_persist`] and should use
+//! New code should call [`select_compose_verify_persist`] and should use
 //! a runtime-owned coordinator when ACT, BROADCAST, cancellation, or resource
 //! enforcement is required.
-
-use serde::{Deserialize, Serialize};
 
 use crate::{
     Budget, Compose, Context, Engram, Query, React, Route, Store, Verdict, Verify, error::Result,
 };
-
-/// Historical configuration accepted by [`loop_tick_with_config`].
-///
-/// These fields were never enforced by this helper. The type remains readable
-/// for source compatibility; production limits belong to the runtime that owns
-/// provider execution and cancellation.
-#[deprecated(
-    since = "0.1.0",
-    note = "loop_tick is a compatibility helper and does not enforce TickConfig; use a runtime-owned coordinator"
-)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TickConfig {
-    /// Maximum number of turns (candidates examined) before stopping.
-    /// `None` means unlimited.
-    pub max_turns: Option<u64>,
-    /// Timeout in seconds for the entire tick. `None` means no timeout.
-    pub timeout_secs: Option<u64>,
-    /// Budget ceiling in USD. `None` means no budget limit.
-    pub budget_usd: Option<f64>,
-    /// Whether to emit verbose tracing for this tick.
-    pub verbose: bool,
-}
-
-#[allow(deprecated)]
-impl Default for TickConfig {
-    fn default() -> Self {
-        Self {
-            max_turns: None,
-            timeout_secs: None,
-            budget_usd: None,
-            verbose: false,
-        }
-    }
-}
-
-#[allow(deprecated)]
-impl TickConfig {
-    /// Create a config with no limits (equivalent to `Default`).
-    #[must_use]
-    pub fn unlimited() -> Self {
-        Self::default()
-    }
-
-    /// Set the maximum number of turns.
-    #[must_use]
-    pub const fn with_max_turns(mut self, max: u64) -> Self {
-        self.max_turns = Some(max);
-        self
-    }
-
-    /// Set the timeout in seconds.
-    #[must_use]
-    pub const fn with_timeout_secs(mut self, secs: u64) -> Self {
-        self.timeout_secs = Some(secs);
-        self
-    }
-
-    /// Set the budget ceiling in USD.
-    #[must_use]
-    pub fn with_budget_usd(mut self, usd: f64) -> Self {
-        self.budget_usd = Some(usd);
-        self
-    }
-
-    /// Enable verbose tracing.
-    #[must_use]
-    pub const fn with_verbose(mut self, verbose: bool) -> Self {
-        self.verbose = verbose;
-        self
-    }
-}
 
 /// Outcome of one signal selection/composition/verification/persistence pass.
 #[derive(Debug)]
@@ -233,72 +159,6 @@ pub async fn select_compose_verify_persist(
         emitted,
         written,
     })
-}
-
-/// Historical outcome name retained for compatibility.
-#[deprecated(
-    since = "0.1.0",
-    note = "use SignalSelectionOutcome; this helper is not the production universal loop"
-)]
-pub type TickOutcome = SignalSelectionOutcome;
-
-/// Historical helper name retained for compatibility.
-///
-/// # Errors
-///
-/// Propagates errors from the substrate and composer.
-#[deprecated(
-    since = "0.1.0",
-    note = "use select_compose_verify_persist; production execution is owned by WorkflowEngine, Runner-v2, or Graph"
-)]
-#[allow(clippy::similar_names, clippy::too_many_arguments)]
-pub async fn loop_tick(
-    substrate: &dyn Store,
-    scorer: &dyn crate::traits::Score,
-    router: &dyn Route,
-    composer: &dyn Compose,
-    gate: &dyn Verify,
-    policy: &dyn React,
-    query: &Query,
-    budget: &Budget,
-    ctx: &Context,
-) -> Result<SignalSelectionOutcome> {
-    select_compose_verify_persist(
-        substrate, scorer, router, composer, gate, policy, query, budget, ctx,
-    )
-    .await
-}
-
-/// Historical configured helper retained for compatibility.
-///
-/// `tick_config` is intentionally ignored because this helper does not own an
-/// ACT loop, provider budget, or cancellation boundary.
-///
-/// # Errors
-///
-/// Propagates errors from the substrate and composer.
-#[deprecated(
-    since = "0.1.0",
-    note = "TickConfig was never enforced; use select_compose_verify_persist plus a runtime-owned coordinator"
-)]
-#[allow(deprecated)]
-#[allow(clippy::similar_names, clippy::too_many_arguments)]
-pub async fn loop_tick_with_config(
-    substrate: &dyn Store,
-    scorer: &dyn crate::traits::Score,
-    router: &dyn Route,
-    composer: &dyn Compose,
-    gate: &dyn Verify,
-    policy: &dyn React,
-    query: &Query,
-    budget: &Budget,
-    ctx: &Context,
-    _tick_config: &TickConfig,
-) -> Result<SignalSelectionOutcome> {
-    select_compose_verify_persist(
-        substrate, scorer, router, composer, gate, policy, query, budget, ctx,
-    )
-    .await
 }
 
 #[cfg(test)]

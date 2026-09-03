@@ -3,7 +3,6 @@
 //! This crate wires Roko's primitives (Store, Compose, Agent, Verify,
 //! React) into a one-shot CLI loop. It does **not** implement a plan runner
 //! or DAG executor — it drives a single prompt through the universal loop
-#![allow(dead_code, unused_imports, unused_variables)]
 //! and writes the resulting signals to disk.
 //!
 //! See [`run_once`] for the core loop and [`Config`] for the `roko.toml`
@@ -56,6 +55,7 @@ pub mod chat_session;
 pub mod clean;
 pub mod config;
 pub mod config_cmd;
+#[allow(dead_code)]
 pub mod config_helpers;
 pub mod context_loader;
 pub mod credentials;
@@ -65,6 +65,7 @@ pub mod demo_cmd;
 pub mod demo_seed;
 pub mod deployment;
 pub mod dispatch;
+#[allow(dead_code)]
 pub(crate) mod dispatch_helpers;
 pub mod dispatch_v2;
 pub mod doctor;
@@ -73,13 +74,16 @@ pub mod episode;
 pub mod event_sources;
 pub mod exit_codes;
 pub mod explain;
+#[allow(dead_code)]
 pub(crate) mod gate_runner;
 pub mod github_ops;
 pub mod github_ops_impl;
 pub mod graph_checkpoint;
+#[allow(dead_code)]
 #[path = "commands/graph.rs"]
 pub(crate) mod graph_command;
 pub mod graph_task_dispatch;
+#[allow(dead_code)]
 mod heartbeat;
 pub mod hints;
 pub mod index;
@@ -88,18 +92,20 @@ pub mod inference_observer;
 pub mod init;
 pub mod inject;
 pub mod inline;
+#[allow(dead_code)]
 pub(crate) mod knowledge_helpers;
 #[path = "../../../scripts/layer_check.rs"]
 pub mod layer_check;
+#[allow(dead_code)]
 pub mod learning_helpers;
 pub mod model_selection;
 pub mod note_cluster;
 pub mod oneshot;
-// orchestrate.rs was the legacy 21K-line engine. Deleted in E12-T07.
+// The legacy 21K-line orchestrate.rs engine was deleted in E12-T07.
 // The v2 event_loop.rs in runner/ is the sole execution engine.
-// The feature flag is retained for cfg-gate compile compatibility (E12-T08 removes it).
 pub mod cli_output;
 pub mod orchestrator;
+#[allow(dead_code)]
 pub mod output_format;
 pub mod pipe;
 pub mod plan;
@@ -108,6 +114,7 @@ pub mod plan_policy;
 pub mod prd;
 pub mod prd_prompt;
 pub mod projection;
+#[allow(dead_code)]
 pub mod prompt_helpers;
 pub mod prompting;
 pub mod repl;
@@ -127,6 +134,7 @@ pub mod spinner;
 pub mod status;
 pub mod subscriptions;
 pub mod surface_inventory;
+#[allow(dead_code)]
 pub mod task_helpers;
 pub mod task_parser;
 pub mod transcript;
@@ -148,12 +156,6 @@ pub use config::{
     Source, ToolsConfig, load_resolved_config,
 };
 
-/// **Deprecated**: Use [`load_resolved_config`] instead.
-#[deprecated(note = "use load_resolved_config() instead")]
-#[allow(deprecated)]
-pub fn load_layered(workdir: &std::path::Path) -> anyhow::Result<ResolvedConfig> {
-    config::load_resolved_config(workdir)
-}
 pub use config_cmd::{EditTarget, WizardInputs, run_init_wizard};
 pub use daemon::{DaemonConfig, DaemonMode, DaemonState, DaemonStatus};
 pub use deployment::SigstoreVerifier;
@@ -167,7 +169,7 @@ pub use plan::{Plan, PlanSummary, PlanTask};
 pub use repl::{ReplCommand, ReplMode, WorkspaceContext};
 pub use run::{RunReport, RunUsage, run_once};
 pub use secrets::SecretsCmd;
-pub use status::SessionStatus;
+pub use status::{SessionStatus, StatusDiagnostic, collect_session_status};
 pub use tui::{
     DashboardData, DashboardScaffold, DashboardSummary, PageId, PageScaffold, Theme, WidgetScaffold,
 };

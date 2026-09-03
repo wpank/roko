@@ -64,7 +64,7 @@ depending on your hardware. The driver prints a summary per task:
 ```bash
 # Latest agent output for any instance:
 jq -r 'select(.kind=="agent_output" and .tags.cleaned=="true") | .body.data' \
-  /tmp/roko-swe-workdirs/pallets__flask-4045/.roko/signals.jsonl \
+  /tmp/roko-swe-workdirs/pallets__flask-4045/.roko/engrams.jsonl \
   | tail -n 1 | jq -r .
 
 # Full predictions file:

@@ -1,6 +1,6 @@
 //! Runner v2 — event-driven plan executor with streaming agent output.
 //!
-//! This module replaces the batch-only `orchestrate.rs` plan runner with
+//! This module replaces the batch-only legacy orchestrator plan runner with
 //! a streaming architecture:
 //!
 //! - Agent output is parsed line-by-line from `--output-format stream-json`
@@ -40,6 +40,7 @@ pub mod extension_loader;
 pub mod extension_registry;
 pub mod gate_dispatch;
 pub mod github_workflow;
+pub mod graph_tui_bridge;
 pub mod impact_analysis;
 pub mod inline_output;
 pub mod merge;

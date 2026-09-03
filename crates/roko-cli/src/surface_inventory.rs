@@ -1304,7 +1304,7 @@ pub fn tui_parity_inventory() -> Vec<TuiParityDetail> {
         tab: "F7 Inspect".into(),
         subview: Some("KnowledgeBrowse".into()),
         dashboard_equivalent: Some("/api/neuro/query".into()),
-        cli_equivalent: Some("roko neuro query".into()),
+        cli_equivalent: Some("roko knowledge query".into()),
         data_source: DataSourceKind::PushBased,
         parity_status: TuiParityStatus::TuiEnhanced,
         notes: "Knowledge table from TuiState.knowledge_entries (push). \

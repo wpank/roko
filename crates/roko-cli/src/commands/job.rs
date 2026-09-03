@@ -84,6 +84,7 @@ pub(crate) async fn cmd_job(cli: &Cli, cmd: JobCmd) -> Result<i32> {
             auto_execute,
             plan_id,
             workdir,
+            ..
         } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             let dir = jobs_dir(&wd);

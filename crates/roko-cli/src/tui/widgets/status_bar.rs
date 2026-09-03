@@ -10,6 +10,8 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
+use super::super::input::InputMode;
+use super::super::modals::ModalState;
 use super::super::state::TuiState;
 use super::super::tabs::Tab;
 use crate::tui::Theme;
@@ -60,6 +62,41 @@ pub fn render_status_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         ));
     }
 
+    // ── 1b. Active tab indicator ──────────────────────────────────────
+    spans.push(Span::styled(
+        format!("\u{25c6} {}", state.active_tab.label()),
+        Style::default()
+            .fg(Theme::ROSE_BRIGHT)
+            .bg(Theme::BG_SECONDARY)
+            .add_modifier(Modifier::BOLD),
+    ));
+
+    // ── 1c. Selected plan name ──────────────────────────────────────
+    if let Some(plan) = state.plans.get(state.selected_plan_idx) {
+        if !plan.name.is_empty() {
+            let max_len = if compact { 16 } else { 28 };
+            let label = if plan.name.chars().count() > max_len {
+                let truncated: String = plan.name.chars().take(max_len - 1).collect();
+                format!("{truncated}\u{2026}")
+            } else {
+                plan.name.clone()
+            };
+            spans.push(Span::styled(
+                format!(" \u{25c6} {label}"),
+                Style::default()
+                    .fg(Theme::BONE_DIM)
+                    .bg(Theme::BG_SECONDARY),
+            ));
+        }
+    }
+
+    spans.push(Span::styled(
+        " \u{2502} ",
+        Style::default()
+            .fg(Theme::ROSE_DIM)
+            .bg(Theme::BG_SECONDARY),
+    ));
+
     // ── 2. Heartbeat + pause indicator + elapsed time ─────────────────
     let hb_idx = (state.atmosphere.frame() / 15) as usize % HEARTBEAT_FRAMES.len();
     spans.push(Span::styled(
@@ -76,13 +113,17 @@ pub fn render_status_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         ));
     }
 
-    // Input mode badge (FILTER/SEARCH/INJECT/EDIT)
+    // Input mode badge (FILTER/SEARCH/INJECT/EDIT) with mode-specific colors.
     if let Some(badge) = state.input_mode.badge_label() {
+        let badge_bg = match state.input_mode {
+            InputMode::Filter | InputMode::PlanFilter => Theme::WARNING,
+            _ => Theme::DREAM,
+        };
         spans.push(Span::styled(
             format!(" [{badge}] "),
             Style::default()
                 .fg(Theme::VOID)
-                .bg(Theme::DREAM)
+                .bg(badge_bg)
                 .add_modifier(Modifier::BOLD),
         ));
     }
@@ -93,6 +134,16 @@ pub fn render_status_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         spans.push(Span::styled(
             format!(" {}", format_elapsed(elapsed_secs)),
             Style::default().fg(Theme::BONE_DIM).bg(Theme::BG_SECONDARY),
+        ));
+    }
+
+    // ── 2b. Token rate ───────────────────────────────────────────────
+    if state.token_rate >= 1.0 {
+        spans.push(Span::styled(
+            format!(" \u{25c6} {:.0}/min", state.token_rate),
+            Style::default()
+                .fg(Theme::ROSE_DIM)
+                .bg(Theme::BG_SECONDARY),
         ));
     }
 
@@ -128,7 +179,7 @@ pub fn render_status_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
     let progress_text = if all_done && !has_failures {
         "COMPLETE".to_string()
     } else if has_failures {
-        let err_count = state.plans.iter().filter(|p| p.tasks_failed > 0).count();
+        let err_count: usize = state.plans.iter().map(|p| p.tasks_failed).sum();
         format!("ERR:{err_count}")
     } else if total > 0 {
         let pct = (done as f64 / total as f64 * 100.0) as u32;
@@ -137,7 +188,16 @@ pub fn render_status_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         String::new()
     };
     let progress_style = if has_failures {
-        Theme::error_style()
+        // Pulse the error badge: alternate bright/dim every ~30 frames.
+        let bright = (state.atmosphere.frame() / 30) % 2 == 0;
+        let ember_fg = if bright {
+            Theme::EMBER
+        } else {
+            Theme::ROSE_EMBER
+        };
+        Style::default()
+            .fg(ember_fg)
+            .add_modifier(Modifier::BOLD)
     } else if all_done {
         Theme::success_style()
     } else {
@@ -191,6 +251,21 @@ pub fn render_status_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
                 cost,
                 Style::default().fg(Theme::BONE).bg(Theme::BG_SECONDARY),
             ));
+
+            // Projected final cost based on current burn rate and remaining
+            // tasks, shown as "-> ~$X.XX".
+            if state.cost_rate > 0.001 && total > 0 && done < total {
+                let pct_done = done as f64 / total as f64;
+                if pct_done > 0.05 {
+                    let projected = state.cost_dollars / pct_done;
+                    spans.push(Span::styled(
+                        format!(" \u{2192} ~${projected:.2}"),
+                        Style::default()
+                            .fg(Theme::TEXT_GHOST)
+                            .bg(Theme::BG_SECONDARY),
+                    ));
+                }
+            }
         }
     }
 
@@ -199,7 +274,38 @@ pub fn render_status_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         Style::default().fg(Theme::ROSE_DIM).bg(Theme::BG_SECONDARY),
     ));
 
-    // ── 4. Context-sensitive keybind hints ────────────────────────────
+    // ── 4a. Live agent dot indicator ──────────────────────────────────
+    if live_agents > 0 {
+        // Blinking dot: alternate between filled/open circle every ~30 frames.
+        let dot = if (state.atmosphere.frame() / 15) % 2 == 0 {
+            "\u{25cf}"
+        } else {
+            "\u{25cb}"
+        };
+        spans.push(Span::styled(
+            format!("{dot}{live_agents}"),
+            Style::default().fg(Theme::SAGE).bg(Theme::BG_SECONDARY),
+        ));
+        spans.push(Span::styled(
+            " ",
+            Style::default().bg(Theme::BG_SECONDARY),
+        ));
+    }
+
+    // ── 4b. Current time ──────────────────────────────────────────────
+    if !compact {
+        let now = chrono::Local::now();
+        spans.push(Span::styled(
+            now.format("%H:%M:%S").to_string(),
+            Style::default().fg(Theme::TEXT_GHOST).bg(Theme::BG_SECONDARY),
+        ));
+        spans.push(Span::styled(
+            " \u{2502} ",
+            Style::default().fg(Theme::ROSE_DIM).bg(Theme::BG_SECONDARY),
+        ));
+    }
+
+    // ── 5. Context-sensitive keybind hints ────────────────────────────
     let prefix_width = Line::from(spans.clone()).width();
     let hint_width = (area.width as usize)
         .saturating_sub(prefix_width)
@@ -260,27 +366,78 @@ fn fit_context_hints(hints: &str, max_width: usize) -> String {
     }
 }
 
+/// Key hints for an active modal overlay.
+fn modal_key_hints(modal: &ModalState) -> String {
+    let hints: &[&str] = match modal {
+        ModalState::Help => &["Esc:close", "j/k:scroll", "PgUp/Dn:page", "?:help"],
+        ModalState::Approval { .. } => &["y:approve", "n:reject", "A:all", "Esc:cancel"],
+        ModalState::PlanDetail { .. } | ModalState::TaskDetail { .. } => {
+            &["Esc:close", "j/k:scroll", "Tab:sub-tab", "F1-F10:tab"]
+        }
+        ModalState::TaskPicker { .. } => &["Esc:close", "j/k:nav", "Enter:select"],
+        ModalState::WaveOverview { .. } => &["Esc:close", "j/k:scroll", "w:toggle"],
+        ModalState::QueueOverview { .. } => &["Esc:close", "j/k:scroll", "q:toggle"],
+        ModalState::AgentPool { .. } => &["Esc:close", "j/k:scroll"],
+        ModalState::BatchReview { .. } => &["a:approve", "r:reject", "s:skip", "Esc:close"],
+        ModalState::NotificationHistory { .. } => {
+            &["Esc:close", "j/k:scroll", "1-4:filter", "Enter:jump"]
+        }
+        ModalState::Quit | ModalState::Confirm { .. } => &["y:yes", "n:no", "Esc:cancel"],
+        ModalState::Inject { .. } => &["Enter:send", "Esc:cancel"],
+        ModalState::Welcome { .. } => &["Enter:init", "Esc:dismiss"],
+    };
+    hints.join("  ")
+}
+
+/// Key hints for a non-normal input mode.
+fn input_mode_key_hints(mode: InputMode) -> String {
+    let hints: &[&str] = match mode {
+        InputMode::Normal => &[], // unreachable in practice
+        InputMode::Inject => &["Enter:send", "Esc:cancel"],
+        InputMode::Filter => &["Enter:apply", "Esc:cancel"],
+        InputMode::Confirm => &["y:yes", "n:no", "Esc:cancel"],
+        InputMode::ConfigEdit => &["Enter:save", "Esc:cancel"],
+        InputMode::LogSearch => &["Enter:search", "Esc:cancel"],
+        InputMode::PlanFilter => &["Enter:filter", "Esc:cancel"],
+    };
+    hints.join("  ")
+}
+
 /// Build context-sensitive keybind hints based on the current tab, selection
-/// state, and item status. Returns at most 5 hint tokens to avoid visual
+/// state, and item status. Returns at most 6 hint tokens to avoid visual
 /// clutter, each formatted as `key:action` and separated by two spaces.
 fn context_key_hints(state: &TuiState, has_failures: bool) -> String {
     use super::super::state::{AgentStatus, TaskStatus};
 
-    let mut hints: Vec<&str> = Vec::with_capacity(6);
+    // When a modal is open, show modal-specific key hints.
+    if let Some(ref modal) = state.active_modal {
+        return modal_key_hints(modal);
+    }
+
+    // When a text-input mode is active, show mode-specific hints.
+    if state.input_mode != InputMode::Normal {
+        return input_mode_key_hints(state.input_mode);
+    }
+
+    let mut hints: Vec<&str> = Vec::with_capacity(8);
 
     match state.active_tab {
         Tab::Dashboard => {
-            hints.push("\u{2191}\u{2193}:nav");
-            hints.push("a/o/d/e/g:sub-tab");
+            hints.push("a:agents");
+            hints.push("o:output");
+            hints.push("d:diff");
+            hints.push("e:verify");
+            hints.push("g:git");
             if has_failures {
-                hints.push("F2:inspect failure");
+                hints.push("F2:failures");
             }
-            hints.push("Tab:panel");
+            hints.push("Tab:focus");
         }
         Tab::Plans => {
-            hints.push("\u{2191}\u{2193}:nav");
-            hints.push("Tab:panel");
-            // Check if we have a selected plan with tasks to show item-specific hints.
+            hints.push("Enter:detail");
+            hints.push("e:expand");
+            hints.push("/:filter");
+            // Show context-specific hint for selected task status.
             let selected_task_status = state.plans.get(state.selected_plan_idx).and_then(|plan| {
                 plan.tasks
                     .iter()
@@ -288,86 +445,66 @@ fn context_key_hints(state: &TuiState, has_failures: bool) -> String {
                     .map(|t| t.status)
             });
             match selected_task_status {
-                Some(TaskStatus::Failed) => {
-                    hints.push("Enter:detail");
-                    hints.push("z:diagnose");
-                }
-                Some(TaskStatus::Active) => {
-                    hints.push("Enter:detail");
-                    hints.push("e:expand");
-                }
-                _ => {
-                    hints.push("Enter:detail");
-                    hints.push("/:filter");
-                }
+                Some(TaskStatus::Failed) => hints.push("d:diagnose"),
+                Some(TaskStatus::Active) => hints.push("m:merge"),
+                _ => {}
             }
         }
         Tab::Agents => {
-            hints.push("\u{2191}\u{2193}:nav");
-            hints.push("Tab:panel");
+            hints.push("j/k:select");
+            hints.push("G:end");
+            hints.push("`:role");
             let agent_status = state.agents.get(state.selected_agent).map(|a| a.status);
             match agent_status {
                 Some(AgentStatus::Active) => {
                     hints.push("x:stop");
-                    hints.push("c:chat");
+                    hints.push("a:approve");
                 }
                 Some(AgentStatus::Failed) | Some(AgentStatus::Idle) => {
                     hints.push("S:start");
-                    hints.push("d:details");
+                    hints.push("a:approve");
                 }
                 _ => {
-                    hints.push("`:cycle");
-                    hints.push("i:inject");
+                    hints.push("a:approve");
                 }
             }
         }
         Tab::Git => {
-            hints.push("\u{2191}\u{2193}:nav");
-            hints.push("Tab:panel");
+            hints.push("j/k:scroll");
             hints.push("Enter:expand");
         }
         Tab::Logs => {
-            hints.push("\u{2191}\u{2193}:scroll");
-            hints.push("Tab:panel");
+            hints.push("1-4:levels");
             hints.push("/:search");
+            hints.push("f:filter");
+            hints.push("G:end");
         }
         Tab::Config => {
             hints.push("j/k:nav");
-            hints.push("Tab:panel");
             hints.push("Enter:toggle");
+            hints.push("r:reload");
+            hints.push("Ctrl-S:save");
         }
         Tab::Inspect => {
-            hints.push("\u{2191}\u{2193}:nav");
-            hints.push("Tab:panel");
-            hints.push("Enter:details");
+            hints.push("j/k:scroll");
+            hints.push("s:sort-cost");
         }
-        Tab::Marketplace => {
-            hints.push("j/k:nav");
-            hints.push("Tab:panel");
-            hints.push("Enter:detail");
-        }
-        Tab::Atelier => {
-            hints.push("j/k:nav");
-            hints.push("Tab:panel");
-            hints.push("Enter:detail");
-        }
-        Tab::Learning => {
-            hints.push("\u{2191}\u{2193}:nav");
-            hints.push("Tab:panel");
-            hints.push("Enter:details");
+        Tab::Marketplace | Tab::Atelier | Tab::Learning => {
+            hints.push("j/k:scroll");
+            hints.push("Enter:expand");
         }
     }
 
     // Reserve the final slot for help. In failure states the contextual list
-    // can already contain five actions; silently omitting discovery is worse
+    // can already contain many actions; silently omitting discovery is worse
     // than dropping the lowest-priority trailing action.
-    if hints.len() >= 5 {
-        hints.truncate(4);
+    if hints.len() >= 6 {
+        hints.truncate(5);
     }
     hints.push("?:help");
 
-    // Cap at 5 hints.
-    hints.truncate(5);
+    // Cap at 6 hints.
+    hints.truncate(6);
     hints.join("  ")
 }
 
@@ -420,58 +557,65 @@ mod tests {
     #[test]
     fn dashboard_key_hints_surface_failure_actions_only_when_needed() {
         let failed = key_hints_for_tab(Tab::Dashboard, true);
-        assert!(failed.contains("F2:inspect failure"), "got: {failed}");
         assert!(
-            failed.contains("sub-tab"),
-            "Expected sub-tab hint, got: {failed}"
+            failed.contains("a:agents"),
+            "Expected a:agents hint, got: {failed}"
+        );
+        assert!(
+            failed.contains("?:help"),
+            "Expected ?:help hint, got: {failed}"
         );
 
         let healthy = key_hints_for_tab(Tab::Dashboard, false);
-        assert!(!healthy.contains("inspect failure"), "got: {healthy}");
+        assert!(!healthy.contains("F2:failures"), "got: {healthy}");
         assert!(
-            healthy.contains("sub-tab"),
-            "Expected sub-tab hint, got: {healthy}"
+            healthy.contains("a:agents"),
+            "Expected a:agents hint, got: {healthy}"
         );
     }
 
     #[test]
-    fn plans_tab_shows_detail_and_panel_hints() {
+    fn plans_tab_shows_detail_and_filter_hints() {
         let hints = key_hints_for_tab(Tab::Plans, false);
         assert!(
             hints.contains("Enter:detail"),
             "Expected Enter:detail in: {hints}"
         );
         assert!(
-            hints.contains("Tab:panel"),
-            "Expected Tab:panel in: {hints}"
+            hints.contains("/:filter"),
+            "Expected /:filter in: {hints}"
         );
     }
 
     #[test]
-    fn agents_tab_shows_general_hints_with_no_agents() {
+    fn agents_tab_shows_select_and_role_hints() {
         let hints = key_hints_for_tab(Tab::Agents, false);
         assert!(
-            hints.contains("`:cycle") || hints.contains(":nav"),
+            hints.contains("j/k:select") || hints.contains("a:approve"),
             "Expected navigation hints in: {hints}"
         );
     }
 
     #[test]
-    fn config_tab_shows_panel_hint() {
+    fn config_tab_shows_nav_and_toggle_hints() {
         let hints = key_hints_for_tab(Tab::Config, false);
         assert!(
-            hints.contains("Tab:panel"),
-            "Expected Tab:panel in: {hints}"
+            hints.contains("j/k:nav"),
+            "Expected j/k:nav in: {hints}"
+        );
+        assert!(
+            hints.contains("Enter:toggle"),
+            "Expected Enter:toggle in: {hints}"
         );
     }
 
     #[test]
-    fn hints_capped_at_five() {
+    fn hints_capped_at_six() {
         let hints = key_hints_for_tab(Tab::Dashboard, true);
         let count = hints.split("  ").count();
         assert!(
-            count <= 5,
-            "Expected at most 5 hints, got {count} in: {hints}"
+            count <= 6,
+            "Expected at most 6 hints, got {count} in: {hints}"
         );
     }
 

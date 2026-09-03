@@ -17,11 +17,14 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
     let gw = load_gateway_env(&workdir);
     let model = cli.model.clone().or_else(|| model_from_config(&workdir));
     let model_ref = model.as_deref();
-    let effort = cli.effort.map(|effort| effort.to_string());
-    let effort_ref = effort.as_deref();
+    let cli_effort = cli.effort.map(|effort| effort.to_string());
+    let cli_effort_ref = cli_effort.as_deref();
     let resume_session = cli.resume.as_deref();
     let agent_command = command_from_config(&workdir).unwrap_or_else(|| "claude".to_string());
     let config = roko_core::config::loader::load_config_unified(&workdir).unwrap_or_default();
+    // #181: resolve per-role effort for the researcher role; CLI --effort wins.
+    let researcher_effort = cli_effort_ref
+        .unwrap_or_else(|| config.agent.effort_for_role("researcher"));
 
     match cmd {
         ResearchCmd::Topic { topic, deep } => {
@@ -471,7 +474,7 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
                 prompt: &task_prompt,
                 workdir: &workdir,
                 model: model_ref,
-                effort: effort_ref,
+                effort: Some(researcher_effort),
                 system_prompt: Some(&system),
                 resume_session,
                 env_vars: &gw.vars,
@@ -517,7 +520,7 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
                 prompt: &task_prompt,
                 workdir: &workdir,
                 model: model_ref,
-                effort: effort_ref,
+                effort: Some(researcher_effort),
                 system_prompt: Some(&system),
                 resume_session,
                 env_vars: &gw.vars,
@@ -573,7 +576,7 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
                 prompt: &task_prompt,
                 workdir: &workdir,
                 model: model_ref,
-                effort: effort_ref,
+                effort: Some(researcher_effort),
                 system_prompt: Some(&system),
                 resume_session,
                 env_vars: &gw.vars,
@@ -624,7 +627,7 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
                 prompt: &task_prompt,
                 workdir: &workdir,
                 model: model_ref,
-                effort: effort_ref,
+                effort: Some(researcher_effort),
                 system_prompt: Some(&system),
                 resume_session,
                 env_vars: &gw.vars,
@@ -676,7 +679,7 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
                 prompt: &task_prompt,
                 workdir: &workdir,
                 model: model_ref,
-                effort: effort_ref,
+                effort: Some(researcher_effort),
                 system_prompt: Some(&system),
                 resume_session,
                 env_vars: &gw.vars,

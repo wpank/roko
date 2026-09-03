@@ -163,6 +163,7 @@ impl ProviderCapabilityMatrix {
         ProviderKind::CerebrasApi,
         ProviderKind::Hermes,
         ProviderKind::OpenClaw,
+        ProviderKind::CodexCli,
     ];
 
     /// Create a matrix with all providers set to [`CapabilityState::Untested`].
@@ -362,6 +363,22 @@ impl ProviderCapabilityMatrix {
             ],
         );
 
+        // CodexCli: Codex CLI subprocess protocol (codex exec --json)
+        matrix.set_row(
+            ProviderKind::CodexCli,
+            &[
+                (Capability::Tools, CapabilityState::Supported),
+                (Capability::Streaming, CapabilityState::Supported),
+                (Capability::Reasoning, CapabilityState::Supported),
+                (Capability::Vision, CapabilityState::Unavailable),
+                (Capability::CodeExecution, CapabilityState::Unavailable),
+                (Capability::Mcp, CapabilityState::Supported),
+                (Capability::ParallelTools, CapabilityState::Supported),
+                (Capability::UsageReporting, CapabilityState::Supported),
+                (Capability::Cancellation, CapabilityState::Supported),
+            ],
+        );
+
         matrix
     }
 
@@ -476,6 +493,7 @@ pub fn provider_label(kind: ProviderKind) -> &'static str {
         ProviderKind::CerebrasApi => "cerebras_api",
         ProviderKind::Hermes => "hermes",
         ProviderKind::OpenClaw => "openclaw",
+        ProviderKind::CodexCli => "codex_cli",
     }
 }
 

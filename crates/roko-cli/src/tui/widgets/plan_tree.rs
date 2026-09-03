@@ -36,7 +36,9 @@ fn plan_icon(plan: &PlanEntry) -> (&'static str, Style) {
     if !plan.active && plan.status.is_done() {
         (
             "\u{2713}", // ✓
-            Style::default().fg(Theme::SAGE),
+            Style::default()
+                .fg(Theme::SAGE)
+                .add_modifier(Modifier::BOLD),
         )
     } else if !plan.active && plan.status.is_failed() {
         (
@@ -47,7 +49,7 @@ fn plan_icon(plan: &PlanEntry) -> (&'static str, Style) {
         )
     } else if plan.active {
         (
-            "\u{25b6}", // ▶
+            "\u{26a1}", // ⚡
             Style::default()
                 .fg(Theme::WARNING)
                 .add_modifier(Modifier::BOLD),
@@ -108,18 +110,20 @@ pub fn render_plan_tree(frame: &mut Frame<'_>, area: Rect, state: &TuiState, foc
                 .and_then(|&idx| state.plans.get(idx))
         })
         .map(|plan| plan.id.as_str());
-    let filtered_suffix = if filter_active {
-        format!(", {filtered_total}/{total} filtered")
-    } else {
-        String::new()
-    };
-
     let title = if focused {
-        format!(
-            "Plans ({completed}/{total}{health_suffix}{filtered_suffix}) [Enter:detail h/l:tree]"
-        )
+        if filter_active {
+            format!(
+                "Plans ({filtered_total}/{total}{health_suffix}) [Enter:detail h/l:tree]"
+            )
+        } else {
+            format!(
+                "Plans ({completed}/{total}{health_suffix}) [Enter:detail h/l:tree]"
+            )
+        }
+    } else if filter_active {
+        format!("Plans ({filtered_total}/{total}{health_suffix})")
     } else {
-        format!("Plans ({completed}/{total}{health_suffix}{filtered_suffix})")
+        format!("Plans ({completed}/{total}{health_suffix})")
     };
 
     let mut lines: Vec<Line<'static>> = Vec::new();
@@ -127,12 +131,14 @@ pub fn render_plan_tree(frame: &mut Frame<'_>, area: Rect, state: &TuiState, foc
     // Filter indicator
     if filter_active {
         lines.push(Line::from(vec![
-            Span::styled(" /", Style::default().fg(Theme::DREAM)),
             Span::styled(
-                state.plan_tree_filter.pattern.clone(),
-                Style::default().fg(Theme::BONE),
+                format!(" [filter: \"{}\"", state.plan_tree_filter.pattern),
+                Style::default().fg(Theme::DREAM),
             ),
-            Span::styled("/ ", Style::default().fg(Theme::DREAM)),
+            Span::styled(
+                format!(" {filtered_total}/{total}]"),
+                Style::default().fg(Theme::TEXT_DIM),
+            ),
         ]));
     }
 
@@ -286,9 +292,17 @@ fn render_wave_tree(
         }; // ▾ / ▸
         let wave_selected = selected_wave == Some(wave.index);
         let header_bg = if wave_selected {
-            Theme::BG_SECONDARY
+            Theme::BG_HIGHLIGHT
         } else {
-            Theme::BG
+            Theme::BG_RAISED
+        };
+
+        let wave_label_fg = if all_done {
+            Theme::SAGE
+        } else if any_active {
+            Theme::BONE_BRIGHT
+        } else {
+            Theme::BONE_DIM
         };
 
         let mut wave_spans = vec![
@@ -300,7 +314,7 @@ fn render_wave_tree(
             Span::styled(
                 format!("Wave {} ", wave.index),
                 Style::default()
-                    .fg(Theme::BONE_DIM)
+                    .fg(wave_label_fg)
                     .bg(header_bg)
                     .add_modifier(Modifier::BOLD),
             ),
@@ -511,35 +525,8 @@ fn render_plan_line(
         )
     };
 
-    // Bar cell (8 chars): filled blocks + dashes
-    let bar_cell = if plan.tasks_total > 0 {
-        let filled = ((fill_pct.clamp(0.0, 1.0)) * COL_BAR as f64).round() as usize;
-        let empty = COL_BAR.saturating_sub(filled);
-        let bar_color = if !plan.active && plan.tasks_failed == 0 {
-            Theme::SAGE
-        } else if plan.active && fill_pct >= 0.999 {
-            Theme::WARNING
-        } else if plan.status.is_failed() {
-            Theme::EMBER
-        } else if plan.tasks_done == 0 && !plan.active {
-            Theme::TEXT_PHANTOM
-        } else {
-            Theme::semantic_color(fill_pct)
-        };
-        (
-            format!(
-                "{}{}",
-                "\u{2588}".repeat(filled.min(COL_BAR)),
-                "\u{2500}".repeat(empty)
-            ),
-            bar_color,
-        )
-    } else {
-        (
-            format!("{:>width$}", "\u{00b7}", width = COL_BAR),
-            Theme::TEXT_PHANTOM,
-        )
-    };
+    // Bar cell (8 chars): gradient-filled blocks with partial-fill chars
+    let bar_spans = render_progress_bar_spans(COL_BAR, fill_pct, plan);
 
     // Delta cell (8 chars): git dirty or health indicator
     let delta_cell = if plan.tasks_failed > 0 {
@@ -587,39 +574,30 @@ fn render_plan_line(
         )
     };
 
-    // Phase abbreviation for active plans
-    let phase_suffix = if plan.active && !plan.phase.is_empty() {
-        format!(" {}", phase_abbrev(&plan.phase))
+    // Phase tag next to the icon for active plans: "⚡impl "
+    let phase_tag = if plan.active && !plan.phase.is_empty() {
+        phase_abbrev(&plan.phase)
     } else {
-        String::new()
+        ""
     };
 
-    let prefix_plain = format!("{indent}{icon} ");
+    // Build prefix: indent + icon + optional phase tag
+    let prefix_plain = if phase_tag.is_empty() {
+        format!("{indent}{icon} ")
+    } else {
+        format!("{indent}{icon}{phase_tag} ")
+    };
     let available_title = area
         .width
         .saturating_sub(prefix_plain.len() as u16)
         .saturating_sub(RESERVED)
         .max(10) as usize;
-    let name_budget = available_title.saturating_sub(phase_suffix.len());
-    let plan_name = truncate_middle(&plan.name, name_budget);
-    let title_text = format!("{plan_name}{phase_suffix}");
+    let plan_name = truncate_plan_name(&plan.name, available_title);
 
-    // Title span — color phase suffix differently for active plans
-    let title_span = if phase_suffix.is_empty() {
-        Span::styled(
-            format!("{title_text:<width$}", width = available_title),
-            text_s.bg(bg),
-        )
-    } else {
-        let phase_color = Theme::phase_accent(&plan.phase);
-        let padded = format!("{title_text:<width$}", width = available_title);
-        let style = if plan.active {
-            text_s.fg(phase_color).bg(bg)
-        } else {
-            text_s.bg(bg)
-        };
-        Span::styled(padded, style)
-    };
+    let title_span = Span::styled(
+        format!("{plan_name:<width$}", width = available_title),
+        text_s.bg(bg),
+    );
 
     let sep = |bg_c: Color| {
         Span::styled(
@@ -628,12 +606,31 @@ fn render_plan_line(
         )
     };
 
-    let mut spans = vec![Span::styled(prefix_plain, icon_s.bg(bg)), title_span];
+    let mut spans = if phase_tag.is_empty() {
+        vec![Span::styled(prefix_plain, icon_s.bg(bg)), title_span]
+    } else {
+        let phase_color = Theme::phase_accent(&plan.phase);
+        vec![
+            Span::styled(format!("{indent}{icon}"), icon_s.bg(bg)),
+            Span::styled(
+                format!("{phase_tag} "),
+                Style::default()
+                    .fg(phase_color)
+                    .bg(bg)
+                    .add_modifier(Modifier::DIM),
+            ),
+            title_span,
+        ]
+    };
+    spans.push(sep(bg));
+    spans.push(Span::styled(progress_cell.0, Style::default().fg(progress_cell.1).bg(bg)));
+    spans.push(sep(bg));
+    for mut s in bar_spans {
+        // Apply bg to each gradient span
+        s.style = s.style.bg(bg);
+        spans.push(s);
+    }
     spans.extend([
-        sep(bg),
-        Span::styled(progress_cell.0, Style::default().fg(progress_cell.1).bg(bg)),
-        sep(bg),
-        Span::styled(bar_cell.0, Style::default().fg(bar_cell.1).bg(bg)),
         sep(bg),
         Span::styled(delta_cell.0, Style::default().fg(delta_cell.1).bg(bg)),
         sep(bg),
@@ -646,6 +643,18 @@ fn render_plan_line(
 
     // Selected plan detail row (expanded info)
     if is_selected {
+        // Show full name when it was truncated
+        let name_was_truncated = plan.name.chars().count() > available_title;
+        if name_was_truncated {
+            lines.push(Line::from(vec![
+                Span::styled(format!("{indent}  "), Style::default().bg(bg)),
+                Span::styled(
+                    truncate_middle(&plan.name, area.width.saturating_sub(6) as usize),
+                    Style::default().fg(Theme::BONE_DIM).bg(bg),
+                ),
+            ]));
+        }
+
         let mut detail_spans = vec![Span::styled(format!("{indent}  "), Style::default().bg(bg))];
 
         // Mini progress bar in the detail row
@@ -699,37 +708,24 @@ fn render_plan_line(
 fn render_column_header(area: Rect) -> Line<'static> {
     let reserved: u16 = (COL_PROGRESS + COL_BAR + COL_DELTA + COL_VERIFY + COL_AGE + 5) as u16;
     let title_width = area.width.saturating_sub(reserved + 3).max(10) as usize;
+    let theme = Theme::dark();
+    let meta = theme.metadata();
     let sep = Span::styled("\u{2502}", Style::default().fg(Theme::TEXT_PHANTOM));
     Line::from(vec![
         Span::styled(
             format!(" {:<width$}", "plan", width = title_width),
-            Style::default().fg(Theme::TEXT_GHOST),
+            theme.section_header(),
         ),
         sep.clone(),
-        Span::styled(
-            format!("{:>6}", "prog"),
-            Style::default().fg(Theme::TEXT_PHANTOM),
-        ),
+        Span::styled(format!("{:>6}", "prog"), meta),
         sep.clone(),
-        Span::styled(
-            format!("{:>8}", "bar"),
-            Style::default().fg(Theme::TEXT_PHANTOM),
-        ),
+        Span::styled(format!("{:>8}", "bar"), meta),
         sep.clone(),
-        Span::styled(
-            format!("{:>8}", "delta"),
-            Style::default().fg(Theme::TEXT_PHANTOM),
-        ),
+        Span::styled(format!("{:>8}", "delta"), meta),
         sep.clone(),
-        Span::styled(
-            format!("{:>3}", "vfy"),
-            Style::default().fg(Theme::TEXT_PHANTOM),
-        ),
+        Span::styled(format!("{:>3}", "vfy"), meta),
         sep,
-        Span::styled(
-            format!("{:>6}", "age"),
-            Style::default().fg(Theme::TEXT_PHANTOM),
-        ),
+        Span::styled(format!("{:>6}", "age"), meta),
     ])
 }
 
@@ -833,6 +829,106 @@ fn matches_filter(plan: &PlanEntry, state: &TuiState) -> bool {
         return true;
     }
     state.plan_tree_filter.matches_plan_or_tasks(plan)
+}
+
+/// Truncate a plan name, keeping the first dash-delimited segment intact.
+///
+/// For plan names like `async-runtime-patterns`, this produces
+/// `async-runtime-...ns` rather than the generic `async-r...atterns`, keeping
+/// the leading segment (the most distinctive part) fully readable.
+fn truncate_plan_name(name: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
+    }
+    let char_count = name.chars().count();
+    if char_count <= max {
+        return name.to_string();
+    }
+    if max <= 3 {
+        return "\u{2026}".repeat(max); // …
+    }
+    // Find the first segment boundary (first '-')
+    let first_dash = name.find('-').unwrap_or(char_count);
+    // Keep at least the first segment + dash, up to half the budget
+    let left_budget = (first_dash + 1).min(max.saturating_sub(4)); // need room for …+tail
+    let right_budget = max.saturating_sub(left_budget + 1); // 1 for …
+    if right_budget == 0 {
+        // No room for tail, fall back to simple left + …
+        let left: String = name.chars().take(max - 1).collect();
+        return format!("{left}\u{2026}");
+    }
+    let left: String = name.chars().take(left_budget).collect();
+    let right: String = name
+        .chars()
+        .rev()
+        .take(right_budget)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    format!("{left}\u{2026}{right}")
+}
+
+/// Build gradient progress bar spans with partial-fill characters.
+///
+/// Uses `█▓▒░` for the fractional cell and colors based on progress:
+/// red (0-25%), yellow (25-75%), green (75-100%).
+fn render_progress_bar_spans(width: usize, fill_pct: f64, plan: &PlanEntry) -> Vec<Span<'static>> {
+    if plan.tasks_total == 0 {
+        return vec![Span::styled(
+            format!("{:>width$}", "\u{00b7}", width = width),
+            Style::default().fg(Theme::TEXT_PHANTOM),
+        )];
+    }
+    let pct = fill_pct.clamp(0.0, 1.0);
+    let filled_f = pct * width as f64;
+    let filled = filled_f as usize;
+    let frac = filled_f - filled as f64;
+    let empty = width.saturating_sub(filled).saturating_sub(if frac > 0.01 { 1 } else { 0 });
+
+    // Color based on status and progress
+    let bar_color = if !plan.active && plan.tasks_failed == 0 && plan.status.is_done() {
+        Theme::SAGE
+    } else if plan.status.is_failed() {
+        Theme::EMBER
+    } else {
+        Theme::progress_gradient(pct)
+    };
+
+    let mut spans = Vec::with_capacity(3);
+
+    // Filled portion
+    if filled > 0 {
+        spans.push(Span::styled(
+            "\u{2588}".repeat(filled.min(width)),
+            Style::default().fg(bar_color),
+        ));
+    }
+
+    // Fractional cell using gradient characters
+    if frac > 0.01 && filled < width {
+        let partial = if frac >= 0.75 {
+            "\u{2593}" // ▓
+        } else if frac >= 0.5 {
+            "\u{2592}" // ▒
+        } else {
+            "\u{2591}" // ░
+        };
+        spans.push(Span::styled(
+            partial.to_string(),
+            Style::default().fg(bar_color),
+        ));
+    }
+
+    // Empty portion
+    if empty > 0 {
+        spans.push(Span::styled(
+            "\u{2500}".repeat(empty),
+            Style::default().fg(Theme::TEXT_PHANTOM),
+        ));
+    }
+
+    spans
 }
 
 fn compact_progress_glyphs(width: usize, fill_pct: f64) -> String {
@@ -1031,7 +1127,7 @@ mod tests {
             .unwrap();
 
         let rendered = rendered_text(&terminal);
-        assert!(rendered.contains("1/3 filtered"), "{rendered}");
+        assert!(rendered.contains("1/3"), "{rendered}");
         assert!(rendered.contains("plan-beta"), "{rendered}");
         assert!(!rendered.contains("plan-alpha"), "{rendered}");
         assert!(!rendered.contains("plan-gamma"), "{rendered}");
@@ -1044,6 +1140,23 @@ mod tests {
         assert_eq!(truncate_middle("hello world", 5), "he\u{2026}ld");
         assert_eq!(truncate_middle("abc", 0), "");
         assert_eq!(truncate_middle("abcdef", 3), "\u{2026}\u{2026}\u{2026}");
+    }
+
+    #[test]
+    fn plan_name_truncation_keeps_first_segment() {
+        // Fits entirely
+        assert_eq!(truncate_plan_name("plan-alpha", 20), "plan-alpha");
+        // Truncation keeps first segment intact
+        assert_eq!(
+            truncate_plan_name("async-runtime-patterns", 16),
+            "async-\u{2026}-patterns"
+        );
+        // Very short budget
+        assert_eq!(truncate_plan_name("something-long", 3), "\u{2026}\u{2026}\u{2026}");
+        // Empty
+        assert_eq!(truncate_plan_name("anything", 0), "");
+        // No dash — still keeps both ends visible
+        assert_eq!(truncate_plan_name("abcdefghijklmnop", 8), "abcd\u{2026}nop");
     }
 
     #[test]

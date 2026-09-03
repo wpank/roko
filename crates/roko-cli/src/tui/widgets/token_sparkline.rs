@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
@@ -46,13 +46,19 @@ fn fmt_rate(rate: f64) -> String {
     }
 }
 
-fn tier_color(tier: &str) -> Color {
+fn tier_color(tier: &str) -> ratatui::style::Color {
     match tier {
         "T0" => Theme::SAGE,
         "T1" => Theme::ROSE,
         "T2" => Theme::WARNING,
         _ => Theme::TEXT_DIM,
     }
+}
+
+/// Map a 0..1 normalized burn value to a gradient color:
+/// low (green/sage) -> medium (yellow/warning) -> high (red/ember).
+fn burn_gradient(t: f64) -> ratatui::style::Color {
+    Theme::progress_gradient(1.0 - t.clamp(0.0, 1.0))
 }
 
 /// Generic fallback label for a tier with no events. Non-empty tiers are
@@ -133,29 +139,32 @@ pub fn render_token_sparkline(
         return;
     }
 
+    let theme = Theme::dark();
     let mut lines: Vec<Line<'_>> = Vec::new();
+
+    // Cost color: gradient from sage (cheap) through warning to ember (expensive).
+    let cost_color = burn_gradient(
+        (snapshot.total_cost_usd / 5.0).clamp(0.0, 1.0), // $5 = full red
+    );
     let summary1 = Line::from(vec![
-        Span::styled(" tokens ", Style::default().fg(Theme::BONE_DIM)),
-        Span::styled(
-            fmt_tokens(snapshot.total_tokens),
-            Style::default().fg(Theme::BONE),
-        ),
-        Span::styled(" cost ", Style::default().fg(Theme::BONE_DIM)),
+        Span::styled(" tokens ", theme.label()),
+        Span::styled(fmt_tokens(snapshot.total_tokens), theme.value()),
+        Span::styled(" cost ", theme.label()),
         Span::styled(
             format!("${:.2}", snapshot.total_cost_usd),
-            Style::default().fg(Theme::WARNING),
+            Style::default().fg(cost_color),
         ),
-        Span::styled(" avg/task ", Style::default().fg(Theme::BONE_DIM)),
+        Span::styled(" avg/task ", theme.label()),
         Span::styled(
             fmt_tokens(snapshot.average_tokens_per_task.round() as u64),
-            Style::default().fg(Theme::FG),
+            theme.value(),
         ),
     ]);
     lines.push(summary1);
 
     if inner.height > 3 {
         let summary2 = Line::from(vec![
-            Span::styled(" succ ", Style::default().fg(Theme::BONE_DIM)),
+            Span::styled(" succ ", theme.label()),
             Span::styled(
                 format!("{:.0}%", snapshot.success_rate * 100.0),
                 Style::default().fg(if snapshot.success_rate >= 0.9 {
@@ -166,12 +175,12 @@ pub fn render_token_sparkline(
                     Theme::EMBER
                 }),
             ),
-            Span::styled(" events ", Style::default().fg(Theme::BONE_DIM)),
+            Span::styled(" events ", theme.label()),
             Span::styled(
                 format!("{}", snapshot.event_count),
-                Style::default().fg(Theme::TEXT),
+                theme.value(),
             ),
-            Span::styled(" window ", Style::default().fg(Theme::BONE_DIM)),
+            Span::styled(" window ", theme.label()),
             Span::styled(format!("{window}"), Style::default().fg(Theme::TEXT_DIM)),
         ]);
         lines.push(summary2);
@@ -187,6 +196,9 @@ pub fn render_token_sparkline(
         let max_val = *display.iter().max().unwrap_or(&1);
         let range_label = format!("{}-{}", fmt_tokens(min_val), fmt_tokens(max_val));
         let rate_label = fmt_rate(rate);
+        // Color the rate label by burn intensity (high rate = warm, low = cool).
+        let rate_intensity = (rate / 10_000.0).clamp(0.0, 1.0);
+        let rate_color = burn_gradient(rate_intensity);
         let spark_w = inner_width
             .saturating_sub(range_label.len() + rate_label.len() + 5)
             .max(8);
@@ -194,7 +206,7 @@ pub fn render_token_sparkline(
             format!(" {} ", range_label),
             Style::default().fg(Theme::TEXT_GHOST),
         )];
-        // Use gradient coloring: dim for low values, bright rose for peaks
+        // Use gradient coloring: sage for low values, warning mid, ember peaks.
         let normalized: Vec<f64> = {
             let min_f = min_val as f64;
             let range_f = (max_val - min_val).max(1) as f64;
@@ -207,18 +219,18 @@ pub fn render_token_sparkline(
             &normalized,
             1.0,
             spark_w,
-            Theme::ROSE_DIM,
+            Theme::SAGE,
             pulsed_color,
         ));
         spans.push(Span::styled(
             format!(" {} ", rate_label),
-            Style::default().fg(Theme::ROSE),
+            Style::default().fg(rate_color),
         ));
         lines.push(Line::from(spans));
     } else {
         lines.push(Line::from(Span::styled(
             format!(
-                " {} Token usage will appear during provider calls",
+                " {} waiting for data",
                 state.atmosphere.spinner()
             ),
             Style::default().fg(Theme::TEXT_DIM),
@@ -251,7 +263,7 @@ pub fn render_token_sparkline(
                 "\u{2500}".repeat(empty),
                 Style::default().fg(Theme::TEXT_PHANTOM),
             ),
-            Span::styled(suffix, Style::default().fg(Theme::BONE_DIM)),
+            Span::styled(suffix, theme.label()),
         ]));
     }
 

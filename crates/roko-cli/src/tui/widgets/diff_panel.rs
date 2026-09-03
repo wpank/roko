@@ -136,6 +136,9 @@ pub fn format_diff_lines<'a>(
 ) -> Vec<Line<'a>> {
     let raw_lines: Vec<&str> = diff_text.lines().collect();
 
+    // Compute +/- stats for summary header.
+    let (additions, deletions) = count_diff_stats(&raw_lines);
+
     // Determine gutter width from total line count.
     let gutter_w = if opts.line_numbers {
         if opts.gutter_width > 0 {
@@ -161,10 +164,36 @@ pub fn format_diff_lines<'a>(
     let mut old_ln: Option<usize> = None;
     let mut new_ln: Option<usize> = None;
 
-    raw_lines
-        .iter()
-        .enumerate()
-        .map(|(i, line)| {
+    // Build stats summary as the first line.
+    let mut result: Vec<Line<'a>> = Vec::with_capacity(raw_lines.len() + 1);
+    if additions > 0 || deletions > 0 {
+        let mut stats_spans: Vec<Span<'a>> = Vec::new();
+        if opts.line_numbers {
+            stats_spans.push(Span::styled(" ".repeat(gutter_w), Style::default()));
+        }
+        stats_spans.push(Span::styled(
+            format!("+{additions}"),
+            Style::default().fg(theme.success),
+        ));
+        stats_spans.push(Span::styled(" / ", Style::default().fg(Theme::TEXT_DIM)));
+        stats_spans.push(Span::styled(
+            format!("-{deletions}"),
+            Style::default().fg(theme.danger),
+        ));
+        let file_count = raw_lines
+            .iter()
+            .filter(|l| l.starts_with("diff --git"))
+            .count();
+        if file_count > 0 {
+            stats_spans.push(Span::styled(
+                format!("  ({file_count} file{})", if file_count == 1 { "" } else { "s" }),
+                Style::default().fg(Theme::TEXT_DIM),
+            ));
+        }
+        result.push(Line::from(stats_spans));
+    }
+
+    result.extend(raw_lines.iter().enumerate().map(|(i, line)| {
             // Update line counters from hunk headers.
             if line.starts_with("@@") {
                 let (o, n) = parse_hunk_header(line);
@@ -182,14 +211,17 @@ pub fn format_diff_lines<'a>(
 
             // Content spans.
             if line.starts_with("diff --git") {
-                // File header: extract filename and display prominently.
+                // File header: extract filename with section_header style + separator.
                 let filename = extract_filename(line);
+                let sep_len = content_w.saturating_sub(filename.len() + 2);
+                let separator = "\u{2500}".repeat(sep_len.min(60));
                 spans.push(Span::styled(
                     format!(" {filename} "),
-                    Style::default()
-                        .fg(theme.accent)
-                        .bg(Theme::BG_SECONDARY)
-                        .add_modifier(Modifier::BOLD),
+                    theme.section_header(),
+                ));
+                spans.push(Span::styled(
+                    separator,
+                    Style::default().fg(Theme::TEXT_PHANTOM),
                 ));
             } else if line.starts_with("index ") {
                 spans.push(Span::styled(
@@ -224,8 +256,9 @@ pub fn format_diff_lines<'a>(
             }
 
             Line::from(spans)
-        })
-        .collect()
+        }));
+
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -235,10 +268,7 @@ pub fn format_diff_lines<'a>(
 /// Return the base style for a diff line based on its prefix.
 pub fn diff_line_style(line: &str, theme: &Theme) -> Style {
     if line.starts_with("diff --git") {
-        Style::default()
-            .fg(theme.accent)
-            .bg(Theme::BG_SECONDARY)
-            .add_modifier(Modifier::BOLD)
+        theme.section_header()
     } else if line.starts_with("index ") {
         Style::default().fg(Theme::TEXT_PHANTOM)
     } else if line.starts_with("@@") {
@@ -258,7 +288,10 @@ pub fn diff_line_style(line: &str, theme: &Theme) -> Style {
     } else if line.starts_with('-') {
         Style::default().fg(theme.danger)
     } else {
-        Style::default().fg(theme.foreground)
+        // Context lines rendered dim for visual hierarchy.
+        Style::default()
+            .fg(Theme::TEXT_DIM)
+            .add_modifier(Modifier::DIM)
     }
 }
 
@@ -528,6 +561,20 @@ fn word_highlight_spans<'a>(
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Count total additions and deletions in a diff.
+fn count_diff_stats(lines: &[&str]) -> (usize, usize) {
+    let mut adds = 0usize;
+    let mut dels = 0usize;
+    for line in lines {
+        if line.starts_with('+') && !line.starts_with("+++ ") {
+            adds += 1;
+        } else if line.starts_with('-') && !line.starts_with("--- ") {
+            dels += 1;
+        }
+    }
+    (adds, dels)
+}
+
 fn truncate_line(line: &str, max: usize) -> String {
     if max == 0 {
         return String::new();
@@ -561,7 +608,7 @@ mod tests {
         let theme = Theme::default();
 
         let git_header = diff_line_style("diff --git a/f b/f", &theme);
-        assert_eq!(git_header.fg, Some(theme.accent));
+        assert_eq!(git_header.fg, Some(Theme::BONE));
 
         let index = diff_line_style("index abc..def 100644", &theme);
         assert_eq!(index.fg, Some(Theme::TEXT_PHANTOM));
@@ -582,7 +629,7 @@ mod tests {
         assert_eq!(del.fg, Some(theme.danger));
 
         let context = diff_line_style(" context", &theme);
-        assert_eq!(context.fg, Some(theme.foreground));
+        assert_eq!(context.fg, Some(Theme::TEXT_DIM));
     }
 
     #[test]
@@ -661,10 +708,11 @@ index abc..def 100644
             word_highlight: false,
         };
         let lines = format_diff_lines(diff, 80, &theme, &opts);
-        // Should have 9 lines.
-        assert_eq!(lines.len(), 9);
+        // Should have 10 lines (1 stats summary + 9 diff lines).
+        assert_eq!(lines.len(), 10);
         // The context line "fn main() {" should have a gutter span with "1".
-        let context_line = &lines[5];
+        // Offset by 1 for the stats summary line.
+        let context_line = &lines[6];
         assert!(context_line.spans[0].content.contains('1'));
     }
 
@@ -678,9 +726,10 @@ index abc..def 100644
             word_highlight: false,
         };
         let lines = format_diff_lines(diff, 80, &theme, &opts);
-        assert_eq!(lines.len(), 3);
-        // No gutter span -- first span is the content.
-        assert!(lines[0].spans[0].content.starts_with('+'));
+        // 1 stats summary + 3 diff lines.
+        assert_eq!(lines.len(), 4);
+        // First line is stats summary; second line is the +added content.
+        assert!(lines[1].spans[0].content.starts_with('+'));
     }
 
     #[test]

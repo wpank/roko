@@ -174,7 +174,7 @@ mod tests {
             completed_plans: vec!["plan-041".into(), "plan-042".into(), "plan-043".into()],
             integration_memo: Some("## Integration\nCross-crate wiring notes.".into()),
             fixture_manifest: Some("[fixture]\nname = \"anvil\"\nport = 8545".into()),
-            dependency_manifest: Some("[dep]\ncrate = \"golem-core\"\nversion = \"0.1\"".into()),
+            dependency_manifest: Some("[dep]\ncrate = \"roko-core\"\nversion = \"0.1\"".into()),
         }
     }
 

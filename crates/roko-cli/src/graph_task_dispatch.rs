@@ -91,6 +91,7 @@ pub struct GraphPlanBudgetSnapshot {
 }
 
 impl GraphPlanBudgetSnapshot {
+    #[allow(dead_code)]
     fn remaining_usd(self) -> f64 {
         self.ceiling_usd.map_or(f64::INFINITY, |ceiling| {
             (ceiling - self.spent_usd - self.reserved_usd).max(0.0)
@@ -322,6 +323,11 @@ pub struct GraphTaskDispatcher {
     workdir: PathBuf,
     budget_policy: GraphPlanBudgetPolicy,
     budget_ledger: GraphPlanBudgetLedger,
+    /// CLI model override (from `--model` / `--force-backend`). When set, this
+    /// replaces the config default and any per-task `model_hint` in dispatch.
+    cli_model_override: Option<String>,
+    /// Whether to skip agent permission prompts (from `--dangerously-skip-permissions`).
+    dangerously_skip_permissions: bool,
 }
 
 impl GraphTaskDispatcher {
@@ -338,7 +344,26 @@ impl GraphTaskDispatcher {
             workdir,
             budget_policy: GraphPlanBudgetPolicy::unlimited(),
             budget_ledger: GraphPlanBudgetLedger::default(),
+            cli_model_override: None,
+            dangerously_skip_permissions: false,
         }
+    }
+
+    /// Set the CLI model override (from `--model` / `--force-backend`).
+    ///
+    /// When set, this bypasses adaptive routing and forces all graph task
+    /// dispatches to use the specified model slug.
+    #[must_use]
+    pub fn with_cli_model_override(mut self, model: Option<String>) -> Self {
+        self.cli_model_override = model;
+        self
+    }
+
+    /// Enable or disable permission skipping (from `--dangerously-skip-permissions`).
+    #[must_use]
+    pub fn with_dangerously_skip_permissions(mut self, skip: bool) -> Self {
+        self.dangerously_skip_permissions = skip;
+        self
     }
 
     /// Apply a per-plan cost ceiling to subsequent task dispatches.
@@ -417,9 +442,15 @@ impl TaskDispatcher for GraphTaskDispatcher {
             plan_id: spec.plan_id.clone(),
             role: role.to_string(),
             workdir: self.workdir.clone(),
-            // Preserve the configured default when the task has no author hint.
-            model_hint: Some(self.config.agent.default_model.clone()),
-            force_backend: None,
+            // CLI model override takes priority over the task model_hint and
+            // the configured default. This mirrors the runner-v2 semantics
+            // where `--model` / `--force-backend` bypass adaptive routing.
+            model_hint: Some(
+                self.cli_model_override
+                    .clone()
+                    .unwrap_or_else(|| self.config.agent.default_model.clone()),
+            ),
+            force_backend: self.cli_model_override.clone(),
             budget_remaining_usd: effective_routing_budget(
                 ctx.budget_remaining,
                 budget_reservation.routing_budget_usd(),
@@ -459,8 +490,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             tools: None,
             agent_contract: Some(contract),
             bare_mode: self.config.agent.bare_mode,
-            // Graph execution never silently bypasses provider permissions.
-            dangerously_skip_permissions: false,
+            dangerously_skip_permissions: self.dangerously_skip_permissions,
         };
 
         let dispatch = self

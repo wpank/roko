@@ -561,6 +561,7 @@ pub(crate) fn gate_timeout(config: &RunConfig, rung: u32) -> Duration {
 }
 
 /// Resolve HTTP request timeout from `TimeoutConfig`.
+#[allow(dead_code)]
 pub(crate) fn http_request_timeout(config: &RunConfig) -> Duration {
     config.roko_config.as_deref().map_or_else(
         || roko_core::config::TimeoutConfig::default().http_request(),
@@ -569,6 +570,7 @@ pub(crate) fn http_request_timeout(config: &RunConfig) -> Duration {
 }
 
 /// Resolve health check timeout from `TimeoutConfig`.
+#[allow(dead_code)]
 pub(crate) fn health_check_timeout(config: &RunConfig) -> Duration {
     config.roko_config.as_deref().map_or_else(
         || roko_core::config::TimeoutConfig::default().health_check(),
@@ -1418,6 +1420,7 @@ struct TaskRuntimeState {
     tokens_out: u64,
     cache_read_tokens: u64,
     cache_write_tokens: u64,
+    reasoning_tokens: u64,
     cost_usd: f64,
     task_agent_calls: u32,
     task_model_hint: Option<String>,
@@ -1511,6 +1514,7 @@ impl TaskRuntimeState {
             tokens_out: state.tokens_out,
             cache_read_tokens: state.cache_read_tokens,
             cache_write_tokens: state.cache_write_tokens,
+            reasoning_tokens: state.reasoning_tokens,
             cost_usd: state.cost_usd,
             task_agent_calls: state.task_agent_calls,
             task_model_hint: state.task_model_hint.clone(),
@@ -1538,6 +1542,7 @@ impl TaskRuntimeState {
         state.tokens_out = self.tokens_out;
         state.cache_read_tokens = self.cache_read_tokens;
         state.cache_write_tokens = self.cache_write_tokens;
+        state.reasoning_tokens = self.reasoning_tokens;
         state.cost_usd = self.cost_usd;
         state.task_agent_calls = self.task_agent_calls;
         state.task_model_hint = self.task_model_hint.clone();
@@ -1676,12 +1681,14 @@ struct RunContext<'a> {
     worktrees: &'a WorktreeManager,
     gate_thresholds: &'a GateThresholds,
     snapshot_writer: &'a SnapshotWriter,
+    #[allow(dead_code)]
     prompt_cache: &'a Arc<PromptCache>,
     factory: &'a SharedAgentFactory,
     task_capacity: &'a TaskCapacity,
     disk_budget: &'a mut DiskBudgetTracker,
     gate_sem: Arc<tokio::sync::Semaphore>,
     task_runtime_states: &'a mut HashMap<String, TaskRuntimeState>,
+    #[allow(dead_code)]
     legacy_gate_attempts: &'a mut HashMap<String, TaskAttemptRef>,
     preflight_attempted: &'a mut HashSet<TaskAttemptRef>,
     baseline_gate_failures: &'a mut HashMap<TaskAttemptRef, Vec<GateVerdictSummary>>,
@@ -2023,6 +2030,7 @@ async fn run_candidate_replay(
     }
 }
 
+#[allow(dead_code)]
 fn default_runner_worktree_manager(workdir: &Path) -> WorktreeManager {
     default_runner_worktree_manager_with_ttl(workdir, RUNNER_WORKTREE_IDLE_TTL_SECS)
 }
@@ -2395,6 +2403,7 @@ pub async fn run_with_tui_commands(
     if config.conductor.is_some() {
         if let Some(ring) = config.conductor_ring.clone() {
             use super::conductor_adapter::ConductorRingSink;
+            #[allow(unused_imports)]
             use crate::runtime_feedback::FeedbackFacade;
 
             let ring_sink = Arc::new(ConductorRingSink::new(ring));
@@ -2524,10 +2533,38 @@ pub async fn run_with_tui_commands(
     // of a prior run is ambiguous and must remain an explicit operator choice.
     // The unified snapshot is authoritative whenever present. Legacy
     // run-state.json is consulted only when the unified path is NotFound.
-    let (mut prior_snapshot, mut loaded_gate_thresholds) = match persist::load_state_snapshot(
-        &paths,
-    ) {
-        Ok(Some(unified)) => {
+    // Load the unified snapshot exactly once. The loaded StateSnapshot is
+    // reused by both run-state resume and executor/merge-queue resume so
+    // load_state_snapshot is never called a second time.
+    let loaded_unified: Option<roko_runtime::StateSnapshot> =
+        match persist::load_state_snapshot(&paths) {
+            Ok(snap) => snap,
+            Err(err) => {
+                warn!(error = %err, "state snapshot corrupt; trying backup");
+                match persist::load_state_snapshot_backup(&paths) {
+                    Ok(backup) => backup,
+                    _ => {
+                        // Both authoritative and backup snapshots are corrupt or
+                        // missing. Return a typed recovery error instead of
+                        // silently starting fresh (which would fail later when
+                        // prepare_resume_with_force re-reads the same file).
+                        return Err(anyhow::anyhow!(
+                            super::resume::ResumeError::StateRecoveryRequired {
+                                snapshot_path: paths.state_snapshot_json.clone(),
+                                reason: format!(
+                                    "the snapshot at {} is corrupt and no valid backup exists. \
+                                     The file has been preserved for diagnosis. \
+                                     Run with --fresh to archive prior state and start a new run",
+                                    paths.state_snapshot_json.display()
+                                ),
+                            }
+                        ));
+                    }
+                }
+            }
+        };
+    let (mut prior_snapshot, mut loaded_gate_thresholds) = match loaded_unified.as_ref() {
+        Some(unified) => {
             info!(
                 timestamp_ms = unified.timestamp_ms,
                 "loaded state snapshot -- checksum valid"
@@ -2538,7 +2575,7 @@ pub async fn run_with_tui_commands(
                 .context("parse validated authoritative gate_thresholds_json")?;
             (Some(run_state), Some(loaded_gt))
         }
-        Ok(None) => {
+        None => {
             // No unified snapshot -- try legacy run-state.json.
             match persist::load_run_state(&paths) {
                 Ok(Some(snapshot)) => {
@@ -2551,23 +2588,6 @@ pub async fn run_with_tui_commands(
                         error = %err,
                         "failed to read prior run-state.json; continuing without seeded resume state"
                     );
-                    (None, None)
-                }
-            }
-        }
-        Err(err) => {
-            warn!(error = %err, "state snapshot corrupt; trying backup");
-            match persist::load_state_snapshot_backup(&paths) {
-                Ok(Some(backup)) => {
-                    warn!("loaded backup snapshot — most recent checkpoint may be lost");
-                    let run_state = serde_json::from_str(&backup.run_state_json)
-                        .context("parse validated backup run_state_json")?;
-                    let loaded_gt = serde_json::from_str(&backup.gate_thresholds_json)
-                        .context("parse validated backup gate_thresholds_json")?;
-                    (Some(run_state), Some(loaded_gt))
-                }
-                _ => {
-                    warn!("no valid backup; starting fresh");
                     (None, None)
                 }
             }
@@ -2793,7 +2813,9 @@ pub async fn run_with_tui_commands(
     let plan_ids: Vec<String> = plans.iter().map(|p| p.id.clone()).collect();
 
     // Only resume if snapshot exists AND its plans match the current run.
-    let resume = load_executor(&paths, &exec_config, &plan_ids);
+    // Pass the already-loaded unified snapshot so load_executor does not
+    // re-read the file from disk.
+    let resume = load_executor(&paths, &exec_config, &plan_ids, loaded_unified.as_ref());
     let mut executor = resume.executor;
     let merge_queue = resume.merge_queue;
 
@@ -2829,7 +2851,7 @@ pub async fn run_with_tui_commands(
     let sink = config.output_sink.as_ref();
 
     // E05-T08: Create a VerdictPublisher that graduates Pulse -> Signal and
-    // appends the result to signals.jsonl. This replaces the ad-hoc JSON
+    // appends the result to engrams.jsonl. This replaces the ad-hoc JSON
     // append to gate-verdicts.jsonl with canonical Kind::GateVerdict signals
     // that dashboard and query paths can consume.
     let signals_path = config.layout.engrams_path();
@@ -3220,6 +3242,7 @@ pub async fn run_with_tui_commands(
         state.tokens_out = salvage.agent_snapshot.tokens_out;
         state.cache_read_tokens = salvage.agent_snapshot.cache_read_tokens;
         state.cache_write_tokens = salvage.agent_snapshot.cache_write_tokens;
+        state.reasoning_tokens = salvage.agent_snapshot.reasoning_tokens;
         state.cost_usd = salvage.agent_snapshot.cost_usd;
         capture_task_runtime(
             &mut task_runtime_states,
@@ -3861,7 +3884,7 @@ pub async fn run_with_tui_commands(
                         session_id,
                         total_cost_usd,
                         num_turns,
-                        is_error,
+                        is_error: _is_error,
                     } = &event
                     {
                         let agent_id = format!("{}/{}", state.plan_id, state.current_task);
@@ -4969,7 +4992,7 @@ pub async fn run_with_tui_commands(
                 // E05-T08: Live gate verdicts are now published as
                 // Kind::GateVerdict signals via VerdictPublisher (wired
                 // into gate_dispatch::run_gate_once). The canonical path
-                // is signals.jsonl. Legacy gate-verdicts.jsonl retained
+                // is engrams.jsonl. Legacy gate-verdicts.jsonl retained
                 // for backward-compatible tooling.
                 {
                     let verdict_json = serde_json::json!({
@@ -5857,7 +5880,7 @@ pub async fn run_with_tui_commands(
                         false
                     };
                     if !retry_started {
-                        let phase_durations = failure_phase_durations;
+                        let _phase_durations = failure_phase_durations;
                         state.task_failed();
                         // E48-T11: post-dispatch budget check after failed task.
                         check_budget_post_dispatch(
@@ -8384,6 +8407,7 @@ fn publish_learning_agent_event(
                     output_tokens: saturating_u32(state.tokens_out),
                     cache_read_tokens: saturating_u32(state.cache_read_tokens),
                     cache_create_tokens: saturating_u32(state.cache_write_tokens),
+                    reasoning_tokens: saturating_u32(state.reasoning_tokens),
                     cost_usd: total_cost_usd.unwrap_or(state.cost_usd) as f32,
                     wall_ms: state.task_elapsed_ms(),
                 },
@@ -8433,12 +8457,13 @@ fn agent_event_json(event: &AgentEvent) -> serde_json::Value {
             output_tokens,
             cache_read_tokens,
             cache_write_tokens,
-            reasoning_tokens: _,
+            reasoning_tokens,
         } => serde_json::json!({
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "cache_read_tokens": cache_read_tokens,
             "cache_write_tokens": cache_write_tokens,
+            "reasoning_tokens": reasoning_tokens,
         }),
         AgentEvent::TurnCompleted {
             session_id,
@@ -8494,6 +8519,7 @@ fn emit_runner_event(
 /// runner-level emits still cover the lifecycle events these helpers
 /// produce because the helpers themselves only emit on their plan's
 /// completion which is also republished from `run()`.
+#[allow(dead_code)]
 fn emit_runner_event_facadeless(
     paths: &PersistPaths,
     state: &mut RunState,
@@ -10067,11 +10093,22 @@ struct ResumeLoad {
 
 /// Load a resumable executor snapshot when compatible, otherwise start fresh
 /// and emit a structured resume marker explaining the decision.
-fn load_executor(paths: &PersistPaths, config: &ExecutorConfig, plan_ids: &[String]) -> ResumeLoad {
+///
+/// When `preloaded_unified` is `Some`, the unified snapshot has already been
+/// loaded and validated by the caller; this avoids a second disk read.
+fn load_executor(
+    paths: &PersistPaths,
+    config: &ExecutorConfig,
+    plan_ids: &[String],
+    preloaded_unified: Option<&roko_runtime::StateSnapshot>,
+) -> ResumeLoad {
     // The unified snapshot is authoritative whenever present. Standalone
     // orchestrator/executor files are legacy fallbacks only for NotFound;
     // corruption must never resume an unrelated generation.
-    let (snapshot, merge_queue, snapshot_path) = match load_unified_state_checkpoint(paths) {
+    let (snapshot, merge_queue, snapshot_path) = match extract_executor_from_unified(
+        preloaded_unified,
+        paths,
+    ) {
         Ok(Some((snapshot, merge_queue))) => (
             snapshot,
             merge_queue,
@@ -10246,6 +10283,32 @@ fn load_orchestrator_checkpoint(
             crate::orchestrator::executor::current_schema_version()
         ));
     }
+    let merge_queue = snapshot
+        .merge_queue
+        .map(MergeQueue::from_snapshot)
+        .unwrap_or_else(MergeQueue::new);
+    Ok(Some((snapshot.executor, merge_queue)))
+}
+
+/// Extract executor + merge queue from a pre-loaded unified snapshot,
+/// falling back to disk-based `load_unified_state_checkpoint` if no
+/// preloaded snapshot is available.
+fn extract_executor_from_unified(
+    preloaded: Option<&roko_runtime::StateSnapshot>,
+    paths: &PersistPaths,
+) -> Result<Option<(ExecutorSnapshot, MergeQueue)>, String> {
+    match preloaded {
+        Some(unified) => parse_executor_from_unified(unified),
+        None => load_unified_state_checkpoint(paths),
+    }
+}
+
+/// Parse executor and merge queue from an already-loaded unified snapshot.
+fn parse_executor_from_unified(
+    unified: &roko_runtime::StateSnapshot,
+) -> Result<Option<(ExecutorSnapshot, MergeQueue)>, String> {
+    let snapshot = OrchestratorSnapshot::from_json(&unified.orchestrator_json)
+        .map_err(|err| format!("failed to parse authoritative orchestrator_json: {err}"))?;
     let merge_queue = snapshot
         .merge_queue
         .map(MergeQueue::from_snapshot)
@@ -10959,7 +11022,7 @@ async fn dispatch_action(
                 AttemptPhase::Dispatching,
                 EffectRef(0),
             );
-            let active_task_key = task_key(plan_id, &task_id);
+            let _active_task_key = task_key(plan_id, &task_id);
             if ctx.attempt_ownership.contains_task(plan_id, &task_id) && !continuing_preflight {
                 debug!(
                     plan_id = %plan_id,
@@ -11086,6 +11149,7 @@ async fn dispatch_action(
             // the guardrail.
             let max_plan_usd = ctx.config.max_plan_usd;
             let plan_spent = ctx.state.plan_cost(plan_id);
+            let mut budget_pressure = false;
 
             if ctx.state.budget_exhausted && !ctx.config.budget_override {
                 warn!(
@@ -11162,8 +11226,9 @@ async fn dispatch_action(
                             spent = plan_spent,
                             limit = max_plan_usd,
                             pct = ">80%",
-                            "plan budget >80% consumed — BudgetAction::RouteToCheaper"
+                            "plan budget >80% consumed — routing to cheaper models"
                         );
+                        budget_pressure = true;
                     }
                     roko_learn::budget::BudgetAction::Warn {
                         percent_used,
@@ -11989,6 +12054,9 @@ async fn dispatch_action(
                 role: role.to_string(),
                 workdir: plan_workdir.clone(),
                 model_hint: None,
+                // `cli_model_override` is set from `--model` / `--force-model`
+                // (global) or `--force-backend` (plan run subcommand). It is
+                // the highest-priority override in the model routing pipeline.
                 force_backend: ctx.config.cli_model_override.clone(),
                 budget_remaining_usd: if ctx.config.max_plan_usd > 0.0 {
                     (ctx.config.max_plan_usd - ctx.state.plan_cost(plan_id)).max(0.0)
@@ -12021,7 +12089,7 @@ async fn dispatch_action(
                 .clone()
                 .unwrap_or_else(|| "implementer".to_string());
             let dispatcher = ctx.factory.dispatcher();
-            let mut dispatch_plan = match dispatcher.plan(&task_def, &dispatch_ctx) {
+            let mut dispatch_plan = match dispatcher.plan_logged(&task_def, &dispatch_ctx, &task_id, budget_pressure) {
                 Ok(plan) => plan,
                 Err(err) => {
                     let message = format!("dispatch planning failed: {err}");
@@ -12097,7 +12165,16 @@ async fn dispatch_action(
                 }
             }
             let mut dispatch_turn_limit = DEFAULT_AGENT_TURN_LIMIT;
-            let mut dispatch_effort = None;
+            // ── Per-role context effort (#181) ──────────────────────────────
+            //
+            // Seed dispatch_effort from the role override's effort /
+            // default_effort / built-in role defaults before daimon modulation
+            // so roles like researcher and implementer get "high" effort by
+            // default.  The daimon can still override this downstream.
+            let mut dispatch_effort: Option<String> =
+                ctx.config.roko_config.as_ref().map(|roko_cfg| {
+                    roko_cfg.agent.effort_for_role(&role).to_string()
+                });
             let daimon_modulation = daimon_hook.as_ref().and_then(|hook| {
                 daimon_dispatch_modulation(
                     ctx.config,
@@ -15079,6 +15156,7 @@ fn format_discovered_patterns_section(pattern_path: &std::path::Path) -> Option<
 /// Collect playbook rule IDs whose file-glob triggers match any of the given
 /// files in scope. Used during context assembly to surface relevant playbook
 /// rules in the agent system prompt.
+#[allow(dead_code)]
 pub(crate) fn collect_plan_playbook_scope(
     files_in_scope: &[String],
     playbook_rules: &[roko_learn::playbook_rules::Rule],
@@ -15145,7 +15223,7 @@ async fn compact_episodes_if_needed(episodes_path: &std::path::Path) {
 /// The threshold is read from `resources.log_rotation_max_mb` in `roko.toml`
 /// (default 100 MB via [`roko_core::config::ResourcesConfig`]).
 ///
-/// Checks `episodes.jsonl` and `signals.jsonl` (and the other canonical JSONL
+/// Checks `episodes.jsonl` and `engrams.jsonl` (and the other canonical JSONL
 /// paths tracked by `roko_fs::log_rotation::rotatable_jsonl_paths`). Each file
 /// that exceeds the threshold is atomically renamed to a timestamped archive and
 /// an empty replacement is created at the original path. Errors are logged but
@@ -15468,7 +15546,7 @@ pub struct CleanupSummary {
 ///
 /// Sub-steps:
 ///
-/// 1. **JSONL log rotation** — rotates `episodes.jsonl`, `signals.jsonl`,
+/// 1. **JSONL log rotation** — rotates `episodes.jsonl`, `engrams.jsonl`,
 ///    and other JSONL files if they exceed `resources.log_rotation_max_mb`.
 /// 2. **Filesystem GC** — prunes stale `.roko/` data (old runs, excess
 ///    episodes, cache) when `resources.gc_on_plan_end` is true.
@@ -15738,6 +15816,7 @@ fn timeout_agent_snapshot(state: &RunState) -> TimeoutAgentSnapshot {
         tokens_out: state.tokens_out,
         cache_read_tokens: state.cache_read_tokens,
         cache_write_tokens: state.cache_write_tokens,
+        reasoning_tokens: state.reasoning_tokens,
         cost_usd: state.cost_usd,
     }
 }
@@ -16316,7 +16395,7 @@ async fn enforce_owned_deadlines_at(
         if let CancelAttemptOutcome::Confirmed(TaskAttemptOutcome::TimedOut) = settled {
             expired += 1;
             let plan_id = &candidate.attempt.plan_id;
-            let task_id = &candidate.attempt.task_id;
+            let _task_id = &candidate.attempt.task_id;
             let reason = format!("task timed out: {:?}", expiry.kind);
             if !ready_tasks_for_plan(task_dag, executor, task_index, state, plan_id).is_empty() {
                 if let Some(plan) = executor.plan_state_mut(plan_id) {
@@ -16420,6 +16499,7 @@ enum AttemptCleanupTerminal {
 
 #[derive(Debug)]
 struct CancelAttemptSummary {
+    #[allow(dead_code)]
     attempt: TaskAttemptRef,
     outcome: CancelAttemptOutcome,
 }
@@ -22326,6 +22406,7 @@ depends_on = []
             &paths,
             &ExecutorConfig::default(),
             &["self-dev-ux".to_string()],
+            Some(&unified),
         );
 
         assert_eq!(resume.marker.outcome, ResumeOutcome::Resumed);

@@ -2,7 +2,7 @@
 //! results through a channel.
 
 use std::collections::{BTreeSet, HashMap};
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::Read;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
@@ -36,7 +36,6 @@ use crate::task_parser::VerifyStep;
 
 use super::types::{
     GateCompletion, GateCompletionKind, GateEffectRef, GateVerdictSummary, RunnerFailureKind,
-    TaskAttemptRef,
 };
 use super::{impact_analysis, impact_analysis::ImpactReport};
 
@@ -2072,7 +2071,7 @@ pub async fn run_gate_once(
     // E05-T08: Publish non-skipped verdicts through VerdictPublisher as
     // Kind::GateVerdict signals. The publisher callback (set up by the
     // caller in event_loop.rs) graduates each Pulse to a Signal and
-    // appends it to signals.jsonl.
+    // appends it to engrams.jsonl.
     if let Some(ref publisher) = verdict_publisher {
         let real: Vec<Verdict> = verdicts.iter().filter(|v| !v.skipped).cloned().collect();
         if !real.is_empty() {
@@ -2848,7 +2847,10 @@ mod tests {
     use super::*;
 
     use std::collections::BTreeMap;
+    use std::fs::File;
     use std::sync::Mutex;
+
+    use super::super::types::TaskAttemptRef;
 
     #[test]
     fn cargo_verify_fingerprint_ignores_only_non_semantic_flags_and_order() {

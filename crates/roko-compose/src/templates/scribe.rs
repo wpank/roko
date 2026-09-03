@@ -11,7 +11,7 @@ use roko_core::AgentRole;
 /// A source file snippet for the scribe to document.
 #[derive(Clone, Debug)]
 pub struct FileSnippet {
-    /// Relative file path (e.g. "crates/golem-core/src/mortality.rs").
+    /// Relative file path (e.g. "crates/roko-core/src/lifecycle.rs").
     pub path: String,
     /// The source code content.
     pub content: String,
@@ -236,19 +236,19 @@ mod tests {
             agents_md: "# AGENTS.md\nConventions.".into(),
             plan: PlanSlice {
                 num: "042".into(),
-                base: "golem-mortality".into(),
-                title: "Mortality model".into(),
-                content: "## Plan\nDocument the mortality model.".into(),
+                base: "agent-lifecycle".into(),
+                title: "Agent lifecycle model".into(),
+                content: "## Plan\nDocument the agent lifecycle model.".into(),
             },
-            prd2_extract: "## PRD2\nGompertz mortality: lambda(t) = ae^(bt).".into(),
-            brief: "Brief about mortality module.".into(),
+            prd2_extract: "## PRD2\nGompertz lifecycle: lambda(t) = ae^(bt).".into(),
+            brief: "Brief about lifecycle module.".into(),
             source_snippets: vec![
                 FileSnippet {
-                    path: "crates/golem-core/src/mortality.rs".into(),
+                    path: "crates/roko-core/src/lifecycle.rs".into(),
                     content: "pub fn compute_rate() -> f64 { 0.0 }".into(),
                 },
                 FileSnippet {
-                    path: "crates/golem-core/src/lifecycle.rs".into(),
+                    path: "crates/roko-core/src/agent.rs".into(),
                     content: "pub struct Lifecycle;".into(),
                 },
             ],

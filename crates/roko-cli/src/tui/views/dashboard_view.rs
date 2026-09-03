@@ -21,11 +21,11 @@ use roko_core::dashboard_snapshot::{
 };
 
 use super::ViewState;
-use crate::tui::ansi::parse_ansi_line;
 use crate::tui::dashboard::{DashboardData, GateFailureRow, GateSummaryRow, Theme};
+use crate::tui::empty_state;
 use crate::tui::input::FocusZone;
 use crate::tui::state::{RouteMetrics, TuiState};
-use crate::tui::widgets::{self, braille};
+use crate::tui::widgets::{self, braille, stream_output};
 
 // ---------------------------------------------------------------------------
 // Sub-tab labels
@@ -40,6 +40,7 @@ const SUB_TAB_LABELS: &[(&str, &str)] = &[
     ("m", "MCP"),
     ("L", "Learning"),
     ("P", "Procs"),
+    ("C", "Cond"),
 ];
 
 // ---------------------------------------------------------------------------
@@ -482,6 +483,7 @@ fn render_right_panel_content(
         5 => render_sub_mcp(frame, area, data, tui_state, theme),
         6 => render_sub_learning(frame, area, data, tui_state, focused, theme),
         7 => render_sub_processes(frame, area, data, tui_state, focused, theme),
+        8 => render_sub_conductor(frame, area, tui_state, focused, theme),
         _ => {}
     }
 }
@@ -577,8 +579,19 @@ fn render_sub_agents(
     focused: bool,
     theme: &Theme,
 ) {
-    let route_row_count = tui_state
-        .agents
+    // Filter agents by the selected plan when one is selected.
+    let plan_id = selected_plan_id(tui_state);
+    let filtered_agents: Vec<&crate::tui::state::AgentRow> = if let Some(pid) = plan_id {
+        tui_state
+            .agents
+            .iter()
+            .filter(|agent| agent.current_plan == pid)
+            .collect()
+    } else {
+        tui_state.agents.iter().collect()
+    };
+
+    let route_row_count = filtered_agents
         .iter()
         .filter(|agent| tui_state.route_metrics.contains_key(&agent.id))
         .count();
@@ -587,7 +600,7 @@ fn render_sub_agents(
     } else {
         (route_row_count as u16 + 3).min(6)
     };
-    let active_agent_count = tui_state.agents.iter().filter(|agent| agent.active).count();
+    let active_agent_count = filtered_agents.iter().filter(|agent| agent.active).count();
     // Tighter pool cap gives the output hero more vertical space.
     let pool_height = (active_agent_count.max(1) as u16 + 3).clamp(4, 6);
     // Compact bottom strip (was 7).
@@ -600,21 +613,39 @@ fn render_sub_agents(
     ])
     .split(area);
 
+    // Build a cloned slice for the pool widget, filtered by plan.
+    let pool_agents: Vec<crate::tui::state::AgentRow> =
+        filtered_agents.iter().map(|a| (*a).clone()).collect();
+    let selected = if pool_agents.is_empty() {
+        0
+    } else {
+        tui_state
+            .selected_agent
+            .min(pool_agents.len().saturating_sub(1))
+    };
+
     widgets::parallel_pool::render_parallel_pool(
         frame,
         sections[0],
-        &tui_state.agents,
-        tui_state
-            .selected_agent
-            .min(tui_state.agents.len().saturating_sub(1)),
+        &pool_agents,
+        selected,
         theme,
     );
     if route_height > 0 {
+        // Filter route metrics to agents visible in the filtered set.
+        let filtered_route_ids: HashSet<&str> =
+            filtered_agents.iter().map(|a| a.id.as_str()).collect();
+        let filtered_route_metrics: HashMap<String, RouteMetrics> = tui_state
+            .route_metrics
+            .iter()
+            .filter(|(id, _)| filtered_route_ids.contains(id.as_str()))
+            .map(|(id, m)| (id.clone(), m.clone()))
+            .collect();
         render_agent_routes_table(
             frame,
             sections[1],
             tui_state,
-            &tui_state.route_metrics,
+            &filtered_route_metrics,
             theme,
         );
     }
@@ -670,7 +701,13 @@ fn render_output_panel(
     // instead of normal agent output.
     if widgets::gate_output::should_show(&tui_state.current_gate_rung, &tui_state.gate_output_lines)
     {
-        widgets::gate_output::render_gate_output(frame, area, tui_state, theme);
+        widgets::gate_output::render_gate_output(
+            frame,
+            area,
+            tui_state,
+            theme,
+            selected_plan_id(tui_state),
+        );
         return;
     }
 
@@ -684,9 +721,14 @@ fn render_output_panel(
     } else {
         Theme::unfocused_title_style()
     };
+    // Include the selected plan label in the Output title.
+    let output_title = match selected_plan_label(tui_state) {
+        Some(label) => format!(" Output \u{00b7} {} ", truncate(label, 24)),
+        None => " Output ".to_string(),
+    };
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(Span::styled(" Output ", title_style))
+        .title(Span::styled(output_title, title_style))
         .border_style(border);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -753,20 +795,12 @@ fn render_output_panel(
     } else {
         collected
     };
-    let lines: Vec<&str> = collected.iter().map(String::as_str).collect();
-
-    if lines.is_empty() {
-        frame.render_widget(
-            Paragraph::new("Waiting for agent output...").style(theme.muted()),
-            inner,
-        );
+    if collected.is_empty() {
+        empty_state::render_pane_empty_compact(frame, inner, "No agent output yet", theme);
         return;
     }
 
-    let text: Vec<Line<'static>> = lines
-        .iter()
-        .map(|line| Line::from(parse_ansi_line(line)))
-        .collect();
+    let text: Vec<Line<'static>> = stream_output::render_output_lines(&collected, theme);
     let scroll = if view_state.auto_tail {
         text.len()
             .saturating_sub(inner.height as usize)
@@ -832,10 +866,11 @@ fn render_agent_routes_table(
         .collect();
 
     if rows.is_empty() {
-        frame.render_widget(
-            Paragraph::new("No route metrics yet \u{2014} metrics appear after agent dispatch")
-                .style(theme.muted()),
+        empty_state::render_pane_empty_compact(
+            frame,
             inner,
+            "No route metrics yet",
+            theme,
         );
         return;
     }
@@ -909,9 +944,13 @@ fn render_sub_gate(
     } else {
         theme.muted()
     };
+    let verdict_title = match selected_plan_label(tui_state) {
+        Some(label) => format!(" Verdicts \u{00b7} {} ", truncate(label, 24)),
+        None => " Verdicts ".to_string(),
+    };
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(Span::styled(" Verdicts ", title_style))
+        .title(Span::styled(verdict_title, title_style))
         .border_style(border);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -926,17 +965,49 @@ fn render_sub_gate(
 
     let rows = gate_verdict_rows(tui_state);
     let trend_rows = gate_trend_rows(tui_state);
-    let failures = &tui_state.gate_results_page.failure_rows;
+
+    // Filter gate failures by selected plan when possible.
+    let plan_id = selected_plan_id(tui_state);
+    let failures: Vec<&GateFailureRow> = if plan_id.is_some() {
+        tui_state
+            .gate_results_page
+            .failure_rows
+            .iter()
+            .filter(|f| {
+                f.task_id.is_empty()
+                    || selected_plan(tui_state)
+                        .map_or(false, |p| p.tasks.iter().any(|t| t.id == f.task_id))
+            })
+            .collect()
+    } else {
+        tui_state.gate_results_page.failure_rows.iter().collect()
+    };
+
+    let filtered_recent_failures: Vec<&roko_core::FailureEntry> = if let Some(pid) = plan_id {
+        tui_state
+            .gate_recent_failures
+            .iter()
+            .filter(|f| {
+                // Use plan_id field directly when available.
+                if !f.plan_id.is_empty() {
+                    return f.plan_id == pid;
+                }
+                // Fallback: match by task membership.
+                f.task_id.is_empty()
+                    || selected_plan(tui_state)
+                        .map_or(false, |p| p.tasks.iter().any(|t| t.id == f.task_id))
+            })
+            .collect()
+    } else {
+        tui_state.gate_recent_failures.iter().collect()
+    };
 
     if rows.is_empty()
         && trend_rows.is_empty()
-        && tui_state.gate_recent_failures.is_empty()
+        && filtered_recent_failures.is_empty()
         && failures.is_empty()
     {
-        frame.render_widget(
-            Paragraph::new(" no gate verdict data yet").style(theme.muted()),
-            inner,
-        );
+        empty_state::render_pane_empty_compact(frame, inner, "Waiting for gate verdicts", theme);
         return;
     }
 
@@ -961,11 +1032,15 @@ fn render_sub_gate(
         );
         render_gate_trend_grid(frame, sections[1], &trend_rows, focused, theme);
     }
+    let live_failures_owned: Vec<roko_core::FailureEntry> =
+        filtered_recent_failures.into_iter().cloned().collect();
+    let fallback_failures_owned: Vec<GateFailureRow> =
+        failures.into_iter().cloned().collect();
     render_recent_gate_failures(
         frame,
         sections[2],
-        &tui_state.gate_recent_failures,
-        failures,
+        &live_failures_owned,
+        &fallback_failures_owned,
         focused,
         theme,
     );
@@ -999,10 +1074,7 @@ fn render_sub_git(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme
     let cached_lines = &tui_state.git_summary_lines;
 
     if cached_lines.is_empty() {
-        frame.render_widget(
-            Paragraph::new(" loading git data...").style(theme.muted()),
-            inner,
-        );
+        empty_state::render_pane_empty_compact(frame, inner, "Loading git data...", theme);
         return;
     }
 
@@ -1335,10 +1407,11 @@ fn render_sub_processes(
     process_rows.sort_by(|a, b| a.role.cmp(&b.role).then_with(|| a.pid.cmp(&b.pid)));
 
     if process_rows.is_empty() {
-        frame.render_widget(
-            Paragraph::new("No processes running \u{2014} agents spawn during plan execution")
-                .style(theme.muted()),
+        empty_state::render_pane_empty_compact(
+            frame,
             inner,
+            "No processes running",
+            theme,
         );
         return;
     }
@@ -1437,6 +1510,28 @@ fn render_sub_processes(
     );
 }
 
+// ---------------------------------------------------------------------------
+// Sub-tab: Conductor -- watcher health, interventions, thresholds
+// ---------------------------------------------------------------------------
+
+fn render_sub_conductor(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    tui_state: &TuiState,
+    focused: bool,
+    theme: &Theme,
+) {
+    widgets::conductor_panel::render_conductor_panel(
+        frame,
+        area,
+        &tui_state.conductor_snapshot,
+        &tui_state.diagnoses,
+        &tui_state.conductor_alerts,
+        focused,
+        theme,
+    );
+}
+
 fn render_diagnosis_panel(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -1467,13 +1562,11 @@ fn render_diagnosis_panel(
 
     let rows = diagnosis_rows(diagnoses, inner.width, theme);
     if rows.is_empty() {
-        frame.render_widget(
-            Paragraph::new(
-                "No diagnoses \u{2014} the conductor circuit breaker fires only when \
-                 a sustained gate-failure pattern is detected across multiple tasks.",
-            )
-            .style(theme.muted()),
+        empty_state::render_pane_empty_compact(
+            frame,
             inner,
+            "No diagnoses",
+            theme,
         );
         return;
     }
@@ -1620,10 +1713,7 @@ fn render_learning_sparkline(
     frame.render_widget(block, area);
 
     if series.is_empty() {
-        frame.render_widget(
-            Paragraph::new(" waiting for trend data").style(theme.muted()),
-            inner,
-        );
+        empty_state::render_pane_empty_compact(frame, inner, "Waiting for trend data", theme);
         return;
     }
 
@@ -1663,9 +1753,11 @@ fn render_concluded_experiments_panel(
 
     let rows = concluded_experiment_rows(tui_state);
     if rows.is_empty() {
-        frame.render_widget(
-            Paragraph::new(" no concluded experiments yet").style(theme.muted()),
+        empty_state::render_pane_empty_compact(
+            frame,
             inner,
+            "No concluded experiments yet",
+            theme,
         );
         return;
     }
@@ -1843,10 +1935,7 @@ fn render_gate_verdict_summary(
     frame.render_widget(block, area);
 
     if rows.is_empty() {
-        frame.render_widget(
-            Paragraph::new(" no gate verdict rows yet").style(theme.muted()),
-            inner,
-        );
+        empty_state::render_pane_empty_compact(frame, inner, "No gate verdicts yet", theme);
         return;
     }
 
@@ -2008,7 +2097,7 @@ fn render_gate_trend_grid(
     frame.render_widget(block, area);
 
     if rows.is_empty() {
-        frame.render_widget(Paragraph::new(" no data yet").style(theme.muted()), inner);
+        empty_state::render_pane_empty_compact(frame, inner, "No data yet", theme);
         return;
     }
 
@@ -2297,6 +2386,37 @@ fn format_uptime(uptime_secs: f64) -> String {
     } else {
         format!("{seconds}s")
     }
+}
+
+// ===========================================================================
+// Plan-context helpers
+// ===========================================================================
+
+/// Return the currently selected plan entry, if any.
+fn selected_plan(tui_state: &TuiState) -> Option<&crate::tui::state::PlanEntry> {
+    if tui_state.plans.is_empty() {
+        return None;
+    }
+    let idx = tui_state
+        .selected_plan_idx
+        .min(tui_state.plans.len().saturating_sub(1));
+    tui_state.plans.get(idx)
+}
+
+/// Return the ID of the currently selected plan, if any.
+fn selected_plan_id(tui_state: &TuiState) -> Option<&str> {
+    selected_plan(tui_state).map(|p| p.id.as_str())
+}
+
+/// Return a short display name for the selected plan.
+fn selected_plan_label(tui_state: &TuiState) -> Option<&str> {
+    selected_plan(tui_state).map(|p| {
+        if p.name.is_empty() {
+            p.id.as_str()
+        } else {
+            p.name.as_str()
+        }
+    })
 }
 
 // ===========================================================================
@@ -2638,7 +2758,7 @@ mod tests {
 
     #[test]
     fn one_route_is_visible_in_the_agents_buffer() {
-        let backend = TestBackend::new(100, 24);
+        let backend = TestBackend::new(100, 40);
         let mut terminal = Terminal::new(backend).unwrap();
         let data = DashboardData::default();
         let mut tui_state = TuiState::default();

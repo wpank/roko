@@ -93,8 +93,20 @@ pub struct DispatchContext {
     /// Working directory for the agent.
     pub workdir: std::path::PathBuf,
     /// Optional explicit model override from CLI / config (`task.model_hint`).
+    /// Lower priority than `force_backend`; used as a soft suggestion from
+    /// task authors. The model router consults this after `force_backend` but
+    /// before the cascade router.
     pub model_hint: Option<String>,
-    /// Optional `force_backend` override (manual operator decision).
+    /// Highest-priority model slug override (manual operator decision).
+    ///
+    /// Populated from `RunConfig.cli_model_override`, which in turn comes
+    /// from the global `--model` / `--force-model` CLI flag or the
+    /// subcommand-level `--force-backend` flag on `plan run`.
+    ///
+    /// When set, the model router returns this slug immediately with
+    /// `ModelChoiceSource::Override`, skipping task hints and the cascade
+    /// router entirely. Feedback writers tag the outcome as `forced = true`
+    /// so the router's learned policy is not corrupted by operator overrides.
     pub force_backend: Option<String>,
     /// Remaining USD budget for the plan; the router uses this to bias
     /// toward cheaper models when the budget is nearly exhausted.
@@ -201,6 +213,28 @@ impl Dispatcher {
         })
     }
 
+    /// Like [`plan`](Self::plan) but emits structured routing decision logs.
+    ///
+    /// Used by the live event loop where routing visibility matters.
+    pub fn plan_logged(
+        &self,
+        task: &TaskDef,
+        ctx: &DispatchContext,
+        task_id: &str,
+        budget_pressure: bool,
+    ) -> Result<RunnerDispatchPlan, RunnerDispatchError> {
+        let mut inputs = RoutingInputs::from_task(task, ctx);
+        inputs.budget_pressure = budget_pressure;
+        let choice = self.router.route_logged(&inputs, task_id)?;
+        let prompt_ctx = PromptContext::from_task(task, ctx);
+        let assembled = self.prompt_assembler.assemble(task, &prompt_ctx)?;
+        Ok(RunnerDispatchPlan {
+            model: choice.model.clone(),
+            forced: choice.forced(),
+            prompt: assembled,
+        })
+    }
+
     /// Dispatch `task` through the supplied bridge and normalize the
     /// outcome.
     ///
@@ -252,9 +286,10 @@ impl Dispatcher {
 pub struct RunnerDispatchPlan {
     /// Selected model + backend.
     pub model: ModelSpec,
-    /// `true` if the model came from a `force_backend` override rather
-    /// than the router. Recorded so feedback writers can downstream-tag
-    /// observations as overrides.
+    /// `true` if the model came from an operator override (`--model`,
+    /// `--force-model`, or `--force-backend`) rather than the cascade
+    /// router. Recorded so feedback writers tag observations as manual
+    /// overrides and the router's learned policy is not corrupted.
     pub forced: bool,
     /// Assembled prompt, allowlist, diagnostics.
     pub prompt: AssembledPrompt,

@@ -348,6 +348,7 @@ fn streaming_contract_usage_preserved() {
         output_tokens: 50,
         cache_read_tokens: 10,
         cache_create_tokens: 5,
+        reasoning_tokens: 0,
         cost_usd: 0.0,
         wall_ms: 0,
     };
@@ -462,6 +463,7 @@ fn streaming_contract_unified_from_runtime_event() {
         output_tokens: 50,
         cache_read_tokens: 0,
         cache_write_tokens: 0,
+        reasoning_tokens: 0,
     };
     let unified = UnifiedStreamEvent::try_from_runtime_event(event);
     match unified {

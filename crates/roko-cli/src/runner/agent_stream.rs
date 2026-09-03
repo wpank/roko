@@ -11,7 +11,7 @@ use std::{fmt, future::Future};
 
 use anyhow::{Context, Result};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, Command};
+use tokio::process::Child;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -723,6 +723,7 @@ fn env_flag_enabled(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::process::Command;
 
     #[cfg(unix)]
     fn scripted_agent(script: &str) -> (tempfile::TempDir, AgentSpawnConfig) {

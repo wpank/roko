@@ -178,6 +178,7 @@ async fn run_simple_path(
         role: cli.role.clone(),
         provider,
         cascade_enabled: Some(!no_cascade),
+        effort: cli.effort.map(|e| e.to_string()),
     };
 
     tracing::debug!(
@@ -637,7 +638,7 @@ pub(crate) async fn run_plan_execution(
         workdir: workdir.to_path_buf(),
         plan_dir: plans_dir.to_path_buf(),
         model: roko_config.agent.default_model.clone(),
-        cli_model_override: cli.model.clone(),
+        cli_model_override: cli.model.clone(), // global --model / --force-model
         timeout_secs: roko_config.timeouts.agent_dispatch_secs,
         plan_timeout_secs: roko_config.timeouts.plan_total_secs,
         max_retries: 2,
@@ -672,6 +673,7 @@ pub(crate) async fn run_plan_execution(
             .unwrap_or_else(|| std::path::PathBuf::from("claude")),
         max_plan_usd: f64::from(roko_config.budget.max_plan_usd),
         max_turn_usd: f64::from(roko_config.budget.max_turn_usd),
+        max_task_retry_usd: f64::from(roko_config.budget.max_task_retry_usd),
         budget_override: false,
         budget_ceiling_override: None,
         no_budget: false,

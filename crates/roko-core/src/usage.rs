@@ -62,6 +62,7 @@ impl From<UsageObservation> for Usage {
             output_tokens: clamp_u32(observation.output_tokens),
             cache_read_tokens: clamp_u32(observation.cache_read_tokens),
             cache_create_tokens: clamp_u32(observation.cache_creation_tokens),
+            reasoning_tokens: 0,
             cost_usd: observation.cost_usd.map_or(0.0, |value| value as f32),
             wall_ms: observation.wall_ms,
         }

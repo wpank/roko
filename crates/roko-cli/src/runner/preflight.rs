@@ -198,6 +198,146 @@ pub fn print_preflight_results(checks: &[PreflightCheck]) -> bool {
     any_fail
 }
 
+/// Async provider connectivity preflight — probes all configured providers.
+///
+/// HTTP providers get a HEAD probe with a 2 s timeout (reuses `doctor.rs` logic).
+/// CLI providers check for the binary on `$PATH`.
+/// Individual unreachable providers produce `Warn`; zero reachable produces a `Fail` summary.
+pub async fn check_provider_connectivity(config: &RokoConfig) -> Vec<PreflightCheck> {
+    use roko_core::agent::ProviderKind;
+    use std::time::Duration;
+
+    let mut checks = Vec::new();
+    let mut reachable_count = 0u32;
+    let providers = config.effective_providers();
+
+    if providers.is_empty() {
+        checks.push(PreflightCheck {
+            name: "providers",
+            status: PreflightStatus::Warn,
+            message: "no providers configured".into(),
+        });
+        return checks;
+    }
+
+    let timeout = Duration::from_secs(2);
+    let mut handles = Vec::new();
+
+    for (provider_id, provider) in &providers {
+        let kind = provider.kind;
+
+        // CLI providers: check binary on PATH.
+        let is_cli = matches!(
+            kind,
+            ProviderKind::ClaudeCli
+                | ProviderKind::CodexCli
+                | ProviderKind::CursorCli
+                | ProviderKind::GeminiCli
+                | ProviderKind::CursorAcp
+                | ProviderKind::Hermes
+                | ProviderKind::OpenClaw
+        );
+
+        if is_cli {
+            let binary = match kind {
+                ProviderKind::ClaudeCli => "claude",
+                ProviderKind::CodexCli => "codex",
+                ProviderKind::CursorCli | ProviderKind::CursorAcp => "cursor",
+                ProviderKind::GeminiCli => "gemini",
+                ProviderKind::Hermes => "hermes",
+                ProviderKind::OpenClaw => "openclaw",
+                _ => continue,
+            };
+            let found = std::process::Command::new("which")
+                .arg(binary)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            checks.push(PreflightCheck {
+                name: "providers",
+                status: if found {
+                    PreflightStatus::Pass
+                } else {
+                    PreflightStatus::Warn
+                },
+                message: if found {
+                    format!("provider:{provider_id}: {binary} found on PATH")
+                } else {
+                    format!("provider:{provider_id}: {binary} not found on PATH")
+                },
+            });
+            if found {
+                reachable_count += 1;
+            }
+            continue;
+        }
+
+        // HTTP providers: probe endpoint.
+        let endpoint = crate::doctor::endpoint_for_provider(provider);
+        match endpoint {
+            Some(url) => {
+                let pid = provider_id.clone();
+                handles.push(tokio::spawn(async move {
+                    let result =
+                        crate::doctor::probe_one_provider(pid.clone(), url, timeout).await;
+                    (pid, result)
+                }));
+            }
+            None => {
+                checks.push(PreflightCheck {
+                    name: "providers",
+                    status: PreflightStatus::Warn,
+                    message: format!("provider:{provider_id}: no endpoint configured"),
+                });
+            }
+        }
+    }
+
+    // Await all HTTP probes.
+    for handle in handles {
+        if let Ok((pid, probe)) = handle.await {
+            let passed = probe
+                .http_status
+                .map_or(false, |c| (200..400).contains(&c.into()));
+            checks.push(PreflightCheck {
+                name: "providers",
+                status: if passed {
+                    PreflightStatus::Pass
+                } else {
+                    PreflightStatus::Warn
+                },
+                message: if passed {
+                    format!(
+                        "provider:{pid}: {} ({}ms)",
+                        probe
+                            .http_status
+                            .map_or("OK".to_string(), |c| format!("{c}")),
+                        probe.latency_ms.unwrap_or(0)
+                    )
+                } else {
+                    format!("provider:{pid}: {}", probe.message)
+                },
+            });
+            if passed {
+                reachable_count += 1;
+            }
+        }
+    }
+
+    // Summary check: fail if zero providers reachable.
+    if reachable_count == 0 && !checks.is_empty() {
+        checks.push(PreflightCheck {
+            name: "providers",
+            status: PreflightStatus::Fail,
+            message: "no providers reachable \u{2014} all probes failed or timed out".into(),
+        });
+    }
+
+    checks
+}
+
 // ── Individual checks ────────────────────────────────────────────────────
 
 /// Check whether the config was loadable and minimally valid.

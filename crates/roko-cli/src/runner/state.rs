@@ -10,10 +10,10 @@ use roko_learn::model_router::RoutingContext;
 
 use super::task_dag::SkippedReason;
 use super::types::{
-    AgentDispatchOutcome, PlanLifecycleStatus, RetryAction, RetryDecision, RunnerEvent,
-    RunnerFailureKind, RunnerLifecycleProjection, RunnerRunStatus, TaskAttemptLifecycle,
-    TaskAttemptOutcome, TaskAttemptRef, TaskAttemptStatus, TaskLifecycle, TaskLifecycleStatus,
-    retry_delay,
+    AgentDispatchOutcome, PLAN_VERIFY_TASK_ID, PlanLifecycleStatus, RetryAction, RetryDecision,
+    RunnerEvent, RunnerFailureKind, RunnerLifecycleProjection, RunnerRunStatus,
+    TaskAttemptLifecycle, TaskAttemptOutcome, TaskAttemptRef, TaskAttemptStatus, TaskLifecycle,
+    TaskLifecycleStatus, retry_delay,
 };
 
 /// Tracks scheduled GitHub sync timestamps so the runner knows when to
@@ -90,6 +90,8 @@ pub struct RunState {
     pub cache_read_tokens: u64,
     /// Cache write tokens this task.
     pub cache_write_tokens: u64,
+    /// Reasoning/thinking tokens this task (subset of output_tokens).
+    pub reasoning_tokens: u64,
     /// Estimated cost in USD this task.
     pub cost_usd: f64,
     /// Number of agent spawn attempts for the current task (retries).
@@ -252,7 +254,7 @@ pub struct RunState {
     // ─── PR / Gate Updates ──────────────────────────────────────────
     /// Maps `plan_id` to the GitHub PR number associated with that plan.
     /// Populated when a plan opens or discovers its PR; consumed by the
-    /// gate-result PR-update hook when `github.auto_update_prs = true`.
+    /// gate-result PR-update hook.
     pub plan_pr_numbers: HashMap<String, u64>,
 }
 
@@ -273,6 +275,7 @@ impl RunState {
             tokens_out: 0,
             cache_read_tokens: 0,
             cache_write_tokens: 0,
+            reasoning_tokens: 0,
             cost_usd: 0.0,
             task_agent_calls: 0,
             plan_id: String::new(),
@@ -356,12 +359,14 @@ impl RunState {
         let attempt = value.max(1);
         let key = task_key(plan_id, task_id);
         self.ensure_task_lifecycle(plan_id, task_id, 0);
-        if let Some(task) = self.lifecycle.tasks.get_mut(&key) {
+        if let Some(task) = self.task_lifecycle_mut(task_id, &key) {
             task.current_attempt = task.current_attempt.max(attempt);
             task.next_attempt = task
                 .next_attempt
                 .max(task.current_attempt.saturating_add(1));
-            self.iterations.insert(key, task.current_attempt);
+        }
+        if let Some(val) = self.task_lifecycle_mut(task_id, &key).map(|t| t.current_attempt) {
+            self.iterations.insert(key, val);
         }
     }
 
@@ -373,9 +378,7 @@ impl RunState {
         let key = task_key(plan_id, task_id);
         self.ensure_task_lifecycle(plan_id, task_id, 0);
         let attempt = self
-            .lifecycle
-            .tasks
-            .get_mut(&key)
+            .task_lifecycle_mut(task_id, &key)
             .map(|task| {
                 let attempt = task
                     .next_attempt
@@ -696,31 +699,45 @@ impl RunState {
 
     fn ensure_task_lifecycle(&mut self, plan_id: &str, task_id: &str, timestamp_ms: u64) {
         let key = task_key(plan_id, task_id);
-        self.lifecycle
-            .tasks
-            .entry(key.clone())
-            .or_insert_with(|| TaskLifecycle {
-                plan_id: plan_id.to_string(),
-                task_id: task_id.to_string(),
-                status: TaskLifecycleStatus::Started,
-                current_attempt: 1,
-                next_attempt: 2,
-                started_at_ms: timestamp_ms,
-                completed_at_ms: None,
-                latest_failure_kind: None,
-            });
+        let map = if task_id == PLAN_VERIFY_TASK_ID {
+            &mut self.lifecycle.plan_verification
+        } else {
+            &mut self.lifecycle.tasks
+        };
+        map.entry(key.clone()).or_insert_with(|| TaskLifecycle {
+            plan_id: plan_id.to_string(),
+            task_id: task_id.to_string(),
+            status: TaskLifecycleStatus::Started,
+            current_attempt: 1,
+            next_attempt: 2,
+            started_at_ms: timestamp_ms,
+            completed_at_ms: None,
+            latest_failure_kind: None,
+        });
         self.iterations.entry(key).or_insert(1);
+    }
+
+    /// Look up a task lifecycle entry in the correct map (plan_verification for
+    /// `plan-verify` tasks, `tasks` for everything else).
+    fn task_lifecycle_mut(&mut self, task_id: &str, key: &str) -> Option<&mut TaskLifecycle> {
+        if task_id == PLAN_VERIFY_TASK_ID {
+            self.lifecycle.plan_verification.get_mut(key)
+        } else {
+            self.lifecycle.tasks.get_mut(key)
+        }
     }
 
     fn observe_attempt_number(&mut self, attempt: &TaskAttemptRef) {
         let key = attempt.task_key();
         self.ensure_task_lifecycle(&attempt.plan_id, &attempt.task_id, 0);
-        if let Some(task) = self.lifecycle.tasks.get_mut(&key) {
+        if let Some(task) = self.task_lifecycle_mut(&attempt.task_id, &key) {
             task.current_attempt = task.current_attempt.max(attempt.attempt.max(1));
             task.next_attempt = task
                 .next_attempt
                 .max(task.current_attempt.saturating_add(1));
-            self.iterations.insert(key, task.current_attempt);
+        }
+        if let Some(val) = self.task_lifecycle_mut(&attempt.task_id, &key).map(|t| t.current_attempt) {
+            self.iterations.insert(key, val);
         }
     }
 
@@ -728,7 +745,7 @@ impl RunState {
         self.ensure_task_lifecycle(&attempt.plan_id, &attempt.task_id, timestamp_ms);
         self.observe_attempt_number(attempt);
         self.supersede_retry_attempts_before(attempt, timestamp_ms);
-        if let Some(task) = self.lifecycle.tasks.get_mut(&attempt.task_key()) {
+        if let Some(task) = self.task_lifecycle_mut(&attempt.task_id, &attempt.task_key()) {
             if !task.status.is_terminal() {
                 task.status = TaskLifecycleStatus::Running;
                 task.completed_at_ms = None;
@@ -769,7 +786,8 @@ impl RunState {
         timestamp_ms: u64,
     ) {
         self.ensure_task_lifecycle(&attempt.plan_id, &attempt.task_id, 0);
-        if let Some(task) = self.lifecycle.tasks.get_mut(&attempt.task_key()) {
+        let task_key = attempt.task_key();
+        if let Some(task) = self.task_lifecycle_mut(&attempt.task_id, &task_key) {
             task.latest_failure_kind = Some(decision.failure_kind);
             match decision.action {
                 RetryAction::RetryAfterBackoff | RetryAction::Replan => {
@@ -782,8 +800,6 @@ impl RunState {
                     task.next_attempt = task
                         .next_attempt
                         .max(task.current_attempt.saturating_add(1));
-                    self.iterations
-                        .insert(attempt.task_key(), task.current_attempt.max(1));
                 }
                 RetryAction::Exhausted => {
                     task.status = TaskLifecycleStatus::Exhausted;
@@ -793,6 +809,11 @@ impl RunState {
                     task.status = TaskLifecycleStatus::Failed;
                     task.completed_at_ms = Some(timestamp_ms);
                 }
+            }
+        }
+        if let Some(val) = self.task_lifecycle_mut(&attempt.task_id, &task_key).map(|t| t.current_attempt.max(1)) {
+            if matches!(decision.action, RetryAction::RetryAfterBackoff | RetryAction::Replan) {
+                self.iterations.insert(task_key, val);
             }
         }
     }
@@ -808,7 +829,7 @@ impl RunState {
             self.apply_attempt_terminal_to_task(attempt, status, timestamp_ms, failure_kind);
             return;
         }
-        if let Some(task) = self.lifecycle.tasks.get_mut(&attempt.task_key()) {
+        if let Some(task) = self.task_lifecycle_mut(&attempt.task_id, &attempt.task_key()) {
             if let Some(failure_kind) = failure_kind {
                 task.latest_failure_kind = Some(failure_kind);
             }
@@ -830,7 +851,7 @@ impl RunState {
         if status.is_terminal() {
             self.supersede_retry_attempts_through(attempt, timestamp_ms);
         }
-        if let Some(task) = self.lifecycle.tasks.get_mut(&attempt.task_key()) {
+        if let Some(task) = self.task_lifecycle_mut(&attempt.task_id, &attempt.task_key()) {
             if attempt.attempt < task.current_attempt && status == TaskAttemptStatus::Superseded {
                 return;
             }
@@ -865,6 +886,7 @@ impl RunState {
         self.tokens_out = 0;
         self.cache_read_tokens = 0;
         self.cache_write_tokens = 0;
+        self.reasoning_tokens = 0;
         self.cost_usd = 0.0;
         self.task_agent_calls = 0;
         self.plan_id = plan_id.to_string();
@@ -1393,8 +1415,13 @@ mod tests {
             TaskAttemptStatus::Passed
         );
         assert_eq!(
-            state.lifecycle.tasks["plan:plan-verify"].status,
+            state.lifecycle.plan_verification["plan:plan-verify"].status,
             TaskLifecycleStatus::Passed
+        );
+        // plan-verify must NOT appear in the executable tasks map.
+        assert!(
+            !state.lifecycle.tasks.contains_key("plan:plan-verify"),
+            "plan-verify should be in plan_verification, not tasks"
         );
     }
 

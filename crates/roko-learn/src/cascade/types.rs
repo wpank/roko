@@ -400,6 +400,33 @@ pub(crate) const PARETO_RECOMPUTE_INTERVAL: u64 = 50;
 /// rather than intrinsic model capability. Over many observations the signal
 /// still accumulates, but a single override cannot dominate the bandit.
 pub(crate) const OVERRIDE_LEARNING_RATE: f64 = 0.5;
+/// Weight applied to category-specific pass-rate deviations when adjusting
+/// confidence scores (audit #84). A model whose category pass rate differs
+/// from its global pass rate by `delta` receives a score adjustment of
+/// `CATEGORY_CONFIDENCE_WEIGHT * delta`.
+pub(crate) const CATEGORY_CONFIDENCE_WEIGHT: f64 = 0.15;
+/// Minimum category-specific trials before the adjustment kicks in.
+pub(crate) const CATEGORY_MIN_TRIALS: u64 = 5;
+
+/// Per-model-per-category observation record for category-aware routing (#84).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(crate) struct CategoryModelStats {
+    /// Number of trials for this (model, category) pair.
+    pub(crate) trials: u64,
+    /// Number of successes for this (model, category) pair.
+    pub(crate) successes: u64,
+}
+
+impl CategoryModelStats {
+    /// Empirical pass rate for this category.
+    pub(crate) fn pass_rate(&self) -> f64 {
+        if self.trials == 0 {
+            0.0
+        } else {
+            self.successes as f64 / self.trials as f64
+        }
+    }
+}
 
 /// Per-model observation record for the confidence stage.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

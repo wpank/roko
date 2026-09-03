@@ -13,6 +13,7 @@ fn agent_event_types_construct_all_variants() {
         output_tokens: 45,
         cache_read_tokens: 10,
         cache_create_tokens: 0,
+        reasoning_tokens: 0,
         cost_usd: 0.12,
         wall_ms: 850,
     };

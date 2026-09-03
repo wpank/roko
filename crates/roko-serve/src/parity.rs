@@ -421,7 +421,7 @@ pub fn build_parity_matrix() -> ParityMatrix {
             tui_tab: Some("F7 Inspect".into()),
             tui_subview: Some("Signal DAG inspector".into()),
             cli_fallback: Some("roko replay (walks signal DAG)".into()),
-            backend_source: ".roko/signals.jsonl".into(),
+            backend_source: ".roko/engrams.jsonl".into(),
             status: ParityStatus::Partial,
         },
         // -- Knowledge / Signal browse --

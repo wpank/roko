@@ -1,4 +1,4 @@
-//! Prompt construction helpers extracted from `orchestrate.rs`.
+//! Prompt construction helpers extracted from the legacy orchestrator.
 //!
 //! This module contains:
 //! - System prompt assembly (`build_system_prompt*` family)

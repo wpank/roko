@@ -101,20 +101,6 @@ pub mod tool_loop;
 pub mod translate;
 pub mod usage;
 
-/// Deprecated compatibility shim for the former flat `ollama_agent` module.
-#[deprecated(note = "use crate::ollama::agent::OllamaAgent or crate::OllamaAgent instead")]
-pub mod ollama_agent {
-    pub use crate::ollama::agent::OllamaAgent;
-}
-
-/// Deprecated compatibility shim for the former flat `ollama_backend` module.
-#[deprecated(
-    note = "use crate::ollama::agent::OllamaLlmBackend or crate::OllamaLlmBackend instead"
-)]
-pub mod ollama_backend {
-    pub use crate::ollama::agent::OllamaLlmBackend;
-}
-
 pub use agent::{Agent, AgentResult};
 pub use chat_types::{ChatRequest, RequestOptions, ResponseFormat, ToolChoice};
 pub use claude_cli_agent::ClaudeCliAgent;

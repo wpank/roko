@@ -226,10 +226,10 @@ fn render_header<'a>(name: &str, width: u16, theme: &Theme) -> Line<'a> {
     let w = width as usize;
     let label = format!(" {name} ");
     let dashes = w.saturating_sub(label.len() + 2);
-    let line_str = format!("──{label}{}", "─".repeat(dashes));
+    let line_str = format!("───{label}{}", "─".repeat(dashes));
     Line::from(Span::styled(
         truncate(&line_str, w),
-        theme.accent().add_modifier(Modifier::BOLD),
+        theme.section_header(),
     ))
 }
 
@@ -276,9 +276,9 @@ fn render_field_line<'a>(
         match kind {
             ConfigFieldKind::Bool => {
                 if value == "true" {
-                    "[x]".to_string()
+                    "\u{25cf} on".to_string() // ● green indicator
                 } else {
-                    "[ ]".to_string()
+                    "\u{25cb} off".to_string() // ○ dim indicator
                 }
             }
             ConfigFieldKind::Enum(_)
@@ -299,29 +299,33 @@ fn render_field_line<'a>(
     let gap = value_max.saturating_sub(displayed_value.len());
     let source_str = format!("{}{source_tag}", " ".repeat(gap + 1));
 
-    // Styles
+    // Styles — visual weight hierarchy: section_header > label > value > metadata
     let label_style = if selected {
         theme.selection().add_modifier(Modifier::BOLD)
     } else if modified {
-        theme.text().add_modifier(Modifier::BOLD)
+        theme.label().add_modifier(Modifier::BOLD)
     } else {
-        theme.text()
+        theme.label()
     };
 
     let value_style = if editing {
         theme.accent().add_modifier(Modifier::UNDERLINED)
-    } else if modified {
-        theme.accent().add_modifier(Modifier::BOLD)
     } else if valid.is_some() {
         theme.danger()
+    } else if modified || source != ConfigSource::Default {
+        theme.value()
     } else {
-        theme.text()
+        match kind {
+            ConfigFieldKind::Bool if value == "true" => theme.success(),
+            ConfigFieldKind::Bool => theme.muted(),
+            _ => theme.text(),
+        }
     };
 
     let source_style = match source {
         ConfigSource::File => theme.accent(),
         ConfigSource::Env => theme.warning(),
-        ConfigSource::Default => theme.muted(),
+        ConfigSource::Default => theme.metadata(),
     };
 
     let bg = if selected {
@@ -346,11 +350,11 @@ fn render_description_with_validation<'a>(
 ) -> Line<'a> {
     if let Some(err) = validation_error {
         Line::from(vec![
-            Span::styled("      ", theme.muted()),
+            Span::styled("      ", theme.metadata()),
             Span::styled(format!("X {err}"), theme.danger()),
         ])
     } else {
-        Line::from(Span::styled(format!("      {desc}"), theme.muted()))
+        Line::from(Span::styled(format!("      {desc}"), theme.metadata()))
     }
 }
 
@@ -673,7 +677,7 @@ impl ProviderMetrics {
 
 #[allow(clippy::cast_precision_loss)]
 fn render_provider_health(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme: &Theme) {
-    let block = Block::bordered().title(Span::styled(" Provider Health ", theme.accent()));
+    let block = Block::bordered().title(Span::styled(" Provider Health ", theme.section_header()));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -681,7 +685,7 @@ fn render_provider_health(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiStat
 
     if providers.is_empty() {
         let empty = Paragraph::new("no provider data -- run agents to populate")
-            .style(theme.muted())
+            .style(theme.metadata())
             .wrap(Wrap { trim: false });
         frame.render_widget(empty, inner);
         return;
@@ -700,7 +704,7 @@ fn render_provider_health(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiStat
             } else if avg_latency > 5_000.0 {
                 theme.warning()
             } else {
-                theme.text()
+                theme.value()
             };
 
             let err_style = if err_rate > 30.0 {
@@ -708,17 +712,25 @@ fn render_provider_health(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiStat
             } else if err_rate > 10.0 {
                 theme.warning()
             } else {
-                theme.muted()
+                theme.metadata()
+            };
+
+            let rate_style = if rate >= 90.0 {
+                theme.success()
+            } else if rate >= 70.0 {
+                theme.warning()
+            } else {
+                theme.danger()
             };
 
             Row::new(vec![
-                Cell::from(truncate(name, 16)),
+                Cell::from(Span::styled(truncate(name, 16), theme.label())),
                 Cell::from(Span::styled(format!("{icon} {status}"), status_style)),
                 Cell::from(Span::styled(format!("{avg_latency:.0}ms"), latency_style)),
-                Cell::from(format!("{rate:.0}%")),
+                Cell::from(Span::styled(format!("{rate:.0}%"), rate_style)),
                 Cell::from(Span::styled(format!("{err_rate:.0}%"), err_style)),
-                Cell::from(format!("${:.3}", m.total_cost)),
-                Cell::from(m.total_calls.to_string()),
+                Cell::from(Span::styled(format!("${:.3}", m.total_cost), theme.value())),
+                Cell::from(Span::styled(m.total_calls.to_string(), theme.metadata())),
             ])
         })
         .collect();
@@ -735,12 +747,12 @@ fn render_provider_health(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiStat
     let table = Table::new(rows, widths)
         .header(
             Row::new(["provider", "status", "latency", "success", "errors", "cost", "calls"])
-                .style(theme.accent().add_modifier(Modifier::BOLD)),
+                .style(theme.section_header()),
         )
         .column_spacing(1);
 
-    // Render table, leaving room for secrets note at bottom
-    let table_h = inner.height.saturating_sub(2);
+    // Render table, leaving room for separator + secrets note at bottom
+    let table_h = inner.height.saturating_sub(3);
     let table_area = Rect {
         x: inner.x,
         y: inner.y,
@@ -748,6 +760,19 @@ fn render_provider_health(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiStat
         height: table_h,
     };
     frame.render_widget(table, table_area);
+
+    // Separator line
+    let sep_area = Rect {
+        x: inner.x,
+        y: inner.y + inner.height.saturating_sub(2),
+        width: inner.width,
+        height: 1,
+    };
+    let sep_line = "─".repeat(inner.width as usize);
+    frame.render_widget(
+        Paragraph::new(Span::styled(sep_line, theme.metadata())),
+        sep_area,
+    );
 
     // Secrets management note
     let note_area = Rect {
@@ -757,9 +782,9 @@ fn render_provider_health(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiStat
         height: 1,
     };
     let note = Line::from(vec![
-        Span::styled("API keys: ", theme.muted()),
+        Span::styled("API keys: ", theme.metadata()),
         Span::styled("roko config set-secret", theme.accent()),
-        Span::styled(" | ", theme.muted()),
+        Span::styled(" | ", theme.metadata()),
         Span::styled("roko config check-secrets", theme.accent()),
     ]);
     frame.render_widget(Paragraph::new(note), note_area);
@@ -771,13 +796,13 @@ fn render_provider_health(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiStat
 
 #[allow(clippy::cast_precision_loss)]
 fn render_model_comparison(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme: &Theme) {
-    let block = Block::bordered().title(Span::styled(" Model Comparison ", theme.accent()));
+    let block = Block::bordered().title(Span::styled(" Model Comparison ", theme.section_header()));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     if tui_state.cascade_router.model_slugs.is_empty() {
-        let empty = Paragraph::new("no model data — run agents to populate cascade router")
-            .style(theme.muted())
+        let empty = Paragraph::new("no model data --- run agents to populate cascade router")
+            .style(theme.metadata())
             .wrap(Wrap { trim: false });
         frame.render_widget(empty, inner);
         return;
@@ -843,11 +868,11 @@ fn render_model_comparison(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiSta
             };
 
             Row::new(vec![
-                Cell::from(truncate(slug, 24)),
-                Cell::from(tier.clone()),
+                Cell::from(Span::styled(truncate(slug, 24), theme.label())),
+                Cell::from(Span::styled(tier.clone(), theme.metadata())),
                 Cell::from(Span::styled(format!("${cost:.4}"), cost_style)),
                 Cell::from(Span::styled(format!("{gate_rate:.0}%"), rate_style)),
-                Cell::from(trials.to_string()),
+                Cell::from(Span::styled(trials.to_string(), theme.metadata())),
             ])
         })
         .collect();
@@ -862,7 +887,7 @@ fn render_model_comparison(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiSta
     let table = Table::new(rows, widths)
         .header(
             Row::new(["model", "tier", "cost", "gate %", "tries"])
-                .style(theme.accent().add_modifier(Modifier::BOLD)),
+                .style(theme.section_header()),
         )
         .column_spacing(1);
     frame.render_widget(table, inner);
@@ -900,9 +925,9 @@ fn infer_tier(model: &str) -> String {
 
 fn provider_health_icon(rate: f64, total: u64, theme: &Theme) -> (&'static str, &'static str, Style) {
     if total == 0 {
-        ("?", "no data", theme.muted())
+        ("\u{25cb}", "no data", theme.metadata()) // ○
     } else if rate >= 90.0 {
-        ("+", "healthy", theme.success())
+        ("\u{25cf}", "healthy", theme.success()) // ●
     } else if rate >= 70.0 {
         ("~", "degraded", theme.warning())
     } else {
@@ -922,11 +947,11 @@ fn build_provider_summary_line<'a>(
         return None;
     }
 
-    let mut spans: Vec<Span<'a>> = vec![Span::styled("  Providers: ", theme.muted())];
+    let mut spans: Vec<Span<'a>> = vec![Span::styled("  Providers: ", theme.label())];
 
     for (i, (name, m)) in providers.iter().enumerate() {
         if i > 0 {
-            spans.push(Span::styled("  ", theme.muted()));
+            spans.push(Span::styled("  ", theme.metadata()));
         }
         let rate = m.success_rate();
         let (icon, _, style) = provider_health_icon(rate, m.total_calls, theme);

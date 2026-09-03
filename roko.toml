@@ -48,23 +48,8 @@ worker_image = "ghcr.io/nunchi-trade/roko-worker:latest"
 [feed_agents]
 enabled = false
 
-[[gate]]
-args = ["check"]
-kind = "shell"
-program = "cargo"
-timeout_ms = 600000
-
-[[gate]]
-args = ["test"]
-kind = "shell"
-program = "cargo"
-timeout_ms = 600000
-
-[[gate]]
-args = ["clippy"]
-kind = "shell"
-program = "cargo"
-timeout_ms = 600000
+# NOTE: [[gate]] top-level array removed (2026-09-03) — phantom section,
+# silently ignored. Custom gates belong under [[gates.rungs]].
 
 [gates]
 cargo_fix_enabled = true
@@ -128,14 +113,8 @@ sample_every = 1
 [graduation.policies.watch]
 Prefix = "heartbeat."
 
-[isfr]
-auto_deploy_contracts = false
-enabled = false
-epoch_duration_secs = 28800
-min_submissions = 2
-outlier_sigma = 3.0
-poll_interval_secs = 10
-sources = []
+# NOTE: [isfr] section removed (2026-09-03) — dead rate-oracle vestige,
+# no corresponding struct in RokoConfig; silently discarded on parse.
 
 [learning]
 auto_playbook_refresh = true

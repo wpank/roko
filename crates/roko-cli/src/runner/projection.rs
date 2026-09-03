@@ -228,6 +228,7 @@ impl Projection {
 
     /// Normalize a runner event without publishing it. Replay uses this same
     /// path so durable and live timeout terminals cannot drift by consumer.
+    #[allow(dead_code)]
     pub(super) fn normalize_runner_event(&self, event: RunnerEvent) -> ProjectionEvent {
         self.from_runner(event)
     }

@@ -101,7 +101,7 @@ pub struct PromptContext {
     /// Each entry is `(task_id, files)`.
     pub dependency_outputs: Vec<(String, Vec<String>)>,
     /// Workspace context: git branch, modified files, crate names/descriptions.
-    /// Ported from the legacy `workspace_context()` in orchestrate.rs; includes
+    /// Ported from the legacy `workspace_context()` helper; includes
     /// git state (best-effort, bounded) and crate scan from `crates/*/Cargo.toml`.
     pub workspace_context: String,
     /// C-Factor collective-intelligence policy text.
@@ -371,9 +371,10 @@ fn load_prd_excerpt(workdir: &Path, plan_id: &str) -> String {
     String::new()
 }
 
-// ─── Workspace context (ported from legacy orchestrate.rs) ─────────────
+// ─── Workspace context (ported from legacy orchestrator) ───────────────
 
 const WORKSPACE_CONTEXT_LIMIT: usize = 4_000;
+#[allow(dead_code)]
 const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
 const GIT_STATUS_LINE_LIMIT: usize = 40;
 
@@ -464,7 +465,7 @@ fn git_command(workdir: &Path, args: &[&str]) -> Option<String> {
 
 /// Scan `crates/*/Cargo.toml` for package names and descriptions.
 ///
-/// Ported from legacy `workspace_context()` in orchestrate.rs.
+/// Ported from the legacy `workspace_context()` helper.
 fn scan_crate_descriptions(workdir: &Path) -> Vec<(String, String)> {
     let crates_dir = workdir.join("crates");
     let entries = match std::fs::read_dir(&crates_dir) {
@@ -501,7 +502,7 @@ fn scan_crate_descriptions(workdir: &Path) -> Vec<(String, String)> {
     crates
 }
 
-// ─── C-Factor context (ported from legacy orchestrate.rs) ──────────────
+// ─── C-Factor context (ported from legacy orchestrator) ────────────────
 
 /// Load C-Factor history and generate policy context for the system prompt.
 ///
@@ -510,7 +511,7 @@ fn scan_crate_descriptions(workdir: &Path) -> Vec<(String, String)> {
 /// Returns an empty string when no history exists or the episode count
 /// is below the minimum threshold.
 fn generate_cfactor_context(workdir: &Path) -> String {
-    use roko_core::{Body, CFactorPolicy, CFactorSource, Context, React};
+    use roko_core::{CFactorPolicy, CFactorSource, Context, React};
     use roko_learn::cfactor::CFactor;
     use std::sync::Arc;
 
@@ -880,6 +881,7 @@ fn apply_prompt_experiment_assignments(
 struct PromptSection {
     name: String,
     body: String,
+    #[allow(dead_code)]
     drop_priority: u32,
     knowledge_ids: Vec<String>,
     playbook_ids: Vec<String>,
@@ -1429,9 +1431,16 @@ impl PromptAssembler {
         // score result used by selection.
         let section_effectiveness = self.resolve_section_effectiveness(&ctx.workdir);
         let group_context = load_group_context(&ctx.workdir, &ctx.role, task, ctx);
-        let spec = RoleSystemPromptSpec::new(role, task_context, tools_csv)
+        let has_mcp = task
+            .mcp_servers
+            .as_ref()
+            .is_some_and(|s| !s.is_empty());
+        let mut spec = RoleSystemPromptSpec::new(role, task_context, tools_csv)
             .with_cache_markers()
             .with_pheromones(&group_context);
+        if has_mcp {
+            spec = spec.with_mcp_tools();
+        }
         let composer = PromptComposer::new()
             .with_strategy(self.composition_strategy)
             .with_vcg_warmup_observations(self.vcg_warmup_observations)

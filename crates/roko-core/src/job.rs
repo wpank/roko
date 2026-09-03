@@ -309,11 +309,34 @@ pub struct JobEvaluation {
     pub evaluated_at: String,
 }
 
+/// Diagnostic emitted when a job JSON file cannot be parsed.
+#[derive(Debug, Clone)]
+pub struct MalformedJobFile {
+    /// Path to the malformed file.
+    pub path: PathBuf,
+    /// Human-readable parse error.
+    pub error: String,
+}
+
+/// Diagnostic emitted when a job carries both the legacy `state` field and the
+/// canonical `status` field, potentially with conflicting values.
+#[derive(Debug, Clone)]
+pub struct LegacyMigrationDiagnostic {
+    pub job_id: String,
+    pub legacy_state: String,
+    pub canonical_status: String,
+    /// `true` when `state` and `status` disagree.
+    pub disagreement: bool,
+}
+
 /// Error type for job store operations.
 #[derive(Debug)]
 pub enum JobError {
     InvalidTransition { from: String, to: String },
     NotFound(String),
+    /// The job is in an active state (e.g. `in_progress`) and cannot be
+    /// cancelled without executor acknowledgement (see #371).
+    ActiveCancellationDenied { id: String, status: String },
     Io(std::io::Error),
     Serde(serde_json::Error),
 }
@@ -325,6 +348,9 @@ impl std::fmt::Display for JobError {
                 write!(f, "invalid job transition from '{from}' to '{to}'")
             }
             Self::NotFound(id) => write!(f, "job '{id}' not found"),
+            Self::ActiveCancellationDenied { id, status } => {
+                write!(f, "job '{id}' is {status} and cannot be cancelled while active")
+            }
             Self::Io(e) => write!(f, "job I/O error: {e}"),
             Self::Serde(e) => write!(f, "job serialization error: {e}"),
         }
@@ -403,6 +429,8 @@ pub struct JobStats {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CreateJobRequest {
     #[serde(default)]
+    pub id: String,
+    #[serde(default)]
     pub title: String,
     #[serde(default)]
     pub description: String,
@@ -415,7 +443,46 @@ pub struct CreateJobRequest {
     #[serde(default)]
     pub reward: String,
     #[serde(default)]
+    pub posted_by: String,
+    #[serde(default)]
     pub auto_execute: bool,
+}
+
+/// Validated priority level for marketplace jobs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobPriority {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+impl JobPriority {
+    /// Allowed priority strings.
+    pub const ALL: &[&str] = &["low", "medium", "high", "critical"];
+
+    /// Parse a priority string (case-insensitive).
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            "critical" => Some(Self::Critical),
+            _ => None,
+        }
+    }
+
+    /// Return the canonical lowercase string.
+    #[must_use]
+    pub const fn as_str(&self) -> &str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Critical => "critical",
+        }
+    }
 }
 
 /// File-system backed job store rooted at `.roko/jobs/`.
@@ -516,6 +583,133 @@ impl FileJobStore {
             updated_at: now,
             ..Default::default()
         };
+        self.save(&job).await?;
+        Ok(job)
+    }
+
+    /// List jobs with diagnostics for malformed files.
+    pub async fn list_with_diagnostics(
+        &self,
+        filter: &JobFilter,
+    ) -> Result<(Vec<MarketplaceJob>, Vec<MalformedJobFile>), JobError> {
+        if !self.root.is_dir() {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        let mut jobs = Vec::new();
+        let mut malformed = Vec::new();
+        let mut entries = tokio::fs::read_dir(&self.root).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let data = match tokio::fs::read_to_string(&path).await {
+                Ok(d) => d,
+                Err(e) => {
+                    malformed.push(MalformedJobFile {
+                        path,
+                        error: e.to_string(),
+                    });
+                    continue;
+                }
+            };
+            let mut job: MarketplaceJob = match serde_json::from_str(&data) {
+                Ok(j) => j,
+                Err(e) => {
+                    malformed.push(MalformedJobFile {
+                        path,
+                        error: e.to_string(),
+                    });
+                    continue;
+                }
+            };
+            if job.id.is_empty() {
+                job.id = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or_default()
+                    .to_string();
+            }
+            if filter.matches(&job) {
+                jobs.push(job);
+            }
+        }
+        jobs.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(b.id.cmp(&a.id)));
+        Ok((jobs, malformed))
+    }
+
+    /// Check whether a job has a legacy `state` field that needs migration.
+    pub fn migration_diagnostic(job: &MarketplaceJob) -> Option<LegacyMigrationDiagnostic> {
+        let legacy = job.state.trim();
+        if legacy.is_empty() {
+            return None;
+        }
+        let canonical = job.status.trim();
+        let disagreement =
+            !canonical.is_empty() && canonical.to_lowercase() != legacy.to_lowercase();
+        Some(LegacyMigrationDiagnostic {
+            job_id: job.id.clone(),
+            legacy_state: legacy.to_string(),
+            canonical_status: if canonical.is_empty() {
+                "open".to_string()
+            } else {
+                canonical.to_string()
+            },
+            disagreement,
+        })
+    }
+
+    /// Resolve a job ID by prefix match.
+    pub async fn resolve_by_prefix(&self, prefix: &str) -> Result<String, JobError> {
+        // Exact match first.
+        if self.job_path(prefix).is_file() {
+            return Ok(prefix.to_string());
+        }
+        // Prefix scan.
+        if !self.root.is_dir() {
+            return Err(JobError::NotFound(prefix.to_string()));
+        }
+        let mut matches = Vec::new();
+        let mut entries = tokio::fs::read_dir(&self.root).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            if let Some(stem) = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .filter(|s| s.starts_with(prefix))
+            {
+                matches.push(stem.to_string());
+            }
+        }
+        match matches.len() {
+            0 => Err(JobError::NotFound(prefix.to_string())),
+            1 => Ok(matches.into_iter().next().expect("len==1 checked")),
+            _ => Err(JobError::NotFound(format!(
+                "{prefix} (ambiguous: {} matches)",
+                matches.len()
+            ))),
+        }
+    }
+
+    /// Cancel a job that is not in an active execution state.
+    pub async fn cancel_inactive(&self, id: &str) -> Result<MarketplaceJob, JobError> {
+        let resolved = self.resolve_by_prefix(id).await?;
+        let mut job = self.get(&resolved).await?;
+        let effective = job.effective_status().to_string();
+        match effective.as_str() {
+            "in_progress" | "active" | "running" => {
+                return Err(JobError::ActiveCancellationDenied {
+                    id: resolved,
+                    status: effective,
+                });
+            }
+            _ => {}
+        }
+        job.status = "cancelled".to_string();
+        job.updated_at = chrono::Utc::now().to_rfc3339();
         self.save(&job).await?;
         Ok(job)
     }

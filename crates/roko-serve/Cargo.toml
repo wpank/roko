@@ -18,7 +18,7 @@ chain = []
 # Real EVM JSON-RPC reads/writes. Keep this out of ordinary self-development
 # builds: Alloy's provider/full graph dominates a cold CLI compile.
 alloy-backend = ["chain", "dep:alloy", "roko-chain/alloy-backend"]
-hdc = ["dep:roko-primitives"]
+hdc = ["dep:roko-primitives", "roko-compose/hdc", "roko-fs/hdc"]
 otlp = [
     "dep:opentelemetry",
     "dep:opentelemetry_sdk",

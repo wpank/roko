@@ -4,6 +4,7 @@
 pub mod rosedust;
 
 pub mod braille;
+pub mod conductor_panel;
 pub mod cost_by_model;
 pub mod diff_panel;
 pub mod error_digest;
@@ -13,6 +14,7 @@ pub mod parallel_pool;
 pub mod phase_compact;
 pub mod plan_tree;
 pub mod status_bar;
+pub mod stream_output;
 pub mod sys_metrics;
 pub mod task_progress;
 pub mod token_sparkline;

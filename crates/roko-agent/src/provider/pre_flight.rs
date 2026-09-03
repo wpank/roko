@@ -126,6 +126,16 @@ fn check_single_provider(
                 });
             }
         }
+        ProviderKind::CodexCli => {
+            let command = provider.command.as_deref().unwrap_or("codex");
+            if !binary_on_path(command) {
+                issues.push(ProviderReadinessIssue {
+                    provider_name: provider_name.to_string(),
+                    message: "codex CLI not found on PATH. Install: https://github.com/openai/codex"
+                        .to_string(),
+                });
+            }
+        }
         ProviderKind::GeminiCli => {
             let command = provider.command.as_deref().unwrap_or("gemini");
             if !binary_on_path(command) {

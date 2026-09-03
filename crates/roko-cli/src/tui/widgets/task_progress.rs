@@ -24,8 +24,9 @@ use ratatui::widgets::{
     Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
 
-use super::super::state::{TaskRowStatus, TuiState};
+use super::super::state::{TaskRow, TaskRowStatus, TuiState};
 use crate::tui::Theme;
+use crate::tui::util::truncate_middle;
 
 // ---------------------------------------------------------------------------
 // Public render entry-point
@@ -34,7 +35,29 @@ use crate::tui::Theme;
 /// Render the task progress widget.
 pub fn render_task_progress(frame: &mut Frame<'_>, area: Rect, state: &TuiState, focused: bool) {
     let atm = &state.atmosphere;
-    let tasks = &state.current_task_checklist;
+
+    // Use the selected plan's tasks when a plan is selected, otherwise global checklist.
+    let selected_plan = state
+        .plans
+        .get(state.selected_plan_idx);
+    let plan_task_rows: Vec<TaskRow> = if let Some(plan) = selected_plan {
+        plan.tasks
+            .iter()
+            .map(|te| TaskRow {
+                id: te.id.clone(),
+                title: te.name.clone(),
+                status: te.status,
+                elapsed_secs: 0.0,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let tasks: &[TaskRow] = if selected_plan.is_some() && !plan_task_rows.is_empty() {
+        &plan_task_rows
+    } else {
+        &state.current_task_checklist
+    };
 
     // Count by status
     let done = tasks
@@ -56,11 +79,17 @@ pub fn render_task_progress(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
     let total = tasks.len();
     let pending = total.saturating_sub(done + active + blocked + failed);
 
-    // Title
-    let mut title = format!("Tasks ({}/{})", done, total);
+    // Title — show plan name when filtering
+    let plan_label = selected_plan.map(|p| p.name.as_str()).unwrap_or("");
+    let mut title = if !plan_label.is_empty() {
+        format!("Tasks · {} ({}/{})", plan_label, done, total)
+    } else {
+        format!("Tasks ({}/{})", done, total)
+    };
 
+    let theme = Theme::dark();
     let (border_style, ttl_style) = if focused {
-        (Theme::focused_border_style(), Theme::focused_title_style())
+        (Theme::focused_border_style(), theme.section_header())
     } else {
         (
             Theme::unfocused_border_style(),
@@ -155,23 +184,43 @@ pub fn render_task_progress(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
     for (i, task) in tasks[start..end].iter().enumerate() {
         let global_idx = start + i;
         let is_selected = global_idx == scroll && focused;
+        let is_active = task.status == TaskRowStatus::Active;
 
+        // Status icons: ✓ done (green bold), ✗ failed (red bold), ⚡ active (yellow bold), ○ pending (dim)
+        let active_spinner;
         let (icon, icon_style) = match task.status {
-            TaskRowStatus::Done => ("\u{2713}", Style::default().fg(Theme::STATUS_OK)),
+            TaskRowStatus::Done => (
+                "\u{2713}",
+                Style::default()
+                    .fg(Theme::SAGE)
+                    .add_modifier(Modifier::BOLD),
+            ),
             TaskRowStatus::Active => {
                 let pulse_color = pulse_rose(atm.heartbeat());
+                active_spinner = atm.spinner().to_string();
                 (
-                    "\u{25ba}",
+                    active_spinner.as_str(),
                     Style::default()
                         .fg(pulse_color)
                         .add_modifier(Modifier::BOLD),
                 )
             }
-            TaskRowStatus::Blocked => ("\u{2717}", Style::default().fg(Theme::STATUS_ERROR)),
-            TaskRowStatus::Failed => ("\u{2717}", Style::default().fg(Theme::EMBER)),
+            TaskRowStatus::Blocked => (
+                "\u{2717}",
+                Style::default()
+                    .fg(Theme::STATUS_ERROR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            TaskRowStatus::Failed => (
+                "\u{2717}",
+                Style::default()
+                    .fg(Theme::EMBER)
+                    .add_modifier(Modifier::BOLD),
+            ),
             TaskRowStatus::Pending => ("\u{25cb}", Style::default().fg(Theme::TEXT_DIM)),
         };
 
+        // Active tasks get a subtle background highlight; selected items keep the stronger one.
         let (text_style, bg) = if is_selected {
             (
                 Style::default()
@@ -179,6 +228,13 @@ pub fn render_task_progress(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
                     .add_modifier(Modifier::BOLD)
                     .bg(Theme::BG_HIGHLIGHT),
                 Some(Theme::BG_HIGHLIGHT),
+            )
+        } else if is_active {
+            (
+                theme
+                    .value()
+                    .bg(Theme::BG_RAISED),
+                Some(Theme::BG_RAISED),
             )
         } else {
             (Style::default().fg(Theme::TEXT), None)
@@ -199,32 +255,31 @@ pub fn render_task_progress(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
             _ => String::new(),
         };
 
-        // Truncate title using ellipsis character
+        // Smart truncation: keep first segment + end (matches plan_tree style)
         let time_tag_len = time_tag.chars().count();
-        // Fixed 8-char column for task ID alignment
         let id_col_w = 8;
         let prefix_len = 4 + id_col_w + time_tag_len;
         let max_title = (inner.width as usize).saturating_sub(prefix_len + 2);
-        let title_display = if task.title.chars().count() > max_title && max_title > 1 {
-            let truncated: String = task
-                .title
-                .chars()
-                .take(max_title.saturating_sub(1))
-                .collect();
-            format!("{truncated}\u{2026}")
+        let title_display = truncate_middle(&task.title, max_title);
+
+        // Task ID uses label() style, task name uses value() for active / text for others.
+        let id_style = if let Some(bg_color) = bg {
+            theme.label().bg(bg_color)
         } else {
-            task.title.clone()
+            theme.label()
         };
 
         let mut task_spans = vec![
             Span::styled(format!(" {icon} "), effective_icon_style),
-            Span::styled(
-                format!("{:<width$}", &task.id, width = id_col_w),
-                Style::default().fg(Theme::ROSE_DIM),
-            ),
+            Span::styled(format!("{:<width$}", &task.id, width = id_col_w), id_style),
         ];
         if !time_tag.is_empty() {
-            task_spans.push(Span::styled(time_tag, Style::default().fg(Theme::TEXT_DIM)));
+            let time_style = if let Some(bg_color) = bg {
+                Style::default().fg(Theme::TEXT_DIM).bg(bg_color)
+            } else {
+                Style::default().fg(Theme::TEXT_DIM)
+            };
+            task_spans.push(Span::styled(time_tag, time_style));
         }
         task_spans.push(Span::styled(title_display, text_style));
 
@@ -272,45 +327,61 @@ pub fn render_task_progress(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Build a semantic progress bar with gradient coloring and leading-edge glow.
+/// Build a gradient progress bar with `█▓▒░` partial-fill characters.
 ///
-/// The leading filled cell gets an extra brightness pulse driven by the
-/// heartbeat, giving the bar a sense of momentum when advancing.
+/// Uses `Theme::progress_gradient` for smooth color transitions and a
+/// heartbeat-pulsed leading edge for visual momentum.
 fn semantic_bar(width: usize, pct: f64, heartbeat: Option<f64>) -> Vec<Span<'static>> {
     let pct = pct.clamp(0.0, 1.0);
-    let filled = ((width as f64) * pct).round() as usize;
-    let empty = width.saturating_sub(filled);
+    let filled_f = pct * width as f64;
+    let filled = filled_f as usize;
+    let frac = filled_f - filled as f64;
+    let empty = width
+        .saturating_sub(filled)
+        .saturating_sub(if frac > 0.01 { 1 } else { 0 });
 
-    let mut spans = Vec::new();
+    let bar_color = Theme::progress_gradient(pct);
+    let mut spans = Vec::with_capacity(4);
 
     if filled > 0 {
-        let color = Theme::semantic_color(pct);
-
         if filled > 1 && pct < 1.0 {
-            // Body: the filled portion minus the leading edge.
+            // Body
             spans.push(Span::styled(
                 "\u{2588}".repeat(filled - 1),
-                Style::default().fg(color),
+                Style::default().fg(bar_color),
             ));
-
             // Leading edge: brighter, pulsed by heartbeat.
             let boost = heartbeat.map_or(1.0, |hb| 1.0 + hb * 0.3);
-            let leading_style = match color {
+            let leading_style = match bar_color {
                 Color::Rgb(r, g, b) => Style::default().fg(Color::Rgb(
                     ((r as f64) * boost).min(255.0) as u8,
                     ((g as f64) * boost).min(255.0) as u8,
                     ((b as f64) * boost).min(255.0) as u8,
                 )),
-                _ => Style::default().fg(color),
+                _ => Style::default().fg(bar_color),
             };
             spans.push(Span::styled("\u{2588}", leading_style));
         } else {
-            // Single cell or complete: no separate leading edge needed.
             spans.push(Span::styled(
-                "\u{2588}".repeat(filled),
-                Style::default().fg(color),
+                "\u{2588}".repeat(filled.min(width)),
+                Style::default().fg(bar_color),
             ));
         }
+    }
+
+    // Fractional cell using gradient characters
+    if frac > 0.01 && filled < width {
+        let partial = if frac >= 0.75 {
+            "\u{2593}" // ▓
+        } else if frac >= 0.5 {
+            "\u{2592}" // ▒
+        } else {
+            "\u{2591}" // ░
+        };
+        spans.push(Span::styled(
+            partial.to_string(),
+            Style::default().fg(bar_color),
+        ));
     }
 
     // Empty portion

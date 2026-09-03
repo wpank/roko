@@ -237,6 +237,7 @@ impl PluginConfinement {
         }
     }
 
+    #[allow(dead_code)]
     fn is_supported(&self) -> bool {
         !matches!(self, Self::Unsupported { .. })
     }

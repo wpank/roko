@@ -86,7 +86,7 @@ fn provider_kind_for_command(command: &str) -> ProviderKind {
     match executable {
         "claude" => ProviderKind::ClaudeCli,
         "cursor-agent" | "cursor_agent" => ProviderKind::CursorAcp,
-        "codex" => ProviderKind::OpenAiCompat,
+        "codex" => ProviderKind::CodexCli,
         _ => ProviderKind::ClaudeCli,
     }
 }
@@ -99,14 +99,21 @@ fn provider_api_key_env(kind: ProviderKind) -> Option<String> {
         ProviderKind::GeminiApi => Some("GEMINI_API_KEY".to_string()),
         ProviderKind::GeminiCli => None,
         ProviderKind::CerebrasApi => Some("CEREBRAS_API_KEY".to_string()),
-        ProviderKind::ClaudeCli | ProviderKind::CursorAcp | ProviderKind::CursorCli => None,
+        ProviderKind::ClaudeCli
+        | ProviderKind::CodexCli
+        | ProviderKind::CursorAcp
+        | ProviderKind::CursorCli => None,
         // Harness adapters handle auth via their own probe mechanism.
         ProviderKind::Hermes | ProviderKind::OpenClaw => None,
     }
 }
 
 fn provider_command(kind: ProviderKind, command: &str) -> Option<String> {
-    matches!(kind, ProviderKind::ClaudeCli | ProviderKind::CursorAcp).then(|| command.to_string())
+    matches!(
+        kind,
+        ProviderKind::ClaudeCli | ProviderKind::CodexCli | ProviderKind::CursorAcp
+    )
+    .then(|| command.to_string())
 }
 
 fn command_backed_config(command: &str, model: &str, kind: ProviderKind) -> RokoConfig {

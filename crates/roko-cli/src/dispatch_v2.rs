@@ -215,7 +215,7 @@ impl CliProtocol {
     pub const fn provider_kind(self) -> ProviderKind {
         match self {
             Self::ClaudeStreamJson => ProviderKind::ClaudeCli,
-            Self::CodexExecJson => ProviderKind::OpenAiCompat,
+            Self::CodexExecJson => ProviderKind::CodexCli,
             Self::GeminiStreamJson => ProviderKind::GeminiCli,
         }
     }
@@ -390,17 +390,27 @@ impl CliProviderConfig {
         match provider.kind {
             ProviderKind::ClaudeCli => {
                 let command = required_command(&provider_id, provider)?;
-                let mut config = if executable_name(&command).contains("codex") {
-                    Self::codex(provider_id, command)
-                } else {
-                    Self::claude(provider_id, command)
-                };
+                let mut config = Self::claude(provider_id, command);
+                config.provider_args = provider.args.clone().unwrap_or_default();
+                config.resource_limits = configured_cli_resource_limits(provider)?;
+                Ok(config)
+            }
+            ProviderKind::CodexCli => {
+                let command = provider
+                    .command
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|command| !command.is_empty())
+                    .unwrap_or("codex");
+                let mut config = Self::codex(provider_id, command);
                 config.provider_args = provider.args.clone().unwrap_or_default();
                 config.resource_limits = configured_cli_resource_limits(provider)?;
                 Ok(config)
             }
             ProviderKind::OpenAiCompat => {
                 let command = required_command(&provider_id, provider)?;
+                // Legacy backward compat: an OpenAiCompat provider whose
+                // command is a codex binary is dispatched as codex protocol.
                 if executable_name(&command).contains("codex") {
                     let mut config = Self::codex(provider_id, command);
                     config.provider_args = provider.args.clone().unwrap_or_default();
@@ -2099,7 +2109,7 @@ fn classify_runtime(
         Err(DispatchV2Error::MissingCommand { .. }) => {
             if matches!(
                 provider_kind,
-                ProviderKind::ClaudeCli | ProviderKind::CursorAcp
+                ProviderKind::ClaudeCli | ProviderKind::CodexCli | ProviderKind::CursorAcp
             ) {
                 return ProviderRuntime::Unsupported(UnsupportedProvider {
                     reason: UnsupportedProviderReason::MissingCommand,
@@ -2132,10 +2142,12 @@ fn classify_runtime(
         | ProviderKind::CerebrasApi
         | ProviderKind::Hermes
         | ProviderKind::OpenClaw => ProviderRuntime::AgentResultBridge { provider_kind },
-        ProviderKind::ClaudeCli => ProviderRuntime::Unsupported(UnsupportedProvider {
-            reason: UnsupportedProviderReason::UnsupportedCliProvider,
-            detail: format!("provider `{provider_id}` is not dispatchable as configured"),
-        }),
+        ProviderKind::ClaudeCli | ProviderKind::CodexCli => {
+            ProviderRuntime::Unsupported(UnsupportedProvider {
+                reason: UnsupportedProviderReason::UnsupportedCliProvider,
+                detail: format!("provider `{provider_id}` is not dispatchable as configured"),
+            })
+        }
     }
 }
 

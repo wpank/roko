@@ -81,9 +81,10 @@ pub(crate) fn handle_agent_event(
             if state.agent_output.len() > MAX_AGENT_OUTPUT {
                 let trim_point = state.agent_output.len() - MAX_AGENT_OUTPUT / 2;
                 let boundary = state.agent_output.ceil_char_boundary(trim_point);
+                let omitted_lines = state.agent_output[..boundary].lines().count();
                 state.agent_output = format!(
-                    "[...truncated {}B...]\n{}",
-                    boundary,
+                    "[output truncated: {} lines omitted]\n{}",
+                    omitted_lines,
                     &state.agent_output[boundary..],
                 );
                 debug!(
@@ -114,16 +115,19 @@ pub(crate) fn handle_agent_event(
             let (truncated, state_was_truncated) = bounded_utf8(output, limit);
             state.agent_output.push_str(truncated);
             if state_was_truncated {
-                state
-                    .agent_output
-                    .push_str("\n[...tool output truncated...]\n");
+                let omitted_lines = output[truncated.len()..].lines().count();
+                state.agent_output.push_str(&format!(
+                    "\n[output truncated: {omitted_lines} lines omitted]\n"
+                ));
             }
             state.agent_output.push('\n');
 
             let (visible, visible_was_truncated) = bounded_utf8(output, MAX_TUI_TOOL_OUTPUT);
             let mut dashboard_output = visible.to_string();
             if visible_was_truncated {
-                dashboard_output.push_str("\n[...tool output truncated for TUI...]\n");
+                let omitted_lines = output[visible.len()..].lines().count();
+                dashboard_output
+                    .push_str(&format!("\n[output truncated: {omitted_lines} lines omitted]\n"));
             } else if !dashboard_output.ends_with('\n') {
                 dashboard_output.push('\n');
             }
@@ -139,14 +143,13 @@ pub(crate) fn handle_agent_event(
             output_tokens,
             cache_read_tokens,
             cache_write_tokens,
-            // Reasoning tokens are a subset of `output_tokens`; nothing in the
-            // runner ledger aggregates them yet, so they are not double-counted.
-            reasoning_tokens: _,
+            reasoning_tokens,
         } => {
             state.tokens_in += input_tokens;
             state.tokens_out += output_tokens;
             state.cache_read_tokens += cache_read_tokens;
             state.cache_write_tokens += cache_write_tokens;
+            state.reasoning_tokens += reasoning_tokens;
             // Token counts are accumulated here; authoritative cost comes from
             // TurnCompleted.total_cost_usd which overwrites state.cost_usd.
 
@@ -428,6 +431,7 @@ fn quick_fixable_by_text(finding: &str) -> bool {
 /// This typed variant is used in tests and by code that has access to a
 /// full [`ReviewVerdict`] (not just the string evidence in
 /// [`ParsedReviewVerdict`]).
+#[allow(dead_code)]
 pub(crate) fn issue_category_is_quick_fixable(cat: &IssueCategory) -> bool {
     matches!(
         cat,
@@ -569,7 +573,7 @@ mod tests {
                 .map_or(false, |v| {
                     v["payload"]["output"]
                         .as_str()
-                        .map_or(false, |s| s.contains("truncated for TUI"))
+                        .map_or(false, |s| s.contains("output truncated:"))
                 })
         });
         assert!(

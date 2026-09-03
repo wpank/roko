@@ -8,7 +8,7 @@
 
 use reqwest::blocking::Client;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
-use roko_mcp_stdio::{JsonRpcError, JsonRpcRequest, serve_stdio};
+use roko_mcp_stdio::{JsonRpcError, JsonRpcRequest, MCP_PROTOCOL_VERSION, serve_stdio};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -236,7 +236,7 @@ fn handle_request(request: JsonRpcRequest) -> Result<Value, JsonRpcError> {
 
 fn handle_initialize() -> Value {
     serde_json::json!({
-        "protocolVersion": "2024-11-05",
+        "protocolVersion": MCP_PROTOCOL_VERSION,
         "capabilities": {
             "tools": {}
         },

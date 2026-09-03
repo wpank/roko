@@ -1,7 +1,7 @@
 //! Typed, bounded broadcast event bus with replay support.
 //!
-//! This generalises the pattern used in `golem-core::event::EventFabric` and the
-//! ad-hoc `mpsc::UnboundedSender<AgentEvent>` channels in `apps/mori/src/agent/`.
+//! This generalises the pattern used in `roko-core` event fabric and the
+//! ad-hoc `mpsc::UnboundedSender<AgentEvent>` channels in the legacy mori agent.
 //!
 //! # Architecture
 //!

@@ -178,6 +178,7 @@ async fn run_simple_path(
         role: cli.role.clone(),
         provider,
         cascade_enabled: Some(!no_cascade),
+        effort: cli.effort.map(|e| e.to_string()),
     };
 
     tracing::debug!(

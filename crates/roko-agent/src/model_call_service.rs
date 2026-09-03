@@ -325,13 +325,6 @@ impl ModelCallService {
         self
     }
 
-    /// Deprecated. Configure OpenAI-compatible providers in `RokoConfig` instead.
-    #[must_use]
-    #[deprecated(note = "configure OpenAI-compatible providers in RokoConfig")]
-    pub fn with_openai_base_url(self, _url: String) -> Self {
-        self
-    }
-
     /// Use an explicit MCP config path for service-created agents.
     #[must_use]
     pub fn with_mcp_config(mut self, path: impl Into<PathBuf>) -> Self {
@@ -3024,11 +3017,9 @@ mod tests {
         config.providers.clear();
         config.models.clear();
 
-        #[allow(deprecated)]
         let svc = ModelCallService::new("default".into())
             .with_config(config)
-            .with_anthropic_api_key("sk-test".into())
-            .with_openai_base_url("https://example.invalid/v1".into());
+            .with_anthropic_api_key("sk-test".into());
         let req = ModelCallRequest {
             model: "claude-haiku-4".into(),
             system: None,

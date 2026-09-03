@@ -150,37 +150,6 @@ pub enum LoadConfigError {
     },
 }
 
-/// Load the workspace configuration from `workdir/roko.toml`.
-///
-/// **Deprecated**: Use [`loader::load_config_validated`] instead.
-/// This function now delegates to the unified loader with default options.
-#[deprecated(note = "use roko_core::config::loader::load_config_validated() instead")]
-pub fn load_config(workdir: &Path) -> Result<ValidatedConfig, LoadConfigError> {
-    tracing::debug!(workdir = %workdir.display(), "deprecated load_config -> unified loader");
-    loader::load_config_validated_with_options(workdir, &loader::LoadOptions::default())
-}
-
-/// Load the workspace configuration with strict safety validation.
-///
-/// **Deprecated**: Use [`loader::load_config_with_options`] with
-/// [`loader::LoadOptions::strict()`] instead.
-/// This function now delegates to the unified loader with strict options.
-#[deprecated(
-    note = "use roko_core::config::loader::load_config_with_options(workdir, &LoadOptions::strict()) instead"
-)]
-pub fn load_config_strict(workdir: &Path) -> Result<ValidatedConfig, LoadConfigError> {
-    tracing::debug!(workdir = %workdir.display(), "deprecated load_config_strict -> unified loader");
-    loader::load_config_validated_with_options(
-        workdir,
-        &loader::LoadOptions {
-            merge_global: true,
-            apply_env_overrides: true,
-            apply_hierarchical_env: true,
-            strict_validation: true,
-        },
-    )
-}
-
 /// Trust level for workspace config loading.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -256,7 +225,6 @@ fn load_config_impl(
 }
 
 #[cfg(test)]
-#[allow(deprecated)] // Tests exercise the deprecated load_config/load_config_strict API
 mod load_config_tests {
     use super::*;
 
@@ -279,8 +247,14 @@ mod load_config_tests {
         let toml_text = "[runner]\ndangerously_skip_permissions = true\n";
         std::fs::write(dir.path().join("roko.toml"), toml_text).expect("write roko.toml");
 
-        let err =
-            load_config_strict(dir.path()).expect_err("must reject dangerous shared override");
+        let strict_options = loader::LoadOptions {
+            merge_global: true,
+            apply_env_overrides: true,
+            apply_hierarchical_env: true,
+            strict_validation: true,
+        };
+        let err = loader::load_config_validated_with_options(dir.path(), &strict_options)
+            .expect_err("must reject dangerous shared override");
         assert!(
             matches!(err, LoadConfigError::Validation { .. }),
             "got {err:?}"
@@ -404,8 +378,9 @@ mod load_config_tests {
             .expect("find workspace root");
         let roko_toml = project_root.join("roko.toml");
         if roko_toml.exists() {
-            let validated = load_config(project_root)
-                .expect("project roko.toml must load through unified loader");
+            let validated =
+                loader::load_config_validated_with_options(project_root, &loader::LoadOptions::default())
+                    .expect("project roko.toml must load through unified loader");
             let config = validated.config();
             assert!(
                 !config.providers.is_empty(),

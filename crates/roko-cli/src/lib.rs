@@ -147,12 +147,6 @@ pub use config::{
     Source, ToolsConfig, load_resolved_config,
 };
 
-/// **Deprecated**: Use [`load_resolved_config`] instead.
-#[deprecated(note = "use load_resolved_config() instead")]
-#[allow(deprecated)]
-pub fn load_layered(workdir: &std::path::Path) -> anyhow::Result<ResolvedConfig> {
-    config::load_resolved_config(workdir)
-}
 pub use config_cmd::{EditTarget, WizardInputs, run_init_wizard};
 pub use daemon::{DaemonConfig, DaemonMode, DaemonState, DaemonStatus};
 pub use deployment::SigstoreVerifier;

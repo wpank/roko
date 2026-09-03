@@ -297,6 +297,8 @@ pub struct CliOverrides {
     pub role: Option<String>,
     pub provider: Option<String>,
     pub cascade_enabled: Option<bool>,
+    /// Reasoning effort level override (e.g. "low", "medium", "high", "max").
+    pub effort: Option<String>,
 }
 
 fn resolve_workflow_model_selection(
@@ -313,6 +315,9 @@ fn resolve_workflow_model_selection(
     }
     if let Some(ref role) = overrides.role {
         config.prompt.role.clone_from(role);
+    }
+    if let Some(ref effort) = overrides.effort {
+        config.agent.effort.clone_from(effort);
     }
 
     let mut model_config =

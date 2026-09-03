@@ -273,6 +273,7 @@ pub(crate) async fn cmd_run(
         role: cli.role.clone(),
         provider,
         cascade_enabled: None,
+        effort: cli.effort.map(|e| e.to_string()),
     };
 
     let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));

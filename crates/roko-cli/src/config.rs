@@ -3290,15 +3290,6 @@ pub fn load_resolved_config(workdir: &Path) -> Result<ResolvedConfig> {
     })
 }
 
-/// **Deprecated**: Use [`load_resolved_config`] instead.
-///
-/// This function now delegates to `load_resolved_config` and exists only to
-/// avoid breaking any remaining test-only references during migration.
-#[deprecated(note = "use load_resolved_config() instead")]
-pub fn load_layered(workdir: &Path) -> Result<ResolvedConfig> {
-    load_resolved_config(workdir)
-}
-
 /// Compute per-field provenance from global + project layers.
 fn compute_sources(global: &ConfigLayer, project: &ConfigLayer) -> ConfigSources {
     let g_auto_plan = global.auto_plan.is_some();

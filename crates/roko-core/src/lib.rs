@@ -26,7 +26,7 @@
 //! query substrate → score → route/compose → gate verdict → write back → policy fires
 //! ```
 //!
-//! See [`loop_tick`] for the concrete implementation.
+//! See [`select_compose_verify_persist`] for the concrete implementation.
 //!
 //! # Extensibility
 //!
@@ -304,11 +304,7 @@ pub use immune::{
 };
 pub use kind::{Kind, KindEntry, KindRegistry};
 pub use language::{Import, ImportKind, LanguageProvider, Symbol, SymbolKind, Visibility};
-#[allow(deprecated)]
-pub use loop_tick::{
-    SignalSelectionOutcome, TickConfig, TickOutcome, loop_tick, loop_tick_with_config,
-    select_compose_verify_persist,
-};
+pub use loop_tick::{SignalSelectionOutcome, select_compose_verify_persist};
 pub use metric::{ConfigHash, Headlines, TaskMetric, compute_headlines};
 pub use operating_frequency::{
     OperatingFrequency, OperatingFrequencyAffect, OperatingFrequencyScheduleContext,

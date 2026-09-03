@@ -255,7 +255,30 @@ pub(crate) async fn cmd_deploy(cli: &Cli, cmd: DeployCmd) -> Result<i32> {
         DeployCmd::Fly {
             workdir,
             unsafe_public,
-        } => cmd_deploy_fly(cli, workdir, unsafe_public).await,
+            dry_run,
+            app,
+            region,
+            dockerfile,
+            health_path,
+            volume_source,
+            volume_destination,
+            force,
+        } => {
+            cmd_deploy_fly(
+                cli,
+                workdir,
+                unsafe_public,
+                dry_run,
+                &app,
+                &region,
+                &dockerfile,
+                &health_path,
+                &volume_source,
+                &volume_destination,
+                force,
+            )
+            .await
+        }
         DeployCmd::Docker {
             workdir,
             registry,
@@ -432,6 +455,14 @@ pub(crate) async fn cmd_deploy_fly(
     cli: &Cli,
     workdir: Option<PathBuf>,
     unsafe_public: bool,
+    dry_run: bool,
+    app: &str,
+    region: &str,
+    dockerfile: &str,
+    health_path: &str,
+    volume_source: &str,
+    volume_destination: &str,
+    force: bool,
 ) -> Result<i32> {
     let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
     let config = roko_core::config::loader::load_config_unified(&workdir)
@@ -439,7 +470,23 @@ pub(crate) async fn cmd_deploy_fly(
     println!("Checking security posture...");
     check_security_posture(&config, unsafe_public)?;
 
-    write_fly_toml(&workdir)?;
+    let fly_config = FlyTomlConfig {
+        app,
+        region,
+        dockerfile,
+        health_path,
+        volume_source,
+        volume_destination,
+    };
+
+    let path = write_fly_toml(&workdir, &fly_config, force)?;
+    println!("Wrote {}", path.display());
+
+    if dry_run {
+        println!("Dry run: skipping flyctl deploy");
+        return Ok(EXIT_SUCCESS);
+    }
+
     run_command_status(&workdir, "flyctl", &["deploy", "--remote-only"])?;
 
     Ok(EXIT_SUCCESS)
@@ -514,9 +561,61 @@ pub(crate) fn load_template_for_deploy(workdir: &Path, name: &str) -> Result<Vec
     serde_json::to_vec(&template).context("serialize template for worker env")
 }
 
-pub(crate) fn write_fly_toml(workdir: &Path) -> Result<PathBuf> {
+/// Configuration for the generated `fly.toml`.
+pub(crate) struct FlyTomlConfig<'a> {
+    pub app: &'a str,
+    pub region: &'a str,
+    pub dockerfile: &'a str,
+    pub health_path: &'a str,
+    pub volume_source: &'a str,
+    pub volume_destination: &'a str,
+}
+
+pub(crate) fn write_fly_toml(
+    workdir: &Path,
+    config: &FlyTomlConfig<'_>,
+    force: bool,
+) -> Result<PathBuf> {
     let path = workdir.join("fly.toml");
-    std::fs::write(&path, FLY_TOML_TEMPLATE)
+    if path.exists() && !force {
+        bail!(
+            "{} already exists; use --force to overwrite",
+            path.display()
+        );
+    }
+    let content = format!(
+        r#"app = "{app}"
+primary_region = "{region}"
+
+[build]
+dockerfile = "{dockerfile}"
+
+[http_service]
+internal_port = 6677
+force_https = true
+auto_stop_machines = true
+auto_start_machines = true
+min_machines_running = 0
+
+[[http_service.checks]]
+interval = "30s"
+timeout = "5s"
+grace_period = "10s"
+path = "{health_path}"
+method = "GET"
+
+[mounts]
+source = "{volume_source}"
+destination = "{volume_destination}"
+"#,
+        app = config.app,
+        region = config.region,
+        dockerfile = config.dockerfile,
+        health_path = config.health_path,
+        volume_source = config.volume_source,
+        volume_destination = config.volume_destination,
+    );
+    std::fs::write(&path, content)
         .with_context(|| format!("write {}", path.display()))?;
     Ok(path)
 }
@@ -843,27 +942,3 @@ pub(crate) fn run_command_output(workdir: &Path, program: &str, args: &[&str]) -
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-pub(crate) const FLY_TOML_TEMPLATE: &str = r#"app = "roko-agent"
-primary_region = "iad"
-
-[build]
-dockerfile = "Dockerfile"
-
-[http_service]
-internal_port = 6677
-force_https = true
-auto_stop_machines = true
-auto_start_machines = true
-min_machines_running = 0
-
-[[http_service.checks]]
-interval = "30s"
-timeout = "5s"
-grace_period = "10s"
-path = "/health"
-method = "GET"
-
-[mounts]
-source = "roko_data"
-destination = "/data/.roko"
-"#;

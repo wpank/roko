@@ -31,7 +31,6 @@ use tokio::task::JoinHandle;
 use tokio::time::{Duration, timeout};
 use tracing::{error, info, warn};
 
-use crate::gate_runner::FsGeneratedArtifactStore;
 use crate::task_parser::VerifyStep;
 
 use super::types::{
@@ -1266,6 +1265,10 @@ macro_rules! proof_failure {
     };
 }
 /// Spawn a gate rung as a background task. Sends `GateCompletion` when done.
+///
+/// When `gate_adapter` is provided, the worker body delegates through the
+/// shared [`RunnerProductionGateAdapter`] instead of calling `run_gate_once`
+/// directly. This is production redirect #2 from #275.
 pub fn spawn_gate(
     effect: GateEffectRef,
     plan_id: String,
@@ -1285,6 +1288,7 @@ pub fn spawn_gate(
     telemetry_sink: Option<Arc<dyn TelemetryEventSink>>,
     main_target_dir: Option<PathBuf>,
     expected_input_fingerprint: Option<String>,
+    gate_adapter: Option<Arc<RunnerProductionGateAdapter>>,
 ) -> (JoinHandle<()>, oneshot::Sender<()>) {
     let (start_tx, start_rx) = oneshot::channel();
     let handle = tokio::spawn(async move {
@@ -1314,7 +1318,26 @@ pub fn spawn_gate(
                     );
                 }
             }
-            Ok::<_, String>(
+            // #275 redirect: when a shared gate adapter is available, delegate
+            // through it instead of calling `run_gate_once` inline.
+            let completion = if let Some(adapter) = gate_adapter {
+                adapter
+                    .run(
+                        effect,
+                        plan_id,
+                        task_id,
+                        rung,
+                        workdir,
+                        gates_config,
+                        complexity,
+                        verify_steps,
+                        baseline_failed_gates,
+                        timeout_secs,
+                        target_crates,
+                        task_context,
+                    )
+                    .await
+            } else {
                 run_gate_once(
                     effect,
                     plan_id,
@@ -1332,8 +1355,9 @@ pub fn spawn_gate(
                     telemetry_sink,
                     main_target_dir,
                 )
-                .await,
-            )
+                .await
+            };
+            Ok::<_, String>(completion)
         })
         .catch_unwind()
         .await;
@@ -3131,6 +3155,57 @@ pub fn default_gate_adapter() -> RunnerProductionGateAdapter {
     RunnerProductionGateAdapter::new(Arc::new(
         roko_gate::production_service::ProductionGateService::new(),
     ) as Arc<dyn roko_gate::production_service::ProductionGateRunner>)
+}
+
+// ── Generated-test artifact store ───────────────────────────────────────
+
+/// Filesystem-backed store for generated test artifacts, keyed by plan.
+#[derive(Clone, Debug)]
+pub(crate) struct FsGeneratedArtifactStore {
+    root: PathBuf,
+}
+
+impl FsGeneratedArtifactStore {
+    pub(crate) fn new(root: PathBuf) -> Self {
+        Self { root }
+    }
+
+    fn artifact_dir(&self) -> PathBuf {
+        self.root.join("generated-tests")
+    }
+
+    pub(crate) fn matching_entries(&self, prefix: &str) -> Vec<String> {
+        let dir = self.artifact_dir();
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return Vec::new();
+        };
+
+        let mut names: Vec<String> = entries
+            .filter_map(std::result::Result::ok)
+            .filter_map(|entry| {
+                entry.file_type().ok().filter(|kind| kind.is_file())?;
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let logical = format!("generated-tests/{name}");
+                logical.starts_with(prefix).then_some(logical)
+            })
+            .collect();
+        names.sort();
+        names
+    }
+}
+
+impl GeneratedArtifactStore for FsGeneratedArtifactStore {
+    fn list(&self, _plan: &str, prefix: &str) -> Vec<String> {
+        self.matching_entries(prefix)
+    }
+
+    fn read(&self, _plan: &str, name: &str) -> Option<Vec<u8>> {
+        let relative = name.strip_prefix("generated-tests/")?;
+        if relative.contains("..") || relative.contains('/') {
+            return None;
+        }
+        std::fs::read(self.artifact_dir().join(relative)).ok()
+    }
 }
 
 #[cfg(test)]

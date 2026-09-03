@@ -735,12 +735,6 @@ Examples:
         cmd: JobCmd,
     },
 
-    /// Browse and manage marketplace artifacts.
-    Market {
-        #[command(subcommand)]
-        cmd: MarketCmd,
-    },
-
     /// Run benchmark evaluations and write learning telemetry.
     Bench {
         #[command(subcommand)]
@@ -984,17 +978,23 @@ Examples:
         workdir: Option<PathBuf>,
     },
     /// Walk the lineage DAG rooted at a signal hash and print it.
+    ///
+    /// Traversal is breadth-first with lexicographic parent ordering so
+    /// branching output is deterministic.
     Replay {
         /// Signal hash (64 hex chars) to walk.
         hash: String,
-        /// Directory containing `.roko/` (default: cwd).
+        /// Directory containing `.roko/` (default: cwd, respects global --repo).
         #[arg(long)]
         workdir: Option<PathBuf>,
         /// Show forensic detail: timestamps, full hashes, metadata.
         #[arg(long)]
         forensic: bool,
-        /// Filter replay to events from this step forward.
-        #[arg(long)]
+        /// Include only events at or after this traversal index (1-based, inclusive).
+        #[arg(long, conflicts_with = "as_of")]
+        from_event: Option<String>,
+        /// Deprecated: use --from-event instead. Identical semantics.
+        #[arg(long, hide = true, conflicts_with = "from_event")]
         as_of: Option<String>,
         /// Output format: tree (default) or json.
         #[arg(long, default_value = "tree")]
@@ -1423,7 +1423,13 @@ enum LearnCmd {
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
-    /// Tune adaptive thresholds and model routing parameters.
+    /// Read-only inspection of a learning subsystem (gates, routing, budget).
+    Inspect {
+        #[command(subcommand)]
+        subsystem: InspectSubsystem,
+    },
+    /// (deprecated: use `roko learn inspect`) Tune adaptive thresholds and model routing parameters.
+    #[command(hide = true)]
     Tune {
         /// Subsystem to tune: gates, routing, budget.
         #[arg(default_value = "gates")]
@@ -1431,6 +1437,32 @@ enum LearnCmd {
         /// Display current values without modifying.
         #[arg(long)]
         dry_run: bool,
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+}
+
+// -----------------------------------------------------------------------
+// InspectSubsystem — read-only learning inspection targets
+// -----------------------------------------------------------------------
+
+#[derive(Debug, Subcommand)]
+enum InspectSubsystem {
+    /// Inspect adaptive gate threshold state.
+    Gates {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Inspect cascade routing state and model statistics.
+    Routing {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Inspect configured budget limits and spend history.
+    Budget {
         /// Working directory (default: cwd).
         #[arg(long)]
         workdir: Option<PathBuf>,
@@ -2123,6 +2155,52 @@ enum PrdDraftCmd {
     List,
 }
 
+/// Backend selection for grounded research operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum ResearchBackend {
+    /// Automatic selection: configured deep -> Perplexity -> Gemini -> agent fallback.
+    Auto,
+    /// Force Gemini with Google Search grounding.
+    Gemini,
+    /// Force Perplexity search-grounded research.
+    Perplexity,
+    /// Force agent (Claude CLI) fallback.
+    Agent,
+}
+
+impl std::fmt::Display for ResearchBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Auto => f.write_str("auto"),
+            Self::Gemini => f.write_str("gemini"),
+            Self::Perplexity => f.write_str("perplexity"),
+            Self::Agent => f.write_str("agent"),
+        }
+    }
+}
+
+/// Validated recency filter for Perplexity search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum SearchRecency {
+    Hour,
+    Day,
+    Week,
+    Month,
+    Year,
+}
+
+impl SearchRecency {
+    fn as_api_str(self) -> &'static str {
+        match self {
+            Self::Hour => "hour",
+            Self::Day => "day",
+            Self::Week => "week",
+            Self::Month => "month",
+            Self::Year => "year",
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 enum ResearchCmd {
     /// Deep-dive research on a topic. Produces .roko/research/<slug>.md with citations.
@@ -2132,6 +2210,9 @@ enum ResearchCmd {
         /// Use Perplexity deep research (async, 1-10 min).
         #[arg(long, help = "Use Perplexity deep research (async, 1-10 min)")]
         deep: bool,
+        /// Backend to use for research. Default: auto (selects best available).
+        #[arg(long, value_enum, default_value_t = ResearchBackend::Auto)]
+        backend: ResearchBackend,
     },
     /// Enhance a PRD with academic citations, diagrams, and research-backed improvements.
     EnhancePrd {
@@ -2151,7 +2232,14 @@ enum ResearchCmd {
     /// Analyze execution episodes for self-learning insights and bandit weight recommendations.
     Analyze,
     /// List all research artifacts.
-    List,
+    List {
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+        /// Include generated INDEX.md in listing (excluded by default).
+        #[arg(long)]
+        include_generated: bool,
+    },
     /// Direct web search using Perplexity's pure search API. Returns raw results without synthesis.
     Search {
         /// The search query.
@@ -2159,9 +2247,15 @@ enum ResearchCmd {
         /// Restrict results to these domains (comma-separated, e.g. "docs.rs,github.com").
         #[arg(long, value_delimiter = ',')]
         domains: Vec<String>,
-        /// Recency filter: day, week, month, year.
+        /// Recency filter: hour, day, week, month, year.
+        #[arg(long, value_enum)]
+        recency: Option<SearchRecency>,
+        /// Output file path. Default: .roko/research/search-<slug>.md
         #[arg(long)]
-        recency: Option<String>,
+        output: Option<PathBuf>,
+        /// Do not save search results to disk.
+        #[arg(long)]
+        no_save: bool,
     },
 }
 
@@ -2291,57 +2385,6 @@ enum JobCmd {
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
-}
-
-#[derive(Debug, Subcommand)]
-enum MarketCmd {
-    /// Browse marketplace artifacts.
-    #[command(alias = "list")]
-    Browse {
-        #[arg(long)]
-        query: Option<String>,
-        #[arg(long)]
-        tag: Option<String>,
-        #[arg(long)]
-        kind: Option<String>,
-        #[arg(long)]
-        featured: bool,
-    },
-    /// Show one artifact.
-    Show { artifact_ref: String },
-    /// Install an artifact.
-    Install { artifact_ref: String },
-    /// Uninstall an artifact.
-    Uninstall { artifact_ref: String },
-    /// Fork an artifact under an optional new name.
-    Fork {
-        artifact_ref: String,
-        new_name: Option<String>,
-    },
-    /// Publish a local artifact.
-    Publish { local_name: String },
-    /// Verify an artifact checksum and signature.
-    Verify { artifact_ref: String },
-}
-
-fn market_command_name(command: &MarketCmd) -> &'static str {
-    match command {
-        MarketCmd::Browse { .. } => "browse",
-        MarketCmd::Show { .. } => "show",
-        MarketCmd::Install { .. } => "install",
-        MarketCmd::Uninstall { .. } => "uninstall",
-        MarketCmd::Fork { .. } => "fork",
-        MarketCmd::Publish { .. } => "publish",
-        MarketCmd::Verify { .. } => "verify",
-    }
-}
-
-fn cmd_market(command: MarketCmd) -> Result<i32> {
-    println!(
-        "roko market {}: not yet implemented",
-        market_command_name(&command)
-    );
-    Ok(EXIT_SUCCESS)
 }
 
 // Internal enum used by cmd_neuro — mirrors the old top-level NeuroCmd.
@@ -2689,6 +2732,94 @@ enum ConfigCmd {
         #[command(subcommand)]
         cmd: ConfigMcpCmd,
     },
+    // ── Presets ─────────────────────────────────────────────────────
+    /// Apply validated configuration presets (gates, routing, budget, model).
+    Preset {
+        #[command(subcommand)]
+        cmd: ConfigPresetCmd,
+    },
+}
+
+// -----------------------------------------------------------------------
+// ConfigPresetCmd — preset mutation targets
+// -----------------------------------------------------------------------
+
+#[derive(Debug, Subcommand)]
+enum ConfigPresetCmd {
+    /// Apply recommended gate strictness preset.
+    Gates {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Preview the preset diff without writing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip interactive confirmation.
+        #[arg(short = 'y', long)]
+        yes: bool,
+        /// Write to global config instead of project.
+        #[arg(long, conflicts_with = "project")]
+        global: bool,
+        /// Write to project config (default).
+        #[arg(long, conflicts_with = "global")]
+        project: bool,
+    },
+    /// Apply recommended model routing preset with resolved model slugs.
+    Routing {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Preview the preset diff without writing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip interactive confirmation.
+        #[arg(short = 'y', long)]
+        yes: bool,
+        /// Write to global config instead of project.
+        #[arg(long, conflicts_with = "project")]
+        global: bool,
+        /// Write to project config (default).
+        #[arg(long, conflicts_with = "global")]
+        project: bool,
+    },
+    /// Apply recommended budget limits preset.
+    Budget {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Preview the preset diff without writing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip interactive confirmation.
+        #[arg(short = 'y', long)]
+        yes: bool,
+        /// Write to global config instead of project.
+        #[arg(long, conflicts_with = "project")]
+        global: bool,
+        /// Write to project config (default).
+        #[arg(long, conflicts_with = "global")]
+        project: bool,
+    },
+    /// Set the default model from configured models.
+    Model {
+        /// Model key or alias (e.g. sonnet, haiku).
+        name: String,
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Preview the preset diff without writing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip interactive confirmation.
+        #[arg(short = 'y', long)]
+        yes: bool,
+        /// Write to global config instead of project.
+        #[arg(long, conflicts_with = "project")]
+        global: bool,
+        /// Write to project config (default).
+        #[arg(long, conflicts_with = "global")]
+        project: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -2815,10 +2946,13 @@ enum ConfigMcpCmd {
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
-    /// Test whether a named MCP server starts successfully.
+    /// Test an MCP server by performing a real initialize + tools/list handshake.
     Test {
-        /// MCP server name (currently only "roko" is used).
+        /// MCP server name from the config.
         name: String,
+        /// Per-stage timeout in seconds (applies to initialize, tools/list, and shutdown).
+        #[arg(long, default_value_t = roko_core::defaults::DEFAULT_MCP_DISCOVERY_TIMEOUT_SECS, value_parser = clap::value_parser!(u64).range(1..=60))]
+        timeout_secs: u64,
         /// Directory containing `.roko/mcp-config.json` (default: cwd).
         #[arg(long)]
         workdir: Option<PathBuf>,
@@ -3430,7 +3564,6 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
         Command::Knowledge { cmd } => commands::knowledge::dispatch_knowledge(cli, cmd).await,
         Command::Learn { cmd } => commands::learn::dispatch_learn(cli, cmd).await,
         Command::Job { cmd } => commands::job::cmd_job(cli, cmd).await,
-        Command::Market { cmd } => cmd_market(cmd),
         Command::Backlog { cmd } => commands::backlog::cmd_backlog(cli, cmd).await,
         Command::Bench { cmd } => commands::bench::cmd_bench(cli, cmd).await,
         Command::Demo(cmd) => {
@@ -4631,55 +4764,6 @@ mod tests {
         assert!(!cli.json);
         assert!(!cli.quiet);
         assert!(!cli.headless);
-    }
-
-    #[test]
-    fn cli_parses_marketplace_subcommands_and_fields() {
-        let cli = Cli::try_parse_from([
-            "roko",
-            "market",
-            "browse",
-            "--query",
-            "review",
-            "--tag",
-            "strict",
-            "--kind",
-            "graph",
-            "--featured",
-        ])
-        .unwrap();
-        match cli.command {
-            Some(Command::Market {
-                cmd:
-                    MarketCmd::Browse {
-                        query,
-                        tag,
-                        kind,
-                        featured,
-                    },
-            }) => {
-                assert_eq!(query.as_deref(), Some("review"));
-                assert_eq!(tag.as_deref(), Some("strict"));
-                assert_eq!(kind.as_deref(), Some("graph"));
-                assert!(featured);
-            }
-            other => panic!("unexpected command variant: {other:?}"),
-        }
-
-        for (arguments, expected_name) in [
-            (vec!["roko", "market", "show", "@a/x@1"], "show"),
-            (vec!["roko", "market", "install", "@a/x@1"], "install"),
-            (vec!["roko", "market", "uninstall", "@a/x@1"], "uninstall"),
-            (vec!["roko", "market", "fork", "@a/x@1", "mine"], "fork"),
-            (vec!["roko", "market", "publish", "local"], "publish"),
-            (vec!["roko", "market", "verify", "@a/x@1"], "verify"),
-        ] {
-            let cli = Cli::try_parse_from(arguments).unwrap();
-            let Some(Command::Market { cmd }) = cli.command else {
-                panic!("market command did not parse");
-            };
-            assert_eq!(market_command_name(&cmd), expected_name);
-        }
     }
 
     #[test]

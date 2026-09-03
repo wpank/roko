@@ -15,6 +15,11 @@ pub(crate) async fn cmd_dashboard(
     let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
     prepare_runtime_hooks(&workdir, cli.quiet);
 
+    // Acquire a shared lock so the read-only TUI can coexist with other
+    // readers but will fail if an exclusive writer holds the lock.
+    let _lock =
+        roko_cli::workspace_lock::acquire_workspace_lock_shared(&workdir.join(".roko"))?;
+
     let initial_page = page.as_deref().map(|page| {
         parse_dashboard_page(page).ok_or_else(|| {
             anyhow!(

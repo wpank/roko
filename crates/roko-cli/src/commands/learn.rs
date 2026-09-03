@@ -29,6 +29,26 @@ fn display_cost_precise(cost_usd: f64, input_tokens: u64, output_tokens: u64) ->
 
 pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
     let json = cli.json;
+
+    // All learn subcommands are read-only inspections of `.roko/learn/`
+    // files, so acquire a shared lock that can coexist with other readers.
+    let wd_for_lock = match &cmd {
+        LearnCmd::All { workdir }
+        | LearnCmd::Route { workdir }
+        | LearnCmd::Experiments { workdir, .. }
+        | LearnCmd::Efficiency { workdir, .. }
+        | LearnCmd::Episodes { workdir, .. }
+        | LearnCmd::Reflexes { workdir }
+        | LearnCmd::Gates { workdir }
+        | LearnCmd::KnowledgeStats { workdir } => {
+            workdir.clone().unwrap_or_else(|| resolve_workdir(cli))
+        }
+        LearnCmd::Tune { workdir, .. } => workdir.clone().unwrap_or_else(|| resolve_workdir(cli)),
+    };
+    let _lock = roko_cli::workspace_lock::acquire_workspace_lock_shared(
+        &wd_for_lock.join(".roko"),
+    )?;
+
     match cmd {
         LearnCmd::All { workdir } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));

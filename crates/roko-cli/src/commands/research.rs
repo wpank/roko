@@ -13,6 +13,16 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
     };
 
     let workdir = resolve_workdir(cli);
+
+    // Research subcommands that write artifacts need an exclusive lock;
+    // List and Search are read-only and take a shared lock.
+    let _lock = match &cmd {
+        ResearchCmd::List | ResearchCmd::Search { .. } => {
+            roko_cli::workspace_lock::acquire_workspace_lock_shared(&workdir.join(".roko"))?
+        }
+        _ => roko_cli::workspace_lock::acquire_workspace_lock(&workdir.join(".roko"))?,
+    };
+
     roko_cli::research::ensure_dirs(&workdir)?;
     let gw = load_gateway_env(&workdir);
     let model = cli.model.clone().or_else(|| model_from_config(&workdir));

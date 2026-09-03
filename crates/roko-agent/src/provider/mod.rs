@@ -83,7 +83,7 @@ pub mod pre_flight;
 
 pub use anthropic_api::AnthropicApiAdapter;
 pub use cerebras::CerebrasAdapter;
-pub use claude_cli::{ClaudeCliAdapter, CodexCliAdapter};
+pub use claude_cli::ClaudeCliAdapter;
 pub use cursor_acp::CursorAcpAdapter;
 pub use cursor_cli::CursorCliAdapter;
 pub use gemini_cli::GeminiCliAdapter;
@@ -98,7 +98,6 @@ use crate::perplexity::{PerplexityAdapter, SearchOptions};
 static ANTHROPIC_API_ADAPTER: AnthropicApiAdapter = AnthropicApiAdapter;
 static CEREBRAS_ADAPTER: CerebrasAdapter = CerebrasAdapter;
 static CLAUDE_CLI_ADAPTER: ClaudeCliAdapter = ClaudeCliAdapter;
-static CODEX_CLI_ADAPTER: CodexCliAdapter = CodexCliAdapter;
 static CURSOR_ACP_ADAPTER: CursorAcpAdapter = CursorAcpAdapter;
 static CURSOR_CLI_ADAPTER: CursorCliAdapter = CursorCliAdapter;
 static GEMINI_CLI_ADAPTER: GeminiCliAdapter = GeminiCliAdapter;
@@ -183,7 +182,6 @@ pub fn adapter_for_kind(kind: ProviderKind) -> &'static dyn ProviderAdapter {
         ProviderKind::CerebrasApi => &CEREBRAS_ADAPTER,
         ProviderKind::Hermes => &HERMES_ADAPTER,
         ProviderKind::OpenClaw => &OPENCLAW_ADAPTER,
-        ProviderKind::CodexCli => &CODEX_CLI_ADAPTER,
     }
 }
 
@@ -570,7 +568,7 @@ fn provider_kind_for_known_protocol_command(command: &str) -> Option<ProviderKin
 
     match executable {
         "claude" => Some(ProviderKind::ClaudeCli),
-        "codex" => Some(ProviderKind::CodexCli),
+        "codex" => Some(ProviderKind::OpenAiCompat),
         "cursor-agent" | "cursor_agent" => Some(ProviderKind::CursorAcp),
         _ => None,
     }
@@ -766,13 +764,13 @@ pub struct AgentOptions {
     ///   - crates/roko-cli/src/agent_serve.rs:429
     ///   - crates/roko-cli/src/commands/research.rs:66,264,377
     ///   - crates/roko-cli/src/dispatch_v2.rs:1037
-    ///   - (orchestrate.rs removed — logic ported to runner/event_loop.rs)
+    ///   - crates/roko-cli/src/runner/event_loop.rs (runner-v2; orchestrate.rs deleted in E12-T07)
     ///   - crates/roko-cli/src/run.rs:2054,2096
     ///   - crates/roko-cli/tests/smoke.rs:260
     ///   - crates/roko-dreams/src/runner.rs:169
     /// - DIVERGENCE:
     ///   - crates/roko-cli/src/run.rs:2784 (unknown roles default `true`; includes `network`)
-    ///   - (orchestrate.rs removed — typed `AgentRole` logic ported to runner/event_loop.rs)
+    ///   (orchestrate.rs deleted in E12-T07; typed AgentRole now in runner-v2)
     /// - PROPAGATION:
     ///   - crates/roko-agent/src/provider/claude_cli.rs:54
     ///   - crates/roko-agent/src/claude_cli_agent.rs:328
@@ -782,7 +780,7 @@ pub struct AgentOptions {
     ///   - crates/roko-cli/src/dispatch_v2.rs:320
     ///   - crates/roko-cli/src/dispatch_v2.rs:357
     ///   - crates/roko-cli/src/dispatch_v2.rs:728
-    ///   - (orchestrate.rs removed — propagation ported to runner/event_loop.rs)
+    ///   - crates/roko-cli/src/runner/event_loop.rs (runner-v2; orchestrate.rs deleted in E12-T07)
     ///   - crates/roko-cli/src/run.rs:1923,2003
     /// Default MUST be `false`. PE_02 will flip all NEEDS FIX sites.
     pub dangerously_skip_permissions: bool,

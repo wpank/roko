@@ -1,4 +1,4 @@
-//! Verify-related free functions and types extracted from the legacy orchestrator.
+//! Verify-related free functions and types (originally extracted from the legacy orchestrator).
 //!
 //! This module contains gate helpers that do not require `&self` access to
 //! `PlanRunner`. The heavy gate methods (`run_gate_pipeline`, `run_gate_rung`,

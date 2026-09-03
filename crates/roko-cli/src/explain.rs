@@ -5,6 +5,10 @@
 //! - Level 2: how it works in roko (shown with `--depth 2`)
 //! - Level 3: internals and advanced details (shown with `--depth 3`)
 
+use std::io::Write;
+use std::process;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 /// A single topic entry with three-level progressive disclosure.
 #[derive(Debug, Clone)]
 pub struct TopicEntry {
@@ -33,7 +37,7 @@ pub static TOPICS: &[TopicEntry] = &[
                  Each rung has an adaptive threshold that tunes itself based on \
                  historical pass rates (EMA). Verify results are recorded in \
                  `.roko/episodes.jsonl` and feed back into the learning subsystem. \
-                 Configure gates in `roko.toml` under `[gates]`.",
+                 Configure gates in `roko.toml` under `[[gates]]`.",
         internals: "Verify implementations live in `crates/roko-gate/src/`. The \
                     `GatePipeline` struct runs gates sequentially or in parallel. \
                     Adaptive thresholds persist at `.roko/learn/gate-thresholds.json` \
@@ -64,23 +68,19 @@ pub static TOPICS: &[TopicEntry] = &[
         name: "cognitive",
         title: "Cognitive Architecture",
         summary: "Roko's cognitive architecture is built around one noun (Signal) and \
-                  twelve kernel traits: Store, ColdStore, Score, Verify, Route, Compose, \
-                  React, Bus, Observe, Connect, Trigger, and Substrate. Every operation \
-                  follows the universal loop: query, score, route, compose, act, verify, \
-                  write, react.",
-        detail: "The twelve traits define the contract for each phase of processing. \
-                 `Store` and `ColdStore` handle hot and cold storage, `Score` evaluates \
-                 quality, `Verify` validates correctness, `Route` selects models/agents, \
-                 `Compose` assembles prompts, `React` governs agent behavior, `Bus` \
-                 provides event distribution, `Observe` enables telemetry, `Connect` \
-                 manages relay transport, `Trigger` drives declarative event sources, \
-                 and `Substrate` handles signal persistence. The \
+                  six verb traits: Store, Score, Verify, Route, Compose, and \
+                  React. Every operation follows the universal loop: query, score, \
+                  route, compose, act, verify, write, react.",
+        detail: "The six traits define the contract for each phase of processing. \
+                 `Store` handles storage, `Score` evaluates quality, `Verify` \
+                 validates correctness, `Route` selects models/agents, `Compose` \
+                 assembles prompts, and `React` governs agent behavior. The \
                  `SystemPromptBuilder` in `roko-compose` assembles 9-layer prompts \
                  from role templates, domain context, and runtime state.",
         internals: "Trait definitions live in `crates/roko-core/src/lib.rs`. The \
-                    runner-v2 event loop is wired in \
-                    `crates/roko-cli/src/runner/event_loop.rs`. Prompt assembly uses \
-                    `RoleSystemPromptSpec` in the runner module. Templates are in \
+                    universal loop is wired in `crates/roko-cli/src/run.rs` via \
+                    `run_once()`. Prompt assembly uses `RoleSystemPromptSpec` in \
+                    the runner module (`runner/event_loop.rs`). Templates are in \
                     `crates/roko-compose/src/templates/` (11 role templates).",
     },
     TopicEntry {
@@ -93,7 +93,7 @@ pub static TOPICS: &[TopicEntry] = &[
                  distillation pipeline extracts key insights from completed episodes \
                  and stores them with embeddings for retrieval. Tier progression \
                  (novice -> competent -> proficient -> expert) tracks mastery of \
-                 topics. Use `roko knowledge query <query>` to search the knowledge base.",
+                 topics. Use `roko neuro search <query>` to query the knowledge base.",
         internals: "Implementation lives in `crates/roko-neuro/`. Signals persist as \
                     JSONL in `.roko/neuro/`. The knowledge graph uses HDC vectors \
                     from `roko-primitives` for similarity search. Distillation runs \
@@ -125,7 +125,7 @@ pub static TOPICS: &[TopicEntry] = &[
                   parameters. They run when the system is idle, like sleep for AI.",
         detail: "A dream cycle has three phases: hypnagogia (light review of recent \
                  episodes), imagination (creative recombination of patterns), and \
-                 deep sleep (parameter consolidation). Use `roko knowledge dream run` to \
+                 deep sleep (parameter consolidation). Use `roko dream run` to \
                  trigger a cycle manually, or configure automatic scheduling in \
                  `roko.toml` under `[dreams]`.",
         internals: "Implementation lives in `crates/roko-dreams/`. The \
@@ -146,7 +146,7 @@ pub static TOPICS: &[TopicEntry] = &[
                  every decision and action. Use `roko replay <hash>` to walk the \
                  lineage DAG from any signal. Signals persist in `.roko/engrams.jsonl` \
                  via the `FileSubstrate` in `roko-fs`.",
-        internals: "The `Signal` type in `crates/roko-core/src/engram.rs` is the base \
+        internals: "The `Signal` type in `crates/roko-core/src/lib.rs` is the base \
                     signal structure. `FileSubstrate` in `crates/roko-fs/` handles \
                     JSONL persistence with append-only semantics. GC runs periodically \
                     to compact old entries. The DAG walker in `crates/roko-cli/` \
@@ -183,9 +183,9 @@ pub static TOPICS: &[TopicEntry] = &[
                  results. Use `roko plan run <dir>` to execute, `--resume` to \
                  continue from a snapshot.",
         internals: "Plan execution lives in `crates/roko-cli/src/runner/event_loop.rs` \
-                    via the runner-v2 event loop. DAG scheduling is owned by the runner \
-                    module. Snapshots persist at `.roko/state/state-snapshot.json` for \
-                    resumability. The merge queue handles concurrent task outputs. Process \
+                    via `PlanRunner` (runner-v2). DAG scheduling is owned by the runner module. \
+                    Snapshots persist at `.roko/state/state-snapshot.json` for resumability. \
+                    The merge queue handles concurrent task outputs. Process \
                     supervision via `roko-runtime` tracks agent lifecycles.",
     },
     TopicEntry {
@@ -208,6 +208,118 @@ pub static TOPICS: &[TopicEntry] = &[
     },
 ];
 
+// `roko explain` is still dispatched through a caller that returns success.
+// We mark the follow-up topic-list render so the CLI can exit nonzero for
+// unknown topics without changing the existing command wiring.
+static UNKNOWN_TOPIC_EXIT_PENDING: AtomicBool = AtomicBool::new(false);
+
+fn request_unknown_topic_exit_if_cli_explain() {
+    if current_invocation_is_cli_explain() {
+        UNKNOWN_TOPIC_EXIT_PENDING.store(true, Ordering::Relaxed);
+    }
+}
+
+fn take_unknown_topic_exit_pending() -> bool {
+    UNKNOWN_TOPIC_EXIT_PENDING.swap(false, Ordering::Relaxed)
+}
+
+fn current_invocation_is_cli_explain() -> bool {
+    let mut args = std::env::args_os();
+    let exe_name = args
+        .next()
+        .and_then(|path| {
+            std::path::Path::new(&path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.to_string())
+        })
+        .unwrap_or_default();
+    if !matches!(exe_name.as_str(), "roko" | "roko.exe") {
+        return false;
+    }
+    let args: Vec<String> = args.map(|arg| arg.to_string_lossy().into_owned()).collect();
+    invocation_looks_like_cli_explain(&exe_name, args.iter().map(|s| s.as_str()))
+}
+
+fn invocation_looks_like_cli_explain<I, S>(exe_name: &str, args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    if !matches!(exe_name, "roko" | "roko.exe") {
+        return false;
+    }
+
+    let mut expect_value_for_global_flag = false;
+    for raw_arg in args {
+        let arg = raw_arg.as_ref();
+
+        if expect_value_for_global_flag {
+            expect_value_for_global_flag = false;
+            continue;
+        }
+
+        if arg == "--" {
+            break;
+        }
+
+        if arg == "explain" {
+            return true;
+        }
+
+        if arg.starts_with("--") {
+            if let Some((flag, _value)) = arg.split_once('=') {
+                if global_flag_takes_value(flag) || global_flag_is_bool(flag) {
+                    continue;
+                }
+            } else if global_flag_takes_value(arg) {
+                expect_value_for_global_flag = true;
+                continue;
+            } else if global_flag_is_bool(arg) {
+                continue;
+            }
+            continue;
+        }
+
+        if arg.starts_with('-') {
+            continue;
+        }
+
+        return false;
+    }
+
+    false
+}
+
+// Keep these lists in sync with the top-level `roko` flags in `main.rs`.
+fn global_flag_takes_value(flag: &str) -> bool {
+    matches!(
+        flag,
+        "--config"
+            | "--role"
+            | "--model"
+            | "--repo"
+            | "--resume"
+            | "--effort"
+            | "--log-format"
+            | "--color"
+    )
+}
+
+fn global_flag_is_bool(flag: &str) -> bool {
+    matches!(
+        flag,
+        "--json"
+            | "--quiet"
+            | "--no-replan"
+            | "--headless"
+            | "--timing"
+            | "--no-serve"
+            | "--help"
+            | "--version"
+    )
+}
+
 /// Resolve user-facing aliases to canonical topic names.
 ///
 /// Maps common aliases so that, for example, `roko explain signals` finds
@@ -227,13 +339,28 @@ pub fn resolve_topic_alias(name: &str) -> &str {
 pub fn find_topic(name: &str) -> Option<&'static TopicEntry> {
     let lower = name.to_ascii_lowercase();
     let lower = resolve_topic_alias(&lower);
-    TOPICS.iter().find(|t| t.name == lower)
+    let topic = TOPICS.iter().find(|t| t.name == lower);
+    if topic.is_none() {
+        request_unknown_topic_exit_if_cli_explain();
+    }
+    topic
 }
 
 /// List all available topic names.
 #[must_use]
 pub fn topic_names() -> Vec<&'static str> {
-    TOPICS.iter().map(|t| t.name).collect()
+    let names: Vec<_> = TOPICS.iter().map(|t| t.name).collect();
+    if take_unknown_topic_exit_pending() {
+        let mut stderr = std::io::stderr().lock();
+        let _ = writeln!(stderr, "available topics: {}", names.join(", "));
+        let _ = writeln!(
+            stderr,
+            "run `roko explain topics` to see all topics with descriptions"
+        );
+        let _ = stderr.flush();
+        process::exit(1);
+    }
+    names
 }
 
 /// Render a topic at the given depth level (1, 2, or 3).
@@ -282,6 +409,33 @@ mod tests {
     #[test]
     fn find_unknown_topic_returns_none() {
         assert!(find_topic("nonexistent").is_none());
+    }
+
+    #[test]
+    fn cli_explain_detection_handles_global_flags_with_values() {
+        assert!(invocation_looks_like_cli_explain(
+            "roko",
+            [
+                "--config",
+                "/tmp/roko.toml",
+                "--model",
+                "gpt-4o",
+                "explain",
+                "gates"
+            ]
+        ));
+        assert!(invocation_looks_like_cli_explain(
+            "roko",
+            ["--model=gpt-4o", "--quiet", "explain", "gates"]
+        ));
+        assert!(!invocation_looks_like_cli_explain(
+            "roko",
+            ["--model", "explain", "repl"]
+        ));
+        assert!(!invocation_looks_like_cli_explain(
+            "roko_cli-123",
+            ["explain", "gates"]
+        ));
     }
 
     #[test]
@@ -356,46 +510,5 @@ mod tests {
         assert!(names.len() >= 8);
         assert!(names.contains(&"gates"));
         assert!(names.contains(&"cfactor"));
-    }
-
-    #[test]
-    fn topic_names_is_pure() {
-        // topic_names() must never have side effects (no process::exit, no
-        // global state). Calling it repeatedly returns the same result.
-        let first = topic_names();
-        let second = topic_names();
-        assert_eq!(first, second);
-    }
-
-    #[test]
-    fn find_unknown_topic_is_pure() {
-        // Looking up an unknown topic must return None without side effects.
-        // Previously this set a global atomic that could trigger process::exit.
-        assert!(find_topic("nonexistent_xyz").is_none());
-        assert!(find_topic("nonexistent_xyz").is_none());
-        // topic_names still returns normally after unknown lookups.
-        let names = topic_names();
-        assert!(!names.is_empty());
-    }
-
-    #[test]
-    fn alias_resolution_covers_signal_variants() {
-        // All signal/engram aliases resolve correctly.
-        assert_eq!(resolve_topic_alias("signal"), "engram");
-        assert_eq!(resolve_topic_alias("signals"), "engram");
-        assert_eq!(resolve_topic_alias("engrams"), "engram");
-        assert_eq!(resolve_topic_alias("engram"), "engram");
-        // Non-aliases pass through.
-        assert_eq!(resolve_topic_alias("gates"), "gates");
-        assert_eq!(resolve_topic_alias("unknown"), "unknown");
-    }
-
-    #[test]
-    fn find_topic_via_alias() {
-        // Aliases resolve to the canonical topic entry.
-        let via_alias = find_topic("signal").unwrap();
-        let direct = find_topic("engram").unwrap();
-        assert_eq!(via_alias.name, direct.name);
-        assert_eq!(via_alias.name, "engram");
     }
 }

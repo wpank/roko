@@ -1,4 +1,4 @@
-//! Dispatch and prompt-building helpers extracted from the legacy orchestrator.
+//! Dispatch and prompt-building helpers (originally extracted from the legacy orchestrator).
 //!
 //! Free functions for system prompt assembly, tool allowlists, task
 //! conversion, context building, and output handling.

@@ -312,7 +312,7 @@ mod tests {
                      This plan implements the context provider system.\n\n\
                      ## Phase 1: Core types\n\n\
                      First, create the core types in context_provider.rs.\n\n\
-                     ## Phase 2: Wire into the runner event loop\n\n\
+                     ## Phase 2: Wire into event_loop.rs\n\n\
                      The event_loop.rs file needs to call the context provider\n\
                      during dispatch_agent, between task parsing and prompt composition.\n\n\
                      ## Phase 3: Testing\n\n\

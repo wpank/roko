@@ -1,4 +1,4 @@
-//! Learning and efficiency helpers extracted from the legacy orchestrator.
+//! Learning and efficiency helpers (originally extracted from the legacy orchestrator).
 //!
 //! Free functions for turn-level learning feedback, efficiency signals,
 //! skill/playbook loading, experiment overrides, and episode distillation.

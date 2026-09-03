@@ -15,8 +15,9 @@ temperament = "balanced"
 [agent.roles]
 
 [budget]
-max_plan_usd = 0.0
-max_turn_usd = 0.0
+# Explicit nonzero spend ceilings. 0.0 means unlimited (no cap).
+max_plan_usd = 10.0
+max_turn_usd = 0.50
 prompt_token_budget = 10000
 
 [chain]
@@ -32,7 +33,6 @@ max_age_days = 7
 
 [conductor]
 auto_fix_model = "claude-haiku-4-5"
-context_pressure_enabled = false
 express_mode = false
 max_agents = 8
 max_auto_fix_attempts = 3
@@ -47,9 +47,6 @@ worker_image = "ghcr.io/nunchi-trade/roko-worker:latest"
 
 [feed_agents]
 enabled = false
-
-# NOTE: [[gate]] top-level array removed (2026-09-03) — phantom section,
-# silently ignored. Custom gates belong under [[gates.rungs]].
 
 [gates]
 cargo_fix_enabled = true
@@ -112,9 +109,6 @@ sample_every = 1
 
 [graduation.policies.watch]
 Prefix = "heartbeat."
-
-# NOTE: [isfr] section removed (2026-09-03) — dead rate-oracle vestige,
-# no corresponding struct in RokoConfig; silently discarded on parse.
 
 [learning]
 auto_playbook_refresh = true

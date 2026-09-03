@@ -430,14 +430,36 @@ pub async fn cmd_validate(workdir: &Path) -> Result<()> {
         }
     };
 
-    if let Err(err) = toml::from_str::<toml::Value>(&text) {
-        print_phase_status("Phase 1: TOML syntax", false);
-        println!("  ✗ {err}");
+    let parsed_value = match toml::from_str::<toml::Value>(&text) {
+        Ok(v) => v,
+        Err(err) => {
+            print_phase_status("Phase 1: TOML syntax", false);
+            println!("  ✗ {err}");
+            println!();
+            println!("Result: 0 warnings, 1 error");
+            return Err(anyhow!("config validation failed"));
+        }
+    };
+    print_phase_status("Phase 1: TOML syntax", true);
+
+    // Phase 1b: validate all TOML paths against the RokoConfig schema.
+    // Unknown paths are errors in `roko config validate`.
+    let path_diagnostics =
+        roko_core::config::loader::validate_known_config_paths(&parsed_value);
+    if !path_diagnostics.is_empty() {
+        print_phase_status("Phase 1b: Config path validation", false);
+        for diag in &path_diagnostics {
+            println!(
+                "  ✗ {}: {}",
+                config_path.display(),
+                diag.message
+            );
+        }
         println!();
-        println!("Result: 0 warnings, 1 error");
+        println!("Result: 0 warnings, {} errors", path_diagnostics.len());
         return Err(anyhow!("config validation failed"));
     }
-    print_phase_status("Phase 1: TOML syntax", true);
+    print_phase_status("Phase 1b: Config path validation", true);
 
     let config = match toml::from_str::<RokoConfig>(&text) {
         Ok(config) => config,

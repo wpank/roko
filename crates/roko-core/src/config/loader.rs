@@ -42,7 +42,7 @@
 //! - `ROKO__CONDUCTOR__MAX_AGENTS=16` -> `conductor.max_agents = 16`
 //! - `ROKO__GATES__SKIP_TESTS=true` -> `gates.skip_tests = true`
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -1160,61 +1160,337 @@ fn invariant_diagnostics(config: &RokoConfig) -> Vec<ConfigDiagnostic> {
         .collect()
 }
 
-fn unknown_field_diagnostics(value: &toml::Value) -> Vec<ConfigDiagnostic> {
-    const TOP_LEVEL_FIELDS: &[&str] = &[
-        "config_version",
-        "schema_version",
-        "project",
-        "prd",
-        "agent",
-        "providers",
-        "models",
-        "profiles",
-        "gate",
-        "gates",
-        "graduation",
-        "isfr",
-        "routing",
-        "pipeline",
-        "budget",
-        "conductor",
-        "watcher",
-        "learning",
-        "tui",
-        "timeouts",
-        "statehub",
-        "serve",
-        "scheduler",
-        "webhooks",
-        "github",
-        "subscriptions",
-        "server",
-        "deploy",
-        "perplexity",
-        "gemini",
-        "tools",
-        "chain",
-        "relay",
-        "feed_agents",
-        "runner",
-        "agents",
-        "validation",
-        "cold_storage",
-        "prompt",
-        "resources",
-    ];
+/// Sections whose keys are user-defined names (dynamic maps).
+///
+/// Keys under these dotted paths are treated as dynamic identifiers and are not
+/// validated against the schema tree. Their *values* are validated against the
+/// value schema of the map.
+const DYNAMIC_MAP_SECTIONS: &[&str] = &[
+    "providers",
+    "models",
+    "profiles",
+    "agent.roles",
+    "tools.profiles",
+];
 
-    let Some(table) = value.as_table() else {
-        return Vec::new();
+/// Sections that were removed from the schema and must produce a targeted
+/// migration/removal diagnostic rather than a generic "unknown field" message.
+const LEGACY_REMOVED_SECTIONS: &[(&str, &str)] = &[
+    (
+        "isfr",
+        "the [isfr] section was removed (dead rate-oracle vestige); \
+         delete it from your config",
+    ),
+    (
+        "gate",
+        "top-level [[gate]] is a legacy alias ignored by runner-v2; \
+         migrate entries to [[gates.rungs]] via `roko config migrate` \
+         or move them manually under [gates]",
+    ),
+];
+
+/// Validate every path in the input TOML against the `RokoConfig` schema.
+///
+/// Builds an allowed-key tree by serializing a default `RokoConfig` to a
+/// `toml::Value`, then walks the input recursively. Dynamic map sections
+/// (providers, models, profiles, agent.roles, tools.profiles) treat their
+/// keys as user-defined names and validate each value against the map's
+/// value schema. Legacy removed sections produce targeted diagnostics.
+///
+/// This replaces the previous top-level-only `unknown_field_diagnostics`.
+pub fn validate_known_config_paths(value: &toml::Value) -> Vec<ConfigDiagnostic> {
+    let schema = build_schema_tree();
+    let mut diagnostics = Vec::new();
+    walk_config_paths(value, &schema, "", &mut diagnostics);
+    diagnostics
+}
+
+/// Build a schema tree that includes all `RokoConfig` fields, including those
+/// skipped by `skip_serializing_if` on the default value.
+///
+/// The default `RokoConfig` serializes most sections, but empty collections
+/// with `skip_serializing_if = "Vec::is_empty"` (subscriptions, agents,
+/// groups, repos) and conditional structs (watcher, profiles) are omitted.
+/// We populate those with sentinel entries so the walker accepts them.
+fn build_schema_tree() -> toml::Value {
+    use super::agent::RoleOverride;
+    use super::provider::{ModelProfile, ProviderConfig};
+    use super::schema::DomainProfile;
+    use super::subscriptions::SubscriptionConfig;
+
+    let mut config = RokoConfig::default();
+
+    // Add a sentinel entry in each dynamic/conditional section so its keys
+    // and value schemas appear in the serialized tree.
+    // Provider sentinel: set Optional fields to Some so they appear in the
+    // serialized schema tree. The values are never used at runtime.
+    let mut sentinel_provider = ProviderConfig::default();
+    sentinel_provider.extra_headers = Some(HashMap::new());
+    sentinel_provider.max_concurrent = Some(1);
+    sentinel_provider.limits = Some(Default::default());
+    sentinel_provider.base_url = Some(String::new());
+    sentinel_provider.api_key_env = Some(String::new());
+    sentinel_provider.command = Some(String::new());
+    sentinel_provider.args = Some(Vec::new());
+    config.providers.insert(
+        "_schema_sentinel".to_string(),
+        sentinel_provider,
+    );
+
+    // Model sentinel: set all Optional and skip_serializing_if fields to
+    // non-default values so every field appears in the serialized schema tree.
+    let sentinel_model = ModelProfile {
+        max_output: Some(0),
+        supports_thinking: true,
+        supports_vision: true,
+        supports_web_search: true,
+        supports_mcp_tools: true,
+        supports_partial: true,
+        supports_grounding: true,
+        supports_code_execution: true,
+        supports_caching: true,
+        supports_search: true,
+        supports_citations: true,
+        supports_async: true,
+        is_embedding_model: true,
+        provider_routing: Some(Default::default()),
+        cost_input_per_m: Some(0.0),
+        cost_output_per_m: Some(0.0),
+        cost_input_per_m_high: Some(0.0),
+        cost_output_per_m_high: Some(0.0),
+        cost_cache_read_per_m: Some(0.0),
+        cost_cache_write_per_m: Some(0.0),
+        cost_per_request: Some(0.0),
+        thinking_level: Some(String::new()),
+        max_tools: Some(0),
+        max_tool_iterations: Some(0),
+        tokenizer_ratio: Some(0.0),
+        search_context_size: Some(String::new()),
+        ..ModelProfile::default()
     };
-    table
-        .keys()
-        .filter(|key| !TOP_LEVEL_FIELDS.contains(&key.as_str()))
-        .map(|key| ConfigDiagnostic {
-            key: key.clone(),
-            message: format!("unknown config field '{key}' was ignored"),
-        })
-        .collect()
+    config.models.insert(
+        "_schema_sentinel".to_string(),
+        sentinel_model,
+    );
+    config.profiles.insert(
+        "_schema_sentinel".to_string(),
+        DomainProfile::default(),
+    );
+    config
+        .agent
+        .roles
+        .insert("_schema_sentinel".to_string(), RoleOverride::default());
+    config.subscriptions.push(SubscriptionConfig::default());
+
+    let mut value = toml::Value::try_from(config)
+        .expect("sentinel RokoConfig must serialize to toml::Value");
+
+    // Sections backed by Vec<T> where T lacks Default or conditional
+    // structs with `skip_serializing_if` are added to the schema tree so
+    // their keys are accepted. Empty arrays accept any element; empty
+    // tables accept nested subsections by name.
+    if let Some(table) = value.as_table_mut() {
+        for key in &["agents", "groups", "repos"] {
+            table.entry((*key).to_string()).or_insert_with(|| toml::Value::Array(Vec::new()));
+        }
+        // `watcher` is skipped when empty. Add an empty table so
+        // `[watcher]` and `[watcher.paths]` are accepted.
+        table.entry("watcher".to_string()).or_insert_with(|| {
+            let mut watcher_table = toml::map::Map::new();
+            watcher_table.insert("paths".to_string(), toml::Value::Array(Vec::new()));
+            toml::Value::Table(watcher_table)
+        });
+    }
+
+    value
+}
+
+/// Walk the input TOML tree against the schema tree, collecting diagnostics
+/// for unknown keys at every nesting level.
+fn walk_config_paths(
+    input: &toml::Value,
+    schema: &toml::Value,
+    prefix: &str,
+    diagnostics: &mut Vec<ConfigDiagnostic>,
+) {
+    let Some(input_table) = input.as_table() else {
+        return;
+    };
+
+    // Check if the current path is a dynamic map section.
+    let is_dynamic = DYNAMIC_MAP_SECTIONS
+        .iter()
+        .any(|section| !prefix.is_empty() && *section == prefix);
+
+    if is_dynamic {
+        // Keys are user-defined names. Validate each value against the schema
+        // value template (the first value in the default, or the schema table
+        // itself if it is empty).
+        let value_schema = schema
+            .as_table()
+            .and_then(|t| t.values().next())
+            .cloned();
+        if let Some(ref vs) = value_schema {
+            for (key, val) in input_table {
+                let child_path = if prefix.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{prefix}.{key}")
+                };
+                walk_config_paths(val, vs, &child_path, diagnostics);
+            }
+        }
+        // If the schema map is empty (no default value template), accept all
+        // keys without further validation.
+        return;
+    }
+
+    let schema_table = match schema.as_table() {
+        Some(t) => t,
+        None => return,
+    };
+
+    let known_keys: Vec<&str> = schema_table.keys().map(String::as_str).collect();
+
+    for (key, val) in input_table {
+        let dotted = if prefix.is_empty() {
+            key.clone()
+        } else {
+            format!("{prefix}.{key}")
+        };
+
+        // Check for legacy removed sections first.
+        if let Some((_, message)) = LEGACY_REMOVED_SECTIONS
+            .iter()
+            .find(|(section, _)| *section == dotted)
+        {
+            diagnostics.push(ConfigDiagnostic {
+                key: dotted,
+                message: message.to_string(),
+            });
+            continue;
+        }
+
+        if schema_table.contains_key(key) {
+            // Known key — check if both sides are tables/arrays and recurse.
+            let schema_val = &schema_table[key];
+            let child_path = if prefix.is_empty() {
+                key.clone()
+            } else {
+                format!("{prefix}.{key}")
+            };
+
+            // For arrays of tables, validate each element against the schema
+            // array's element template (first element of the default).
+            if let (Some(input_arr), Some(schema_arr)) =
+                (val.as_array(), schema_val.as_array())
+            {
+                if let Some(element_schema) = schema_arr.first() {
+                    for (i, element) in input_arr.iter().enumerate() {
+                        let elem_path = format!("{child_path}[{i}]");
+                        walk_config_paths(element, element_schema, &elem_path, diagnostics);
+                    }
+                }
+                // Empty schema arrays (no template element) accept all entries.
+            } else if is_likely_enum_table(schema_val, val) {
+                // Serde-tagged enums serialize as single-key tables (e.g.
+                // `{ "Prefix": "..." }`). When the schema has one variant
+                // and the input has a different variant, accept it rather
+                // than flagging the variant name as unknown.
+            } else {
+                walk_config_paths(val, schema_val, &child_path, diagnostics);
+            }
+        } else {
+            // Unknown key. Suggest nearest match if edit distance is small.
+            let suggestion = find_nearest_key(key, &known_keys);
+            let msg = match suggestion {
+                Some(nearest) => format!(
+                    "unknown config key '{dotted}' (did you mean '{prefix_dot}{nearest}'?)",
+                    prefix_dot = if prefix.is_empty() {
+                        String::new()
+                    } else {
+                        format!("{prefix}.")
+                    }
+                ),
+                None => format!("unknown config key '{dotted}'"),
+            };
+            diagnostics.push(ConfigDiagnostic {
+                key: dotted,
+                message: msg,
+            });
+        }
+    }
+}
+
+/// Heuristic: detect serde-tagged enum tables.
+///
+/// When both the schema and input are tables with exactly one key each, and
+/// those keys differ, the values likely represent two variants of a serde
+/// externally-tagged enum. Returns `true` so the walker skips recursive
+/// validation (because the schema variant differs from the input variant).
+fn is_likely_enum_table(schema: &toml::Value, input: &toml::Value) -> bool {
+    let (Some(st), Some(it)) = (schema.as_table(), input.as_table()) else {
+        return false;
+    };
+    st.len() == 1
+        && it.len() == 1
+        && st.keys().next() != it.keys().next()
+}
+
+/// Find the nearest known key by edit distance (Levenshtein).
+///
+/// Returns `Some(key)` when the distance is at most 2 edits and the key is
+/// at least 3 characters long (to avoid spurious suggestions for short keys).
+fn find_nearest_key<'a>(input: &str, candidates: &[&'a str]) -> Option<&'a str> {
+    if input.len() < 3 {
+        return None;
+    }
+    let mut best: Option<(&str, usize)> = None;
+    for &candidate in candidates {
+        let dist = levenshtein_distance(input, candidate);
+        if dist > 0 && dist <= 2 {
+            if best.is_none() || dist < best.unwrap().1 {
+                best = Some((candidate, dist));
+            }
+        }
+    }
+    best.map(|(key, _)| key)
+}
+
+/// Minimal Levenshtein distance for typo detection.
+fn levenshtein_distance(a: &str, b: &str) -> usize {
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+    let (m, n) = (a_chars.len(), b_chars.len());
+
+    // Early exit for large differences.
+    if m.abs_diff(n) > 2 {
+        return m.abs_diff(n);
+    }
+
+    let mut prev = (0..=n).collect::<Vec<_>>();
+    let mut curr = vec![0; n + 1];
+
+    for i in 1..=m {
+        curr[0] = i;
+        for j in 1..=n {
+            let cost = if a_chars[i - 1] == b_chars[j - 1] {
+                0
+            } else {
+                1
+            };
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[n]
+}
+
+/// Backward-compatible wrapper that `parse_from_resolved_path` calls.
+///
+/// Uses [`validate_known_config_paths`] for full nested validation.
+fn unknown_field_diagnostics(value: &toml::Value) -> Vec<ConfigDiagnostic> {
+    validate_known_config_paths(value)
 }
 
 /// Serialize the effective (fully-resolved) config as TOML.
@@ -2780,5 +3056,240 @@ strict_validation = true
                 std::env::set_var("HOME", h);
             }
         }
+    }
+
+    // ---- #340: config schema integrity and live config repair ----
+
+    #[test]
+    fn validate_paths_detects_unknown_top_level_key() {
+        let value: toml::Value = "schema_version = 2\nconfig_version = 2\nbogus = 'x'\n"
+            .parse()
+            .unwrap();
+        let diags = validate_known_config_paths(&value);
+        assert!(
+            diags.iter().any(|d| d.key == "bogus" && d.message.contains("unknown")),
+            "expected diagnostic for top-level 'bogus', got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn validate_paths_detects_unknown_nested_key() {
+        let value: toml::Value =
+            "schema_version = 2\nconfig_version = 2\n[budget]\nmax_plna_usd = 5.0\n"
+                .parse()
+                .unwrap();
+        let diags = validate_known_config_paths(&value);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.key == "budget.max_plna_usd"
+                    && d.message.contains("max_plan_usd")),
+            "expected typo suggestion for 'budget.max_plna_usd', got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn validate_paths_accepts_dynamic_provider_model_profile_keys() {
+        let value: toml::Value = r#"
+schema_version = 2
+config_version = 2
+[providers.my-custom-provider]
+kind = "openai_compat"
+base_url = "https://example.com"
+[models.my-custom-model]
+provider = "my-custom-provider"
+slug = "custom-v1"
+context_window = 8000
+[profiles.my-domain]
+name = "my-domain"
+"#
+        .parse()
+        .unwrap();
+        let diags = validate_known_config_paths(&value);
+        let unexpected: Vec<_> = diags
+            .iter()
+            .filter(|d| {
+                d.key.starts_with("providers.")
+                    || d.key.starts_with("models.")
+                    || d.key.starts_with("profiles.")
+            })
+            .collect();
+        assert!(
+            unexpected.is_empty(),
+            "dynamic map keys must not produce diagnostics: {unexpected:?}"
+        );
+    }
+
+    #[test]
+    fn validate_paths_detects_unknown_key_inside_dynamic_value() {
+        let value: toml::Value = r#"
+schema_version = 2
+config_version = 2
+[providers.my-prov]
+kind = "openai_compat"
+bogus_field = "x"
+"#
+        .parse()
+        .unwrap();
+        let diags = validate_known_config_paths(&value);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.key == "providers.my-prov.bogus_field"
+                    && d.message.contains("unknown")),
+            "expected diagnostic for 'providers.my-prov.bogus_field', got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn validate_paths_diagnoses_isfr_as_removed() {
+        let value: toml::Value = "schema_version = 2\nconfig_version = 2\n[isfr]\nkey = 1\n"
+            .parse()
+            .unwrap();
+        let diags = validate_known_config_paths(&value);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.key == "isfr" && d.message.contains("removed")),
+            "expected removal diagnostic for [isfr], got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn validate_paths_diagnoses_legacy_gate_with_migration_guidance() {
+        let value: toml::Value =
+            "schema_version = 2\nconfig_version = 2\n[[gate]]\nprogram = 'test'\n"
+                .parse()
+                .unwrap();
+        let diags = validate_known_config_paths(&value);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.key == "gate"
+                    && d.message.contains("gates.rungs")),
+            "expected migration guidance for [[gate]], got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn validate_paths_accepts_clean_default_config() {
+        let value = toml::Value::try_from(RokoConfig::default())
+            .expect("default config must serialize");
+        let diags = validate_known_config_paths(&value);
+        assert!(
+            diags.is_empty(),
+            "default config must produce no diagnostics, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn context_pressure_enabled_still_parses_with_deprecation_info() {
+        // The field remains in ConductorConfig for compatibility; it must
+        // parse without error. The deprecation diagnostic comes from doctor,
+        // not from path validation (the key is still in the schema).
+        let value: toml::Value = r#"
+schema_version = 2
+config_version = 2
+[conductor]
+context_pressure_enabled = true
+"#
+        .parse()
+        .unwrap();
+        let diags = validate_known_config_paths(&value);
+        // context_pressure_enabled is a valid schema field (deprecated but parseable).
+        let unexpected: Vec<_> = diags
+            .iter()
+            .filter(|d| d.key.contains("context_pressure_enabled"))
+            .collect();
+        assert!(
+            unexpected.is_empty(),
+            "context_pressure_enabled must remain parseable, got: {unexpected:?}"
+        );
+        // Also confirm it actually deserializes.
+        let config: RokoConfig = value.try_into().expect("must deserialize");
+        assert!(config.conductor.context_pressure_enabled);
+    }
+
+    #[test]
+    fn checked_in_config_loads_cleanly_with_nonzero_budgets() {
+        // Load the actual workspace roko.toml and verify it produces no
+        // unknown-path diagnostics and has the intended budget values.
+        let workspace_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("workspace root");
+        let config_path = workspace_root.join("roko.toml");
+        if !config_path.exists() {
+            // Skip in CI or alternate build contexts where roko.toml may
+            // not be available from the crate manifest dir.
+            return;
+        }
+        let text = std::fs::read_to_string(&config_path).expect("read roko.toml");
+        let value: toml::Value = text.parse().expect("parse roko.toml");
+        let diags = validate_known_config_paths(&value);
+        assert!(
+            diags.is_empty(),
+            "checked-in roko.toml must produce no unknown-path diagnostics, got: {diags:?}"
+        );
+
+        let config: RokoConfig = value.try_into().expect("deserialize roko.toml");
+        assert!(
+            config.budget.max_plan_usd > 0.0,
+            "checked-in budget.max_plan_usd must be nonzero, got: {}",
+            config.budget.max_plan_usd
+        );
+        assert!(
+            config.budget.max_turn_usd > 0.0,
+            "checked-in budget.max_turn_usd must be nonzero, got: {}",
+            config.budget.max_turn_usd
+        );
+    }
+
+    #[test]
+    fn validate_paths_suggests_nearest_key_for_typos() {
+        let value: toml::Value = "schema_version = 2\nconfig_version = 2\nbudegt = 5\n"
+            .parse()
+            .unwrap();
+        let diags = validate_known_config_paths(&value);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.key == "budegt" && d.message.contains("budget")),
+            "expected typo suggestion 'budget' for 'budegt', got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn validate_paths_forward_compatible_ordinary_load() {
+        // Unknown future sections must NOT prevent loading. This is the
+        // forward-compatibility contract: ordinary loads warn, don't reject.
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("roko.toml"),
+            "schema_version = 2\nconfig_version = 2\nfuture_v3_section = 'new'\n",
+        )
+        .expect("write config");
+
+        let config = load_config_with_options(
+            dir.path(),
+            &LoadOptions {
+                merge_global: false,
+                apply_env_overrides: false,
+                apply_hierarchical_env: false,
+                strict_validation: false,
+            },
+        )
+        .expect("forward-compatible load must succeed");
+        // Verify the config loaded successfully with defaults.
+        assert_eq!(config.schema_version, 2);
+    }
+
+    #[test]
+    fn levenshtein_distance_basic() {
+        assert_eq!(levenshtein_distance("budget", "budegt"), 2);
+        assert_eq!(levenshtein_distance("budget", "budget"), 0);
+        assert_eq!(levenshtein_distance("abc", "xyz"), 3);
+        assert_eq!(levenshtein_distance("", "abc"), 3);
+        assert_eq!(levenshtein_distance("abc", ""), 3);
     }
 }

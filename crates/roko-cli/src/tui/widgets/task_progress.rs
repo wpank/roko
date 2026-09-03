@@ -24,7 +24,7 @@ use ratatui::widgets::{
     Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
 
-use super::super::state::{TaskRowStatus, TuiState};
+use super::super::state::{TaskRow, TaskRowStatus, TuiState};
 use crate::tui::Theme;
 use crate::tui::util::truncate_middle;
 
@@ -35,7 +35,29 @@ use crate::tui::util::truncate_middle;
 /// Render the task progress widget.
 pub fn render_task_progress(frame: &mut Frame<'_>, area: Rect, state: &TuiState, focused: bool) {
     let atm = &state.atmosphere;
-    let tasks = &state.current_task_checklist;
+
+    // Use the selected plan's tasks when a plan is selected, otherwise global checklist.
+    let selected_plan = state
+        .plans
+        .get(state.selected_plan_idx);
+    let plan_task_rows: Vec<TaskRow> = if let Some(plan) = selected_plan {
+        plan.tasks
+            .iter()
+            .map(|te| TaskRow {
+                id: te.id.clone(),
+                title: te.name.clone(),
+                status: te.status,
+                elapsed_secs: 0.0,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let tasks: &[TaskRow] = if selected_plan.is_some() && !plan_task_rows.is_empty() {
+        &plan_task_rows
+    } else {
+        &state.current_task_checklist
+    };
 
     // Count by status
     let done = tasks
@@ -57,8 +79,13 @@ pub fn render_task_progress(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
     let total = tasks.len();
     let pending = total.saturating_sub(done + active + blocked + failed);
 
-    // Title
-    let mut title = format!("Tasks ({}/{})", done, total);
+    // Title — show plan name when filtering
+    let plan_label = selected_plan.map(|p| p.name.as_str()).unwrap_or("");
+    let mut title = if !plan_label.is_empty() {
+        format!("Tasks · {} ({}/{})", plan_label, done, total)
+    } else {
+        format!("Tasks ({}/{})", done, total)
+    };
 
     let theme = Theme::dark();
     let (border_style, ttl_style) = if focused {

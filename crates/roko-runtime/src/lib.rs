@@ -65,6 +65,7 @@ pub mod projection;
 pub mod pulse_bus;
 pub mod resource;
 pub mod run_ledger;
+pub mod runtime_event_dashboard;
 pub mod state_hub;
 pub mod state_snapshot;
 pub mod task_scheduler;
@@ -113,6 +114,7 @@ pub use roko_core::foundation::{
     GateVerdict, MessageRole, ModelCallRequest, ModelCallResponse, ModelCaller, PromptAssembler,
     PromptSpec, ShellGateCommand, TokenUsage,
 };
+pub use runtime_event_dashboard::{ProjectionResult, RuntimeEventDashboardProjector};
 pub use run_ledger::{
     AgentOutcome, ArtifactOutcome, CancellationOutcome, EffectErrorKind, EventPersistenceHealth,
     GateRunOutcome, PhaseTransitionRecord, RunLedger, TaskTerminalOutcome,

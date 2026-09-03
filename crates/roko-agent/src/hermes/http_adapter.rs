@@ -208,7 +208,7 @@ impl HermesHttpAgent {
     /// Level 1: Parse `usage` from the Chat Completions response JSON.
     ///
     /// The `OpenAiCompatLlmBackend` already does this via `parse_sse_line()`
-    /// producing `StreamChunk::Usage(Usage)`. This method extracts usage
+    /// producing `StreamEvent::Usage(Usage)`. This method extracts usage
     /// from a non-streaming JSON response.
     fn extract_usage_from_response(response: &BackendResponse) -> Option<Usage> {
         match response {

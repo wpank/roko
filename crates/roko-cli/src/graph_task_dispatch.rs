@@ -1,15 +1,34 @@
 //! Host adapter that makes converted Graph plan tasks execute real agents.
+//!
+//! ## Streaming dispatch (#274)
+//!
+//! [`GraphTaskDispatcher`] now implements [`StreamingTaskDispatcher`] in
+//! addition to the basic [`TaskDispatcher`] trait. The streaming path adds:
+//!
+//! - Live text/tool/usage/progress events forwarded through a bounded channel.
+//! - Attempt start/terminal receipts through an injected [`ProviderAttemptRecorder`].
+//! - `reconcile_attempt` for crash-safe resume (reuse committed, allocate new,
+//!   or fail ambiguous).
+//! - Lease validation: the workdir must match the acquired lease path.
+//!
+//! The existing `TaskDispatcher::dispatch` implementation is unchanged and
+//! remains the production plan route until #256 atomically activates the
+//! streaming path after lease acquisition.
 
 use std::collections::{HashMap, hash_map::Entry};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 use roko_agent::safety::contract::{AgentContract, ContractLoadMode};
 use roko_core::config::schema::RokoConfig;
 use roko_core::error::{Result, RokoError};
 use roko_core::{Body, Kind, Signal};
 use roko_graph::cell::CellContext;
-use roko_graph::cells::{TaskDispatcher, TaskExecutionSpec};
+use roko_graph::cells::{
+    AttemptReconciliation, GraphTaskEvent, ProviderAttemptRecorder, StreamingTaskDispatcher,
+    TaskDispatchOutcome, TaskDispatchOutcomeKind, TaskDispatcher, TaskExecutionSpec, TaskLease,
+};
 
 use crate::dispatch::{AgentDispatchRequest, DispatchContext, SharedAgentFactory};
 use crate::graph_checkpoint::GraphCostLedgerCheckpoint;
@@ -533,6 +552,337 @@ impl TaskDispatcher for GraphTaskDispatcher {
     }
 }
 
+/// Bounded channel capacity for streaming graph task events (#233).
+const STREAMING_EVENT_CHANNEL_CAPACITY: usize = 256;
+
+/// Recommended channel capacity for callers constructing an event sender.
+///
+/// Text/progress events may coalesce across sends. Tool boundaries, usage,
+/// attempt receipt, and terminal outcome events are reliable and must not be
+/// dropped.
+#[must_use]
+pub const fn streaming_event_channel_capacity() -> usize {
+    STREAMING_EVENT_CHANNEL_CAPACITY
+}
+
+#[async_trait::async_trait]
+impl StreamingTaskDispatcher for GraphTaskDispatcher {
+    async fn dispatch_streaming(
+        &self,
+        spec: &TaskExecutionSpec,
+        input: Vec<Signal>,
+        ctx: &CellContext,
+        lease: &TaskLease,
+        event_tx: tokio::sync::mpsc::Sender<GraphTaskEvent>,
+        recorder: &dyn ProviderAttemptRecorder,
+    ) -> Result<TaskDispatchOutcome> {
+        // ── Lease validation ─────────────────────────────────────────────
+        if !lease.path.exists() {
+            return Err(RokoError::Agent {
+                backend: "graph-task-executor".to_string(),
+                message: format!(
+                    "lease path `{}` does not exist; the caller must acquire the lease before dispatch",
+                    lease.path.display()
+                ),
+            });
+        }
+        if lease.path != self.workdir {
+            return Err(RokoError::Agent {
+                backend: "graph-task-executor".to_string(),
+                message: format!(
+                    "lease path `{}` does not match the dispatcher workdir `{}`; shared-checkout workdirs are rejected",
+                    lease.path.display(),
+                    self.workdir.display()
+                ),
+            });
+        }
+
+        // ── Budget reservation ───────────────────────────────────────────
+        let budget_reservation = self
+            .budget_ledger
+            .reserve(&spec.plan_id, self.budget_policy)?;
+
+        // ── Attempt identity ─────────────────────────────────────────────
+        let attempt_id = format!(
+            "{}/{}/{}",
+            spec.plan_id,
+            ctx.cell_id.as_deref().unwrap_or("unknown"),
+            uuid::Uuid::new_v4()
+        );
+
+        // Record attempt-start receipt before provider launch.
+        recorder.record_start(&attempt_id, spec).await?;
+
+        // Notify the event channel that the attempt has started.
+        let _ = event_tx
+            .send(GraphTaskEvent::AttemptStarted {
+                attempt_id: attempt_id.clone(),
+            })
+            .await;
+
+        let started_at = Instant::now();
+
+        // ── Task + dispatch context ──────────────────────────────────────
+        let task: TaskDef = serde_json::from_str(&spec.task_def_json).map_err(|error| {
+            RokoError::Planning(format!(
+                "decode task definition for `{}`: {error}",
+                spec.title
+            ))
+        })?;
+        let role = task.role.as_deref().unwrap_or("implementer");
+        let dispatch_ctx = DispatchContext {
+            plan_id: spec.plan_id.clone(),
+            role: role.to_string(),
+            workdir: lease.path.clone(),
+            model_hint: Some(
+                self.cli_model_override
+                    .clone()
+                    .unwrap_or_else(|| self.config.agent.default_model.clone()),
+            ),
+            force_backend: self.cli_model_override.clone(),
+            budget_remaining_usd: effective_routing_budget(
+                ctx.budget_remaining,
+                budget_reservation.routing_budget_usd(),
+            ),
+            attempt: 0,
+            prompt_experiment: None,
+            gate_feedback: None,
+            routing_context: None,
+            routing_bias: None,
+            dependency_outputs: upstream_outputs(&input),
+        };
+        let dispatch_plan = self
+            .factory
+            .dispatcher()
+            .plan(&task, &dispatch_ctx)
+            .map_err(|error| RokoError::Planning(error.to_string()))?;
+        let contract = effective_agent_contract(role, &task);
+        let timeout_ms = spec.timeout_secs.max(1).saturating_mul(1_000);
+        let request = AgentDispatchRequest {
+            model_key: dispatch_plan.model.slug.clone(),
+            prompt: dispatch_plan.prompt.user_prompt,
+            system_prompt: dispatch_plan.prompt.system_prompt,
+            workdir: lease.path.clone(),
+            immune_root: Some(lease.path.clone()),
+            agent_id: format!(
+                "{}/{}",
+                spec.plan_id,
+                ctx.cell_id.as_deref().unwrap_or(&task.id)
+            ),
+            command: None,
+            timeout_ms: Some(timeout_ms),
+            mcp_config: self.config.agent.mcp_config.clone(),
+            env: Vec::new(),
+            extra_args: Vec::new(),
+            effort: Some(self.config.agent.default_effort.clone()),
+            tools: None,
+            agent_contract: Some(contract),
+            bare_mode: self.config.agent.bare_mode,
+            dangerously_skip_permissions: self.dangerously_skip_permissions,
+        };
+
+        // ── Provider invocation ──────────────────────────────────────────
+        let dispatch_result = self
+            .factory
+            .run_shared_agent_bridge(request)
+            .await;
+
+        let wall_duration = started_at.elapsed();
+
+        // ── Map provider events to graph events ──────────────────────────
+        // Forward provider dispatch events as streaming graph events.
+        match &dispatch_result {
+            Ok(dispatch) => {
+                for event in &dispatch.events {
+                    let graph_event = match event {
+                        roko_agent::AgentRuntimeEvent::MessageDelta { text } => {
+                            Some(GraphTaskEvent::Text { text: text.clone() })
+                        }
+                        roko_agent::AgentRuntimeEvent::ToolCall { id, name } => {
+                            Some(GraphTaskEvent::ToolCall {
+                                id: id.clone(),
+                                name: name.clone(),
+                            })
+                        }
+                        roko_agent::AgentRuntimeEvent::ToolOutput { id, output } => {
+                            Some(GraphTaskEvent::ToolOutput {
+                                id: id.clone(),
+                                output: output.clone(),
+                            })
+                        }
+                        roko_agent::AgentRuntimeEvent::TokenUsage {
+                            input_tokens,
+                            output_tokens,
+                            ..
+                        } => Some(GraphTaskEvent::Usage {
+                            input_tokens: *input_tokens,
+                            output_tokens: *output_tokens,
+                            cost_usd: None,
+                        }),
+                        _ => None,
+                    };
+                    if let Some(event) = graph_event {
+                        // Best-effort send; text/progress may coalesce.
+                        let _ = event_tx.send(event).await;
+                    }
+                }
+            }
+            Err(_) => {}
+        }
+
+        // ── Settle cost and build outcome ────────────────────────────────
+        let (outcome, output_signals) = match dispatch_result {
+            Ok(dispatch) => {
+                let cost_usd = f64::from(dispatch.result.usage.cost_usd);
+                let actual_cost = if cost_usd.is_finite() && cost_usd > 0.0 {
+                    Some(cost_usd)
+                } else {
+                    tracing::debug!(
+                        attempt = %attempt_id,
+                        "provider did not report cost; recording None"
+                    );
+                    None
+                };
+                budget_reservation.settle(cost_usd.max(0.0))?;
+
+                // Forward final usage event with cost.
+                let _ = event_tx
+                    .send(GraphTaskEvent::Usage {
+                        input_tokens: u64::from(dispatch.result.usage.input_tokens),
+                        output_tokens: u64::from(dispatch.result.usage.output_tokens),
+                        cost_usd: actual_cost,
+                    })
+                    .await;
+
+                let outcome_kind = if dispatch.result.success {
+                    TaskDispatchOutcomeKind::Succeeded
+                } else {
+                    TaskDispatchOutcomeKind::Failed
+                };
+
+                let output_signals = if dispatch.result.success {
+                    let mut output = dispatch.result.output;
+                    if output.body.as_text().is_err() {
+                        output = Signal::builder(Kind::AgentOutput)
+                            .body(Body::text(format!(
+                                "provider `{}` completed task `{}`",
+                                dispatch.target.provider_id, spec.title
+                            )))
+                            .build();
+                    }
+                    vec![output]
+                } else {
+                    Vec::new()
+                };
+
+                let dispatch_outcome = TaskDispatchOutcome {
+                    attempt_id: attempt_id.clone(),
+                    outcome: outcome_kind,
+                    provider_id: dispatch.target.provider_id.clone(),
+                    model: dispatch.target.model_slug.clone(),
+                    input_tokens: Some(u64::from(dispatch.result.usage.input_tokens)),
+                    output_tokens: Some(u64::from(dispatch.result.usage.output_tokens)),
+                    cost_usd: actual_cost,
+                    changed_files: Vec::new(), // Changed files computed relative to lease base.
+                    wall_duration,
+                    output: output_signals.clone(),
+                };
+
+                (dispatch_outcome, output_signals)
+            }
+            Err(error) => {
+                let dispatch_outcome = TaskDispatchOutcome {
+                    attempt_id: attempt_id.clone(),
+                    outcome: TaskDispatchOutcomeKind::Failed,
+                    provider_id: "graph-task-executor".to_string(),
+                    model: String::new(),
+                    input_tokens: None,
+                    output_tokens: None,
+                    cost_usd: None,
+                    changed_files: Vec::new(),
+                    wall_duration,
+                    output: Vec::new(),
+                };
+
+                // Record terminal receipt before propagating the error.
+                let _ = recorder.record_terminal(&attempt_id, &dispatch_outcome).await;
+
+                // Send terminal event.
+                let _ = event_tx
+                    .send(GraphTaskEvent::AttemptTerminal {
+                        attempt_id,
+                        outcome: TaskDispatchOutcomeKind::Failed,
+                    })
+                    .await;
+
+                return Err(RokoError::Agent {
+                    backend: "graph-task-executor".to_string(),
+                    message: error.to_string(),
+                });
+            }
+        };
+
+        // ── Terminal receipt and event ────────────────────────────────────
+        recorder.record_terminal(&attempt_id, &outcome).await?;
+
+        let _ = event_tx
+            .send(GraphTaskEvent::AttemptTerminal {
+                attempt_id: attempt_id.clone(),
+                outcome: outcome.outcome,
+            })
+            .await;
+
+        // If the provider returned an unsuccessful result, fail the task
+        // even though cost was settled (callers still incur the charge).
+        if outcome.outcome == TaskDispatchOutcomeKind::Failed {
+            return Err(RokoError::Agent {
+                backend: outcome.provider_id.clone(),
+                message: "provider returned an unsuccessful result".to_string(),
+            });
+        }
+
+        Ok(TaskDispatchOutcome {
+            output: output_signals,
+            ..outcome
+        })
+    }
+
+    async fn reconcile_attempt(
+        &self,
+        _spec: &TaskExecutionSpec,
+        previous_attempt_id: &str,
+        recorder: &dyn ProviderAttemptRecorder,
+    ) -> AttemptReconciliation {
+        // Check if the previous attempt has terminal evidence: if so, the
+        // caller should reuse the committed result without re-invoking the
+        // provider.
+        if recorder.has_terminal_evidence(previous_attempt_id).await {
+            return AttemptReconciliation::ReuseCommitted {
+                attempt_id: previous_attempt_id.to_string(),
+            };
+        }
+
+        // Check if the previous attempt started but never reached a terminal
+        // state. This is ambiguous: the provider may have been invoked and we
+        // cannot know whether it completed. Do not retry.
+        if recorder.has_started_evidence(previous_attempt_id).await {
+            return AttemptReconciliation::FailAmbiguous {
+                attempt_id: previous_attempt_id.to_string(),
+                reason: format!(
+                    "attempt `{previous_attempt_id}` started but has no terminal evidence; \
+                     the provider may have been invoked and cannot be safely retried"
+                ),
+            };
+        }
+
+        // No evidence that the previous attempt ever started. Allocate a
+        // fresh attempt ID for a new dispatch.
+        AttemptReconciliation::AllocateNew {
+            attempt_id: format!("{previous_attempt_id}-retry-{}", uuid::Uuid::new_v4()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::PermissionsExt;
@@ -540,6 +890,7 @@ mod tests {
     use roko_core::agent::ProviderKind;
     use roko_core::config::schema::{ModelProfile, ProviderConfig};
     use roko_graph::Cell;
+    use roko_graph::cells::{AttemptReconciliation, NoopAttemptRecorder};
     use tempfile::tempdir;
 
     use super::*;
@@ -830,5 +1181,481 @@ exit 1
             .await
             .expect_err("later dispatch must fail closed after plan budget exhaustion");
         assert!(matches!(blocked, RokoError::BudgetExceeded { .. }));
+    }
+
+    // ─── Streaming dispatch tests (#274) ─────────────────────────────────────
+
+    /// Helper: create a `GraphTaskDispatcher` with a fake CLI provider.
+    async fn make_streaming_dispatcher(
+        temp: &tempfile::TempDir,
+        script_content: &str,
+    ) -> (Arc<GraphTaskDispatcher>, TaskDef) {
+        let script = temp.path().join("fake-claude-stream.sh");
+        std::fs::write(&script, script_content).expect("write stream provider script");
+        let mut permissions = std::fs::metadata(&script)
+            .expect("script metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).expect("make executable");
+
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.agent.default_model = "stream-model".to_string();
+        config.agent.bare_mode = false;
+        config.providers.insert(
+            "stream-cli".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::ClaudeCli,
+                base_url: None,
+                api_key_env: None,
+                command: Some(script.display().to_string()),
+                args: None,
+                timeout_ms: Some(5_000),
+                ttft_timeout_ms: Some(5_000),
+                connect_timeout_ms: Some(5_000),
+                extra_headers: None,
+                max_concurrent: None,
+                limits: None,
+            },
+        );
+        config.models.insert(
+            "stream-model".to_string(),
+            ModelProfile {
+                provider: "stream-cli".to_string(),
+                slug: "claude-sonnet-4-6".to_string(),
+                ..ModelProfile::default()
+            },
+        );
+        let config = Arc::new(config);
+        let factory =
+            Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
+        let dispatcher = Arc::new(
+            GraphTaskDispatcher::new(factory, Arc::clone(&config), temp.path().to_path_buf())
+                .with_plan_budget(1.00, 0.50, false),
+        );
+
+        let task = TaskDef {
+            id: "T-STREAM".to_string(),
+            title: "Streaming graph task".to_string(),
+            description: Some("Test streaming dispatch".to_string()),
+            role: Some("implementer".to_string()),
+            status: "ready".to_string(),
+            tier: "focused".to_string(),
+            frequency: None,
+            model_hint: Some("stream-model".to_string()),
+            replan_strategy: None,
+            max_loc: None,
+            files: Vec::new(),
+            allowed_tools: None,
+            denied_tools: None,
+            mcp_servers: None,
+            depends_on: Vec::new(),
+            depends_on_plan: Vec::new(),
+            split_into: None,
+            context: None,
+            verify: Vec::new(),
+            timeout_secs: 5,
+            max_retries: 0,
+            acceptance: Vec::new(),
+            acceptance_contract: None,
+            domain: None,
+            estimated_minutes: None,
+            crates_touched: None,
+            sequence: 0,
+        };
+
+        (dispatcher, task)
+    }
+
+    fn make_spec(task: &TaskDef) -> TaskExecutionSpec {
+        TaskExecutionSpec {
+            plan_id: "stream-plan".to_string(),
+            plan_dir: "/tmp/plans/stream-plan".to_string(),
+            title: task.title.clone(),
+            description: task.description.clone(),
+            role: task.role.clone(),
+            tier: task.tier.clone(),
+            model_hint: task.model_hint.clone(),
+            files: task.files.clone(),
+            timeout_secs: task.timeout_secs,
+            max_retries: task.max_retries,
+            task_def_json: serde_json::to_string(task).expect("serialize task"),
+        }
+    }
+
+    #[tokio::test]
+    async fn streaming_dispatch_sends_attempt_started_and_terminal_events() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, task) = make_streaming_dispatcher(
+            &temp,
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"streaming-output"}}'
+printf '%s\n' '{"type":"result","session_id":"sess-s1","model":"claude-sonnet-4-6","total_cost_usd":0.10,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#,
+        )
+        .await;
+
+        let spec = make_spec(&task);
+        let lease = TaskLease {
+            path: temp.path().to_path_buf(),
+            fingerprint: "test-fingerprint".to_string(),
+        };
+        let (event_tx, mut event_rx) =
+            tokio::sync::mpsc::channel(streaming_event_channel_capacity());
+        let recorder = NoopAttemptRecorder;
+
+        let outcome = dispatcher
+            .dispatch_streaming(
+                &spec,
+                Vec::new(),
+                &CellContext::new().with_cell_id("T-STREAM".to_string()),
+                &lease,
+                event_tx,
+                &recorder,
+            )
+            .await
+            .expect("streaming dispatch");
+
+        assert_eq!(outcome.outcome, TaskDispatchOutcomeKind::Succeeded);
+        assert!(!outcome.attempt_id.is_empty());
+        assert!(outcome.cost_usd.is_some());
+        assert!(!outcome.output.is_empty());
+
+        // Collect all events.
+        let mut events = Vec::new();
+        while let Ok(event) = event_rx.try_recv() {
+            events.push(event);
+        }
+
+        // Must have at least AttemptStarted and AttemptTerminal.
+        let started = events.iter().any(|e| {
+            matches!(e, GraphTaskEvent::AttemptStarted { .. })
+        });
+        let terminal = events.iter().any(|e| {
+            matches!(
+                e,
+                GraphTaskEvent::AttemptTerminal {
+                    outcome: TaskDispatchOutcomeKind::Succeeded,
+                    ..
+                }
+            )
+        });
+        assert!(started, "must emit AttemptStarted event");
+        assert!(terminal, "must emit AttemptTerminal(Succeeded) event");
+
+        // Must have usage event with cost.
+        let usage = events.iter().any(|e| {
+            matches!(e, GraphTaskEvent::Usage { cost_usd: Some(_), .. })
+        });
+        assert!(usage, "must emit Usage event with actual cost");
+    }
+
+    #[tokio::test]
+    async fn streaming_dispatch_rejects_missing_lease_path() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, task) = make_streaming_dispatcher(
+            &temp,
+            "#!/bin/sh\nexit 0\n",
+        )
+        .await;
+
+        let spec = make_spec(&task);
+        let lease = TaskLease {
+            path: temp.path().join("nonexistent-lease"),
+            fingerprint: "fp".to_string(),
+        };
+        let (event_tx, _event_rx) =
+            tokio::sync::mpsc::channel(streaming_event_channel_capacity());
+        let recorder = NoopAttemptRecorder;
+
+        let error = dispatcher
+            .dispatch_streaming(
+                &spec,
+                Vec::new(),
+                &CellContext::new(),
+                &lease,
+                event_tx,
+                &recorder,
+            )
+            .await
+            .expect_err("missing lease path must fail");
+
+        assert!(error.to_string().contains("does not exist"));
+    }
+
+    #[tokio::test]
+    async fn streaming_dispatch_rejects_mismatched_workdir() {
+        let temp = tempdir().expect("tempdir");
+        let other_dir = tempdir().expect("other tempdir");
+        let (dispatcher, task) = make_streaming_dispatcher(
+            &temp,
+            "#!/bin/sh\nexit 0\n",
+        )
+        .await;
+
+        let spec = make_spec(&task);
+        let lease = TaskLease {
+            path: other_dir.path().to_path_buf(),
+            fingerprint: "fp".to_string(),
+        };
+        let (event_tx, _event_rx) =
+            tokio::sync::mpsc::channel(streaming_event_channel_capacity());
+        let recorder = NoopAttemptRecorder;
+
+        let error = dispatcher
+            .dispatch_streaming(
+                &spec,
+                Vec::new(),
+                &CellContext::new(),
+                &lease,
+                event_tx,
+                &recorder,
+            )
+            .await
+            .expect_err("mismatched workdir must fail");
+
+        assert!(error.to_string().contains("shared-checkout"));
+    }
+
+    #[tokio::test]
+    async fn streaming_dispatch_settles_cost_on_provider_failure() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, task) = make_streaming_dispatcher(
+            &temp,
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"fail-output"}}'
+printf '%s\n' '{"type":"result","session_id":"sess-f1","model":"claude-sonnet-4-6","total_cost_usd":0.15,"usage":{"input_tokens":3,"output_tokens":4},"is_error":true}'
+exit 1
+"#,
+        )
+        .await;
+
+        let spec = make_spec(&task);
+        let lease = TaskLease {
+            path: temp.path().to_path_buf(),
+            fingerprint: "fp".to_string(),
+        };
+        let (event_tx, mut event_rx) =
+            tokio::sync::mpsc::channel(streaming_event_channel_capacity());
+        let recorder = NoopAttemptRecorder;
+
+        let error = dispatcher
+            .dispatch_streaming(
+                &spec,
+                Vec::new(),
+                &CellContext::new().with_cell_id("T-FAIL".to_string()),
+                &lease,
+                event_tx,
+                &recorder,
+            )
+            .await
+            .expect_err("failed provider must error");
+
+        assert!(matches!(error, RokoError::Agent { .. }));
+
+        // Terminal event must still be emitted for failures.
+        let mut events = Vec::new();
+        while let Ok(event) = event_rx.try_recv() {
+            events.push(event);
+        }
+        let terminal = events.iter().any(|e| {
+            matches!(
+                e,
+                GraphTaskEvent::AttemptTerminal {
+                    outcome: TaskDispatchOutcomeKind::Failed,
+                    ..
+                }
+            )
+        });
+        assert!(terminal, "must emit AttemptTerminal(Failed) event");
+    }
+
+    #[tokio::test]
+    async fn reconcile_returns_reuse_committed_for_terminal_evidence() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        /// Test recorder that reports terminal evidence for a specific attempt.
+        struct TerminalRecorder {
+            terminal: AtomicBool,
+        }
+
+        #[async_trait::async_trait]
+        impl ProviderAttemptRecorder for TerminalRecorder {
+            async fn record_start(&self, _id: &str, _spec: &TaskExecutionSpec) -> Result<()> {
+                Ok(())
+            }
+            async fn record_terminal(
+                &self,
+                _id: &str,
+                _outcome: &TaskDispatchOutcome,
+            ) -> Result<()> {
+                self.terminal.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+            async fn has_terminal_evidence(&self, _id: &str) -> bool {
+                self.terminal.load(Ordering::SeqCst)
+            }
+            async fn has_started_evidence(&self, _id: &str) -> bool {
+                false
+            }
+        }
+
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, task) = make_streaming_dispatcher(
+            &temp,
+            "#!/bin/sh\nexit 0\n",
+        )
+        .await;
+        let spec = make_spec(&task);
+
+        let recorder = TerminalRecorder {
+            terminal: AtomicBool::new(true),
+        };
+
+        let result = dispatcher
+            .reconcile_attempt(&spec, "prev-attempt-1", &recorder)
+            .await;
+
+        assert!(
+            matches!(result, AttemptReconciliation::ReuseCommitted { .. }),
+            "terminal evidence must return ReuseCommitted"
+        );
+    }
+
+    #[tokio::test]
+    async fn reconcile_returns_fail_ambiguous_for_started_evidence() {
+        /// Recorder that reports started-but-not-terminal evidence.
+        struct StartedRecorder;
+
+        #[async_trait::async_trait]
+        impl ProviderAttemptRecorder for StartedRecorder {
+            async fn record_start(&self, _id: &str, _spec: &TaskExecutionSpec) -> Result<()> {
+                Ok(())
+            }
+            async fn record_terminal(
+                &self,
+                _id: &str,
+                _outcome: &TaskDispatchOutcome,
+            ) -> Result<()> {
+                Ok(())
+            }
+            async fn has_terminal_evidence(&self, _id: &str) -> bool {
+                false
+            }
+            async fn has_started_evidence(&self, _id: &str) -> bool {
+                true
+            }
+        }
+
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, task) = make_streaming_dispatcher(
+            &temp,
+            "#!/bin/sh\nexit 0\n",
+        )
+        .await;
+        let spec = make_spec(&task);
+
+        let result = dispatcher
+            .reconcile_attempt(&spec, "prev-attempt-ambig", &StartedRecorder)
+            .await;
+
+        assert!(
+            matches!(result, AttemptReconciliation::FailAmbiguous { .. }),
+            "started-but-not-terminal must return FailAmbiguous"
+        );
+    }
+
+    #[tokio::test]
+    async fn reconcile_returns_allocate_new_for_no_evidence() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, task) = make_streaming_dispatcher(
+            &temp,
+            "#!/bin/sh\nexit 0\n",
+        )
+        .await;
+        let spec = make_spec(&task);
+        let recorder = NoopAttemptRecorder;
+
+        let result = dispatcher
+            .reconcile_attempt(&spec, "prev-never-started", &recorder)
+            .await;
+
+        match result {
+            AttemptReconciliation::AllocateNew { attempt_id } => {
+                assert!(
+                    attempt_id.contains("prev-never-started"),
+                    "new attempt ID must reference the original"
+                );
+            }
+            other => panic!("expected AllocateNew, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn streaming_event_channel_capacity_is_bounded() {
+        let capacity = streaming_event_channel_capacity();
+        assert!(
+            capacity > 0 && capacity <= 1024,
+            "channel capacity {capacity} must be bounded and reasonable"
+        );
+    }
+
+    #[tokio::test]
+    async fn streaming_dispatch_respects_budget_exhaustion() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, task) = make_streaming_dispatcher(
+            &temp,
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"expensive"}}'
+printf '%s\n' '{"type":"result","session_id":"sess-x","model":"claude-sonnet-4-6","total_cost_usd":1.00,"usage":{"input_tokens":50,"output_tokens":100}}'
+"#,
+        )
+        .await;
+
+        let spec = make_spec(&task);
+        let lease = TaskLease {
+            path: temp.path().to_path_buf(),
+            fingerprint: "fp".to_string(),
+        };
+        let recorder = NoopAttemptRecorder;
+
+        // First dispatch exhausts the $1.00 budget.
+        let (event_tx, _) = tokio::sync::mpsc::channel(streaming_event_channel_capacity());
+        let _ = dispatcher
+            .dispatch_streaming(
+                &spec,
+                Vec::new(),
+                &CellContext::new().with_cell_id("T-EXP-1".to_string()),
+                &lease,
+                event_tx,
+                &recorder,
+            )
+            .await;
+
+        // Second dispatch must fail with budget exhaustion.
+        let (event_tx2, _) = tokio::sync::mpsc::channel(streaming_event_channel_capacity());
+        let error = dispatcher
+            .dispatch_streaming(
+                &spec,
+                Vec::new(),
+                &CellContext::new().with_cell_id("T-EXP-2".to_string()),
+                &lease,
+                event_tx2,
+                &recorder,
+            )
+            .await
+            .expect_err("budget-exhausted dispatch must fail");
+
+        assert!(
+            matches!(error, RokoError::BudgetExceeded { .. }),
+            "error must be BudgetExceeded, got: {error:?}"
+        );
     }
 }

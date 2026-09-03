@@ -160,6 +160,32 @@ fn apply_event(summary: &mut RunSummary, event: &RuntimeEvent) {
         | RuntimeEvent::TaskStarted { .. }
         | RuntimeEvent::TaskCompleted { .. }
         | RuntimeEvent::PipelinePhase { .. } => {}
+        // v2 events -- identity lives on the envelope; no aggregate summary fields yet.
+        RuntimeEvent::WaveStarted { .. }
+        | RuntimeEvent::WaveCompleted { .. }
+        | RuntimeEvent::TaskRetrying { .. }
+        | RuntimeEvent::TaskSkipped { .. }
+        | RuntimeEvent::AgentProgress { .. }
+        | RuntimeEvent::UsageRecorded { .. }
+        | RuntimeEvent::GateRungStarted { .. }
+        | RuntimeEvent::GateRungOutput { .. }
+        | RuntimeEvent::GateRungCompleted { .. }
+        | RuntimeEvent::ApprovalRequested { .. }
+        | RuntimeEvent::ApprovalResolved { .. }
+        | RuntimeEvent::ControlApplied { .. }
+        | RuntimeEvent::BudgetUpdated { .. }
+        | RuntimeEvent::WorkspaceAcquired { .. }
+        | RuntimeEvent::WorkspaceReleased { .. }
+        | RuntimeEvent::MergeQueued { .. }
+        | RuntimeEvent::MergeCompleted { .. }
+        | RuntimeEvent::PublishCompleted { .. }
+        | RuntimeEvent::FeedbackSinkSettled { .. }
+        | RuntimeEvent::FeedbackSinkFailed { .. }
+        | RuntimeEvent::PredictionPublished { .. }
+        | RuntimeEvent::ActualRecorded { .. }
+        | RuntimeEvent::CorrectionApplied { .. }
+        | RuntimeEvent::SequenceGap { .. }
+        | RuntimeEvent::Extension { .. } => {}
     }
 }
 

@@ -36,7 +36,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use super::approval_ipc::ApprovalRequest;
 use super::dashboard::{DashboardData, DashboardScaffold, Theme};
 use super::effects_config::EffectsConfig;
-use super::event::{Event, EventHandler};
+use super::event::{Event, EventHandler, FrameStats, RenderDirty, TickPolicyInputs, next_tick_policy};
 use super::fs_watch::{self, FsRefresh, FsWatchHandle};
 use super::git_watch::{self, GitRefresh, GitWatchHandle};
 use super::input::{self, ConfirmAction, FocusZone, InputMode, TuiAction};
@@ -160,6 +160,11 @@ pub struct App {
     /// iteration (verdicts open/tick are async and cannot be called from sync
     /// dispatch_action).
     pending_refresh: bool,
+    /// Accumulated dirty-frame reasons since the last draw. The render loop
+    /// draws only when this is non-empty after coalescing all ready inputs.
+    render_dirty: RenderDirty,
+    /// Per-session render telemetry (frame count, skipped ticks, latencies).
+    frame_stats: FrameStats,
     /// Hash of the last applied snapshot file for incremental change detection (RC-6).
     /// When the standalone dashboard detects a filesystem change, it reads only the
     /// snapshot hash first and skips the full re-bootstrap when unchanged.
@@ -591,6 +596,10 @@ fn configured_tui_refresh_rate(workdir: &Path) -> Duration {
 }
 
 /// Run the interactive dashboard event loop (async variant).
+///
+/// Uses the same adaptive tick policy and `RenderDirty` reason accounting
+/// as the sync `main_loop()`. Draws only when dirty state has accumulated
+/// after coalescing all ready inputs.
 pub async fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> Result<()> {
     // Populate verdicts aggregator on first async entry.
     app.reseed_verdicts_aggregator().await;
@@ -600,41 +609,71 @@ pub async fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut Ap
     terminal.draw(|f| app.draw(f))?;
 
     loop {
-        let snapshot_changed = app
-            .snapshot_rx
-            .as_ref()
-            .is_some_and(|rx| rx.has_changed().unwrap_or(false));
-        let mut redraw = snapshot_changed;
+        // -- Adaptive tick: select policy duration --
+        let tick_duration = app.current_tick_duration();
 
-        if crossterm::event::poll(app.refresh_rate)? {
+        // -- Poll terminal events with the adaptive timeout --
+        if crossterm::event::poll(tick_duration)? {
             match crossterm::event::read()? {
                 crossterm::event::Event::Key(key) => {
+                    app.frame_stats.record_input();
+                    app.render_dirty.insert(RenderDirty::INPUT);
                     app.handle_key(key);
-                    redraw = true;
                 }
                 crossterm::event::Event::Mouse(mouse) => {
+                    app.frame_stats.record_input();
+                    app.render_dirty.insert(RenderDirty::INPUT);
                     app.handle_mouse(mouse);
-                    redraw = true;
                 }
                 crossterm::event::Event::Resize(width, height) => {
                     app.terminal_size = (width, height);
-                    redraw = true;
+                    app.render_dirty.insert(RenderDirty::RESIZE);
                 }
                 _ => {}
             }
+        } else {
+            // Tick (timeout expired with no input): check for animation.
+            let animated = app.tui_state.agents.iter().any(|a| a.active)
+                || app.tui_state.plans.iter().any(|p| p.active)
+                || app.has_modal()
+                || !app.notifications.is_empty();
+            if animated {
+                app.tui_state.atmosphere.tick();
+                app.render_dirty.insert(RenderDirty::ANIMATION);
+            }
         }
-        // Drain pending async refresh requests from sync dispatch_action.
+
+        // -- Drain pending async refresh requests from sync dispatch_action --
         if app.pending_refresh {
             app.pending_refresh = false;
             app.refresh_snapshot_async().await;
         }
+
+        // -- Coalesce: drain all channels --
         app.drain_snapshot_channel();
         app.drain_approval_requests();
+
         if !app.running {
             break;
         }
-        if redraw {
+
+        // -- Draw only when dirty; record stats --
+        if app.render_dirty.is_dirty() {
+            let draw_reasons = app.render_dirty;
+            let input_pending =
+                app.render_dirty.contains(RenderDirty::INPUT) && app.frame_stats.last_input_at.is_some();
+            let draw_start = Instant::now();
             terminal.draw(|f| app.draw(f))?;
+            let draw_elapsed = draw_start.elapsed();
+            app.frame_stats.record_frame(draw_elapsed, draw_reasons);
+            if input_pending {
+                if let Some(input_at) = app.frame_stats.last_input_at {
+                    app.frame_stats.record_input_to_draw(input_at.elapsed());
+                }
+            }
+            app.render_dirty.remove(draw_reasons);
+        } else {
+            app.frame_stats.record_skip();
         }
     }
     Ok(())
@@ -744,6 +783,8 @@ impl App {
             refresh_rate,
             terminal_size,
             pending_refresh: false,
+            render_dirty: RenderDirty::NONE,
+            frame_stats: FrameStats::default(),
             last_snapshot_hash: None,
             last_events_offset: 0,
             tui_command_tx: None,
@@ -1069,81 +1110,99 @@ impl App {
         let mut last_draw = Instant::now();
 
         // ---------------------------------------------------------------
-        // Event loop
+        // Event loop — adaptive tick policy with dirty-flag rendering
         // ---------------------------------------------------------------
         while self.running {
+            // -- 1. Shutdown check --
             self.drain_shutdown_signal();
             if !self.running {
                 break;
             }
 
-            let snapshot_changed = self
-                .snapshot_rx
-                .as_ref()
-                .is_some_and(|rx| rx.has_changed().unwrap_or(false));
-            let sys_changed = self
-                .sys_rx
-                .as_ref()
-                .is_some_and(|rx| rx.has_changed().unwrap_or(false));
-            let approval_pending = self.approval_rx.as_ref().is_some_and(|rx| !rx.is_empty());
-            self.drain_snapshot_channel();
-            let mut redraw = snapshot_changed || sys_changed || approval_pending;
+            // -- 2. Adaptive tick rate: select policy, update EventHandler --
+            let policy = next_tick_policy(&self.tick_policy_inputs());
+            events.set_tick_rate(policy.duration());
+
+            // -- 3. Wait for next event (blocks up to the policy duration) --
             match events.next().context("poll TUI event")? {
                 Event::Key(key) => {
+                    self.frame_stats.record_input();
+                    self.render_dirty.insert(RenderDirty::INPUT);
                     self.handle_key(key);
                     // Handle deferred refresh requests from dispatch_action.
                     if self.pending_refresh {
                         self.pending_refresh = false;
                         self.refresh_snapshot();
                     }
-                    // Drain all background channels (includes snapshot) before redraw
-                    self.drain_background_channels();
-                    terminal
-                        .draw(|frame| self.draw(frame))
-                        .context("TUI redraw after key")?;
-                    last_draw = Instant::now();
-                    continue;
                 }
                 Event::Mouse(mouse) => {
+                    self.frame_stats.record_input();
+                    self.render_dirty.insert(RenderDirty::INPUT);
                     self.handle_mouse(mouse);
-                    redraw = true;
                 }
                 Event::Resize(width, height) => {
                     self.terminal_size = (width, height);
-                    redraw = true;
+                    self.render_dirty.insert(RenderDirty::RESIZE);
                 }
                 Event::Tick => {
-                    let animated = self.tui_state.agents.iter().any(|agent| agent.active)
-                        || self.tui_state.plans.iter().any(|plan| plan.active)
+                    // Tick: check for animation state that warrants a redraw.
+                    let animated = self.tui_state.agents.iter().any(|a| a.active)
+                        || self.tui_state.plans.iter().any(|p| p.active)
                         || self.has_modal()
                         || !self.notifications.is_empty();
                     if animated {
                         self.tui_state.atmosphere.tick();
-                        redraw = true;
+                        self.render_dirty.insert(RenderDirty::ANIMATION);
                     }
-                    self.drain_approval_requests();
-                    self.drain_background_channels();
                     // Handle deferred refresh requests from dispatch_action.
                     if self.pending_refresh {
                         self.pending_refresh = false;
                         self.refresh_snapshot();
-                        redraw = true;
                     }
-                    let notification_count = self.notifications.len();
-                    self.expire_notifications();
-                    redraw |= notification_count != self.notifications.len();
                 }
             }
 
-            // A connected, terminal run can now remain open for postmortem
-            // navigation without redrawing continuously. Keep a low-frequency
-            // standalone refresh as a fallback for disk-backed dashboards.
-            redraw |= self._state_hub.is_none() && last_draw.elapsed() >= Duration::from_secs(1);
-            if redraw {
+            // -- 4. Coalesce: drain all background channels --
+            self.drain_approval_requests();
+            self.drain_background_channels();
+
+            // -- 5. Notification expiry --
+            let notification_count = self.notifications.len();
+            self.expire_notifications();
+            if notification_count != self.notifications.len() {
+                self.render_dirty.insert(RenderDirty::NOTIFICATION);
+            }
+
+            // -- 6. Health fallback: disk-backed dashboards without a
+            //    StateHub should still refresh periodically. --
+            if self._state_hub.is_none() && last_draw.elapsed() >= Duration::from_secs(1) {
+                self.render_dirty.insert(RenderDirty::FORCED_HEALTH);
+            }
+
+            // -- 7. Draw only when dirty; record stats --
+            if !self.running {
+                break;
+            }
+            if self.render_dirty.is_dirty() {
+                let draw_reasons = self.render_dirty;
+                let input_pending =
+                    self.render_dirty.contains(RenderDirty::INPUT) && self.frame_stats.last_input_at.is_some();
+                let draw_start = Instant::now();
                 terminal
                     .draw(|frame| self.draw(frame))
                     .context("TUI redraw")?;
+                let draw_elapsed = draw_start.elapsed();
+                self.frame_stats.record_frame(draw_elapsed, draw_reasons);
+                if input_pending {
+                    if let Some(input_at) = self.frame_stats.last_input_at {
+                        self.frame_stats.record_input_to_draw(input_at.elapsed());
+                    }
+                }
+                // Clear only the reasons that were included in this draw.
+                self.render_dirty.remove(draw_reasons);
                 last_draw = Instant::now();
+            } else {
+                self.frame_stats.record_skip();
             }
         }
 
@@ -2723,15 +2782,23 @@ impl App {
         };
 
         let mut disconnected = false;
+        let mut got_request = false;
         loop {
             match rx.try_recv() {
-                Ok(request) => self.accept_approval_request(request),
+                Ok(request) => {
+                    self.accept_approval_request(request);
+                    got_request = true;
+                }
                 Err(mpsc::error::TryRecvError::Empty) => break,
                 Err(mpsc::error::TryRecvError::Disconnected) => {
                     disconnected = true;
                     break;
                 }
             }
+        }
+
+        if got_request {
+            self.render_dirty.insert(RenderDirty::MODAL);
         }
 
         if !disconnected {
@@ -3657,6 +3724,27 @@ impl App {
         self.tui_state.active_modal.is_some()
     }
 
+    /// Build the tick-policy inputs from current `App` state.
+    ///
+    /// This keeps the pure `next_tick_policy()` function free of `App`
+    /// coupling while letting both event loops share identical policy.
+    fn tick_policy_inputs(&self) -> TickPolicyInputs {
+        TickPolicyInputs {
+            has_active_agents: self.tui_state.agents.iter().any(|a| a.active),
+            has_active_plans: self.tui_state.plans.iter().any(|p| p.active),
+            has_modal: self.has_modal(),
+            has_notifications: !self.notifications.is_empty(),
+            has_tab_transition: self.tab_transition.is_some(),
+            has_postfx: self.fx_config.screen_postfx,
+            since_last_input: self.frame_stats.since_last_input(),
+        }
+    }
+
+    /// Select the current tick policy and return its duration.
+    fn current_tick_duration(&self) -> std::time::Duration {
+        next_tick_policy(&self.tick_policy_inputs()).duration()
+    }
+
     fn dismiss_all_modals(&mut self) {
         if matches!(
             self.tui_state.active_modal,
@@ -4103,6 +4191,7 @@ impl App {
                 sys.disk_free_bytes = snap.sys.disk_free_bytes;
                 sys.disk_total_bytes = snap.sys.disk_total_bytes;
                 self.merge_process_metrics(snap.process_metrics);
+                self.render_dirty.insert(RenderDirty::METRICS);
             }
         }
 
@@ -4118,6 +4207,7 @@ impl App {
                 }
             }
             if got_refresh {
+                self.render_dirty.insert(RenderDirty::SNAPSHOT);
                 // Incremental refresh (RC-6): avoid full re-bootstrap by
                 // checking whether the snapshot file actually changed.  We
                 // use the file size as a cheap proxy for content changes
@@ -4198,6 +4288,7 @@ impl App {
                 if completed_gen >= self.git_applied_generation {
                     self.git_applied_generation = completed_gen;
                     self.apply_git_bg_data(data);
+                    self.render_dirty.insert(RenderDirty::SNAPSHOT);
                 }
                 self.git_bg_rx = None; // channel consumed, allow new requests
             }
@@ -4235,6 +4326,7 @@ impl App {
             &snapshot,
         );
         self.update_plan_completion_exit(&snapshot);
+        self.render_dirty.insert(RenderDirty::SNAPSHOT);
     }
 
     fn drain_state_events(&mut self) {
@@ -6361,5 +6453,166 @@ mod tests {
         terminal.draw(|frame| app.draw(frame)).unwrap();
         let filter = rendered_text(&terminal);
         assert!(filter.contains("[FILTER] > plan│"));
+    }
+
+    // -----------------------------------------------------------------
+    // Adaptive tick policy + dirty-flag render loop tests
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn tui_event_loop_render_dirty_starts_clean() {
+        let dir = tempdir().unwrap();
+        let app = App::new(dir.path());
+        assert!(
+            app.render_dirty.is_empty(),
+            "fresh App should start with no dirty bits"
+        );
+    }
+
+    #[test]
+    fn tui_event_loop_frame_stats_start_zeroed() {
+        let dir = tempdir().unwrap();
+        let app = App::new(dir.path());
+        assert_eq!(app.frame_stats.frames_drawn, 0);
+        assert_eq!(app.frame_stats.skipped_identical, 0);
+        assert!(app.frame_stats.last_input_at.is_none());
+    }
+
+    #[test]
+    fn tui_event_loop_tick_policy_dormant_on_idle_app() {
+        let dir = tempdir().unwrap();
+        let app = App::new(dir.path());
+        let inputs = app.tick_policy_inputs();
+        let policy = next_tick_policy(&inputs);
+        assert_eq!(
+            policy,
+            super::super::event::TickPolicy::Dormant,
+            "idle app with no active work should select Dormant policy"
+        );
+    }
+
+    #[test]
+    fn tui_event_loop_tick_policy_active_after_input() {
+        let dir = tempdir().unwrap();
+        let mut app = App::new(dir.path());
+        // Simulate recent input
+        app.frame_stats.record_input();
+        let inputs = app.tick_policy_inputs();
+        let policy = next_tick_policy(&inputs);
+        assert_eq!(
+            policy,
+            super::super::event::TickPolicy::Active,
+            "app with recent input should select Active policy"
+        );
+    }
+
+    #[test]
+    fn tui_event_loop_tick_policy_idle_with_active_plan() {
+        let dir = tempdir().unwrap();
+        let mut app = App::new(dir.path());
+        // Add an active plan
+        app.tui_state.plans.push(PlanEntry {
+            id: "test-plan".to_string(),
+            active: true,
+            ..Default::default()
+        });
+        let inputs = app.tick_policy_inputs();
+        let policy = next_tick_policy(&inputs);
+        assert_eq!(
+            policy,
+            super::super::event::TickPolicy::Idle,
+            "app with active plan should select Idle policy"
+        );
+    }
+
+    #[test]
+    fn tui_event_loop_snapshot_drain_sets_dirty() {
+        let dir = tempdir().unwrap();
+        let hub = crate::state_hub::shared_state_hub();
+        let mut app = App::new_connected(dir.path(), &hub);
+
+        // Initially clean
+        app.render_dirty = RenderDirty::NONE;
+
+        // Publish an event to trigger snapshot change
+        hub.publish(roko_core::DashboardEvent::PlanStarted {
+            plan_id: "dirty-test".to_string(),
+            tasks_total: 1,
+        });
+        app.drain_snapshot_channel();
+
+        assert!(
+            app.render_dirty.contains(RenderDirty::SNAPSHOT),
+            "drain_snapshot_channel should set SNAPSHOT dirty bit"
+        );
+    }
+
+    #[test]
+    fn tui_event_loop_clean_state_skips_draw() {
+        // Verify that when render_dirty is empty, we would skip a draw.
+        // (This tests the flag logic, not the actual event loop.)
+        let dir = tempdir().unwrap();
+        let app = App::new(dir.path());
+        assert!(
+            app.render_dirty.is_empty(),
+            "clean state should not trigger a draw"
+        );
+    }
+
+    #[test]
+    fn tui_event_loop_drawn_reasons_cleared() {
+        let dir = tempdir().unwrap();
+        let mut app = App::new(dir.path());
+
+        // Set multiple dirty bits
+        app.render_dirty
+            .insert(RenderDirty::INPUT | RenderDirty::SNAPSHOT);
+
+        // Simulate drawing: capture reasons, then clear
+        let drawn = app.render_dirty;
+        app.render_dirty.remove(drawn);
+
+        assert!(
+            app.render_dirty.is_empty(),
+            "all drawn reasons should be cleared after draw"
+        );
+    }
+
+    #[test]
+    fn tui_event_loop_late_arrival_survives_clear() {
+        let dir = tempdir().unwrap();
+        let mut app = App::new(dir.path());
+
+        // Initial dirty reason
+        app.render_dirty.insert(RenderDirty::INPUT);
+        let drawn = app.render_dirty;
+
+        // Late arrival before clear
+        app.render_dirty.insert(RenderDirty::METRICS);
+
+        // Clear only drawn reasons
+        app.render_dirty.remove(drawn);
+
+        assert!(
+            !app.render_dirty.contains(RenderDirty::INPUT),
+            "INPUT should be cleared"
+        );
+        assert!(
+            app.render_dirty.contains(RenderDirty::METRICS),
+            "METRICS arrived late and should survive"
+        );
+    }
+
+    #[test]
+    fn tui_event_loop_current_tick_duration_matches_policy() {
+        let dir = tempdir().unwrap();
+        let app = App::new(dir.path());
+        // Idle app with no active work: should be 250ms (Dormant)
+        let dur = app.current_tick_duration();
+        assert_eq!(
+            dur,
+            std::time::Duration::from_millis(250),
+            "dormant app should use 250ms tick"
+        );
     }
 }

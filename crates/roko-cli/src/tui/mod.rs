@@ -56,7 +56,7 @@ pub use atmosphere::Atmosphere;
 pub use dashboard::{DashboardData, DashboardScaffold, DashboardSummary};
 pub use dashboard_gen::{DashboardGenerationState, DurableDashboardGenerationCounter};
 pub use effects_config::EffectsConfig;
-pub use event::{Event, EventHandler};
+pub use event::{Event, EventHandler, FrameStats, RenderDirty, TickPolicy};
 pub use hit_test::HitZones;
 pub use input::{ConfirmAction, FocusZone, InputMode, TuiAction};
 pub use layout::{centered_rect, responsive_outer_margin};

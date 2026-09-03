@@ -882,6 +882,32 @@ impl CoreEventConsumer for AcpWorkflowEventConsumer {
             | CoreRuntimeEvent::TaskStarted { .. }
             | CoreRuntimeEvent::TaskCompleted { .. }
             | CoreRuntimeEvent::PipelinePhase { .. } => {}
+            // v2 events -- no ACP cognitive mapping yet.
+            CoreRuntimeEvent::WaveStarted { .. }
+            | CoreRuntimeEvent::WaveCompleted { .. }
+            | CoreRuntimeEvent::TaskRetrying { .. }
+            | CoreRuntimeEvent::TaskSkipped { .. }
+            | CoreRuntimeEvent::AgentProgress { .. }
+            | CoreRuntimeEvent::UsageRecorded { .. }
+            | CoreRuntimeEvent::GateRungStarted { .. }
+            | CoreRuntimeEvent::GateRungOutput { .. }
+            | CoreRuntimeEvent::GateRungCompleted { .. }
+            | CoreRuntimeEvent::ApprovalRequested { .. }
+            | CoreRuntimeEvent::ApprovalResolved { .. }
+            | CoreRuntimeEvent::ControlApplied { .. }
+            | CoreRuntimeEvent::BudgetUpdated { .. }
+            | CoreRuntimeEvent::WorkspaceAcquired { .. }
+            | CoreRuntimeEvent::WorkspaceReleased { .. }
+            | CoreRuntimeEvent::MergeQueued { .. }
+            | CoreRuntimeEvent::MergeCompleted { .. }
+            | CoreRuntimeEvent::PublishCompleted { .. }
+            | CoreRuntimeEvent::FeedbackSinkSettled { .. }
+            | CoreRuntimeEvent::FeedbackSinkFailed { .. }
+            | CoreRuntimeEvent::PredictionPublished { .. }
+            | CoreRuntimeEvent::ActualRecorded { .. }
+            | CoreRuntimeEvent::CorrectionApplied { .. }
+            | CoreRuntimeEvent::SequenceGap { .. }
+            | CoreRuntimeEvent::Extension { .. } => {}
         }
     }
 }

@@ -356,7 +356,10 @@ pub use query::{Budget, Query};
 pub use recipe::{Recipe, RecipeEdge, RecipeNode, ScoreOp};
 pub use recipe_store::RecipeStore;
 pub use roko_primitives::HdcVector;
-pub use runtime_event::{RuntimeEvent, ToolCallSummary, WorkflowOutcome};
+pub use runtime_event::{
+    RuntimeEvent, RuntimeEventDelivery, RuntimeEventMode, RuntimeEventProjector,
+    RuntimeEventPublishDisposition, RuntimeEventPublisher, ToolCallSummary, WorkflowOutcome,
+};
 pub use score::Score;
 pub use signal::{ArtifactKind, ArtifactLineage, ArtifactRef, Signal, SignalBuilder};
 pub use signal_kinds::*;

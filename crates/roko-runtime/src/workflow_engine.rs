@@ -811,6 +811,34 @@ fn event_source(event: &RuntimeEvent) -> &'static str {
         | RuntimeEvent::TaskStarted { .. }
         | RuntimeEvent::TaskCompleted { .. }
         | RuntimeEvent::PipelinePhase { .. } => "effect_driver",
+        // v2 events -- the source label is generic because these events
+        // originate from various higher-layer producers that own the
+        // envelope source field.
+        RuntimeEvent::WaveStarted { .. }
+        | RuntimeEvent::WaveCompleted { .. }
+        | RuntimeEvent::TaskRetrying { .. }
+        | RuntimeEvent::TaskSkipped { .. }
+        | RuntimeEvent::AgentProgress { .. }
+        | RuntimeEvent::UsageRecorded { .. }
+        | RuntimeEvent::GateRungStarted { .. }
+        | RuntimeEvent::GateRungOutput { .. }
+        | RuntimeEvent::GateRungCompleted { .. }
+        | RuntimeEvent::ApprovalRequested { .. }
+        | RuntimeEvent::ApprovalResolved { .. }
+        | RuntimeEvent::ControlApplied { .. }
+        | RuntimeEvent::BudgetUpdated { .. }
+        | RuntimeEvent::WorkspaceAcquired { .. }
+        | RuntimeEvent::WorkspaceReleased { .. }
+        | RuntimeEvent::MergeQueued { .. }
+        | RuntimeEvent::MergeCompleted { .. }
+        | RuntimeEvent::PublishCompleted { .. }
+        | RuntimeEvent::FeedbackSinkSettled { .. }
+        | RuntimeEvent::FeedbackSinkFailed { .. }
+        | RuntimeEvent::PredictionPublished { .. }
+        | RuntimeEvent::ActualRecorded { .. }
+        | RuntimeEvent::CorrectionApplied { .. }
+        | RuntimeEvent::SequenceGap { .. }
+        | RuntimeEvent::Extension { .. } => "v2_event",
     }
 }
 

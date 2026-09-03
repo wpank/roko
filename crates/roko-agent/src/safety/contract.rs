@@ -158,9 +158,10 @@ impl Default for AgentContract {
 impl AgentContract {
     /// Build a permissive contract for `role`.
     ///
-    /// This is retained for tests and adapter shims. New code should prefer
-    /// either [`AgentContract::load_for_role`] or
-    /// [`AgentContract::restricted`] so missing-role fallbacks fail closed.
+    /// **Test-only.** New production code should use
+    /// [`AgentContract::load_for_role`] or [`AgentContract::restricted`]
+    /// so missing-role fallbacks fail closed.
+    #[cfg(test)]
     #[must_use]
     pub fn permissive(role: impl Into<String>) -> Self {
         Self {

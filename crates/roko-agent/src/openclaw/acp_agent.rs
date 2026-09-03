@@ -89,6 +89,8 @@ pub struct OpenClawAcpAgent {
     config: OpenClawAcpConfig,
     capabilities: HarnessCapabilities,
     name: String,
+    /// Safety layer for output scrubbing (secret leak prevention).
+    safety: crate::safety::SafetyLayer,
 }
 
 impl OpenClawAcpAgent {
@@ -123,6 +125,7 @@ impl OpenClawAcpAgent {
             config,
             capabilities,
             name: "openclaw-acp".to_string(),
+            safety: crate::safety::SafetyLayer::with_defaults(),
         }
     }
 
@@ -145,6 +148,7 @@ impl OpenClawAcpAgent {
             config,
             capabilities,
             name: "openclaw-acp".to_string(),
+            safety: crate::safety::SafetyLayer::with_defaults(),
         }
     }
 
@@ -365,7 +369,7 @@ impl Agent for OpenClawAcpAgent {
         let display_text = if success && output_text.is_empty() {
             "(no output from openclaw acp)".to_string()
         } else {
-            output_text
+            self.safety.scrub_text(&output_text)
         };
 
         let output_signal =
@@ -404,7 +408,7 @@ impl Agent for OpenClawAcpAgent {
         let display_text = if success && output_text.is_empty() {
             "(no output from openclaw acp)".to_string()
         } else {
-            output_text
+            self.safety.scrub_text(&output_text)
         };
 
         let output_signal =

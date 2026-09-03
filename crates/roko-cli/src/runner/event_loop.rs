@@ -1765,7 +1765,7 @@ struct CandidateReplaySpec {
     baseline_oid: String,
     repo_root: PathBuf,
     replay_root: PathBuf,
-    safety: Option<roko_agent::SafetyLayer>,
+    safety: roko_agent::SafetyLayer,
     contract: AgentContract,
     task: TaskDef,
     timeout: Duration,
@@ -1944,7 +1944,7 @@ async fn run_candidate_replay(
     let result: std::result::Result<(String, (String, [u8; 32], bool)), String> = async {
         let (call, context, safety) = reflex::authorize_action(
             &spec.candidate.action,
-            spec.safety.as_ref(),
+            Some(&spec.safety),
             spec.contract,
             &spec.task,
             &replay_workdir,
@@ -3936,7 +3936,8 @@ pub async fn run_with_tui_commands(
                     .await;
 
                     // ── E04-T06: Post-dispatch safety check ──────────────
-                    if let Some(ref safety) = config.safety_layer {
+                    {
+                        let safety = &config.safety_layer;
                         let effective_safety = task_index
                             .get(state.plan_id.as_str())
                             .and_then(|tasks| tasks.get(state.current_task.as_str()))
@@ -11740,7 +11741,7 @@ async fn dispatch_action(
                     let authorized = condition.as_ref().and_then(|_| {
                         reflex::authorize_action(
                             &matched.action,
-                            ctx.config.safety_layer.as_ref(),
+                            Some(&ctx.config.safety_layer),
                             effective_contract,
                             &task_def,
                             &plan_workdir,
@@ -12711,8 +12712,9 @@ async fn dispatch_action(
             );
 
             // ── E04-T06 / E34: Pre-dispatch safety check ─────────────
-            if let Some(ref safety) = ctx.config.safety_layer {
-                let effective_safety = safety.clone().with_contract(effective_contract.clone());
+            {
+                let effective_safety =
+                    ctx.config.safety_layer.clone().with_contract(effective_contract.clone());
                 if let Err(violation) = effective_safety.pre_dispatch_check_with_context(
                     plan_id,
                     &task_id,
@@ -12751,11 +12753,8 @@ async fn dispatch_action(
 
             let contract_allowed_tools = effective_contract.allowed_tools.clone();
             let contract_denied_tools = effective_contract.forbidden_tool_names();
-            let permission_bypass_allowed = ctx
-                .config
-                .safety_layer
-                .as_ref()
-                .is_none_or(|safety| safety.sandbox_level.allows_permission_bypass());
+            let permission_bypass_allowed =
+                ctx.config.safety_layer.sandbox_level.allows_permission_bypass();
             if contract_allowed_tools.is_some() || !contract_denied_tools.is_empty() {
                 debug!(
                     role = %task_role,
@@ -16812,11 +16811,9 @@ fn timeout_salvage_safety_block(
     attempt: &TaskAttemptRef,
     diff: &TimeoutSalvageDiff,
 ) -> Option<String> {
-    let Some(safety) = config.safety_layer.as_ref() else {
-        return Some("post-dispatch safety policy is unavailable".to_string());
-    };
     let task_role = task.role.as_deref().unwrap_or("implementer");
-    let effective_safety = safety
+    let effective_safety = config
+        .safety_layer
         .clone()
         .with_contract(effective_agent_contract(task_role, task));
     let violations = effective_safety.post_dispatch_check(
@@ -20606,7 +20603,7 @@ mod tests {
             baseline_oid: fixture.baseline_oid.clone(),
             repo_root: fixture.repo_root.clone(),
             replay_root: fixture.repo_root.join(".roko/worktrees"),
-            safety: None,
+            safety: roko_agent::SafetyLayer::with_defaults(),
             contract: AgentContract::permissive("implementer"),
             task: fixture.task.clone(),
             timeout: Duration::from_secs(120),

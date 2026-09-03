@@ -168,6 +168,8 @@ pub struct HermesOneShotAgent {
     config: HermesOneShotConfig,
     capabilities: HarnessCapabilities,
     name: String,
+    /// Safety layer for output scrubbing (secret leak prevention).
+    safety: crate::safety::SafetyLayer,
 }
 
 impl HermesOneShotAgent {
@@ -189,6 +191,7 @@ impl HermesOneShotAgent {
             config,
             capabilities,
             name: "hermes-oneshot".to_string(),
+            safety: crate::safety::SafetyLayer::with_defaults(),
         }
     }
 
@@ -306,7 +309,13 @@ impl Agent for HermesOneShotAgent {
         };
 
         let wall_ms = started.elapsed().as_millis() as u64;
-        harness_events_to_agent_result(&events, input, &self.name, wall_ms)
+        let mut result = harness_events_to_agent_result(&events, input, &self.name, wall_ms);
+        // Scrub secrets from the output before returning.
+        if let Ok(text) = result.output.body.as_text() {
+            let scrubbed = self.safety.scrub_text(text);
+            result.output.body = roko_core::Body::text(scrubbed);
+        }
+        result
     }
 
     fn name(&self) -> &str {

@@ -2475,8 +2475,9 @@ pub struct RunConfig {
     /// Populated when running under `roko serve`.
     pub metrics: Option<std::sync::Arc<roko_core::obs::metrics::MetricRegistry>>,
     /// Safety layer for pre- and post-dispatch checks around CLI dispatch.
-    /// When `None`, safety checks are skipped (tests, bare smoke runs).
-    pub safety_layer: Option<SafetyLayer>,
+    /// Always present — `SafetyLayer::with_defaults()` provides a hardened
+    /// fail-closed baseline. Safety checks are never skipped.
+    pub safety_layer: SafetyLayer,
     /// Filesystem-backed observability sinks (traces + tool metrics).
     /// When `None`, the runner constructs sinks from `workdir` at startup.
     /// Set explicitly to share sinks across runs or inject test doubles.
@@ -2672,7 +2673,7 @@ impl RunConfig {
             projection: None,
             http_event_sink: None,
             metrics: Some(metrics),
-            safety_layer: Some(safety_layer),
+            safety_layer,
             obs_sinks: None,
             conductor: Some(Arc::new(conductor)),
             conductor_ring: Some(conductor_ring),
@@ -2729,7 +2730,7 @@ impl Default for RunConfig {
             batch_size: None,
             warm_cache: true,
             metrics: None,
-            safety_layer: None,
+            safety_layer: SafetyLayer::with_defaults(),
             obs_sinks: None,
             conductor: None,
             conductor_ring: None,
@@ -3195,6 +3196,21 @@ mod tests {
         assert_eq!(
             event_loop::health_check_timeout(&config),
             defaults.health_check()
+        );
+    }
+
+    // ─── #60: RunConfig.safety_layer non-optionality regression ─────
+
+    #[test]
+    fn run_config_default_has_active_safety_layer() {
+        let config = RunConfig::default();
+        // Compile-time proof: safety_layer is SafetyLayer, not Option<SafetyLayer>.
+        let _safety: &SafetyLayer = &config.safety_layer;
+        // The default layer should have Restrict sandbox level (not permissive).
+        assert_eq!(
+            config.safety_layer.sandbox_level,
+            roko_agent::safety::SandboxLevel::Restrict,
+            "default RunConfig must have a restrictive sandbox level"
         );
     }
 }

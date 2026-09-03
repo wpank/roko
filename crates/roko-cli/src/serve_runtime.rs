@@ -800,7 +800,7 @@ fn build_runner_config(
         no_budget: false,
         clippy_enabled: roko_config.gates.clippy_enabled,
         skip_tests: roko_config.gates.skip_tests,
-        safety_layer: Some(roko_agent::SafetyLayer::from_config(&roko_config)),
+        safety_layer: roko_agent::SafetyLayer::from_config(&roko_config),
         roko_config: Some(Arc::new(roko_config)),
         extension_chain: Some(extension_chain),
         cascade_router: Some(cascade_router),

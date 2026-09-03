@@ -58,6 +58,8 @@ pub struct HermesHttpAgent {
     capabilities: HarnessCapabilities,
     /// State directory for probe cache, PID files, etc.
     state_dir: PathBuf,
+    /// Safety layer for output scrubbing (secret leak prevention).
+    safety: crate::safety::SafetyLayer,
 }
 
 impl HermesHttpAgent {
@@ -111,6 +113,7 @@ impl HermesHttpAgent {
             capabilities,
             config,
             agent_name: "hermes-http".to_string(),
+            safety: crate::safety::SafetyLayer::with_defaults(),
         }
     }
 
@@ -341,7 +344,7 @@ impl Agent for HermesHttpAgent {
         match self.backend.send_turn(&messages, &tools, &session).await {
             Ok(response) => {
                 let wall_ms = started.elapsed().as_millis() as u64;
-                let content = Self::extract_content(&response);
+                let content = self.safety.scrub_text(&Self::extract_content(&response));
                 let prompt_chars = prompt_text.len();
                 let content_chars = content.len();
 
@@ -411,7 +414,7 @@ impl Agent for HermesHttpAgent {
         match result {
             Ok(response) => {
                 let wall_ms = started.elapsed().as_millis() as u64;
-                let content = Self::extract_content(&response);
+                let content = self.safety.scrub_text(&Self::extract_content(&response));
                 let prompt_chars = prompt_text.len();
                 let content_chars = content.len();
 

@@ -374,10 +374,9 @@ where
         unreachable!("invariant: runtime event bus registry stores EventBus by TypeId");
     }
 
-    // TODO(arch): switch this to `roko_core::RuntimeEvent` once the manifest
-    // dependency direction matches the architecture reference. In this checkout,
-    // `roko-core` depends on `roko-runtime`, so `roko-runtime` cannot directly
-    // import `roko_core::RuntimeEvent` without a crate cycle.
+    // The bus is generic over `RuntimeEvent` by design: callers parameterise
+    // with `roko_core::RuntimeEvent` (or any other `Clone + Send + Sync + 'static`
+    // type) so the event bus layer stays domain-agnostic.
     let bus: &'static EventBus<RuntimeEvent> = Box::leak(Box::new(EventBus::new(2048)));
     buses.insert(type_id, bus);
     bus

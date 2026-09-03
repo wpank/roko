@@ -289,6 +289,71 @@ fn format_duration(d: std::time::Duration) -> String {
     }
 }
 
+/// Explicit execution route for workflow callers.
+///
+/// Before #260 the default is `LegacyDefault`, which selects `WorkflowEngine`.
+/// `GraphCanary` selects the graph-based live execution path (#257).
+/// `ReplayOnly` consumes recorded inputs with all provider/git/feedback/publication
+/// effects disabled — used by shadow fixtures for #259 comparison.
+/// `LiveFallback` explicitly selects the current `WorkflowEngine` and emits a
+/// `legacy compatibility` tracing warning; intended as an emergency path during
+/// the compatibility window.
+///
+/// CLI/canary selection is explicit only: `--engine graph` maps to `GraphCanary`;
+/// hidden `--engine runner-v2` compatibility maps to `LiveFallback` as
+/// prescribed by #260.  No heuristic chooses an engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowExecutionRoute {
+    /// Default production route — selects WorkflowEngine until #260 switches
+    /// the mapping.
+    LegacyDefault,
+    /// Graph-based execution path for canary validation (#257).
+    GraphCanary,
+    /// Replay-only path: effects disabled, consumes recorded inputs for
+    /// comparison (#259).
+    ReplayOnly,
+    /// Explicit legacy WorkflowEngine path with an observable compatibility
+    /// warning.  Only selected by explicit routing; removed by #277.
+    LiveFallback,
+}
+
+impl Default for WorkflowExecutionRoute {
+    fn default() -> Self {
+        Self::LegacyDefault
+    }
+}
+
+impl std::fmt::Display for WorkflowExecutionRoute {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::LegacyDefault => f.write_str("legacy_default"),
+            Self::GraphCanary => f.write_str("graph_canary"),
+            Self::ReplayOnly => f.write_str("replay_only"),
+            Self::LiveFallback => f.write_str("live_fallback"),
+        }
+    }
+}
+
+impl std::str::FromStr for WorkflowExecutionRoute {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "legacy_default" | "legacy-default" | "legacydefault" => Ok(Self::LegacyDefault),
+            "graph_canary" | "graph-canary" | "graphcanary" | "graph" => Ok(Self::GraphCanary),
+            "replay_only" | "replay-only" | "replayonly" | "replay" => Ok(Self::ReplayOnly),
+            "live_fallback" | "live-fallback" | "livefallback" | "fallback" => {
+                Ok(Self::LiveFallback)
+            }
+            other => Err(format!(
+                "unknown workflow execution route `{other}`; expected one of: \
+                 legacy_default, graph_canary, replay_only, live_fallback"
+            )),
+        }
+    }
+}
+
 /// CLI overrides parsed from clap args, threaded through the call chain
 /// instead of re-parsing `std::env::args_os()`.
 #[derive(Debug, Default, Clone)]
@@ -297,6 +362,7 @@ pub struct CliOverrides {
     pub role: Option<String>,
     pub provider: Option<String>,
     pub cascade_enabled: Option<bool>,
+    pub effort: Option<String>,
 }
 
 fn resolve_workflow_model_selection(
@@ -445,6 +511,85 @@ fn build_workflow_effect_services(
     Ok(services.effect_services())
 }
 
+// ---------------------------------------------------------------------------
+// #245: Non-plan service migration adapter (Lane A)
+// ---------------------------------------------------------------------------
+
+/// Thin adapter that validates a workflow request against the
+/// [`roko_execution::profiles::ProfileMatrix`] before delegating to the
+/// existing `ServiceFactory::build` path.
+///
+/// When #243 lands, this adapter will be replaced by a direct call to
+/// `RuntimeServicesBuilder::build()`. Until then it serves as the
+/// consumer-side contract: callers build `ExecutionOverrides` at the
+/// host boundary and pass them through this adapter.
+///
+/// **Spec constraint (Lane A):** this adapter does not edit
+/// `commands/plan.rs`, `runner/event_loop.rs`, or any plan-path type.
+pub struct WorkflowServiceAdapter;
+
+impl WorkflowServiceAdapter {
+    /// Validate and build workflow services through the interim path.
+    ///
+    /// 1. Translates [`CliOverrides`] into
+    ///    [`roko_execution::ExecutionOverrides`].
+    /// 2. Validates the request against the profile matrix.
+    /// 3. Delegates to `ServiceFactory::build` (unchanged).
+    /// 4. Returns the `EffectServices` and a validated handle for
+    ///    cost settlement correlation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `anyhow::Error` if the profile matrix validation fails or
+    /// if `ServiceFactory::build` fails.
+    pub fn build(
+        workdir: &std::path::Path,
+        config: &Config,
+        model_config: RokoConfig,
+        selection: &EffectiveModelSelection,
+        overrides: &CliOverrides,
+    ) -> anyhow::Result<(EffectServices, roko_execution::NonPlanServiceHandle)> {
+        use roko_execution::profiles::RuntimeProfile;
+
+        // Phase 1: translate CLI overrides to the shared type.
+        let exec_overrides = roko_execution::overrides_for_workflow(
+            overrides.model.clone(),
+            overrides.role.clone(),
+            overrides.provider.clone(),
+            overrides.cascade_enabled,
+            config.agent.mcp_config.clone(),
+        );
+
+        // Phase 2: validate against the profile matrix.
+        let request = roko_execution::NonPlanServiceRequest::new(
+            RuntimeProfile::Workflow,
+            workdir.to_path_buf(),
+            exec_overrides,
+        );
+        let handle = roko_execution::validate_service_request(&request)
+            .map_err(|e| anyhow!("workflow service validation: {e}"))?;
+
+        tracing::debug!(
+            instance_id = %handle.instance_id(),
+            profile = %handle.profile(),
+            required = ?handle.required_bundles(),
+            "validated workflow service request"
+        );
+
+        // Phase 3: delegate to the existing ServiceFactory::build path.
+        // TODO(#243): Replace with RuntimeServicesBuilder::build(&request).
+        let effect_services = build_workflow_effect_services(
+            workdir,
+            config,
+            model_config,
+            selection,
+            overrides.cascade_enabled.unwrap_or(true),
+        )?;
+
+        Ok((effect_services, handle))
+    }
+}
+
 fn workflow_config_for_template(workflow_template: &str) -> WorkflowConfig {
     match workflow_template {
         "express" => WorkflowConfig::express(),
@@ -495,35 +640,82 @@ pub fn workflow_shell_gate_commands(gates: &[GateConfig]) -> Vec<CoreShellGateCo
         .collect()
 }
 
-/// Execute a prompt via the new WorkflowEngine (event-driven architecture).
+/// Unified workflow execution entry point.
 ///
-/// This is the WorkflowEngine execution path. It uses:
-/// - PipelineStateV2 for state machine decisions
-/// - EffectDriver for side-effect execution
-/// - RuntimeEvent bus for observability
+/// All production workflow callers should route through this function.
+/// The `route` parameter selects the execution backend:
 ///
-/// Used by the default `roko run` execution path.
-pub async fn run_with_workflow_engine(
+/// - `LegacyDefault` and `LiveFallback` both select WorkflowEngine (the
+///   current production default).  `LiveFallback` additionally emits a
+///   `legacy compatibility` tracing warning so operators can identify
+///   emergency fallback usage.
+/// - `GraphCanary` is reserved for the graph-based execution path (#257).
+///   Until that packet lands, it returns an error.
+/// - `ReplayOnly` is reserved for the shadow-fixture comparison path (#259).
+///   Until that packet lands, it returns an error.
+pub async fn run_workflow_report(
+    route: WorkflowExecutionRoute,
     prompt: &str,
     workdir: &std::path::Path,
     workflow_template: &str,
     enabled_gates: Vec<String>,
+    shell_gates: Vec<CoreShellGateCommand>,
+    external_hub: Option<&StateHub>,
+    overrides: &CliOverrides,
 ) -> anyhow::Result<WorkflowRunReport> {
-    run_with_workflow_engine_with_hub(
-        prompt,
-        workdir,
-        workflow_template,
-        enabled_gates,
-        Vec::new(),
-        None,
-        &CliOverrides::default(),
-    )
-    .await
+    match route {
+        WorkflowExecutionRoute::LegacyDefault => {
+            // Default production path — delegates to WorkflowEngine.
+            run_workflow_report_via_legacy(
+                prompt,
+                workdir,
+                workflow_template,
+                enabled_gates,
+                shell_gates,
+                external_hub,
+                overrides,
+            )
+            .await
+        }
+        WorkflowExecutionRoute::LiveFallback => {
+            // Explicit legacy fallback — same engine, observable warning.
+            tracing::warn!(
+                route = %route,
+                "legacy compatibility: explicit LiveFallback route selected; \
+                 this path will be removed by #277"
+            );
+            run_workflow_report_via_legacy(
+                prompt,
+                workdir,
+                workflow_template,
+                enabled_gates,
+                shell_gates,
+                external_hub,
+                overrides,
+            )
+            .await
+        }
+        WorkflowExecutionRoute::GraphCanary => {
+            // Graph-based canary path — stub until #257 lands.
+            Err(anyhow!(
+                "WorkflowExecutionRoute::GraphCanary is not yet implemented; \
+                 awaiting #257 graph template wiring"
+            ))
+        }
+        WorkflowExecutionRoute::ReplayOnly => {
+            // Replay-only comparison path — stub until #259 lands.
+            Err(anyhow!(
+                "WorkflowExecutionRoute::ReplayOnly is not yet implemented; \
+                 awaiting #259 shadow fixture wiring"
+            ))
+        }
+    }
 }
 
-/// Execute a prompt via the new WorkflowEngine and optionally publish lifecycle
-/// events to an existing StateHub.
-pub async fn run_with_workflow_engine_with_hub(
+/// Internal: execute through the legacy WorkflowEngine path.
+///
+/// Shared by both `LegacyDefault` and `LiveFallback` routes.
+async fn run_workflow_report_via_legacy(
     prompt: &str,
     workdir: &std::path::Path,
     workflow_template: &str,
@@ -536,59 +728,6 @@ pub async fn run_with_workflow_engine_with_hub(
     selection.print_stderr();
     let workflow_prompt = workflow_prompt_with_config_files(workdir, &config, prompt)?;
 
-    let pipeline_config = model_config.pipeline.clone();
-    let services = build_workflow_effect_services(
-        workdir,
-        &config,
-        model_config,
-        &selection,
-        overrides.cascade_enabled.unwrap_or(true),
-    )?;
-
-    // Use the pipeline bands declared in roko.toml for the interactive run path.
-    let workflow = match workflow_template {
-        "express" | "mechanical" => workflow_config_from_band(&pipeline_config.mechanical),
-        "focused" => workflow_config_from_band(&pipeline_config.focused),
-        "integrative" => workflow_config_from_band(&pipeline_config.integrative),
-        "full" | "architectural" => workflow_config_from_band(&pipeline_config.architectural),
-        "standard" => workflow_config_from_band(&pipeline_config.mechanical),
-        _ => workflow_config_for_template(workflow_template),
-    };
-    let workflow_label = match workflow_template {
-        "express" | "mechanical" | "standard" => "mechanical",
-        "focused" => "focused",
-        "integrative" => "integrative",
-        "full" | "architectural" => "architectural",
-        _ => workflow_template,
-    };
-
-    let report = run_workflow_engine_with_services(
-        &workflow_prompt,
-        workdir,
-        workflow,
-        enabled_gates,
-        shell_gates,
-        external_hub,
-        services,
-        selection.provider_key,
-    )
-    .await?;
-    print_workflow_run_report(prompt, workflow_label, &report);
-    Ok(report)
-}
-
-pub async fn run_workflow_engine_report_with_hub(
-    prompt: &str,
-    workdir: &std::path::Path,
-    workflow_template: &str,
-    enabled_gates: Vec<String>,
-    shell_gates: Vec<CoreShellGateCommand>,
-    external_hub: Option<&StateHub>,
-    overrides: &CliOverrides,
-) -> anyhow::Result<WorkflowRunReport> {
-    let (config, model_config, selection) = resolve_workflow_model_selection(workdir, overrides)?;
-    selection.print_stderr();
-    let workflow_prompt = workflow_prompt_with_config_files(workdir, &config, prompt)?;
     let pipeline_config = model_config.pipeline.clone();
     let services = build_workflow_effect_services(
         workdir,
@@ -616,6 +755,100 @@ pub async fn run_workflow_engine_report_with_hub(
         external_hub,
         services,
         selection.provider_key,
+    )
+    .await
+}
+
+/// Execute a prompt via the new WorkflowEngine (event-driven architecture).
+///
+/// This is the WorkflowEngine execution path. It uses:
+/// - PipelineStateV2 for state machine decisions
+/// - EffectDriver for side-effect execution
+/// - RuntimeEvent bus for observability
+///
+/// Used by the default `roko run` execution path.
+///
+/// **Compatibility wrapper** — delegates to [`run_workflow_report`] with
+/// `WorkflowExecutionRoute::LegacyDefault`.
+pub async fn run_with_workflow_engine(
+    prompt: &str,
+    workdir: &std::path::Path,
+    workflow_template: &str,
+    enabled_gates: Vec<String>,
+) -> anyhow::Result<WorkflowRunReport> {
+    run_workflow_report(
+        WorkflowExecutionRoute::LegacyDefault,
+        prompt,
+        workdir,
+        workflow_template,
+        enabled_gates,
+        Vec::new(),
+        None,
+        &CliOverrides::default(),
+    )
+    .await
+}
+
+/// Execute a prompt via the new WorkflowEngine and optionally publish lifecycle
+/// events to an existing StateHub.
+///
+/// **Compatibility wrapper** — delegates to [`run_workflow_report`] with
+/// `WorkflowExecutionRoute::LegacyDefault`, then prints the report.
+pub async fn run_with_workflow_engine_with_hub(
+    prompt: &str,
+    workdir: &std::path::Path,
+    workflow_template: &str,
+    enabled_gates: Vec<String>,
+    shell_gates: Vec<CoreShellGateCommand>,
+    external_hub: Option<&StateHub>,
+    overrides: &CliOverrides,
+) -> anyhow::Result<WorkflowRunReport> {
+    let workflow_label = match workflow_template {
+        "express" | "mechanical" | "standard" => "mechanical",
+        "focused" => "focused",
+        "integrative" => "integrative",
+        "full" | "architectural" => "architectural",
+        _ => workflow_template,
+    };
+
+    let report = run_workflow_report(
+        WorkflowExecutionRoute::LegacyDefault,
+        prompt,
+        workdir,
+        workflow_template,
+        enabled_gates,
+        shell_gates,
+        external_hub,
+        overrides,
+    )
+    .await?;
+    print_workflow_run_report(prompt, workflow_label, &report);
+    Ok(report)
+}
+
+/// Like [`run_with_workflow_engine_with_hub`] but returns the raw report
+/// without printing.
+///
+/// **Compatibility wrapper** — delegates to [`run_workflow_report`] with
+/// `WorkflowExecutionRoute::LegacyDefault`.
+pub async fn run_workflow_engine_report_with_hub(
+    prompt: &str,
+    workdir: &std::path::Path,
+    workflow_template: &str,
+    enabled_gates: Vec<String>,
+    shell_gates: Vec<CoreShellGateCommand>,
+    external_hub: Option<&StateHub>,
+    overrides: &CliOverrides,
+) -> anyhow::Result<WorkflowRunReport> {
+    run_workflow_report(
+        WorkflowExecutionRoute::LegacyDefault,
+        prompt,
+        workdir,
+        workflow_template,
+        enabled_gates,
+        shell_gates,
+        external_hub,
+        overrides,
     )
     .await
 }
@@ -1916,5 +2149,167 @@ mod tests {
             args,
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    // ── WorkflowExecutionRoute tests ────────────────────────────────────
+
+    #[test]
+    fn workflow_route_default_is_legacy_default() {
+        assert_eq!(
+            WorkflowExecutionRoute::default(),
+            WorkflowExecutionRoute::LegacyDefault
+        );
+    }
+
+    #[test]
+    fn workflow_route_serde_round_trip() {
+        let variants = [
+            WorkflowExecutionRoute::LegacyDefault,
+            WorkflowExecutionRoute::GraphCanary,
+            WorkflowExecutionRoute::ReplayOnly,
+            WorkflowExecutionRoute::LiveFallback,
+        ];
+        for route in variants {
+            let json = serde_json::to_string(&route).unwrap();
+            let back: WorkflowExecutionRoute = serde_json::from_str(&json).unwrap();
+            assert_eq!(route, back, "serde round-trip failed for {route}");
+        }
+    }
+
+    #[test]
+    fn workflow_route_serde_lowercase_strings() {
+        assert_eq!(
+            serde_json::to_string(&WorkflowExecutionRoute::LegacyDefault).unwrap(),
+            "\"legacy_default\""
+        );
+        assert_eq!(
+            serde_json::to_string(&WorkflowExecutionRoute::GraphCanary).unwrap(),
+            "\"graph_canary\""
+        );
+        assert_eq!(
+            serde_json::to_string(&WorkflowExecutionRoute::ReplayOnly).unwrap(),
+            "\"replay_only\""
+        );
+        assert_eq!(
+            serde_json::to_string(&WorkflowExecutionRoute::LiveFallback).unwrap(),
+            "\"live_fallback\""
+        );
+    }
+
+    #[test]
+    fn workflow_route_from_str_accepts_aliases() {
+        use std::str::FromStr;
+
+        // Standard names
+        assert_eq!(
+            WorkflowExecutionRoute::from_str("legacy_default").unwrap(),
+            WorkflowExecutionRoute::LegacyDefault
+        );
+        assert_eq!(
+            WorkflowExecutionRoute::from_str("graph_canary").unwrap(),
+            WorkflowExecutionRoute::GraphCanary
+        );
+        assert_eq!(
+            WorkflowExecutionRoute::from_str("replay_only").unwrap(),
+            WorkflowExecutionRoute::ReplayOnly
+        );
+        assert_eq!(
+            WorkflowExecutionRoute::from_str("live_fallback").unwrap(),
+            WorkflowExecutionRoute::LiveFallback
+        );
+
+        // Dash aliases
+        assert_eq!(
+            WorkflowExecutionRoute::from_str("graph-canary").unwrap(),
+            WorkflowExecutionRoute::GraphCanary
+        );
+        assert_eq!(
+            WorkflowExecutionRoute::from_str("live-fallback").unwrap(),
+            WorkflowExecutionRoute::LiveFallback
+        );
+
+        // Short aliases
+        assert_eq!(
+            WorkflowExecutionRoute::from_str("graph").unwrap(),
+            WorkflowExecutionRoute::GraphCanary
+        );
+        assert_eq!(
+            WorkflowExecutionRoute::from_str("replay").unwrap(),
+            WorkflowExecutionRoute::ReplayOnly
+        );
+        assert_eq!(
+            WorkflowExecutionRoute::from_str("fallback").unwrap(),
+            WorkflowExecutionRoute::LiveFallback
+        );
+
+        // Unknown
+        assert!(WorkflowExecutionRoute::from_str("unknown").is_err());
+    }
+
+    #[test]
+    fn workflow_route_display_matches_serde_value() {
+        let variants = [
+            (WorkflowExecutionRoute::LegacyDefault, "legacy_default"),
+            (WorkflowExecutionRoute::GraphCanary, "graph_canary"),
+            (WorkflowExecutionRoute::ReplayOnly, "replay_only"),
+            (WorkflowExecutionRoute::LiveFallback, "live_fallback"),
+        ];
+        for (route, expected) in variants {
+            assert_eq!(route.to_string(), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn workflow_route_graph_canary_returns_not_implemented() {
+        let err = run_workflow_report(
+            WorkflowExecutionRoute::GraphCanary,
+            "test prompt",
+            std::path::Path::new("/nonexistent"),
+            "standard",
+            Vec::new(),
+            Vec::new(),
+            None,
+            &CliOverrides::default(),
+        )
+        .await;
+        assert!(err.is_err());
+        let msg = err.unwrap_err().to_string();
+        assert!(
+            msg.contains("GraphCanary"),
+            "error should mention GraphCanary: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn workflow_route_replay_only_returns_not_implemented() {
+        let err = run_workflow_report(
+            WorkflowExecutionRoute::ReplayOnly,
+            "test prompt",
+            std::path::Path::new("/nonexistent"),
+            "standard",
+            Vec::new(),
+            Vec::new(),
+            None,
+            &CliOverrides::default(),
+        )
+        .await;
+        assert!(err.is_err());
+        let msg = err.unwrap_err().to_string();
+        assert!(
+            msg.contains("ReplayOnly"),
+            "error should mention ReplayOnly: {msg}"
+        );
+    }
+
+    #[test]
+    fn cli_overrides_has_effort_field() {
+        let overrides = CliOverrides {
+            model: None,
+            role: None,
+            provider: None,
+            cascade_enabled: None,
+            effort: Some("high".to_string()),
+        };
+        assert_eq!(overrides.effort.as_deref(), Some("high"));
     }
 }

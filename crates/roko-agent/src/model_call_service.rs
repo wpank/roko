@@ -31,7 +31,10 @@ use std::time::Instant;
 use parking_lot::{Mutex, RwLock};
 
 type ModelRouter = dyn Fn(Option<&str>) -> String + Send + Sync;
-type KnowledgeStoreQuery = dyn Fn(&str, usize) -> Result<Vec<serde_json::Value>> + Send + Sync;
+/// Re-export: callers that previously supplied a closure adapter can now
+/// implement `roko_core::KnowledgeQuery` directly or wrap a closure with
+/// `ClosureKnowledgeQuery`.
+use roko_core::foundation::KnowledgeQuery;
 
 /// Records explicit model override outcomes when no routing context is available.
 pub trait ForceBackendOverrideRecorder: Send + Sync {
@@ -93,14 +96,12 @@ pub struct ModelCallService {
     feedback_sink: Option<Arc<dyn FeedbackSink>>,
     /// Optional durable gateway event writer.
     gateway_event_writer: Option<Arc<GatewayEventWriter>>,
-    /// Optional knowledge store query adapter for knowledge-informed routing.
+    /// Optional knowledge store for knowledge-informed model routing.
     ///
-    /// TODO(converge): Replace this erased adapter with
-    /// `Arc<dyn roko_neuro::NeuroStore + Send + Sync>` once `roko-agent` has a
-    /// normal `roko-neuro` dependency and `NeuroStore` is object-safe. In this
-    /// worktree `NeuroStore: Sized`, and this batch's scope forbids Cargo.toml
-    /// changes, so direct trait-object storage cannot compile here.
-    knowledge_store: Option<Arc<KnowledgeStoreQuery>>,
+    /// Uses the canonical `roko_core::KnowledgeQuery` trait object, which any
+    /// `NeuroStore` backend can implement via the blanket impl in
+    /// `roko-compose`.
+    knowledge_store: Option<Arc<dyn KnowledgeQuery>>,
     /// Optional model router used when requests omit an explicit model.
     model_router: Option<Arc<ModelRouter>>,
     /// Optional cascade router callback for recording forced model observations.
@@ -247,15 +248,12 @@ impl ModelCallService {
         self
     }
 
-    /// Attach a knowledge store query adapter for knowledge-informed model routing.
+    /// Attach a knowledge store for knowledge-informed model routing.
     ///
-    /// The adapter should return serialized neuro `KnowledgeEntry` values.
+    /// Accepts any `KnowledgeQuery` implementation. `NeuroStore` backends
+    /// satisfy this via the blanket impl in `roko-compose`.
     #[must_use]
-    #[allow(clippy::type_complexity)]
-    pub fn with_knowledge_store(
-        mut self,
-        store: Arc<dyn Fn(&str, usize) -> Result<Vec<serde_json::Value>> + Send + Sync>,
-    ) -> Self {
+    pub fn with_knowledge_store(mut self, store: Arc<dyn KnowledgeQuery>) -> Self {
         self.knowledge_store = Some(store);
         self
     }
@@ -1048,7 +1046,7 @@ impl ModelCallService {
             task_hint.unwrap_or("general")
         );
 
-        let entries = match store(&query, 10) {
+        let entries = match store.query_knowledge(&query, 10) {
             Ok(entries) => entries,
             Err(err) => {
                 tracing::debug!(error = %err, "knowledge store query failed for routing");
@@ -2390,12 +2388,27 @@ impl ModelCaller for ModelCallService {
         if let Some(max_tokens) = thinking_cap.thinking_budget {
             set_max_tokens_option(&mut options, max_tokens);
         }
-        // TODO(converge): Thread per-request generation settings through
-        // AgentOptions/provider adapters. The Anthropic and OpenAI-compatible
-        // adapters derive max tokens from ModelProfile::max_output and do not
-        // parse "max_tokens=..." or "temperature=..." extra_args.
-        // TODO(converge): Thread req-level MCP config here in S05 once
-        // ModelCallRequest carries it.
+        // Thread per-request generation settings through AgentOptions.
+        if let Some(ref gen) = req.generation_settings {
+            if let Some(max_tokens) = gen.max_tokens {
+                set_max_tokens_option(&mut options, max_tokens);
+            }
+            if let Some(temperature) = gen.temperature {
+                options
+                    .extra_args
+                    .push(format!("--temperature={temperature}"));
+            }
+            if let Some(top_p) = gen.top_p {
+                options.extra_args.push(format!("--top-p={top_p}"));
+            }
+            for stop in &gen.stop_sequences {
+                options.extra_args.push(format!("--stop={stop}"));
+            }
+        }
+        // Thread per-request MCP config, overriding the service-level default.
+        if let Some(ref mcp) = req.mcp_config {
+            options.mcp_config = Some(mcp.clone());
+        }
 
         let fallback_models = self
             .fallback_models_for_request(&model)
@@ -3180,6 +3193,52 @@ mod tests {
         assert!(
             !debug_repr.contains("sk-") && !debug_repr.contains("ANTHROPIC_API_KEY"),
             "resolved path metadata must not leak credentials"
+        );
+    }
+
+    /// Per-request `generation_settings` and `mcp_config` are threaded through
+    /// `build_agent_options` into `AgentOptions`.
+    #[test]
+    fn per_request_generation_settings_and_mcp_config_threaded() {
+        use roko_core::foundation::GenerationSettings;
+
+        let svc = ModelCallService::new("claude".into())
+            .with_mcp_config("/service/default.json");
+
+        // Per-request overrides should take precedence.
+        let req = ModelCallRequest {
+            generation_settings: Some(GenerationSettings {
+                max_tokens: Some(4096),
+                temperature: Some(0.7),
+                top_p: Some(0.9),
+                stop_sequences: vec!["DONE".into()],
+            }),
+            mcp_config: Some(PathBuf::from("/per-request/override.json")),
+            ..user_request("claude", "hello")
+        };
+
+        let options = svc.build_agent_options(&req, None);
+
+        // MCP config: per-request wins over service-level.
+        assert_eq!(
+            options.mcp_config,
+            Some(PathBuf::from("/per-request/override.json")),
+            "per-request mcp_config must override service-level default"
+        );
+
+        // Generation settings should be threaded as extra_args.
+        let args_joined = options.extra_args.join(" ");
+        assert!(
+            args_joined.contains("--temperature=0.7"),
+            "temperature not threaded: {args_joined}"
+        );
+        assert!(
+            args_joined.contains("--top-p=0.9"),
+            "top_p not threaded: {args_joined}"
+        );
+        assert!(
+            args_joined.contains("--stop=DONE"),
+            "stop sequence not threaded: {args_joined}"
         );
     }
 

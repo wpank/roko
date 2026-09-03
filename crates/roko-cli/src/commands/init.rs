@@ -1,5 +1,4 @@
 //! `roko init` template rendering.
-#![allow(dead_code)]
 
 use anyhow::{Context, Result};
 use std::ffi::OsStr;

@@ -10,26 +10,11 @@
 
 use serde::{Deserialize, Serialize};
 
-// TODO(arch): Use roko_core::runtime_event::WorkflowOutcome once the crate
-// dependency graph matches the architecture reference. In this checkout,
-// roko-core currently depends on roko-runtime, so importing roko-core here
-// would create a circular dependency and Cargo.toml edits are out of scope.
-/// Outcome of a completed workflow run.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum WorkflowOutcome {
-    /// Workflow completed successfully, optionally with a commit hash.
-    Success {
-        /// Commit hash created by the workflow, when commit creation was requested.
-        commit_hash: Option<String>,
-    },
-    /// Workflow halted due to an error or resource limit.
-    Halted {
-        /// Human-readable halt reason.
-        reason: String,
-    },
-    /// Workflow was cancelled by the user.
-    Cancelled,
-}
+/// Canonical workflow outcome, re-exported from `roko-core`.
+///
+/// `roko-runtime` depends on `roko-core`, so we use the single canonical
+/// definition rather than maintaining a local duplicate.
+pub use roko_core::runtime_event::WorkflowOutcome;
 
 /// Typed result of a commit effect.
 ///

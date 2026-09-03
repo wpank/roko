@@ -10,4 +10,5 @@ pub mod delivery;
 pub mod feedback;
 pub mod identity_map;
 pub mod runtime_event_adapter;
+pub mod workflow_host;
 pub mod workspaces;

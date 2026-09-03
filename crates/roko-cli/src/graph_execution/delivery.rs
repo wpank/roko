@@ -26,6 +26,9 @@ use roko_graph::delivery::{
     CompletionDeliveryState, DeliveryError, DeliveryReceiptStore, ReleasePolicy,
     DELIVERY_EXTENSION_KEY, delivery_extension_value,
 };
+use roko_graph::events::{
+    CommonFields, EventSeqCounter, GraphEventSink, GraphExecutionEvent, GRAPH_EVENT_SCHEMA_VERSION,
+};
 use tracing::{debug, info, warn};
 
 use crate::runner::merge::{
@@ -92,7 +95,8 @@ impl PublicationBackend for NoOpPublicationBackend {
 /// CLI host adapter implementing [`CompletionDeliveryService`].
 ///
 /// Uses the existing `MergeQueue`, `PlanMerger`, and `GitHubWorkflow`
-/// services from the runner layer.
+/// services from the runner layer. Emits delivery events through an
+/// optional [`GraphEventSink`] at each state transition.
 #[derive(Debug)]
 pub struct CliCompletionDeliveryService {
     /// Thread-safe receipt store for idempotency.
@@ -107,6 +111,10 @@ pub struct CliCompletionDeliveryService {
     workdir: PathBuf,
     /// Timeout for regression gate.
     regression_timeout: Duration,
+    /// Optional event sink for delivery progress events.
+    event_sink: Option<Arc<dyn GraphEventSink>>,
+    /// Sequence counter for event emission.
+    seq_counter: Arc<EventSeqCounter>,
 }
 
 /// Builder configuration for [`CliCompletionDeliveryService`].
@@ -122,6 +130,8 @@ pub struct CliDeliveryConfig {
     pub regression_gate: Option<Arc<dyn RegressionGate>>,
     /// Optional custom publication backend.
     pub publication_backend: Option<Arc<dyn PublicationBackend>>,
+    /// Optional event sink for delivery progress events.
+    pub event_sink: Option<Arc<dyn GraphEventSink>>,
 }
 
 impl CliDeliveryConfig {
@@ -134,6 +144,7 @@ impl CliDeliveryConfig {
             merge_backend: None,
             regression_gate: None,
             publication_backend: None,
+            event_sink: None,
         }
     }
 
@@ -157,6 +168,13 @@ impl CliDeliveryConfig {
         self.publication_backend = Some(backend);
         self
     }
+
+    /// Install an event sink for delivery progress events.
+    #[must_use]
+    pub fn with_event_sink(mut self, sink: Arc<dyn GraphEventSink>) -> Self {
+        self.event_sink = Some(sink);
+        self
+    }
 }
 
 impl CliCompletionDeliveryService {
@@ -176,6 +194,8 @@ impl CliCompletionDeliveryService {
                 .unwrap_or_else(|| Arc::new(NoOpPublicationBackend)),
             workdir: config.workdir,
             regression_timeout: config.regression_timeout,
+            event_sink: config.event_sink,
+            seq_counter: Arc::new(EventSeqCounter::new()),
         }
     }
 
@@ -240,7 +260,116 @@ impl CliCompletionDeliveryService {
             .insert(DELIVERY_EXTENSION_KEY.to_string(), value);
     }
 
+    /// Construct common fields for delivery events.
+    fn make_common(&self, request: &CompletionDeliveryRequest) -> CommonFields {
+        CommonFields {
+            schema_version: GRAPH_EVENT_SCHEMA_VERSION,
+            run_id: request.run_id.clone(),
+            graph_id: request.plan_id.clone(),
+            seq: self.seq_counter.next(),
+        }
+    }
+
+    /// Emit a delivery event through the optional event sink.
+    async fn emit_event(&self, event: &GraphExecutionEvent) {
+        if let Some(sink) = &self.event_sink {
+            if let Err(e) = sink.publish(event).await {
+                warn!(
+                    variant = event.variant_name(),
+                    error = %e,
+                    "delivery event sink publish failed"
+                );
+            }
+        }
+    }
+
+    /// Emit a `DeliveryStarted` event.
+    async fn emit_delivery_started(&self, request: &CompletionDeliveryRequest) {
+        self.emit_event(&GraphExecutionEvent::DeliveryStarted {
+            common: self.make_common(request),
+            delivery_id: request.delivery_id.clone(),
+            plan_id: request.plan_id.clone(),
+            branch: request.branch.clone(),
+            publish: request.publish,
+        })
+        .await;
+    }
+
+    /// Emit a `DeliveryStateAdvanced` event.
+    async fn emit_state_advanced(
+        &self,
+        request: &CompletionDeliveryRequest,
+        from_state: CompletionDeliveryState,
+        to_state: CompletionDeliveryState,
+        receipt: &CompletionDeliveryReceiptV1,
+    ) {
+        self.emit_event(&GraphExecutionEvent::DeliveryStateAdvanced {
+            common: self.make_common(request),
+            delivery_id: request.delivery_id.clone(),
+            plan_id: request.plan_id.clone(),
+            from_state: format!("{from_state:?}"),
+            to_state: format!("{to_state:?}"),
+            merge_commit: receipt.merge_commit.clone(),
+            publication_ref: receipt.publication_ref.clone(),
+        })
+        .await;
+    }
+
+    /// Emit a `DeliveryCompleted` event.
+    async fn emit_delivery_completed(
+        &self,
+        request: &CompletionDeliveryRequest,
+        receipt: &CompletionDeliveryReceiptV1,
+    ) {
+        self.emit_event(&GraphExecutionEvent::DeliveryCompleted {
+            common: self.make_common(request),
+            delivery_id: request.delivery_id.clone(),
+            plan_id: request.plan_id.clone(),
+            release_policy: format!("{:?}", receipt.release_policy),
+        })
+        .await;
+    }
+
+    /// Emit a `DeliveryFailed` event.
+    async fn emit_delivery_failed(
+        &self,
+        request: &CompletionDeliveryRequest,
+        receipt: &CompletionDeliveryReceiptV1,
+    ) {
+        self.emit_event(&GraphExecutionEvent::DeliveryFailed {
+            common: self.make_common(request),
+            delivery_id: request.delivery_id.clone(),
+            plan_id: request.plan_id.clone(),
+            failure_state: format!("{:?}", receipt.state),
+            error: receipt.error.clone().unwrap_or_default(),
+            release_policy: format!("{:?}", receipt.release_policy),
+        })
+        .await;
+    }
+
+    /// Advance the receipt to a new state, write the extension, update the store,
+    /// and emit a state-advanced event.
+    async fn advance_and_emit(
+        &self,
+        receipt: &mut CompletionDeliveryReceiptV1,
+        new_state: CompletionDeliveryState,
+    ) -> Result<(), DeliveryError> {
+        let from_state = receipt.state;
+        receipt
+            .advance(new_state)
+            .map_err(DeliveryError::Transition)?;
+        Self::write_extension(receipt);
+        self.store.update(receipt);
+        self.emit_state_advanced(&receipt.request, from_state, new_state, receipt)
+            .await;
+        Ok(())
+    }
+
     /// Core delivery logic: advance through the state machine.
+    ///
+    /// Acquires the merge slot before entering the merge phase and releases
+    /// it on completion or failure. Independent deliveries in `Prepared`
+    /// state proceed concurrently.
     async fn execute_delivery(
         &self,
         receipt: &mut CompletionDeliveryReceiptV1,
@@ -249,11 +378,20 @@ impl CliCompletionDeliveryService {
 
         // ---- Prepared -> Queued ----
         if receipt.state == CompletionDeliveryState::Prepared {
-            receipt
-                .advance(CompletionDeliveryState::Queued)
-                .map_err(DeliveryError::Transition)?;
-            Self::write_extension(receipt);
-            self.store.update(receipt);
+            // Acquire the merge slot before entering the merge phase.
+            self.store
+                .merge_slot()
+                .try_acquire(&request.delivery_id)
+                .map_err(|blocked| DeliveryError::QueueRejected {
+                    delivery_id: blocked.blocked_id,
+                    reason: format!(
+                        "merge slot held by delivery '{}'",
+                        blocked.holder_id
+                    ),
+                })?;
+
+            self.advance_and_emit(receipt, CompletionDeliveryState::Queued)
+                .await?;
             debug!(
                 delivery_id = %request.delivery_id,
                 plan_id = %request.plan_id,
@@ -272,11 +410,9 @@ impl CliCompletionDeliveryService {
                     CompletionDeliveryState::TerminalFailed
                 };
                 receipt.error = Some(result.summary.clone());
-                receipt
-                    .advance(terminal)
-                    .map_err(DeliveryError::Transition)?;
-                Self::write_extension(receipt);
-                self.store.update(receipt);
+                self.advance_and_emit(receipt, terminal).await?;
+                self.emit_delivery_failed(&request, receipt).await;
+                self.store.merge_slot().release(&request.delivery_id);
 
                 if result.is_conflict {
                     return Err(DeliveryError::MergeConflict {
@@ -288,11 +424,8 @@ impl CliCompletionDeliveryService {
             }
 
             receipt.merge_commit = result.merge_commit;
-            receipt
-                .advance(CompletionDeliveryState::Merged)
-                .map_err(DeliveryError::Transition)?;
-            Self::write_extension(receipt);
-            self.store.update(receipt);
+            self.advance_and_emit(receipt, CompletionDeliveryState::Merged)
+                .await?;
             info!(
                 delivery_id = %request.delivery_id,
                 plan_id = %request.plan_id,
@@ -304,11 +437,10 @@ impl CliCompletionDeliveryService {
             if !result.regression_passed {
                 receipt.error = Some(result.summary.clone());
                 receipt.regression_evidence_ref = Some(result.summary.clone());
-                receipt
-                    .advance(CompletionDeliveryState::RegressionFailed)
-                    .map_err(DeliveryError::Transition)?;
-                Self::write_extension(receipt);
-                self.store.update(receipt);
+                self.advance_and_emit(receipt, CompletionDeliveryState::RegressionFailed)
+                    .await?;
+                self.emit_delivery_failed(&request, receipt).await;
+                self.store.merge_slot().release(&request.delivery_id);
                 return Err(DeliveryError::RegressionFailed {
                     delivery_id: request.delivery_id,
                     details: result.summary,
@@ -316,11 +448,10 @@ impl CliCompletionDeliveryService {
             }
 
             receipt.regression_evidence_ref = Some(result.summary);
-            receipt
-                .advance(CompletionDeliveryState::RegressionPassed)
-                .map_err(DeliveryError::Transition)?;
-            Self::write_extension(receipt);
-            self.store.update(receipt);
+            self.advance_and_emit(receipt, CompletionDeliveryState::RegressionPassed)
+                .await?;
+            // Release merge slot after regression passes -- merge phase is done.
+            self.store.merge_slot().release(&request.delivery_id);
             info!(
                 delivery_id = %request.delivery_id,
                 plan_id = %request.plan_id,
@@ -342,11 +473,8 @@ impl CliCompletionDeliveryService {
                 {
                     Ok(pub_ref) => {
                         receipt.publication_ref = Some(pub_ref);
-                        receipt
-                            .advance(CompletionDeliveryState::Published)
-                            .map_err(DeliveryError::Transition)?;
-                        Self::write_extension(receipt);
-                        self.store.update(receipt);
+                        self.advance_and_emit(receipt, CompletionDeliveryState::Published)
+                            .await?;
                         info!(
                             delivery_id = %request.delivery_id,
                             plan_id = %request.plan_id,
@@ -356,11 +484,9 @@ impl CliCompletionDeliveryService {
                     }
                     Err(err) => {
                         receipt.error = Some(err.clone());
-                        receipt
-                            .advance(CompletionDeliveryState::TerminalFailed)
-                            .map_err(DeliveryError::Transition)?;
-                        Self::write_extension(receipt);
-                        self.store.update(receipt);
+                        self.advance_and_emit(receipt, CompletionDeliveryState::TerminalFailed)
+                            .await?;
+                        self.emit_delivery_failed(&request, receipt).await;
                         return Err(DeliveryError::PublicationFailed {
                             delivery_id: request.delivery_id,
                             details: err,
@@ -369,11 +495,9 @@ impl CliCompletionDeliveryService {
                 }
             } else {
                 // Skip Published, go directly to Delivered
-                receipt
-                    .advance(CompletionDeliveryState::Delivered)
-                    .map_err(DeliveryError::Transition)?;
-                Self::write_extension(receipt);
-                self.store.update(receipt);
+                self.advance_and_emit(receipt, CompletionDeliveryState::Delivered)
+                    .await?;
+                self.emit_delivery_completed(&request, receipt).await;
                 info!(
                     delivery_id = %request.delivery_id,
                     plan_id = %request.plan_id,
@@ -385,11 +509,9 @@ impl CliCompletionDeliveryService {
 
         // ---- Published -> Delivered ----
         if receipt.state == CompletionDeliveryState::Published {
-            receipt
-                .advance(CompletionDeliveryState::Delivered)
-                .map_err(DeliveryError::Transition)?;
-            Self::write_extension(receipt);
-            self.store.update(receipt);
+            self.advance_and_emit(receipt, CompletionDeliveryState::Delivered)
+                .await?;
+            self.emit_delivery_completed(&request, receipt).await;
             info!(
                 delivery_id = %request.delivery_id,
                 plan_id = %request.plan_id,
@@ -436,9 +558,10 @@ impl CompletionDeliveryService for CliCompletionDeliveryService {
             .get(&request.delivery_id)
             .expect("just inserted by insert_or_get");
 
-        // Write initial extension
+        // Write initial extension and emit DeliveryStarted event
         Self::write_extension(&mut receipt);
         self.store.update(&receipt);
+        self.emit_delivery_started(&request).await;
 
         if let Err(err) = self.execute_delivery(&mut receipt).await {
             // Error returned, but receipt is updated in store

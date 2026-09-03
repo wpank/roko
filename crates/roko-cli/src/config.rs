@@ -3216,60 +3216,17 @@ impl ConfigSources {
 /// Any key present in a `roko.toml` that is not in this set is silently dropped
 /// by serde; [`warn_dropped_toml_keys`] emits a diagnostic warning for such keys
 /// so users are informed rather than left wondering why their setting has no effect.
-const KNOWN_CONFIG_KEYS: &[&str] = &[
-    // Core RokoConfig top-level keys
-    "config_version",
-    "schema_version",
-    "project",
-    "prd",
-    "agent",
-    "providers",
-    "models",
-    "gates",
-    "graduation",
-    "routing",
-    "pipeline",
-    "budget",
-    "statehub",
-    "conductor",
-    "watcher",
-    "learning",
-    "tui",
-    "timeouts",
-    "serve",
-    "scheduler",
-    "webhooks",
-    "github",
-    "subscriptions",
-    "server",
-    "deploy",
-    "perplexity",
-    "gemini",
-    "tools",
-    "chain",
-    "relay",
-    "feed_agents",
-    "runner",
-    "agents",
-    "validation",
-    "cold_storage",
-    "resources",
-    "isfr",
-    "profiles",
-    "dreams",
-    "daimon",
-    "repos",
-    // CLI-only ConfigLayer keys (not in core schema)
-    "auto_plan",
-    "prompt",
-    "gate", // legacy [[gate]] array syntax (ConfigLayer renames from "gates")
-    "executor",
-    "runtime",
-];
+/// CLI-only top-level keys that the legacy `ConfigLayer` accepts but the core
+/// `RokoConfig` schema does not.  The core validator handles all
+/// `RokoConfig`-level keys; these are the residual CLI-specific additions.
+const CLI_ONLY_CONFIG_KEYS: &[&str] = &["auto_plan", "executor", "runtime"];
 
-/// Emit a warning for each top-level TOML key in `text` that is not in
-/// [`KNOWN_CONFIG_KEYS`].  This surfaces keys that serde silently drops instead
-/// of hiding them from the user entirely.
+/// Emit a warning for each TOML key in `text` that is not recognized by the
+/// core `RokoConfig` schema or the CLI-only `ConfigLayer` additions.
+///
+/// Delegates to the core [`roko_core::config::loader::validate_known_config_paths`]
+/// for full nested validation. CLI-only keys are additionally accepted at the
+/// top level.
 ///
 /// Non-fatal: unrecognised keys do not prevent config loading.
 #[allow(dead_code)]
@@ -3278,18 +3235,19 @@ pub fn warn_dropped_toml_keys(text: &str, source_label: &str) {
         Ok(v) => v,
         Err(_) => return, // parse errors are reported elsewhere
     };
-    let table = match value.as_table() {
-        Some(t) => t,
-        None => return,
-    };
-    for key in table.keys() {
-        if !KNOWN_CONFIG_KEYS.contains(&key.as_str()) {
-            tracing::warn!(
-                %source_label,
-                %key,
-                "roko config: unknown key will be ignored; check for typos or schema change"
-            );
+    let diagnostics = roko_core::config::loader::validate_known_config_paths(&value);
+    for diag in &diagnostics {
+        // Skip diagnostics for keys that the CLI config layer accepts.
+        let top_key = diag.key.split('.').next().unwrap_or(&diag.key);
+        if CLI_ONLY_CONFIG_KEYS.contains(&top_key) {
+            continue;
         }
+        tracing::warn!(
+            %source_label,
+            key = %diag.key,
+            "roko config: {}",
+            diag.message
+        );
     }
 }
 

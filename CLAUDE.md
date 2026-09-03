@@ -242,7 +242,8 @@ pre-commit checks in the Building section.
 | Command | What it does |
 |---|---|
 | `roko learn all/router/experiments/efficiency/episodes` | Inspect learning state |
-| `roko learn tune gates/routing/budget` | Tune adaptive thresholds |
+| `roko learn inspect gates/routing/budget` | Read-only subsystem inspection (thresholds, routing, budget) |
+| `roko learn tune gates/routing/budget` | (deprecated) Alias for `learn inspect` |
 
 ### Jobs
 | Command | What it does |
@@ -263,6 +264,7 @@ pre-commit checks in the Building section.
 | `roko config experiments` | Model A/B experiments |
 | `roko config plugins list/install/remove/audit` | Plugin management |
 | `roko config secrets set/get/list/rotate` | Profile-aware secrets |
+| `roko config preset gates/routing/budget/model` | Apply validated config presets (with --dry-run, --yes) |
 
 ### Server & deployment
 | Command | What it does |

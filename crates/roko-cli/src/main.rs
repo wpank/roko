@@ -7,7 +7,6 @@
 //! `--resume`, `--repo`, `--no-replan`, and a positional `[prompt]` for
 //! one-shot mode).
 
-#![allow(clippy::too_many_lines)]
 #![allow(missing_docs)]
 
 mod agent_serve;
@@ -34,6 +33,10 @@ use roko_cli::{
     run_init_wizard, run_once,
 };
 pub use roko_cli::{model_selection, repo_context};
+use roko_cli::resolved_overrides::{
+    ConfigEditTarget, ConfigSetInput, DoInput, GlobalCliFlags, LearnTuneInput, PlanRunInput,
+    ResolvedExecutionOverrides,
+};
 use roko_core::agent::{AgentRole, ProviderKind};
 use roko_core::config::ServeDeployWebhookConfig;
 use roko_core::config::schema::{ModelProfile, ProviderConfig, RokoConfig};
@@ -98,6 +101,9 @@ pub enum Effort {
 /// Complexity override for `roko do`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum DoComplexity {
+    /// Mechanical: single-line / derive-only change.
+    #[value(alias = "mechanical")]
+    Trivial,
     /// Direct single-agent workflow.
     Simple,
     /// Planned workflow.
@@ -111,6 +117,7 @@ pub enum DoComplexity {
 impl DoComplexity {
     fn into_plan_complexity(self) -> roko_gate::PlanComplexity {
         match self {
+            Self::Trivial => roko_gate::PlanComplexity::Trivial,
             Self::Simple => roko_gate::PlanComplexity::Simple,
             Self::Medium => roko_gate::PlanComplexity::Standard,
             Self::Complex => roko_gate::PlanComplexity::Complex,
@@ -293,10 +300,10 @@ COMMAND GROUPS:
   Agents:            agent (create, start, stop, chat, serve)
   Research:          research, think, note
   Knowledge:         knowledge (query, dream, custody, archive)
-  Learning:          learn (router, experiments, efficiency, reflexes, tune)
+  Learning:          learn (router, experiments, efficiency, reflexes, inspect)
   Jobs:              job
   Benchmarks:        bench
-  Configuration:     tune, config (providers, models, subscriptions, plugins, secrets)
+  Configuration:     config (providers, models, subscriptions, plugins, secrets, preset)
   Code intelligence: index
   Server:            up, serve, acp, daemon, deploy, worker
   Interactive:       dashboard
@@ -697,17 +704,16 @@ Examples:
         /// Note text.
         text: Vec<String>,
     },
-    /// (deprecated: use `roko learn tune`) Adjust behavior by writing roko.toml.
+    /// (deprecated: use `roko config preset`) Apply config presets by writing roko.toml.
     #[command(
         hide = true,
         subcommand,
         after_help = "\
-Examples:
-  roko tune routing
-  roko tune gates
-  roko tune budget
-  roko tune model sonnet
-  roko tune model haiku"
+Examples (deprecated -- use `roko config preset` instead):
+  roko tune routing   ->  roko config preset routing
+  roko tune gates     ->  roko config preset gates
+  roko tune budget    ->  roko config preset budget
+  roko tune model X   ->  roko config preset model X"
     )]
     Tune(TuneCmd),
 
@@ -719,7 +725,7 @@ Examples:
     },
 
     // ── Learning & feedback ─────────────────────────────────────────
-    /// Inspect learning state: routing, experiments, efficiency, episodes, reflexes, and tuning.
+    /// Inspect learning state: routing, experiments, efficiency, episodes, reflexes, and subsystem inspection.
     Learn {
         #[command(subcommand)]
         cmd: LearnCmd,
@@ -730,12 +736,6 @@ Examples:
     Job {
         #[command(subcommand)]
         cmd: JobCmd,
-    },
-
-    /// Browse and manage marketplace artifacts.
-    Market {
-        #[command(subcommand)]
-        cmd: MarketCmd,
     },
 
     /// Run benchmark evaluations and write learning telemetry.
@@ -981,17 +981,23 @@ Examples:
         workdir: Option<PathBuf>,
     },
     /// Walk the lineage DAG rooted at a signal hash and print it.
+    ///
+    /// Traversal is breadth-first with lexicographic parent ordering so
+    /// branching output is deterministic.
     Replay {
         /// Signal hash (64 hex chars) to walk.
         hash: String,
-        /// Directory containing `.roko/` (default: cwd).
+        /// Directory containing `.roko/` (default: cwd, respects global --repo).
         #[arg(long)]
         workdir: Option<PathBuf>,
         /// Show forensic detail: timestamps, full hashes, metadata.
         #[arg(long)]
         forensic: bool,
-        /// Filter replay to events from this step forward.
-        #[arg(long)]
+        /// Include only events at or after this traversal index (1-based, inclusive).
+        #[arg(long, conflicts_with = "as_of")]
+        from_event: Option<String>,
+        /// Deprecated: use --from-event instead. Identical semantics.
+        #[arg(long, hide = true, conflicts_with = "from_event")]
         as_of: Option<String>,
         /// Output format: tree (default) or json.
         #[arg(long, default_value = "tree")]
@@ -1323,7 +1329,7 @@ enum KnowledgeCustodyCmd {
 }
 
 // -----------------------------------------------------------------------
-// Learn: learning state + tuning
+// Learn: learning state + inspection
 // -----------------------------------------------------------------------
 
 #[derive(Debug, Subcommand)]
@@ -1420,7 +1426,13 @@ enum LearnCmd {
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
-    /// Tune adaptive thresholds and model routing parameters.
+    /// Read-only inspection of a learning subsystem (gates, routing, budget).
+    Inspect {
+        #[command(subcommand)]
+        subsystem: InspectSubsystem,
+    },
+    /// (deprecated: use `roko learn inspect`) Tune adaptive thresholds and model routing parameters.
+    #[command(hide = true)]
     Tune {
         /// Subsystem to tune: gates, routing, budget.
         #[arg(default_value = "gates")]
@@ -1428,6 +1440,32 @@ enum LearnCmd {
         /// Display current values without modifying.
         #[arg(long)]
         dry_run: bool,
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+}
+
+// -----------------------------------------------------------------------
+// InspectSubsystem — read-only learning inspection targets
+// -----------------------------------------------------------------------
+
+#[derive(Debug, Subcommand)]
+enum InspectSubsystem {
+    /// Inspect adaptive gate threshold state.
+    Gates {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Inspect cascade routing state and model statistics.
+    Routing {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Inspect configured budget limits and spend history.
+    Budget {
         /// Working directory (default: cwd).
         #[arg(long)]
         workdir: Option<PathBuf>,
@@ -2120,6 +2158,52 @@ enum PrdDraftCmd {
     List,
 }
 
+/// Backend selection for grounded research operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum ResearchBackend {
+    /// Automatic selection: configured deep -> Perplexity -> Gemini -> agent fallback.
+    Auto,
+    /// Force Gemini with Google Search grounding.
+    Gemini,
+    /// Force Perplexity search-grounded research.
+    Perplexity,
+    /// Force agent (Claude CLI) fallback.
+    Agent,
+}
+
+impl std::fmt::Display for ResearchBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Auto => f.write_str("auto"),
+            Self::Gemini => f.write_str("gemini"),
+            Self::Perplexity => f.write_str("perplexity"),
+            Self::Agent => f.write_str("agent"),
+        }
+    }
+}
+
+/// Validated recency filter for Perplexity search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum SearchRecency {
+    Hour,
+    Day,
+    Week,
+    Month,
+    Year,
+}
+
+impl SearchRecency {
+    fn as_api_str(self) -> &'static str {
+        match self {
+            Self::Hour => "hour",
+            Self::Day => "day",
+            Self::Week => "week",
+            Self::Month => "month",
+            Self::Year => "year",
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 enum ResearchCmd {
     /// Deep-dive research on a topic. Produces .roko/research/<slug>.md with citations.
@@ -2129,6 +2213,9 @@ enum ResearchCmd {
         /// Use Perplexity deep research (async, 1-10 min).
         #[arg(long, help = "Use Perplexity deep research (async, 1-10 min)")]
         deep: bool,
+        /// Backend to use for research. Default: auto (selects best available).
+        #[arg(long, value_enum, default_value_t = ResearchBackend::Auto)]
+        backend: ResearchBackend,
     },
     /// Enhance a PRD with academic citations, diagrams, and research-backed improvements.
     EnhancePrd {
@@ -2148,7 +2235,14 @@ enum ResearchCmd {
     /// Analyze execution episodes for self-learning insights and bandit weight recommendations.
     Analyze,
     /// List all research artifacts.
-    List,
+    List {
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+        /// Include generated INDEX.md in listing (excluded by default).
+        #[arg(long)]
+        include_generated: bool,
+    },
     /// Direct web search using Perplexity's pure search API. Returns raw results without synthesis.
     Search {
         /// The search query.
@@ -2156,9 +2250,15 @@ enum ResearchCmd {
         /// Restrict results to these domains (comma-separated, e.g. "docs.rs,github.com").
         #[arg(long, value_delimiter = ',')]
         domains: Vec<String>,
-        /// Recency filter: day, week, month, year.
+        /// Recency filter: hour, day, week, month, year.
+        #[arg(long, value_enum)]
+        recency: Option<SearchRecency>,
+        /// Output file path. Default: .roko/research/search-<slug>.md
         #[arg(long)]
-        recency: Option<String>,
+        output: Option<PathBuf>,
+        /// Do not save search results to disk.
+        #[arg(long)]
+        no_save: bool,
     },
 }
 
@@ -2288,57 +2388,6 @@ enum JobCmd {
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
-}
-
-#[derive(Debug, Subcommand)]
-enum MarketCmd {
-    /// Browse marketplace artifacts.
-    #[command(alias = "list")]
-    Browse {
-        #[arg(long)]
-        query: Option<String>,
-        #[arg(long)]
-        tag: Option<String>,
-        #[arg(long)]
-        kind: Option<String>,
-        #[arg(long)]
-        featured: bool,
-    },
-    /// Show one artifact.
-    Show { artifact_ref: String },
-    /// Install an artifact.
-    Install { artifact_ref: String },
-    /// Uninstall an artifact.
-    Uninstall { artifact_ref: String },
-    /// Fork an artifact under an optional new name.
-    Fork {
-        artifact_ref: String,
-        new_name: Option<String>,
-    },
-    /// Publish a local artifact.
-    Publish { local_name: String },
-    /// Verify an artifact checksum and signature.
-    Verify { artifact_ref: String },
-}
-
-fn market_command_name(command: &MarketCmd) -> &'static str {
-    match command {
-        MarketCmd::Browse { .. } => "browse",
-        MarketCmd::Show { .. } => "show",
-        MarketCmd::Install { .. } => "install",
-        MarketCmd::Uninstall { .. } => "uninstall",
-        MarketCmd::Fork { .. } => "fork",
-        MarketCmd::Publish { .. } => "publish",
-        MarketCmd::Verify { .. } => "verify",
-    }
-}
-
-fn cmd_market(command: MarketCmd) -> Result<i32> {
-    println!(
-        "roko market {}: not yet implemented",
-        market_command_name(&command)
-    );
-    Ok(EXIT_SUCCESS)
 }
 
 // Internal enum used by cmd_neuro — mirrors the old top-level NeuroCmd.
@@ -2686,6 +2735,94 @@ enum ConfigCmd {
         #[command(subcommand)]
         cmd: ConfigMcpCmd,
     },
+    // ── Presets ─────────────────────────────────────────────────────
+    /// Apply validated configuration presets (gates, routing, budget, model).
+    Preset {
+        #[command(subcommand)]
+        cmd: ConfigPresetCmd,
+    },
+}
+
+// -----------------------------------------------------------------------
+// ConfigPresetCmd — preset mutation targets
+// -----------------------------------------------------------------------
+
+#[derive(Debug, Subcommand)]
+enum ConfigPresetCmd {
+    /// Apply recommended gate strictness preset.
+    Gates {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Preview the preset diff without writing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip interactive confirmation.
+        #[arg(short = 'y', long)]
+        yes: bool,
+        /// Write to global config instead of project.
+        #[arg(long, conflicts_with = "project")]
+        global: bool,
+        /// Write to project config (default).
+        #[arg(long, conflicts_with = "global")]
+        project: bool,
+    },
+    /// Apply recommended model routing preset with resolved model slugs.
+    Routing {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Preview the preset diff without writing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip interactive confirmation.
+        #[arg(short = 'y', long)]
+        yes: bool,
+        /// Write to global config instead of project.
+        #[arg(long, conflicts_with = "project")]
+        global: bool,
+        /// Write to project config (default).
+        #[arg(long, conflicts_with = "global")]
+        project: bool,
+    },
+    /// Apply recommended budget limits preset.
+    Budget {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Preview the preset diff without writing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip interactive confirmation.
+        #[arg(short = 'y', long)]
+        yes: bool,
+        /// Write to global config instead of project.
+        #[arg(long, conflicts_with = "project")]
+        global: bool,
+        /// Write to project config (default).
+        #[arg(long, conflicts_with = "global")]
+        project: bool,
+    },
+    /// Set the default model from configured models.
+    Model {
+        /// Model key or alias (e.g. sonnet, haiku).
+        name: String,
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Preview the preset diff without writing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip interactive confirmation.
+        #[arg(short = 'y', long)]
+        yes: bool,
+        /// Write to global config instead of project.
+        #[arg(long, conflicts_with = "project")]
+        global: bool,
+        /// Write to project config (default).
+        #[arg(long, conflicts_with = "global")]
+        project: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -2812,11 +2949,11 @@ enum ConfigMcpCmd {
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
-    /// Test a named MCP server by performing a real initialize + tools/list handshake.
+    /// Test an MCP server by performing a real initialize + tools/list handshake.
     Test {
-        /// MCP server name from the MCP config.
+        /// MCP server name from the config.
         name: String,
-        /// Per-stage timeout in seconds (applied to initialize and tools/list independently).
+        /// Per-stage timeout in seconds (applies to initialize, tools/list, and shutdown).
         #[arg(long, default_value_t = roko_core::defaults::DEFAULT_MCP_DISCOVERY_TIMEOUT_SECS, value_parser = clap::value_parser!(u64).range(1..=60))]
         timeout_secs: u64,
         /// Directory containing `.roko/mcp-config.json` (default: cwd).
@@ -3271,6 +3408,15 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             provider,
             max_retries,
         } => {
+            // Resolve typed overrides before any side effects (#262).
+            let _resolved = ResolvedExecutionOverrides::for_run(
+                &global_cli_flags(cli),
+                provider.clone(),
+                serve || share,
+                max_retries,
+            );
+            tracing::debug!(?_resolved, "resolved execution overrides for `run`");
+
             if !serve && !share && max_retries.is_none() {
                 return commands::do_cmd::cmd_do(
                     cli,
@@ -3305,6 +3451,20 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             context,
             prompt,
         } => {
+            // Resolve typed overrides before any side effects (#262).
+            let _resolved = ResolvedExecutionOverrides::for_do(
+                &global_cli_flags(cli),
+                &DoInput {
+                    dry_run,
+                    ghost,
+                    yes,
+                    no_cascade,
+                    provider: provider.clone(),
+                    context: context.clone(),
+                },
+            );
+            tracing::debug!(?_resolved, "resolved execution overrides for `do`");
+
             commands::do_cmd::cmd_do(
                 cli,
                 workdir,
@@ -3401,13 +3561,12 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             commands::note::cmd_note(&wd, text, tags, cli.json)
         }
         Command::Tune(cmd) => {
-            eprintln!("warning: 'roko tune' is deprecated, use 'roko learn tune'");
+            eprintln!("warning: 'roko tune' is deprecated, use 'roko config preset'");
             commands::tune::cmd_tune(cli, cmd).await
         }
         Command::Knowledge { cmd } => commands::knowledge::dispatch_knowledge(cli, cmd).await,
         Command::Learn { cmd } => commands::learn::dispatch_learn(cli, cmd).await,
         Command::Job { cmd } => commands::job::cmd_job(cli, cmd).await,
-        Command::Market { cmd } => cmd_market(cmd),
         Command::Backlog { cmd } => commands::backlog::cmd_backlog(cli, cmd).await,
         Command::Bench { cmd } => commands::bench::cmd_bench(cli, cmd).await,
         Command::Demo(cmd) => {
@@ -3442,8 +3601,11 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
                 }
                 ConfigCmd::Mcp { cmd: mcp_cmd } => {
                     let workdir = resolve_workdir(cli);
-                    dispatch_mcp_cmd(&mcp_cmd, &workdir, cli.json).await?;
+                    dispatch_mcp_cmd(&mcp_cmd, &workdir)?;
                     return Ok(EXIT_SUCCESS);
+                }
+                ConfigCmd::Preset { cmd: preset_cmd } => {
+                    return commands::tune::cmd_config_preset(cli, preset_cmd).await;
                 }
                 other => {
                     commands::config_cmd::dispatch_config(cli, other).await?;
@@ -3720,9 +3882,21 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             hash,
             workdir,
             forensic,
+            from_event,
             as_of,
             format,
-        } => commands::util::cmd_replay(workdir, hash, forensic, as_of, format).await,
+        } => {
+            commands::util::cmd_replay(
+                cli,
+                workdir,
+                hash,
+                forensic,
+                from_event,
+                as_of,
+                format,
+            )
+            .await
+        }
         Command::History { id, workdir } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             let truncate = |value: &str, max_chars: usize| -> String {
@@ -3870,6 +4044,32 @@ fn resolve_workdir(cli: &Cli) -> PathBuf {
     }
 
     resolved
+}
+
+/// Extract typed global CLI flags for resolved override construction.
+///
+/// This borrows from the parsed `Cli` struct to avoid requiring downstream
+/// callers to depend on the full clap type. Used by
+/// [`ResolvedExecutionOverrides`] constructors.
+fn global_cli_flags(cli: &Cli) -> GlobalCliFlags<'_> {
+    GlobalCliFlags {
+        model: cli.model.as_deref(),
+        role: cli.role.as_deref(),
+        effort: cli.effort.as_ref().map(|e| match e {
+            Effort::Low => "low",
+            Effort::Medium => "medium",
+            Effort::High => "high",
+            Effort::Max => "max",
+        }),
+        resume: cli.resume.as_deref(),
+        json: cli.json,
+        quiet: cli.quiet,
+        no_replan: cli.no_replan,
+        skip_validate: cli.skip_validate,
+        headless: cli.headless,
+        no_serve: cli.no_serve,
+        color_enabled: cli.color.should_color(),
+    }
 }
 
 /// Resolve the plans directory, preferring top-level `./plans/` and falling back to `.roko/plans/`.
@@ -4249,7 +4449,7 @@ fn load_env_file(path: &Path) -> Result<Vec<(String, String)>> {
 
 /// Dispatch `roko config mcp` subcommands inline (avoids the `unreachable!` in
 /// `dispatch_config` which is reserved for arms intercepted before reaching it).
-async fn dispatch_mcp_cmd(cmd: &ConfigMcpCmd, workdir: &Path, json_mode: bool) -> Result<()> {
+fn dispatch_mcp_cmd(cmd: &ConfigMcpCmd, workdir: &Path) -> Result<()> {
     match cmd {
         ConfigMcpCmd::List {
             workdir: wd_override,
@@ -4275,7 +4475,6 @@ async fn dispatch_mcp_cmd(cmd: &ConfigMcpCmd, workdir: &Path, json_mode: bool) -
         }
         ConfigMcpCmd::Test {
             name,
-            timeout_secs,
             workdir: wd_override,
         } => {
             let wd = wd_override.as_deref().unwrap_or(workdir);
@@ -4288,33 +4487,12 @@ async fn dispatch_mcp_cmd(cmd: &ConfigMcpCmd, workdir: &Path, json_mode: bool) -
             }
             let cfg = roko_agent::mcp::McpConfig::load(&path)
                 .map_err(|e| anyhow!("parse MCP config at {}: {}", path.display(), e))?;
-
-            let report = roko_agent::mcp::test_mcp_server(
-                &cfg,
-                name,
-                std::time::Duration::from_secs(*timeout_secs),
-                &path,
-            )
-            .await;
-
-            if json_mode {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&report).context("serialize test report")?
-                );
+            if cfg.servers.iter().any(|s| s.name == *name) {
+                println!("ok: server '{}' found in {}", name, path.display());
             } else {
-                print_mcp_test_report(&report);
+                return Err(anyhow!("server '{}' not found in {}", name, path.display()));
             }
-
-            if report.status == "ok" {
-                Ok(())
-            } else {
-                Err(anyhow!(
-                    "MCP server '{}' test failed at stage: {}",
-                    name,
-                    report.failed_stage.as_deref().unwrap_or("unknown")
-                ))
-            }
+            Ok(())
         }
         ConfigMcpCmd::Add {
             name,
@@ -4361,58 +4539,6 @@ async fn dispatch_mcp_cmd(cmd: &ConfigMcpCmd, workdir: &Path, json_mode: bool) -
             Ok(())
         }
     }
-}
-
-/// Render an [`McpTestReport`] as human-readable text to stdout.
-fn print_mcp_test_report(report: &roko_agent::mcp::McpTestReport) {
-    println!("MCP test: {}", report.server);
-    println!("  config: {}", report.config_path);
-    println!("  command available: {}", report.command_available);
-
-    if let Some(ref init) = report.initialize {
-        let status_icon = if init.ok { "ok" } else { "FAIL" };
-        println!(
-            "  initialize: {} ({:.0}ms)",
-            status_icon,
-            init.latency_ms,
-        );
-        if let Some(ref err) = init.error {
-            println!("    error: {err}");
-        }
-    } else {
-        println!("  initialize: skipped");
-    }
-
-    if let Some(ref tl) = report.tools_list {
-        let status_icon = if tl.ok { "ok" } else { "FAIL" };
-        println!(
-            "  tools/list: {} ({:.0}ms)",
-            status_icon,
-            tl.latency_ms,
-        );
-        if let Some(ref err) = tl.error {
-            println!("    error: {err}");
-        }
-    } else {
-        println!("  tools/list: skipped");
-    }
-
-    if let Some(ref ver) = report.protocol_version {
-        println!("  protocol version: {ver}");
-    }
-
-    println!("  tool count: {}", report.tool_count);
-    if !report.tool_names.is_empty() {
-        println!("  tools: {}", report.tool_names.join(", "));
-    }
-
-    if let Some(ref stderr) = report.stderr_summary {
-        if !stderr.is_empty() {
-            println!("  stderr (redacted): {stderr}");
-        }
-    }
-
-    println!("  status: {}", report.status);
 }
 
 /// Resolve the MCP config path using the following chain:
@@ -4659,55 +4785,6 @@ mod tests {
     }
 
     #[test]
-    fn cli_parses_marketplace_subcommands_and_fields() {
-        let cli = Cli::try_parse_from([
-            "roko",
-            "market",
-            "browse",
-            "--query",
-            "review",
-            "--tag",
-            "strict",
-            "--kind",
-            "graph",
-            "--featured",
-        ])
-        .unwrap();
-        match cli.command {
-            Some(Command::Market {
-                cmd:
-                    MarketCmd::Browse {
-                        query,
-                        tag,
-                        kind,
-                        featured,
-                    },
-            }) => {
-                assert_eq!(query.as_deref(), Some("review"));
-                assert_eq!(tag.as_deref(), Some("strict"));
-                assert_eq!(kind.as_deref(), Some("graph"));
-                assert!(featured);
-            }
-            other => panic!("unexpected command variant: {other:?}"),
-        }
-
-        for (arguments, expected_name) in [
-            (vec!["roko", "market", "show", "@a/x@1"], "show"),
-            (vec!["roko", "market", "install", "@a/x@1"], "install"),
-            (vec!["roko", "market", "uninstall", "@a/x@1"], "uninstall"),
-            (vec!["roko", "market", "fork", "@a/x@1", "mine"], "fork"),
-            (vec!["roko", "market", "publish", "local"], "publish"),
-            (vec!["roko", "market", "verify", "@a/x@1"], "verify"),
-        ] {
-            let cli = Cli::try_parse_from(arguments).unwrap();
-            let Some(Command::Market { cmd }) = cli.command else {
-                panic!("market command did not parse");
-            };
-            assert_eq!(market_command_name(&cmd), expected_name);
-        }
-    }
-
-    #[test]
     fn cli_parses_global_flags() {
         let cli = Cli::try_parse_from([
             "roko",
@@ -4751,6 +4828,172 @@ mod tests {
                     workdir: Some(ref workdir),
                 },
             }) if workdir == std::path::Path::new("/tmp/reflex-project")
+        ));
+    }
+
+    // ── #311: learn inspect / config preset parser tests ──────────
+
+    #[test]
+    fn cli_parses_learn_inspect_gates() {
+        let cli = Cli::try_parse_from(["roko", "learn", "inspect", "gates"])
+            .expect("parse learn inspect gates");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Learn {
+                cmd: LearnCmd::Inspect {
+                    subsystem: InspectSubsystem::Gates { workdir: None },
+                },
+            })
+        ));
+    }
+
+    #[test]
+    fn cli_parses_learn_inspect_routing_with_workdir() {
+        let cli = Cli::try_parse_from([
+            "roko",
+            "learn",
+            "inspect",
+            "routing",
+            "--workdir",
+            "/tmp/proj",
+        ])
+        .expect("parse learn inspect routing --workdir");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Learn {
+                cmd: LearnCmd::Inspect {
+                    subsystem: InspectSubsystem::Routing { workdir: Some(ref wd) },
+                },
+            }) if wd == std::path::Path::new("/tmp/proj")
+        ));
+    }
+
+    #[test]
+    fn cli_parses_learn_inspect_budget() {
+        let cli = Cli::try_parse_from(["roko", "learn", "inspect", "budget"])
+            .expect("parse learn inspect budget");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Learn {
+                cmd: LearnCmd::Inspect {
+                    subsystem: InspectSubsystem::Budget { workdir: None },
+                },
+            })
+        ));
+    }
+
+    #[test]
+    fn cli_parses_learn_tune_deprecated_alias() {
+        let cli = Cli::try_parse_from(["roko", "learn", "tune", "routing"])
+            .expect("parse learn tune routing");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Learn {
+                cmd: LearnCmd::Tune {
+                    ref subsystem,
+                    dry_run: false,
+                    workdir: None,
+                },
+            }) if subsystem == "routing"
+        ));
+    }
+
+    #[test]
+    fn cli_parses_learn_tune_dry_run_flag() {
+        let cli = Cli::try_parse_from(["roko", "learn", "tune", "--dry-run", "gates"])
+            .expect("parse learn tune --dry-run");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Learn {
+                cmd: LearnCmd::Tune {
+                    ref subsystem,
+                    dry_run: true,
+                    workdir: None,
+                },
+            }) if subsystem == "gates"
+        ));
+    }
+
+    #[test]
+    fn cli_parses_config_preset_gates() {
+        let cli =
+            Cli::try_parse_from(["roko", "config", "preset", "gates"]).expect("parse config preset gates");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Config {
+                cmd: ConfigCmd::Preset {
+                    cmd: ConfigPresetCmd::Gates {
+                        dry_run: false,
+                        yes: false,
+                        global: false,
+                        ..
+                    },
+                },
+            })
+        ));
+    }
+
+    #[test]
+    fn cli_parses_config_preset_routing_dry_run() {
+        let cli = Cli::try_parse_from(["roko", "config", "preset", "routing", "--dry-run"])
+            .expect("parse config preset routing --dry-run");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Config {
+                cmd: ConfigCmd::Preset {
+                    cmd: ConfigPresetCmd::Routing {
+                        dry_run: true,
+                        yes: false,
+                        ..
+                    },
+                },
+            })
+        ));
+    }
+
+    #[test]
+    fn cli_parses_config_preset_model_with_name() {
+        let cli = Cli::try_parse_from(["roko", "config", "preset", "model", "sonnet", "--yes"])
+            .expect("parse config preset model sonnet --yes");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Config {
+                cmd: ConfigCmd::Preset {
+                    cmd: ConfigPresetCmd::Model {
+                        ref name,
+                        yes: true,
+                        dry_run: false,
+                        ..
+                    },
+                },
+            }) if name == "sonnet"
+        ));
+    }
+
+    #[test]
+    fn cli_parses_config_preset_budget_global() {
+        let cli = Cli::try_parse_from(["roko", "config", "preset", "budget", "--global"])
+            .expect("parse config preset budget --global");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Config {
+                cmd: ConfigCmd::Preset {
+                    cmd: ConfigPresetCmd::Budget {
+                        global: true,
+                        ..
+                    },
+                },
+            })
+        ));
+    }
+
+    #[test]
+    fn cli_parses_top_level_tune_deprecated() {
+        let cli =
+            Cli::try_parse_from(["roko", "tune", "gates"]).expect("parse top-level tune gates");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Tune(TuneCmd::Gates { workdir: None }))
         ));
     }
 
@@ -5749,101 +5992,10 @@ mod tests {
             cli.command,
             Some(Command::Config {
                 cmd: ConfigCmd::Mcp {
-                    cmd: ConfigMcpCmd::Test { name, timeout_secs, .. }
+                    cmd: ConfigMcpCmd::Test { name, .. }
                 }
-            }) if name == "roko" && timeout_secs == roko_core::defaults::DEFAULT_MCP_DISCOVERY_TIMEOUT_SECS
+            }) if name == "roko"
         ));
-    }
-
-    #[test]
-    fn cli_mcp_test_timeout_default_is_5() {
-        let cli = Cli::try_parse_from(["roko", "config", "mcp", "test", "srv"]).unwrap();
-        if let Some(Command::Config {
-            cmd: ConfigCmd::Mcp {
-                cmd: ConfigMcpCmd::Test { timeout_secs, .. },
-            },
-        }) = cli.command
-        {
-            assert_eq!(timeout_secs, 5, "default timeout must be 5 seconds");
-        } else {
-            panic!("expected ConfigMcpCmd::Test");
-        }
-    }
-
-    #[test]
-    fn cli_mcp_test_timeout_accepts_1() {
-        let cli = Cli::try_parse_from([
-            "roko",
-            "config",
-            "mcp",
-            "test",
-            "srv",
-            "--timeout-secs",
-            "1",
-        ])
-        .unwrap();
-        if let Some(Command::Config {
-            cmd: ConfigCmd::Mcp {
-                cmd: ConfigMcpCmd::Test { timeout_secs, .. },
-            },
-        }) = cli.command
-        {
-            assert_eq!(timeout_secs, 1);
-        } else {
-            panic!("expected ConfigMcpCmd::Test");
-        }
-    }
-
-    #[test]
-    fn cli_mcp_test_timeout_accepts_60() {
-        let cli = Cli::try_parse_from([
-            "roko",
-            "config",
-            "mcp",
-            "test",
-            "srv",
-            "--timeout-secs",
-            "60",
-        ])
-        .unwrap();
-        if let Some(Command::Config {
-            cmd: ConfigCmd::Mcp {
-                cmd: ConfigMcpCmd::Test { timeout_secs, .. },
-            },
-        }) = cli.command
-        {
-            assert_eq!(timeout_secs, 60);
-        } else {
-            panic!("expected ConfigMcpCmd::Test");
-        }
-    }
-
-    #[test]
-    fn cli_mcp_test_timeout_rejects_0() {
-        let result = Cli::try_parse_from([
-            "roko",
-            "config",
-            "mcp",
-            "test",
-            "srv",
-            "--timeout-secs",
-            "0",
-        ]);
-        assert!(result.is_err(), "timeout-secs=0 must be rejected");
-    }
-
-    #[test]
-    fn cli_mcp_test_timeout_rejects_61() {
-        let result = Cli::try_parse_from([
-            "roko",
-            "config",
-            "mcp",
-            "test",
-            "srv",
-            "--timeout-secs",
-            "61",
-        ]);
-        assert!(result.is_err(), "timeout-secs=61 must be rejected");
     }
 
     #[test]
@@ -5878,6 +6030,77 @@ mod tests {
     #[test]
     fn cli_parses_replay_subcommand() {
         let cli = Cli::try_parse_from(["roko", "replay", "abcd1234"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Replay { .. })));
+    }
+
+    #[test]
+    fn cli_parses_replay_from_event() {
+        let cli =
+            Cli::try_parse_from(["roko", "replay", "abcd1234", "--from-event", "3"])
+                .unwrap();
+        match cli.command {
+            Some(Command::Replay {
+                from_event, as_of, ..
+            }) => {
+                assert_eq!(from_event.as_deref(), Some("3"));
+                assert!(as_of.is_none());
+            }
+            other => panic!("expected Replay, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_replay_as_of_hidden() {
+        let cli =
+            Cli::try_parse_from(["roko", "replay", "abcd1234", "--as-of", "5"]).unwrap();
+        match cli.command {
+            Some(Command::Replay {
+                from_event, as_of, ..
+            }) => {
+                assert!(from_event.is_none());
+                assert_eq!(as_of.as_deref(), Some("5"));
+            }
+            other => panic!("expected Replay, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_replay_from_event_conflicts_with_as_of() {
+        let result = Cli::try_parse_from([
+            "roko",
+            "replay",
+            "abcd1234",
+            "--from-event",
+            "3",
+            "--as-of",
+            "5",
+        ]);
+        assert!(result.is_err(), "--from-event and --as-of must conflict");
+    }
+
+    #[test]
+    fn cli_parses_replay_with_workdir() {
+        let cli = Cli::try_parse_from([
+            "roko",
+            "replay",
+            "abcd1234",
+            "--workdir",
+            "/tmp/proj",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Replay { workdir, .. }) => {
+                assert_eq!(workdir, Some(PathBuf::from("/tmp/proj")));
+            }
+            other => panic!("expected Replay, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_replay_global_json() {
+        let cli =
+            Cli::try_parse_from(["roko", "--json", "replay", "abcd1234"]).unwrap();
+        assert!(cli.json);
         assert!(matches!(cli.command, Some(Command::Replay { .. })));
     }
 
@@ -7720,5 +7943,199 @@ mod tests {
             }
             other => panic!("unexpected command variant: {other:?}"),
         }
+    }
+
+    // ── #262: CLI flag resolution contract tests ────────────────────
+
+    use roko_cli::resolved_overrides::{
+        CascadePolicy, ConfigEditTarget, ConfigSetInput, DryRunPolicy, GlobalCliFlags,
+        InteractionMode, LearnTuneInput, PlanRunInput, PresentationMode, ReplanPolicy,
+        ResolvedExecutionOverrides, ServePolicy, ValidationPolicy,
+    };
+
+    #[test]
+    fn cli_flags_model_alias_equivalence() {
+        let cli_model = Cli::try_parse_from(["roko", "--model", "sonnet", "status"]).unwrap();
+        let cli_force =
+            Cli::try_parse_from(["roko", "--force-model", "sonnet", "status"]).unwrap();
+        assert_eq!(cli_model.model, cli_force.model);
+        assert_eq!(cli_model.model.as_deref(), Some("sonnet"));
+    }
+
+    #[test]
+    fn cli_flags_no_replan_resolves() {
+        let cli = Cli::try_parse_from(["roko", "--no-replan", "status"]).unwrap();
+        let flags = global_cli_flags(&cli);
+        let overrides =
+            ResolvedExecutionOverrides::for_do(&flags, &DoInput::default());
+        assert_eq!(overrides.replan, ReplanPolicy::DisabledByUser);
+    }
+
+    #[test]
+    fn cli_flags_skip_validate_resolves() {
+        let cli = Cli::try_parse_from(["roko", "--skip-validate", "status"]).unwrap();
+        let flags = global_cli_flags(&cli);
+        let overrides = ResolvedExecutionOverrides::for_plan_run(
+            &flags,
+            &PlanRunInput::default(),
+        );
+        assert_eq!(overrides.validation, ValidationPolicy::SkipStructureOnly);
+    }
+
+    #[test]
+    fn cli_flags_headless_resolves() {
+        let cli = Cli::try_parse_from(["roko", "--headless", "status"]).unwrap();
+        let flags = global_cli_flags(&cli);
+        let overrides =
+            ResolvedExecutionOverrides::for_do(&flags, &DoInput::default());
+        assert_eq!(overrides.interaction_mode, InteractionMode::Headless);
+    }
+
+    #[test]
+    fn cli_flags_plan_run_force_backend_wins_model() {
+        let cli = Cli::try_parse_from(["roko", "--model", "opus", "status"]).unwrap();
+        let flags = global_cli_flags(&cli);
+        let plan = PlanRunInput {
+            force_backend: Some("sonnet".into()),
+            ..PlanRunInput::default()
+        };
+        let overrides = ResolvedExecutionOverrides::for_plan_run(&flags, &plan);
+        assert_eq!(
+            overrides.model.as_deref(),
+            Some("sonnet"),
+            "--force-backend must win over --model"
+        );
+    }
+
+    #[test]
+    fn cli_flags_do_ghost_is_dry_run() {
+        let cli = Cli::try_parse_from(["roko", "status"]).unwrap();
+        let flags = global_cli_flags(&cli);
+        let input = DoInput {
+            ghost: true,
+            ..DoInput::default()
+        };
+        let overrides = ResolvedExecutionOverrides::for_do(&flags, &input);
+        assert_eq!(overrides.dry_run, DryRunPolicy::ReadOnlyNoMutation);
+    }
+
+    #[test]
+    fn cli_flags_no_cascade_resolves() {
+        let cli = Cli::try_parse_from(["roko", "status"]).unwrap();
+        let flags = global_cli_flags(&cli);
+        let input = DoInput {
+            no_cascade: true,
+            ..DoInput::default()
+        };
+        let overrides = ResolvedExecutionOverrides::for_do(&flags, &input);
+        assert_eq!(overrides.cascade_policy, CascadePolicy::DisabledByUser);
+    }
+
+    #[test]
+    fn cli_flags_serve_required() {
+        let cli = Cli::try_parse_from(["roko", "status"]).unwrap();
+        let flags = global_cli_flags(&cli);
+        let overrides =
+            ResolvedExecutionOverrides::for_run(&flags, None, true, None);
+        assert_eq!(overrides.serve_policy, ServePolicy::Required);
+    }
+
+    #[test]
+    fn cli_flags_no_serve_disabled() {
+        let cli = Cli::try_parse_from(["roko", "--no-serve", "status"]).unwrap();
+        let flags = global_cli_flags(&cli);
+        let overrides =
+            ResolvedExecutionOverrides::for_run(&flags, None, false, None);
+        assert_eq!(overrides.serve_policy, ServePolicy::Disabled);
+    }
+
+    #[test]
+    fn cli_flags_plan_run_tui_presentation() {
+        let cli = Cli::try_parse_from(["roko", "status"]).unwrap();
+        let flags = global_cli_flags(&cli);
+        let plan_tui = PlanRunInput {
+            approval: true,
+            ..PlanRunInput::default()
+        };
+        let plan_no_tui = PlanRunInput {
+            no_tui: true,
+            ..PlanRunInput::default()
+        };
+        let plan_auto = PlanRunInput::default();
+
+        assert_eq!(
+            ResolvedExecutionOverrides::for_plan_run(&flags, &plan_tui).presentation,
+            PresentationMode::Tui,
+        );
+        assert_eq!(
+            ResolvedExecutionOverrides::for_plan_run(&flags, &plan_no_tui).presentation,
+            PresentationMode::Text,
+        );
+        assert_eq!(
+            ResolvedExecutionOverrides::for_plan_run(&flags, &plan_auto).presentation,
+            PresentationMode::Auto,
+        );
+    }
+
+    #[test]
+    fn cli_flags_config_set_targets() {
+        assert_eq!(
+            ResolvedExecutionOverrides::resolve_config_edit_target(&ConfigSetInput {
+                global: false,
+                project: false,
+            }),
+            ConfigEditTarget::Global,
+            "no flags defaults to Global for config set"
+        );
+        assert_eq!(
+            ResolvedExecutionOverrides::resolve_config_edit_target(&ConfigSetInput {
+                global: false,
+                project: true,
+            }),
+            ConfigEditTarget::Project,
+        );
+    }
+
+    #[test]
+    fn cli_flags_learn_tune_dry_run() {
+        assert_eq!(
+            ResolvedExecutionOverrides::resolve_tune_dry_run(&LearnTuneInput { dry_run: true }),
+            DryRunPolicy::ReadOnlyNoMutation,
+        );
+        assert_eq!(
+            ResolvedExecutionOverrides::resolve_tune_dry_run(&LearnTuneInput { dry_run: false }),
+            DryRunPolicy::Execute,
+        );
+    }
+
+    #[test]
+    fn cli_flags_global_flags_helper_roundtrip() {
+        let cli = Cli::try_parse_from([
+            "roko",
+            "--model",
+            "opus",
+            "--role",
+            "architect",
+            "--effort",
+            "high",
+            "--json",
+            "--quiet",
+            "--no-replan",
+            "--skip-validate",
+            "--headless",
+            "--no-serve",
+            "status",
+        ])
+        .unwrap();
+        let flags = global_cli_flags(&cli);
+        assert_eq!(flags.model, Some("opus"));
+        assert_eq!(flags.role, Some("architect"));
+        assert_eq!(flags.effort, Some("high"));
+        assert!(flags.json);
+        assert!(flags.quiet);
+        assert!(flags.no_replan);
+        assert!(flags.skip_validate);
+        assert!(flags.headless);
+        assert!(flags.no_serve);
     }
 }

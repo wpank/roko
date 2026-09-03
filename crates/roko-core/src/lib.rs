@@ -289,10 +289,11 @@ pub use forensic::{
 pub use foundation::{
     BoxModelStream, ChatMessage as FoundationChatMessage, Effect, EffectExecutor, EffectOutcome,
     EventConsumer, FeedbackEvent, FeedbackSink, GateClassification, GateConfig, GateReport,
-    GateRunner, GateVerdict, KnowledgeQuery, MessageRole, ModelCallRequest, ModelCallResponse,
-    ModelCaller, ModelInputBlock, ModelInputImage, ModelInputMessage, ModelStreamEvent,
-    PromptAssembler, PromptSpec, ShellGateCommand, TokenUsage, model_call_failure_to_stream,
-    model_call_response_to_stream, validate_model_input_images, validate_model_input_messages,
+    GateRunner, GateVerdict, GenerationSettings, KnowledgeQuery, MessageRole, ModelCallRequest,
+    ModelCallResponse, ModelCaller, ModelInputBlock, ModelInputImage, ModelInputMessage,
+    ModelStreamEvent, PromptAssembler, PromptSpec, ShellGateCommand, TokenUsage,
+    model_call_failure_to_stream, model_call_response_to_stream, validate_model_input_images,
+    validate_model_input_messages,
 };
 pub use groups::{
     AssignmentStrategy, CoordinationMode, Group, GroupConfig, GroupContextBidder, GroupEvent,

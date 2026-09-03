@@ -16,7 +16,7 @@ pub mod to_tool_def;
 
 pub use bridge::{
     McpBridgeError, McpLifecycleState, McpRuntime, McpRuntimeClient, McpRuntimeTransport,
-    McpStageResult, McpTestReport, discover_mcp_runtime, discover_mcp_tools, redact_stderr,
+    McpTestReport, McpTestStageResult, McpTestStatus, discover_mcp_runtime, discover_mcp_tools,
     test_mcp_server,
 };
 pub use client::{

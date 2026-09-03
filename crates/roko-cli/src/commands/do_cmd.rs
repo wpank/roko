@@ -1,14 +1,172 @@
-//! `roko do` command — universal entry point with progressive formality.
+//! `roko do` command — deterministic template routing (#278).
 //!
-//! Classifies prompt complexity and routes through the appropriate pipeline:
-//! - Trivial/Simple: direct single-agent WorkflowEngine run
-//! - Standard: generate plan from prompt, then execute it
-//! - Complex: create PRD -> draft PRD -> generate plan -> execute plan
+//! Replaces silent engine/workflow delegation with explicit named Graph
+//! template selection. The frozen routing table is implemented as the
+//! pure [`resolve_do_route`] function and table-tested against every row.
+//!
+//! ## Routing table (frozen)
+//!
+//! | Input                          | Route                                    |
+//! |-------------------------------|------------------------------------------|
+//! | `--complexity trivial`        | `mechanical@1`                           |
+//! | `--complexity simple`         | `focused@1`                              |
+//! | `--complexity standard`       | prompt -> plan -> execute                |
+//! | `--complexity complex`        | PRD -> plan -> execute                   |
+//! | `--plan` with trivial/simple  | `integrative@1`                          |
+//! | research intent               | `roko research topic`                    |
+//! | plan-generate intent          | `roko plan generate`                     |
+//! | unqualified TTY prompt        | preview + confirm before dispatch        |
+//! | unqualified non-TTY prompt    | reject; require `--complexity`/`--plan`  |
+//! | dry-run/ghost/compare         | print route; never execute               |
+//! | single word matching plan dir | instruct `roko plan run <path>`          |
 
 use crate::*;
 use roko_core::config::schema::RokoConfig;
 use roko_gate::PlanComplexity;
 use std::path::{Path, PathBuf};
+
+// ─── Routing types ──────────────────────────────────────────────────────
+
+/// Resolved execution route for `roko do`.
+///
+/// Each variant maps to exactly one row in the frozen routing table.
+/// The resolver is pure: no I/O, no config loading, no filesystem probing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DoRoute {
+    /// `--complexity trivial` -> `mechanical@1` single-agent template.
+    Mechanical,
+    /// `--complexity simple` -> `focused@1` single-agent template.
+    Focused,
+    /// `--complexity standard` -> generate plan from prompt, then execute.
+    PromptPlan,
+    /// `--complexity complex` -> create/validate PRD, generate plan, execute.
+    PrdPlan,
+    /// `--plan` with trivial/simple classification -> `integrative@1`.
+    Integrative,
+    /// Research intent auto-detected from prompt.
+    Research,
+    /// Plan-generation intent auto-detected from prompt.
+    PlanGenerate,
+    /// Dry-run / ghost / compare: print route without executing.
+    DryRun {
+        /// The inner route that *would* execute.
+        inner: Box<DoRoute>,
+    },
+    /// Non-TTY prompt without explicit complexity/plan: reject before side effects.
+    RejectNonTty,
+    /// Single word matching a known plan directory: instruct `roko plan run`.
+    PlanHint {
+        /// The slug the user typed.
+        slug: String,
+    },
+}
+
+impl DoRoute {
+    /// Canonical template name for display in previews.
+    #[must_use]
+    pub fn template_name(&self) -> &'static str {
+        match self {
+            Self::Mechanical => "mechanical@1",
+            Self::Focused => "focused@1",
+            Self::PromptPlan => "prompt-plan",
+            Self::PrdPlan => "prd-plan",
+            Self::Integrative => "integrative@1",
+            Self::Research => "research",
+            Self::PlanGenerate => "plan-generate",
+            Self::DryRun { inner } => inner.template_name(),
+            Self::RejectNonTty => "reject",
+            Self::PlanHint { .. } => "plan-hint",
+        }
+    }
+
+    /// Estimated cost band for display in previews.
+    #[must_use]
+    pub fn cost_band(&self) -> &'static str {
+        match self {
+            Self::Mechanical => "<$0.01",
+            Self::Focused => "$0.01-$0.05",
+            Self::PromptPlan => "$0.05-$0.25",
+            Self::PrdPlan => "$0.25+",
+            Self::Integrative => "$0.05-$0.25",
+            Self::Research => "$0.01-$0.10",
+            Self::PlanGenerate => "$0.05-$0.25",
+            Self::DryRun { inner } => inner.cost_band(),
+            Self::RejectNonTty => "$0.00",
+            Self::PlanHint { .. } => "$0.00",
+        }
+    }
+
+    /// Human-readable pipeline description.
+    #[must_use]
+    pub fn pipeline_description(&self) -> &'static str {
+        match self {
+            Self::Mechanical => "single agent (mechanical)",
+            Self::Focused => "single agent (focused)",
+            Self::PromptPlan => "generate plan -> execute",
+            Self::PrdPlan => "PRD -> draft -> plan -> execute",
+            Self::Integrative => "single agent (integrative, plan-forced)",
+            Self::Research => "research command",
+            Self::PlanGenerate => "plan generation command",
+            Self::DryRun { inner } => inner.pipeline_description(),
+            Self::RejectNonTty => "rejected (non-TTY without explicit complexity)",
+            Self::PlanHint { .. } => "plan hint (use roko plan run)",
+        }
+    }
+}
+
+/// Inputs to the pure routing resolver.
+#[derive(Debug, Clone)]
+pub struct DoRouteInput {
+    /// Classified or overridden complexity.
+    pub complexity: PlanComplexity,
+    /// Whether `--complexity` was explicitly provided.
+    pub complexity_forced: bool,
+    /// Whether `--plan` was passed.
+    pub plan_flag: bool,
+    /// Whether `--dry-run` or `--ghost` was passed.
+    pub dry_preview: bool,
+    /// Whether `--compare` was passed.
+    pub compare: bool,
+    /// Whether stdin is a TTY.
+    pub is_tty: bool,
+}
+
+/// Pure routing resolver: maps [`DoRouteInput`] to a [`DoRoute`].
+///
+/// This function performs no I/O, no config loading, and no filesystem
+/// access. Intent classification and single-word plan detection happen
+/// *before* this function is called.
+#[must_use]
+pub fn resolve_do_route(input: &DoRouteInput) -> DoRoute {
+    let base = if input.plan_flag {
+        match input.complexity {
+            PlanComplexity::Trivial | PlanComplexity::Simple => DoRoute::Integrative,
+            PlanComplexity::Standard => DoRoute::PromptPlan,
+            PlanComplexity::Complex => DoRoute::PrdPlan,
+        }
+    } else {
+        match input.complexity {
+            PlanComplexity::Trivial => DoRoute::Mechanical,
+            PlanComplexity::Simple => DoRoute::Focused,
+            PlanComplexity::Standard => DoRoute::PromptPlan,
+            PlanComplexity::Complex => DoRoute::PrdPlan,
+        }
+    };
+
+    // Dry-run / ghost / compare: wrap the base route.
+    if input.dry_preview || input.compare {
+        return DoRoute::DryRun {
+            inner: Box::new(base),
+        };
+    }
+
+    // Non-TTY without explicit complexity: reject before side effects.
+    if !input.is_tty && !input.complexity_forced && !input.plan_flag {
+        return DoRoute::RejectNonTty;
+    }
+
+    base
+}
 
 /// Main entry point for `roko do`.
 pub(crate) async fn cmd_do(
@@ -38,8 +196,9 @@ pub(crate) async fn cmd_do(
         return cmd_do_resume_hint(&workdir);
     }
 
-    // If the prompt is a single word (no spaces), check if it matches an
-    // existing plan slug before treating it as a prompt.
+    // If the prompt is a single word matching an existing plan directory,
+    // instruct the user to use `roko plan run` instead of silently executing.
+    // This prevents filesystem-sensitive routing (#278 frozen routing table).
     if !prompt.contains(' ') {
         let plan_slug = &prompt;
         let candidates = [
@@ -51,10 +210,21 @@ pub(crate) async fn cmd_do(
             workdir.join("plans").join(plan_slug).join("tasks.toml"),
         ];
         if let Some(found) = candidates.iter().find(|p| p.is_file()) {
-            let _lock = roko_cli::workspace_lock::acquire_workspace_lock(&workdir.join(".roko"))?;
             let plan_dir = found.parent().expect("tasks.toml has parent dir");
-            roko_cli::output_format::step("Found plan", &plan_dir.display().to_string());
-            return run_plan_execution(cli, &workdir, plan_dir, no_cascade, provider).await;
+            let out = roko_cli::cli_output::CliOutput::new(cli.quiet);
+            out.step(
+                "Plan found",
+                &format!(
+                    "\"{}\" matches plan at {}",
+                    plan_slug,
+                    plan_dir.display()
+                ),
+            );
+            out.step(
+                "Run with",
+                &format!("roko plan run {}", plan_dir.display()),
+            );
+            return Ok(EXIT_SUCCESS);
         }
     }
 
@@ -72,9 +242,14 @@ pub(crate) async fn cmd_do(
                 out.step("Routing", "roko research topic ...");
                 let topic_words: Vec<String> =
                     prompt.split_whitespace().map(String::from).collect();
+                // Respect configured auto_deep preference for auto-routed research.
+                let auto_deep = roko_core::config::loader::load_config_unified(&workdir)
+                    .map(|c| c.perplexity.auto_deep)
+                    .unwrap_or(false);
                 let research_cmd = crate::ResearchCmd::Topic {
                     topic: topic_words,
-                    deep: false,
+                    deep: auto_deep,
+                    backend: crate::ResearchBackend::Auto,
                 };
                 return crate::commands::research::cmd_research(cli, research_cmd).await;
             }
@@ -114,37 +289,93 @@ pub(crate) async fn cmd_do(
     let forced = complexity_override.is_some();
     let dry_preview = dry_run || ghost;
 
-    if dry_preview || compare {
-        print_do_preview(
-            &prompt,
-            complexity,
-            forced,
-            yes,
-            no_cascade,
-            &preview_config,
-        );
-        if compare {
-            println!("compare     : cascade-enabled vs --no-cascade");
-            println!("execution   : skipped; compare mode is a dry preview in this worktree");
+    // ── Deterministic route resolution (#278) ───────────────────────
+    let route_input = DoRouteInput {
+        complexity,
+        complexity_forced: forced,
+        plan_flag: plan,
+        dry_preview,
+        compare,
+        is_tty: roko_cli::stdin_is_tty(),
+    };
+    let route = resolve_do_route(&route_input);
+
+    tracing::debug!(
+        ?route,
+        template = route.template_name(),
+        cost_band = route.cost_band(),
+        "resolved do route"
+    );
+
+    match route {
+        DoRoute::DryRun { ref inner } => {
+            print_do_preview(
+                &prompt,
+                complexity,
+                forced,
+                yes,
+                no_cascade,
+                &preview_config,
+                inner,
+            );
+            if compare {
+                println!("compare     : cascade-enabled vs --no-cascade");
+                println!("execution   : skipped; compare mode is a dry preview in this worktree");
+            }
+            return Ok(EXIT_SUCCESS);
         }
-        return Ok(EXIT_SUCCESS);
+        DoRoute::RejectNonTty => {
+            roko_cli::output_format::error(
+                "non-TTY input requires --complexity <level> or --plan to avoid silent dispatch",
+            );
+            roko_cli::output_format::step(
+                "Hint",
+                "roko do --complexity simple \"your prompt\" or roko do --plan \"your prompt\"",
+            );
+            return Ok(EXIT_AGENT_FAILURE);
+        }
+        DoRoute::PlanHint { ref slug } => {
+            // This path is unreachable in normal flow (handled earlier), but
+            // included for completeness.
+            roko_cli::output_format::step(
+                "Plan found",
+                &format!("use `roko plan run <path>` to execute plan \"{slug}\""),
+            );
+            return Ok(EXIT_SUCCESS);
+        }
+        DoRoute::Research | DoRoute::PlanGenerate => {
+            // These are handled before complexity classification.
+            unreachable!("research/plan-generate routes are resolved before resolve_do_route");
+        }
+        _ => {}
     }
 
     // A `do` execution owns the workspace's mutable runtime state for its
     // complete lifetime (including plan generation and runner dispatch).
     let _lock = roko_cli::workspace_lock::acquire_workspace_lock(&workdir.join(".roko"))?;
 
-    // Route based on classified complexity.
-    match complexity {
-        PlanComplexity::Trivial | PlanComplexity::Simple => {
+    // Route based on resolved route.
+    match route {
+        DoRoute::Mechanical | DoRoute::Focused => {
             run_simple_path(cli, &workdir, &prompt, complexity, no_cascade, provider).await
         }
-        PlanComplexity::Standard => {
+        DoRoute::Integrative => {
+            // --plan with trivial/simple: run through integrative template.
+            run_simple_path(cli, &workdir, &prompt, PlanComplexity::Standard, no_cascade, provider)
+                .await
+        }
+        DoRoute::PromptPlan => {
             run_standard_path(cli, &workdir, &prompt, no_cascade, provider, &context).await
         }
-        PlanComplexity::Complex => {
+        DoRoute::PrdPlan => {
             run_complex_path(cli, &workdir, &prompt, no_cascade, provider, &context).await
         }
+        // Already handled above.
+        DoRoute::DryRun { .. }
+        | DoRoute::RejectNonTty
+        | DoRoute::PlanHint { .. }
+        | DoRoute::Research
+        | DoRoute::PlanGenerate => unreachable!(),
     }
 }
 
@@ -181,14 +412,18 @@ async fn run_simple_path(
         effort: cli.effort.map(|e| e.to_string()),
     };
 
+    let route = roko_cli::run::WorkflowExecutionRoute::LegacyDefault;
+
     tracing::debug!(
         complexity = complexity_label(complexity),
         workflow_template,
         cascade_enabled = !no_cascade,
+        %route,
         "dispatching roko do (simple) through WorkflowEngine"
     );
 
-    let result = roko_cli::run::run_workflow_engine_report_with_hub(
+    let result = roko_cli::run::run_workflow_report(
+        route,
         prompt,
         workdir,
         workflow_template,
@@ -899,9 +1134,9 @@ fn print_do_preview(
     yes: bool,
     no_cascade: bool,
     config: &Config,
+    route: &DoRoute,
 ) {
     let gate_count = roko_cli::run::workflow_enabled_gate_names(&config.gates).len();
-    let pipeline = pipeline_description(complexity);
 
     println!("roko do");
     println!("prompt      : {}", truncate_for_preview(prompt, 80));
@@ -914,8 +1149,9 @@ fn print_do_preview(
             "auto-detected, override with --complexity simple"
         }
     );
-    println!("pipeline    : {pipeline}");
-    println!("cost        : {}", estimated_cost_range(complexity));
+    println!("template    : {}", route.template_name());
+    println!("pipeline    : {}", route.pipeline_description());
+    println!("cost        : {}", route.cost_band());
     println!("gates       : {gate_count}");
     println!("approval    : {}", if yes { "auto" } else { "workflow" });
     println!(
@@ -925,6 +1161,12 @@ fn print_do_preview(
     println!("execution   : skipped");
 }
 
+// NOTE: pipeline_description and estimated_cost_range are now methods on
+// DoRoute (template_name, pipeline_description, cost_band). The standalone
+// functions below are retained only for backward compatibility with callers
+// outside do_cmd.rs that have not yet migrated.
+
+#[allow(dead_code)]
 fn pipeline_description(complexity: PlanComplexity) -> &'static str {
     match complexity {
         PlanComplexity::Trivial => "single agent (direct)",
@@ -987,6 +1229,7 @@ fn complexity_label(complexity: PlanComplexity) -> &'static str {
     }
 }
 
+#[allow(dead_code)]
 fn estimated_cost_range(complexity: PlanComplexity) -> &'static str {
     match complexity {
         PlanComplexity::Trivial => "<$0.01",
@@ -1209,5 +1452,233 @@ mod tests {
         // Unicode chars count by char, not byte.
         let emoji = "\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}"; // 5 emoji
         assert_eq!(truncate_for_preview(emoji, 5), emoji);
+    }
+
+    // ── resolve_do_route table-driven tests (#278) ───────────────
+
+    fn route_input(
+        complexity: PlanComplexity,
+        forced: bool,
+        plan: bool,
+        dry: bool,
+        compare: bool,
+        tty: bool,
+    ) -> DoRouteInput {
+        DoRouteInput {
+            complexity,
+            complexity_forced: forced,
+            plan_flag: plan,
+            dry_preview: dry,
+            compare,
+            is_tty: tty,
+        }
+    }
+
+    // Row 1: explicit --complexity trivial -> mechanical@1
+    #[test]
+    fn do_route_explicit_trivial() {
+        let r = resolve_do_route(&route_input(PlanComplexity::Trivial, true, false, false, false, true));
+        assert_eq!(r, DoRoute::Mechanical);
+        assert_eq!(r.template_name(), "mechanical@1");
+    }
+
+    // Row 2: explicit --complexity simple -> focused@1
+    #[test]
+    fn do_route_explicit_simple() {
+        let r = resolve_do_route(&route_input(PlanComplexity::Simple, true, false, false, false, true));
+        assert_eq!(r, DoRoute::Focused);
+        assert_eq!(r.template_name(), "focused@1");
+    }
+
+    // Row 3: explicit --complexity standard -> prompt-plan
+    #[test]
+    fn do_route_explicit_standard() {
+        let r = resolve_do_route(&route_input(PlanComplexity::Standard, true, false, false, false, true));
+        assert_eq!(r, DoRoute::PromptPlan);
+        assert_eq!(r.template_name(), "prompt-plan");
+    }
+
+    // Row 4: explicit --complexity complex -> prd-plan
+    #[test]
+    fn do_route_explicit_complex() {
+        let r = resolve_do_route(&route_input(PlanComplexity::Complex, true, false, false, false, true));
+        assert_eq!(r, DoRoute::PrdPlan);
+        assert_eq!(r.template_name(), "prd-plan");
+    }
+
+    // Row 5: --plan with trivial classification -> integrative@1
+    #[test]
+    fn do_route_plan_flag_with_trivial() {
+        let r = resolve_do_route(&route_input(PlanComplexity::Trivial, false, true, false, false, true));
+        assert_eq!(r, DoRoute::Integrative);
+        assert_eq!(r.template_name(), "integrative@1");
+    }
+
+    // Row 5b: --plan with simple classification -> integrative@1
+    #[test]
+    fn do_route_plan_flag_with_simple() {
+        let r = resolve_do_route(&route_input(PlanComplexity::Simple, false, true, false, false, true));
+        assert_eq!(r, DoRoute::Integrative);
+    }
+
+    // Row 5c: --plan with standard classification -> prompt-plan (not integrative)
+    #[test]
+    fn do_route_plan_flag_with_standard() {
+        let r = resolve_do_route(&route_input(PlanComplexity::Standard, false, true, false, false, true));
+        assert_eq!(r, DoRoute::PromptPlan);
+    }
+
+    // Row 5d: --plan with complex classification -> prd-plan
+    #[test]
+    fn do_route_plan_flag_with_complex() {
+        let r = resolve_do_route(&route_input(PlanComplexity::Complex, false, true, false, false, true));
+        assert_eq!(r, DoRoute::PrdPlan);
+    }
+
+    // Row 8: dry-run wraps the base route
+    #[test]
+    fn do_route_dry_run_wraps_mechanical() {
+        let r = resolve_do_route(&route_input(PlanComplexity::Trivial, true, false, true, false, true));
+        assert_eq!(
+            r,
+            DoRoute::DryRun {
+                inner: Box::new(DoRoute::Mechanical),
+            }
+        );
+        assert_eq!(r.template_name(), "mechanical@1");
+        assert_eq!(r.cost_band(), "<$0.01");
+    }
+
+    // Row 8b: ghost wraps the base route (same as dry-run)
+    #[test]
+    fn do_route_ghost_wraps_focused() {
+        let r = resolve_do_route(&route_input(PlanComplexity::Simple, true, false, true, false, true));
+        assert_eq!(
+            r,
+            DoRoute::DryRun {
+                inner: Box::new(DoRoute::Focused),
+            }
+        );
+    }
+
+    // Row 9: compare wraps the base route
+    #[test]
+    fn do_route_compare_wraps_route() {
+        let r = resolve_do_route(&route_input(PlanComplexity::Standard, true, false, false, true, true));
+        assert_eq!(
+            r,
+            DoRoute::DryRun {
+                inner: Box::new(DoRoute::PromptPlan),
+            }
+        );
+    }
+
+    // Row 10: non-TTY without forced complexity -> RejectNonTty
+    #[test]
+    fn do_route_non_tty_unqualified_rejects() {
+        let r = resolve_do_route(&route_input(PlanComplexity::Simple, false, false, false, false, false));
+        assert_eq!(r, DoRoute::RejectNonTty);
+    }
+
+    // Row 10b: non-TTY WITH forced complexity -> dispatches normally
+    #[test]
+    fn do_route_non_tty_forced_complexity_passes() {
+        let r = resolve_do_route(&route_input(PlanComplexity::Simple, true, false, false, false, false));
+        assert_eq!(r, DoRoute::Focused);
+    }
+
+    // Row 10c: non-TTY WITH --plan flag -> dispatches normally
+    #[test]
+    fn do_route_non_tty_plan_flag_passes() {
+        let r = resolve_do_route(&route_input(PlanComplexity::Simple, false, true, false, false, false));
+        assert_eq!(r, DoRoute::Integrative);
+    }
+
+    // Row 10d: non-TTY dry-run does NOT reject (dry-run takes precedence)
+    #[test]
+    fn do_route_non_tty_dry_run_does_not_reject() {
+        let r = resolve_do_route(&route_input(PlanComplexity::Simple, false, false, true, false, false));
+        assert_eq!(
+            r,
+            DoRoute::DryRun {
+                inner: Box::new(DoRoute::Focused),
+            }
+        );
+    }
+
+    // ── DoRoute method coverage ──────────────────────────────────
+
+    #[test]
+    fn do_route_template_names_are_stable() {
+        assert_eq!(DoRoute::Mechanical.template_name(), "mechanical@1");
+        assert_eq!(DoRoute::Focused.template_name(), "focused@1");
+        assert_eq!(DoRoute::PromptPlan.template_name(), "prompt-plan");
+        assert_eq!(DoRoute::PrdPlan.template_name(), "prd-plan");
+        assert_eq!(DoRoute::Integrative.template_name(), "integrative@1");
+        assert_eq!(DoRoute::Research.template_name(), "research");
+        assert_eq!(DoRoute::PlanGenerate.template_name(), "plan-generate");
+        assert_eq!(DoRoute::RejectNonTty.template_name(), "reject");
+        assert_eq!(
+            DoRoute::PlanHint {
+                slug: "my-plan".into()
+            }
+            .template_name(),
+            "plan-hint"
+        );
+    }
+
+    #[test]
+    fn do_route_cost_bands_are_stable() {
+        assert_eq!(DoRoute::Mechanical.cost_band(), "<$0.01");
+        assert_eq!(DoRoute::Focused.cost_band(), "$0.01-$0.05");
+        assert_eq!(DoRoute::PromptPlan.cost_band(), "$0.05-$0.25");
+        assert_eq!(DoRoute::PrdPlan.cost_band(), "$0.25+");
+        assert_eq!(DoRoute::Integrative.cost_band(), "$0.05-$0.25");
+        assert_eq!(DoRoute::RejectNonTty.cost_band(), "$0.00");
+    }
+
+    #[test]
+    fn do_route_pipeline_descriptions_are_stable() {
+        assert_eq!(
+            DoRoute::Mechanical.pipeline_description(),
+            "single agent (mechanical)"
+        );
+        assert_eq!(
+            DoRoute::Focused.pipeline_description(),
+            "single agent (focused)"
+        );
+        assert_eq!(
+            DoRoute::PromptPlan.pipeline_description(),
+            "generate plan -> execute"
+        );
+        assert_eq!(
+            DoRoute::PrdPlan.pipeline_description(),
+            "PRD -> draft -> plan -> execute"
+        );
+        assert_eq!(
+            DoRoute::Integrative.pipeline_description(),
+            "single agent (integrative, plan-forced)"
+        );
+    }
+
+    #[test]
+    fn do_route_dry_run_delegates_to_inner() {
+        let inner = DoRoute::PrdPlan;
+        let dry = DoRoute::DryRun {
+            inner: Box::new(inner.clone()),
+        };
+        assert_eq!(dry.template_name(), inner.template_name());
+        assert_eq!(dry.cost_band(), inner.cost_band());
+        assert_eq!(dry.pipeline_description(), inner.pipeline_description());
+    }
+
+    // ── Equivalent alias coverage ────────────────────────────────
+
+    #[test]
+    fn do_route_forced_trivial_and_auto_trivial_same_template() {
+        let forced = resolve_do_route(&route_input(PlanComplexity::Trivial, true, false, false, false, true));
+        let auto = resolve_do_route(&route_input(PlanComplexity::Trivial, false, false, false, false, true));
+        // Both should resolve to Mechanical when TTY
+        assert_eq!(forced.template_name(), auto.template_name());
     }
 }

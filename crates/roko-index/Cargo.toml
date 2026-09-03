@@ -27,12 +27,18 @@ rkyv = { version = "0.8", optional = true }
 
 [features]
 default = []
+# SQLite is the canonical CLI persistence backend. Stores the versioned code
+# index at <root>/.roko/index.db. Enabled by roko-cli (backlog #362).
 sqlite = ["dep:rusqlite", "dep:blake3"]
+# rkyv is library-only opt-in for zero-copy deserialization. CLI does not
+# enable it. tree-sitter (roko-lang-rust/tree-sitter) is disabled and
+# experimental until a separate parser-parity packet exists.
 rkyv = ["dep:rkyv", "roko-core/rkyv"]
 
 [dev-dependencies]
 tempfile = { workspace = true }
 rusqlite = { workspace = true }
+blake3 = { workspace = true }
 
 [package.metadata.roko]
 layer = 2

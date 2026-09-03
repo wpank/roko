@@ -31,6 +31,8 @@ pub enum InputMode {
     LogSearch,
     /// Plan tree filter mode: typing a filter string for plan tree (#219).
     PlanFilter,
+    /// Agent output search mode: typing a regex for agent output (#367).
+    AgentOutputSearch,
 }
 
 impl InputMode {
@@ -45,6 +47,7 @@ impl InputMode {
             Self::ConfigEdit => Some("EDIT"),
             Self::LogSearch => Some("SEARCH"),
             Self::PlanFilter => Some("FILTER"),
+            Self::AgentOutputSearch => Some("SEARCH"),
         }
     }
 }
@@ -482,6 +485,18 @@ pub enum TuiAction {
     /// Cancel plan tree filter and clear.
     CancelPlanFilter,
 
+    // -- agent output search (#367) --
+    /// Enter agent output search mode on F3:Agents tab.
+    StartAgentOutputSearch,
+    /// Accept current agent output search pattern.
+    AcceptAgentOutputSearch,
+    /// Cancel agent output search and clear pattern.
+    CancelAgentOutputSearch,
+    /// Jump to the next agent output search match.
+    NextAgentOutputMatch,
+    /// Jump to the previous agent output search match.
+    PrevAgentOutputMatch,
+
     // -- recovery (#119) --
     /// Soft retry: re-dispatch only failed tasks.
     SoftRetry,
@@ -573,6 +588,7 @@ pub fn handle_key(
         InputMode::ConfigEdit => return handle_config_edit_key(key),
         InputMode::LogSearch => return handle_log_search_key(key),
         InputMode::PlanFilter => return handle_plan_filter_key(key),
+        InputMode::AgentOutputSearch => return handle_agent_output_search_key(key),
     }
 
     // Step 2b: F-keys always switch tabs, even when a modal is open.
@@ -799,6 +815,17 @@ fn handle_log_search_key(key: KeyEvent) -> TuiAction {
     match key.code {
         KeyCode::Enter => TuiAction::AcceptLogSearch,
         KeyCode::Esc => TuiAction::CancelLogSearch,
+        KeyCode::Backspace => TuiAction::InputBackspace,
+        KeyCode::Char(c) => TuiAction::InputChar(c),
+        _ => TuiAction::None,
+    }
+}
+
+/// Key handler for agent output search mode (#367).
+fn handle_agent_output_search_key(key: KeyEvent) -> TuiAction {
+    match key.code {
+        KeyCode::Enter => TuiAction::AcceptAgentOutputSearch,
+        KeyCode::Esc => TuiAction::CancelAgentOutputSearch,
         KeyCode::Backspace => TuiAction::InputBackspace,
         KeyCode::Char(c) => TuiAction::InputChar(c),
         _ => TuiAction::None,
@@ -1065,6 +1092,11 @@ fn handle_agents_key(key: KeyEvent, focus: FocusZone) -> TuiAction {
         KeyCode::Char('i') => TuiAction::StartInject,
         KeyCode::Char('g') => TuiAction::ToggleAgentPaneGroup,
         KeyCode::Char('t') => TuiAction::ToggleAgentTopology,
+
+        // Agent output search (#367): / enters search, n/N navigate
+        KeyCode::Char('/') => TuiAction::StartAgentOutputSearch,
+        KeyCode::Char('n') => TuiAction::NextAgentOutputMatch,
+        KeyCode::Char('N') => TuiAction::PrevAgentOutputMatch,
         _ => TuiAction::None,
     }
 }

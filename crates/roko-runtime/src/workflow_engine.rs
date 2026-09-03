@@ -199,7 +199,7 @@ impl WorkflowEngine {
                 if let PipelineOutput::Done { outcome } = cancel_output {
                     self.emit(RuntimeEvent::WorkflowCompleted {
                         run_id: run_id.clone(),
-                        outcome: runtime_workflow_outcome(&outcome),
+                        outcome: outcome.clone(),
                     });
                     if let Err(err) = self
                         .record_workflow_feedback(&run_id, &outcome, &driver, started_at)
@@ -304,7 +304,7 @@ impl WorkflowEngine {
                 PipelineOutput::Done { outcome } => {
                     self.emit(RuntimeEvent::WorkflowCompleted {
                         run_id: run_id.clone(),
-                        outcome: runtime_workflow_outcome(outcome),
+                        outcome: outcome.clone(),
                     });
 
                     if let Err(err) = self
@@ -327,7 +327,7 @@ impl WorkflowEngine {
                     };
                     self.emit(RuntimeEvent::WorkflowCompleted {
                         run_id: run_id.clone(),
-                        outcome: runtime_workflow_outcome(&outcome),
+                        outcome: outcome.clone(),
                     });
 
                     if let Err(err) = self
@@ -407,7 +407,7 @@ impl WorkflowEngine {
             );
             self.emit(RuntimeEvent::WorkflowCompleted {
                 run_id: run_id.clone(),
-                outcome: runtime_workflow_outcome(&outcome),
+                outcome: outcome.clone(),
             });
 
             return Ok(self.build_run_report(
@@ -491,7 +491,7 @@ impl WorkflowEngine {
                 PipelineOutput::Done { outcome } => {
                     self.emit(RuntimeEvent::WorkflowCompleted {
                         run_id: run_id.clone(),
-                        outcome: runtime_workflow_outcome(outcome),
+                        outcome: outcome.clone(),
                     });
 
                     if let Err(err) = self
@@ -515,7 +515,7 @@ impl WorkflowEngine {
                     };
                     self.emit(RuntimeEvent::WorkflowCompleted {
                         run_id: run_id.clone(),
-                        outcome: runtime_workflow_outcome(&outcome),
+                        outcome: outcome.clone(),
                     });
 
                     if let Err(err) = self
@@ -839,24 +839,6 @@ fn event_source(event: &RuntimeEvent) -> &'static str {
         | RuntimeEvent::CorrectionApplied { .. }
         | RuntimeEvent::SequenceGap { .. }
         | RuntimeEvent::Extension { .. } => "v2_event",
-    }
-}
-
-fn runtime_workflow_outcome(
-    outcome: &WorkflowOutcome,
-) -> roko_core::runtime_event::WorkflowOutcome {
-    // TODO(converge): Remove this adapter once PipelineStateV2 uses
-    // roko_core::runtime_event::WorkflowOutcome directly.
-    match outcome {
-        WorkflowOutcome::Success { commit_hash } => {
-            roko_core::runtime_event::WorkflowOutcome::Success {
-                commit_hash: commit_hash.clone(),
-            }
-        }
-        WorkflowOutcome::Halted { reason } => roko_core::runtime_event::WorkflowOutcome::Halted {
-            reason: reason.clone(),
-        },
-        WorkflowOutcome::Cancelled => roko_core::runtime_event::WorkflowOutcome::Cancelled,
     }
 }
 

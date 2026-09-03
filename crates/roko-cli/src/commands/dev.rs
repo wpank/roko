@@ -7,7 +7,7 @@
 //! Signal handling: listens for both SIGINT (Ctrl+C) and SIGTERM (systemd,
 //! docker stop, kill) to ensure clean PID file removal on any shutdown path.
 
-#![allow(unsafe_code, dead_code)]
+#![allow(unsafe_code)]
 
 use std::io;
 use std::net::TcpListener;

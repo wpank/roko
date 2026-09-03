@@ -810,7 +810,15 @@ fn render_output_body(
         Theme::unfocused_title_style()
     };
 
-    let collected = collect_agent_output_lines(tui_state, view_state.selected);
+    // Build output lines from agent output history (#367) with fallback
+    // to the legacy collect path for backward compatibility.
+    let history_records = tui_state.agent_output_history.records_for(selected_id);
+    let collected = if history_records.is_empty() {
+        collect_agent_output_lines(tui_state, view_state.selected)
+    } else {
+        // Convert records back to raw lines for the existing render pipeline.
+        history_records.iter().map(|r| r.text.clone()).collect()
+    };
     let has_stream_records = collected.iter().any(|l| l.starts_with('\x1e'));
     let output_lines = if collected.is_empty() {
         Vec::new()
@@ -819,6 +827,11 @@ fn render_output_body(
     } else {
         tui_state.render_agent_output_lines(selected_id, &collected, theme)
     };
+
+    // Agent output search state (#367)
+    let search = &tui_state.agent_output_search;
+    let search_active = search.active && !search.pattern.is_empty();
+
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(border_style);
@@ -896,10 +909,31 @@ fn render_output_body(
     } else {
         Style::default().fg(theme.warning)
     };
-    let block = block.border_style(border_style).title(vec![
+    // Build title spans, including search match indicator (#367).
+    let mut title_spans = vec![
         Span::styled(format!(" {title_label}"), title_style),
         Span::styled(format!(" [{tail_indicator}] "), tail_style),
-    ]);
+    ];
+    if search_active {
+        let search_info = if search.pattern_error {
+            Span::styled(
+                " [regex error] ",
+                Style::default().fg(theme.danger).add_modifier(Modifier::BOLD),
+            )
+        } else if search.match_count > 0 {
+            Span::styled(
+                format!(" [/{} {}/{}] ", search.pattern, search.current_match + 1, search.match_count),
+                Style::default().fg(Theme::SAGE).add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::styled(
+                format!(" [/{} 0/0] ", search.pattern),
+                Style::default().fg(theme.warning),
+            )
+        };
+        title_spans.push(search_info);
+    }
+    let block = block.border_style(border_style).title(title_spans);
     frame.render_widget(block, area);
 
     if output_lines.is_empty() {

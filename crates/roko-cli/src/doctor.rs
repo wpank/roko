@@ -7,6 +7,9 @@ use anyhow::{Context as _, Result};
 use reqwest::Url;
 use roko_core::agent::ProviderKind;
 use roko_core::config::provider::{ProviderConfig, ProviderNetworkPolicy};
+use roko_execution::diagnostics::{
+    DiagnosticCheckId, DiagnosticFinding, DiagnosticRequest, DiagnosticService, DiagnosticSeverity,
+};
 use roko_fs::RokoLayout;
 use serde::Serialize;
 use std::fmt::Write as _;
@@ -15,6 +18,38 @@ use std::time::{Duration, Instant};
 
 const DEFAULT_HEALTH_PATH: &str = "/api/health";
 const DOCTOR_HTTP_TIMEOUT_SECS: u64 = 2;
+
+/// Convert a shared [`DiagnosticFinding`] to a doctor-format [`DoctorCheck`].
+fn finding_to_doctor_check(finding: &DiagnosticFinding) -> DoctorCheck {
+    let status = match finding.severity {
+        DiagnosticSeverity::Info => DoctorStatus::Ok,
+        DiagnosticSeverity::Warning => DoctorStatus::Warn,
+        DiagnosticSeverity::Error => DoctorStatus::Fail,
+    };
+    DoctorCheck {
+        id: format!("shared_{}", finding.code),
+        status,
+        message: finding.message.clone(),
+        detail: if finding.evidence.is_empty() {
+            None
+        } else {
+            Some(
+                finding
+                    .evidence
+                    .iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )
+        },
+        path: finding.evidence.get("path").cloned(),
+        url: None,
+        fix: finding
+            .remediation
+            .as_ref()
+            .and_then(|r| r.command.clone()),
+    }
+}
 
 /// Inputs for `roko doctor`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -179,6 +214,20 @@ pub async fn run_doctor(options: &DoctorOptions) -> Result<DoctorReport> {
     let loaded_config = load_active_config(&workdir, options.config_override.as_deref())?;
 
     let mut checks = Vec::new();
+
+    // ── Shared diagnostic service checks (#279) ─────────────────────────
+    // Run all 11 shared checks via the consolidated DiagnosticService.
+    let shared_report = DiagnosticService::run(&DiagnosticRequest {
+        workdir: workdir.clone(),
+        selected: DiagnosticCheckId::ALL.iter().copied().collect(),
+        profile: None,
+        allow_repairs: false,
+    });
+    for finding in &shared_report.findings {
+        checks.push(finding_to_doctor_check(finding));
+    }
+
+    // ── Doctor-only checks (not in the shared service) ──────────────────
     checks.push(check_workdir(&workdir));
     checks.push(check_config_presence(
         &workdir,

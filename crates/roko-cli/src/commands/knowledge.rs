@@ -1,5 +1,4 @@
 //! knowledge command handlers.
-#![allow(unused_imports)]
 
 use crate::*;
 use anyhow::ensure;

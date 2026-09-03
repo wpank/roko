@@ -55,6 +55,8 @@ pub mod events;
 pub mod fingerprint;
 pub mod hot;
 pub mod loader;
+pub mod plan_mutation;
+pub mod profile;
 pub mod registry;
 pub mod replay;
 pub mod topo;
@@ -104,14 +106,26 @@ pub use events::{
 
 // Re-export approval, control, and cancellation ports (#255).
 pub use control::{
-    ApprovalRequestV1, ApprovalResolution, ControlEffect, ControlReceiptV1,
-    ExecutionControlService, FinalizationIntent, ReceiptStatus, CONTROL_EXTENSION_NAME,
-    CONTROL_EXTENSION_VERSION,
+    ApprovalRequestV1, ApprovalResolution, ControlCommandKind, ControlEffect,
+    ControlReceiptV1, ControlSnapshot, ExecutionControlService, FinalizationIntent,
+    ReceiptStatus, build_approval_request, CONTROL_EXTENSION_NAME, CONTROL_EXTENSION_VERSION,
+};
+
+// Re-export graph-layer replan mutation adapter (#252).
+pub use plan_mutation::{
+    build_merge_with_rewiring, build_split_with_rewiring, completed_tasks_preserved,
+    downstream_tasks, pending_siblings, upstream_tasks,
 };
 
 // Re-export completion delivery lifecycle (#254).
 pub use delivery::{
     CompletionDeliveryReceiptV1, CompletionDeliveryRequest, CompletionDeliveryService,
     CompletionDeliveryState, DeliveryError, DeliveryReceiptStore, DeliveryTransitionError,
-    ReleasePolicy, DELIVERY_EXTENSION_KEY, delivery_extension_value,
+    MergeSlot, MergeSlotBlocked, ReleasePolicy, DELIVERY_EXTENSION_KEY, delivery_extension_value,
+};
+
+// Re-export authored graph production profile (#267).
+pub use profile::{
+    AuthoredGraphProfile, AuthoredGraphProfileBuilder, CapabilityDenial, CellCapabilityDenial,
+    DenialReason, ProfileValidationError, RuntimeProfileKind, validate_cell_capabilities,
 };

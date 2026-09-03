@@ -362,4 +362,171 @@ mod tests {
             WorktreeExecutionWorkspaceProvider::map_worktree_error(err);
         assert!(matches!(mapped, WorkspaceError::Io(_)));
     }
+
+    // -- Comprehensive error mapping coverage ---------------------------------
+
+    #[test]
+    fn map_git_failed_error() {
+        use crate::orchestrator::worktree::WorktreeError;
+
+        let err = WorktreeError::GitFailed {
+            stderr: "fatal: not a git repository".to_string(),
+        };
+        let mapped = WorktreeExecutionWorkspaceProvider::map_worktree_error(err);
+        match mapped {
+            WorkspaceError::Io(msg) => {
+                assert!(
+                    msg.contains("git command failed"),
+                    "GitFailed should map to Io with original message, got: {msg}"
+                );
+            }
+            other => panic!("expected WorkspaceError::Io, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_already_exists_error() {
+        use crate::orchestrator::worktree::WorktreeError;
+
+        let err = WorktreeError::AlreadyExists("attempt-xyz".to_string());
+        let mapped = WorktreeExecutionWorkspaceProvider::map_worktree_error(err);
+        match mapped {
+            WorkspaceError::Io(msg) => {
+                assert!(
+                    msg.contains("already exists"),
+                    "AlreadyExists should map to Io preserving message, got: {msg}"
+                );
+            }
+            other => panic!("expected WorkspaceError::Io, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_invalid_id_error() {
+        use crate::orchestrator::worktree::WorktreeError;
+
+        let err = WorktreeError::InvalidId("../escape".to_string());
+        let mapped = WorktreeExecutionWorkspaceProvider::map_worktree_error(err);
+        match mapped {
+            WorkspaceError::Io(msg) => {
+                assert!(
+                    msg.contains("invalid worktree id"),
+                    "InvalidId should map to Io preserving message, got: {msg}"
+                );
+            }
+            other => panic!("expected WorkspaceError::Io, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_dirty_worktree_error() {
+        use crate::orchestrator::worktree::WorktreeError;
+
+        let err = WorktreeError::DirtyWorktree {
+            id: "attempt-dirty".to_string(),
+            paths: "M src/main.rs".to_string(),
+        };
+        let mapped = WorktreeExecutionWorkspaceProvider::map_worktree_error(err);
+        match mapped {
+            WorkspaceError::Io(msg) => {
+                assert!(
+                    msg.contains("dirty"),
+                    "DirtyWorktree should map to Io preserving message, got: {msg}"
+                );
+            }
+            other => panic!("expected WorkspaceError::Io, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_reattach_rejected_error() {
+        use crate::orchestrator::worktree::WorktreeError;
+
+        let err = WorktreeError::ReattachRejected {
+            id: "plan-reattach".to_string(),
+            reason: "path identity mismatch".to_string(),
+        };
+        let mapped = WorktreeExecutionWorkspaceProvider::map_worktree_error(err);
+        match mapped {
+            WorkspaceError::Io(msg) => {
+                assert!(
+                    msg.contains("reattach"),
+                    "ReattachRejected should map to Io preserving message, got: {msg}"
+                );
+            }
+            other => panic!("expected WorkspaceError::Io, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_unsafe_git_execution_error() {
+        use crate::orchestrator::worktree::WorktreeError;
+
+        let err = WorktreeError::UnsafeGitExecution {
+            reason: "no-descendant violation".to_string(),
+        };
+        let mapped = WorktreeExecutionWorkspaceProvider::map_worktree_error(err);
+        match mapped {
+            WorkspaceError::Io(msg) => {
+                assert!(
+                    msg.contains("unsafe git execution"),
+                    "UnsafeGitExecution should map to Io preserving message, got: {msg}"
+                );
+            }
+            other => panic!("expected WorkspaceError::Io, got: {other:?}"),
+        }
+    }
+
+    // -- Adapter construction -------------------------------------------------
+
+    #[test]
+    fn manager_accessor_returns_underlying_manager() {
+        use crate::orchestrator::worktree::{WorktreeConfig, WorktreeManager};
+        use std::time::Duration;
+
+        let config = WorktreeConfig {
+            repo_root: PathBuf::from("/project"),
+            base_branch: "main".to_string(),
+            worktrees_root: PathBuf::from("/project/.worktrees"),
+            max_live: Some(3),
+            idle_ttl: Duration::from_secs(600),
+        };
+        let manager = WorktreeManager::new(config);
+        let provider =
+            WorktreeExecutionWorkspaceProvider::new(manager, PathBuf::from("/project"));
+
+        // The accessor should return the same manager reference.
+        let m = provider.manager();
+        assert!(m.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn shared_checkout_rejection_subdirectory_passes() {
+        use crate::orchestrator::worktree::{WorktreeConfig, WorktreeManager};
+        use std::time::Duration;
+
+        let config = WorktreeConfig {
+            repo_root: PathBuf::from("/repo"),
+            base_branch: "main".to_string(),
+            worktrees_root: PathBuf::from("/repo/.worktrees"),
+            max_live: None,
+            idle_ttl: Duration::from_secs(3600),
+        };
+        let manager = WorktreeManager::new(config);
+        let provider =
+            WorktreeExecutionWorkspaceProvider::new(manager, PathBuf::from("/repo"));
+
+        // Subdirectories of the repo root must be accepted.
+        assert!(provider
+            .reject_shared_checkout(&PathBuf::from("/repo/subdir"))
+            .is_ok());
+        // The root itself must be rejected.
+        assert!(provider
+            .reject_shared_checkout(&PathBuf::from("/repo"))
+            .is_err());
+        // A completely different path must be accepted.
+        assert!(provider
+            .reject_shared_checkout(&PathBuf::from("/other/path"))
+            .is_ok());
+    }
 }

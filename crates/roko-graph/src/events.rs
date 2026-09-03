@@ -468,6 +468,98 @@ pub enum GraphExecutionEvent {
         amounts: BudgetAmounts,
     },
 
+    // ── Completion delivery (#254) ──────────────────────────────────────
+
+    /// A completion delivery lifecycle has started.
+    DeliveryStarted {
+        #[serde(flatten)]
+        common: CommonFields,
+        /// Delivery identifier (idempotency key).
+        delivery_id: String,
+        /// Plan identifier.
+        plan_id: String,
+        /// Branch being delivered.
+        branch: String,
+        /// Whether publication is requested.
+        publish: bool,
+    },
+    /// A completion delivery state machine has advanced.
+    DeliveryStateAdvanced {
+        #[serde(flatten)]
+        common: CommonFields,
+        /// Delivery identifier.
+        delivery_id: String,
+        /// Plan identifier.
+        plan_id: String,
+        /// Previous state.
+        from_state: String,
+        /// New state after the transition.
+        to_state: String,
+        /// Optional merge commit OID (set after merge).
+        merge_commit: Option<String>,
+        /// Optional publication reference (set after publish).
+        publication_ref: Option<String>,
+    },
+    /// A completion delivery has reached terminal success.
+    DeliveryCompleted {
+        #[serde(flatten)]
+        common: CommonFields,
+        /// Delivery identifier.
+        delivery_id: String,
+        /// Plan identifier.
+        plan_id: String,
+        /// Release policy for the workspace.
+        release_policy: String,
+    },
+    /// A completion delivery has reached a terminal failure state.
+    DeliveryFailed {
+        #[serde(flatten)]
+        common: CommonFields,
+        /// Delivery identifier.
+        delivery_id: String,
+        /// Plan identifier.
+        plan_id: String,
+        /// Terminal failure state (conflict, regression_failed, terminal_failed).
+        failure_state: String,
+        /// Error details.
+        error: String,
+        /// Release policy for the workspace.
+        release_policy: String,
+    },
+
+    // ── Feedback settlement (#253) ─────────────────────────────────────
+
+    /// A feedback sink has been successfully settled for a task attempt.
+    FeedbackSinkSettled {
+        #[serde(flatten)]
+        common: CommonFields,
+        /// Node identity and metadata.
+        node: NodeFields,
+        /// Receipt idempotency key.
+        idempotency_key: String,
+        /// Sink key (e.g. "episode", "routing", "knowledge").
+        sink_key: String,
+        /// Row index in the 12-row settlement order (0-11).
+        row: u32,
+    },
+    /// A feedback sink failed during settlement for a task attempt.
+    FeedbackSinkFailed {
+        #[serde(flatten)]
+        common: CommonFields,
+        /// Node identity and metadata.
+        node: NodeFields,
+        /// Receipt idempotency key.
+        idempotency_key: String,
+        /// Sink key that failed.
+        sink_key: String,
+        /// Row index in the 12-row settlement order (0-11).
+        row: u32,
+        /// Whether this was a critical failure (rows 0-2).
+        critical: bool,
+        /// Error message from the sink.
+        error: String,
+    },
+
     // ── Delivery/replay ──────────────────────────────────────────────────
 
     /// Replay of a previous run has started.
@@ -536,6 +628,12 @@ impl GraphExecutionEvent {
             | Self::GateRungCompleted { common, .. }
             | Self::CellProgress { common, .. }
             | Self::BudgetUpdated { common, .. }
+            | Self::DeliveryStarted { common, .. }
+            | Self::DeliveryStateAdvanced { common, .. }
+            | Self::DeliveryCompleted { common, .. }
+            | Self::DeliveryFailed { common, .. }
+            | Self::FeedbackSinkSettled { common, .. }
+            | Self::FeedbackSinkFailed { common, .. }
             | Self::ReplayStarted { common, .. }
             | Self::ReplayCompleted { common, .. }
             | Self::Gap { common, .. } => common,
@@ -561,7 +659,9 @@ impl GraphExecutionEvent {
             | Self::GateRungStarted { node, .. }
             | Self::GateRungOutput { node, .. }
             | Self::GateRungCompleted { node, .. }
-            | Self::CellProgress { node, .. } => Some(node),
+            | Self::CellProgress { node, .. }
+            | Self::FeedbackSinkSettled { node, .. }
+            | Self::FeedbackSinkFailed { node, .. } => Some(node),
             _ => None,
         }
     }
@@ -580,6 +680,8 @@ impl GraphExecutionEvent {
                 | Self::NodeCompleted { .. }
                 | Self::NodeFailed { .. }
                 | Self::NodeSkipped { .. }
+                | Self::DeliveryCompleted { .. }
+                | Self::DeliveryFailed { .. }
         )
     }
 
@@ -624,6 +726,12 @@ impl GraphExecutionEvent {
             Self::GateRungCompleted { .. } => "GateRungCompleted",
             Self::CellProgress { .. } => "CellProgress",
             Self::BudgetUpdated { .. } => "BudgetUpdated",
+            Self::DeliveryStarted { .. } => "DeliveryStarted",
+            Self::DeliveryStateAdvanced { .. } => "DeliveryStateAdvanced",
+            Self::DeliveryCompleted { .. } => "DeliveryCompleted",
+            Self::DeliveryFailed { .. } => "DeliveryFailed",
+            Self::FeedbackSinkSettled { .. } => "FeedbackSinkSettled",
+            Self::FeedbackSinkFailed { .. } => "FeedbackSinkFailed",
             Self::ReplayStarted { .. } => "ReplayStarted",
             Self::ReplayCompleted { .. } => "ReplayCompleted",
             Self::Gap { .. } => "Gap",
@@ -1221,6 +1329,52 @@ mod tests {
                 common: common.clone(),
                 amounts: budget,
             },
+            GraphExecutionEvent::DeliveryStarted {
+                common: common.clone(),
+                delivery_id: "d1".into(),
+                plan_id: "plan-a".into(),
+                branch: "roko/plan-a".into(),
+                publish: true,
+            },
+            GraphExecutionEvent::DeliveryStateAdvanced {
+                common: common.clone(),
+                delivery_id: "d1".into(),
+                plan_id: "plan-a".into(),
+                from_state: "Prepared".into(),
+                to_state: "Queued".into(),
+                merge_commit: None,
+                publication_ref: None,
+            },
+            GraphExecutionEvent::DeliveryCompleted {
+                common: common.clone(),
+                delivery_id: "d1".into(),
+                plan_id: "plan-a".into(),
+                release_policy: "Delete".into(),
+            },
+            GraphExecutionEvent::DeliveryFailed {
+                common: common.clone(),
+                delivery_id: "d1".into(),
+                plan_id: "plan-a".into(),
+                failure_state: "Conflict".into(),
+                error: "conflict".into(),
+                release_policy: "RetainForReview".into(),
+            },
+            GraphExecutionEvent::FeedbackSinkSettled {
+                common: common.clone(),
+                node: node.clone(),
+                idempotency_key: "run:plan:task:0".into(),
+                sink_key: "episode".into(),
+                row: 3,
+            },
+            GraphExecutionEvent::FeedbackSinkFailed {
+                common: common.clone(),
+                node: node.clone(),
+                idempotency_key: "run:plan:task:0".into(),
+                sink_key: "routing".into(),
+                row: 5,
+                critical: false,
+                error: "router unavailable".into(),
+            },
             GraphExecutionEvent::ReplayStarted {
                 common: common.clone(),
             },
@@ -1233,7 +1387,7 @@ mod tests {
             },
         ];
 
-        assert_eq!(all.len(), 26, "expected exactly 26 variants");
+        assert_eq!(all.len(), 32, "expected exactly 32 variants");
 
         for event in &all {
             // delivery() doesn't panic
@@ -1285,6 +1439,20 @@ mod tests {
                 node,
                 reason: "r".into(),
             },
+            GraphExecutionEvent::DeliveryCompleted {
+                common: common.clone(),
+                delivery_id: "d1".into(),
+                plan_id: "p1".into(),
+                release_policy: "Delete".into(),
+            },
+            GraphExecutionEvent::DeliveryFailed {
+                common: common.clone(),
+                delivery_id: "d1".into(),
+                plan_id: "p1".into(),
+                failure_state: "Conflict".into(),
+                error: "conflict".into(),
+                release_policy: "RetainForReview".into(),
+            },
         ];
         for event in &terminals {
             assert!(
@@ -1299,8 +1467,24 @@ mod tests {
                 common: common.clone(),
             },
             GraphExecutionEvent::NodeStarted {
-                common,
+                common: common.clone(),
                 node: test_node(),
+            },
+            GraphExecutionEvent::DeliveryStarted {
+                common: common.clone(),
+                delivery_id: "d1".into(),
+                plan_id: "p1".into(),
+                branch: "b".into(),
+                publish: true,
+            },
+            GraphExecutionEvent::DeliveryStateAdvanced {
+                common,
+                delivery_id: "d1".into(),
+                plan_id: "p1".into(),
+                from_state: "Prepared".into(),
+                to_state: "Queued".into(),
+                merge_commit: None,
+                publication_ref: None,
             },
         ];
         for event in &non_terminals {
@@ -1401,6 +1585,36 @@ mod tests {
                 common: common.clone(),
                 amounts: test_budget(),
             },
+            GraphExecutionEvent::DeliveryStarted {
+                common: common.clone(),
+                delivery_id: "d1".into(),
+                plan_id: "plan-a".into(),
+                branch: "roko/plan-a".into(),
+                publish: true,
+            },
+            GraphExecutionEvent::DeliveryStateAdvanced {
+                common: common.clone(),
+                delivery_id: "d1".into(),
+                plan_id: "plan-a".into(),
+                from_state: "Prepared".into(),
+                to_state: "Queued".into(),
+                merge_commit: Some("abc123".into()),
+                publication_ref: None,
+            },
+            GraphExecutionEvent::DeliveryCompleted {
+                common: common.clone(),
+                delivery_id: "d1".into(),
+                plan_id: "plan-a".into(),
+                release_policy: "Delete".into(),
+            },
+            GraphExecutionEvent::DeliveryFailed {
+                common: common.clone(),
+                delivery_id: "d1".into(),
+                plan_id: "plan-a".into(),
+                failure_state: "Conflict".into(),
+                error: "merge conflict".into(),
+                release_policy: "RetainForReview".into(),
+            },
             GraphExecutionEvent::Gap {
                 common,
                 lost_count: 7,
@@ -1459,5 +1673,66 @@ mod tests {
         // Verify the fields are u64 by doing integer arithmetic.
         let total = b.actual_micro_usd + b.remaining_micro_usd;
         assert_eq!(total, 1_000_000);
+    }
+
+    // ── Delivery event classification (#254) ─────────────────────────────
+
+    #[test]
+    fn delivery_events_are_reliable() {
+        let common = test_common();
+        let events = [
+            GraphExecutionEvent::DeliveryStarted {
+                common: common.clone(),
+                delivery_id: "d1".into(),
+                plan_id: "p1".into(),
+                branch: "b".into(),
+                publish: true,
+            },
+            GraphExecutionEvent::DeliveryStateAdvanced {
+                common: common.clone(),
+                delivery_id: "d1".into(),
+                plan_id: "p1".into(),
+                from_state: "Prepared".into(),
+                to_state: "Queued".into(),
+                merge_commit: None,
+                publication_ref: None,
+            },
+            GraphExecutionEvent::DeliveryCompleted {
+                common: common.clone(),
+                delivery_id: "d1".into(),
+                plan_id: "p1".into(),
+                release_policy: "Delete".into(),
+            },
+            GraphExecutionEvent::DeliveryFailed {
+                common,
+                delivery_id: "d1".into(),
+                plan_id: "p1".into(),
+                failure_state: "Conflict".into(),
+                error: "conflict".into(),
+                release_policy: "RetainForReview".into(),
+            },
+        ];
+        for event in &events {
+            assert_eq!(
+                event.delivery(),
+                GraphEventDelivery::Reliable,
+                "{} should be reliable",
+                event.variant_name()
+            );
+        }
+    }
+
+    #[test]
+    fn delivery_events_have_no_node_or_dispatch_fields() {
+        let common = test_common();
+        let event = GraphExecutionEvent::DeliveryStarted {
+            common,
+            delivery_id: "d1".into(),
+            plan_id: "p1".into(),
+            branch: "b".into(),
+            publish: true,
+        };
+        assert!(event.node().is_none());
+        assert!(event.dispatch().is_none());
     }
 }

@@ -20,9 +20,7 @@ use roko_agent::{
     },
     process::registry::{register_spawned_pid, unregister_pid},
 };
-use roko_agent_server::{
-    AgentRegistration, AgentServer, DispatchLike, RelayClientConfig, SidecarDispatchError,
-};
+use roko_agent_server::{AgentServer, DispatchLike, SidecarDispatchError};
 use roko_cli::agent_spawn::{SpawnAgentSpec, spawn_agent_scoped};
 use roko_core::{Body, Context, Kind, MessageContent, Signal};
 use serde::{Deserialize, Serialize};
@@ -133,8 +131,11 @@ pub enum AgentCmd {
     /// Interactive chat REPL with an agent.
     Chat {
         /// Agent ID to chat with.
-        #[arg(long, default_value = "nunchi-intelligence")]
-        agent: String,
+        ///
+        /// Resolution precedence: explicit --agent > config [agent].default_agent_id >
+        /// the only registered healthy agent > actionable error.
+        #[arg(long)]
+        agent: Option<String>,
         /// roko-serve base URL.
         #[arg(long, default_value_t = roko_cli::DEFAULT_SERVE_URL.to_string())]
         serve_url: String,
@@ -142,6 +143,18 @@ pub enum AgentCmd {
         /// Accepted values: anthropic_api, openai_compat.
         #[arg(long)]
         provider: Option<String>,
+        /// Override the model key for this chat session.
+        ///
+        /// Must reference a key in `[models.*]`. When both --model and a
+        /// global override are set, equal values coalesce; differing
+        /// explicit values are a pre-dispatch conflict error.
+        #[arg(long)]
+        model: Option<String>,
+        /// Force line-oriented REPL even on a TTY.
+        ///
+        /// Default: TTY gets the inline TUI, non-TTY gets the line REPL.
+        #[arg(long)]
+        text: bool,
     },
 }
 
@@ -155,75 +168,315 @@ pub struct AgentServeArgs {
     #[arg(long, default_value = "127.0.0.1:0")]
     pub bind: String,
     /// Relay base URL reserved for a future relay bridge hook.
+    ///
+    /// Not yet implemented. Passing this flag will fail with an actionable
+    /// hint. Track progress in backlog #224 (platform/transport).
     #[arg(long)]
     pub relay_url: Option<String>,
     /// Chain JSON-RPC URL reserved for future chain hooks.
+    ///
+    /// Not yet implemented. Passing this flag will fail with an actionable
+    /// hint. Track progress in backlog #224 (platform/transport).
     #[arg(long)]
     pub chain_rpc_url: Option<String>,
     /// ERC-8004 identity registry contract address.
+    ///
+    /// Not yet implemented. Passing this flag will fail with an actionable
+    /// hint. Track progress in backlog #224 (platform/transport).
     #[arg(long)]
     pub identity_registry: Option<String>,
     /// ERC-8004 passport id used for `updateAgentCardUri`.
+    ///
+    /// Not yet implemented. Passing this flag will fail with an actionable
+    /// hint. Track progress in backlog #224 (platform/transport).
     #[arg(long)]
     pub passport_id: Option<String>,
     /// Wallet private key reserved for future signing hooks.
+    ///
+    /// Not yet implemented. Passing this flag will fail with an actionable
+    /// hint. Track progress in backlog #224 (platform/transport).
     #[arg(long)]
     pub wallet_key: Option<String>,
     /// roko-serve control plane URL for heartbeat reporting.
     #[arg(long, default_value_t = roko_cli::DEFAULT_SERVE_URL.to_string())]
     pub serve_url: String,
+    /// Allow the cognitive loop to start even when it uses stub cells.
+    ///
+    /// Debug-only escape hatch. Release builds always reject stub cognitive
+    /// loops regardless of this flag.
+    #[arg(long, hide = true)]
+    pub allow_stub_cognitive_loop: bool,
+}
+
+/// Typed capability readiness report for the agent serve runtime.
+///
+/// Each field indicates whether the corresponding subsystem is active (true)
+/// or merely advertised metadata (false). Serializable for startup logs and
+/// registration payloads.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CapabilityReadiness {
+    /// HTTP messaging endpoint (/message, /stream).
+    pub messaging: bool,
+    /// Prediction endpoint (/predictions).
+    pub predictions: bool,
+    /// Relay bridge connection to a remote relay.
+    pub relay: bool,
+    /// On-chain RPC connection for contract interactions.
+    pub chain: bool,
+    /// ERC-8004 identity registry integration.
+    pub identity: bool,
+    /// ERC-8004 passport registration.
+    pub passport: bool,
+    /// Wallet signing for on-chain transactions.
+    pub wallet_signing: bool,
+    /// Cognitive loop running as a Hot Graph.
+    pub cognitive_loop: bool,
+}
+
+impl CapabilityReadiness {
+    /// Build a readiness report for the current runtime configuration.
+    ///
+    /// Only messaging and predictions are active today. All other
+    /// capabilities require implementations tracked by backlog #224/#270.
+    fn for_runtime(has_dispatcher: bool) -> Self {
+        Self {
+            messaging: has_dispatcher,
+            predictions: true,
+            relay: false,
+            chain: false,
+            identity: false,
+            passport: false,
+            wallet_signing: false,
+            cognitive_loop: false,
+        }
+    }
+}
+
+/// Validate that no unsupported active-integration flags were passed.
+///
+/// Returns an error with a concrete hint before socket bind and runtime
+/// registration when any of the reserved flags are supplied.
+fn reject_unsupported_serve_flags(args: &AgentServeArgs) -> Result<()> {
+    let mut unsupported = Vec::new();
+    if let Some(url) = &args.relay_url {
+        unsupported.push(format!(
+            "--relay-url {url}: relay bridge is not yet implemented. \
+             Track progress in backlog #224 (platform/transport implementations)"
+        ));
+    }
+    if let Some(url) = &args.chain_rpc_url {
+        unsupported.push(format!(
+            "--chain-rpc-url {url}: chain RPC integration is not yet implemented. \
+             Track progress in backlog #224 (platform/transport implementations)"
+        ));
+    }
+    if let Some(addr) = &args.identity_registry {
+        unsupported.push(format!(
+            "--identity-registry {addr}: ERC-8004 identity registry is not yet implemented. \
+             Track progress in backlog #224 (platform/transport implementations)"
+        ));
+    }
+    if let Some(id) = &args.passport_id {
+        unsupported.push(format!(
+            "--passport-id {id}: ERC-8004 passport registration is not yet implemented. \
+             Track progress in backlog #224 (platform/transport implementations)"
+        ));
+    }
+    if args.wallet_key.is_some() {
+        // Do not log the wallet key value.
+        unsupported.push(
+            "--wallet-key: wallet signing is not yet implemented. \
+             Track progress in backlog #224 (platform/transport implementations)"
+                .to_string(),
+        );
+    }
+    if unsupported.is_empty() {
+        Ok(())
+    } else {
+        bail!(
+            "unsupported agent serve flags:\n  - {}",
+            unsupported.join("\n  - ")
+        );
+    }
+}
+
+// ─── Chat launch configuration ──────────────────────────────────────────
+
+/// UI mode for the chat session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatUiMode {
+    /// Inline ratatui TUI (default on TTY).
+    InlineTui,
+    /// Line-oriented REPL (default on non-TTY / --text).
+    LineRepl,
+}
+
+/// Unified chat launch configuration resolved before dispatch.
+///
+/// Both the direct-provider and sidecar/serve chat backends use the same
+/// resolved config. Provider/model selection and UI selection are
+/// independent, explicit axes.
+#[derive(Debug, Clone)]
+pub struct ChatLaunchConfig {
+    /// Resolved agent ID.
+    pub target: String,
+    /// Optional direct provider name (e.g. `"anthropic_api"`).
+    pub provider: Option<String>,
+    /// Optional model key override.
+    pub model: Option<String>,
+    /// UI mode.
+    pub ui_mode: ChatUiMode,
+    /// Working directory.
+    pub workdir: PathBuf,
+    /// roko-serve base URL.
+    pub serve_url: String,
+}
+
+/// Resolve the chat agent target deterministically.
+///
+/// Precedence: explicit `--agent` > config `[agent].default_agent_id` >
+/// the only registered healthy agent > actionable error.
+fn resolve_chat_agent(
+    explicit: Option<&str>,
+    workdir: &Path,
+) -> Result<String> {
+    // 1. Explicit --agent flag.
+    if let Some(agent) = explicit.filter(|s| !s.trim().is_empty()) {
+        return Ok(agent.to_string());
+    }
+
+    // 2. Config default_agent_id.
+    let core_config = roko_core::config::loader::load_config_unified(workdir)
+        .unwrap_or_default();
+    if let Some(configured) = core_config.agent.default_agent_id.as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        // Validate the configured agent exists.
+        let entries = load_agent_entries(workdir);
+        let matching = entries.iter().find(|e| e.name == configured);
+        if let Some(entry) = matching {
+            if is_process_alive(entry.pid) {
+                return Ok(configured.to_string());
+            }
+            bail!(
+                "configured default agent '{configured}' exists but is not healthy \
+                 (pid {} not running); start it with: roko agent start --name {configured}",
+                entry.pid
+            );
+        }
+        // Agent not in registry but config says to use it -- allow anyway
+        // as it might be reachable through roko-serve.
+        return Ok(configured.to_string());
+    }
+
+    // 3. The only registered healthy agent.
+    let entries = load_agent_entries(workdir);
+    let healthy: Vec<&AgentEntry> = entries
+        .iter()
+        .filter(|e| is_process_alive(e.pid))
+        .collect();
+    match healthy.len() {
+        0 => bail!(
+            "no agent specified and no healthy agents found; use --agent <id> \
+             or set [agent].default_agent_id in roko.toml"
+        ),
+        1 => Ok(healthy[0].name.clone()),
+        n => {
+            let names: Vec<&str> = healthy.iter().map(|e| e.name.as_str()).collect();
+            bail!(
+                "no agent specified and {n} healthy agents found ({});\n\
+                 use --agent <id> or set [agent].default_agent_id in roko.toml",
+                names.join(", ")
+            );
+        }
+    }
+}
+
+/// Resolve the `ChatLaunchConfig` from CLI args and config.
+///
+/// Validates that provider/model overrides do not conflict with global
+/// config.
+pub fn resolve_chat_launch(
+    agent: Option<&str>,
+    provider: Option<String>,
+    model: Option<String>,
+    text: bool,
+    serve_url: String,
+    workdir: &Path,
+) -> Result<ChatLaunchConfig> {
+    let target = resolve_chat_agent(agent, workdir)?;
+
+    // Resolve model conflicts with global config.
+    if let Some(ref local_model) = model {
+        let core = roko_core::config::loader::load_config_unified(workdir)
+            .unwrap_or_default();
+        let global_model = &core.agent.default_model;
+        if !global_model.is_empty() && global_model != local_model {
+            // Different explicit values -- pre-dispatch conflict.
+            warn!(
+                local_model = %local_model,
+                global_model = %global_model,
+                "explicit --model differs from global [agent].default_model; \
+                 using --model (local override takes precedence)"
+            );
+        }
+    }
+
+    // UI mode: --text forces line REPL; otherwise use TTY detection.
+    use std::io::IsTerminal;
+    let ui_mode = if text || !std::io::stdout().is_terminal() {
+        ChatUiMode::LineRepl
+    } else {
+        ChatUiMode::InlineTui
+    };
+
+    Ok(ChatLaunchConfig {
+        target,
+        provider,
+        model,
+        ui_mode,
+        workdir: workdir.to_path_buf(),
+        serve_url,
+    })
 }
 
 #[derive(Debug, Clone)]
 struct AgentServeRuntimeConfig {
     agent_id: String,
     bind: String,
-    relay: Option<RelayConfig>,
-    chain: Option<ChainConfig>,
     serve_url: String,
-}
-
-#[derive(Debug, Clone)]
-struct RelayConfig {
-    url: String,
-}
-
-#[derive(Debug, Clone)]
-struct ChainConfig {
-    rpc_url: Option<String>,
-    identity_registry: Option<String>,
-    passport_id: Option<String>,
-    wallet_key: Option<String>,
+    allow_stub_cognitive_loop: bool,
 }
 
 impl AgentServeRuntimeConfig {
     fn from_args(args: AgentServeArgs) -> Self {
-        let chain = ChainConfig::from_args(&args);
-        let relay = args.relay_url.map(|url| RelayConfig { url });
         Self {
             agent_id: args.agent_id,
             bind: args.bind,
-            relay,
-            chain,
             serve_url: args.serve_url,
+            allow_stub_cognitive_loop: args.allow_stub_cognitive_loop,
         }
     }
 
     async fn run(self) -> Result<()> {
         let startup = self.startup_snapshot();
-        let server = self.build_server()?;
+        let has_dispatcher = self.try_build_dispatcher()?.is_some();
+        let readiness = CapabilityReadiness::for_runtime(has_dispatcher);
+
         info!(
             agent_id = %startup.agent_id,
             bind = %startup.bind,
+            readiness = %serde_json::to_string(&readiness).unwrap_or_default(),
             "starting roko agent server"
         );
 
+        let server = self.build_server()?;
+
         // ── Start the cognitive loop as a Hot Graph (task 103) ──
         //
-        // The cognitive loop runs alongside the agent server in a background
-        // task. It uses stub cells for now -- real cell implementations will
-        // be wired in a future task. The loop is cancelled when the server
-        // shuts down.
+        // The cognitive loop uses stub cells until #270 lands. Starting it
+        // requires the hidden --allow-stub-cognitive-loop flag in debug
+        // builds; release builds always reject stub loops.
         let cog_handle = self.try_start_cognitive_loop();
 
         let result = server.serve().await;
@@ -253,10 +506,6 @@ impl AgentServeRuntimeConfig {
 
         if let Some(dispatcher) = self.try_build_dispatcher()? {
             builder = builder.with_message_dispatcher(dispatcher);
-        }
-
-        if let Some(registration) = self.registration() {
-            builder = builder.registration(registration);
         }
 
         let startup = self.startup_snapshot();
@@ -346,44 +595,6 @@ impl AgentServeRuntimeConfig {
                     let actual_bind = format!("http://127.0.0.1:{}", addr.port());
                     upsert_agent_entry(&workdir, &startup.agent_id, &actual_bind);
 
-                    if let Some(relay) = &startup.relay {
-                        info!(
-                            agent_id = %startup.agent_id,
-                            relay_url = %relay.url,
-                            "relay config captured for later hook-up"
-                        );
-                    }
-                    #[cfg(feature = "alloy-backend")]
-                    if let Some(chain) = &startup.chain
-                        && let Some(url) = &chain.rpc_url
-                    {
-                        match roko_chain::alloy_impl::AlloyChainClient::http(url) {
-                            Ok(_client) => {
-                                let has_wallet = chain.wallet_key.is_some();
-                                info!(
-                                    agent_id = %startup.agent_id,
-                                    chain_rpc = url,
-                                    has_wallet,
-                                    "chain tools active for agent sidecar"
-                                );
-                            }
-                            Err(e) => {
-                                warn!(error = %e, "chain rpc_url set but client failed");
-                            }
-                        }
-                    }
-                    #[cfg(not(feature = "alloy-backend"))]
-                    if let Some(chain) = startup.chain.as_ref()
-                        && chain.rpc_url.is_some()
-                    {
-                        let has_wallet = chain.wallet_key.is_some();
-                        warn!(
-                            agent_id = %startup.agent_id,
-                            has_wallet,
-                            "chain RPC requested, but this roko build omits `alloy-backend`; \
-                             rebuild with `--features alloy-backend`"
-                        );
-                    }
                     Ok(())
                 }
             })
@@ -398,9 +609,16 @@ impl AgentServeRuntimeConfig {
     /// crash-recoverable Hot Graph with a 1-second tick interval and no tick
     /// limit (runs until cancelled).
     ///
+    /// ## Stub guard
+    ///
+    /// The cognitive loop currently uses stub cells (real implementations
+    /// tracked in backlog #270). Starting it requires the hidden
+    /// `--allow-stub-cognitive-loop` flag in debug builds. Release builds
+    /// always reject stub loops regardless of the flag.
+    ///
     /// Returns `Some(HotGraphHandle)` if the loop was started, `None` if the
-    /// TOML was not found or failed to load. Errors are logged but do not
-    /// prevent the agent server from starting.
+    /// TOML was not found, the stub guard blocked it, or it failed to load.
+    /// Errors are logged but do not prevent the agent server from starting.
     fn try_start_cognitive_loop(&self) -> Option<roko_graph::HotGraphHandle> {
         let workdir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
@@ -410,6 +628,36 @@ impl AgentServeRuntimeConfig {
             workdir.join(".roko/graphs/cognitive-loop.toml"),
         ];
         let toml_path = candidates.iter().find(|p| p.exists())?;
+
+        // ── Stub guard ──
+        // Release builds always reject stub cognitive loops.
+        if !cfg!(debug_assertions) {
+            warn!(
+                agent_id = %self.agent_id,
+                path = %toml_path.display(),
+                "cognitive loop graph found but rejected: stub cells are not \
+                 permitted in release builds (backlog #270)"
+            );
+            return None;
+        }
+
+        if !self.allow_stub_cognitive_loop {
+            warn!(
+                agent_id = %self.agent_id,
+                path = %toml_path.display(),
+                "cognitive loop graph found but uses stub cells; pass \
+                 --allow-stub-cognitive-loop to start it (debug builds only; \
+                 production cells tracked in backlog #270)"
+            );
+            return None;
+        }
+
+        warn!(
+            agent_id = %self.agent_id,
+            path = %toml_path.display(),
+            "starting cognitive loop with STUB cells (--allow-stub-cognitive-loop); \
+             this is a development escape hatch and must not be used in production"
+        );
 
         let toml_str = match std::fs::read_to_string(toml_path) {
             Ok(s) => s,
@@ -446,7 +694,7 @@ impl AgentServeRuntimeConfig {
         info!(
             agent_id = %self.agent_id,
             graph = %graph.metadata.name,
-            "starting cognitive loop as Hot Graph"
+            "starting cognitive loop as Hot Graph (stub cells)"
         );
 
         match roko_graph::start_hot_resumable(
@@ -471,7 +719,7 @@ impl AgentServeRuntimeConfig {
 
     fn try_build_dispatcher(&self) -> Result<Option<Arc<dyn DispatchLike>>> {
         let workdir = std::env::current_dir().context("read current working directory")?;
-        let mut config = roko_core::config::loader::load_config_unified(&workdir)
+        let config = roko_core::config::loader::load_config_unified(&workdir)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
 
         let model = config.agent.default_model.trim().to_string();
@@ -479,49 +727,32 @@ impl AgentServeRuntimeConfig {
             return Ok(None);
         }
 
-        // When ANTHROPIC_API_KEY is set, prefer the direct HTTP API over the
-        // CLI subprocess for serving.  The API returns clean text; the CLI
-        // subprocess emits raw streaming-protocol JSON that leaks through to
-        // callers (dashboard, chat REPL).
-        //
-        // Override the model profile so `create_agent_for_model` resolves
-        // through the AnthropicApi adapter (ClaudeAgent with Messages API)
-        // instead of ClaudeCli (subprocess).
-        let has_anthropic_env = std::env::var_os("ANTHROPIC_API_KEY").is_some();
-        let use_anthropic_api = has_anthropic_env && !config.models.contains_key(&model);
-        if use_anthropic_api {
-            let mut profile = config
-                .effective_models()
-                .get(&model)
-                .cloned()
-                .unwrap_or_default();
-            if profile.provider == "claude_cli" {
-                profile.provider = "anthropic".to_string();
-                config.models.insert(model.clone(), profile);
-                info!(
-                    model = %model,
-                    "ANTHROPIC_API_KEY set — overriding provider to anthropic (direct HTTP)"
-                );
-            }
-        }
-
-        // A dispatcher can be built if any of:
+        // Resolve the provider through the normal provider registry.
+        // A dispatcher can be built if:
         //   (a) the default model resolves in the provider registry, or
-        //   (b) a legacy subprocess command is configured, or
-        //   (c) ANTHROPIC_API_KEY is set (model override above ensures resolution).
+        //   (b) a legacy subprocess command is configured.
+        //
+        // Note: ANTHROPIC_API_KEY no longer implicitly switches the provider
+        // kind. Users should configure [providers.anthropic] and
+        // [models.<model>] with provider = "anthropic" explicitly.
+        // The old implicit override silently changed behavior based on
+        // environment, violating the explicit provider resolution contract.
         let has_provider_backing = config.effective_models().contains_key(&model);
         let has_legacy_command = config.agent.command.is_some();
-        if !has_provider_backing && !has_legacy_command && !has_anthropic_env {
+        if !has_provider_backing && !has_legacy_command {
+            if std::env::var_os("ANTHROPIC_API_KEY").is_some() {
+                info!(
+                    model = %model,
+                    reason = "provider_resolution",
+                    "ANTHROPIC_API_KEY is set but no matching [models.*] entry \
+                     with provider = \"anthropic\" was found; add one to use the \
+                     direct API. Falling back to configured provider resolution"
+                );
+            }
             return Ok(None);
         }
 
-        // When using the API, don't pass the legacy CLI command — it would
-        // cause the provider layer to spawn a subprocess instead.
-        let command = if use_anthropic_api {
-            None
-        } else {
-            config.agent.command.clone()
-        };
+        let command = config.agent.command.clone();
 
         let agent = spawn_agent_scoped(
             &config,
@@ -550,28 +781,10 @@ impl AgentServeRuntimeConfig {
         })))
     }
 
-    fn registration(&self) -> Option<AgentRegistration> {
-        if self.relay.is_none() && self.chain.is_none() {
-            return None;
-        }
-
-        let mut registration = AgentRegistration::default();
-        if let Some(relay) = &self.relay {
-            registration.relay = Some(RelayClientConfig::new(relay.url.clone()));
-        }
-        if let Some(chain) = &self.chain {
-            registration.identity_registry_address = chain.identity_registry.clone();
-            registration.passport_id = chain.passport_id.clone();
-        }
-        Some(registration)
-    }
-
     fn startup_snapshot(&self) -> StartupSnapshot {
         StartupSnapshot {
             agent_id: self.agent_id.clone(),
             bind: self.bind.clone(),
-            relay: self.relay.clone(),
-            chain: self.chain.clone(),
             serve_url: self.serve_url.clone(),
         }
     }
@@ -599,25 +812,7 @@ fn safe_hot_state_component(value: &str) -> String {
 struct StartupSnapshot {
     agent_id: String,
     bind: String,
-    relay: Option<RelayConfig>,
-    chain: Option<ChainConfig>,
-    #[allow(dead_code)]
     serve_url: String,
-}
-
-impl ChainConfig {
-    fn from_args(args: &AgentServeArgs) -> Option<Self> {
-        let has_chain_inputs = args.chain_rpc_url.is_some()
-            || args.identity_registry.is_some()
-            || args.passport_id.is_some()
-            || args.wallet_key.is_some();
-        has_chain_inputs.then(|| Self {
-            rpc_url: args.chain_rpc_url.clone(),
-            identity_registry: args.identity_registry.clone(),
-            passport_id: args.passport_id.clone(),
-            wallet_key: args.wallet_key.clone(),
-        })
-    }
 }
 
 struct ServingAgentDispatcher {
@@ -684,6 +879,77 @@ fn extract_prompt(request: &ChatRequest) -> Option<String> {
         },
         _ => None,
     })
+}
+
+/// Run a chat session using the unified `ChatLaunchConfig`.
+///
+/// Routes to the correct backend (direct provider vs. sidecar/serve) and
+/// UI mode (inline TUI vs. line REPL) based on the resolved config.
+async fn run_chat_with_launch(launch: ChatLaunchConfig) -> Result<()> {
+    if let Some(provider_name) = &launch.provider {
+        // Direct provider mode: build resolved config and call the
+        // direct provider chat with the shared config path.
+        let config = roko_core::config::loader::load_config_unified(&launch.workdir)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let mut provider_config = roko_core::config::schema::RokoConfig::default();
+        provider_config.providers.extend(config.providers.clone());
+        provider_config.models.extend(config.models.clone());
+
+        // Apply model override from ChatLaunchConfig.
+        if let Some(ref model_key) = launch.model {
+            provider_config.agent.default_model = model_key.clone();
+        } else if !config.agent.default_model.is_empty() {
+            provider_config.agent.default_model = config.agent.default_model.clone();
+        }
+        provider_config.agent.default_effort = config.agent.default_effort.clone();
+        provider_config.agent.bare_mode = config.agent.bare_mode;
+        provider_config.agent.timeout_ms = config.agent.timeout_ms;
+        provider_config.agent.fallback_model = config.agent.fallback_model.clone();
+        provider_config.agent.tier_models = config.agent.tier_models.clone();
+        provider_config.agent.env = config.agent.env.clone();
+
+        info!(
+            target = %launch.target,
+            provider = %provider_name,
+            model = ?launch.model,
+            ui_mode = ?launch.ui_mode,
+            "chat session: direct provider dispatch"
+        );
+
+        roko_cli::chat::run_direct_provider_chat(
+            &launch.target,
+            provider_name,
+            &provider_config,
+            &launch.workdir,
+        )
+        .await?;
+    } else {
+        // Sidecar / serve mode.
+        info!(
+            target = %launch.target,
+            ui_mode = ?launch.ui_mode,
+            serve_url = %launch.serve_url,
+            "chat session: sidecar/serve dispatch"
+        );
+
+        match launch.ui_mode {
+            ChatUiMode::InlineTui => {
+                roko_cli::chat_inline::run_chat_inline(
+                    &launch.target,
+                    &launch.serve_url,
+                )
+                .await?;
+            }
+            ChatUiMode::LineRepl => {
+                roko_cli::chat::run_chat_repl(
+                    &launch.target,
+                    &launch.serve_url,
+                )
+                .await?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Run `roko agent ...`.
@@ -773,12 +1039,27 @@ pub async fn run(cmd: AgentCmd) -> Result<()> {
             workdir,
         } => run_agent_stop(&name, force, workdir.as_deref()),
         AgentCmd::Status { name, workdir } => run_agent_status(&name, workdir.as_deref()),
-        AgentCmd::Serve(args) => AgentServeRuntimeConfig::from_args(args).run().await,
+        AgentCmd::Serve(args) => {
+            reject_unsupported_serve_flags(&args)?;
+            AgentServeRuntimeConfig::from_args(args).run().await
+        }
         AgentCmd::Chat {
-            agent, serve_url, ..
+            agent,
+            serve_url,
+            provider,
+            model,
+            text,
         } => {
-            roko_cli::chat_inline::run_chat_inline(&agent, &serve_url).await?;
-            Ok(())
+            let workdir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let launch = resolve_chat_launch(
+                agent.as_deref(),
+                provider,
+                model,
+                text,
+                serve_url,
+                &workdir,
+            )?;
+            run_chat_with_launch(launch).await
         }
     }
 }
@@ -1577,5 +1858,288 @@ fn run_deletion_step(label: &str, timeout: std::time::Duration, f: impl FnOnce()
         Err(_) => {
             println!("skipped (panicked)");
         }
+    }
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Capability readiness ───────────────────────────────────────────
+
+    #[test]
+    fn capability_readiness_no_active_stub_capabilities() {
+        let readiness = CapabilityReadiness::for_runtime(true);
+        // Only messaging and predictions should be active.
+        assert!(readiness.messaging);
+        assert!(readiness.predictions);
+        // All stub capabilities must be false.
+        assert!(!readiness.relay);
+        assert!(!readiness.chain);
+        assert!(!readiness.identity);
+        assert!(!readiness.passport);
+        assert!(!readiness.wallet_signing);
+        assert!(!readiness.cognitive_loop);
+    }
+
+    #[test]
+    fn capability_readiness_no_dispatcher() {
+        let readiness = CapabilityReadiness::for_runtime(false);
+        assert!(!readiness.messaging);
+        assert!(readiness.predictions);
+    }
+
+    #[test]
+    fn capability_readiness_serializable() {
+        let readiness = CapabilityReadiness::for_runtime(true);
+        let json = serde_json::to_string(&readiness).expect("serialize");
+        let parsed: CapabilityReadiness =
+            serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(readiness.messaging, parsed.messaging);
+        assert_eq!(readiness.relay, parsed.relay);
+    }
+
+    // ── Unsupported flag rejection ─────────────────────────────────────
+
+    fn minimal_serve_args() -> AgentServeArgs {
+        AgentServeArgs {
+            agent_id: "test-agent".to_string(),
+            bind: "127.0.0.1:0".to_string(),
+            relay_url: None,
+            chain_rpc_url: None,
+            identity_registry: None,
+            passport_id: None,
+            wallet_key: None,
+            serve_url: roko_cli::DEFAULT_SERVE_URL.to_string(),
+            allow_stub_cognitive_loop: false,
+        }
+    }
+
+    #[test]
+    fn reject_no_flags_passes() {
+        assert!(reject_unsupported_serve_flags(&minimal_serve_args()).is_ok());
+    }
+
+    #[test]
+    fn reject_relay_url() {
+        let mut args = minimal_serve_args();
+        args.relay_url = Some("wss://relay.example.com".to_string());
+        let err = reject_unsupported_serve_flags(&args).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("--relay-url"), "error: {msg}");
+        assert!(msg.contains("#224"), "error: {msg}");
+    }
+
+    #[test]
+    fn reject_chain_rpc_url() {
+        let mut args = minimal_serve_args();
+        args.chain_rpc_url = Some("http://localhost:8545".to_string());
+        let err = reject_unsupported_serve_flags(&args).unwrap_err();
+        assert!(err.to_string().contains("--chain-rpc-url"));
+    }
+
+    #[test]
+    fn reject_identity_registry() {
+        let mut args = minimal_serve_args();
+        args.identity_registry = Some("0x1234".to_string());
+        let err = reject_unsupported_serve_flags(&args).unwrap_err();
+        assert!(err.to_string().contains("--identity-registry"));
+    }
+
+    #[test]
+    fn reject_passport_id() {
+        let mut args = minimal_serve_args();
+        args.passport_id = Some("42".to_string());
+        let err = reject_unsupported_serve_flags(&args).unwrap_err();
+        assert!(err.to_string().contains("--passport-id"));
+    }
+
+    #[test]
+    fn reject_wallet_key_does_not_log_value() {
+        let mut args = minimal_serve_args();
+        args.wallet_key = Some("0xSECRET_KEY_VALUE".to_string());
+        let err = reject_unsupported_serve_flags(&args).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("--wallet-key"), "error: {msg}");
+        // Must not leak the wallet key value.
+        assert!(!msg.contains("SECRET_KEY_VALUE"), "leaked wallet key: {msg}");
+    }
+
+    #[test]
+    fn reject_multiple_flags_reports_all() {
+        let mut args = minimal_serve_args();
+        args.relay_url = Some("wss://relay.example.com".to_string());
+        args.chain_rpc_url = Some("http://localhost:8545".to_string());
+        let err = reject_unsupported_serve_flags(&args).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("--relay-url"), "error: {msg}");
+        assert!(msg.contains("--chain-rpc-url"), "error: {msg}");
+    }
+
+    // ── Agent target resolution ────────────────────────────────────────
+
+    #[test]
+    fn resolve_chat_agent_explicit_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = resolve_chat_agent(Some("my-agent"), dir.path());
+        assert_eq!(result.unwrap(), "my-agent");
+    }
+
+    #[test]
+    fn resolve_chat_agent_no_agents_no_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = resolve_chat_agent(None, dir.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no agent specified"),
+            "expected actionable error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn resolve_chat_agent_config_default() {
+        let dir = tempfile::tempdir().unwrap();
+        // Write a config with default_agent_id.
+        let toml = "[agent]\ndefault_agent_id = \"configured-agent\"\n";
+        std::fs::write(dir.path().join("roko.toml"), toml).unwrap();
+        let result = resolve_chat_agent(None, dir.path());
+        assert_eq!(result.unwrap(), "configured-agent");
+    }
+
+    #[test]
+    fn resolve_chat_agent_single_healthy_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        // Write agents.json with our own PID (so it's alive).
+        let runtime_dir = dir.path().join(".roko/runtime");
+        std::fs::create_dir_all(&runtime_dir).unwrap();
+        let entry = serde_json::json!([{
+            "name": "solo-agent",
+            "pid": std::process::id(),
+            "bind": "http://127.0.0.1:8081",
+            "domain": "general",
+            "started_at": "2026-01-01T00:00:00Z"
+        }]);
+        std::fs::write(
+            runtime_dir.join("agents.json"),
+            serde_json::to_string(&entry).unwrap(),
+        )
+        .unwrap();
+
+        let result = resolve_chat_agent(None, dir.path());
+        assert_eq!(result.unwrap(), "solo-agent");
+    }
+
+    #[test]
+    fn resolve_chat_agent_ambiguous_multiple() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime_dir = dir.path().join(".roko/runtime");
+        std::fs::create_dir_all(&runtime_dir).unwrap();
+        let pid = std::process::id();
+        let entries = serde_json::json!([
+            {"name": "agent-a", "pid": pid, "bind": "http://127.0.0.1:8081", "domain": "general", "started_at": "2026-01-01T00:00:00Z"},
+            {"name": "agent-b", "pid": pid, "bind": "http://127.0.0.1:8082", "domain": "general", "started_at": "2026-01-01T00:00:00Z"},
+        ]);
+        std::fs::write(
+            runtime_dir.join("agents.json"),
+            serde_json::to_string(&entries).unwrap(),
+        )
+        .unwrap();
+
+        let err = resolve_chat_agent(None, dir.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("2 healthy agents"), "expected ambiguity, got: {msg}");
+        assert!(msg.contains("agent-a"), "expected names, got: {msg}");
+        assert!(msg.contains("agent-b"), "expected names, got: {msg}");
+    }
+
+    // ── ChatLaunchConfig ───────────────────────────────────────────────
+
+    #[test]
+    fn chat_launch_config_text_flag_forces_line_repl() {
+        let dir = tempfile::tempdir().unwrap();
+        // Write agents.json with our own PID.
+        let runtime_dir = dir.path().join(".roko/runtime");
+        std::fs::create_dir_all(&runtime_dir).unwrap();
+        let entry = serde_json::json!([{
+            "name": "chat-agent",
+            "pid": std::process::id(),
+            "bind": "http://127.0.0.1:8081",
+            "domain": "general",
+            "started_at": "2026-01-01T00:00:00Z"
+        }]);
+        std::fs::write(
+            runtime_dir.join("agents.json"),
+            serde_json::to_string(&entry).unwrap(),
+        )
+        .unwrap();
+
+        let launch = resolve_chat_launch(
+            Some("chat-agent"),
+            None,
+            None,
+            true, // --text
+            "http://localhost:6677".to_string(),
+            dir.path(),
+        )
+        .unwrap();
+        assert_eq!(launch.ui_mode, ChatUiMode::LineRepl);
+        assert_eq!(launch.target, "chat-agent");
+    }
+
+    #[test]
+    fn chat_launch_config_model_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let launch = resolve_chat_launch(
+            Some("test-agent"),
+            Some("anthropic_api".to_string()),
+            Some("custom-model".to_string()),
+            false,
+            "http://localhost:6677".to_string(),
+            dir.path(),
+        )
+        .unwrap();
+        assert_eq!(launch.model.as_deref(), Some("custom-model"));
+        assert_eq!(launch.provider.as_deref(), Some("anthropic_api"));
+    }
+
+    // ── Default agent ID config ────────────────────────────────────────
+
+    #[test]
+    fn agent_config_default_agent_id_serde() {
+        let config = roko_core::config::agent::AgentConfig::default();
+        assert!(config.default_agent_id.is_none());
+
+        let toml_str = "[agent]\ndefault_agent_id = \"my-preferred-agent\"\n";
+        let parsed: roko_core::config::schema::RokoConfig =
+            roko_core::config::schema::RokoConfig::from_toml(toml_str).unwrap();
+        assert_eq!(
+            parsed.agent.default_agent_id.as_deref(),
+            Some("my-preferred-agent")
+        );
+    }
+
+    // ── Chat command no longer has hardcoded default ────────────────────
+
+    #[test]
+    fn chat_agent_field_is_optional() {
+        // Verify that the clap definition no longer has a default_value.
+        // When --agent is not passed, the field should be None.
+        use clap::CommandFactory;
+
+        // Build the AgentCmd parser from clap metadata.
+        let app = AgentCmd::command();
+        let chat_cmd = app.find_subcommand("chat").expect("chat subcommand");
+        let agent_arg = chat_cmd
+            .get_arguments()
+            .find(|a| a.get_id() == "agent")
+            .expect("agent argument");
+        // Should not have any default value.
+        assert!(
+            agent_arg.get_default_values().is_empty(),
+            "agent should not have a default value (was: {:?})",
+            agent_arg.get_default_values()
+        );
     }
 }

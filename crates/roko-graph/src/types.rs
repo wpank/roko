@@ -9,6 +9,8 @@ use petgraph::graph::DiGraph;
 use roko_core::{LensRegistry, TypeSchema};
 use serde::{Deserialize, Serialize};
 
+use roko_core::Capability;
+
 use crate::hot::HotPolicy;
 
 /// Unique identifier for a node within a graph.
@@ -165,6 +167,15 @@ pub struct GraphPolicy {
     /// Hot Graph tick policy. Only relevant when `mode = Hot`.
     #[serde(default)]
     pub hot: Option<HotPolicy>,
+    /// Capabilities declared by this graph definition.
+    ///
+    /// Missing `capabilities` deserializes to an empty vector, meaning the graph
+    /// requests no privileged authorities. A live run may receive `ReadFs` and
+    /// `Bus` from normal workspace configuration; `WriteFs`, `Network`, `Shell`,
+    /// `Llm`, and `Secrets` require both a graph declaration here **and** the
+    /// corresponding workspace grant.
+    #[serde(default)]
+    pub capabilities: Vec<Capability>,
 }
 
 fn default_max_concurrent_nodes() -> usize {
@@ -179,6 +190,7 @@ impl Default for GraphPolicy {
             max_concurrent_nodes: default_max_concurrent_nodes(),
             timeout_ms: None,
             hot: None,
+            capabilities: Vec::new(),
         }
     }
 }
@@ -637,6 +649,7 @@ mod tests {
         assert_eq!(graph.policy.max_concurrent_nodes, 4);
         assert!(graph.policy.timeout_ms.is_none());
         assert!(graph.policy.hot.is_none());
+        assert!(graph.policy.capabilities.is_empty());
         assert!(graph.lenses.registrations().is_empty());
     }
 
@@ -648,12 +661,14 @@ mod tests {
             max_concurrent_nodes: 8,
             timeout_ms: Some(30_000),
             hot: None,
+            capabilities: vec![Capability::ReadFs, Capability::Llm],
         };
         let graph = Graph::new(GraphMetadata::default()).with_policy(policy);
         assert_eq!(graph.policy.mode, GraphMode::Hot);
         assert_eq!(graph.policy.failure_strategy, FailureStrategy::SkipFailed);
         assert_eq!(graph.policy.max_concurrent_nodes, 8);
         assert_eq!(graph.policy.timeout_ms, Some(30_000));
+        assert_eq!(graph.policy.capabilities.len(), 2);
     }
 
     #[test]

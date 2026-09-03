@@ -399,6 +399,7 @@ fn input_mode_key_hints(mode: InputMode) -> String {
         InputMode::ConfigEdit => &["Enter:save", "Esc:cancel"],
         InputMode::LogSearch => &["Enter:search", "Esc:cancel"],
         InputMode::PlanFilter => &["Enter:filter", "Esc:cancel"],
+        InputMode::AgentOutputSearch => &["Enter:search", "Esc:cancel", "n/N:next/prev"],
     };
     hints.join("  ")
 }

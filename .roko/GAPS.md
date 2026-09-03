@@ -1072,3 +1072,19 @@ Several findings appear independently in multiple audits, indicating high-confid
 - **Scaffold template breakage**: CLI audit identifies 6/9 broken; Engine audit identifies 13 broken templates (wider scope including non-CLI templates)
 - **Graph engine parity**: Engine audit provides the comprehensive gap analysis; CLI audit confirms `--engine graph` silently drops 8 flags; UX parity audit surfaces the lack of Graph-to-TUI event integration
 - **Silent flag handling**: CLI audit finds `--json` ignored by 15+ commands, `--role` hardcoded, `config set --global` discarded; Engine audit finds `--no-replan` and `--skip-validate` dead, 3 model-override names, `--engine graph` drops 8 flags
+
+### 6. Non-plan runtime services migration (#245)
+
+**Status**: Consumer-side adapters landed; builder blocked on #243.
+
+| Item | Status | Subsystem |
+|---|---|---|
+| `runtime_services.rs` in roko-execution with `ExecutionOverrides`, `NonPlanServiceRequest`, validation, and cost/shutdown contracts | Done | roko-execution |
+| `WorkflowServiceAdapter` in run.rs (Lane A) validates against profile matrix then delegates to `ServiceFactory::build` | Done | roko-cli |
+| `ChatSessionServiceAdapter` in chat_session.rs (Lane D1) validates `ChatLight` profile | Done | roko-cli |
+| `AcpSessionServiceAdapter` in runner.rs (Lane D2) validates ACP workflow against profile matrix | Done | roko-acp |
+| Actual `RuntimeServicesBuilder::build()` replacing `ServiceFactory::build` per-call construction | Blocked on #243 | roko-execution |
+| Replace `ChatFeedbackRuntime` per-session construction with builder handle | Blocked on #243 | roko-cli |
+| Replace `SessionManager::provider_health_registry`/`provider_rate_limiter` with builder handle | Blocked on #243 | roko-acp |
+| Conformance tests proving mandatory services active per profile | Partial (unit tests in runtime_services.rs) | roko-execution |
+| Delete duplicate `ServiceFactory::build` calls after full migration | Blocked on #243 | roko-cli, roko-acp |

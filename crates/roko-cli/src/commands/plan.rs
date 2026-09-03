@@ -1,5 +1,4 @@
 //! plan command handlers.
-#![allow(unused_imports)]
 
 use std::io::IsTerminal as _;
 

@@ -118,6 +118,29 @@ impl WorkspaceLeaseState {
     }
 }
 
+impl std::fmt::Display for WorkspaceLeaseState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Acquired => write!(f, "acquired"),
+            Self::Accepted => write!(f, "accepted"),
+            Self::Retained => write!(f, "retained"),
+            Self::Released => write!(f, "released"),
+        }
+    }
+}
+
+impl std::fmt::Display for WorkspaceLease {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "lease {} for {} at {}",
+            self.lease_id,
+            self.attempt_id,
+            self.path.display()
+        )
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Release policy
 // ---------------------------------------------------------------------------
@@ -137,6 +160,16 @@ pub enum WorkspaceReleasePolicy {
     RetainForReview,
 }
 
+impl std::fmt::Display for WorkspaceReleasePolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Delete => write!(f, "delete"),
+            Self::RetainForFailure => write!(f, "retain_for_failure"),
+            Self::RetainForReview => write!(f, "retain_for_review"),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Reconciliation
 // ---------------------------------------------------------------------------
@@ -144,8 +177,10 @@ pub enum WorkspaceReleasePolicy {
 /// Result of reconciling a lease against the actual workspace state.
 ///
 /// Used by resume/recovery flows to determine whether a previously
-/// checkpointed lease is still usable.
-#[derive(Debug, Clone)]
+/// checkpointed lease is still usable. Serializable so #251 can persist
+/// reconciliation results in host checkpoint extensions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "status", content = "payload")]
 pub enum WorkspaceReconcileResult {
     /// The workspace exists and matches the lease — ready to use.
     Live(WorkspaceLease),
@@ -379,6 +414,56 @@ pub mod fake {
                 .values()
                 .filter(|(_, state)| state.is_active())
                 .count()
+        }
+
+        /// Reconcile all tracked leases and return results keyed by fingerprint.
+        ///
+        /// This is the fake equivalent of the CLI manager's batch reconciliation
+        /// and prune facilities. It never removes an unproved path.
+        pub async fn reconcile_all(
+            &self,
+        ) -> Vec<(WorkspaceLease, WorkspaceReconcileResult)> {
+            let snapshot: Vec<WorkspaceLease> = self
+                .leases
+                .lock()
+                .values()
+                .map(|(lease, _)| lease.clone())
+                .collect();
+
+            let mut results = Vec::with_capacity(snapshot.len());
+            for lease in snapshot {
+                if let Ok(result) = self.reconcile(&lease).await {
+                    results.push((lease, result));
+                }
+            }
+            results
+        }
+
+        /// Release all orphaned (Retained) leases, transitioning them to Released.
+        ///
+        /// Returns the leases that were cleaned up. This never removes an
+        /// unproved path -- only leases the provider already tracks as Retained
+        /// are eligible.
+        pub async fn cleanup_orphans(&self) -> Vec<WorkspaceLease> {
+            let orphans: Vec<WorkspaceLease> = self
+                .leases
+                .lock()
+                .values()
+                .filter(|(_, state)| *state == WorkspaceLeaseState::Retained)
+                .map(|(lease, _)| lease.clone())
+                .collect();
+
+            let mut cleaned = Vec::new();
+            for lease in orphans {
+                if self
+                    .release(&lease, WorkspaceReleasePolicy::Delete)
+                    .await
+                    .is_ok()
+                {
+                    cleaned.push(lease);
+                }
+            }
+            cleaned
         }
     }
 
@@ -895,5 +980,189 @@ mod tests {
         // Now acquire succeeds.
         let lease_b = provider.acquire(&b).await.unwrap();
         assert_ne!(lease_a.path, lease_b.path);
+    }
+
+    // -- Truly concurrent acquire (multi-task) --------------------------------
+
+    #[tokio::test]
+    async fn concurrent_spawned_acquires_never_share_checkout() {
+        use std::sync::Arc;
+
+        let provider = Arc::new(test_provider());
+
+        // Spawn 20 concurrent acquire tasks for distinct attempts.
+        let mut handles = Vec::new();
+        for i in 0..20 {
+            let p = Arc::clone(&provider);
+            handles.push(tokio::spawn(async move {
+                let id = WorkspaceAttemptId {
+                    plan_id: "concurrent-plan".to_string(),
+                    task_id: format!("task-{i}"),
+                    attempt: 0,
+                };
+                p.acquire(&id).await.unwrap()
+            }));
+        }
+
+        let leases: Vec<WorkspaceLease> = futures::future::join_all(handles)
+            .await
+            .into_iter()
+            .map(|r| r.unwrap())
+            .collect();
+
+        // All 20 leases must have unique paths.
+        let paths: std::collections::HashSet<_> =
+            leases.iter().map(|l| l.path.clone()).collect();
+        assert_eq!(paths.len(), 20, "concurrent acquires must yield unique paths");
+
+        // All 20 leases must have unique branches.
+        let branches: std::collections::HashSet<_> =
+            leases.iter().map(|l| l.branch.clone()).collect();
+        assert_eq!(
+            branches.len(),
+            20,
+            "concurrent acquires must yield unique branches"
+        );
+
+        // All 20 leases must have unique lease IDs.
+        let ids: std::collections::HashSet<_> =
+            leases.iter().map(|l| l.lease_id.clone()).collect();
+        assert_eq!(ids.len(), 20, "concurrent acquires must yield unique lease IDs");
+    }
+
+    // -- WorkspaceReconcileResult serde ---------------------------------------
+
+    #[test]
+    fn reconcile_result_serde_roundtrip() {
+        let lease = WorkspaceLease {
+            lease_id: "lease-99".to_string(),
+            attempt_id: attempt("p", "t", 0),
+            path: PathBuf::from("/worktrees/attempt-p-t-0"),
+            branch: "roko/attempt/p/t/0".to_string(),
+            base_revision: "main".to_string(),
+            lease_fingerprint: attempt("p", "t", 0).fingerprint(),
+        };
+
+        let cases: Vec<WorkspaceReconcileResult> = vec![
+            WorkspaceReconcileResult::Live(lease.clone()),
+            WorkspaceReconcileResult::AlreadyReleased,
+            WorkspaceReconcileResult::Conflict("detached HEAD".to_string()),
+            WorkspaceReconcileResult::Orphaned(lease),
+        ];
+
+        for original in &cases {
+            let json = serde_json::to_string(original).unwrap();
+            let back: WorkspaceReconcileResult = serde_json::from_str(&json).unwrap();
+            assert_eq!(*original, back, "round-trip failed for {json}");
+        }
+    }
+
+    // -- WorkspaceReleasePolicy Display ---------------------------------------
+
+    #[test]
+    fn release_policy_display() {
+        assert_eq!(WorkspaceReleasePolicy::Delete.to_string(), "delete");
+        assert_eq!(
+            WorkspaceReleasePolicy::RetainForFailure.to_string(),
+            "retain_for_failure"
+        );
+        assert_eq!(
+            WorkspaceReleasePolicy::RetainForReview.to_string(),
+            "retain_for_review"
+        );
+    }
+
+    // -- reconcile_all --------------------------------------------------------
+
+    #[tokio::test]
+    async fn reconcile_all_returns_all_tracked_leases() {
+        let provider = test_provider();
+
+        // Acquire three leases.
+        let a = attempt("plan-1", "task-a", 0);
+        let b = attempt("plan-1", "task-b", 0);
+        let c = attempt("plan-1", "task-c", 0);
+
+        provider.acquire(&a).await.unwrap();
+        let lease_b = provider.acquire(&b).await.unwrap();
+        provider.acquire(&c).await.unwrap();
+
+        // Release one with Delete, one with RetainForFailure.
+        provider
+            .release(&lease_b, WorkspaceReleasePolicy::Delete)
+            .await
+            .unwrap();
+
+        let results = provider.reconcile_all().await;
+        assert_eq!(results.len(), 3, "reconcile_all must return all tracked leases");
+
+        // Verify the mix of states.
+        let live_count = results
+            .iter()
+            .filter(|(_, r)| matches!(r, WorkspaceReconcileResult::Live(_)))
+            .count();
+        let released_count = results
+            .iter()
+            .filter(|(_, r)| matches!(r, WorkspaceReconcileResult::AlreadyReleased))
+            .count();
+
+        assert_eq!(live_count, 2, "two leases should be live");
+        assert_eq!(released_count, 1, "one lease should be released");
+    }
+
+    // -- cleanup_orphans ------------------------------------------------------
+
+    #[tokio::test]
+    async fn cleanup_orphans_releases_retained_leases() {
+        let provider = test_provider();
+
+        let a = attempt("plan-1", "task-a", 0);
+        let b = attempt("plan-1", "task-b", 0);
+        let c = attempt("plan-1", "task-c", 0);
+
+        let lease_a = provider.acquire(&a).await.unwrap();
+        provider.acquire(&b).await.unwrap(); // stays active
+        let lease_c = provider.acquire(&c).await.unwrap();
+
+        // Retain two leases (simulating failures).
+        provider
+            .release(&lease_a, WorkspaceReleasePolicy::RetainForFailure)
+            .await
+            .unwrap();
+        provider
+            .release(&lease_c, WorkspaceReleasePolicy::RetainForReview)
+            .await
+            .unwrap();
+
+        // cleanup_orphans should release the two retained leases.
+        let cleaned = provider.cleanup_orphans().await;
+        assert_eq!(cleaned.len(), 2, "two retained leases should be cleaned up");
+
+        // After cleanup, only one active lease should remain.
+        let active = provider.active_leases();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].attempt_id, b);
+    }
+
+    #[tokio::test]
+    async fn cleanup_orphans_skips_active_and_released() {
+        let provider = test_provider();
+
+        let a = attempt("plan-1", "task-a", 0);
+        let b = attempt("plan-1", "task-b", 0);
+
+        provider.acquire(&a).await.unwrap(); // stays active
+        let lease_b = provider.acquire(&b).await.unwrap();
+        provider
+            .release(&lease_b, WorkspaceReleasePolicy::Delete)
+            .await
+            .unwrap(); // already released
+
+        // No retained leases exist, so cleanup should return empty.
+        let cleaned = provider.cleanup_orphans().await;
+        assert!(
+            cleaned.is_empty(),
+            "cleanup_orphans must not touch active or released leases"
+        );
     }
 }

@@ -1,5 +1,4 @@
 //! Explicit cleanup for retained runner attempt worktrees and branches.
-#![allow(dead_code)]
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;

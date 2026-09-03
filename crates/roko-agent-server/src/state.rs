@@ -449,6 +449,39 @@ pub struct TaskCompletionRequest {
     pub summary: Option<String>,
 }
 
+/// Resolved dispatch profile injected once at server construction (#283).
+///
+/// Captures model/role/cost parameters that were previously resolved inline
+/// per call. Both HTTP messaging and relay routes reuse this profile. These
+/// paths do not generate plans.
+#[derive(Debug, Clone)]
+pub struct DispatchProfile {
+    /// Resolved model key for this agent's dispatch.
+    pub model: Option<String>,
+    /// Agent role.
+    pub role: String,
+    /// Cost accounting label.
+    pub cost_label: Option<String>,
+}
+
+impl DispatchProfile {
+    /// Create a new dispatch profile with defaults.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            model: None,
+            role: "implementer".to_string(),
+            cost_label: None,
+        }
+    }
+}
+
+impl Default for DispatchProfile {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Shared state for agent-server routes.
 pub struct AgentState {
     agent_id: String,
@@ -465,6 +498,7 @@ pub struct AgentState {
     message_dispatcher: Option<Arc<dyn DispatchLike>>,
     #[allow(dead_code)]
     knowledge_store: Option<Arc<KnowledgeStore>>,
+    dispatch_profile: DispatchProfile,
     predictions: Mutex<Vec<AgentPrediction>>,
     tasks: Mutex<VecDeque<TaskEntry>>,
     stats: Mutex<AgentRuntimeStats>,
@@ -501,6 +535,7 @@ impl AgentState {
             llm_backend,
             message_dispatcher,
             knowledge_store,
+            dispatch_profile: DispatchProfile::default(),
             predictions: Mutex::new(Vec::new()),
             tasks: Mutex::new(VecDeque::new()),
             stats: Mutex::new(AgentRuntimeStats::default()),
@@ -587,6 +622,22 @@ impl AgentState {
     pub fn with_message_dispatcher(mut self, dispatcher: Arc<dyn DispatchLike>) -> Self {
         self.message_dispatcher = Some(dispatcher);
         self
+    }
+
+    /// Inject a resolved dispatch profile for model/role/cost resolution (#283).
+    ///
+    /// Both HTTP and relay messaging routes reuse this profile instead of
+    /// resolving factory/model parameters per call.
+    #[must_use]
+    pub fn with_dispatch_profile(mut self, profile: DispatchProfile) -> Self {
+        self.dispatch_profile = profile;
+        self
+    }
+
+    /// Borrow the dispatch profile.
+    #[must_use]
+    pub fn dispatch_profile(&self) -> &DispatchProfile {
+        &self.dispatch_profile
     }
 
     /// Override the path used for the sidecar log file.

@@ -7,6 +7,9 @@ license.workspace = true
 authors.workspace = true
 description = "Graph execution engine: DAG types, TOML loader, CellRegistry, and topological sort."
 
+[features]
+test-support = []
+
 [lints]
 workspace = true
 
@@ -30,6 +33,7 @@ workspace = true
 features = ["process", "time", "rt", "macros", "sync"]
 
 [dev-dependencies]
+futures = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
 

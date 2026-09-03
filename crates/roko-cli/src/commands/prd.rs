@@ -881,28 +881,6 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
     }
 }
 
-#[allow(dead_code)]
-fn resolve_effective_model_key(
-    workdir: &Path,
-    cli_model: Option<String>,
-    role: Option<&str>,
-    context: &str,
-) -> Result<String> {
-    let config = roko_core::config::loader::load_config_unified(workdir)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let selection = roko_cli::model_selection::resolve_effective_model(
-        cli_model,
-        None,
-        role.map(str::to_string),
-        None,
-        &config,
-        None,
-    )
-    .map_err(|err| anyhow::anyhow!("resolve model selection for {context}: {err}"))?;
-    selection.print_stderr();
-    Ok(selection.effective_model_key)
-}
-
 /// Find a PRD by slug in either published or drafts.
 pub(crate) fn find_prd(workdir: &Path, slug: &str) -> Result<PathBuf> {
     if let Some(path) = roko_cli::workspace_paths::find_prd_path(workdir, slug) {

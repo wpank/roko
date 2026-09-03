@@ -106,9 +106,9 @@ pub use events::{
 
 // Re-export approval, control, and cancellation ports (#255).
 pub use control::{
-    ApprovalRequestV1, ApprovalResolution, ControlEffect, ControlReceiptV1,
-    ExecutionControlService, FinalizationIntent, ReceiptStatus, CONTROL_EXTENSION_NAME,
-    CONTROL_EXTENSION_VERSION,
+    ApprovalRequestV1, ApprovalResolution, ControlCommandKind, ControlEffect,
+    ControlReceiptV1, ControlSnapshot, ExecutionControlService, FinalizationIntent,
+    ReceiptStatus, build_approval_request, CONTROL_EXTENSION_NAME, CONTROL_EXTENSION_VERSION,
 };
 
 // Re-export graph-layer replan mutation adapter (#252).

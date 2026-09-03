@@ -19,7 +19,8 @@
 //! # Scope boundary
 //!
 //! This module owns transport only. Graph scheduling, approval semantics,
-//! persistent command receipts, and crash behavior belong to #255.
+//! persistent command receipts, and crash behavior live in
+//! `roko_graph::control::ExecutionControlService` (#255).
 
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -52,9 +53,8 @@ pub struct ExecutionCommand {
     pub kind: ExecutionCommandKind,
 }
 
-/// The command discriminant — one-for-one with the legacy `TuiCommand` variants.
-///
-/// #255 will extend this enum with `Approve`, `RejectApproval`, and `Reset`.
+/// The command discriminant — one-for-one with the legacy `TuiCommand` variants
+/// plus the approval and reset commands added by #255.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExecutionCommandKind {
     /// Pause the executor: finish the current agent turn, then stop dispatching.
@@ -74,6 +74,29 @@ pub enum ExecutionCommandKind {
     Skip,
     /// Cancel a running plan.
     Cancel,
+    /// Approve a pending approval request (#255).
+    ///
+    /// Resolves the matching pending approval before provider process spawn;
+    /// stale or mismatched approval IDs are rejected.
+    Approve {
+        /// The approval request ID to resolve.
+        approval_id: String,
+    },
+    /// Reject a pending approval request (#255).
+    ///
+    /// Stale or mismatched approval IDs are rejected. Rejection launches
+    /// zero provider work.
+    RejectApproval {
+        /// The approval request ID to reject.
+        approval_id: String,
+        /// Human-readable reason for the rejection.
+        reason: String,
+    },
+    /// Reset eligible graph state (#255).
+    ///
+    /// Uses the same receipt-preserving rules as repair-clean: committed
+    /// receipts are never erased.
+    Reset,
 }
 
 impl fmt::Display for ExecutionCommandKind {
@@ -88,6 +111,12 @@ impl fmt::Display for ExecutionCommandKind {
             Self::ReverifyGates => write!(f, "reverify-gates"),
             Self::Skip => write!(f, "skip"),
             Self::Cancel => write!(f, "cancel"),
+            Self::Approve { approval_id } => write!(f, "approve({})", approval_id),
+            Self::RejectApproval {
+                approval_id,
+                reason,
+            } => write!(f, "reject-approval({}, {})", approval_id, reason),
+            Self::Reset => write!(f, "reset"),
         }
     }
 }
@@ -504,6 +533,22 @@ mod tests {
         );
         assert_eq!(ExecutionCommandKind::Skip.to_string(), "skip");
         assert_eq!(ExecutionCommandKind::Cancel.to_string(), "cancel");
+        assert_eq!(
+            ExecutionCommandKind::Approve {
+                approval_id: "ap-1".into()
+            }
+            .to_string(),
+            "approve(ap-1)"
+        );
+        assert_eq!(
+            ExecutionCommandKind::RejectApproval {
+                approval_id: "ap-2".into(),
+                reason: "unsafe".into()
+            }
+            .to_string(),
+            "reject-approval(ap-2, unsafe)"
+        );
+        assert_eq!(ExecutionCommandKind::Reset.to_string(), "reset");
 
         assert_eq!(CommandAckStatus::Accepted.to_string(), "accepted");
         assert_eq!(CommandAckStatus::Rejected.to_string(), "rejected");
@@ -629,6 +674,14 @@ mod tests {
             ExecutionCommandKind::ReverifyGates,
             ExecutionCommandKind::Skip,
             ExecutionCommandKind::Cancel,
+            ExecutionCommandKind::Approve {
+                approval_id: "ap-test".into(),
+            },
+            ExecutionCommandKind::RejectApproval {
+                approval_id: "ap-test-2".into(),
+                reason: "test rejection".into(),
+            },
+            ExecutionCommandKind::Reset,
         ];
 
         for kind in &kinds {

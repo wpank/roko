@@ -1,12 +1,11 @@
-//! Runner-v2 execution command adapter (#233).
+//! Runner-v2 execution command adapter (#233 + #255).
 //!
 //! This module bridges the executor-neutral `ExecutionCommand` transport
 //! into the existing runner-v2 event-loop branches. It delegates to the
 //! same scheduling logic the legacy `TuiCommand` match arms used, without
 //! changing any scheduling semantics.
 //!
-//! #255 will add `Approve`, `RejectApproval`, and `Reset` handling to the
-//! same adapter.
+//! #255 added `Approve`, `RejectApproval`, and `Reset` handling.
 
 use tokio::sync::mpsc;
 use tracing::{info, warn};
@@ -29,6 +28,16 @@ pub enum RunnerCommandEffect {
     Cancel {
         plan_id: Option<String>,
     },
+    /// An approval was resolved. The runner should unblock the pending
+    /// approval gate for the given approval ID.
+    ApprovalResolved {
+        approval_id: String,
+        approved: bool,
+        reason: Option<String>,
+    },
+    /// The runner should reset eligible graph state using receipt-preserving
+    /// rules (committed receipts are never erased).
+    Reset,
     /// The command was accepted but the operation is not yet implemented.
     /// The runner should log a rejection to the TUI bridge.
     NotImplemented {
@@ -183,6 +192,50 @@ impl RunnerExecutionCommandAdapter {
                     Some(msg.to_string()),
                 )
             }
+            ExecutionCommandKind::Approve { approval_id } => {
+                info!(
+                    command_id = %cmd.command_id,
+                    approval_id = %approval_id,
+                    "execution command: approve"
+                );
+                (
+                    RunnerCommandEffect::ApprovalResolved {
+                        approval_id: approval_id.clone(),
+                        approved: true,
+                        reason: None,
+                    },
+                    CommandAckStatus::Completed,
+                    None,
+                )
+            }
+            ExecutionCommandKind::RejectApproval {
+                approval_id,
+                reason,
+            } => {
+                warn!(
+                    command_id = %cmd.command_id,
+                    approval_id = %approval_id,
+                    reason = %reason,
+                    "execution command: reject approval"
+                );
+                (
+                    RunnerCommandEffect::ApprovalResolved {
+                        approval_id: approval_id.clone(),
+                        approved: false,
+                        reason: Some(reason.clone()),
+                    },
+                    CommandAckStatus::Completed,
+                    None,
+                )
+            }
+            ExecutionCommandKind::Reset => {
+                info!(command_id = %cmd.command_id, "execution command: reset");
+                (
+                    RunnerCommandEffect::Reset,
+                    CommandAckStatus::Completed,
+                    None,
+                )
+            }
         };
 
         let ack = ack_for(cmd, ack_status, ack_msg);
@@ -312,10 +365,93 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tui_command_all_seven_variants_produce_effects() {
+    async fn tui_command_approve_roundtrip() {
+        let (sender, mut cmd_rx, ack_tx, ack_rx) =
+            ExecutionCommandSender::channel("run-approve");
+        let adapter = RunnerExecutionCommandAdapter::new("run-approve", ack_tx);
+        let mut ack_receiver = crate::execution_control::CommandAckReceiver::new(ack_rx);
+
+        let cmd = sender.build_command(
+            ExecutionCommandKind::Approve {
+                approval_id: "ap-42".into(),
+            },
+            Some("plan-1".into()),
+            Some("task-1".into()),
+            None,
+        );
+        sender.try_send(cmd).unwrap();
+        let received = cmd_rx.recv().await.unwrap();
+        let effect = adapter.process(&received).await;
+        assert_eq!(
+            effect,
+            RunnerCommandEffect::ApprovalResolved {
+                approval_id: "ap-42".into(),
+                approved: true,
+                reason: None,
+            }
+        );
+
+        let acks = ack_receiver.drain();
+        assert_eq!(acks.len(), 1);
+        assert_eq!(acks[0].status, CommandAckStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn tui_command_reject_approval_roundtrip() {
+        let (sender, mut cmd_rx, ack_tx, ack_rx) =
+            ExecutionCommandSender::channel("run-reject");
+        let adapter = RunnerExecutionCommandAdapter::new("run-reject", ack_tx);
+        let mut ack_receiver = crate::execution_control::CommandAckReceiver::new(ack_rx);
+
+        let cmd = sender.build_command(
+            ExecutionCommandKind::RejectApproval {
+                approval_id: "ap-99".into(),
+                reason: "unsafe tool call".into(),
+            },
+            Some("plan-1".into()),
+            None,
+            None,
+        );
+        sender.try_send(cmd).unwrap();
+        let received = cmd_rx.recv().await.unwrap();
+        let effect = adapter.process(&received).await;
+        assert_eq!(
+            effect,
+            RunnerCommandEffect::ApprovalResolved {
+                approval_id: "ap-99".into(),
+                approved: false,
+                reason: Some("unsafe tool call".into()),
+            }
+        );
+
+        let acks = ack_receiver.drain();
+        assert_eq!(acks.len(), 1);
+        assert_eq!(acks[0].status, CommandAckStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn tui_command_reset_roundtrip() {
+        let (sender, mut cmd_rx, ack_tx, ack_rx) =
+            ExecutionCommandSender::channel("run-reset");
+        let adapter = RunnerExecutionCommandAdapter::new("run-reset", ack_tx);
+        let mut ack_receiver = crate::execution_control::CommandAckReceiver::new(ack_rx);
+
+        let cmd = sender.build_command(ExecutionCommandKind::Reset, None, None, None);
+        sender.try_send(cmd).unwrap();
+        let received = cmd_rx.recv().await.unwrap();
+        let effect = adapter.process(&received).await;
+        assert_eq!(effect, RunnerCommandEffect::Reset);
+
+        let acks = ack_receiver.drain();
+        assert_eq!(acks.len(), 1);
+        assert_eq!(acks[0].status, CommandAckStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn tui_command_all_ten_variants_produce_effects() {
         let (sender, mut cmd_rx, ack_tx, _ack_rx) =
-            ExecutionCommandSender::channel("run-seven");
-        let adapter = RunnerExecutionCommandAdapter::new("run-seven", ack_tx);
+            ExecutionCommandSender::channel("run-ten");
+        let adapter = RunnerExecutionCommandAdapter::new("run-ten", ack_tx);
 
         let kinds = vec![
             ExecutionCommandKind::Pause,
@@ -327,6 +463,14 @@ mod tests {
             ExecutionCommandKind::ReverifyGates,
             ExecutionCommandKind::Skip,
             ExecutionCommandKind::Cancel,
+            ExecutionCommandKind::Approve {
+                approval_id: "ap-1".into(),
+            },
+            ExecutionCommandKind::RejectApproval {
+                approval_id: "ap-2".into(),
+                reason: "test".into(),
+            },
+            ExecutionCommandKind::Reset,
         ];
 
         let mut effects = Vec::new();
@@ -337,7 +481,7 @@ mod tests {
             effects.push(adapter.process(&received).await);
         }
 
-        assert_eq!(effects.len(), 7);
+        assert_eq!(effects.len(), 10);
         assert_eq!(effects[0], RunnerCommandEffect::Pause);
         assert_eq!(effects[1], RunnerCommandEffect::Resume);
         assert!(matches!(effects[2], RunnerCommandEffect::NotImplemented { .. }));
@@ -345,5 +489,20 @@ mod tests {
         assert!(matches!(effects[4], RunnerCommandEffect::NotImplemented { .. }));
         assert!(matches!(effects[5], RunnerCommandEffect::NotImplemented { .. }));
         assert!(matches!(effects[6], RunnerCommandEffect::Cancel { .. }));
+        assert!(matches!(
+            effects[7],
+            RunnerCommandEffect::ApprovalResolved {
+                approved: true,
+                ..
+            }
+        ));
+        assert!(matches!(
+            effects[8],
+            RunnerCommandEffect::ApprovalResolved {
+                approved: false,
+                ..
+            }
+        ));
+        assert_eq!(effects[9], RunnerCommandEffect::Reset);
     }
 }

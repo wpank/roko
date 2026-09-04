@@ -108,6 +108,62 @@ pub trait TaskDispatcher: Send + Sync {
         input: Vec<Signal>,
         ctx: &CellContext,
     ) -> Result<Vec<Signal>>;
+
+    /// Dispatch one task using the typed request contract (#247).
+    ///
+    /// Default implementation delegates to [`dispatch`](Self::dispatch) for
+    /// backward compatibility. Host implementations should override this.
+    async fn dispatch_request(
+        &self,
+        request: &TaskDispatchRequest,
+        ctx: &CellContext,
+    ) -> Result<TaskDispatchOutcome> {
+        let output = self
+            .dispatch(&request.spec, request.input.clone(), ctx)
+            .await?;
+        Ok(TaskDispatchOutcome {
+            attempt_id: request.attempt_id.clone(),
+            outcome: TaskDispatchOutcomeKind::Succeeded,
+            provider_id: request.provider.clone().unwrap_or_default(),
+            model: request.model.clone().unwrap_or_default(),
+            input_tokens: None,
+            output_tokens: None,
+            cost_usd: None,
+            changed_files: Vec::new(),
+            wall_duration: Duration::ZERO,
+            output,
+        })
+    }
+
+    /// Dispatch with streaming events (#247).
+    ///
+    /// Default implementation calls [`dispatch_request`](Self::dispatch_request)
+    /// and sends no intermediate events. The terminal outcome is returned
+    /// directly.
+    async fn dispatch_stream(
+        &self,
+        request: &TaskDispatchRequest,
+        ctx: &CellContext,
+        _event_tx: tokio::sync::mpsc::Sender<GraphTaskEvent>,
+    ) -> Result<TaskDispatchOutcome> {
+        self.dispatch_request(request, ctx).await
+    }
+
+    /// Reconcile a previously started attempt after crash/restart (#247).
+    ///
+    /// Default implementation returns `FailAmbiguous` so that an
+    /// implementation cannot silently retry an unknown in-flight provider
+    /// call.
+    async fn reconcile_attempt(
+        &self,
+        _attempt_id: &str,
+        _request_fingerprint: &str,
+    ) -> AttemptReconciliation {
+        AttemptReconciliation::FailAmbiguous {
+            attempt_id: String::new(),
+            reason: "reconcile_attempt not implemented".to_string(),
+        }
+    }
 }
 
 // ─── Streaming dispatch contract (#274) ─────────────────────────────────────
@@ -134,7 +190,13 @@ pub enum GraphTaskEvent {
         cost_usd: Option<f64>,
     },
     /// Task execution progress indicator (may coalesce).
-    Progress { fraction: f64, message: String },
+    ///
+    /// `message` is truncated to 4096 bytes at the nearest valid UTF-8 boundary.
+    Progress {
+        message: String,
+        completed: Option<u32>,
+        total: Option<u32>,
+    },
     /// The attempt has started (before any provider output).
     AttemptStarted { attempt_id: String },
     /// The attempt has reached a terminal state.
@@ -309,6 +371,110 @@ impl ProviderAttemptRecorder for NoopAttemptRecorder {
     async fn has_started_evidence(&self, _attempt_id: &str) -> bool {
         false
     }
+}
+
+// ─── Spec-named type aliases ─────────────────────────────────────────────────
+
+/// Spec name for [`GraphTaskEvent`] (#247).
+pub type TaskDispatchEvent = GraphTaskEvent;
+
+/// Spec name for [`TaskDispatchOutcomeKind`] (#247).
+pub type TaskDispatchStatus = TaskDispatchOutcomeKind;
+
+/// Spec name for [`AttemptReconciliation`] (#247).
+pub type AttemptReconcileDecision = AttemptReconciliation;
+
+// ─── Typed dispatch request (#247) ──────────────────────────────────────────
+
+/// Maximum byte length for a `Progress` message before truncation.
+pub const PROGRESS_MESSAGE_MAX_BYTES: usize = 4096;
+
+/// Provider-neutral request for a single task dispatch.
+///
+/// Contains everything the host needs to route, execute, and record one
+/// provider attempt. The `TaskExecutorCell` constructs this before calling
+/// `dispatch_request`.
+#[derive(Debug, Clone)]
+pub struct TaskDispatchRequest {
+    /// Plan-scoped task identifier (node ID).
+    pub task_id: String,
+    /// Unique attempt identity (ULID). Generated before dispatch and
+    /// recorded against reconciliation state.
+    pub attempt_id: String,
+    /// Owning plan identifier.
+    pub plan_id: String,
+    /// Run identifier (from `CellContext.run_id`).
+    pub run_id: Option<String>,
+    /// Node identifier within the graph.
+    pub node_id: Option<String>,
+    /// Resolved agent role (e.g. "implementer", "reviewer").
+    pub role: String,
+    /// Resolved effort/complexity tier (e.g. "mechanical", "focused").
+    pub effort: String,
+    /// Resolved provider identifier (from cascade routing).
+    pub provider: Option<String>,
+    /// Resolved model slug (from cascade routing or hint).
+    pub model: Option<String>,
+    /// Input signals from upstream cells.
+    pub input: Vec<Signal>,
+    /// Working directory for the dispatch (lease path).
+    pub workdir: PathBuf,
+    /// Effective capability intersection for this task.
+    pub capabilities: Vec<roko_core::Capability>,
+    /// Unix millisecond deadline for this dispatch.
+    pub deadline_ms: Option<i64>,
+    /// Budget ceiling in micro-USD for this attempt.
+    pub budget_micro_usd: Option<u64>,
+    /// Tool policy override (serialized JSON).
+    pub tool_policy: Option<serde_json::Value>,
+    /// Full task execution spec (backward compat).
+    pub spec: TaskExecutionSpec,
+}
+
+// ─── Provider attempt receipt (#247) ────────────────────────────────────────
+
+/// Durable receipt for a single provider attempt.
+///
+/// Every provider call produces exactly one terminal receipt. The
+/// `attempt_id` matches the pre-recorded identity from the dispatch
+/// request. Receipts are ordered by `started_at_ms` within a task.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderAttemptReceipt {
+    /// Stable attempt identity (ULID).
+    pub attempt_id: String,
+    /// BLAKE3 fingerprint of the dispatch request (for deduplication).
+    pub request_fingerprint: String,
+    /// Provider-assigned request identifier (opaque).
+    pub provider_request_id: Option<String>,
+    /// Unix millisecond timestamp when the attempt started.
+    pub started_at_ms: u64,
+    /// Unix millisecond timestamp when the attempt completed.
+    pub completed_at_ms: u64,
+    /// Terminal status of the attempt.
+    pub status: TaskDispatchOutcomeKind,
+    /// Input tokens consumed (provider-reported).
+    pub input_tokens: u64,
+    /// Output tokens produced (provider-reported).
+    pub output_tokens: u64,
+    /// Actual cost in micro-USD (provider-reported).
+    pub cost_micro_usd: u64,
+    /// Error message, if the attempt failed.
+    pub error: Option<String>,
+}
+
+// ─── Truncation helper ──────────────────────────────────────────────────────
+
+/// Truncate `s` to at most `max_bytes` bytes at a valid UTF-8 char boundary.
+#[must_use]
+pub fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
 
 enum TaskExecutionMode {
@@ -574,5 +740,185 @@ task_def_json = "{}"
             output[0].body.as_text().expect("text"),
             "task-output:dry-run:Implement the feature"
         );
+    }
+
+    // ── #247 typed dispatch request contract ────────────────────────────
+
+    fn test_request() -> TaskDispatchRequest {
+        TaskDispatchRequest {
+            task_id: "T1".to_string(),
+            attempt_id: "01JARH5QVXP4T3K9WNFG8M2D".to_string(),
+            plan_id: "plan-a".to_string(),
+            run_id: Some("run-1".to_string()),
+            node_id: Some("node-1".to_string()),
+            role: "implementer".to_string(),
+            effort: "focused".to_string(),
+            provider: Some("anthropic".to_string()),
+            model: Some("claude-4".to_string()),
+            input: vec![Signal::builder(Kind::AgentOutput)
+                .body(Body::text("upstream"))
+                .build()],
+            workdir: PathBuf::from("/tmp/work"),
+            capabilities: Vec::new(),
+            deadline_ms: Some(1_000_000),
+            budget_micro_usd: Some(500_000),
+            tool_policy: None,
+            spec: TaskExecutionSpec::from_config(&config()),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_request_default_delegates_to_dispatch() {
+        let dispatcher = Arc::new(CapturingDispatcher::default());
+        let request = test_request();
+        let outcome = dispatcher
+            .dispatch_request(&request, &CellContext::new())
+            .await
+            .expect("dispatch_request");
+
+        assert_eq!(outcome.attempt_id, request.attempt_id);
+        assert_eq!(outcome.outcome, TaskDispatchOutcomeKind::Succeeded);
+        assert!(!outcome.output.is_empty());
+    }
+
+    #[tokio::test]
+    async fn dispatch_stream_default_returns_outcome_without_events() {
+        let dispatcher = Arc::new(CapturingDispatcher::default());
+        let request = test_request();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<GraphTaskEvent>(16);
+
+        let outcome = dispatcher
+            .dispatch_stream(&request, &CellContext::new(), tx)
+            .await
+            .expect("dispatch_stream");
+
+        assert_eq!(outcome.outcome, TaskDispatchOutcomeKind::Succeeded);
+        // Default impl sends no events.
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn reconcile_attempt_default_returns_fail_ambiguous() {
+        let dispatcher = Arc::new(CapturingDispatcher::default());
+        let result = dispatcher
+            .reconcile_attempt("attempt-1", "fingerprint-1")
+            .await;
+        assert!(
+            matches!(result, AttemptReconciliation::FailAmbiguous { .. }),
+            "default reconcile must fail ambiguous"
+        );
+    }
+
+    // ── Provider attempt receipt ────────────────────────────────────────
+
+    #[test]
+    fn provider_attempt_receipt_roundtrip() {
+        let receipt = ProviderAttemptReceipt {
+            attempt_id: "01JARH5QVXP4T3K9WNFG8M2D".to_string(),
+            request_fingerprint: "blake3-abc".to_string(),
+            provider_request_id: Some("req-xyz".to_string()),
+            started_at_ms: 1_000_000,
+            completed_at_ms: 1_005_000,
+            status: TaskDispatchOutcomeKind::Succeeded,
+            input_tokens: 1500,
+            output_tokens: 800,
+            cost_micro_usd: 4200,
+            error: None,
+        };
+        let json = serde_json::to_string(&receipt).expect("serialize");
+        let deser: ProviderAttemptReceipt = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(receipt, deser);
+    }
+
+    #[test]
+    fn provider_attempt_receipt_uses_u64_cost() {
+        let receipt = ProviderAttemptReceipt {
+            attempt_id: "a".to_string(),
+            request_fingerprint: "f".to_string(),
+            provider_request_id: None,
+            started_at_ms: 0,
+            completed_at_ms: 1,
+            status: TaskDispatchOutcomeKind::Failed,
+            input_tokens: 0,
+            output_tokens: 0,
+            cost_micro_usd: 1_000_000,
+            error: Some("budget".to_string()),
+        };
+        // Verify cost is integer arithmetic.
+        assert_eq!(receipt.cost_micro_usd, 1_000_000_u64);
+    }
+
+    // ── Progress variant uses completed/total ───────────────────────────
+
+    #[test]
+    fn progress_event_uses_completed_total() {
+        let event = GraphTaskEvent::Progress {
+            message: "step 3 of 5".to_string(),
+            completed: Some(3),
+            total: Some(5),
+        };
+        match event {
+            GraphTaskEvent::Progress {
+                completed, total, ..
+            } => {
+                assert_eq!(completed, Some(3));
+                assert_eq!(total, Some(5));
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn progress_serde_roundtrip() {
+        let event = GraphTaskEvent::Progress {
+            message: "processing".to_string(),
+            completed: None,
+            total: None,
+        };
+        let json = serde_json::to_string(&event).expect("serialize");
+        let deser: GraphTaskEvent = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(event, deser);
+    }
+
+    // ── Type aliases ────────────────────────────────────────────────────
+
+    #[test]
+    fn type_aliases_are_identical() {
+        // Compile-time proof that the aliases resolve correctly.
+        let _event: TaskDispatchEvent = GraphTaskEvent::Text {
+            text: "t".to_string(),
+        };
+        let _status: TaskDispatchStatus = TaskDispatchOutcomeKind::Succeeded;
+        let _decision: AttemptReconcileDecision = AttemptReconciliation::AllocateNew {
+            attempt_id: "a".to_string(),
+        };
+    }
+
+    // ── Truncation helper ───────────────────────────────────────────────
+
+    #[test]
+    fn truncate_utf8_within_limit() {
+        assert_eq!(truncate_utf8("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_utf8_at_exact_boundary() {
+        assert_eq!(truncate_utf8("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_utf8_mid_ascii() {
+        assert_eq!(truncate_utf8("hello world", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_utf8_respects_char_boundary() {
+        // 'é' is 2 bytes in UTF-8.
+        let s = "café";
+        assert_eq!(s.len(), 5); // c=1 a=1 f=1 é=2
+        // Cutting at 4 would split 'é'; should back up to 3.
+        assert_eq!(truncate_utf8(s, 4), "caf");
+        // Cutting at 5 keeps the whole string.
+        assert_eq!(truncate_utf8(s, 5), s);
     }
 }

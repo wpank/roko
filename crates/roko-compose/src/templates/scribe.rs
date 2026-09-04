@@ -290,8 +290,8 @@ mod tests {
 
         // file_context contains both snippets
         let fc = &sections[4].content;
-        assert!(fc.contains("mortality.rs"));
         assert!(fc.contains("lifecycle.rs"));
+        assert!(fc.contains("agent.rs"));
         assert!(fc.contains("compute_rate"));
     }
 

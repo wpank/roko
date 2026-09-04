@@ -222,6 +222,7 @@ fn classify_and_redact(
     }
 
     let result_record = TranscriptRecord {
+        schema_version: record.schema_version,
         meta: record.meta,
         event: redacted_event,
     };
@@ -336,11 +337,14 @@ mod tests {
             provider: "test".into(),
             model: "test-model".into(),
             parent_event_id: None,
+            task_id: None,
+            attempt_id: None,
         }
     }
 
     fn make_record(seq: u64, event: TranscriptEvent) -> TranscriptRecord {
         TranscriptRecord {
+            schema_version: TranscriptRecord::CURRENT_SCHEMA_VERSION,
             meta: make_meta(seq),
             event,
         }

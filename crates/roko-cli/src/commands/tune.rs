@@ -14,64 +14,49 @@ use std::io::IsTerminal;
 ///
 /// This command is deprecated. Users should migrate to `roko config preset`.
 /// The deprecation warning is printed in main.rs dispatch.
+///
+/// Forwards to [`cmd_config_preset`] so that all writes go through the same
+/// validated, resolved, consent-aware path.
 pub(crate) async fn cmd_tune(cli: &Cli, cmd: TuneCmd) -> Result<i32> {
-    let workdir = tune_workdir(cli, &cmd);
-    ensure_project_config(&workdir)?;
+    let preset_cmd = tune_to_preset(cmd);
+    cmd_config_preset(cli, preset_cmd).await
+}
 
-    let (label, edits): (&str, Vec<(&str, String)>) = match cmd {
-        TuneCmd::Routing { .. } => (
-            "routing",
-            vec![
-                ("routing.mode", "auto_override".to_string()),
-                ("routing.algorithm", "linucb".to_string()),
-                ("routing.fast_task_model", "claude-haiku-4-5".to_string()),
-                (
-                    "routing.standard_task_model",
-                    "claude-sonnet-4-6".to_string(),
-                ),
-                ("routing.complex_task_model", "claude-opus-4-6".to_string()),
-                ("routing.context_strategy", "hybrid".to_string()),
-                ("routing.weights.quality", "0.55".to_string()),
-                ("routing.weights.cost", "0.30".to_string()),
-                ("routing.weights.latency", "0.15".to_string()),
-            ],
-        ),
-        TuneCmd::Gates { .. } => (
-            "gates",
-            vec![
-                ("gates.clippy_enabled", "true".to_string()),
-                ("gates.skip_tests", "false".to_string()),
-                ("gates.max_iterations", "2".to_string()),
-            ],
-        ),
-        TuneCmd::Budget { .. } => (
-            "budget",
-            vec![
-                ("budget.max_plan_usd", "10.0".to_string()),
-                ("budget.max_turn_usd", "1.0".to_string()),
-                ("budget.prompt_token_budget", "20000".to_string()),
-            ],
-        ),
-        TuneCmd::Model { name, .. } => {
-            let model = resolve_model_key(&workdir, &name)?;
-            ("model", vec![("agent.default_model", model)])
-        }
-    };
-
-    let pending = edits
-        .iter()
-        .map(|(key, value)| ((*key).to_string(), value.clone()))
-        .collect::<HashMap<_, _>>();
-    roko_cli::tui::config_meta::save_pending_edits(&workdir, &pending)
-        .map_err(anyhow::Error::msg)?;
-
-    let path = workdir.join("roko.toml");
-    println!("tuned {label} in {}", path.display());
-    for (key, value) in edits {
-        println!("  {key} = {value}");
+/// Convert a legacy `TuneCmd` to the canonical `ConfigPresetCmd`.
+///
+/// Uses `--yes` to preserve the legacy non-interactive behavior.
+fn tune_to_preset(cmd: TuneCmd) -> ConfigPresetCmd {
+    match cmd {
+        TuneCmd::Routing { workdir } => ConfigPresetCmd::Routing {
+            workdir,
+            dry_run: false,
+            yes: true,
+            global: false,
+            project: false,
+        },
+        TuneCmd::Gates { workdir } => ConfigPresetCmd::Gates {
+            workdir,
+            dry_run: false,
+            yes: true,
+            global: false,
+            project: false,
+        },
+        TuneCmd::Budget { workdir } => ConfigPresetCmd::Budget {
+            workdir,
+            dry_run: false,
+            yes: true,
+            global: false,
+            project: false,
+        },
+        TuneCmd::Model { name, workdir } => ConfigPresetCmd::Model {
+            name,
+            workdir,
+            dry_run: false,
+            yes: true,
+            global: false,
+            project: false,
+        },
     }
-
-    Ok(EXIT_SUCCESS)
 }
 
 // ── New `roko config preset` command ─────────────────────────────────
@@ -385,16 +370,6 @@ fn build_budget_preset() -> Vec<PresetDiffEntry> {
 
 // ── Shared helpers ──────────────────────────────────────────────────
 
-fn tune_workdir(cli: &Cli, cmd: &TuneCmd) -> PathBuf {
-    match cmd {
-        TuneCmd::Routing { workdir }
-        | TuneCmd::Gates { workdir }
-        | TuneCmd::Budget { workdir }
-        | TuneCmd::Model { workdir, .. } => workdir.clone(),
-    }
-    .unwrap_or_else(|| resolve_workdir(cli))
-}
-
 fn ensure_project_config(workdir: &Path) -> Result<()> {
     let path = workdir.join("roko.toml");
     if path.exists() {
@@ -501,5 +476,87 @@ mod tests {
         assert!(json.contains("\"preset\": \"gates\""));
         assert!(json.contains("\"dry_run\": true"));
         assert!(json.contains("gates.clippy_enabled"));
+    }
+
+    // ── tune_compat: legacy TuneCmd → ConfigPresetCmd forwarding ──
+
+    #[test]
+    fn tune_compat_routing_forwards_to_preset() {
+        let cmd = TuneCmd::Routing { workdir: None };
+        let preset = tune_to_preset(cmd);
+        assert!(
+            matches!(preset, ConfigPresetCmd::Routing { yes: true, dry_run: false, global: false, .. }),
+            "legacy tune routing must forward to config preset routing with --yes"
+        );
+    }
+
+    #[test]
+    fn tune_compat_gates_forwards_to_preset() {
+        let cmd = TuneCmd::Gates { workdir: None };
+        let preset = tune_to_preset(cmd);
+        assert!(
+            matches!(preset, ConfigPresetCmd::Gates { yes: true, dry_run: false, global: false, .. }),
+            "legacy tune gates must forward to config preset gates with --yes"
+        );
+    }
+
+    #[test]
+    fn tune_compat_budget_forwards_to_preset() {
+        let cmd = TuneCmd::Budget {
+            workdir: Some(PathBuf::from("/tmp/proj")),
+        };
+        let preset = tune_to_preset(cmd);
+        assert!(
+            matches!(
+                preset,
+                ConfigPresetCmd::Budget { workdir: Some(ref wd), yes: true, global: false, .. }
+                if wd == std::path::Path::new("/tmp/proj")
+            ),
+            "legacy tune budget must forward workdir and set --yes"
+        );
+    }
+
+    #[test]
+    fn tune_compat_model_forwards_name_and_workdir() {
+        let cmd = TuneCmd::Model {
+            name: "sonnet".into(),
+            workdir: None,
+        };
+        let preset = tune_to_preset(cmd);
+        assert!(
+            matches!(
+                preset,
+                ConfigPresetCmd::Model { ref name, yes: true, dry_run: false, global: false, .. }
+                if name == "sonnet"
+            ),
+            "legacy tune model must forward name and set --yes"
+        );
+    }
+
+    #[test]
+    fn tune_compat_no_hardcoded_model_slugs() {
+        // Verify no hardcoded model slugs appear anywhere in the legacy path.
+        // The legacy cmd_tune now forwards to cmd_config_preset which uses
+        // build_routing_preset (resolves from config) instead of hardcoded values.
+        let source = include_str!("tune.rs");
+        // The only model references should be in build_routing_preset which
+        // reads from config, not in cmd_tune.
+        let cmd_tune_section = source
+            .split("pub(crate) async fn cmd_tune")
+            .nth(1)
+            .and_then(|s| s.split("pub(crate) async fn cmd_config_preset").next())
+            .unwrap_or("");
+        assert!(
+            !cmd_tune_section.contains("claude-haiku"),
+            "cmd_tune must not contain hardcoded claude-haiku slug"
+        );
+        assert!(
+            !cmd_tune_section.contains("claude-sonnet"),
+            "cmd_tune must not contain hardcoded claude-sonnet slug"
+        );
+        assert!(
+            !cmd_tune_section.contains("claude-opus"),
+            "cmd_tune must not contain hardcoded claude-opus slug"
+        );
     }
 }

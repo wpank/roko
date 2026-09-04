@@ -72,6 +72,8 @@ pub mod capabilities;
 pub mod catalyst;
 /// The Cell trait — universal computation unit for all protocol implementations.
 pub mod cell;
+/// Typed cell payload contracts for graph-level inter-cell communication (#250).
+pub mod cell_payloads;
 pub mod cfactor;
 /// Canonical provider-agnostic chat message types.
 pub mod chat_types;
@@ -232,6 +234,7 @@ pub use capabilities::{
 };
 pub use catalyst::{CatalystImpactSummary, CatalystScorer, CatalystSignalSource};
 pub use cell::*;
+pub use cell_payloads::{GateResult, RungResult};
 pub use cfactor::{CFactorPolicy, CFactorSource, CFactorSummary};
 pub use chat_types::{
     ChatMessage, ChatRequest, ChatResponse, ContentBlock, FinishReason, ImageUrl, MessageContent,

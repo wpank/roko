@@ -130,7 +130,9 @@ pub mod auth_detect;
 pub mod bench;
 pub mod bench_demo;
 pub mod bootstrap;
+#[cfg(feature = "chain")]
 pub mod chain_handler;
+#[cfg(feature = "chain")]
 pub mod chain_registry;
 pub mod chat;
 pub mod chat_history;
@@ -161,6 +163,7 @@ pub mod github_ops_impl;
 pub mod graph_checkpoint;
 #[path = "commands/graph.rs"]
 pub(crate) mod graph_command;
+pub mod graph_execution;
 pub mod graph_task_dispatch;
 pub mod hints;
 pub mod index;
@@ -225,9 +228,9 @@ pub mod serve_runtime;
 pub use roko_serve as serve;
 
 pub use config::{
-    AgentConfig, Config, ConfigLayer, ConfigPaths, ConfigSources, DreamsConfig, GateConfig,
-    PromptConfig, PromptFile, RepoEntry, RepoRegistry, ResolvedConfig, ServeAuthLayer, ServeLayer,
-    Source, ToolsConfig, load_resolved_config,
+    AgentConfig, Config, ConfigPaths, ConfigSources, DreamsConfig, GateConfig, PromptConfig,
+    PromptFile, RepoEntry, RepoRegistry, ResolvedConfig, Source,
+    ToolsConfig, load_resolved_config,
 };
 
 pub use config_cmd::{EditTarget, WizardInputs, run_init_wizard};

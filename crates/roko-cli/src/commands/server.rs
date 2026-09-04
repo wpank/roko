@@ -81,6 +81,10 @@ pub(crate) async fn cmd_up(cli: &Cli, workdir: PathBuf) -> Result<i32> {
                 None,
                 prompt,
                 Some(&workdir),
+                Vec::new(),
+                None,
+                0,
+                0,
             )
             .await
             {

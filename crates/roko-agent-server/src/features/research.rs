@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 
-use axum::{Json, Router, extract::State, routing::post};
+use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::post};
 
-use crate::state::{AgentState, ResearchRequest, ResearchResponse};
+use crate::state::{AgentState, ResearchRequest};
 
 /// Research routes.
 pub fn router() -> Router<Arc<AgentState>> {
@@ -14,6 +14,16 @@ pub fn router() -> Router<Arc<AgentState>> {
 async fn research(
     State(state): State<Arc<AgentState>>,
     Json(request): Json<ResearchRequest>,
-) -> Json<ResearchResponse> {
-    Json(state.research(request).await)
+) -> impl IntoResponse {
+    match state.research(request).await {
+        Some(response) => (StatusCode::OK, Json(serde_json::json!(response))).into_response(),
+        None => (
+            StatusCode::NOT_IMPLEMENTED,
+            Json(serde_json::json!({
+                "error": "active research is not supported; use mode=local_knowledge",
+                "supported_modes": ["local_knowledge"],
+            })),
+        )
+            .into_response(),
+    }
 }

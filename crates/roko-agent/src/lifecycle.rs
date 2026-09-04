@@ -121,6 +121,39 @@ pub struct CustomPluginConfig {
     pub params: HashMap<String, String>,
 }
 
+/// Valid agent tier values for creation metadata.
+pub const VALID_TIERS: &[&str] = &["Unverified", "Verified", "Trusted", "Expert", "Pioneer"];
+
+/// Creation metadata persisted alongside the manifest so that `--skills`,
+/// `--tier`, `--reputation`, and `--max-concurrent-jobs` are not lost when
+/// `--serve-url` is absent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentCreationMetadata {
+    /// Skill tags (trimmed, deduplicated, order-preserved).
+    #[serde(default)]
+    pub skills: Vec<String>,
+    /// Agent tier: one of `Unverified|Verified|Trusted|Expert|Pioneer`.
+    #[serde(default)]
+    pub tier: Option<String>,
+    /// Reputation score in `0..=100`.
+    #[serde(default)]
+    pub reputation: u32,
+    /// Maximum concurrent jobs (`0` = unspecified/default capacity).
+    #[serde(default)]
+    pub max_concurrent_jobs: u32,
+}
+
+impl Default for AgentCreationMetadata {
+    fn default() -> Self {
+        Self {
+            skills: Vec::new(),
+            tier: None,
+            reputation: 0,
+            max_concurrent_jobs: 0,
+        }
+    }
+}
+
 /// Full manifest with optional overrides resolved before provisioning.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentExtendedManifest {
@@ -155,6 +188,9 @@ pub struct AgentExtendedManifest {
     pub generation: u32,
     /// Successor exploration settings.
     pub successor: Option<SuccessorConfig>,
+    /// Creation metadata persisted from CLI flags.
+    #[serde(default)]
+    pub creation_metadata: Option<AgentCreationMetadata>,
 }
 
 impl AgentExtendedManifest {
@@ -176,6 +212,7 @@ impl AgentExtendedManifest {
             lineage_id: None,
             generation: 0,
             successor: None,
+            creation_metadata: None,
         }
     }
 }
@@ -989,6 +1026,143 @@ pub enum DrainReason {
     Other(String),
 }
 
+/// Ordered shutdown steps performed during a graceful drain.
+///
+/// Each step must be completed in sequence before the drain can finish.
+/// The caller drives each step; the lifecycle tracks which have completed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShutdownStep {
+    /// Cancel running tasks and stop accepting new work.
+    StopProcessing,
+    /// Complete or cancel queued work items.
+    FlushPending,
+    /// Remove from the agent registry / mesh.
+    DeregisterMesh,
+    /// Close connections and remove temporary files.
+    ReleaseResources,
+}
+
+impl ShutdownStep {
+    /// All steps in their required execution order.
+    pub const ALL: [ShutdownStep; 4] = [
+        ShutdownStep::StopProcessing,
+        ShutdownStep::FlushPending,
+        ShutdownStep::DeregisterMesh,
+        ShutdownStep::ReleaseResources,
+    ];
+
+    /// Return the next step after this one, or `None` if this is the last.
+    #[must_use]
+    pub const fn next(self) -> Option<ShutdownStep> {
+        match self {
+            Self::StopProcessing => Some(Self::FlushPending),
+            Self::FlushPending => Some(Self::DeregisterMesh),
+            Self::DeregisterMesh => Some(Self::ReleaseResources),
+            Self::ReleaseResources => None,
+        }
+    }
+
+    /// Zero-based ordinal for ordering comparisons.
+    const fn ordinal(self) -> u8 {
+        match self {
+            Self::StopProcessing => 0,
+            Self::FlushPending => 1,
+            Self::DeregisterMesh => 2,
+            Self::ReleaseResources => 3,
+        }
+    }
+}
+
+impl std::fmt::Display for ShutdownStep {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::StopProcessing => write!(f, "stop_processing"),
+            Self::FlushPending => write!(f, "flush_pending"),
+            Self::DeregisterMesh => write!(f, "deregister_mesh"),
+            Self::ReleaseResources => write!(f, "release_resources"),
+        }
+    }
+}
+
+/// Tracks completion of the ordered shutdown steps during a drain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShutdownProgress {
+    /// Steps that have been completed, in order.
+    completed: Vec<ShutdownStep>,
+}
+
+impl ShutdownProgress {
+    /// Create empty progress (no steps completed).
+    fn new() -> Self {
+        Self {
+            completed: Vec::with_capacity(4),
+        }
+    }
+
+    /// The next step that must be completed, or `None` if all are done.
+    #[must_use]
+    pub fn next_step(&self) -> Option<ShutdownStep> {
+        match self.completed.last() {
+            None => Some(ShutdownStep::StopProcessing),
+            Some(last) => last.next(),
+        }
+    }
+
+    /// Mark a step as completed. Returns `Err` if the step is out of order
+    /// or already completed.
+    pub fn complete_step(&mut self, step: ShutdownStep) -> Result<(), ShutdownStepError> {
+        if self.completed.contains(&step) {
+            return Err(ShutdownStepError::AlreadyCompleted(step));
+        }
+        match self.next_step() {
+            Some(expected) if expected == step => {
+                self.completed.push(step);
+                Ok(())
+            }
+            Some(expected) => Err(ShutdownStepError::OutOfOrder {
+                attempted: step,
+                expected,
+            }),
+            None => Err(ShutdownStepError::AlreadyCompleted(step)),
+        }
+    }
+
+    /// Whether all four steps have been completed.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.completed.len() == ShutdownStep::ALL.len()
+    }
+
+    /// Steps completed so far.
+    #[must_use]
+    pub fn completed_steps(&self) -> &[ShutdownStep] {
+        &self.completed
+    }
+}
+
+/// Errors from invalid shutdown step transitions.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum ShutdownStepError {
+    /// Step was already completed.
+    #[error("shutdown step `{0}` already completed")]
+    AlreadyCompleted(ShutdownStep),
+    /// Steps must be completed in order.
+    #[error("shutdown step `{attempted}` is out of order; expected `{expected}`")]
+    OutOfOrder {
+        /// The step that was attempted.
+        attempted: ShutdownStep,
+        /// The step that should be completed next.
+        expected: ShutdownStep,
+    },
+    /// All steps already done; drain is ready to complete.
+    #[error("all shutdown steps already completed")]
+    AllCompleted,
+    /// Cannot complete drain because shutdown steps remain.
+    #[error("cannot complete drain: step `{0}` not yet completed")]
+    IncompleteStep(ShutdownStep),
+}
+
 /// Why an agent reached its terminal state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
@@ -1158,13 +1332,14 @@ impl Running {
         self.tick_count
     }
 
-    /// Begin an orderly drain.
+    /// Begin an orderly drain with tracked shutdown steps.
     #[must_use]
     pub fn drain(self, reason: DrainReason) -> Draining {
         Draining {
             manifest: self.manifest,
             reason,
             drain_started: Instant::now(),
+            progress: ShutdownProgress::new(),
         }
     }
 
@@ -1180,6 +1355,14 @@ impl Running {
 }
 
 /// Runtime state performing caller-owned graceful shutdown work.
+///
+/// The drain proceeds through four ordered [`ShutdownStep`]s:
+/// 1. `StopProcessing` — cancel running tasks
+/// 2. `FlushPending` — complete or cancel queued work
+/// 3. `DeregisterMesh` — remove from agent registry
+/// 4. `ReleaseResources` — close connections, remove temp files
+///
+/// [`complete_drain`](Draining::complete_drain) requires all steps done.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Draining {
     /// Immutable creation manifest.
@@ -1188,12 +1371,60 @@ pub struct Draining {
     pub reason: DrainReason,
     /// Monotonic instant the drain began.
     pub drain_started: Instant,
+    /// Tracks which shutdown steps have been completed.
+    progress: ShutdownProgress,
 }
 
 impl Draining {
-    /// Complete the drain with an optional durable backup reference.
+    /// The next shutdown step that must be completed.
     #[must_use]
-    pub fn complete_drain(self, backup: Option<BackupHandle>) -> Terminated {
+    pub fn next_step(&self) -> Option<ShutdownStep> {
+        self.progress.next_step()
+    }
+
+    /// Mark a shutdown step as completed.
+    ///
+    /// Steps must be completed in order: `StopProcessing` -> `FlushPending`
+    /// -> `DeregisterMesh` -> `ReleaseResources`.
+    pub fn complete_step(&mut self, step: ShutdownStep) -> Result<(), ShutdownStepError> {
+        self.progress.complete_step(step)
+    }
+
+    /// Whether all four shutdown steps have been completed.
+    #[must_use]
+    pub fn is_ready_to_complete(&self) -> bool {
+        self.progress.is_complete()
+    }
+
+    /// Steps completed so far.
+    #[must_use]
+    pub fn completed_steps(&self) -> &[ShutdownStep] {
+        self.progress.completed_steps()
+    }
+
+    /// Complete the drain with an optional durable backup reference.
+    ///
+    /// Returns `Err` if any shutdown steps remain incomplete.
+    pub fn complete_drain(
+        self,
+        backup: Option<BackupHandle>,
+    ) -> Result<Terminated, (Self, ShutdownStepError)> {
+        if let Some(next) = self.progress.next_step() {
+            return Err((self, ShutdownStepError::IncompleteStep(next)));
+        }
+        Ok(Terminated {
+            manifest: self.manifest,
+            reason: TerminationReason::DrainCompleted(self.reason),
+            backup,
+        })
+    }
+
+    /// Force-complete the drain, skipping any remaining steps.
+    ///
+    /// Use only for emergency paths where the caller cannot perform
+    /// the remaining shutdown work.
+    #[must_use]
+    pub fn force_complete_drain(self, backup: Option<BackupHandle>) -> Terminated {
         Terminated {
             manifest: self.manifest,
             reason: TerminationReason::DrainCompleted(self.reason),
@@ -3207,9 +3438,13 @@ mod tests {
 
         assert_eq!(running.record_completed_tick(), 1);
         assert_eq!(running.record_completed_tick(), 2);
-        let terminated = running
-            .drain(DrainReason::OperatorRequest)
-            .complete_drain(Some(BackupHandle::new("backup-42").expect("handle")));
+        let mut draining = running.drain(DrainReason::OperatorRequest);
+        for step in ShutdownStep::ALL {
+            draining.complete_step(step).expect("step should succeed");
+        }
+        let terminated = draining
+            .complete_drain(Some(BackupHandle::new("backup-42").expect("handle")))
+            .expect("all steps complete");
         assert_eq!(
             terminated.reason,
             TerminationReason::DrainCompleted(DrainReason::OperatorRequest)
@@ -3310,5 +3545,138 @@ mod tests {
         );
         assert_eq!(mode.current(), AgentMode::Persistent);
         assert_eq!(mode.revision(), 1);
+    }
+
+    // ─── Shutdown step tests ────────────────────────────────────────────
+
+    fn make_draining() -> Draining {
+        let manifest = AgentCoreManifest::new("Agent with shutdown steps");
+        let running = Initializing::new(manifest)
+            .validate(vec!["search".into()])
+            .expect("valid")
+            .bootstrap_complete()
+            .start();
+        running.drain(DrainReason::OperatorRequest)
+    }
+
+    #[test]
+    fn shutdown_steps_must_complete_in_order() {
+        let mut d = make_draining();
+        assert_eq!(d.next_step(), Some(ShutdownStep::StopProcessing));
+        assert!(!d.is_ready_to_complete());
+
+        // Completing in order works.
+        d.complete_step(ShutdownStep::StopProcessing).unwrap();
+        assert_eq!(d.next_step(), Some(ShutdownStep::FlushPending));
+
+        d.complete_step(ShutdownStep::FlushPending).unwrap();
+        assert_eq!(d.next_step(), Some(ShutdownStep::DeregisterMesh));
+
+        d.complete_step(ShutdownStep::DeregisterMesh).unwrap();
+        assert_eq!(d.next_step(), Some(ShutdownStep::ReleaseResources));
+
+        d.complete_step(ShutdownStep::ReleaseResources).unwrap();
+        assert_eq!(d.next_step(), None);
+        assert!(d.is_ready_to_complete());
+    }
+
+    #[test]
+    fn shutdown_out_of_order_rejected() {
+        let mut d = make_draining();
+        let err = d
+            .complete_step(ShutdownStep::FlushPending)
+            .expect_err("out of order");
+        assert_eq!(
+            err,
+            ShutdownStepError::OutOfOrder {
+                attempted: ShutdownStep::FlushPending,
+                expected: ShutdownStep::StopProcessing,
+            }
+        );
+    }
+
+    #[test]
+    fn shutdown_duplicate_step_rejected() {
+        let mut d = make_draining();
+        d.complete_step(ShutdownStep::StopProcessing).unwrap();
+        let err = d
+            .complete_step(ShutdownStep::StopProcessing)
+            .expect_err("duplicate");
+        assert_eq!(
+            err,
+            ShutdownStepError::AlreadyCompleted(ShutdownStep::StopProcessing)
+        );
+    }
+
+    #[test]
+    fn complete_drain_fails_without_all_steps() {
+        let d = make_draining();
+        let (returned, err) = d.complete_drain(None).expect_err("incomplete");
+        assert_eq!(
+            err,
+            ShutdownStepError::IncompleteStep(ShutdownStep::StopProcessing)
+        );
+        // The Draining state is returned so the caller can continue.
+        assert_eq!(returned.reason, DrainReason::OperatorRequest);
+    }
+
+    #[test]
+    fn complete_drain_succeeds_after_all_steps() {
+        let mut d = make_draining();
+        for step in ShutdownStep::ALL {
+            d.complete_step(step).unwrap();
+        }
+        let terminated = d.complete_drain(None).expect("all steps done");
+        assert_eq!(
+            terminated.reason,
+            TerminationReason::DrainCompleted(DrainReason::OperatorRequest)
+        );
+        assert!(terminated.backup.is_none());
+    }
+
+    #[test]
+    fn force_complete_drain_skips_steps() {
+        let d = make_draining();
+        assert!(!d.is_ready_to_complete());
+        let terminated = d.force_complete_drain(None);
+        assert_eq!(
+            terminated.reason,
+            TerminationReason::DrainCompleted(DrainReason::OperatorRequest)
+        );
+    }
+
+    #[test]
+    fn shutdown_step_next_and_ordinal_are_consistent() {
+        let mut step = Some(ShutdownStep::StopProcessing);
+        let mut count = 0;
+        while let Some(s) = step {
+            assert_eq!(s.ordinal() as usize, count);
+            step = s.next();
+            count += 1;
+        }
+        assert_eq!(count, ShutdownStep::ALL.len());
+    }
+
+    #[test]
+    fn completed_steps_tracks_progress() {
+        let mut d = make_draining();
+        assert!(d.completed_steps().is_empty());
+        d.complete_step(ShutdownStep::StopProcessing).unwrap();
+        d.complete_step(ShutdownStep::FlushPending).unwrap();
+        assert_eq!(
+            d.completed_steps(),
+            &[ShutdownStep::StopProcessing, ShutdownStep::FlushPending]
+        );
+    }
+
+    #[test]
+    fn shutdown_step_display() {
+        assert_eq!(ShutdownStep::StopProcessing.to_string(), "stop_processing");
+        assert_eq!(ShutdownStep::FlushPending.to_string(), "flush_pending");
+        assert_eq!(ShutdownStep::DeregisterMesh.to_string(), "deregister_mesh");
+        assert_eq!(
+            ShutdownStep::ReleaseResources.to_string(),
+            "release_resources"
+        );
     }
 }

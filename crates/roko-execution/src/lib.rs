@@ -47,8 +47,8 @@ pub mod workflow;
 // ---- Builder-level re-exports ------------------------------------------------
 
 pub use builder::{
-    BuilderError, DispatchBundle, ExecutionOverrides, ExtensionsBundle, FeedbackBundle,
-    GuardsBundle, ObservationBundle, PromptBundle, RuntimeServices, RuntimeServicesBuilder,
+    BuilderError, FeedbackBundle, PromptBundle, RuntimeServices, RuntimeServicesSummary,
+    RuntimeServicesBuilder,
 };
 pub use lifecycle::RunnerLifecycleEvent;
 pub use profiles::{ProfileBundleManifest, RuntimeProfile, profile_bundle_manifest};
@@ -73,13 +73,14 @@ pub use workflow::{
     build_report, idempotency_key, parse_review, resolve_template,
 };
 
-// ---- Detailed service bundle re-exports --------------------------------------
+// ---- Module-level bundle re-exports ------------------------------------------
 
 pub use dispatch::factory::DispatchFactory;
 pub use dispatch::model_resolver::ModelResolverHandle;
 pub use dispatch::request::DispatchRequest;
-pub use guards::CostLedger;
-pub use observation::ObservationPublisher;
+pub use extensions::ExtensionsBundle;
+pub use guards::{CostLedger, GuardsBundle};
+pub use observation::{ObservationBundle, ObservationPublisher};
 pub use overrides::ExecutionOverrides as DetailedExecutionOverrides;
 pub use prompt::builder::PromptBuildHandle;
 pub use prompt::cache::PromptCacheHandle;

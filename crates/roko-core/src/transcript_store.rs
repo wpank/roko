@@ -668,11 +668,14 @@ mod tests {
             provider: "test".into(),
             model: "test-model".into(),
             parent_event_id: None,
+            task_id: None,
+            attempt_id: None,
         }
     }
 
     fn delta_record(run_id: &str, agent_id: &str, seq: u64, text: &str) -> TranscriptRecord {
         TranscriptRecord {
+            schema_version: TranscriptRecord::CURRENT_SCHEMA_VERSION,
             meta: make_meta(run_id, agent_id, seq),
             event: TranscriptEvent::AssistantDelta { text: text.into() },
         }
@@ -680,6 +683,7 @@ mod tests {
 
     fn control_record(run_id: &str, agent_id: &str, seq: u64) -> TranscriptRecord {
         TranscriptRecord {
+            schema_version: TranscriptRecord::CURRENT_SCHEMA_VERSION,
             meta: make_meta(run_id, agent_id, seq),
             event: TranscriptEvent::RunFinished {
                 success: true,
@@ -692,6 +696,7 @@ mod tests {
 
     fn error_record(run_id: &str, agent_id: &str, seq: u64) -> TranscriptRecord {
         TranscriptRecord {
+            schema_version: TranscriptRecord::CURRENT_SCHEMA_VERSION,
             meta: make_meta(run_id, agent_id, seq),
             event: TranscriptEvent::Error {
                 code: "TEST".into(),
@@ -1022,6 +1027,7 @@ mod tests {
     #[test]
     fn secret_canary_no_raw_api_keys() {
         let record = TranscriptRecord {
+            schema_version: TranscriptRecord::CURRENT_SCHEMA_VERSION,
             meta: make_meta("r", "a", 1),
             event: TranscriptEvent::AssistantDelta {
                 text: "sk-ant-api-fake-key-12345".into(),
@@ -1043,6 +1049,7 @@ mod tests {
         let store = TranscriptStore::new(100);
 
         let started = TranscriptRecord {
+            schema_version: TranscriptRecord::CURRENT_SCHEMA_VERSION,
             meta: make_meta("r", "a", 1),
             event: TranscriptEvent::ToolStarted {
                 call: ToolCall::at("call-42", "read_file", serde_json::json!({}), 0),
@@ -1051,6 +1058,7 @@ mod tests {
             },
         };
         let output = TranscriptRecord {
+            schema_version: TranscriptRecord::CURRENT_SCHEMA_VERSION,
             meta: make_meta("r", "a", 2),
             event: TranscriptEvent::ToolOutputDelta {
                 call_id: "call-42".into(),
@@ -1058,6 +1066,7 @@ mod tests {
             },
         };
         let unrelated = TranscriptRecord {
+            schema_version: TranscriptRecord::CURRENT_SCHEMA_VERSION,
             meta: make_meta("r", "a", 3),
             event: TranscriptEvent::ToolOutputDelta {
                 call_id: "call-99".into(),

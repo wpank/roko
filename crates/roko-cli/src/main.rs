@@ -54,8 +54,8 @@ use roko_agent::process::{cleanup_orphaned_agents, reap_orphaned_children};
 use roko_agent::translate::BackendResponse;
 use roko_cli::agent_spawn::{SpawnAgentSpec, spawn_agent_scoped};
 use roko_cli::resolved_overrides::{
-    ConfigEditTarget, ConfigSetInput, DoInput, GlobalCliFlags, LearnTuneInput, PlanRunInput,
-    ResolvedExecutionOverrides,
+    ConfigEditTarget, ConfigSetInput, DevelopInput, DoInput, GlobalCliFlags, LearnTuneInput,
+    PlanRunInput, ResolvedExecutionOverrides,
 };
 use roko_cli::serve_runtime::RokoCliRuntime;
 use roko_cli::tui::App;
@@ -1025,8 +1025,8 @@ Examples:
         #[arg(long, hide = true, conflicts_with = "from_event")]
         as_of: Option<String>,
         /// Output format: tree (default) or json.
-        #[arg(long, default_value = "tree")]
-        format: String,
+        #[arg(long)]
+        format: Option<String>,
     },
     /// List or show past chat session summaries.
     #[command(after_help = "\
@@ -1079,6 +1079,32 @@ Examples:
         /// Disclosure depth: 1 = summary, 2 = how it works, 3 = internals.
         #[arg(long, default_value_t = 1)]
         depth: u8,
+    },
+    /// Analyze which crates are affected by the current changes.
+    ///
+    /// Uses git diff and cargo metadata to determine impacted crates and
+    /// their reverse dependents. Outputs a list suitable for targeted
+    /// `cargo test -p <crate>` invocations.
+    #[command(after_help = "\
+Examples:
+  roko impact                          Show affected crates from uncommitted changes
+  roko impact --json                   Machine-readable JSON output
+  roko impact --base main              Compare against main branch
+  roko impact --files crates/roko-core/src/lib.rs crates/roko-gate/src/lib.rs
+                                       Analyze specific files instead of git diff")]
+    Impact {
+        /// Git ref to diff against (default: HEAD).
+        #[arg(long, default_value = "HEAD")]
+        base: String,
+        /// Explicit file list instead of detecting from git diff.
+        #[arg(long, num_args = 1..)]
+        files: Vec<String>,
+        /// Output as JSON for scripting.
+        #[arg(long)]
+        json: bool,
+        /// Working directory (default: cwd or --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
     },
 
     // ── Hidden: dynamic completion endpoint ───────────────────────────
@@ -2403,7 +2429,6 @@ enum JobCmd {
 // Internal enum used by cmd_neuro — mirrors the old top-level NeuroCmd.
 // KnowledgeCmd dispatches to this.
 #[derive(Debug)]
-#[allow(dead_code)]
 enum NeuroCmd {
     Query {
         topic: Vec<String>,
@@ -2461,7 +2486,6 @@ enum NeuroCmd {
 
 // Internal enum used by cmd_dream — mirrors the old top-level DreamCmd.
 #[derive(Debug)]
-#[allow(dead_code)]
 enum DreamCmdLegacy {
     Run {
         workdir: Option<PathBuf>,
@@ -3504,6 +3528,17 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             provider,
             prompt,
         } => {
+            // Resolve typed overrides before any side effects (#262).
+            let _resolved = ResolvedExecutionOverrides::for_develop(
+                &global_cli_flags(cli),
+                &DevelopInput {
+                    dry_run,
+                    yes,
+                    provider: provider.clone(),
+                },
+            );
+            tracing::debug!(?_resolved, "resolved execution overrides for `develop`");
+
             commands::develop::cmd_develop(cli, workdir, prompt, dry_run, yes, r#continue, provider)
                 .await
         }
@@ -3560,7 +3595,22 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
         Command::Agent { cmd } => commands::agent::cmd_agent(cli, cmd).await,
         Command::Research { cmd } => {
             let wd = resolve_workdir(cli);
-            let result = commands::research::cmd_research(cli, cmd).await;
+            // Resolve typed overrides before any side effects (#306).
+            let research_input = match &cmd {
+                ResearchCmd::Topic { deep, backend, .. } => {
+                    roko_cli::resolved_overrides::ResearchInput {
+                        backend: Some(backend.to_string()),
+                        deep: *deep,
+                    }
+                }
+                _ => roko_cli::resolved_overrides::ResearchInput::default(),
+            };
+            let resolved = ResolvedExecutionOverrides::for_research(
+                &global_cli_flags(cli),
+                &research_input,
+            );
+            tracing::debug!(?resolved, "resolved execution overrides for `research`");
+            let result = commands::research::cmd_research(cli, cmd, &resolved).await;
             finish_with_index_rebuild(result, &wd, true)
         }
         Command::Think { question, workdir } => {
@@ -4004,6 +4054,12 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
                 Ok(EXIT_FAILURE)
             }
         }
+        Command::Impact {
+            base,
+            files,
+            json,
+            workdir,
+        } => cmd_impact(cli, &base, &files, json, workdir).await,
         Command::Login {
             url,
             api_key,
@@ -4056,7 +4112,7 @@ fn resolve_workdir(cli: &Cli) -> PathBuf {
 /// This borrows from the parsed `Cli` struct to avoid requiring downstream
 /// callers to depend on the full clap type. Used by
 /// [`ResolvedExecutionOverrides`] constructors.
-fn global_cli_flags(cli: &Cli) -> GlobalCliFlags<'_> {
+pub(crate) fn global_cli_flags(cli: &Cli) -> GlobalCliFlags<'_> {
     GlobalCliFlags {
         model: cli.model.as_deref(),
         role: cli.role.as_deref(),
@@ -4754,6 +4810,118 @@ pub fn resolve_mcp_config_with_autodiscovery(workdir: &Path, roko_dir: &Path) ->
     } else {
         base_path
     }
+}
+
+// -----------------------------------------------------------------------
+// Impact analysis
+// -----------------------------------------------------------------------
+
+async fn cmd_impact(
+    cli: &Cli,
+    base: &str,
+    files: &[String],
+    json: bool,
+    workdir: Option<PathBuf>,
+) -> Result<i32> {
+    use roko_cli::runner::impact_analysis;
+    use roko_core::config::GatesConfig;
+
+    let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+    let config = GatesConfig::default();
+    let report = impact_analysis::analyze_against(&wd, base, files, &config).await;
+
+    if json {
+        let affected_packages = {
+            let mut all: std::collections::BTreeSet<String> = report.producer_packages.iter().cloned().collect();
+            all.extend(report.reverse_dependents.iter().cloned());
+            all.into_iter().collect::<Vec<_>>()
+        };
+        let targets: Vec<_> = report.targets.iter().map(|t| t.check_command()).collect();
+        let output = serde_json::json!({
+            "changed_files": report.changed_files,
+            "producer_packages": report.producer_packages,
+            "reverse_dependents": report.reverse_dependents,
+            "affected_packages": affected_packages,
+            "high_impact": report.high_impact,
+            "high_impact_reasons": report.high_impact_reasons,
+            "confidence": report.confidence.to_string(),
+            "analysis_ms": report.analysis_ms,
+            "fallback_reason": report.fallback_reason,
+            "targets": targets,
+        });
+        println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
+    } else {
+        if let Some(reason) = &report.fallback_reason {
+            println!("Fallback to full verification: {reason}");
+            println!();
+        }
+
+        if report.changed_files.is_empty() {
+            println!("No changes detected.");
+            return Ok(EXIT_SUCCESS);
+        }
+
+        println!("Changed files ({}):", report.changed_files.len());
+        for file in &report.changed_files {
+            println!("  {file}");
+        }
+        println!();
+
+        if !report.producer_packages.is_empty() {
+            println!("Producer crates ({}):", report.producer_packages.len());
+            for pkg in &report.producer_packages {
+                println!("  {pkg}");
+            }
+            println!();
+        }
+
+        if !report.reverse_dependents.is_empty() {
+            println!("Reverse dependents ({}):", report.reverse_dependents.len());
+            for pkg in &report.reverse_dependents {
+                println!("  {pkg}");
+            }
+            println!();
+        }
+
+        // Combined affected set for cargo test -p
+        let mut affected: std::collections::BTreeSet<String> =
+            report.producer_packages.iter().cloned().collect();
+        affected.extend(report.reverse_dependents.iter().cloned());
+        if !affected.is_empty() {
+            println!("All affected crates ({}):", affected.len());
+            for pkg in &affected {
+                println!("  {pkg}");
+            }
+            println!();
+            // Print a ready-to-use cargo test command
+            let pkg_args: Vec<String> = affected.iter().flat_map(|p| vec!["-p".to_string(), p.clone()]).collect();
+            println!("cargo test {}", pkg_args.join(" "));
+        }
+
+        if report.high_impact {
+            println!();
+            println!("HIGH IMPACT:");
+            for reason in &report.high_impact_reasons {
+                println!("  - {reason}");
+            }
+        }
+
+        if !report.targets.is_empty() {
+            println!();
+            println!("Focused check commands ({}):", report.targets.len());
+            for cmd in report.focused_commands() {
+                println!("  {cmd}");
+            }
+        }
+
+        println!();
+        println!(
+            "Confidence: {} | Analysis: {}ms",
+            report.confidence, report.analysis_ms
+        );
+    }
+
+    Ok(EXIT_SUCCESS)
 }
 
 // -----------------------------------------------------------------------
@@ -6093,6 +6261,38 @@ mod tests {
         let cli = Cli::try_parse_from(["roko", "--json", "replay", "abcd1234"]).unwrap();
         assert!(cli.json);
         assert!(matches!(cli.command, Some(Command::Replay { .. })));
+    }
+
+    #[test]
+    fn cli_parses_replay_global_repo() {
+        let cli =
+            Cli::try_parse_from(["roko", "--repo", "/tmp/proj", "replay", "abcd1234"]).unwrap();
+        assert_eq!(cli.repo, Some(PathBuf::from("/tmp/proj")));
+        assert!(matches!(cli.command, Some(Command::Replay { .. })));
+    }
+
+    #[test]
+    fn cli_replay_workdir_overrides_repo() {
+        let cli = Cli::try_parse_from([
+            "roko",
+            "--repo",
+            "/tmp/global",
+            "replay",
+            "abcd1234",
+            "--workdir",
+            "/tmp/local",
+        ])
+        .unwrap();
+        // Global --repo is /tmp/global, but --workdir is /tmp/local.
+        // cmd_replay uses workdir.unwrap_or_else(resolve_workdir), so
+        // --workdir takes precedence.
+        assert_eq!(cli.repo, Some(PathBuf::from("/tmp/global")));
+        match cli.command {
+            Some(Command::Replay { workdir, .. }) => {
+                assert_eq!(workdir, Some(PathBuf::from("/tmp/local")));
+            }
+            other => panic!("expected Replay, got {other:?}"),
+        }
     }
 
     #[test]
@@ -7924,9 +8124,10 @@ mod tests {
     // ── #262: CLI flag resolution contract tests ────────────────────
 
     use roko_cli::resolved_overrides::{
-        CascadePolicy, ConfigEditTarget, ConfigSetInput, DryRunPolicy, GlobalCliFlags,
-        InteractionMode, LearnTuneInput, PlanRunInput, PresentationMode, ReplanPolicy,
-        ResolvedExecutionOverrides, ServePolicy, ValidationPolicy,
+        ApprovalPolicy, BudgetPolicy, CascadePolicy, ConfigEditTarget, ConfigSetInput,
+        DevelopInput, DryRunPolicy, GlobalCliFlags, InteractionMode, LearnTuneInput, PlanRunInput,
+        PresentationMode, ReplanPolicy, ResolvedExecutionOverrides, ServePolicy,
+        ValidationPolicy,
     };
 
     #[test]
@@ -8100,5 +8301,224 @@ mod tests {
         assert!(flags.skip_validate);
         assert!(flags.headless);
         assert!(flags.no_serve);
+    }
+
+    #[test]
+    fn cli_flags_develop_resolves_dry_run() {
+        let cli = Cli::try_parse_from(["roko", "status"]).unwrap();
+        let flags = global_cli_flags(&cli);
+        let input = DevelopInput {
+            dry_run: true,
+            ..DevelopInput::default()
+        };
+        let overrides = ResolvedExecutionOverrides::for_develop(&flags, &input);
+        assert_eq!(overrides.dry_run, DryRunPolicy::ReadOnlyNoMutation);
+    }
+
+    #[test]
+    fn cli_flags_develop_resolves_yes() {
+        let cli = Cli::try_parse_from(["roko", "status"]).unwrap();
+        let flags = global_cli_flags(&cli);
+        let input = DevelopInput {
+            yes: true,
+            ..DevelopInput::default()
+        };
+        let overrides = ResolvedExecutionOverrides::for_develop(&flags, &input);
+        assert_eq!(overrides.approval, ApprovalPolicy::AutoApprove);
+    }
+
+    #[test]
+    fn cli_flags_plan_run_budget_override() {
+        let cli = Cli::try_parse_from(["roko", "status"]).unwrap();
+        let flags = global_cli_flags(&cli);
+        let plan = PlanRunInput {
+            budget_override: Some(50.0),
+            ..PlanRunInput::default()
+        };
+        let overrides = ResolvedExecutionOverrides::for_plan_run(&flags, &plan);
+        assert_eq!(overrides.budget, BudgetPolicy::Override(50.0));
+    }
+
+    #[test]
+    fn cli_flags_plan_run_no_budget() {
+        let cli = Cli::try_parse_from(["roko", "status"]).unwrap();
+        let flags = global_cli_flags(&cli);
+        let plan = PlanRunInput {
+            no_budget: true,
+            ..PlanRunInput::default()
+        };
+        let overrides = ResolvedExecutionOverrides::for_plan_run(&flags, &plan);
+        assert_eq!(overrides.budget, BudgetPolicy::Disabled);
+    }
+
+    #[test]
+    fn cli_flags_plan_run_fresh_and_force_resume() {
+        let cli = Cli::try_parse_from(["roko", "status"]).unwrap();
+        let flags = global_cli_flags(&cli);
+        let plan = PlanRunInput {
+            fresh: true,
+            force_resume: true,
+            ..PlanRunInput::default()
+        };
+        let overrides = ResolvedExecutionOverrides::for_plan_run(&flags, &plan);
+        assert!(overrides.fresh);
+        assert!(overrides.force_resume);
+    }
+
+    // ── #326: error_hint accuracy tests ────────────────────────────
+
+    #[test]
+    fn error_hint_state_recovery_required() {
+        let hint = error_hint("state recovery required: snapshot corrupt");
+        assert!(hint.is_some());
+        assert!(hint.unwrap().contains("--fresh"));
+    }
+
+    #[test]
+    fn error_hint_state_snapshot_corrupt() {
+        let hint = error_hint("state snapshot corrupt; trying backup");
+        assert!(hint.is_some());
+        assert!(hint.unwrap().contains("--fresh"));
+    }
+
+    #[test]
+    fn error_hint_authoritative_with_state_recovery() {
+        // The word "authoritative" inside a StateRecoveryRequired message
+        // must get the state recovery hint, not the API key hint.
+        let hint = error_hint(
+            "state recovery required: the snapshot at /tmp/state-snapshot.json is corrupt \
+             (validate authoritative snapshot failed)",
+        );
+        assert!(hint.is_some());
+        let h = hint.unwrap();
+        assert!(
+            !h.contains("API key"),
+            "authoritative must not trigger API key hint, got: {h}"
+        );
+        assert!(h.contains("--fresh"), "should recommend --fresh, got: {h}");
+    }
+
+    #[test]
+    fn error_hint_authoritative_alone_no_api_key() {
+        // "authoritative" alone must not produce an API key hint.
+        let hint = error_hint(
+            "resume validation failed: validate authoritative snapshot /tmp/state-snapshot.json",
+        );
+        assert!(
+            hint.is_none() || !hint.unwrap().contains("API key"),
+            "authoritative alone must not trigger API key hint"
+        );
+    }
+
+    #[test]
+    fn error_hint_401_triggers_api_key() {
+        let hint = error_hint("HTTP 401: unauthorized");
+        assert!(hint.is_some());
+        assert!(hint.unwrap().contains("API key"));
+    }
+
+    #[test]
+    fn error_hint_unauthorized_triggers_api_key() {
+        let hint = error_hint("request failed: unauthorized");
+        assert!(hint.is_some());
+        assert!(hint.unwrap().contains("API key"));
+    }
+
+    #[test]
+    fn error_hint_invalid_api_key_triggers() {
+        let hint = error_hint("invalid_api_key");
+        assert!(hint.is_some());
+        assert!(hint.unwrap().contains("API key"));
+    }
+
+    #[test]
+    fn error_hint_authentication_failed_triggers() {
+        let hint = error_hint("authentication failed for provider");
+        assert!(hint.is_some());
+        assert!(hint.unwrap().contains("API key"));
+    }
+
+    #[test]
+    fn error_hint_authorization_policy_no_api_key() {
+        let hint = error_hint("authorization policy denied tool execution");
+        assert!(
+            hint.is_none() || !hint.unwrap().contains("API key"),
+            "authorization policy must not trigger API key hint"
+        );
+    }
+
+    #[test]
+    fn error_hint_unrelated_returns_none() {
+        assert!(error_hint("something completely unrelated went wrong").is_none());
+    }
+
+    // ─── Impact CLI parsing ─────────────────────────────────────────────
+
+    #[test]
+    fn cli_parses_impact_defaults() {
+        let cli = Cli::try_parse_from(["roko", "impact"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Impact {
+                ref base,
+                ref files,
+                json: false,
+                workdir: None,
+            }) if base == "HEAD" && files.is_empty()
+        ));
+    }
+
+    #[test]
+    fn cli_parses_impact_with_base() {
+        let cli = Cli::try_parse_from(["roko", "impact", "--base", "main"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Impact {
+                ref base,
+                ..
+            }) if base == "main"
+        ));
+    }
+
+    #[test]
+    fn cli_parses_impact_with_json_flag() {
+        let cli = Cli::try_parse_from(["roko", "impact", "--json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Impact { json: true, .. })
+        ));
+    }
+
+    #[test]
+    fn cli_parses_impact_with_explicit_files() {
+        let cli = Cli::try_parse_from([
+            "roko",
+            "impact",
+            "--files",
+            "crates/roko-core/src/lib.rs",
+            "crates/roko-gate/src/lib.rs",
+        ])
+        .unwrap();
+        match &cli.command {
+            Some(Command::Impact { files, .. }) => {
+                assert_eq!(files.len(), 2);
+                assert_eq!(files[0], "crates/roko-core/src/lib.rs");
+                assert_eq!(files[1], "crates/roko-gate/src/lib.rs");
+            }
+            other => panic!("expected Impact, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_impact_with_workdir() {
+        let cli =
+            Cli::try_parse_from(["roko", "impact", "--workdir", "/some/path"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Impact {
+                workdir: Some(ref p),
+                ..
+            }) if p == Path::new("/some/path")
+        ));
     }
 }

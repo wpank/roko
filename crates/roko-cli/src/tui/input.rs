@@ -855,7 +855,7 @@ fn handle_global_key(key: KeyEvent, active_tab: Tab) -> Option<TuiAction> {
         return Some(TuiAction::SwitchTab(tab));
     }
 
-    // Number keys 1-9 switch top-level tabs (same as F1-F9), but only when
+    // Number keys 1-9 switch top-level tabs (same as F1-F10), but only when
     // the active tab does NOT use number keys for its own purpose (e.g.
     // Agents uses 1-7 for agent sub-tabs, Logs uses 1-4 for filter levels,
     // Plans uses 1-9 for direct plan selection).

@@ -1162,8 +1162,35 @@ pub struct SessionManager {
 
 impl SessionManager {
     /// Creates an empty session manager.
+    ///
+    /// Validates the `AgentServer` profile via the
+    /// [`roko_execution::profiles::ProfileMatrix`] (#245) before constructing
+    /// shared dispatch handles.
     #[must_use]
     pub fn new(workdir: PathBuf, roko_config: roko_core::config::schema::RokoConfig) -> Self {
+        // #245: validate AgentServer profile at handler startup.
+        let acp_overrides = roko_execution::overrides_for_acp("session-manager", None, None);
+        let service_request = roko_execution::NonPlanServiceRequest::new(
+            roko_execution::profiles::RuntimeProfile::AgentServer,
+            workdir.clone(),
+            acp_overrides,
+        );
+        match roko_execution::build_non_plan_services(&service_request) {
+            Ok(handle) => {
+                tracing::debug!(
+                    instance_id = %handle.instance_id(),
+                    profile = %handle.profile(),
+                    "validated ACP SessionManager service request"
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    "ACP SessionManager profile validation failed; continuing with degraded state"
+                );
+            }
+        }
+
         let provider_health_registry = Arc::new(ProviderHealthRegistry::load_or_new(
             &workdir
                 .join(".roko")

@@ -193,6 +193,14 @@ fn matrix() -> Vec<MatrixRow> {
             method: Method::POST,
             path: "/api/jobs",
         },
+        MatrixRow {
+            method: Method::GET,
+            path: "/api/jobs/stats",
+        },
+        MatrixRow {
+            method: Method::POST,
+            path: "/api/jobs/match",
+        },
         // -- Run --
         MatrixRow {
             method: Method::POST,
@@ -200,7 +208,7 @@ fn matrix() -> Vec<MatrixRow> {
         },
         MatrixRow {
             method: Method::GET,
-            path: "/api/runs",
+            path: "/api/dashboard/runs",
         },
         // -- Agents --
         MatrixRow {
@@ -234,7 +242,7 @@ fn matrix() -> Vec<MatrixRow> {
         },
         MatrixRow {
             method: Method::GET,
-            path: "/api/learning/router",
+            path: "/api/learning/cascade-router",
         },
         // -- Marketplace (501 stubs) --
         MatrixRow {
@@ -394,6 +402,127 @@ fn matrix() -> Vec<MatrixRow> {
         MatrixRow {
             method: Method::GET,
             path: "/api/connectors",
+        },
+        // -- Arenas --
+        MatrixRow {
+            method: Method::GET,
+            path: "/api/arenas",
+        },
+        MatrixRow {
+            method: Method::POST,
+            path: "/api/arenas",
+        },
+        // -- Registries --
+        MatrixRow {
+            method: Method::GET,
+            path: "/api/registries/stats",
+        },
+        MatrixRow {
+            method: Method::GET,
+            path: "/api/registries/events",
+        },
+        // -- Gateway --
+        MatrixRow {
+            method: Method::GET,
+            path: "/api/gateway/stats",
+        },
+        MatrixRow {
+            method: Method::POST,
+            path: "/api/gateway/inference",
+        },
+        MatrixRow {
+            method: Method::GET,
+            path: "/api/gateway/models",
+        },
+        MatrixRow {
+            method: Method::GET,
+            path: "/api/rate-limits",
+        },
+        // -- Team --
+        MatrixRow {
+            method: Method::GET,
+            path: "/api/team/me",
+        },
+        MatrixRow {
+            method: Method::GET,
+            path: "/api/team/members",
+        },
+        // -- Workspaces --
+        MatrixRow {
+            method: Method::GET,
+            path: "/api/workspaces",
+        },
+        MatrixRow {
+            method: Method::GET,
+            path: "/api/workspaces/default",
+        },
+        // -- SWE bench --
+        MatrixRow {
+            method: Method::GET,
+            path: "/api/bench/swe/runs",
+        },
+        MatrixRow {
+            method: Method::GET,
+            path: "/api/bench/swe/datasets",
+        },
+        // -- Vision loop --
+        MatrixRow {
+            method: Method::POST,
+            path: "/api/vision-loop",
+        },
+        // -- Auth / API keys --
+        MatrixRow {
+            method: Method::GET,
+            path: "/api/api-keys",
+        },
+        MatrixRow {
+            method: Method::GET,
+            path: "/api/auth/audit",
+        },
+        // -- Shared runs --
+        MatrixRow {
+            method: Method::POST,
+            path: "/api/runs/test-id/share",
+        },
+        // -- Webhooks (authenticated) --
+        MatrixRow {
+            method: Method::POST,
+            path: "/api/webhooks/generic",
+        },
+        // -- RPC proxy --
+        MatrixRow {
+            method: Method::GET,
+            path: "/api/rpc/health",
+        },
+        // -- Providers (nested) --
+        MatrixRow {
+            method: Method::GET,
+            path: "/api/providers",
+        },
+        MatrixRow {
+            method: Method::GET,
+            path: "/api/models",
+        },
+        MatrixRow {
+            method: Method::GET,
+            path: "/api/routing/explain",
+        },
+        // -- Aggregator --
+        MatrixRow {
+            method: Method::GET,
+            path: "/api/agents",
+        },
+        MatrixRow {
+            method: Method::GET,
+            path: "/api/tasks",
+        },
+        MatrixRow {
+            method: Method::GET,
+            path: "/api/knowledge/entries",
+        },
+        MatrixRow {
+            method: Method::GET,
+            path: "/api/predictions/sessions",
         },
     ]
 }

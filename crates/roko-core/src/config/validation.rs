@@ -321,6 +321,592 @@ pub enum DangerousPermissionOverrideError {
     MissingAcknowledgementEnv,
 }
 
+// ---- two-phase TOML unknown-field detection and repair ---------------
+
+/// One unknown field discovered via two-phase TOML parsing.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnknownFieldReport {
+    /// Dot-separated TOML path (e.g. `"agent.bogus_key"`).
+    pub path: String,
+    /// The raw TOML value at that path.
+    pub value: String,
+    /// A "did you mean X?" suggestion if edit distance is close, or `None`.
+    pub suggestion: Option<String>,
+}
+
+/// Detect unknown fields in raw TOML text by attempting a full deserialize
+/// through `RokoConfig`. Serde's `deny_unknown_fields` produces an error
+/// message that names the unknown key and the expected alternatives. This
+/// function collects those into structured reports.
+///
+/// Returns `Ok(vec![])` when the TOML is clean.
+/// Returns `Ok(reports)` when unknown fields are found.
+/// Returns `Err(msg)` only for truly unparseable TOML (syntax errors).
+#[must_use]
+pub fn detect_unknown_fields(toml_text: &str) -> Vec<UnknownFieldReport> {
+    // Phase 1: try to deserialize as RokoConfig. If it succeeds, there are
+    // no unknown fields in sections that have deny_unknown_fields.
+    match toml::from_str::<RokoConfig>(toml_text) {
+        Ok(_) => Vec::new(),
+        Err(err) => {
+            // Phase 2: parse the error message for unknown field info.
+            let msg = err.to_string();
+            parse_unknown_field_error(&msg)
+        }
+    }
+}
+
+/// Parse a serde/TOML error message to extract the unknown field path and suggestion.
+fn parse_unknown_field_error(msg: &str) -> Vec<UnknownFieldReport> {
+    // toml produces errors like:
+    // "TOML parse error at line 3, column 1\n ... unknown field `bogus_key`, expected one of ..."
+    // We extract the field name and any expected list.
+    let mut reports = Vec::new();
+
+    // Look for "unknown field `<name>`"
+    if let Some(field_start) = msg.find("unknown field `") {
+        let rest = &msg[field_start + 15..];
+        if let Some(field_end) = rest.find('`') {
+            let field_name = &rest[..field_end];
+
+            // Try to extract expected fields for suggestion
+            let suggestion = if let Some(expected_start) = rest.find("expected one of ") {
+                let expected_rest = &rest[expected_start + 16..];
+                // Extract the list of expected fields
+                let expected_fields: Vec<&str> = expected_rest
+                    .split('`')
+                    .enumerate()
+                    .filter_map(|(idx, part)| {
+                        // Expected fields appear between backticks at odd indices
+                        if idx % 2 == 1 { Some(part) } else { None }
+                    })
+                    .collect();
+                find_closest(field_name, &expected_fields)
+            } else if let Some(expected_start) = rest.find("expected ") {
+                let expected_rest = &rest[expected_start + 9..];
+                let expected_fields: Vec<&str> = expected_rest
+                    .split('`')
+                    .enumerate()
+                    .filter_map(|(idx, part)| {
+                        if idx % 2 == 1 { Some(part) } else { None }
+                    })
+                    .collect();
+                find_closest(field_name, &expected_fields)
+            } else {
+                None
+            };
+
+            // Try to extract the TOML path from "at line X, column Y" + context
+            let path = extract_toml_path_context(msg, field_name);
+
+            reports.push(UnknownFieldReport {
+                path,
+                value: String::new(),
+                suggestion,
+            });
+        }
+    }
+
+    reports
+}
+
+/// Extract a dotted TOML path from the error context. Falls back to the raw field name.
+fn extract_toml_path_context(msg: &str, field_name: &str) -> String {
+    // toml-rs errors sometimes include the table path; extract it if present
+    // e.g. "in `agent`" or "in `serve.auth`"
+    if let Some(in_start) = msg.find("in `") {
+        let rest = &msg[in_start + 4..];
+        if let Some(in_end) = rest.find('`') {
+            let table = &rest[..in_end];
+            return format!("{table}.{field_name}");
+        }
+    }
+    field_name.to_string()
+}
+
+/// Find the closest match from a list of candidates using edit distance.
+fn find_closest(needle: &str, candidates: &[&str]) -> Option<String> {
+    if candidates.is_empty() || needle.is_empty() {
+        return None;
+    }
+    let mut best_match = None;
+    let mut best_distance = usize::MAX;
+    for &candidate in candidates {
+        let distance = levenshtein(needle, candidate);
+        if distance < best_distance {
+            best_distance = distance;
+            best_match = Some(candidate);
+        }
+    }
+    // Only suggest if edit distance is reasonable (at most 3)
+    (best_distance <= 3).then(|| best_match.expect("distance implies candidate").to_string())
+}
+
+/// Simple Levenshtein distance for config key typo detection.
+fn levenshtein(a: &str, b: &str) -> usize {
+    if a == b {
+        return 0;
+    }
+    if a.is_empty() {
+        return b.len();
+    }
+    if b.is_empty() {
+        return a.len();
+    }
+    let b_chars: Vec<char> = b.chars().collect();
+    let mut costs: Vec<usize> = (0..=b_chars.len()).collect();
+    for (i, a_ch) in a.chars().enumerate() {
+        let mut prev_diag = costs[0];
+        costs[0] = i + 1;
+        for (j, &b_ch) in b_chars.iter().enumerate() {
+            let ins = costs[j + 1] + 1;
+            let del = costs[j] + 1;
+            let sub = prev_diag + usize::from(a_ch != b_ch);
+            prev_diag = costs[j + 1];
+            costs[j + 1] = ins.min(del).min(sub);
+        }
+    }
+    *costs.last().unwrap_or(&0)
+}
+
+/// Format a human-readable repair suggestion for CLI output.
+#[must_use]
+pub fn format_repair_suggestions(reports: &[UnknownFieldReport]) -> String {
+    if reports.is_empty() {
+        return "Config is clean: no unknown fields detected.".to_string();
+    }
+    let mut out = String::new();
+    for report in reports {
+        out.push_str(&format!("  unknown field: {}", report.path));
+        if let Some(ref suggestion) = report.suggestion {
+            out.push_str(&format!(" (did you mean `{suggestion}`?)"));
+        }
+        out.push('\n');
+        out.push_str("    fix: remove this field from roko.toml\n");
+    }
+    out
+}
+
+// ---- Provider/model semantic validation (backlog #370) -------------------
+
+/// Stable finding code for provider/model semantic validation.
+///
+/// Each variant maps to exactly one frozen validation rule. The `Display`
+/// impl produces the canonical dotted-string form used in JSON output and
+/// diagnostic messages.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticFindingCode {
+    ProviderEmptyApiKeyEnv,
+    ProviderInvalidBaseUrl,
+    ProviderInvalidTimeout,
+    ProviderInvalidSearchContext,
+    ModelUnknownProvider,
+    ModelEmptySlug,
+    ModelInvalidContext,
+    ModelAmbiguousSlug,
+    ModelInvalidToolFormat,
+    RoutingUnresolvedModel,
+}
+
+impl std::fmt::Display for SemanticFindingCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Self::ProviderEmptyApiKeyEnv => "provider.empty_api_key_env",
+            Self::ProviderInvalidBaseUrl => "provider.invalid_base_url",
+            Self::ProviderInvalidTimeout => "provider.invalid_timeout",
+            Self::ProviderInvalidSearchContext => "provider.invalid_search_context",
+            Self::ModelUnknownProvider => "model.unknown_provider",
+            Self::ModelEmptySlug => "model.empty_slug",
+            Self::ModelInvalidContext => "model.invalid_context",
+            Self::ModelAmbiguousSlug => "model.ambiguous_slug",
+            Self::ModelInvalidToolFormat => "model.invalid_tool_format",
+            Self::RoutingUnresolvedModel => "routing.unresolved_model",
+        };
+        f.write_str(s)
+    }
+}
+
+/// One semantic finding from provider/model validation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SemanticFinding {
+    pub code: SemanticFindingCode,
+    pub severity: InvariantSeverity,
+    /// Dot-path in the config (e.g. `providers.anthropic.base_url`).
+    pub path: String,
+    pub message: String,
+}
+
+/// Validate provider and model configuration semantically.
+///
+/// Runs all frozen rules from backlog #370 against the effective (post-merge)
+/// config. Results are deterministically ordered: provider-sorted, then
+/// model-sorted. Messages never contain env values, secrets, or URL
+/// credentials.
+#[must_use]
+pub fn validate_provider_semantics(config: &RokoConfig) -> Vec<SemanticFinding> {
+    use crate::agent::ProviderKind;
+    use crate::tool::ToolFormat;
+
+    let mut findings = Vec::new();
+
+    // Sort provider names for deterministic output.
+    let mut provider_names: Vec<&String> = config.providers.keys().collect();
+    provider_names.sort();
+
+    for name in &provider_names {
+        let provider = &config.providers[*name];
+        let is_cli = matches!(
+            provider.kind,
+            ProviderKind::ClaudeCli
+                | ProviderKind::CodexCli
+                | ProviderKind::CursorAcp
+                | ProviderKind::CursorCli
+                | ProviderKind::GeminiCli
+                | ProviderKind::Hermes
+                | ProviderKind::OpenClaw
+        );
+
+        // Rule: provider.empty_api_key_env
+        if !is_cli {
+            match provider.api_key_env.as_ref().map(|s| s.trim()) {
+                Some("") => {
+                    findings.push(SemanticFinding {
+                        code: SemanticFindingCode::ProviderEmptyApiKeyEnv,
+                        severity: InvariantSeverity::Error,
+                        path: format!("providers.{name}.api_key_env"),
+                        message: format!(
+                            "HTTP provider '{name}' has empty api_key_env; \
+                             set a valid env var name like ANTHROPIC_API_KEY"
+                        ),
+                    });
+                }
+                Some(env_name) if !is_valid_env_var_name(env_name) => {
+                    findings.push(SemanticFinding {
+                        code: SemanticFindingCode::ProviderEmptyApiKeyEnv,
+                        severity: InvariantSeverity::Error,
+                        path: format!("providers.{name}.api_key_env"),
+                        message: format!(
+                            "HTTP provider '{name}' has invalid api_key_env identifier; \
+                             must match [A-Za-z_][A-Za-z0-9_]*"
+                        ),
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        // Rule: provider.invalid_base_url
+        if let Some(ref url_str) = provider.base_url {
+            let trimmed = url_str.trim();
+            if !trimmed.is_empty() {
+                if let Err(reason) = validate_base_url(trimmed) {
+                    findings.push(SemanticFinding {
+                        code: SemanticFindingCode::ProviderInvalidBaseUrl,
+                        severity: InvariantSeverity::Error,
+                        path: format!("providers.{name}.base_url"),
+                        message: format!("provider '{name}': {reason}"),
+                    });
+                }
+            }
+        }
+
+        // Rule: provider.invalid_timeout
+        if let Some(timeout) = provider.timeout_ms {
+            if timeout == 0 {
+                findings.push(SemanticFinding {
+                    code: SemanticFindingCode::ProviderInvalidTimeout,
+                    severity: InvariantSeverity::Error,
+                    path: format!("providers.{name}.timeout_ms"),
+                    message: format!(
+                        "provider '{name}' has timeout_ms = 0; must be > 0"
+                    ),
+                });
+            }
+        }
+        if let Some(max_conc) = provider.max_concurrent {
+            if max_conc == 0 {
+                findings.push(SemanticFinding {
+                    code: SemanticFindingCode::ProviderInvalidTimeout,
+                    severity: InvariantSeverity::Error,
+                    path: format!("providers.{name}.max_concurrent"),
+                    message: format!(
+                        "provider '{name}' has max_concurrent = 0; must be > 0"
+                    ),
+                });
+            }
+        }
+    }
+
+    // Model validation — sort for determinism.
+    let mut model_names: Vec<&String> = config.models.keys().collect();
+    model_names.sort();
+
+    // Track slugs for ambiguity detection.
+    let mut slug_owners: std::collections::HashMap<&str, Vec<&str>> =
+        std::collections::HashMap::new();
+
+    for name in &model_names {
+        let profile = &config.models[*name];
+
+        // Rule: model.unknown_provider
+        if !config.providers.contains_key(&profile.provider) {
+            findings.push(SemanticFinding {
+                code: SemanticFindingCode::ModelUnknownProvider,
+                severity: InvariantSeverity::Error,
+                path: format!("models.{name}.provider"),
+                message: format!(
+                    "model '{name}' references provider '{}' which is not configured",
+                    profile.provider
+                ),
+            });
+        }
+
+        // Rule: model.empty_slug
+        if profile.slug.trim().is_empty() {
+            findings.push(SemanticFinding {
+                code: SemanticFindingCode::ModelEmptySlug,
+                severity: InvariantSeverity::Error,
+                path: format!("models.{name}.slug"),
+                message: format!("model '{name}' has an empty slug"),
+            });
+        }
+
+        // Rule: model.invalid_context
+        if profile.context_window == 0 {
+            findings.push(SemanticFinding {
+                code: SemanticFindingCode::ModelInvalidContext,
+                severity: InvariantSeverity::Error,
+                path: format!("models.{name}.context_window"),
+                message: format!(
+                    "model '{name}' has context_window = 0; must be > 0"
+                ),
+            });
+        }
+        if let Some(max_out) = profile.max_output {
+            if max_out == 0 {
+                findings.push(SemanticFinding {
+                    code: SemanticFindingCode::ModelInvalidContext,
+                    severity: InvariantSeverity::Error,
+                    path: format!("models.{name}.max_output"),
+                    message: format!(
+                        "model '{name}' has max_output = 0; must be > 0"
+                    ),
+                });
+            } else if max_out > profile.context_window {
+                findings.push(SemanticFinding {
+                    code: SemanticFindingCode::ModelInvalidContext,
+                    severity: InvariantSeverity::Warning,
+                    path: format!("models.{name}.max_output"),
+                    message: format!(
+                        "model '{name}' max_output ({max_out}) exceeds context_window ({})",
+                        profile.context_window
+                    ),
+                });
+            }
+        }
+
+        // Rule: model.invalid_tool_format
+        let tf = profile.tool_format.trim();
+        if !tf.is_empty() {
+            // Accept any known ToolFormat variant name. Custom("...") values
+            // contain a dot by convention; we accept those too.
+            let known = matches!(
+                tf,
+                "openai_json"
+                    | "anthropic_blocks"
+                    | "hermes_json"
+                    | "gemma4_tokens"
+                    | "mistral_tokens"
+                    | "pythonic"
+                    | "qwen_xml"
+                    | "react_text"
+                    | "json_mode"
+            );
+            // Serde would also accept Custom(x) for any x containing a dot
+            // or otherwise not matching a known variant.  We allow those as
+            // intentional extensions.
+            let is_custom_extension = !known && serde_json::from_value::<ToolFormat>(
+                serde_json::Value::String(tf.to_string()),
+            ).is_ok();
+
+            if !known && !is_custom_extension {
+                findings.push(SemanticFinding {
+                    code: SemanticFindingCode::ModelInvalidToolFormat,
+                    severity: InvariantSeverity::Error,
+                    path: format!("models.{name}.tool_format"),
+                    message: format!(
+                        "model '{name}' has invalid tool_format '{}'; \
+                         valid formats: openai_json, anthropic_blocks, hermes_json, \
+                         gemma4_tokens, mistral_tokens, pythonic, qwen_xml, react_text, json_mode",
+                        tf
+                    ),
+                });
+            }
+        }
+
+        // Rule: provider.invalid_search_context (on model, not provider)
+        if let Some(ref scs) = profile.search_context_size {
+            let scs_trimmed = scs.trim();
+            if !scs_trimmed.is_empty()
+                && !matches!(scs_trimmed, "low" | "medium" | "high")
+            {
+                findings.push(SemanticFinding {
+                    code: SemanticFindingCode::ProviderInvalidSearchContext,
+                    severity: InvariantSeverity::Error,
+                    path: format!("models.{name}.search_context_size"),
+                    message: format!(
+                        "model '{name}' has invalid search_context_size '{}'; \
+                         must be exactly 'low', 'medium', or 'high'",
+                        scs_trimmed
+                    ),
+                });
+            }
+        }
+
+        // Collect slug for ambiguity check.
+        let slug = profile.slug.trim();
+        if !slug.is_empty() {
+            slug_owners
+                .entry(slug)
+                .or_default()
+                .push(name.as_str());
+        }
+    }
+
+    // Rule: model.ambiguous_slug — check for duplicate slugs across providers.
+    let mut ambiguous_slugs: Vec<&&str> = slug_owners
+        .iter()
+        .filter(|(_, owners)| owners.len() > 1)
+        .map(|(slug, _)| slug)
+        .collect();
+    ambiguous_slugs.sort();
+    for slug in ambiguous_slugs {
+        let owners = &slug_owners[*slug];
+        // Only report if the owners span different providers.
+        let providers: std::collections::HashSet<&str> = owners
+            .iter()
+            .filter_map(|name| config.models.get(*name).map(|p| p.provider.as_str()))
+            .collect();
+        if providers.len() > 1 {
+            findings.push(SemanticFinding {
+                code: SemanticFindingCode::ModelAmbiguousSlug,
+                severity: InvariantSeverity::Error,
+                path: format!("models.*.slug={slug}"),
+                message: format!(
+                    "slug '{}' is used by models [{}] across different providers",
+                    slug,
+                    owners.join(", ")
+                ),
+            });
+        }
+    }
+
+    // Rule: routing.unresolved_model — every model reference in agent/routing
+    // config must resolve to a defined model key or a builtin.
+    let effective_models = config.effective_models();
+    let resolves = |model_ref: &str| -> bool {
+        effective_models.contains_key(model_ref)
+            || super::model_registry::builtin_model(model_ref).is_some()
+    };
+
+    let mut model_ref_checks: Vec<(&str, &str)> = Vec::new();
+
+    let dm = config.agent.default_model.trim();
+    if !dm.is_empty() {
+        model_ref_checks.push(("agent.default_model", dm));
+    }
+    if let Some(ref fb) = config.agent.fallback_model {
+        let fb = fb.trim();
+        if !fb.is_empty() {
+            model_ref_checks.push(("agent.fallback_model", fb));
+        }
+    }
+
+    let fast = config.routing.fast_task_model.trim();
+    if !fast.is_empty() {
+        model_ref_checks.push(("routing.fast_task_model", fast));
+    }
+    let standard = config.routing.standard_task_model.trim();
+    if !standard.is_empty() {
+        model_ref_checks.push(("routing.standard_task_model", standard));
+    }
+    let complex = config.routing.complex_task_model.trim();
+    if !complex.is_empty() {
+        model_ref_checks.push(("routing.complex_task_model", complex));
+    }
+
+    // tier_models
+    let mut tier_entries: Vec<(&String, &String)> = config.agent.tier_models.iter().collect();
+    tier_entries.sort_by_key(|(k, _)| *k);
+
+    for (tier, model_key) in &tier_entries {
+        let mk = model_key.trim();
+        if !mk.is_empty() && !resolves(mk) {
+            findings.push(SemanticFinding {
+                code: SemanticFindingCode::RoutingUnresolvedModel,
+                severity: InvariantSeverity::Error,
+                path: format!("agent.tier_models.{tier}"),
+                message: format!(
+                    "agent.tier_models.{tier} references unresolved model '{mk}'"
+                ),
+            });
+        }
+    }
+
+    for (field, model_ref) in &model_ref_checks {
+        if !resolves(model_ref) {
+            findings.push(SemanticFinding {
+                code: SemanticFindingCode::RoutingUnresolvedModel,
+                severity: InvariantSeverity::Error,
+                path: field.to_string(),
+                message: format!(
+                    "{field} references unresolved model '{model_ref}'"
+                ),
+            });
+        }
+    }
+
+    findings
+}
+
+/// Check that a string is a valid environment variable identifier.
+fn is_valid_env_var_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Validate a base URL string without pulling in a URL crate.
+fn validate_base_url(url: &str) -> Result<(), String> {
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err("scheme must be http or https".to_string());
+    }
+    let after_scheme = if url.starts_with("https://") {
+        &url[8..]
+    } else {
+        &url[7..]
+    };
+    // Reject credentials (user:pass@host).
+    if let Some(at_pos) = after_scheme.find('@') {
+        // Only reject if @ appears before the first / (i.e., in authority).
+        let slash_pos = after_scheme.find('/').unwrap_or(after_scheme.len());
+        if at_pos < slash_pos {
+            return Err("URL must not contain credentials/userinfo".to_string());
+        }
+    }
+    // Must have a host (non-empty authority before / or end).
+    let authority = after_scheme.split('/').next().unwrap_or("");
+    let host = authority.split(':').next().unwrap_or("");
+    if host.is_empty() {
+        return Err("URL has no host".to_string());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::Duration;
@@ -502,5 +1088,675 @@ mod tests {
     #[test]
     fn validate_invariants_accepts_default_config() {
         assert!(validate_invariants(&RokoConfig::default()).is_empty());
+    }
+
+    // ---- unknown field detection tests ----
+
+    #[test]
+    fn detect_unknown_fields_clean_config() {
+        let toml_text = r#"
+            [budget]
+            max_plan_usd = 10.0
+            max_turn_usd = 0.5
+        "#;
+        let reports = detect_unknown_fields(toml_text);
+        assert!(reports.is_empty(), "clean config should have no reports");
+    }
+
+    #[test]
+    fn detect_unknown_fields_catches_typo() {
+        let toml_text = r#"
+            [budget]
+            max_plan_usd = 10.0
+            max_turn_usdd = 0.5
+        "#;
+        let reports = detect_unknown_fields(toml_text);
+        assert!(!reports.is_empty(), "should detect unknown field 'max_turn_usdd'");
+        assert!(reports[0].path.contains("max_turn_usdd"));
+    }
+
+    #[test]
+    fn detect_unknown_fields_catches_cold_storage_typo() {
+        let toml_text = r#"
+            [cold_storage]
+            enabled = true
+            max_agee_days = 7
+        "#;
+        let reports = detect_unknown_fields(toml_text);
+        assert!(!reports.is_empty(), "should detect 'max_agee_days'");
+        assert!(reports[0].path.contains("max_agee_days"));
+    }
+
+    #[test]
+    fn detect_unknown_fields_nested_section() {
+        let toml_text = r#"
+            [serve.auth]
+            enabled = true
+            bogus_flag = true
+        "#;
+        let reports = detect_unknown_fields(toml_text);
+        assert!(!reports.is_empty(), "should detect bogus_flag in serve.auth");
+    }
+
+    #[test]
+    fn detect_unknown_fields_timeouts_typo() {
+        let toml_text = r#"
+            [timeouts]
+            agent_dispatch_secss = 600
+        "#;
+        let reports = detect_unknown_fields(toml_text);
+        assert!(!reports.is_empty(), "should detect timeouts typo");
+        // Should suggest the correct field
+        if let Some(ref suggestion) = reports[0].suggestion {
+            assert_eq!(suggestion, "agent_dispatch_secs");
+        }
+    }
+
+    #[test]
+    fn format_repair_suggestions_empty() {
+        assert_eq!(
+            format_repair_suggestions(&[]),
+            "Config is clean: no unknown fields detected."
+        );
+    }
+
+    #[test]
+    fn format_repair_suggestions_with_suggestion() {
+        let reports = vec![UnknownFieldReport {
+            path: "timeouts.agent_dispatch_secss".to_string(),
+            value: String::new(),
+            suggestion: Some("agent_dispatch_secs".to_string()),
+        }];
+        let output = format_repair_suggestions(&reports);
+        assert!(output.contains("did you mean"));
+        assert!(output.contains("agent_dispatch_secs"));
+        assert!(output.contains("remove this field"));
+    }
+
+    #[test]
+    fn levenshtein_basic() {
+        assert_eq!(levenshtein("abc", "abc"), 0);
+        assert_eq!(levenshtein("abc", "abd"), 1);
+        assert_eq!(levenshtein("", "abc"), 3);
+        assert_eq!(levenshtein("abc", ""), 3);
+        assert_eq!(levenshtein("kitten", "sitting"), 3);
+    }
+
+    // ---- provider/model semantic validation tests (backlog #370) ----
+
+    use super::super::provider::{ModelProfile, ProviderConfig};
+    use crate::agent::ProviderKind;
+
+    fn api_provider(name: &str) -> (String, ProviderConfig) {
+        (
+            name.to_string(),
+            ProviderConfig {
+                kind: ProviderKind::AnthropicApi,
+                api_key_env: Some("ANTHROPIC_API_KEY".to_string()),
+                ..Default::default()
+            },
+        )
+    }
+
+    #[test]
+    fn semantic_empty_api_key_env_is_error() {
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.providers.insert(
+            "bad".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::AnthropicApi,
+                api_key_env: Some(String::new()),
+                ..Default::default()
+            },
+        );
+
+        let findings = validate_provider_semantics(&config);
+        assert!(findings.iter().any(|f| f.code
+            == SemanticFindingCode::ProviderEmptyApiKeyEnv
+            && f.severity == InvariantSeverity::Error));
+    }
+
+    #[test]
+    fn semantic_invalid_env_var_name() {
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.providers.insert(
+            "bad".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                api_key_env: Some("123INVALID".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let findings = validate_provider_semantics(&config);
+        assert!(findings.iter().any(|f| f.code
+            == SemanticFindingCode::ProviderEmptyApiKeyEnv));
+    }
+
+    #[test]
+    fn semantic_cli_provider_no_api_key_env_is_ok() {
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.providers.insert(
+            "cli".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::ClaudeCli,
+                api_key_env: None,
+                ..Default::default()
+            },
+        );
+
+        let findings = validate_provider_semantics(&config);
+        assert!(findings
+            .iter()
+            .all(|f| f.code != SemanticFindingCode::ProviderEmptyApiKeyEnv));
+    }
+
+    #[test]
+    fn semantic_invalid_base_url_no_scheme() {
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        let (name, mut prov) = api_provider("bad");
+        prov.base_url = Some("example.com/v1".to_string());
+        config.providers.insert(name, prov);
+
+        let findings = validate_provider_semantics(&config);
+        assert!(findings.iter().any(|f| f.code
+            == SemanticFindingCode::ProviderInvalidBaseUrl));
+    }
+
+    #[test]
+    fn semantic_base_url_with_credentials_rejected() {
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        let (name, mut prov) = api_provider("bad");
+        prov.base_url = Some("https://user:pass@example.com/v1".to_string());
+        config.providers.insert(name, prov);
+
+        let findings = validate_provider_semantics(&config);
+        assert!(findings.iter().any(|f| f.code
+            == SemanticFindingCode::ProviderInvalidBaseUrl
+            && f.message.contains("credentials")));
+    }
+
+    #[test]
+    fn semantic_valid_base_url_accepted() {
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        let (name, mut prov) = api_provider("good");
+        prov.base_url = Some("https://api.example.com/v1".to_string());
+        config.providers.insert(name, prov);
+
+        let findings = validate_provider_semantics(&config);
+        assert!(findings
+            .iter()
+            .all(|f| f.code != SemanticFindingCode::ProviderInvalidBaseUrl));
+    }
+
+    #[test]
+    fn semantic_zero_timeout_is_error() {
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        let (name, mut prov) = api_provider("slow");
+        prov.timeout_ms = Some(0);
+        config.providers.insert(name, prov);
+
+        let findings = validate_provider_semantics(&config);
+        assert!(findings.iter().any(|f| f.code
+            == SemanticFindingCode::ProviderInvalidTimeout));
+    }
+
+    #[test]
+    fn semantic_model_unknown_provider() {
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.models.insert(
+            "orphan".to_string(),
+            ModelProfile {
+                provider: "nonexistent".to_string(),
+                slug: "model-v1".to_string(),
+                ..Default::default()
+            },
+        );
+
+        let findings = validate_provider_semantics(&config);
+        assert!(findings.iter().any(|f| f.code
+            == SemanticFindingCode::ModelUnknownProvider));
+    }
+
+    #[test]
+    fn semantic_model_empty_slug() {
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        let (pname, prov) = api_provider("anthropic");
+        config.providers.insert(pname, prov);
+        config.models.insert(
+            "bad".to_string(),
+            ModelProfile {
+                provider: "anthropic".to_string(),
+                slug: String::new(),
+                ..Default::default()
+            },
+        );
+
+        let findings = validate_provider_semantics(&config);
+        assert!(findings
+            .iter()
+            .any(|f| f.code == SemanticFindingCode::ModelEmptySlug));
+    }
+
+    #[test]
+    fn semantic_model_zero_context_window() {
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        let (pname, prov) = api_provider("anthropic");
+        config.providers.insert(pname, prov);
+        config.models.insert(
+            "bad".to_string(),
+            ModelProfile {
+                provider: "anthropic".to_string(),
+                slug: "model-v1".to_string(),
+                context_window: 0,
+                ..Default::default()
+            },
+        );
+
+        let findings = validate_provider_semantics(&config);
+        assert!(findings
+            .iter()
+            .any(|f| f.code == SemanticFindingCode::ModelInvalidContext));
+    }
+
+    #[test]
+    fn semantic_model_max_output_exceeds_context() {
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        let (pname, prov) = api_provider("anthropic");
+        config.providers.insert(pname, prov);
+        config.models.insert(
+            "big".to_string(),
+            ModelProfile {
+                provider: "anthropic".to_string(),
+                slug: "model-v1".to_string(),
+                context_window: 4096,
+                max_output: Some(8192),
+                ..Default::default()
+            },
+        );
+
+        let findings = validate_provider_semantics(&config);
+        assert!(findings.iter().any(|f| f.code
+            == SemanticFindingCode::ModelInvalidContext
+            && f.severity == InvariantSeverity::Warning));
+    }
+
+    #[test]
+    fn semantic_ambiguous_slug_across_providers() {
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.providers.insert(
+            "prov_a".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::AnthropicApi,
+                api_key_env: Some("KEY_A".to_string()),
+                ..Default::default()
+            },
+        );
+        config.providers.insert(
+            "prov_b".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                api_key_env: Some("KEY_B".to_string()),
+                ..Default::default()
+            },
+        );
+        config.models.insert(
+            "model_a".to_string(),
+            ModelProfile {
+                provider: "prov_a".to_string(),
+                slug: "shared-slug".to_string(),
+                ..Default::default()
+            },
+        );
+        config.models.insert(
+            "model_b".to_string(),
+            ModelProfile {
+                provider: "prov_b".to_string(),
+                slug: "shared-slug".to_string(),
+                ..Default::default()
+            },
+        );
+
+        let findings = validate_provider_semantics(&config);
+        assert!(findings
+            .iter()
+            .any(|f| f.code == SemanticFindingCode::ModelAmbiguousSlug));
+    }
+
+    #[test]
+    fn semantic_same_slug_same_provider_is_ok() {
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        let (pname, prov) = api_provider("anthropic");
+        config.providers.insert(pname, prov);
+        config.models.insert(
+            "alias_a".to_string(),
+            ModelProfile {
+                provider: "anthropic".to_string(),
+                slug: "claude-sonnet".to_string(),
+                ..Default::default()
+            },
+        );
+        config.models.insert(
+            "alias_b".to_string(),
+            ModelProfile {
+                provider: "anthropic".to_string(),
+                slug: "claude-sonnet".to_string(),
+                ..Default::default()
+            },
+        );
+
+        let findings = validate_provider_semantics(&config);
+        assert!(findings
+            .iter()
+            .all(|f| f.code != SemanticFindingCode::ModelAmbiguousSlug));
+    }
+
+    #[test]
+    fn semantic_default_config_is_clean() {
+        // Default config may have built-in providers/models, should not error.
+        let config = RokoConfig::default();
+        let findings = validate_provider_semantics(&config);
+        let errors: Vec<_> = findings
+            .iter()
+            .filter(|f| f.severity == InvariantSeverity::Error)
+            .collect();
+        assert!(errors.is_empty(), "default config should have no errors: {errors:?}");
+    }
+
+    #[test]
+    fn is_valid_env_var_name_cases() {
+        assert!(is_valid_env_var_name("ANTHROPIC_API_KEY"));
+        assert!(is_valid_env_var_name("_KEY"));
+        assert!(is_valid_env_var_name("a"));
+        assert!(!is_valid_env_var_name(""));
+        assert!(!is_valid_env_var_name("123"));
+        assert!(!is_valid_env_var_name("KEY WITH SPACE"));
+    }
+
+    #[test]
+    fn validate_base_url_cases() {
+        assert!(validate_base_url("https://api.example.com/v1").is_ok());
+        assert!(validate_base_url("http://localhost:8080").is_ok());
+        assert!(validate_base_url("ftp://example.com").is_err());
+        assert!(validate_base_url("not-a-url").is_err());
+        assert!(validate_base_url("https://user:pass@host.com").is_err());
+        assert!(validate_base_url("https://").is_err());
+    }
+
+    // ── model.invalid_tool_format tests ──────────────────────────────
+
+    #[test]
+    fn semantic_invalid_tool_format_rejected() {
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        let (pname, prov) = api_provider("anthropic");
+        config.providers.insert(pname, prov);
+        config.models.insert(
+            "bad".to_string(),
+            ModelProfile {
+                provider: "anthropic".to_string(),
+                slug: "model-v1".to_string(),
+                tool_format: "not_a_real_format".to_string(),
+                ..Default::default()
+            },
+        );
+
+        let findings = validate_provider_semantics(&config);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.code == SemanticFindingCode::ModelInvalidToolFormat),
+            "expected invalid_tool_format finding, got: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_valid_tool_formats_accepted() {
+        let formats = [
+            "openai_json",
+            "anthropic_blocks",
+            "hermes_json",
+            "gemma4_tokens",
+            "mistral_tokens",
+            "pythonic",
+            "qwen_xml",
+            "react_text",
+            "json_mode",
+        ];
+        for fmt in formats {
+            let mut config = RokoConfig::default();
+            config.providers.clear();
+            config.models.clear();
+            let (pname, prov) = api_provider("anthropic");
+            config.providers.insert(pname, prov);
+            config.models.insert(
+                "good".to_string(),
+                ModelProfile {
+                    provider: "anthropic".to_string(),
+                    slug: "model-v1".to_string(),
+                    tool_format: fmt.to_string(),
+                    ..Default::default()
+                },
+            );
+
+            let findings = validate_provider_semantics(&config);
+            assert!(
+                findings
+                    .iter()
+                    .all(|f| f.code != SemanticFindingCode::ModelInvalidToolFormat),
+                "tool_format '{fmt}' should be accepted, got: {findings:?}"
+            );
+        }
+    }
+
+    // ── provider.invalid_search_context tests ────────────────────────
+
+    #[test]
+    fn semantic_invalid_search_context_rejected() {
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        let (pname, prov) = api_provider("perplexity");
+        config.providers.insert(pname, prov);
+        config.models.insert(
+            "sonar".to_string(),
+            ModelProfile {
+                provider: "perplexity".to_string(),
+                slug: "sonar-pro".to_string(),
+                search_context_size: Some("huge".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let findings = validate_provider_semantics(&config);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.code == SemanticFindingCode::ProviderInvalidSearchContext),
+            "expected invalid_search_context finding, got: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_valid_search_context_accepted() {
+        for ctx in ["low", "medium", "high"] {
+            let mut config = RokoConfig::default();
+            config.providers.clear();
+            config.models.clear();
+            let (pname, prov) = api_provider("perplexity");
+            config.providers.insert(pname, prov);
+            config.models.insert(
+                "sonar".to_string(),
+                ModelProfile {
+                    provider: "perplexity".to_string(),
+                    slug: "sonar-pro".to_string(),
+                    search_context_size: Some(ctx.to_string()),
+                    ..Default::default()
+                },
+            );
+
+            let findings = validate_provider_semantics(&config);
+            assert!(
+                findings
+                    .iter()
+                    .all(|f| f.code != SemanticFindingCode::ProviderInvalidSearchContext),
+                "search_context_size '{ctx}' should be accepted, got: {findings:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn semantic_none_search_context_is_ok() {
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        let (pname, prov) = api_provider("perplexity");
+        config.providers.insert(pname, prov);
+        config.models.insert(
+            "sonar".to_string(),
+            ModelProfile {
+                provider: "perplexity".to_string(),
+                slug: "sonar-pro".to_string(),
+                search_context_size: None,
+                ..Default::default()
+            },
+        );
+
+        let findings = validate_provider_semantics(&config);
+        assert!(
+            findings
+                .iter()
+                .all(|f| f.code != SemanticFindingCode::ProviderInvalidSearchContext),
+            "None search_context_size should be accepted, got: {findings:?}"
+        );
+    }
+
+    // ── routing.unresolved_model tests ───────────────────────────────
+
+    #[test]
+    fn semantic_unresolved_routing_model_rejected() {
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.routing.fast_task_model = "nonexistent-fast".to_string();
+
+        let findings = validate_provider_semantics(&config);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.code == SemanticFindingCode::RoutingUnresolvedModel
+                    && f.path == "routing.fast_task_model"),
+            "expected unresolved_model for fast_task_model, got: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_builtin_routing_model_accepted() {
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        // Default routing models are builtin slugs, should be accepted.
+        config.routing.fast_task_model = "claude-haiku-4-5".to_string();
+        config.routing.standard_task_model = "claude-sonnet-4-6".to_string();
+        config.routing.complex_task_model = "claude-opus-4-6".to_string();
+
+        let findings = validate_provider_semantics(&config);
+        assert!(
+            findings
+                .iter()
+                .all(|f| f.code != SemanticFindingCode::RoutingUnresolvedModel),
+            "builtin model slugs should not produce unresolved_model: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_explicit_routing_model_accepted() {
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        let (pname, prov) = api_provider("anthropic");
+        config.providers.insert(pname, prov);
+        config.models.insert(
+            "my-fast".to_string(),
+            ModelProfile {
+                provider: "anthropic".to_string(),
+                slug: "my-fast-slug".to_string(),
+                ..Default::default()
+            },
+        );
+        config.routing.fast_task_model = "my-fast".to_string();
+
+        let findings = validate_provider_semantics(&config);
+        assert!(
+            findings
+                .iter()
+                .all(|f| f.code != SemanticFindingCode::RoutingUnresolvedModel
+                    || f.path != "routing.fast_task_model"),
+            "explicit model key should resolve, got: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_unresolved_tier_model_rejected() {
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config
+            .agent
+            .tier_models
+            .insert("mechanical".to_string(), "nonexistent-tier".to_string());
+
+        let findings = validate_provider_semantics(&config);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.code == SemanticFindingCode::RoutingUnresolvedModel
+                    && f.path == "agent.tier_models.mechanical"),
+            "expected unresolved_model for tier_models, got: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_unresolved_default_model_rejected() {
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.agent.default_model = "totally-fake-model".to_string();
+
+        let findings = validate_provider_semantics(&config);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.code == SemanticFindingCode::RoutingUnresolvedModel
+                    && f.path == "agent.default_model"),
+            "expected unresolved_model for default_model, got: {findings:?}"
+        );
     }
 }

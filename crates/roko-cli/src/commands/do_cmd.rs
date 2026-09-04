@@ -244,7 +244,15 @@ pub(crate) async fn cmd_do(
                     deep: auto_deep,
                     backend: crate::ResearchBackend::Auto,
                 };
-                return crate::commands::research::cmd_research(cli, research_cmd).await;
+                let research_input = roko_cli::resolved_overrides::ResearchInput {
+                    backend: Some("auto".to_string()),
+                    deep: auto_deep,
+                };
+                let resolved = roko_cli::resolved_overrides::ResolvedExecutionOverrides::for_research(
+                    &crate::global_cli_flags(cli),
+                    &research_input,
+                );
+                return crate::commands::research::cmd_research(cli, research_cmd, &resolved).await;
             }
             PromptIntent::PlanGenerate => {
                 let out = roko_cli::cli_output::CliOutput::new(cli.quiet);
@@ -1162,21 +1170,6 @@ fn print_do_preview(
     println!("execution   : skipped");
 }
 
-// NOTE: pipeline_description and estimated_cost_range are now methods on
-// DoRoute (template_name, pipeline_description, cost_band). The standalone
-// functions below are retained only for backward compatibility with callers
-// outside do_cmd.rs that have not yet migrated.
-
-#[allow(dead_code)]
-fn pipeline_description(complexity: PlanComplexity) -> &'static str {
-    match complexity {
-        PlanComplexity::Trivial => "single agent (direct)",
-        PlanComplexity::Simple => "single agent (focused)",
-        PlanComplexity::Standard => "generate plan -> execute",
-        PlanComplexity::Complex => "PRD -> draft -> plan -> execute",
-    }
-}
-
 fn handle_workflow_result(
     cli: &Cli,
     prompt: &str,
@@ -1227,16 +1220,6 @@ fn complexity_label(complexity: PlanComplexity) -> &'static str {
         PlanComplexity::Simple => "simple",
         PlanComplexity::Standard => "standard",
         PlanComplexity::Complex => "complex",
-    }
-}
-
-#[allow(dead_code)]
-fn estimated_cost_range(complexity: PlanComplexity) -> &'static str {
-    match complexity {
-        PlanComplexity::Trivial => "<$0.01",
-        PlanComplexity::Simple => "$0.01-$0.05",
-        PlanComplexity::Standard => "$0.05-$0.25",
-        PlanComplexity::Complex => "$0.25+",
     }
 }
 
@@ -1328,65 +1311,6 @@ mod tests {
             workflow_template_for_complexity(PlanComplexity::Complex),
             "architectural"
         );
-    }
-
-    // ── pipeline_description ───────────────────────────────────────
-
-    #[test]
-    fn pipeline_trivial_is_direct() {
-        assert_eq!(
-            pipeline_description(PlanComplexity::Trivial),
-            "single agent (direct)"
-        );
-    }
-
-    #[test]
-    fn pipeline_simple_is_focused() {
-        assert_eq!(
-            pipeline_description(PlanComplexity::Simple),
-            "single agent (focused)"
-        );
-    }
-
-    #[test]
-    fn pipeline_standard_is_plan_execute() {
-        assert_eq!(
-            pipeline_description(PlanComplexity::Standard),
-            "generate plan -> execute"
-        );
-    }
-
-    #[test]
-    fn pipeline_complex_is_full_prd() {
-        assert_eq!(
-            pipeline_description(PlanComplexity::Complex),
-            "PRD -> draft -> plan -> execute"
-        );
-    }
-
-    // ── estimated_cost_range ───────────────────────────────────────
-
-    #[test]
-    fn cost_trivial() {
-        assert_eq!(estimated_cost_range(PlanComplexity::Trivial), "<$0.01");
-    }
-
-    #[test]
-    fn cost_simple() {
-        assert_eq!(estimated_cost_range(PlanComplexity::Simple), "$0.01-$0.05");
-    }
-
-    #[test]
-    fn cost_standard() {
-        assert_eq!(
-            estimated_cost_range(PlanComplexity::Standard),
-            "$0.05-$0.25"
-        );
-    }
-
-    #[test]
-    fn cost_complex() {
-        assert_eq!(estimated_cost_range(PlanComplexity::Complex), "$0.25+");
     }
 
     // ── promote_to_planned_complexity ──────────────────────────────

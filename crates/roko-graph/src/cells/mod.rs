@@ -34,7 +34,9 @@ pub use immune::{
 };
 pub use stubs::PassthroughCell;
 pub use task_executor::{
-    AttemptReconciliation, GraphTaskEvent, NoopAttemptRecorder, ProviderAttemptRecorder,
-    StreamingTaskDispatcher, TaskDispatchOutcome, TaskDispatchOutcomeKind, TaskDispatcher,
-    TaskExecutionSpec, TaskExecutorCell, TaskLease,
+    AttemptReconcileDecision, AttemptReconciliation, GraphTaskEvent, NoopAttemptRecorder,
+    ProviderAttemptReceipt, ProviderAttemptRecorder, StreamingTaskDispatcher, TaskDispatchEvent,
+    TaskDispatchOutcome, TaskDispatchOutcomeKind, TaskDispatchRequest, TaskDispatchStatus,
+    TaskDispatcher, TaskExecutionSpec, TaskExecutorCell, TaskLease, PROGRESS_MESSAGE_MAX_BYTES,
+    truncate_utf8,
 };

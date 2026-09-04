@@ -1510,8 +1510,7 @@ exit 1
             terminal: AtomicBool::new(true),
         };
 
-        let result = dispatcher
-            .reconcile_attempt(&spec, "prev-attempt-1", &recorder)
+        let result = StreamingTaskDispatcher::reconcile_attempt(&*dispatcher, &spec, "prev-attempt-1", &recorder)
             .await;
 
         assert!(
@@ -1549,8 +1548,7 @@ exit 1
         let (dispatcher, task) = make_streaming_dispatcher(&temp, "#!/bin/sh\nexit 0\n").await;
         let spec = make_spec(&task);
 
-        let result = dispatcher
-            .reconcile_attempt(&spec, "prev-attempt-ambig", &StartedRecorder)
+        let result = StreamingTaskDispatcher::reconcile_attempt(&*dispatcher, &spec, "prev-attempt-ambig", &StartedRecorder)
             .await;
 
         assert!(
@@ -1566,8 +1564,7 @@ exit 1
         let spec = make_spec(&task);
         let recorder = NoopAttemptRecorder;
 
-        let result = dispatcher
-            .reconcile_attempt(&spec, "prev-never-started", &recorder)
+        let result = StreamingTaskDispatcher::reconcile_attempt(&*dispatcher, &spec, "prev-never-started", &recorder)
             .await;
 
         match result {

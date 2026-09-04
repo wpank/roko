@@ -199,7 +199,6 @@ pub struct ReadFileSnapshot {
 }
 
 /// Lightweight task snapshot used by the interactive TUI plan views.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PlanTaskSnapshot {
     pub id: String,

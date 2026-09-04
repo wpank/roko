@@ -203,11 +203,67 @@ impl ProfileMatrix {
             .map(|(_, b, _)| *b)
             .collect()
     }
+
+    /// Look up the requirement for a specific (profile, bundle) pair.
+    #[must_use]
+    pub fn entries_for(
+        &self,
+        profile: RuntimeProfile,
+        bundle: ServiceBundleId,
+    ) -> Option<BundleRequirement> {
+        self.entries
+            .iter()
+            .find(|(p, b, _)| *p == profile && *b == bundle)
+            .map(|(_, _, r)| *r)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_matrix_snapshot() {
+        let matrix = ProfileMatrix::canonical();
+        let all_profiles = [
+            RuntimeProfile::FullPlan,
+            RuntimeProfile::GraphPlan,
+            RuntimeProfile::Workflow,
+            RuntimeProfile::DirectLight,
+            RuntimeProfile::AgentServer,
+            RuntimeProfile::ChatLight,
+            RuntimeProfile::AuthoredGraph,
+        ];
+        let all_bundles = [
+            ServiceBundleId::Dispatch,
+            ServiceBundleId::Prompt,
+            ServiceBundleId::Feedback,
+            ServiceBundleId::Extensions,
+            ServiceBundleId::Observation,
+            ServiceBundleId::Guards,
+        ];
+
+        let mut rows: Vec<(String, Vec<(String, String)>)> = Vec::new();
+        for profile in &all_profiles {
+            let mut bundle_reqs = Vec::new();
+            for bundle in &all_bundles {
+                let req = matrix
+                    .entries
+                    .iter()
+                    .find(|(p, b, _)| p == profile && b == bundle)
+                    .map(|(_, _, r)| r);
+                let label = match req {
+                    Some(BundleRequirement::Required) => "required",
+                    Some(BundleRequirement::Optional) => "optional",
+                    Some(BundleRequirement::Forbidden) => "forbidden",
+                    None => "absent",
+                };
+                bundle_reqs.push((format!("{bundle}"), label.to_string()));
+            }
+            rows.push((format!("{profile}"), bundle_reqs));
+        }
+        insta::assert_json_snapshot!("profile_bundle_matrix", rows);
+    }
 
     #[test]
     fn profile_display() {

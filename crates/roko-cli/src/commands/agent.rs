@@ -1,6 +1,7 @@
 //! agent command handlers.
 
 use crate::*;
+use roko_cli::resolved_overrides::{AgentChatInput, AgentServeInput, ResolvedExecutionOverrides};
 
 pub(crate) async fn cmd_agent(cli: &Cli, cmd: AgentCmd) -> Result<i32> {
     let workdir = resolve_workdir(cli);
@@ -21,6 +22,25 @@ pub(crate) async fn cmd_agent(cli: &Cli, cmd: AgentCmd) -> Result<i32> {
         _ => None,
     };
 
-    agent_serve::run(cmd).await?;
+    // Build resolved overrides for serve/chat surfaces (#305).
+    let flags = global_cli_flags(cli);
+    let overrides = match &cmd {
+        AgentCmd::Serve(args) => Some(ResolvedExecutionOverrides::for_agent_serve(
+            &flags,
+            &AgentServeInput {
+                allow_stub_cognitive_loop: args.allow_stub_cognitive_loop,
+            },
+        )),
+        AgentCmd::Chat { provider, text, .. } => Some(ResolvedExecutionOverrides::for_agent_chat(
+            &flags,
+            &AgentChatInput {
+                provider: provider.clone(),
+                text: *text,
+            },
+        )),
+        _ => None,
+    };
+
+    agent_serve::run(cmd, overrides.as_ref()).await?;
     Ok(EXIT_SUCCESS)
 }

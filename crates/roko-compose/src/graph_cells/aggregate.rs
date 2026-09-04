@@ -21,6 +21,7 @@ use std::collections::HashSet;
 use async_trait::async_trait;
 use roko_core::error::Result;
 use roko_core::{Body, Kind, Signal};
+use serde::Deserialize;
 use tracing::warn;
 
 use crate::prompt::{PromptSection, SectionPriority, estimate_tokens};
@@ -266,6 +267,21 @@ impl roko_graph::Cell for AggregateCell {
 // Enrichment collection
 // ---------------------------------------------------------------------------
 
+/// Generic enrichment shape for provider-tag dispatch.
+///
+/// All enrichment payloads share `provider`, `scope`, `sections`, and
+/// `warnings`. We deserialize into this common shape once and dispatch
+/// on the `provider` value to avoid serde matching the wrong concrete type.
+#[derive(Deserialize)]
+struct GenericEnrichment {
+    provider: String,
+    scope: ComposeScope,
+    #[serde(default)]
+    sections: Vec<PromptSection>,
+    #[serde(default)]
+    warnings: Vec<String>,
+}
+
 struct CollectedEnrichment {
     sections: Vec<PromptSection>,
     warnings: Vec<String>,
@@ -285,77 +301,88 @@ fn collect_enrichment_outputs(
     let mut has_task_context = false;
 
     for signal in input {
-        // Try each enrichment payload type in turn.
-        if let Ok(payload) = signal.body.as_json::<SafetySections>() {
-            if !payload.scope.matches(request_scope) {
-                warn!("AggregateCell: rejecting safety output with mismatched scope");
-                continue;
+        // All enrichment payloads share the same structure (scope, sections,
+        // warnings) plus a `provider` discriminator tag. We deserialize once
+        // into a generic shape and dispatch on the provider value to avoid
+        // serde matching the wrong type.
+        if let Ok(generic) = signal.body.as_json::<GenericEnrichment>() {
+            match generic.provider.as_str() {
+                SafetySections::PROVIDER_TAG => {
+                    if !generic.scope.matches(request_scope) {
+                        warn!("AggregateCell: rejecting safety output with mismatched scope");
+                        continue;
+                    }
+                    has_safety = true;
+                    sections.extend(generic.sections);
+                    warnings.extend(generic.warnings);
+                }
+                TaskContextSections::PROVIDER_TAG => {
+                    if !generic.scope.matches(request_scope) {
+                        warn!(
+                            "AggregateCell: rejecting task_context output with mismatched scope"
+                        );
+                        continue;
+                    }
+                    has_task_context = true;
+                    sections.extend(generic.sections);
+                    warnings.extend(generic.warnings);
+                }
+                KnowledgeSections::PROVIDER_TAG => {
+                    if !generic.scope.matches(request_scope) {
+                        warnings
+                            .push("knowledge provider scope mismatch; degrading to empty".into());
+                        continue;
+                    }
+                    sections.extend(generic.sections);
+                    warnings.extend(generic.warnings);
+                }
+                EpisodeSections::PROVIDER_TAG => {
+                    if !generic.scope.matches(request_scope) {
+                        warnings
+                            .push("episodes provider scope mismatch; degrading to empty".into());
+                        continue;
+                    }
+                    sections.extend(generic.sections);
+                    warnings.extend(generic.warnings);
+                }
+                PlaybookSections::PROVIDER_TAG => {
+                    if !generic.scope.matches(request_scope) {
+                        warnings
+                            .push("playbook provider scope mismatch; degrading to empty".into());
+                        continue;
+                    }
+                    sections.extend(generic.sections);
+                    warnings.extend(generic.warnings);
+                }
+                ModulationSections::PROVIDER_TAG => {
+                    if !generic.scope.matches(request_scope) {
+                        warnings
+                            .push("modulation provider scope mismatch; degrading to empty".into());
+                        continue;
+                    }
+                    sections.extend(generic.sections);
+                    warnings.extend(generic.warnings);
+                }
+                ExperimentAssignment::PROVIDER_TAG => {
+                    if !generic.scope.matches(request_scope) {
+                        warnings
+                            .push("experiment provider scope mismatch; degrading to empty".into());
+                        continue;
+                    }
+                    sections.extend(generic.sections);
+                    warnings.extend(generic.warnings);
+                    // Extract experiment IDs from the full payload.
+                    if let Ok(exp) = signal.body.as_json::<ExperimentAssignment>() {
+                        experiment_ids.extend(exp.active_experiment_ids);
+                    }
+                }
+                other => {
+                    warn!(
+                        provider = other,
+                        "AggregateCell: ignoring enrichment signal with unknown provider tag"
+                    );
+                }
             }
-            has_safety = true;
-            sections.extend(payload.sections);
-            warnings.extend(payload.warnings);
-            continue;
-        }
-
-        if let Ok(payload) = signal.body.as_json::<TaskContextSections>() {
-            if !payload.scope.matches(request_scope) {
-                warn!("AggregateCell: rejecting task_context output with mismatched scope");
-                continue;
-            }
-            has_task_context = true;
-            sections.extend(payload.sections);
-            warnings.extend(payload.warnings);
-            continue;
-        }
-
-        if let Ok(payload) = signal.body.as_json::<KnowledgeSections>() {
-            if !payload.scope.matches(request_scope) {
-                warnings.push("knowledge provider scope mismatch; degrading to empty".into());
-                continue;
-            }
-            sections.extend(payload.sections);
-            warnings.extend(payload.warnings);
-            continue;
-        }
-
-        if let Ok(payload) = signal.body.as_json::<EpisodeSections>() {
-            if !payload.scope.matches(request_scope) {
-                warnings.push("episodes provider scope mismatch; degrading to empty".into());
-                continue;
-            }
-            sections.extend(payload.sections);
-            warnings.extend(payload.warnings);
-            continue;
-        }
-
-        if let Ok(payload) = signal.body.as_json::<PlaybookSections>() {
-            if !payload.scope.matches(request_scope) {
-                warnings.push("playbook provider scope mismatch; degrading to empty".into());
-                continue;
-            }
-            sections.extend(payload.sections);
-            warnings.extend(payload.warnings);
-            continue;
-        }
-
-        if let Ok(payload) = signal.body.as_json::<ModulationSections>() {
-            if !payload.scope.matches(request_scope) {
-                warnings.push("modulation provider scope mismatch; degrading to empty".into());
-                continue;
-            }
-            sections.extend(payload.sections);
-            warnings.extend(payload.warnings);
-            continue;
-        }
-
-        if let Ok(payload) = signal.body.as_json::<ExperimentAssignment>() {
-            if !payload.scope.matches(request_scope) {
-                warnings.push("experiment provider scope mismatch; degrading to empty".into());
-                continue;
-            }
-            sections.extend(payload.sections);
-            warnings.extend(payload.warnings);
-            experiment_ids.extend(payload.active_experiment_ids);
             continue;
         }
 
@@ -390,28 +417,10 @@ fn extract_scope_and_budget(input: &[Signal]) -> Result<(ComposeScope, Option<us
         }
     }
 
-    // Fall back to extracting scope from the first provider output.
+    // Fall back to extracting scope from the first enrichment signal.
     for signal in input {
-        if let Ok(payload) = signal.body.as_json::<SafetySections>() {
-            return Ok((payload.scope, None));
-        }
-        if let Ok(payload) = signal.body.as_json::<TaskContextSections>() {
-            return Ok((payload.scope, None));
-        }
-        if let Ok(payload) = signal.body.as_json::<KnowledgeSections>() {
-            return Ok((payload.scope, None));
-        }
-        if let Ok(payload) = signal.body.as_json::<EpisodeSections>() {
-            return Ok((payload.scope, None));
-        }
-        if let Ok(payload) = signal.body.as_json::<PlaybookSections>() {
-            return Ok((payload.scope, None));
-        }
-        if let Ok(payload) = signal.body.as_json::<ModulationSections>() {
-            return Ok((payload.scope, None));
-        }
-        if let Ok(payload) = signal.body.as_json::<ExperimentAssignment>() {
-            return Ok((payload.scope, None));
+        if let Ok(generic) = signal.body.as_json::<GenericEnrichment>() {
+            return Ok((generic.scope, None));
         }
     }
 
@@ -732,6 +741,194 @@ mod tests {
         assert_eq!(
             classify_section(&exp_with_id) as u8,
             AggregateGroup::ExperimentAnnotations as u8
+        );
+    }
+
+    /// Full-pipeline test: all 7 providers feed into the aggregate.
+    /// Verifies non-duplication, correct ordering across all groups, and
+    /// that each provider's sections appear exactly once.
+    #[tokio::test]
+    async fn full_pipeline_all_seven_providers() {
+        let scope = test_scope();
+        let cell = AggregateCell::new();
+
+        // Build one signal per provider, each with a uniquely-named section.
+        let safety_sig = make_safety_signal(&scope);
+        let task_ctx_sig = make_task_context_signal(&scope);
+        let knowledge_sig = make_knowledge_signal(&scope);
+
+        let episodes_sig = {
+            let payload = EpisodeSections::new(
+                scope.clone(),
+                vec![PromptSection::new("error_pattern", "E0277: add trait bound")],
+            );
+            let body = Body::from_json(&payload).unwrap();
+            Signal::builder(Kind::ContextPack).body(body).build()
+        };
+        let playbook_sig = {
+            let payload = PlaybookSections::new(
+                scope.clone(),
+                vec![PromptSection::new("playbook_match", "Use builder pattern")],
+            );
+            let body = Body::from_json(&payload).unwrap();
+            Signal::builder(Kind::ContextPack).body(body).build()
+        };
+        let modulation_sig = {
+            let payload = ModulationSections::new(
+                scope.clone(),
+                vec![PromptSection::new("affect", "Focus on correctness")],
+            );
+            let body = Body::from_json(&payload).unwrap();
+            Signal::builder(Kind::ContextPack).body(body).build()
+        };
+        let experiment_sig = {
+            let mut exp_section = PromptSection::new("exp_hint", "Try approach B");
+            exp_section.experiment_id = Some("exp-42".into());
+            let payload = ExperimentAssignment::new(
+                scope.clone(),
+                vec![exp_section],
+                vec!["exp-42".into()],
+            );
+            let body = Body::from_json(&payload).unwrap();
+            Signal::builder(Kind::ContextPack).body(body).build()
+        };
+
+        let input = vec![
+            make_request_signal(&scope),
+            // Deliberately shuffled order to verify aggregate sorts correctly.
+            experiment_sig,
+            modulation_sig,
+            episodes_sig,
+            playbook_sig,
+            knowledge_sig,
+            task_ctx_sig,
+            safety_sig,
+        ];
+
+        let result = cell
+            .execute(input, &roko_graph::CellContext::new())
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 1);
+
+        let prompt: ComposedPrompt = result[0].body.as_json().unwrap();
+
+        // All 7 sections should be present.
+        assert_eq!(prompt.included_section_ids.len(), 7);
+        assert!(prompt.dropped_section_ids.is_empty());
+
+        // Verify ordering: safety < knowledge < episodes < playbook < task < modulation < experiment.
+        let text = &prompt.text;
+        let safety_pos = text.find("Do not modify safety files").unwrap();
+        let knowledge_pos = text.find("Rust uses ownership").unwrap();
+        let episodes_pos = text.find("E0277: add trait bound").unwrap();
+        let playbook_pos = text.find("Use builder pattern").unwrap();
+        let task_pos = text.find("Implement the widget").unwrap();
+        let modulation_pos = text.find("Focus on correctness").unwrap();
+        let experiment_pos = text.find("Try approach B").unwrap();
+
+        assert!(safety_pos < knowledge_pos, "safety before knowledge");
+        assert!(knowledge_pos < episodes_pos, "knowledge before episodes");
+        assert!(episodes_pos < playbook_pos, "episodes before playbook");
+        assert!(playbook_pos < task_pos, "playbook before task");
+        assert!(task_pos < modulation_pos, "task before modulation");
+        assert!(modulation_pos < experiment_pos, "modulation before experiment");
+
+        // Experiment IDs propagated.
+        assert_eq!(prompt.active_experiment_ids, vec!["exp-42"]);
+    }
+
+    /// Duplicate sections from multiple providers are deduplicated.
+    /// The same section ID appearing in knowledge and episodes should
+    /// only appear once in the output.
+    #[tokio::test]
+    async fn cross_provider_deduplication() {
+        let scope = test_scope();
+        let cell = AggregateCell::new();
+
+        let shared_id = "shared-section-001";
+
+        let knowledge_sig = {
+            let payload = KnowledgeSections::new(
+                scope.clone(),
+                vec![PromptSection::new("knowledge_fact", "first copy")
+                    .with_section_id(shared_id)],
+            );
+            let body = Body::from_json(&payload).unwrap();
+            Signal::builder(Kind::ContextPack).body(body).build()
+        };
+        let episodes_sig = {
+            let payload = EpisodeSections::new(
+                scope.clone(),
+                vec![PromptSection::new("error_pattern", "second copy")
+                    .with_section_id(shared_id)],
+            );
+            let body = Body::from_json(&payload).unwrap();
+            Signal::builder(Kind::ContextPack).body(body).build()
+        };
+
+        let input = vec![
+            make_request_signal(&scope),
+            make_safety_signal(&scope),
+            make_task_context_signal(&scope),
+            knowledge_sig,
+            episodes_sig,
+        ];
+
+        let result = cell
+            .execute(input, &roko_graph::CellContext::new())
+            .await
+            .unwrap();
+        let prompt: ComposedPrompt = result[0].body.as_json().unwrap();
+
+        // The shared section ID should appear exactly once.
+        let dup_count = prompt
+            .included_section_ids
+            .iter()
+            .filter(|id| id.as_str() == shared_id)
+            .count();
+        assert_eq!(dup_count, 1, "cross-provider duplicate not deduplicated");
+
+        // Only the first copy (knowledge) should be in the text.
+        assert!(prompt.text.contains("first copy"));
+        assert!(!prompt.text.contains("second copy"));
+    }
+
+    /// Deterministic output: same inputs always produce the same prompt text.
+    #[tokio::test]
+    async fn deterministic_prompt_output() {
+        let scope = test_scope();
+        let cell = AggregateCell::new();
+
+        let build_input = || {
+            vec![
+                make_request_signal(&scope),
+                make_safety_signal(&scope),
+                make_task_context_signal(&scope),
+                make_knowledge_signal(&scope),
+            ]
+        };
+
+        let result1 = cell
+            .execute(build_input(), &roko_graph::CellContext::new())
+            .await
+            .unwrap();
+        let prompt1: ComposedPrompt = result1[0].body.as_json().unwrap();
+
+        let result2 = cell
+            .execute(build_input(), &roko_graph::CellContext::new())
+            .await
+            .unwrap();
+        let prompt2: ComposedPrompt = result2[0].body.as_json().unwrap();
+
+        assert_eq!(prompt1.text, prompt2.text, "prompt text not deterministic");
+        assert_eq!(
+            prompt1.included_section_ids, prompt2.included_section_ids,
+            "included IDs not deterministic"
+        );
+        assert_eq!(
+            prompt1.estimated_tokens, prompt2.estimated_tokens,
+            "token count not deterministic"
         );
     }
 }

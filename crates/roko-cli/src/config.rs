@@ -143,9 +143,8 @@ impl Config {
     /// The core loader is the single source of truth for providers, models,
     /// agent defaults, and env overrides. CLI-only compatibility fields
     /// (`gates`, `executor`, `runtime`, `prompt`) retain their existing
-    /// defaults because those sections are parsed by the legacy `ConfigLayer`
-    /// path; once those are migrated to core schema, this function will map
-    /// them directly.
+    /// defaults because those sections are not yet part of the core schema;
+    /// once they are migrated, this function will map them directly.
     pub fn from_roko_config(core: &RokoConfig) -> Result<Self> {
         let core_agent = &core.agent;
         let agent = AgentConfig {
@@ -1131,56 +1130,10 @@ impl Source {
     }
 }
 
-/// Partial config — every field optional. Used for the global/project layers
-/// that get merged into a final [`Config`].
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct ConfigLayer {
-    /// Agent backend overrides.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent: Option<AgentLayer>,
-    /// Automatically generate a plan when a PRD is promoted.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auto_plan: Option<bool>,
-    /// Automatic dream-cycle overrides.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dreams: Option<DreamsLayer>,
-    /// Daimon configuration overrides.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub daimon: Option<DaimonLayer>,
-    /// Tool registry preference overrides.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tools: Option<ToolsLayer>,
-    /// Prompt settings overrides.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prompt: Option<PromptLayer>,
-    /// Verify list (replaces rather than merges if present).
-    #[serde(default, rename = "gate", skip_serializing_if = "Option::is_none")]
-    pub gates: Option<Vec<GateConfig>>,
-    /// Executor settings overrides.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub executor: Option<ExecutorLayer>,
-    /// Plan-level runner settings overrides.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runner: Option<RunnerLayer>,
-    /// Runtime/control-plane settings overrides.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runtime: Option<RuntimeControlLayer>,
-    /// Provider registry overrides keyed by provider name.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub providers: Option<IndexMap<String, ProviderLayer>>,
-    /// Model registry overrides keyed by model name.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub models: Option<IndexMap<String, ModelProfileLayer>>,
-    /// API serving options overrides.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub serve: Option<ServeLayer>,
-    /// Per-repository configuration blocks.
-    #[serde(default, rename = "repos", skip_serializing_if = "Option::is_none")]
-    pub repos: Option<Vec<RepoConfig>>,
-    /// Learning subsystem overrides.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub learning: Option<LearningLayer>,
-}
+// NOTE: The legacy `ConfigLayer` struct has been eliminated. Config loading
+// goes through `load_resolved_config()` which delegates to the core
+// `roko_core::config::loader`. Config writing (`config set`, `config init`)
+// operates directly on raw `toml::Value` trees via `set_toml_dotted_key()`.
 
 /// Partial overrides for `[learning]`.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -1233,307 +1186,6 @@ impl LearningLayer {
     }
 }
 
-impl ConfigLayer {
-    /// Parse a layer from a TOML string.
-    pub fn parse_toml(text: &str) -> Result<Self> {
-        parse_toml_with_env(text, "invalid config toml")
-    }
-
-    /// Read a layer from a file on disk.
-    pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
-        let path = path.as_ref();
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("read config {}", path.display()))?;
-        Self::parse_toml(&text).with_context(|| format!("parse config {}", path.display()))
-    }
-
-    /// Merge two layers — `overlay` wins field-by-field.
-    #[must_use]
-    pub fn merge(mut self, overlay: Self) -> Self {
-        if let Some(a) = overlay.agent {
-            self.agent = Some(match self.agent {
-                Some(base) => base.merge(a),
-                None => a,
-            });
-        }
-        if let Some(auto_plan) = overlay.auto_plan {
-            self.auto_plan = Some(auto_plan);
-        }
-        if let Some(dreams) = overlay.dreams {
-            self.dreams = Some(match self.dreams {
-                Some(base) => base.merge(dreams),
-                None => dreams,
-            });
-        }
-        if let Some(daimon) = overlay.daimon {
-            self.daimon = Some(match self.daimon {
-                Some(base) => base.merge(daimon),
-                None => daimon,
-            });
-        }
-        if let Some(t) = overlay.tools {
-            self.tools = Some(match self.tools {
-                Some(base) => base.merge(t),
-                None => t,
-            });
-        }
-        if let Some(p) = overlay.prompt {
-            self.prompt = Some(match self.prompt {
-                Some(base) => base.merge(p),
-                None => p,
-            });
-        }
-        if let Some(g) = overlay.gates {
-            self.gates = Some(g);
-        }
-        if let Some(e) = overlay.executor {
-            self.executor = Some(match self.executor {
-                Some(base) => base.merge(e),
-                None => e,
-            });
-        }
-        if let Some(runner) = overlay.runner {
-            self.runner = Some(match self.runner {
-                Some(base) => base.merge(runner),
-                None => runner,
-            });
-        }
-        if let Some(runtime) = overlay.runtime {
-            self.runtime = Some(match self.runtime {
-                Some(base) => base.merge(runtime),
-                None => runtime,
-            });
-        }
-        if let Some(overlay_providers) = overlay.providers {
-            let mut providers = self.providers.unwrap_or_default();
-            for (name, layer) in overlay_providers {
-                providers
-                    .entry(name)
-                    .and_modify(|base| *base = base.clone().merge(layer.clone()))
-                    .or_insert(layer);
-            }
-            self.providers = Some(providers);
-        }
-        if let Some(overlay_models) = overlay.models {
-            let mut models = self.models.unwrap_or_default();
-            for (name, layer) in overlay_models {
-                models
-                    .entry(name)
-                    .and_modify(|base| *base = base.clone().merge(layer.clone()))
-                    .or_insert(layer);
-            }
-            self.models = Some(models);
-        }
-        if let Some(s) = overlay.serve {
-            self.serve = Some(match self.serve {
-                Some(base) => base.merge(s),
-                None => s,
-            });
-        }
-        if let Some(repos) = overlay.repos {
-            self.repos = Some(repos);
-        }
-        if let Some(l) = overlay.learning {
-            self.learning = Some(match self.learning {
-                Some(base) => base.merge(l),
-                None => l,
-            });
-        }
-        self
-    }
-
-    /// True if this layer has no fields set.
-    #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        self.agent.is_none()
-            && self.auto_plan.is_none()
-            && self.dreams.is_none()
-            && self.daimon.is_none()
-            && self.tools.is_none()
-            && self.prompt.is_none()
-            && self.gates.is_none()
-            && self.executor.is_none()
-            && self.runner.is_none()
-            && self.runtime.is_none()
-            && self.providers.is_none()
-            && self.models.is_none()
-            && self.serve.is_none()
-            && self.repos.is_none()
-            && self.learning.is_none()
-    }
-
-    /// Resolve into a concrete [`Config`], filling missing fields with defaults.
-    pub fn resolve(self) -> Result<Config> {
-        let agent = match self.agent {
-            Some(a) => {
-                let defaults = AgentConfig::default();
-                AgentConfig {
-                    command: a.command.unwrap_or(defaults.command),
-                    args: a.args.unwrap_or(defaults.args),
-                    model: a.model.or(defaults.model),
-                    effort: a.effort.unwrap_or(defaults.effort),
-                    bare_mode: a.bare_mode.unwrap_or(defaults.bare_mode),
-                    fallback_model: a.fallback_model.or(defaults.fallback_model),
-                    timeout_ms: a.timeout_ms.unwrap_or(defaults.timeout_ms),
-                    env: a.env.unwrap_or(defaults.env),
-                    clean_output: a.clean_output.unwrap_or(defaults.clean_output),
-                    mcp_config: a.mcp_config.or(defaults.mcp_config),
-                    tier_models: defaults.tier_models,
-                    escalation: defaults.escalation,
-                }
-            }
-            None => AgentConfig::default(),
-        };
-        let tools = match self.tools {
-            Some(t) => {
-                let defaults = ToolsConfig::default();
-                ToolsConfig {
-                    prefer_mcp: t.prefer_mcp.unwrap_or(defaults.prefer_mcp),
-                    global_denied: t.global_denied.unwrap_or(defaults.global_denied),
-                    mcp_timeout_secs: t.mcp_timeout_secs.unwrap_or(defaults.mcp_timeout_secs),
-                }
-            }
-            None => ToolsConfig::default(),
-        };
-        let auto_plan = self.auto_plan.unwrap_or(false);
-        let dreams = match self.dreams {
-            Some(dreams) => dreams.resolve(),
-            None => DreamsConfig::default(),
-        };
-        dreams.validate().context("validate [dreams]")?;
-        let daimon = match self.daimon {
-            Some(daimon) => daimon.resolve()?,
-            None => DaimonConfig::default(),
-        };
-        let prompt = match self.prompt {
-            Some(p) => {
-                let defaults = PromptConfig::default();
-                PromptConfig {
-                    token_budget: p.token_budget.unwrap_or(defaults.token_budget),
-                    role: p.role.unwrap_or(defaults.role),
-                    files: p.files.unwrap_or(defaults.files),
-                    budgets: defaults.budgets,
-                    context_budgets: defaults.context_budgets,
-                }
-            }
-            None => PromptConfig::default(),
-        };
-        let gates = self.gates.unwrap_or_default();
-        let executor = match self.executor {
-            Some(e) => {
-                let defaults = ExecutorConfig::default();
-                ExecutorConfig {
-                    max_concurrent_plans: e
-                        .max_concurrent_plans
-                        .unwrap_or(defaults.max_concurrent_plans),
-                    max_concurrent_tasks: e
-                        .max_concurrent_tasks
-                        .unwrap_or(defaults.max_concurrent_tasks),
-                    max_auto_fix_iterations: e
-                        .max_auto_fix_iterations
-                        .unwrap_or(defaults.max_auto_fix_iterations),
-                    max_merge_attempts: e.max_merge_attempts.unwrap_or(defaults.max_merge_attempts),
-                    task_timeout_secs: e.task_timeout_secs.unwrap_or(defaults.task_timeout_secs),
-                    budget_usd: e.budget_usd.or(defaults.budget_usd),
-                    auto_replan: e.auto_replan.unwrap_or(defaults.auto_replan),
-                    use_worktrees: e.use_worktrees.unwrap_or(defaults.use_worktrees),
-                    speculative_threshold_multiplier: e
-                        .speculative_threshold_multiplier
-                        .unwrap_or(defaults.speculative_threshold_multiplier),
-                    resource_budget: defaults.resource_budget,
-                }
-            }
-            None => ExecutorConfig::default(),
-        };
-        let runner = match self.runner {
-            Some(runner) => runner.resolve(),
-            None => RunnerConfig::default(),
-        };
-        let runtime = match self.runtime {
-            Some(runtime) => runtime.resolve()?,
-            None => RuntimeControlConfig::default(),
-        };
-        let providers = match self.providers {
-            Some(providers) => providers
-                .into_iter()
-                .map(|(name, layer)| {
-                    let provider = layer
-                        .resolve()
-                        .with_context(|| format!("resolve providers.{name}"))?;
-                    Ok((name, provider))
-                })
-                .collect::<Result<IndexMap<_, _>>>()?,
-            None => IndexMap::new(),
-        };
-        let models = match self.models {
-            Some(models) => models
-                .into_iter()
-                .map(|(name, layer)| {
-                    let profile = layer
-                        .resolve()
-                        .with_context(|| format!("resolve models.{name}"))?;
-                    Ok((name, profile))
-                })
-                .collect::<Result<IndexMap<_, _>>>()?,
-            None => IndexMap::new(),
-        };
-        let serve = match self.serve {
-            Some(s) => {
-                let defaults = ServeConfig::default();
-                ServeConfig {
-                    port: s.port,
-                    share_ttl_days: s.share_ttl_days.unwrap_or(defaults.share_ttl_days),
-                    acknowledge_public_risk: defaults.acknowledge_public_risk,
-                    terminal_enabled: match s.terminal_enabled {
-                        Some(terminal_enabled) => terminal_enabled,
-                        None => defaults.terminal_enabled,
-                    },
-                    auto_orchestrate: match s.auto_orchestrate {
-                        Some(auto_orchestrate) => auto_orchestrate,
-                        None => defaults.auto_orchestrate,
-                    },
-                    auth: match s.auth {
-                        Some(auth) => auth.resolve(defaults.auth),
-                        None => defaults.auth,
-                    },
-                    deploy: match s.deploy {
-                        Some(deploy) => deploy.resolve(defaults.deploy),
-                        None => defaults.deploy,
-                    },
-                    auto_start: match s.auto_start {
-                        Some(auto_start) => auto_start,
-                        None => defaults.auto_start,
-                    },
-                    event_ingest_allowlist: defaults.event_ingest_allowlist,
-                    tracing: defaults.tracing,
-                }
-            }
-            None => ServeConfig::default(),
-        };
-        let learning = self.learning.unwrap_or_default();
-        Ok(Config {
-            agent,
-            auto_plan,
-            dreams,
-            daimon,
-            tools,
-            prompt,
-            repos: self.repos.unwrap_or_default(),
-            gates,
-            executor,
-            runner,
-            runtime,
-            budget: BudgetConfig::default(),
-            providers,
-            models,
-            learning,
-            serve,
-            log_format: None,
-            bind: None,
-            data_dir: None,
-        })
-    }
-}
 
 /// Partial provider config used for layered merges.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -1838,730 +1490,275 @@ where
         .context(context)
 }
 
-pub(crate) fn apply_layer_value(layer: &mut ConfigLayer, key: &str, value: &str) -> Result<()> {
-    match key.split('.').collect::<Vec<_>>().as_slice() {
-        ["auto_plan"] => {
-            layer.auto_plan = Some(value.parse::<bool>().context("parse auto_plan as bool")?);
-        }
-        ["agent", "command"] => {
-            let agent = layer.agent.get_or_insert_with(AgentLayer::default);
-            agent.command = Some(value.into());
-        }
-        ["agent", "args"] => {
-            let agent = layer.agent.get_or_insert_with(AgentLayer::default);
-            agent.args = Some(parse_string_list(value, "parse JSON array for agent.args")?);
-        }
-        ["agent", "model"] | ["agent", "default_model"] => {
-            let agent = layer.agent.get_or_insert_with(AgentLayer::default);
-            agent.model = Some(value.into());
-        }
-        ["agent", "effort"] => {
-            let agent = layer.agent.get_or_insert_with(AgentLayer::default);
-            agent.effort = Some(value.into());
-        }
-        ["agent", "bare_mode"] => {
-            let agent = layer.agent.get_or_insert_with(AgentLayer::default);
-            agent.bare_mode = Some(value.parse::<bool>().context("parse bare_mode as bool")?);
-        }
-        ["agent", "fallback_model"] => {
-            let agent = layer.agent.get_or_insert_with(AgentLayer::default);
-            agent.fallback_model = Some(value.into());
-        }
-        ["agent", "timeout_ms"] => {
-            let agent = layer.agent.get_or_insert_with(AgentLayer::default);
-            agent.timeout_ms = Some(value.parse().context("parse timeout_ms as u64")?);
-        }
-        ["agent", "env"] => {
-            let agent = layer.agent.get_or_insert_with(AgentLayer::default);
-            agent.env =
-                Some(serde_json::from_str(value).context("parse JSON array for agent.env")?);
-        }
-        ["agent", "clean_output"] => {
-            let agent = layer.agent.get_or_insert_with(AgentLayer::default);
-            agent.clean_output = Some(
-                value
-                    .parse::<bool>()
-                    .context("parse clean_output as bool")?,
-            );
-        }
-        ["agent", "mcp_config"] => {
-            let agent = layer.agent.get_or_insert_with(AgentLayer::default);
-            agent.mcp_config = Some(PathBuf::from(value));
-        }
-        ["dreams", "auto_dream"] => {
-            let dreams = layer.dreams.get_or_insert_with(DreamsLayer::default);
-            dreams.auto_dream = Some(value.parse::<bool>().context("parse auto_dream as bool")?);
-        }
-        ["dreams", "idle_threshold_mins"] => {
-            let dreams = layer.dreams.get_or_insert_with(DreamsLayer::default);
-            dreams.idle_threshold_mins = Some(
-                value
-                    .parse::<u64>()
-                    .context("parse idle_threshold_mins as u64")?,
-            );
-        }
-        ["dreams", "min_episodes_for_dream"] => {
-            let dreams = layer.dreams.get_or_insert_with(DreamsLayer::default);
-            dreams.min_episodes_for_dream = Some(
-                value
-                    .parse::<usize>()
-                    .context("parse min_episodes_for_dream as usize")?,
-            );
-        }
-        ["dreams", "scheduled_cron"] => {
-            let dreams = layer.dreams.get_or_insert_with(DreamsLayer::default);
-            dreams.scheduled_cron = Some(value.to_string());
-        }
-        ["dreams", "episode_count_trigger"] => {
-            let dreams = layer.dreams.get_or_insert_with(DreamsLayer::default);
-            dreams.episode_count_trigger = Some(
-                value
-                    .parse::<usize>()
-                    .context("parse episode_count_trigger as usize")?,
-            );
-        }
-        ["dreams", "quality_gain"] => {
-            let dreams = layer.dreams.get_or_insert_with(DreamsLayer::default);
-            dreams.quality_gain = Some(
-                value
-                    .parse::<f64>()
-                    .context("parse dream quality_gain as f64")?,
-            );
-        }
-        ["dreams", "quality_penalty"] => {
-            let dreams = layer.dreams.get_or_insert_with(DreamsLayer::default);
-            dreams.quality_penalty = Some(
-                value
-                    .parse::<f64>()
-                    .context("parse dream quality_penalty as f64")?,
-            );
-        }
-        ["daimon", "strategy_space", "domain"] => {
-            let daimon = layer.daimon.get_or_insert_with(DaimonLayer::default);
-            let strategy_space = daimon
-                .strategy_space
-                .get_or_insert_with(StrategySpaceLayer::default);
-            strategy_space.domain = Some(value.into());
-        }
-        ["daimon", "strategy_space", "dimensions"] => {
-            let daimon = layer.daimon.get_or_insert_with(DaimonLayer::default);
-            let strategy_space = daimon
-                .strategy_space
-                .get_or_insert_with(StrategySpaceLayer::default);
-            strategy_space.dimensions = Some(parse_string_list(
-                value,
-                "parse JSON array for daimon.strategy_space.dimensions",
-            )?);
-        }
-        ["tools", "prefer_mcp"] => {
-            let tools = layer.tools.get_or_insert_with(ToolsLayer::default);
-            tools.prefer_mcp = Some(value.parse::<bool>().context("parse prefer_mcp as bool")?);
-        }
-        ["tools", "global_denied"] => {
-            let tools = layer.tools.get_or_insert_with(ToolsLayer::default);
-            tools.global_denied = Some(parse_string_list(
-                value,
-                "parse JSON array for tools.global_denied",
-            )?);
-        }
-        ["tools", "mcp_timeout_secs"] => {
-            let tools = layer.tools.get_or_insert_with(ToolsLayer::default);
-            tools.mcp_timeout_secs = Some(
-                value
-                    .parse::<u64>()
-                    .context("parse mcp_timeout_secs as u64")?,
-            );
-        }
-        ["prompt", "token_budget"] => {
-            let prompt = layer.prompt.get_or_insert_with(PromptLayer::default);
-            prompt.token_budget = Some(
-                value
-                    .parse::<usize>()
-                    .context("parse token_budget as usize")?,
-            );
-        }
-        ["prompt", "role"] => {
-            let prompt = layer.prompt.get_or_insert_with(PromptLayer::default);
-            prompt.role = Some(value.into());
-        }
-        ["prompt", "files"] => {
-            let prompt = layer.prompt.get_or_insert_with(PromptLayer::default);
-            prompt.files =
-                Some(serde_json::from_str(value).context("parse JSON array for prompt.files")?);
-        }
-        ["executor", "max_concurrent_plans"] => {
-            let executor = layer.executor.get_or_insert_with(ExecutorLayer::default);
-            executor.max_concurrent_plans = Some(
-                value
-                    .parse::<usize>()
-                    .context("parse max_concurrent_plans as usize")?,
-            );
-        }
-        ["executor", "max_concurrent_tasks"] => {
-            let executor = layer.executor.get_or_insert_with(ExecutorLayer::default);
-            executor.max_concurrent_tasks = Some(
-                value
-                    .parse::<usize>()
-                    .context("parse max_concurrent_tasks as usize")?,
-            );
-        }
-        ["executor", "max_auto_fix_iterations"] => {
-            let executor = layer.executor.get_or_insert_with(ExecutorLayer::default);
-            executor.max_auto_fix_iterations = Some(
-                value
-                    .parse::<u32>()
-                    .context("parse max_auto_fix_iterations as u32")?,
-            );
-        }
-        ["executor", "max_merge_attempts"] => {
-            let executor = layer.executor.get_or_insert_with(ExecutorLayer::default);
-            executor.max_merge_attempts = Some(
-                value
-                    .parse::<u32>()
-                    .context("parse max_merge_attempts as u32")?,
-            );
-        }
-        ["executor", "task_timeout_secs"] => {
-            let executor = layer.executor.get_or_insert_with(ExecutorLayer::default);
-            executor.task_timeout_secs = Some(
-                value
-                    .parse::<u64>()
-                    .context("parse task_timeout_secs as u64")?,
-            );
-        }
-        ["executor", "budget_usd"] => {
-            let executor = layer.executor.get_or_insert_with(ExecutorLayer::default);
-            executor.budget_usd = Some(value.parse::<f64>().context("parse budget_usd as f64")?);
-        }
-        ["executor", "auto_replan"] => {
-            let executor = layer.executor.get_or_insert_with(ExecutorLayer::default);
-            executor.auto_replan =
-                Some(value.parse::<bool>().context("parse auto_replan as bool")?);
-        }
-        ["executor", "use_worktrees"] => {
-            let executor = layer.executor.get_or_insert_with(ExecutorLayer::default);
-            executor.use_worktrees = Some(
-                value
-                    .parse::<bool>()
-                    .context("parse use_worktrees as bool")?,
-            );
-        }
-        ["runner", "plan_timeout_secs"] => {
-            let runner = layer.runner.get_or_insert_with(RunnerLayer::default);
-            runner.plan_timeout_secs = Some(
-                value
-                    .parse::<u64>()
-                    .context("parse plan_timeout_secs as u64")?,
-            );
-        }
-        ["providers", name, "kind"] => {
-            let provider = provider_layer_mut(layer, name);
-            provider.kind = Some(parse_string_enum(value, "parse provider kind")?);
-        }
-        ["providers", name, "base_url"] => {
-            let provider = provider_layer_mut(layer, name);
-            provider.base_url = Some(value.into());
-        }
-        ["providers", name, "api_key_env"] => {
-            let provider = provider_layer_mut(layer, name);
-            provider.api_key_env = Some(value.into());
-        }
-        ["providers", name, "command"] => {
-            let provider = provider_layer_mut(layer, name);
-            provider.command = Some(value.into());
-        }
-        ["providers", name, "args"] => {
-            let provider = provider_layer_mut(layer, name);
-            provider.args = Some(parse_string_list(
-                value,
-                "parse JSON array for provider args",
-            )?);
-        }
-        ["providers", name, "timeout_ms"] => {
-            let provider = provider_layer_mut(layer, name);
-            provider.timeout_ms = Some(value.parse::<u64>().context("parse timeout_ms as u64")?);
-        }
-        ["providers", name, "ttft_timeout_ms"] => {
-            let provider = provider_layer_mut(layer, name);
-            provider.ttft_timeout_ms = Some(
-                value
-                    .parse::<u64>()
-                    .context("parse ttft_timeout_ms as u64")?,
-            );
-        }
-        ["providers", name, "connect_timeout_ms"] => {
-            let provider = provider_layer_mut(layer, name);
-            provider.connect_timeout_ms = Some(
-                value
-                    .parse::<u64>()
-                    .context("parse connect_timeout_ms as u64")?,
-            );
-        }
-        ["providers", name, "extra_headers"] => {
-            let provider = provider_layer_mut(layer, name);
-            provider.extra_headers =
-                Some(serde_json::from_str(value).context("parse JSON object for extra_headers")?);
-        }
-        ["providers", name, "max_concurrent"] => {
-            let provider = provider_layer_mut(layer, name);
-            provider.max_concurrent = Some(
-                value
-                    .parse::<u32>()
-                    .context("parse max_concurrent as u32")?,
-            );
-        }
-        ["models", name, "provider"] => {
-            let model = model_layer_mut(layer, name);
-            model.provider = Some(value.into());
-        }
-        ["models", name, "slug"] => {
-            let model = model_layer_mut(layer, name);
-            model.slug = Some(value.into());
-        }
-        ["models", name, "context_window"] => {
-            let model = model_layer_mut(layer, name);
-            model.context_window = Some(
-                value
-                    .parse::<u64>()
-                    .context("parse context_window as u64")?,
-            );
-        }
-        ["models", name, "max_output"] => {
-            let model = model_layer_mut(layer, name);
-            model.max_output = Some(value.parse::<u64>().context("parse max_output as u64")?);
-        }
-        ["models", name, "supports_tools"] => {
-            let model = model_layer_mut(layer, name);
-            model.supports_tools = Some(
-                value
-                    .parse::<bool>()
-                    .context("parse supports_tools as bool")?,
-            );
-        }
-        ["models", name, "supports_thinking"] => {
-            let model = model_layer_mut(layer, name);
-            model.supports_thinking = Some(
-                value
-                    .parse::<bool>()
-                    .context("parse supports_thinking as bool")?,
-            );
-        }
-        ["models", name, "supports_vision"] => {
-            let model = model_layer_mut(layer, name);
-            model.supports_vision = Some(
-                value
-                    .parse::<bool>()
-                    .context("parse supports_vision as bool")?,
-            );
-        }
-        ["models", name, "supports_web_search"] => {
-            let model = model_layer_mut(layer, name);
-            model.supports_web_search = Some(
-                value
-                    .parse::<bool>()
-                    .context("parse supports_web_search as bool")?,
-            );
-        }
-        ["models", name, "supports_mcp_tools"] => {
-            let model = model_layer_mut(layer, name);
-            model.supports_mcp_tools = Some(
-                value
-                    .parse::<bool>()
-                    .context("parse supports_mcp_tools as bool")?,
-            );
-        }
-        ["models", name, "supports_partial"] => {
-            let model = model_layer_mut(layer, name);
-            model.supports_partial = Some(
-                value
-                    .parse::<bool>()
-                    .context("parse supports_partial as bool")?,
-            );
-        }
-        ["models", name, "supports_grounding"] => {
-            let model = model_layer_mut(layer, name);
-            model.supports_grounding = Some(
-                value
-                    .parse::<bool>()
-                    .context("parse supports_grounding as bool")?,
-            );
-        }
-        ["models", name, "supports_code_execution"] => {
-            let model = model_layer_mut(layer, name);
-            model.supports_code_execution = Some(
-                value
-                    .parse::<bool>()
-                    .context("parse supports_code_execution as bool")?,
-            );
-        }
-        ["models", name, "supports_caching"] => {
-            let model = model_layer_mut(layer, name);
-            model.supports_caching = Some(
-                value
-                    .parse::<bool>()
-                    .context("parse supports_caching as bool")?,
-            );
-        }
-        ["models", name, "provider_routing", "sort"] => {
-            let routing = model_routing_layer_mut(layer, name);
-            routing.sort = Some(value.into());
-        }
-        ["models", name, "provider_routing", "order"] => {
-            let routing = model_routing_layer_mut(layer, name);
-            routing.order = Some(parse_string_list(
-                value,
-                "parse JSON array for provider_routing.order",
-            )?);
-        }
-        ["models", name, "provider_routing", "allow_fallbacks"] => {
-            let routing = model_routing_layer_mut(layer, name);
-            routing.allow_fallbacks = Some(
-                value
-                    .parse::<bool>()
-                    .context("parse allow_fallbacks as bool")?,
-            );
-        }
-        ["models", name, "provider_routing", "max_price"] => {
-            let routing = model_routing_layer_mut(layer, name);
-            routing.max_price = Some(value.parse::<f64>().context("parse max_price as f64")?);
-        }
-        ["models", name, "provider_routing", "require_parameters"] => {
-            let routing = model_routing_layer_mut(layer, name);
-            routing.require_parameters = Some(parse_string_list(
-                value,
-                "parse JSON array for provider_routing.require_parameters",
-            )?);
-        }
-        ["models", name, "tool_format"] => {
-            let model = model_layer_mut(layer, name);
-            model.tool_format = Some(value.into());
-        }
-        ["models", name, "cost_input_per_m"] => {
-            let model = model_layer_mut(layer, name);
-            model.cost_input_per_m = Some(
-                value
-                    .parse::<f64>()
-                    .context("parse cost_input_per_m as f64")?,
-            );
-        }
-        ["models", name, "cost_output_per_m"] => {
-            let model = model_layer_mut(layer, name);
-            model.cost_output_per_m = Some(
-                value
-                    .parse::<f64>()
-                    .context("parse cost_output_per_m as f64")?,
-            );
-        }
-        ["models", name, "cost_input_per_m_high"] => {
-            let model = model_layer_mut(layer, name);
-            model.cost_input_per_m_high = Some(
-                value
-                    .parse::<f64>()
-                    .context("parse cost_input_per_m_high as f64")?,
-            );
-        }
-        ["models", name, "cost_output_per_m_high"] => {
-            let model = model_layer_mut(layer, name);
-            model.cost_output_per_m_high = Some(
-                value
-                    .parse::<f64>()
-                    .context("parse cost_output_per_m_high as f64")?,
-            );
-        }
-        ["models", name, "cost_cache_read_per_m"] => {
-            let model = model_layer_mut(layer, name);
-            model.cost_cache_read_per_m = Some(
-                value
-                    .parse::<f64>()
-                    .context("parse cost_cache_read_per_m as f64")?,
-            );
-        }
-        ["models", name, "cost_cache_write_per_m"] => {
-            let model = model_layer_mut(layer, name);
-            model.cost_cache_write_per_m = Some(
-                value
-                    .parse::<f64>()
-                    .context("parse cost_cache_write_per_m as f64")?,
-            );
-        }
-        ["models", name, "thinking_level"] => {
-            let model = model_layer_mut(layer, name);
-            model.thinking_level = Some(value.into());
-        }
-        ["models", name, "max_tools"] => {
-            let model = model_layer_mut(layer, name);
-            model.max_tools = Some(value.parse::<u32>().context("parse max_tools as u32")?);
-        }
-        ["models", name, "tokenizer_ratio"] => {
-            let model = model_layer_mut(layer, name);
-            model.tokenizer_ratio = Some(
-                value
-                    .parse::<f64>()
-                    .context("parse tokenizer_ratio as f64")?,
-            );
-        }
-        ["models", name, "supports_search"] => {
-            let model = model_layer_mut(layer, name);
-            model.supports_search = Some(
-                value
-                    .parse::<bool>()
-                    .context("parse supports_search as bool")?,
-            );
-        }
-        ["models", name, "supports_citations"] => {
-            let model = model_layer_mut(layer, name);
-            model.supports_citations = Some(
-                value
-                    .parse::<bool>()
-                    .context("parse supports_citations as bool")?,
-            );
-        }
-        ["models", name, "supports_async"] => {
-            let model = model_layer_mut(layer, name);
-            model.supports_async = Some(
-                value
-                    .parse::<bool>()
-                    .context("parse supports_async as bool")?,
-            );
-        }
-        ["models", name, "is_embedding_model"] => {
-            let model = model_layer_mut(layer, name);
-            model.is_embedding_model = Some(
-                value
-                    .parse::<bool>()
-                    .context("parse is_embedding_model as bool")?,
-            );
-        }
-        ["models", name, "search_context_size"] => {
-            let model = model_layer_mut(layer, name);
-            model.search_context_size = Some(value.into());
-        }
-        ["models", name, "cost_per_request"] => {
-            let model = model_layer_mut(layer, name);
-            model.cost_per_request = Some(
-                value
-                    .parse::<f64>()
-                    .context("parse cost_per_request as f64")?,
-            );
-        }
-        ["serve", "auth", "enabled"] => {
-            let auth = serve_auth_layer_mut(layer);
-            auth.enabled = Some(value.parse::<bool>().context("parse enabled as bool")?);
-        }
-        ["serve", "auth", "api_key"] => {
-            let auth = serve_auth_layer_mut(layer);
-            auth.api_key = Some(value.into());
-        }
-        ["serve", "deploy", "provider"] => {
-            let deploy = serve_deploy_layer_mut(layer);
-            deploy.provider = Some(value.into());
-        }
-        ["serve", "deploy", "environment"] => {
-            let deploy = serve_deploy_layer_mut(layer);
-            deploy.environment = Some(parse_string_list(
-                value,
-                "parse JSON array for serve.deploy.environment",
-            )?);
-        }
-        ["serve", "deploy", "webhooks"] => {
-            let deploy = serve_deploy_layer_mut(layer);
-            deploy.webhooks = Some(
-                serde_json::from_str(value)
-                    .context("parse JSON array for serve.deploy.webhooks")?,
-            );
-        }
-        ["serve", "auto_start"] => {
-            let serve = layer.serve.get_or_insert_with(ServeLayer::default);
-            serve.auto_start = Some(value.parse::<bool>().context("parse auto_start as bool")?);
-        }
-        ["learning", "replan_on_gate_failure"] => {
-            let learning = layer.learning.get_or_insert_with(LearningLayer::default);
-            learning.replan_on_gate_failure = Some(
-                value
-                    .parse::<bool>()
-                    .context("parse replan_on_gate_failure as bool")?,
-            );
-        }
-        ["learning", "replan_max_per_plan"] => {
-            let learning = layer.learning.get_or_insert_with(LearningLayer::default);
-            learning.replan_max_per_plan = Some(
-                value
-                    .parse::<u32>()
-                    .context("parse replan_max_per_plan as u32")?,
-            );
-        }
-        ["learning", "replan_gate_attempts"] => {
-            let learning = layer.learning.get_or_insert_with(LearningLayer::default);
-            learning.replan_gate_attempts = Some(
-                value
-                    .parse::<u32>()
-                    .context("parse replan_gate_attempts as u32")?,
-            );
-        }
-        ["learning", "auto_playbook_refresh"] => {
-            let learning = layer.learning.get_or_insert_with(LearningLayer::default);
-            learning.auto_playbook_refresh = Some(
-                value
-                    .parse::<bool>()
-                    .context("parse auto_playbook_refresh as bool")?,
-            );
-        }
-        ["learning", "use_lookahead_router"] => {
-            let learning = layer.learning.get_or_insert_with(LearningLayer::default);
-            learning.use_lookahead_router = Some(
-                value
-                    .parse::<bool>()
-                    .context("parse use_lookahead_router as bool")?,
-            );
-        }
-        ["learning", "lookahead_threshold"] => {
-            let learning = layer.learning.get_or_insert_with(LearningLayer::default);
-            learning.lookahead_threshold = Some(
-                value
-                    .parse::<f64>()
-                    .context("parse lookahead_threshold as f64")?,
-            );
-        }
-        ["learning", "gate_threshold_flush_interval"] => {
-            let learning = layer.learning.get_or_insert_with(LearningLayer::default);
-            learning.gate_threshold_flush_interval = Some(
-                value
-                    .parse::<u64>()
-                    .context("parse gate_threshold_flush_interval as u64")?,
-            );
-        }
-        _ => return Err(anyhow!("unknown key: {key}")),
+/// Parse a user-supplied value string into a `toml::Value` appropriate for the
+/// given dotted key, then set it in the TOML document.
+///
+/// This replaces the old typed `ConfigLayer` approach: instead of maintaining a
+/// parallel Option-wrapped schema we operate directly on the raw TOML tree,
+/// preserving sparse serialization (only set keys appear in the file).
+pub(crate) fn set_toml_dotted_key(
+    doc: &mut toml::Value,
+    key: &str,
+    value: &str,
+) -> Result<()> {
+    let parsed = parse_value_for_key(key, value)?;
+    let segments: Vec<&str> = key.split('.').collect();
+    if segments.is_empty() {
+        bail!("empty key");
     }
+    // Normalise alias: agent.default_model -> agent.model
+    let segments: Vec<&str> = if segments.as_slice() == ["agent", "default_model"] {
+        vec!["agent", "model"]
+    } else {
+        segments
+    };
 
+    // Walk/create intermediate tables.
+    let table = doc
+        .as_table_mut()
+        .ok_or_else(|| anyhow!("config root is not a table"))?;
+    let mut cursor: &mut toml::Value = &mut toml::Value::Table(table.clone());
+    // We need to work in-place on `doc`, so re-borrow.
+    cursor = doc;
+    for segment in &segments[..segments.len() - 1] {
+        let tbl = cursor
+            .as_table_mut()
+            .ok_or_else(|| anyhow!("expected table at key segment '{segment}'"))?;
+        cursor = tbl
+            .entry(*segment)
+            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    }
+    let leaf_key = segments[segments.len() - 1];
+    let tbl = cursor
+        .as_table_mut()
+        .ok_or_else(|| anyhow!("expected table for leaf key '{leaf_key}'"))?;
+    tbl.insert(leaf_key.to_string(), parsed);
     Ok(())
 }
 
-#[allow(dead_code)]
-fn parse_string_list(value: &str, json_context: &'static str) -> Result<Vec<String>> {
+/// Determine the expected TOML type for a known dotted key and parse `value`
+/// accordingly. Returns an error for unknown keys.
+fn parse_value_for_key(key: &str, value: &str) -> Result<toml::Value> {
+    let segments: Vec<&str> = key.split('.').collect();
+    match segments.as_slice() {
+        // Booleans
+        ["auto_plan"]
+        | ["agent", "bare_mode"]
+        | ["agent", "clean_output"]
+        | ["dreams", "auto_dream"]
+        | ["tools", "prefer_mcp"]
+        | ["executor", "auto_replan"]
+        | ["executor", "use_worktrees"]
+        | ["serve", "auto_start"]
+        | ["serve", "auth", "enabled"]
+        | ["learning", "replan_on_gate_failure"]
+        | ["learning", "auto_playbook_refresh"]
+        | ["learning", "use_lookahead_router"] => {
+            let b = value.parse::<bool>().with_context(|| format!("parse {key} as bool"))?;
+            Ok(toml::Value::Boolean(b))
+        }
+        // Integers (u64 / usize / u32 — all stored as TOML Integer)
+        ["agent", "timeout_ms"]
+        | ["dreams", "idle_threshold_mins"]
+        | ["dreams", "min_episodes_for_dream"]
+        | ["dreams", "episode_count_trigger"]
+        | ["tools", "mcp_timeout_secs"]
+        | ["prompt", "token_budget"]
+        | ["executor", "max_concurrent_plans"]
+        | ["executor", "max_concurrent_tasks"]
+        | ["executor", "max_auto_fix_iterations"]
+        | ["executor", "max_merge_attempts"]
+        | ["executor", "task_timeout_secs"]
+        | ["runner", "plan_timeout_secs"]
+        | ["learning", "replan_max_per_plan"]
+        | ["learning", "replan_gate_attempts"]
+        | ["learning", "gate_threshold_flush_interval"] => {
+            let n = value.parse::<i64>().with_context(|| format!("parse {key} as integer"))?;
+            Ok(toml::Value::Integer(n))
+        }
+        // Floats
+        ["dreams", "quality_gain"]
+        | ["dreams", "quality_penalty"]
+        | ["executor", "budget_usd"]
+        | ["learning", "lookahead_threshold"] => {
+            let f = value.parse::<f64>().with_context(|| format!("parse {key} as float"))?;
+            Ok(toml::Value::Float(f))
+        }
+        // Plain strings
+        ["agent", "command"]
+        | ["agent", "model"]
+        | ["agent", "default_model"]
+        | ["agent", "effort"]
+        | ["agent", "fallback_model"]
+        | ["agent", "mcp_config"]
+        | ["dreams", "scheduled_cron"]
+        | ["prompt", "role"]
+        | ["serve", "auth", "api_key"]
+        | ["serve", "deploy", "provider"]
+        | ["daimon", "strategy_space", "domain"] => Ok(toml::Value::String(value.to_string())),
+        // String arrays (accept JSON array or whitespace-separated)
+        ["agent", "args"]
+        | ["tools", "global_denied"]
+        | ["daimon", "strategy_space", "dimensions"]
+        | ["serve", "deploy", "environment"] => {
+            let items = parse_string_list(value, &format!("parse {key} as string list"))?;
+            let arr = items.into_iter().map(toml::Value::String).collect();
+            Ok(toml::Value::Array(arr))
+        }
+        // JSON-parsed complex values
+        ["agent", "env"] | ["prompt", "files"] | ["serve", "deploy", "webhooks"] => {
+            let json_val: serde_json::Value =
+                serde_json::from_str(value).with_context(|| format!("parse {key} as JSON"))?;
+            json_to_toml(&json_val).with_context(|| format!("convert {key} JSON to TOML"))
+        }
+        ["providers", name, "extra_headers"] => {
+            let json_val: serde_json::Value = serde_json::from_str(value)
+                .with_context(|| format!("parse providers.{name}.extra_headers as JSON object"))?;
+            json_to_toml(&json_val)
+                .with_context(|| format!("convert providers.{name}.extra_headers to TOML"))
+        }
+        // Provider fields with dynamic name
+        ["providers", _, "kind"] => {
+            // Validate it's a known ProviderKind by attempting deserialisation.
+            let _kind: ProviderKind = serde_json::from_value(
+                serde_json::Value::String(value.to_string()),
+            )
+            .context("parse provider kind")?;
+            Ok(toml::Value::String(value.to_string()))
+        }
+        ["providers", _, "base_url"]
+        | ["providers", _, "api_key_env"]
+        | ["providers", _, "command"] => Ok(toml::Value::String(value.to_string())),
+        ["providers", _, "args"] => {
+            let items = parse_string_list(value, "parse provider args as string list")?;
+            let arr = items.into_iter().map(toml::Value::String).collect();
+            Ok(toml::Value::Array(arr))
+        }
+        ["providers", _, "timeout_ms"]
+        | ["providers", _, "ttft_timeout_ms"]
+        | ["providers", _, "connect_timeout_ms"]
+        | ["providers", _, "max_concurrent"] => {
+            let n = value.parse::<i64>().with_context(|| format!("parse {key} as integer"))?;
+            Ok(toml::Value::Integer(n))
+        }
+        // Model fields with dynamic name
+        ["models", _, "provider"]
+        | ["models", _, "slug"]
+        | ["models", _, "tool_format"]
+        | ["models", _, "thinking_level"]
+        | ["models", _, "search_context_size"] => Ok(toml::Value::String(value.to_string())),
+        ["models", _, "context_window"]
+        | ["models", _, "max_output"]
+        | ["models", _, "max_tools"] => {
+            let n = value.parse::<i64>().with_context(|| format!("parse {key} as integer"))?;
+            Ok(toml::Value::Integer(n))
+        }
+        ["models", _, "supports_tools"]
+        | ["models", _, "supports_thinking"]
+        | ["models", _, "supports_vision"]
+        | ["models", _, "supports_web_search"]
+        | ["models", _, "supports_mcp_tools"]
+        | ["models", _, "supports_partial"]
+        | ["models", _, "supports_grounding"]
+        | ["models", _, "supports_code_execution"]
+        | ["models", _, "supports_caching"]
+        | ["models", _, "supports_search"]
+        | ["models", _, "supports_citations"]
+        | ["models", _, "supports_async"]
+        | ["models", _, "is_embedding_model"]
+        | ["models", _, "use_max_completion_tokens"] => {
+            let b = value.parse::<bool>().with_context(|| format!("parse {key} as bool"))?;
+            Ok(toml::Value::Boolean(b))
+        }
+        ["models", _, "cost_input_per_m"]
+        | ["models", _, "cost_output_per_m"]
+        | ["models", _, "cost_input_per_m_high"]
+        | ["models", _, "cost_output_per_m_high"]
+        | ["models", _, "cost_cache_read_per_m"]
+        | ["models", _, "cost_cache_write_per_m"]
+        | ["models", _, "cost_per_request"]
+        | ["models", _, "tokenizer_ratio"] => {
+            let f = value.parse::<f64>().with_context(|| format!("parse {key} as float"))?;
+            Ok(toml::Value::Float(f))
+        }
+        // Model routing sub-keys
+        ["models", _, "provider_routing", "sort"] => Ok(toml::Value::String(value.to_string())),
+        ["models", _, "provider_routing", "order"]
+        | ["models", _, "provider_routing", "require_parameters"] => {
+            let items = parse_string_list(value, &format!("parse {key} as string list"))?;
+            let arr = items.into_iter().map(toml::Value::String).collect();
+            Ok(toml::Value::Array(arr))
+        }
+        ["models", _, "provider_routing", "allow_fallbacks"] => {
+            let b = value.parse::<bool>().with_context(|| format!("parse {key} as bool"))?;
+            Ok(toml::Value::Boolean(b))
+        }
+        ["models", _, "provider_routing", "max_price"] => {
+            let f = value.parse::<f64>().with_context(|| format!("parse {key} as float"))?;
+            Ok(toml::Value::Float(f))
+        }
+        _ => Err(anyhow!("unknown key: {key}")),
+    }
+}
+
+fn parse_string_list(value: &str, context: &str) -> Result<Vec<String>> {
     if value.trim_start().starts_with('[') {
-        serde_json::from_str(value).context(json_context)
+        serde_json::from_str(value).context(context.to_string())
     } else {
         Ok(value.split_whitespace().map(String::from).collect())
     }
 }
 
-fn parse_string_enum<T>(value: &str, context: &'static str) -> Result<T>
-where
-    T: DeserializeOwned,
-{
-    serde_json::from_value(serde_json::Value::String(value.to_string())).context(context)
-}
-
-#[allow(dead_code)]
-fn provider_layer_mut<'a>(layer: &'a mut ConfigLayer, name: &str) -> &'a mut ProviderLayer {
-    layer
-        .providers
-        .get_or_insert_with(IndexMap::new)
-        .entry(name.to_string())
-        .or_default()
-}
-
-#[allow(dead_code)]
-fn model_layer_mut<'a>(layer: &'a mut ConfigLayer, name: &str) -> &'a mut ModelProfileLayer {
-    layer
-        .models
-        .get_or_insert_with(IndexMap::new)
-        .entry(name.to_string())
-        .or_default()
-}
-
-#[allow(dead_code)]
-fn model_routing_layer_mut<'a>(
-    layer: &'a mut ConfigLayer,
-    name: &str,
-) -> &'a mut ProviderRoutingLayer {
-    model_layer_mut(layer, name)
-        .provider_routing
-        .get_or_insert_with(ProviderRoutingLayer::default)
-}
-
-#[allow(dead_code)]
-fn serve_auth_layer_mut(layer: &mut ConfigLayer) -> &mut ServeAuthLayer {
-    layer
-        .serve
-        .get_or_insert_with(ServeLayer::default)
-        .auth
-        .get_or_insert_with(ServeAuthLayer::default)
-}
-
-#[allow(dead_code)]
-fn serve_deploy_layer_mut(layer: &mut ConfigLayer) -> &mut ServeDeployLayer {
-    layer
-        .serve
-        .get_or_insert_with(ServeLayer::default)
-        .deploy
-        .get_or_insert_with(ServeDeployLayer::default)
-}
-
-#[allow(dead_code)]
-fn collect_env_override_layer() -> Result<(ConfigLayer, Vec<String>)> {
-    collect_env_override_layer_from(std::env::vars())
-}
-
-#[allow(dead_code)]
-fn collect_env_override_layer_from<I>(vars: I) -> Result<(ConfigLayer, Vec<String>)>
-where
-    I: IntoIterator<Item = (String, String)>,
-{
-    let mut layer = ConfigLayer::default();
-    let mut paths = Vec::new();
-
-    for (key, value) in vars {
-        let Some(path) = env_override_path(&key) else {
-            continue;
-        };
-        apply_layer_value(&mut layer, &path, &value)
-            .with_context(|| format!("set {path} from {key}"))?;
-        paths.push(path);
-    }
-
-    Ok((layer, paths))
-}
-
-#[allow(dead_code)]
-fn env_override_path(key: &str) -> Option<String> {
-    let suffix = key.strip_prefix("ROKO__")?;
-    if suffix.is_empty() {
-        return None;
-    }
-    Some(suffix.to_ascii_lowercase().replace("__", "."))
-}
-
-#[allow(dead_code)]
-fn apply_env_source_overrides(sources: &mut ConfigSources, paths: &[String]) {
-    for path in paths {
-        match path.as_str() {
-            "auto_plan" => sources.auto_plan = Source::Env,
-            "agent.command" => sources.agent_command = Source::Env,
-            "agent.args" => sources.agent_args = Source::Env,
-            "agent.model" => sources.agent_model = Source::Env,
-            "agent.effort" => sources.agent_effort = Source::Env,
-            "agent.bare_mode" => sources.agent_bare_mode = Source::Env,
-            "agent.fallback_model" => sources.agent_fallback_model = Source::Env,
-            "agent.timeout_ms" => sources.agent_timeout_ms = Source::Env,
-            "tools.prefer_mcp" => sources.tools_prefer_mcp = Source::Env,
-            "tools.global_denied" => sources.tools_global_denied = Source::Env,
-            "tools.mcp_timeout_secs" => sources.tools_mcp_timeout_secs = Source::Env,
-            "prompt.token_budget" => sources.prompt_token_budget = Source::Env,
-            "prompt.role" => sources.prompt_role = Source::Env,
-            "dreams.auto_dream" => sources.dreams_auto_dream = Source::Env,
-            "dreams.idle_threshold_mins" => sources.dreams_idle_threshold_mins = Source::Env,
-            "dreams.min_episodes_for_dream" => sources.dreams_min_episodes_for_dream = Source::Env,
-            "dreams.scheduled_cron" => sources.dreams_scheduled_cron = Source::Env,
-            "dreams.episode_count_trigger" => sources.dreams_episode_count_trigger = Source::Env,
-            "dreams.quality_gain" => sources.dreams_quality_gain = Source::Env,
-            "dreams.quality_penalty" => sources.dreams_quality_penalty = Source::Env,
-            "runner.plan_timeout_secs" => sources.runner_plan_timeout_secs = Source::Env,
-            path if path.starts_with("providers.") => sources.providers = Source::Env,
-            path if path.starts_with("models.") => sources.models = Source::Env,
-            _ => {}
+/// Convert a `serde_json::Value` into a `toml::Value`.
+fn json_to_toml(json: &serde_json::Value) -> Result<toml::Value> {
+    match json {
+        serde_json::Value::Null => Ok(toml::Value::String(String::new())),
+        serde_json::Value::Bool(b) => Ok(toml::Value::Boolean(*b)),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Ok(toml::Value::Integer(i))
+            } else if let Some(f) = n.as_f64() {
+                Ok(toml::Value::Float(f))
+            } else {
+                bail!("unsupported JSON number: {n}")
+            }
+        }
+        serde_json::Value::String(s) => Ok(toml::Value::String(s.clone())),
+        serde_json::Value::Array(arr) => {
+            let items: Result<Vec<_>> = arr.iter().map(json_to_toml).collect();
+            Ok(toml::Value::Array(items?))
+        }
+        serde_json::Value::Object(map) => {
+            let mut table = toml::map::Map::new();
+            for (k, v) in map {
+                table.insert(k.clone(), json_to_toml(v)?);
+            }
+            Ok(toml::Value::Table(table))
         }
     }
+}
+
+/// Read a config file as a raw `toml::Value`, preserving only the keys that
+/// were actually set in the file (no default inflation).
+pub(crate) fn read_toml_file(path: &Path) -> Result<toml::Value> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("read config {}", path.display()))?;
+    let value: toml::Value =
+        toml::from_str(&text).with_context(|| format!("parse config {}", path.display()))?;
+    Ok(value)
+}
+
+/// Write a `toml::Value` back to a file as pretty TOML.
+pub(crate) fn write_toml_file(path: &Path, value: &toml::Value) -> Result<()> {
+    let rendered =
+        toml::to_string_pretty(value).context("serialize config")?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create {}", parent.display()))?;
+    }
+    std::fs::write(path, rendered)
+        .with_context(|| format!("write {}", path.display()))?;
+    Ok(())
 }
 
 fn interpolate_env_values(value: &mut toml::Value) -> Result<()> {
@@ -3098,7 +2295,7 @@ pub struct ResolvedConfig {
 ///
 /// This is a compatibility facade that downstream rendering uses. It is
 /// now populated from the core loader's provenance records rather than
-/// from the legacy `ConfigLayer` inspection.
+/// from the core loader's provenance records.
 #[derive(Clone, Debug)]
 pub struct ConfigSources {
     /// Where `auto_plan` came from.
@@ -3218,112 +2415,6 @@ impl ConfigSources {
     }
 }
 
-/// Top-level TOML keys recognised by either the core `RokoConfig` schema or the
-/// legacy CLI-only `ConfigLayer` schema.
-///
-/// Any key present in a `roko.toml` that is not in this set is silently dropped
-/// by serde; [`warn_dropped_toml_keys`] emits a diagnostic warning for such keys
-/// so users are informed rather than left wondering why their setting has no effect.
-/// CLI-only top-level keys that the legacy `ConfigLayer` accepts but the core
-/// `RokoConfig` schema does not.  The core validator handles all
-/// `RokoConfig`-level keys; these are the residual CLI-specific additions.
-const CLI_ONLY_CONFIG_KEYS: &[&str] = &["auto_plan", "executor", "runtime"];
-
-/// Emit a warning for each TOML key in `text` that is not recognized by the
-/// core `RokoConfig` schema or the CLI-only `ConfigLayer` additions.
-///
-/// Delegates to the core [`roko_core::config::loader::validate_known_config_paths`]
-/// for full nested validation. CLI-only keys are additionally accepted at the
-/// top level.
-///
-/// Non-fatal: unrecognised keys do not prevent config loading.
-#[allow(dead_code)]
-pub fn warn_dropped_toml_keys(text: &str, source_label: &str) {
-    let value: toml::Value = match toml::from_str(text) {
-        Ok(v) => v,
-        Err(_) => return, // parse errors are reported elsewhere
-    };
-    let diagnostics = roko_core::config::loader::validate_known_config_paths(&value);
-    for diag in &diagnostics {
-        // Skip diagnostics for keys that the CLI config layer accepts.
-        let top_key = diag.key.split('.').next().unwrap_or(&diag.key);
-        if CLI_ONLY_CONFIG_KEYS.contains(&top_key) {
-            continue;
-        }
-        tracing::warn!(
-            %source_label,
-            key = %diag.key,
-            "roko config: {}",
-            diag.message
-        );
-    }
-}
-
-/// Apply core-authoritative config overrides to a CLI [`Config`].
-///
-/// The core unified loader (`roko_core::config::loader`) handles hierarchical
-/// `ROKO__*` env overrides, secret interpolation, and semantic validation.
-/// After the legacy `ConfigLayer` path produces a CLI `Config` (which still
-/// provides CLI-only fields like `auto_plan`, `repos`, `dreams`, `daimon`),
-/// this function overlays the provider/model/agent fields from the core
-/// `RokoConfig` so that the core loader is the single source of truth for
-/// those values.
-///
-/// Fields overridden from core:
-/// - `providers` -- full provider registry
-/// - `models` -- full model registry
-/// - `agent.model` -- from `core.agent.default_model`
-/// - `agent.effort` -- from `core.agent.default_effort`
-/// - `agent.bare_mode` -- from `core.agent.bare_mode`
-/// - `agent.command` -- from `core.agent.command` (if set)
-/// - `agent.args` -- from `core.agent.args` (if set)
-/// - `agent.timeout_ms` -- from `core.agent.timeout_ms` (if set)
-/// - `agent.env` -- from `core.agent.env` (if set)
-/// - `agent.fallback_model` -- from `core.agent.fallback_model` (if set)
-/// - `agent.tier_models` -- from `core.agent.tier_models` (if non-empty)
-#[allow(dead_code)]
-fn apply_core_authoritative_overrides(
-    config: &mut Config,
-    core: &roko_core::config::schema::RokoConfig,
-) {
-    // Providers and models: core is always authoritative.
-    config.providers = core.providers.clone();
-    config.models = core.models.clone();
-
-    // Agent fields: core agent has richer semantics (default_model alias,
-    // env override support, per-role overrides). Map core fields onto the
-    // CLI AgentConfig, preferring core values when they differ from the
-    // core defaults (indicating the user explicitly set them).
-    let core_agent = &core.agent;
-
-    // default_model maps to CLI agent.model (Option<String>).
-    config.agent.model = Some(core_agent.default_model.clone());
-
-    // Effort and bare_mode are always consumed from core.
-    config.agent.effort = core_agent.default_effort.clone();
-    config.agent.bare_mode = core_agent.bare_mode;
-
-    // Legacy agent fields: only override if core has an explicit value.
-    if let Some(ref cmd) = core_agent.command {
-        config.agent.command = cmd.clone();
-    }
-    if let Some(ref args) = core_agent.args {
-        config.agent.args = args.clone();
-    }
-    if let Some(timeout) = core_agent.timeout_ms {
-        config.agent.timeout_ms = timeout;
-    }
-    if let Some(ref env) = core_agent.env {
-        config.agent.env = env.clone();
-    }
-    if core_agent.fallback_model.is_some() {
-        config.agent.fallback_model = core_agent.fallback_model.clone();
-    }
-    if !core_agent.tier_models.is_empty() {
-        config.agent.tier_models = core_agent.tier_models.clone();
-    }
-}
-
 /// Load config using the unified core loader and return a [`ResolvedConfig`].
 ///
 /// This is the primary config loading entry point for CLI code. It delegates
@@ -3334,7 +2425,7 @@ fn apply_core_authoritative_overrides(
 ///
 /// The validated core `RokoConfig` is then converted to the CLI `Config` via
 /// [`Config::from_roko_config()`], and provenance is derived from the core
-/// loader's provenance records rather than the legacy `ConfigLayer` system.
+/// loader's provenance records.
 ///
 /// Precedence (highest first): hierarchical `ROKO__*` env vars -> named
 /// `ROKO_*` env vars -> `ROKO_CONFIG` env var -> project `roko.toml` ->
@@ -3367,155 +2458,6 @@ pub fn load_resolved_config(workdir: &Path) -> Result<ResolvedConfig> {
         sources,
         paths,
     })
-}
-
-/// Compute per-field provenance from global + project layers.
-#[allow(dead_code)]
-fn compute_sources(global: &ConfigLayer, project: &ConfigLayer) -> ConfigSources {
-    let g_auto_plan = global.auto_plan.is_some();
-    let p_auto_plan = project.auto_plan.is_some();
-    let g_agent = global.agent.as_ref();
-    let g_tools = global.tools.as_ref();
-    let p_agent = project.agent.as_ref();
-    let p_tools = project.tools.as_ref();
-    let g_prompt = global.prompt.as_ref();
-    let p_prompt = project.prompt.as_ref();
-    let g_dreams = global.dreams.as_ref();
-    let p_dreams = project.dreams.as_ref();
-    let g_runner = global.runner.as_ref();
-    let p_runner = project.runner.as_ref();
-
-    let pick = |in_project: bool, in_global: bool| -> Source {
-        if in_project {
-            Source::Project
-        } else if in_global {
-            Source::Global
-        } else {
-            Source::Default
-        }
-    };
-
-    ConfigSources {
-        auto_plan: pick(p_auto_plan, g_auto_plan),
-        agent_command: pick(
-            p_agent.and_then(|a| a.command.as_ref()).is_some(),
-            g_agent.and_then(|a| a.command.as_ref()).is_some(),
-        ),
-        agent_args: pick(
-            p_agent.and_then(|a| a.args.as_ref()).is_some(),
-            g_agent.and_then(|a| a.args.as_ref()).is_some(),
-        ),
-        agent_model: pick(
-            p_agent.and_then(|a| a.model.as_ref()).is_some(),
-            g_agent.and_then(|a| a.model.as_ref()).is_some(),
-        ),
-        agent_effort: pick(
-            p_agent.and_then(|a| a.effort.as_ref()).is_some(),
-            g_agent.and_then(|a| a.effort.as_ref()).is_some(),
-        ),
-        agent_bare_mode: pick(
-            p_agent.and_then(|a| a.bare_mode).is_some(),
-            g_agent.and_then(|a| a.bare_mode).is_some(),
-        ),
-        agent_fallback_model: pick(
-            p_agent.and_then(|a| a.fallback_model.as_ref()).is_some(),
-            g_agent.and_then(|a| a.fallback_model.as_ref()).is_some(),
-        ),
-        agent_timeout_ms: pick(
-            p_agent.and_then(|a| a.timeout_ms).is_some(),
-            g_agent.and_then(|a| a.timeout_ms).is_some(),
-        ),
-        tools_prefer_mcp: pick(
-            p_tools.and_then(|t| t.prefer_mcp).is_some(),
-            g_tools.and_then(|t| t.prefer_mcp).is_some(),
-        ),
-        tools_global_denied: pick(
-            p_tools.and_then(|t| t.global_denied.as_ref()).is_some(),
-            g_tools.and_then(|t| t.global_denied.as_ref()).is_some(),
-        ),
-        tools_mcp_timeout_secs: pick(
-            p_tools.and_then(|t| t.mcp_timeout_secs).is_some(),
-            g_tools.and_then(|t| t.mcp_timeout_secs).is_some(),
-        ),
-        prompt_token_budget: pick(
-            p_prompt.and_then(|p| p.token_budget).is_some(),
-            g_prompt.and_then(|p| p.token_budget).is_some(),
-        ),
-        prompt_role: pick(
-            p_prompt.and_then(|p| p.role.as_ref()).is_some(),
-            g_prompt.and_then(|p| p.role.as_ref()).is_some(),
-        ),
-        providers: pick(project.providers.is_some(), global.providers.is_some()),
-        models: pick(project.models.is_some(), global.models.is_some()),
-        dreams_auto_dream: pick(
-            p_dreams.and_then(|d| d.auto_dream).is_some(),
-            g_dreams.and_then(|d| d.auto_dream).is_some(),
-        ),
-        dreams_idle_threshold_mins: pick(
-            p_dreams.and_then(|d| d.idle_threshold_mins).is_some(),
-            g_dreams.and_then(|d| d.idle_threshold_mins).is_some(),
-        ),
-        dreams_min_episodes_for_dream: pick(
-            p_dreams.and_then(|d| d.min_episodes_for_dream).is_some(),
-            g_dreams.and_then(|d| d.min_episodes_for_dream).is_some(),
-        ),
-        dreams_scheduled_cron: pick(
-            p_dreams.and_then(|d| d.scheduled_cron.as_ref()).is_some(),
-            g_dreams.and_then(|d| d.scheduled_cron.as_ref()).is_some(),
-        ),
-        dreams_episode_count_trigger: pick(
-            p_dreams.and_then(|d| d.episode_count_trigger).is_some(),
-            g_dreams.and_then(|d| d.episode_count_trigger).is_some(),
-        ),
-        dreams_quality_gain: pick(
-            p_dreams.and_then(|d| d.quality_gain).is_some(),
-            g_dreams.and_then(|d| d.quality_gain).is_some(),
-        ),
-        dreams_quality_penalty: pick(
-            p_dreams.and_then(|d| d.quality_penalty).is_some(),
-            g_dreams.and_then(|d| d.quality_penalty).is_some(),
-        ),
-        gates: pick(project.gates.is_some(), global.gates.is_some()),
-        runner_plan_timeout_secs: pick(p_runner.is_some(), g_runner.is_some()),
-    }
-}
-
-/// Tag every field in a single-layer config as `present` or `fallback`.
-#[allow(dead_code)]
-fn sources_from_layer(layer: &ConfigLayer, present: Source, fallback: Source) -> ConfigSources {
-    let agent = layer.agent.as_ref();
-    let tools = layer.tools.as_ref();
-    let prompt = layer.prompt.as_ref();
-    let dreams = layer.dreams.as_ref();
-    let pick = |is_set: bool| -> Source { if is_set { present } else { fallback } };
-    ConfigSources {
-        auto_plan: pick(layer.auto_plan.is_some()),
-        agent_command: pick(agent.and_then(|a| a.command.as_ref()).is_some()),
-        agent_args: pick(agent.and_then(|a| a.args.as_ref()).is_some()),
-        agent_model: pick(agent.and_then(|a| a.model.as_ref()).is_some()),
-        agent_effort: pick(agent.and_then(|a| a.effort.as_ref()).is_some()),
-        agent_bare_mode: pick(agent.and_then(|a| a.bare_mode).is_some()),
-        agent_fallback_model: pick(agent.and_then(|a| a.fallback_model.as_ref()).is_some()),
-        agent_timeout_ms: pick(agent.and_then(|a| a.timeout_ms).is_some()),
-        tools_prefer_mcp: pick(tools.and_then(|t| t.prefer_mcp).is_some()),
-        tools_global_denied: pick(tools.and_then(|t| t.global_denied.as_ref()).is_some()),
-        tools_mcp_timeout_secs: pick(tools.and_then(|t| t.mcp_timeout_secs).is_some()),
-        prompt_token_budget: pick(prompt.and_then(|p| p.token_budget).is_some()),
-        prompt_role: pick(prompt.and_then(|p| p.role.as_ref()).is_some()),
-        providers: pick(layer.providers.is_some()),
-        models: pick(layer.models.is_some()),
-        dreams_auto_dream: pick(dreams.and_then(|d| d.auto_dream).is_some()),
-        dreams_idle_threshold_mins: pick(dreams.and_then(|d| d.idle_threshold_mins).is_some()),
-        dreams_min_episodes_for_dream: pick(
-            dreams.and_then(|d| d.min_episodes_for_dream).is_some(),
-        ),
-        dreams_scheduled_cron: pick(dreams.and_then(|d| d.scheduled_cron.as_ref()).is_some()),
-        dreams_episode_count_trigger: pick(dreams.and_then(|d| d.episode_count_trigger).is_some()),
-        dreams_quality_gain: pick(dreams.and_then(|d| d.quality_gain).is_some()),
-        dreams_quality_penalty: pick(dreams.and_then(|d| d.quality_penalty).is_some()),
-        gates: pick(layer.gates.is_some()),
-        runner_plan_timeout_secs: pick(layer.runner.is_some()),
-    }
 }
 
 // -----------------------------------------------------------------------
@@ -3898,132 +2840,6 @@ command = "x${ROKO_TEST_MISSING_DEF456:-}y"
     }
 
     #[test]
-    fn layer_resolve_uses_executor_overrides() {
-        let layer = ConfigLayer::parse_toml(
-            r#"
-[executor]
-max_concurrent_plans = 6
-task_timeout_secs = 900
-auto_replan = false
-use_worktrees = true
-
-[runner]
-plan_timeout_secs = 1200
-"#,
-        )
-        .unwrap();
-
-        let cfg = layer.resolve().unwrap();
-        assert_eq!(cfg.executor.max_concurrent_plans, 6);
-        assert_eq!(
-            cfg.executor.max_concurrent_tasks,
-            ExecutorConfig::default().max_concurrent_tasks
-        );
-        assert_eq!(cfg.executor.task_timeout_secs, 900);
-        assert!(!cfg.executor.auto_replan);
-        assert!(cfg.executor.use_worktrees);
-        assert_eq!(cfg.runner.plan_timeout_secs, 1_200);
-        assert!(!cfg.serve.terminal_enabled);
-        // Secure-by-default: auth is enabled even with no explicit [serve] config.
-        assert!(cfg.serve.auth.enabled);
-        assert!(cfg.serve.auth.api_key.is_empty());
-        assert_eq!(cfg.serve.deploy.provider, "railway");
-        assert_eq!(
-            cfg.serve.deploy.environment,
-            vec![
-                "GITHUB_TOKEN".to_string(),
-                "GITHUB_WEBHOOK_SECRET".to_string(),
-                "SLACK_BOT_TOKEN".to_string(),
-                "SLACK_SIGNING_SECRET".to_string()
-            ]
-        );
-        assert!(cfg.serve.deploy.webhooks.is_empty());
-    }
-
-    #[test]
-    fn layer_resolve_uses_terminal_override() {
-        let layer = ConfigLayer::parse_toml(
-            r#"
-[serve]
-terminal_enabled = true
-"#,
-        )
-        .unwrap();
-
-        let cfg = layer.resolve().unwrap();
-        assert!(cfg.serve.terminal_enabled);
-    }
-
-    #[test]
-    fn layer_resolve_uses_auto_start_override() {
-        let layer = ConfigLayer::parse_toml(
-            r#"
-[serve]
-auto_start = true
-"#,
-        )
-        .unwrap();
-
-        let cfg = layer.resolve().unwrap();
-        assert!(cfg.serve.auto_start);
-    }
-
-    #[test]
-    fn layer_resolve_uses_runtime_control_overrides() {
-        let layer = ConfigLayer::parse_toml(
-            r#"
-[runtime]
-process_session_ledger = ".roko/state/custom-process-sessions.json"
-resume_max_staleness_secs = 3600
-"#,
-        )
-        .unwrap();
-
-        let cfg = layer.resolve().unwrap();
-        assert_eq!(
-            cfg.runtime.process_session_ledger,
-            PathBuf::from(".roko/state/custom-process-sessions.json")
-        );
-        assert_eq!(cfg.runtime.resume_max_staleness_secs, 3600);
-        assert_eq!(cfg.runtime.resume_max_staleness_ms(), 3_600_000);
-        assert_eq!(
-            cfg.runtime
-                .process_session_ledger_path(Path::new("/workspace")),
-            PathBuf::from("/workspace/.roko/state/custom-process-sessions.json")
-        );
-    }
-
-    #[test]
-    fn runtime_control_rejects_zero_staleness_window() {
-        let layer = ConfigLayer::parse_toml(
-            r#"
-[runtime]
-resume_max_staleness_secs = 0
-"#,
-        )
-        .unwrap();
-
-        let err = layer.resolve().unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("runtime.resume_max_staleness_secs must be greater than zero")
-        );
-    }
-
-    #[test]
-    fn layer_resolve_uses_auto_plan_override() {
-        let layer = ConfigLayer::parse_toml(
-            r#"
-auto_plan = true
-"#,
-        )
-        .unwrap();
-
-        let cfg = layer.resolve().unwrap();
-        assert!(cfg.auto_plan);
-    }
-
-    #[test]
     fn default_config_roundtrips_through_toml() {
         let cfg = Config::default();
         let text = cfg.to_toml().unwrap();
@@ -4115,460 +2931,45 @@ auto_plan = true
     }
 
     #[test]
-    fn layer_merge_project_overrides_global() {
-        let global = ConfigLayer::parse_toml(
-            r#"
-[agent]
-command = "ollama"
-args = ["run", "llama3"]
-timeout_ms = 60000
-
-[tools]
-prefer_mcp = true
-global_denied = ["web_fetch"]
-mcp_timeout_secs = 99
-
-[prompt]
-token_budget = 4000
-role = "global role"
-"#,
-        )
-        .unwrap();
-        let project = ConfigLayer::parse_toml(
-            r#"
-[agent]
-command = "mods"
-
-[prompt]
-token_budget = 8000
-"#,
-        )
-        .unwrap();
-
-        let merged = global.merge(project).resolve().unwrap();
-        assert_eq!(merged.agent.command, "mods");
-        assert_eq!(
-            merged.agent.args,
-            vec!["run".to_string(), "llama3".to_string()]
-        );
-        assert_eq!(merged.agent.timeout_ms, 60_000);
-        assert!(merged.tools.prefer_mcp);
-        assert_eq!(merged.tools.global_denied, vec!["web_fetch".to_string()]);
-        assert_eq!(merged.tools.mcp_timeout_secs, 99);
-        assert_eq!(merged.prompt.token_budget, 8000);
-        assert_eq!(merged.prompt.role, "global role");
-    }
-
-    #[test]
-    fn layer_merge_merges_provider_and_model_entries() {
-        let global = ConfigLayer::parse_toml(
-            r#"
-[providers.zai]
-kind = "openai_compat"
-base_url = "https://global.example"
-api_key_env = "GLOBAL_KEY"
-
-[models.glm-5-1]
-provider = "zai"
-slug = "glm-5.1"
-supports_tools = true
-"#,
-        )
-        .unwrap();
-        let project = ConfigLayer::parse_toml(
-            r#"
-[providers.zai]
-base_url = "https://project.example"
-timeout_ms = 42000
-
-[models.glm-5-1]
-supports_thinking = true
-max_output = 131072
-"#,
-        )
-        .unwrap();
-
-        let merged = global.merge(project).resolve().unwrap();
-        let provider = merged.providers.get("zai").unwrap();
-        assert_eq!(provider.kind, ProviderKind::OpenAiCompat);
-        assert_eq!(
-            provider.base_url.as_deref(),
-            Some("https://project.example")
-        );
-        assert_eq!(provider.api_key_env.as_deref(), Some("GLOBAL_KEY"));
-        assert_eq!(provider.timeout_ms, Some(42_000));
-
-        let model = merged.models.get("glm-5-1").unwrap();
-        assert_eq!(model.provider, "zai");
-        assert_eq!(model.slug, "glm-5.1");
-        assert!(model.supports_tools);
-        assert!(model.supports_thinking);
-        assert_eq!(model.max_output, Some(131_072));
-    }
-
-    #[test]
-    fn apply_layer_value_sets_provider_and_model_entries() {
-        let mut layer = ConfigLayer::default();
-        apply_layer_value(&mut layer, "providers.zai.kind", "openai_compat").unwrap();
-        apply_layer_value(
-            &mut layer,
+    fn set_toml_dotted_key_sets_fields_correctly() {
+        let mut doc = toml::Value::Table(toml::map::Map::new());
+        set_toml_dotted_key(&mut doc, "providers.zai.kind", "openai_compat").unwrap();
+        set_toml_dotted_key(
+            &mut doc,
             "providers.zai.base_url",
             "https://api.z.ai/api/paas/v4",
         )
         .unwrap();
-        apply_layer_value(&mut layer, "models.glm51.provider", "zai").unwrap();
-        apply_layer_value(&mut layer, "models.glm51.slug", "glm-5.1").unwrap();
-        apply_layer_value(&mut layer, "models.glm51.supports_thinking", "true").unwrap();
-        apply_layer_value(&mut layer, "runner.plan_timeout_secs", "1800").unwrap();
-        apply_layer_value(&mut layer, "learning.gate_threshold_flush_interval", "7").unwrap();
-
-        let cfg = layer.resolve().unwrap();
-        let provider = cfg.providers.get("zai").unwrap();
-        assert_eq!(provider.kind, ProviderKind::OpenAiCompat);
-        assert_eq!(
-            provider.base_url.as_deref(),
-            Some("https://api.z.ai/api/paas/v4")
-        );
-
-        let model = cfg.models.get("glm51").unwrap();
-        assert_eq!(model.provider, "zai");
-        assert_eq!(model.slug, "glm-5.1");
-        assert!(model.supports_thinking);
-        assert_eq!(cfg.runner.plan_timeout_secs, 1_800);
-        assert_eq!(cfg.learning.gate_threshold_flush_interval, Some(7));
-    }
-
-    #[test]
-    fn layer_resolve_errors_when_provider_kind_missing() {
-        let layer = ConfigLayer::parse_toml(
-            r#"
-[providers.zai]
-base_url = "https://api.z.ai/api/paas/v4"
-"#,
-        )
-        .unwrap();
-
-        let err = layer.resolve().unwrap_err();
-        let msg = format!("{err:#}");
-        assert!(msg.contains("resolve providers.zai"));
-        assert!(msg.contains("missing required field `kind`"));
-    }
-
-    #[test]
-    fn layer_resolve_empty_uses_defaults() {
-        let layer = ConfigLayer::default();
-        let cfg = layer.resolve().unwrap();
-        assert_eq!(cfg.agent.command, "cat");
-        assert!(!cfg.tools.prefer_mcp);
-        assert!(cfg.tools.global_denied.is_empty());
-        assert_eq!(cfg.tools.mcp_timeout_secs, 30);
-        assert_eq!(cfg.prompt.token_budget, 10_000);
-        assert!(cfg.providers.is_empty());
-        assert!(cfg.models.is_empty());
-        assert!(cfg.dreams.auto_dream);
-        assert_eq!(cfg.dreams.idle_threshold_mins, 15);
-        assert_eq!(cfg.dreams.min_episodes_for_dream, 5);
-        assert!(cfg.dreams.scheduled_cron.is_none());
-        assert_eq!(cfg.dreams.episode_count_trigger, 0);
-        assert_eq!(cfg.dreams.quality_gain, 0.75);
-        assert_eq!(cfg.dreams.quality_penalty, 1.25);
-        assert_eq!(cfg.daimon.strategy_space.domain, "coding");
-        assert_eq!(cfg.daimon.strategy_space.dimensions[0], "complexity");
-        assert!(cfg.gates.is_empty());
-        assert_eq!(cfg.runner.plan_timeout_secs, DEFAULT_PLAN_TIMEOUT_SECS);
-        assert!(!cfg.serve.terminal_enabled);
-        // Secure-by-default: auth is enabled by default.
-        assert!(cfg.serve.auth.enabled);
-        assert!(cfg.serve.auth.api_key.is_empty());
-    }
-
-    #[test]
-    fn layer_resolve_uses_dreams_override() {
-        let layer = ConfigLayer::parse_toml(
-            r#"
-[dreams]
-auto_dream = false
-idle_threshold_mins = 22
-min_episodes_for_dream = 9
-scheduled_cron = "0 30 * * * * *"
-episode_count_trigger = 7
-quality_gain = 0.7
-quality_penalty = 1.5
-"#,
-        )
-        .unwrap();
-
-        let cfg = layer.resolve().unwrap();
-        assert!(!cfg.dreams.auto_dream);
-        assert_eq!(cfg.dreams.idle_threshold_mins, 22);
-        assert_eq!(cfg.dreams.min_episodes_for_dream, 9);
-        assert_eq!(cfg.dreams.scheduled_cron.as_deref(), Some("0 30 * * * * *"));
-        assert_eq!(cfg.dreams.episode_count_trigger, 7);
-        assert_eq!(cfg.dreams.quality_gain, 0.7);
-        assert_eq!(cfg.dreams.quality_penalty, 1.5);
-    }
-
-    #[test]
-    fn layer_resolve_rejects_invalid_dream_schedule() {
-        let layer = ConfigLayer::parse_toml(
-            r#"
-[dreams]
-quality_penalty = -1.0
-"#,
-        )
-        .unwrap();
-
-        let err = layer.resolve().unwrap_err();
-        assert!(format!("{err:#}").contains("quality_penalty"));
-    }
-
-    #[test]
-    fn layer_resolve_uses_daimon_strategy_space_override() {
-        let layer = ConfigLayer::parse_toml(
-            r#"
-[daimon.strategy_space]
-domain = "chain"
-dimensions = [
-  "volatility",
-  "liquidity",
-  "correlation",
-  "leverage",
-  "time_horizon",
-  "concentration",
-  "counterparty_risk",
-  "regulatory_exposure",
-]
-"#,
-        )
-        .unwrap();
-
-        let cfg = layer.resolve().unwrap();
-        assert_eq!(cfg.daimon.strategy_space.domain, "chain");
-        assert_eq!(cfg.daimon.strategy_space.dimensions[0], "volatility");
-        assert_eq!(
-            cfg.daimon.strategy_space.dimensions[7],
-            "regulatory_exposure"
-        );
-    }
-
-    #[test]
-    fn layer_resolve_rejects_non_8d_strategy_space() {
-        let layer = ConfigLayer::parse_toml(
-            r#"
-[daimon.strategy_space]
-domain = "chain"
-dimensions = ["volatility", "liquidity"]
-"#,
-        )
-        .unwrap();
-
-        let err = layer.resolve().unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("daimon.strategy_space.dimensions must contain exactly 8 entries")
-        );
-    }
-
-    #[test]
-    fn sources_track_provenance() {
-        let global = ConfigLayer::parse_toml(
-            r#"
-[agent]
-command = "ollama"
-timeout_ms = 60000
-"#,
-        )
-        .unwrap();
-        let project = ConfigLayer::parse_toml(
-            r#"
-[agent]
-command = "mods"
-
-[prompt]
-token_budget = 8000
-"#,
-        )
-        .unwrap();
-
-        let sources = compute_sources(&global, &project);
-        assert_eq!(sources.agent_command, Source::Project);
-        assert_eq!(sources.agent_timeout_ms, Source::Global);
-        assert_eq!(sources.tools_prefer_mcp, Source::Default);
-        assert_eq!(sources.tools_global_denied, Source::Default);
-        assert_eq!(sources.tools_mcp_timeout_secs, Source::Default);
-        assert_eq!(sources.prompt_token_budget, Source::Project);
-        assert_eq!(sources.prompt_role, Source::Default);
-        assert_eq!(sources.providers, Source::Default);
-        assert_eq!(sources.models, Source::Default);
-        assert_eq!(sources.agent_args, Source::Default);
-        assert_eq!(sources.dreams_auto_dream, Source::Default);
-        assert_eq!(sources.dreams_idle_threshold_mins, Source::Default);
-        assert_eq!(sources.dreams_min_episodes_for_dream, Source::Default);
-        assert_eq!(sources.dreams_scheduled_cron, Source::Default);
-        assert_eq!(sources.dreams_episode_count_trigger, Source::Default);
-        assert_eq!(sources.dreams_quality_gain, Source::Default);
-        assert_eq!(sources.dreams_quality_penalty, Source::Default);
-        assert_eq!(sources.runner_plan_timeout_secs, Source::Default);
-    }
-
-    #[test]
-    fn dream_layers_merge_field_by_field_and_track_provenance() {
-        let global = ConfigLayer::parse_toml(
-            r#"
-[dreams]
-scheduled_cron = "0 0 * * * * *"
-quality_gain = 0.6
-"#,
-        )
-        .unwrap();
-        let project = ConfigLayer::parse_toml(
-            r#"
-[dreams]
-episode_count_trigger = 9
-quality_penalty = 1.6
-"#,
-        )
-        .unwrap();
-
-        let sources = compute_sources(&global, &project);
-        let resolved = global.merge(project).resolve().unwrap();
+        set_toml_dotted_key(&mut doc, "models.glm51.provider", "zai").unwrap();
+        set_toml_dotted_key(&mut doc, "models.glm51.slug", "glm-5.1").unwrap();
+        set_toml_dotted_key(&mut doc, "models.glm51.supports_thinking", "true").unwrap();
+        set_toml_dotted_key(&mut doc, "runner.plan_timeout_secs", "1800").unwrap();
+        set_toml_dotted_key(&mut doc, "learning.gate_threshold_flush_interval", "7").unwrap();
 
         assert_eq!(
-            resolved.dreams.scheduled_cron.as_deref(),
-            Some("0 0 * * * * *")
+            doc["providers"]["zai"]["kind"].as_str().unwrap(),
+            "openai_compat"
         );
-        assert_eq!(resolved.dreams.episode_count_trigger, 9);
-        assert_eq!(resolved.dreams.quality_gain, 0.6);
-        assert_eq!(resolved.dreams.quality_penalty, 1.6);
-        assert_eq!(sources.dreams_scheduled_cron, Source::Global);
-        assert_eq!(sources.dreams_episode_count_trigger, Source::Project);
-        assert_eq!(sources.dreams_quality_gain, Source::Global);
-        assert_eq!(sources.dreams_quality_penalty, Source::Project);
-    }
-
-    #[test]
-    fn env_override_layer_applies_last_and_marks_sources() {
-        let global = ConfigLayer::parse_toml(
-            r#"
-[agent]
-command = "cat"
-model = "from-file"
-
-[dreams]
-scheduled_cron = "0 0 */4 * * * *"
-episode_count_trigger = 4
-quality_gain = 0.8
-quality_penalty = 1.3
-
-[providers.zai]
-kind = "openai_compat"
-base_url = "https://file.example"
-"#,
-        )
-        .unwrap();
-        let project = ConfigLayer::default();
-        let (env_layer, env_paths) = collect_env_override_layer_from(vec![
-            ("ROKO__AGENT__MODEL".to_string(), "test".to_string()),
-            (
-                "ROKO__RUNNER__PLAN_TIMEOUT_SECS".to_string(),
-                "77".to_string(),
-            ),
-            (
-                "ROKO__PROVIDERS__ZAI__BASE_URL".to_string(),
-                "https://env.example".to_string(),
-            ),
-            (
-                "ROKO__DREAMS__SCHEDULED_CRON".to_string(),
-                "0 30 * * * * *".to_string(),
-            ),
-            (
-                "ROKO__DREAMS__EPISODE_COUNT_TRIGGER".to_string(),
-                "11".to_string(),
-            ),
-            ("ROKO__DREAMS__QUALITY_GAIN".to_string(), "0.65".to_string()),
-            (
-                "ROKO__DREAMS__QUALITY_PENALTY".to_string(),
-                "1.55".to_string(),
-            ),
-        ])
-        .unwrap();
-
-        let mut sources = compute_sources(&global, &project);
-        apply_env_source_overrides(&mut sources, &env_paths);
-        let resolved = global.merge(project).merge(env_layer).resolve().unwrap();
-
-        assert_eq!(resolved.agent.model.as_deref(), Some("test"));
-        assert_eq!(sources.agent_model, Source::Env);
-        assert_eq!(resolved.runner.plan_timeout_secs, 77);
-        assert_eq!(sources.runner_plan_timeout_secs, Source::Env);
         assert_eq!(
-            resolved.providers.get("zai").unwrap().base_url.as_deref(),
-            Some("https://env.example")
+            doc["providers"]["zai"]["base_url"].as_str().unwrap(),
+            "https://api.z.ai/api/paas/v4"
         );
-        assert_eq!(sources.providers, Source::Env);
+        assert_eq!(doc["models"]["glm51"]["provider"].as_str().unwrap(), "zai");
         assert_eq!(
-            resolved.dreams.scheduled_cron.as_deref(),
-            Some("0 30 * * * * *")
+            doc["models"]["glm51"]["slug"].as_str().unwrap(),
+            "glm-5.1"
         );
-        assert_eq!(resolved.dreams.episode_count_trigger, 11);
-        assert_eq!(resolved.dreams.quality_gain, 0.65);
-        assert_eq!(resolved.dreams.quality_penalty, 1.55);
-        assert_eq!(sources.dreams_scheduled_cron, Source::Env);
-        assert_eq!(sources.dreams_episode_count_trigger, Source::Env);
-        assert_eq!(sources.dreams_quality_gain, Source::Env);
-        assert_eq!(sources.dreams_quality_penalty, Source::Env);
-    }
-
-    #[test]
-    fn env_override_layer_applies_daimon_strategy_space() {
-        let (env_layer, _) = collect_env_override_layer_from(vec![
-            (
-                "ROKO__DAIMON__STRATEGY_SPACE__DOMAIN".to_string(),
-                "chain".to_string(),
-            ),
-            (
-                "ROKO__DAIMON__STRATEGY_SPACE__DIMENSIONS".to_string(),
-                serde_json::json!([
-                    "volatility",
-                    "liquidity",
-                    "correlation",
-                    "leverage",
-                    "time_horizon",
-                    "concentration",
-                    "counterparty_risk",
-                    "regulatory_exposure"
-                ])
-                .to_string(),
-            ),
-        ])
-        .unwrap();
-
-        let resolved = ConfigLayer::default().merge(env_layer).resolve().unwrap();
-        assert_eq!(resolved.daimon.strategy_space.domain, "chain");
-        assert_eq!(resolved.daimon.strategy_space.dimensions[3], "leverage");
-    }
-
-    #[test]
-    fn gates_replace_rather_than_merge() {
-        let global = ConfigLayer::parse_toml(
-            r#"
-[[gate]]
-kind = "compile"
-build_system = "cargo"
-"#,
-        )
-        .unwrap();
-        let project = ConfigLayer::parse_toml(
-            r#"
-[[gate]]
-kind = "shell"
-program = "echo"
-"#,
-        )
-        .unwrap();
-        let merged = global.merge(project).resolve().unwrap();
-        assert_eq!(merged.gates.len(), 1);
-        assert!(matches!(&merged.gates[0], GateConfig::Shell { program, .. } if program == "echo"));
+        assert!(doc["models"]["glm51"]["supports_thinking"].as_bool().unwrap());
+        assert_eq!(
+            doc["runner"]["plan_timeout_secs"].as_integer().unwrap(),
+            1800
+        );
+        assert_eq!(
+            doc["learning"]["gate_threshold_flush_interval"]
+                .as_integer()
+                .unwrap(),
+            7
+        );
     }
 
     #[test]
@@ -4579,11 +2980,10 @@ program = "echo"
                 "expected path ending in .roko/config.toml or roko/config.toml, got: {path:?}"
             );
         }
-        // When HOME is unset, global_config_path() returns None.
     }
 
     #[test]
-    fn discover_project_config_walks_upward() {
+    fn discover_project_config_walks_up() {
         use std::fs;
         let tmp = tempfile::tempdir().unwrap();
         let nested = tmp.path().join("a").join("b").join("c");
@@ -4758,7 +3158,7 @@ model = "opus-4"
     }
 
     /// Unknown top-level keys in roko.toml produce a warning via
-    /// `warn_dropped_toml_keys` instead of being silently swallowed.
+    /// the core loader's `validate_known_config_paths` instead of being silently swallowed.
     #[test]
     fn config_unknown_keys_warn() {
         // TOML with both known and unknown top-level keys.

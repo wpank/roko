@@ -1206,7 +1206,7 @@ pub(crate) async fn cmd_replay(
     forensic: bool,
     from_event: Option<String>,
     as_of: Option<String>,
-    format: String,
+    format: Option<String>,
 ) -> Result<i32> {
     use roko_cli::replay::{self, REPLAY_EXIT_SUCCESS, ReplayFormat, ReplayResult};
 
@@ -1226,7 +1226,8 @@ pub(crate) async fn cmd_replay(
     let event_filter = replay::parse_event_filter(filter_value);
 
     // Resolve output format: global --json and --format must agree.
-    let output_format = ReplayFormat::resolve(&format, cli.json).map_err(|msg| anyhow!("{msg}"))?;
+    let output_format =
+        ReplayFormat::resolve(format.as_deref(), cli.json).map_err(|msg| anyhow!("{msg}"))?;
 
     // Validate and parse the root hash.
     let start = ContentHash::from_hex(&hash)

@@ -104,16 +104,16 @@
   ],
   "receipts": [
     {
-      "idempotency_key": "gate-T1-rung2-att0",
-      "owner": "gate-pipeline",
-      "state": "failed",
-      "evidence_fingerprint": "gate-evidence-T1-001"
-    },
-    {
       "idempotency_key": "gate-T1-fix-rung1-att0",
       "owner": "gate-pipeline",
       "state": "failed",
       "evidence_fingerprint": "gate-evidence-T1-fix-001"
+    },
+    {
+      "idempotency_key": "gate-T1-rung2-att0",
+      "owner": "gate-pipeline",
+      "state": "failed",
+      "evidence_fingerprint": "gate-evidence-T1-001"
     }
   ],
   "final": {

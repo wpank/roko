@@ -271,34 +271,6 @@ fn find_vision_model(config: &RokoConfig) -> Option<String> {
         .map(|(key, _)| key.clone())
 }
 
-/// Build a proper multimodal `ChatMessage` for providers that support it.
-/// This is not used by the Agent trait path but is available for direct
-/// provider/backend integration.
-#[allow(dead_code)]
-pub fn build_multimodal_messages(
-    system_prompt: &str,
-    user_text: &str,
-    screenshot_data_uri: &str,
-) -> Vec<ChatMessage> {
-    vec![
-        ChatMessage::System {
-            content: system_prompt.to_string(),
-        },
-        ChatMessage::User {
-            content: MessageContent::Blocks(vec![
-                ContentBlock::Text {
-                    text: user_text.to_string(),
-                },
-                ContentBlock::ImageUrl {
-                    image_url: ImageUrl {
-                        url: screenshot_data_uri.to_string(),
-                    },
-                },
-            ]),
-        },
-    ]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -472,34 +444,6 @@ mod tests {
         // Both blocks should be text when the URI cannot be parsed.
         assert!(matches!(&msgs[0].content[0], ModelInputBlock::Text { .. }));
         assert!(matches!(&msgs[0].content[1], ModelInputBlock::Text { .. }));
-    }
-
-    #[test]
-    fn multimodal_messages_have_correct_shape() {
-        let msgs = build_multimodal_messages("sys", "code here", "data:image/png;base64,abc");
-        assert_eq!(msgs.len(), 2);
-        match &msgs[0] {
-            ChatMessage::System { content } => assert_eq!(content, "sys"),
-            _ => panic!("expected system message"),
-        }
-        match &msgs[1] {
-            ChatMessage::User {
-                content: MessageContent::Blocks(blocks),
-            } => {
-                assert_eq!(blocks.len(), 2);
-                match &blocks[0] {
-                    ContentBlock::Text { text } => assert_eq!(text, "code here"),
-                    _ => panic!("expected text block"),
-                }
-                match &blocks[1] {
-                    ContentBlock::ImageUrl { image_url } => {
-                        assert!(image_url.url.starts_with("data:image/png;base64,"));
-                    }
-                    _ => panic!("expected image block"),
-                }
-            }
-            _ => panic!("expected user message with blocks"),
-        }
     }
 
     #[tokio::test]

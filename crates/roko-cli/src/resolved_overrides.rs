@@ -111,6 +111,17 @@ pub enum ScreenshotPolicy {
     },
 }
 
+/// Budget enforcement policy resolved from `--budget-override`/`--no-budget`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BudgetPolicy {
+    /// Use the config default.
+    FromConfig,
+    /// Explicit per-run ceiling in USD.
+    Override(f64),
+    /// Disabled entirely (`--no-budget` or `--budget-override 0`).
+    Disabled,
+}
+
 /// Config edit target scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigEditTarget {
@@ -185,6 +196,39 @@ pub struct ConfigSetInput {
 #[derive(Debug, Clone, Default)]
 pub struct LearnTuneInput {
     pub dry_run: bool,
+}
+
+/// Input fields specific to `roko develop`.
+#[derive(Debug, Clone, Default)]
+pub struct DevelopInput {
+    pub dry_run: bool,
+    pub yes: bool,
+    pub provider: Option<String>,
+}
+
+/// Input fields specific to `roko research`.
+#[derive(Debug, Clone, Default)]
+pub struct ResearchInput {
+    /// Backend override from `--backend` (auto/gemini/perplexity/agent).
+    pub backend: Option<String>,
+    /// Whether `--deep` was passed.
+    pub deep: bool,
+}
+
+/// Input fields specific to `roko agent serve`.
+#[derive(Debug, Clone, Default)]
+pub struct AgentServeInput {
+    /// Whether `--allow-stub-cognitive-loop` was passed.
+    pub allow_stub_cognitive_loop: bool,
+}
+
+/// Input fields specific to `roko agent chat`.
+#[derive(Debug, Clone, Default)]
+pub struct AgentChatInput {
+    /// Provider override from `--provider`.
+    pub provider: Option<String>,
+    /// Force line-oriented REPL via `--text`.
+    pub text: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -276,6 +320,15 @@ pub struct ResolvedExecutionOverrides {
 
     /// Additional context file paths from `--context`.
     pub context_paths: Vec<PathBuf>,
+
+    /// Budget enforcement policy from `--budget-override`/`--no-budget`.
+    pub budget: BudgetPolicy,
+
+    /// Archive old state and start clean from `--fresh`.
+    pub fresh: bool,
+
+    /// Re-queue drifted tasks on resume from `--force-resume`.
+    pub force_resume: bool,
 }
 
 impl ResolvedExecutionOverrides {
@@ -323,6 +376,9 @@ impl ResolvedExecutionOverrides {
             force_disk_check: false,
             skip_preflight: false,
             max_retries: None,
+            budget: BudgetPolicy::FromConfig,
+            fresh: false,
+            force_resume: false,
         }
     }
 
@@ -373,6 +429,45 @@ impl ResolvedExecutionOverrides {
         resolved
     }
 
+    /// Resolve overrides for `roko research`.
+    ///
+    /// Research commands default role to `researcher` unless `--role` explicitly
+    /// overrides. Model/effort/resume are propagated from global flags.
+    pub fn for_research(flags: &GlobalCliFlags<'_>, input: &ResearchInput) -> Self {
+        let mut resolved = Self::resolve_globals(flags);
+
+        // Default role to researcher unless explicitly overridden.
+        if resolved.role.is_none() {
+            resolved.role = Some("researcher".to_string());
+        }
+
+        // Research backend is informational; stored as provider for downstream routing.
+        if let Some(ref backend) = input.backend {
+            if backend != "auto" {
+                resolved.provider = Some(backend.clone());
+            }
+        }
+
+        resolved
+    }
+
+    /// Resolve overrides for `roko develop`.
+    pub fn for_develop(flags: &GlobalCliFlags<'_>, input: &DevelopInput) -> Self {
+        let mut resolved = Self::resolve_globals(flags);
+
+        if input.dry_run {
+            resolved.dry_run = DryRunPolicy::ReadOnlyNoMutation;
+        }
+
+        if input.yes {
+            resolved.approval = ApprovalPolicy::AutoApprove;
+        }
+
+        resolved.provider = input.provider.clone();
+
+        resolved
+    }
+
     /// Resolve overrides for `roko plan run`.
     ///
     /// `--force-backend` is now a hidden alias on the global `--model` flag,
@@ -413,6 +508,65 @@ impl ResolvedExecutionOverrides {
         // Batch size: zero from clap is rejected; nonzero wraps into NonZeroUsize.
         if let Some(n) = input.batch_size {
             resolved.batch_size = NonZeroUsize::new(n);
+        }
+
+        // Budget policy: --no-budget or --budget-override 0 -> Disabled,
+        // --budget-override <n> -> Override(n), otherwise FromConfig.
+        if input.no_budget {
+            resolved.budget = BudgetPolicy::Disabled;
+        } else if let Some(amount) = input.budget_override {
+            if amount == 0.0 {
+                resolved.budget = BudgetPolicy::Disabled;
+            } else {
+                resolved.budget = BudgetPolicy::Override(amount);
+            }
+        }
+
+        resolved.fresh = input.fresh;
+        resolved.force_resume = input.force_resume;
+
+        resolved
+    }
+
+    /// Resolve overrides for `roko agent serve`.
+    ///
+    /// The serve surface only consumes model (for dispatcher construction)
+    /// and the stub cognitive loop flag. All other policies resolve to their
+    /// defaults because `agent serve` does not accept plan-run or do-style
+    /// flags.
+    pub fn for_agent_serve(flags: &GlobalCliFlags<'_>, input: &AgentServeInput) -> Self {
+        let mut resolved = Self::resolve_globals(flags);
+
+        // Agent serve never uses plan-run presentation or approval modes.
+        resolved.presentation = PresentationMode::Auto;
+        resolved.approval = ApprovalPolicy::Normal;
+
+        // Propagate the stub cognitive loop flag as a custom interaction
+        // signal. Downstream code checks `allow_stub_cognitive_loop` on
+        // the runtime config; we use the interaction_mode field only for
+        // headless detection, so the stub flag is separate.
+        let _ = input.allow_stub_cognitive_loop; // consumed by AgentServeRuntimeConfig
+
+        resolved
+    }
+
+    /// Resolve overrides for `roko agent chat`.
+    ///
+    /// Resolves model/provider from global flags and chat-specific `--provider`.
+    /// UI mode is determined by `--text` and TTY detection but is resolved in
+    /// `agent_serve::resolve_chat_launch` because it depends on runtime
+    /// terminal state.
+    pub fn for_agent_chat(flags: &GlobalCliFlags<'_>, input: &AgentChatInput) -> Self {
+        let mut resolved = Self::resolve_globals(flags);
+
+        // Chat-specific provider override.
+        if input.provider.is_some() {
+            resolved.provider = input.provider.clone();
+        }
+
+        // --text forces LineRepl; otherwise resolve_chat_launch uses TTY.
+        if input.text {
+            resolved.presentation = PresentationMode::Text;
         }
 
         resolved
@@ -984,5 +1138,359 @@ mod tests {
         assert!(!r.force_disk_check);
         assert_eq!(r.screenshots, ScreenshotPolicy::Disabled);
         assert_eq!(r.batch_size, None);
+        assert_eq!(r.budget, BudgetPolicy::FromConfig);
+        assert!(!r.fresh);
+        assert!(!r.force_resume);
+    }
+
+    // ── Budget policy ─────────────────────────────────────────────────
+
+    #[test]
+    fn plan_run_budget_default_is_from_config() {
+        let flags = default_flags();
+        let r = ResolvedExecutionOverrides::for_plan_run(&flags, &PlanRunInput::default());
+        assert_eq!(r.budget, BudgetPolicy::FromConfig);
+    }
+
+    #[test]
+    fn plan_run_no_budget_disables() {
+        let flags = default_flags();
+        let plan = PlanRunInput {
+            no_budget: true,
+            ..PlanRunInput::default()
+        };
+        let r = ResolvedExecutionOverrides::for_plan_run(&flags, &plan);
+        assert_eq!(r.budget, BudgetPolicy::Disabled);
+    }
+
+    #[test]
+    fn plan_run_budget_override_zero_disables() {
+        let flags = default_flags();
+        let plan = PlanRunInput {
+            budget_override: Some(0.0),
+            ..PlanRunInput::default()
+        };
+        let r = ResolvedExecutionOverrides::for_plan_run(&flags, &plan);
+        assert_eq!(r.budget, BudgetPolicy::Disabled);
+    }
+
+    #[test]
+    fn plan_run_budget_override_positive() {
+        let flags = default_flags();
+        let plan = PlanRunInput {
+            budget_override: Some(50.0),
+            ..PlanRunInput::default()
+        };
+        let r = ResolvedExecutionOverrides::for_plan_run(&flags, &plan);
+        assert_eq!(r.budget, BudgetPolicy::Override(50.0));
+    }
+
+    // ── Fresh / force-resume ──────────────────────────────────────────
+
+    #[test]
+    fn plan_run_fresh_propagates() {
+        let flags = default_flags();
+        let plan = PlanRunInput {
+            fresh: true,
+            ..PlanRunInput::default()
+        };
+        let r = ResolvedExecutionOverrides::for_plan_run(&flags, &plan);
+        assert!(r.fresh);
+    }
+
+    #[test]
+    fn plan_run_force_resume_propagates() {
+        let flags = default_flags();
+        let plan = PlanRunInput {
+            force_resume: true,
+            ..PlanRunInput::default()
+        };
+        let r = ResolvedExecutionOverrides::for_plan_run(&flags, &plan);
+        assert!(r.force_resume);
+    }
+
+    // ── for_develop ───────────────────────────────────────────────────
+
+    #[test]
+    fn develop_dry_run_resolves() {
+        let flags = default_flags();
+        let input = DevelopInput {
+            dry_run: true,
+            ..DevelopInput::default()
+        };
+        let r = ResolvedExecutionOverrides::for_develop(&flags, &input);
+        assert_eq!(r.dry_run, DryRunPolicy::ReadOnlyNoMutation);
+    }
+
+    #[test]
+    fn develop_yes_auto_approves() {
+        let flags = default_flags();
+        let input = DevelopInput {
+            yes: true,
+            ..DevelopInput::default()
+        };
+        let r = ResolvedExecutionOverrides::for_develop(&flags, &input);
+        assert_eq!(r.approval, ApprovalPolicy::AutoApprove);
+    }
+
+    #[test]
+    fn develop_provider_propagates() {
+        let flags = default_flags();
+        let input = DevelopInput {
+            provider: Some("anthropic".into()),
+            ..DevelopInput::default()
+        };
+        let r = ResolvedExecutionOverrides::for_develop(&flags, &input);
+        assert_eq!(r.provider.as_deref(), Some("anthropic"));
+    }
+
+    #[test]
+    fn develop_does_not_set_plan_run_fields() {
+        let flags = default_flags();
+        let r = ResolvedExecutionOverrides::for_develop(&flags, &DevelopInput::default());
+        assert!(!r.dangerously_skip_permissions);
+        assert!(r.log_file.is_none());
+        assert!(!r.skip_preflight);
+        assert!(!r.force_disk_check);
+        assert_eq!(r.screenshots, ScreenshotPolicy::Disabled);
+        assert_eq!(r.batch_size, None);
+        assert_eq!(r.budget, BudgetPolicy::FromConfig);
+        assert!(!r.fresh);
+        assert!(!r.force_resume);
+    }
+
+    // ── for_research ──────────────────────────────────────────────────
+
+    #[test]
+    fn research_defaults_role_to_researcher() {
+        let flags = default_flags();
+        let r = ResolvedExecutionOverrides::for_research(&flags, &ResearchInput::default());
+        assert_eq!(r.role.as_deref(), Some("researcher"));
+    }
+
+    #[test]
+    fn research_explicit_role_overrides_default() {
+        let flags = GlobalCliFlags {
+            role: Some("architect"),
+            ..default_flags()
+        };
+        let r = ResolvedExecutionOverrides::for_research(&flags, &ResearchInput::default());
+        assert_eq!(
+            r.role.as_deref(),
+            Some("architect"),
+            "explicit --role must override researcher default"
+        );
+    }
+
+    #[test]
+    fn research_auto_backend_sets_no_provider() {
+        let flags = default_flags();
+        let input = ResearchInput {
+            backend: Some("auto".into()),
+            deep: false,
+        };
+        let r = ResolvedExecutionOverrides::for_research(&flags, &input);
+        assert_eq!(r.provider, None, "auto backend must not set provider");
+    }
+
+    #[test]
+    fn research_explicit_backend_sets_provider() {
+        let flags = default_flags();
+        let input = ResearchInput {
+            backend: Some("gemini".into()),
+            deep: false,
+        };
+        let r = ResolvedExecutionOverrides::for_research(&flags, &input);
+        assert_eq!(r.provider.as_deref(), Some("gemini"));
+    }
+
+    #[test]
+    fn research_model_effort_resume_propagate() {
+        let flags = GlobalCliFlags {
+            model: Some("opus"),
+            effort: Some("high"),
+            resume: Some("session-42"),
+            ..default_flags()
+        };
+        let r = ResolvedExecutionOverrides::for_research(&flags, &ResearchInput::default());
+        assert_eq!(r.model.as_deref(), Some("opus"));
+        assert_eq!(r.effort.as_deref(), Some("high"));
+        assert_eq!(r.resume.as_deref(), Some("session-42"));
+    }
+
+    #[test]
+    fn research_does_not_set_plan_run_fields() {
+        let flags = default_flags();
+        let r = ResolvedExecutionOverrides::for_research(&flags, &ResearchInput::default());
+        assert!(!r.dangerously_skip_permissions);
+        assert!(r.log_file.is_none());
+        assert!(!r.skip_preflight);
+        assert!(!r.force_disk_check);
+        assert_eq!(r.screenshots, ScreenshotPolicy::Disabled);
+        assert_eq!(r.batch_size, None);
+        assert_eq!(r.budget, BudgetPolicy::FromConfig);
+        assert!(!r.fresh);
+        assert!(!r.force_resume);
+    }
+
+    // ── Exhaustive field manifest ─────────────────────────────────────
+    //
+    // This test ensures every field of ResolvedExecutionOverrides is
+    // explicitly listed. Adding a new field to the struct without adding
+    // a resolution row here will produce a compile error (missing field
+    // in the destructure).
+
+    #[test]
+    fn exhaustive_field_manifest_covers_all_struct_fields() {
+        let flags = default_flags();
+        let r = ResolvedExecutionOverrides::for_plan_run(
+            &flags,
+            &PlanRunInput {
+                no_tui: false,
+                approval: false,
+                dangerously_skip_permissions: true,
+                skip_preflight: true,
+                log_file: Some(PathBuf::from("/tmp/log.jsonl")),
+                screenshots: true,
+                screenshot_interval: 10,
+                screenshot_dir: Some(PathBuf::from("/tmp/shots")),
+                batch_size: Some(3),
+                force: true,
+                max_retries: Some(2),
+                dry_run: true,
+                fresh: true,
+                force_resume: true,
+                budget_override: Some(25.0),
+                no_budget: false,
+            },
+        );
+
+        // Destructure to ensure every field is accounted for.
+        // A new field added to the struct will cause a compile error here.
+        let ResolvedExecutionOverrides {
+            model: _,
+            provider: _,
+            role: _,
+            effort: _,
+            resume: _,
+            json: _,
+            quiet: _,
+            color_enabled: _,
+            replan: _,
+            validation: _,
+            dry_run,
+            cascade_policy: _,
+            serve_policy: _,
+            interaction_mode: _,
+            presentation: _,
+            approval: _,
+            dangerously_skip_permissions,
+            log_file,
+            screenshots,
+            batch_size,
+            force_disk_check,
+            skip_preflight,
+            max_retries,
+            context_paths: _,
+            budget,
+            fresh,
+            force_resume,
+        } = r;
+
+        // Spot-check the plan-run-specific fields that were set above.
+        assert_eq!(dry_run, DryRunPolicy::ReadOnlyNoMutation);
+        assert!(dangerously_skip_permissions);
+        assert!(skip_preflight);
+        assert_eq!(log_file, Some(PathBuf::from("/tmp/log.jsonl")));
+        assert!(matches!(screenshots, ScreenshotPolicy::Enabled { .. }));
+        assert_eq!(batch_size, NonZeroUsize::new(3));
+        assert!(force_disk_check);
+        assert_eq!(max_retries, Some(2));
+        assert_eq!(budget, BudgetPolicy::Override(25.0));
+        assert!(fresh);
+        assert!(force_resume);
+    }
+
+    // ── for_agent_serve ─────────────────────────────────────────────
+
+    #[test]
+    fn agent_serve_defaults_resolve_safely() {
+        let flags = default_flags();
+        let r = ResolvedExecutionOverrides::for_agent_serve(
+            &flags,
+            &AgentServeInput::default(),
+        );
+        assert_eq!(r.presentation, PresentationMode::Auto);
+        assert_eq!(r.approval, ApprovalPolicy::Normal);
+        assert!(r.model.is_none());
+        assert!(r.provider.is_none());
+    }
+
+    #[test]
+    fn agent_serve_propagates_global_model() {
+        let flags = GlobalCliFlags {
+            model: Some("opus"),
+            ..default_flags()
+        };
+        let r = ResolvedExecutionOverrides::for_agent_serve(
+            &flags,
+            &AgentServeInput {
+                allow_stub_cognitive_loop: true,
+            },
+        );
+        assert_eq!(r.model.as_deref(), Some("opus"));
+    }
+
+    // ── for_agent_chat ──────────────────────────────────────────────
+
+    #[test]
+    fn agent_chat_defaults_resolve_safely() {
+        let flags = default_flags();
+        let r = ResolvedExecutionOverrides::for_agent_chat(
+            &flags,
+            &AgentChatInput::default(),
+        );
+        assert!(r.model.is_none());
+        assert!(r.provider.is_none());
+        assert_eq!(r.presentation, PresentationMode::Auto);
+    }
+
+    #[test]
+    fn agent_chat_provider_override() {
+        let flags = default_flags();
+        let r = ResolvedExecutionOverrides::for_agent_chat(
+            &flags,
+            &AgentChatInput {
+                provider: Some("anthropic_api".to_string()),
+                text: false,
+            },
+        );
+        assert_eq!(r.provider.as_deref(), Some("anthropic_api"));
+    }
+
+    #[test]
+    fn agent_chat_text_forces_text_presentation() {
+        let flags = default_flags();
+        let r = ResolvedExecutionOverrides::for_agent_chat(
+            &flags,
+            &AgentChatInput {
+                provider: None,
+                text: true,
+            },
+        );
+        assert_eq!(r.presentation, PresentationMode::Text);
+    }
+
+    #[test]
+    fn agent_chat_propagates_global_model() {
+        let flags = GlobalCliFlags {
+            model: Some("sonnet"),
+            ..default_flags()
+        };
+        let r = ResolvedExecutionOverrides::for_agent_chat(
+            &flags,
+            &AgentChatInput::default(),
+        );
+        assert_eq!(r.model.as_deref(), Some("sonnet"));
     }
 }

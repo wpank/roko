@@ -51,7 +51,8 @@ pub use provider::{
 pub use timeouts::TimeoutConfig;
 pub use validation::{
     DangerousPermissionOverride, DangerousPermissionOverrideError, InvariantResult,
-    InvariantSeverity, StrictConfigSource, StrictConfigValidationError, validate_invariants,
+    InvariantSeverity, SemanticFinding, SemanticFindingCode, StrictConfigSource,
+    StrictConfigValidationError, validate_invariants, validate_provider_semantics,
     validate_strict_config_toml,
 };
 

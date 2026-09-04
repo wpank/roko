@@ -262,7 +262,7 @@ from = "a"
 to = "b"
 "#;
     let graph = loader::load_from_str(toml_str).unwrap();
-    let engine = GraphEngine::new(graph, default_registry());
+    let engine = GraphEngine::new(graph, default_registry()).with_allow_test_stubs(true);
     let ctx = CellContext::new();
     let output = engine.execute(&ctx).await.unwrap();
 

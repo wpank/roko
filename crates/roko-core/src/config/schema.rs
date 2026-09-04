@@ -257,6 +257,7 @@ pub struct ValidationConfig {
 
 /// Optional gate settings supplied by a domain profile.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GateProfileConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skip_tests: Option<bool>,
@@ -878,8 +879,7 @@ impl RokoConfig {
             return binary_on_path(command);
         }
         match provider.api_key_env.as_ref().map(|s| s.trim()) {
-            None => false,
-            Some("") => true,
+            None | Some("") => false,
             Some(name) => env_fn(name).is_some() || self.agent_env_value(name).is_some(),
         }
     }
@@ -1737,6 +1737,7 @@ impl Default for ConductorConfig {
 /// built-in default. Runner-v2 materializes these overrides when it constructs
 /// its live conductor, so this surface is not deprecated.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WatcherThresholds {
     #[serde(default)]
     pub compile_fail_repeat: Option<CompileFailRepeatConfig>,
@@ -1764,6 +1765,7 @@ pub struct WatcherThresholds {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CompileFailRepeatConfig {
     #[serde(default = "default_compile_fail_repeat_max")]
     pub max_repeats: usize,
@@ -1774,6 +1776,7 @@ const fn default_compile_fail_repeat_max() -> usize {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ContextWindowPressureConfig {
     #[serde(default = "default_context_pressure_warn")]
     pub warn_threshold: f64,
@@ -1790,6 +1793,7 @@ const fn default_context_pressure_critical() -> f64 {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CostOverrunConfig {
     #[serde(default = "default_cost_overrun_warn")]
     pub warn_usd: f64,
@@ -1806,6 +1810,7 @@ const fn default_cost_overrun_critical() -> f64 {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GhostTurnConfig {
     #[serde(default = "default_ghost_min_output_tokens")]
     pub min_output_tokens: u32,
@@ -1822,6 +1827,7 @@ const fn default_ghost_max_consecutive() -> usize {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IterationLoopConfig {
     #[serde(default = "default_iteration_loop_max")]
     pub max_iterations: usize,
@@ -1832,6 +1838,7 @@ const fn default_iteration_loop_max() -> usize {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReviewLoopConfig {
     #[serde(default = "default_review_loop_max")]
     pub max_rejections: usize,
@@ -1842,6 +1849,7 @@ const fn default_review_loop_max() -> usize {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SpecDriftConfig {
     #[serde(default = "default_spec_drift_ratio")]
     pub max_ratio: f64,
@@ -1852,6 +1860,7 @@ const fn default_spec_drift_ratio() -> f64 {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StuckPatternConfig {
     #[serde(default = "default_stuck_pattern_max")]
     pub max_identical_actions: usize,
@@ -1862,6 +1871,7 @@ const fn default_stuck_pattern_max() -> usize {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TestFailureBudgetConfig {
     #[serde(default = "default_test_failure_increase")]
     pub min_failure_increase: u32,
@@ -1872,6 +1882,7 @@ const fn default_test_failure_increase() -> u32 {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TimeOverrunConfig {
     #[serde(default = "default_time_overrun_alert_ratio")]
     pub alert_ratio: f64,
@@ -1887,6 +1898,7 @@ const fn default_time_overrun_alert_ratio() -> f64 {
 /// emits a `severity=warning` intervention. The metric is produced by the
 /// E47-T09 WorktreeManager adapter.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorktreeCountConfig {
     /// Maximum number of live worktrees before a warning is emitted.
     ///
@@ -1909,6 +1921,7 @@ impl Default for WorktreeCountConfig {
 
 /// Agent definition for multi-agent startup via `roko up`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentDefinition {
     pub name: String,
     pub domain: String,
@@ -1924,6 +1937,7 @@ pub struct AgentDefinition {
 
 /// Declarative group reconciled by `roko serve` at startup.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GroupDefinition {
     pub name: String,
     #[serde(default)]

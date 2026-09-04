@@ -21,7 +21,6 @@ pub enum Severity {
 }
 
 impl Severity {
-    #[allow(dead_code)]
     fn label(self) -> &'static str {
         match self {
             Self::Error => "error",
@@ -62,15 +61,22 @@ pub struct ValidationReport {
 }
 
 impl ValidationReport {
-    #[must_use]
-    #[allow(dead_code)]
+    /// Return an exit code: 0 if no errors (and no warnings in strict mode),
+    /// 1 otherwise.
     pub fn exit_code(&self, strict: bool) -> i32 {
-        if self.totals.errors > 0 || (strict && self.totals.warnings > 0) {
-            1
-        } else {
-            0
+        if self.totals.errors > 0 {
+            return 1;
         }
+        if strict && self.totals.warnings > 0 {
+            return 1;
+        }
+        0
     }
+}
+
+/// Render the validation report as pretty-printed JSON.
+pub fn render_json(report: &ValidationReport) -> anyhow::Result<String> {
+    serde_json::to_string_pretty(report).map_err(|e| anyhow::anyhow!("json serialize: {e}"))
 }
 
 #[derive(Debug, Clone)]
@@ -100,7 +106,6 @@ impl TaskSnapshot {
     }
 }
 
-#[allow(dead_code)]
 pub fn validate_plans_dir(
     dir: &Path,
     models: Option<&IndexMap<String, ModelProfile>>,
@@ -213,7 +218,6 @@ fn validate_plans_dir_impl(
     Ok(ValidationReport { plans, totals })
 }
 
-#[allow(dead_code)]
 pub fn render_text(report: &ValidationReport) -> String {
     let mut out = String::new();
     let mut printed_plan = false;
@@ -252,11 +256,6 @@ pub fn render_text(report: &ValidationReport) -> String {
         report.totals.plans_checked
     );
     out
-}
-
-#[allow(dead_code)]
-pub fn render_json(report: &ValidationReport) -> Result<String> {
-    serde_json::to_string_pretty(report).context("serialize plan validation report")
 }
 
 fn collect_tasks_files(dir: &Path) -> Result<Vec<PathBuf>> {

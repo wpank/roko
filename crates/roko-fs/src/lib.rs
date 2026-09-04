@@ -33,6 +33,8 @@ pub mod atomic;
 pub mod bandit;
 /// Classified persistence for transcript records with redaction and versioning.
 pub mod classified_persistence;
+/// Writer bridging [`TranscriptStore`](roko_core::transcript_store::TranscriptStore) to classified JSONL persistence.
+pub mod classified_writer;
 /// Archive-backed [`ColdStore`](roko_core::ColdStore) for aged-out signals.
 pub mod cold_substrate;
 /// Cross-platform disk space checker and runtime monitor.
@@ -61,6 +63,7 @@ pub use classified_persistence::{
     ArtifactDescriptor, CLASSIFIED_SCHEMA_VERSION, Classification, ClassifiedRecord,
     PayloadPointer, RedactedField, RedactionMeta, ResultMeta,
 };
+pub use classified_writer::{ClassifiedTranscriptWriter, WriterStats, read_classified_jsonl};
 pub use cold_substrate::{ArchiveColdSubstrate, SubstrateMigrator};
 pub use disk::{
     DiskError, DiskMonitor, DiskPressureLevel, DiskStatus, DiskUsage, DiskWarning,

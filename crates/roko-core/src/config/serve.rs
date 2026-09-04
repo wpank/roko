@@ -8,6 +8,7 @@ use super::agent::default_true;
 
 /// StateHub projection persistence and retention settings.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StateHubConfig {
     /// Maximum age of retained projection versions (`ms`, `s`, `m`, `h`, or `d`).
     #[serde(default = "default_projection_history_retention")]
@@ -143,6 +144,7 @@ impl JwksProvider {
 
 /// Authentication settings for the HTTP API.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServeAuthConfig {
     /// Whether `/api/*` routes require an `X-Api-Key` header.
     #[serde(default)]
@@ -239,6 +241,7 @@ fn default_api_key_scope() -> String {
 
 /// Cloud deployment settings attached to the API server configuration.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServeDeployConfig {
     /// Deployment provider, e.g. `"railway"` or `"fly"`.
     #[serde(default = "default_serve_deploy_provider")]
@@ -276,6 +279,7 @@ impl Default for ServeDeployConfig {
 
 /// A webhook registration entry to run after deployment.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServeDeployWebhookConfig {
     /// Webhook provider.
     #[serde(default = "default_serve_deploy_webhook_provider")]
@@ -316,7 +320,7 @@ impl Default for ServeDeployWebhookConfig {
 /// sample_rate = 0.1
 /// ```
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct TracingConfig {
     /// OTLP gRPC endpoint for trace export (e.g. `"http://localhost:4317"`).
     /// When absent, tracing export is disabled.
@@ -531,6 +535,7 @@ impl Default for ServerConfig {
 /// default_region = "us-west1"
 /// ```
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeployConfig {
     /// Which deploy backend to use: `"railway-api"`, `"railway-cli"`, `"manual"`.
     #[serde(default = "default_deploy_backend")]
@@ -601,6 +606,7 @@ impl SchedulerConfig {
 
 /// One cron job configuration entry.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SchedulerCronConfig {
     /// Human-readable schedule name.
     pub name: String,
@@ -628,6 +634,7 @@ impl Default for SchedulerCronConfig {
 
 /// Webhook ingress configuration.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WebhooksConfig {
     /// GitHub webhook configuration.
     #[serde(default)]
@@ -644,6 +651,7 @@ impl Default for WebhooksConfig {
 
 /// GitHub webhook configuration.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GithubWebhookConfig {
     /// Shared secret used to verify `X-Hub-Signature-256`.
     #[serde(default)]
@@ -696,6 +704,7 @@ impl std::fmt::Display for MergeMethod {
 /// This section covers the repo the runner will operate against (branch
 /// creation, PRs, issues).  Webhook secrets remain under `[webhooks.github]`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GitHubConfig {
     /// GitHub organisation or user that owns the target repository.
     /// Optional — callers must check at use-site.

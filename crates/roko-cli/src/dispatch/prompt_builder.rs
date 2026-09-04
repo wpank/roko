@@ -374,8 +374,6 @@ fn load_prd_excerpt(workdir: &Path, plan_id: &str) -> String {
 // ─── Workspace context (ported from legacy orchestrator) ───────────────
 
 const WORKSPACE_CONTEXT_LIMIT: usize = 4_000;
-#[allow(dead_code)]
-const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
 const GIT_STATUS_LINE_LIMIT: usize = 40;
 
 /// Build a bounded workspace context string with git state and crate descriptions.
@@ -385,8 +383,8 @@ const GIT_STATUS_LINE_LIMIT: usize = 40;
 /// - Modified files (`git status --short`), capped at [`GIT_STATUS_LINE_LIMIT`] lines
 /// - Crate names and descriptions from `crates/*/Cargo.toml`
 ///
-/// All git calls are best-effort with a [`GIT_COMMAND_TIMEOUT`] to avoid hanging
-/// on non-git workdirs or slow NFS mounts.
+/// All git calls are best-effort to avoid hanging on non-git workdirs or slow
+/// NFS mounts.
 fn generate_workspace_context(workdir: &Path) -> String {
     let mut out = String::from("# Workspace context\n");
 

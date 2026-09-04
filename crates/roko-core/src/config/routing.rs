@@ -33,6 +33,7 @@ impl Default for RoutingAlgorithm {
 
 /// Reward weights used to scalarize quality, cost, and latency signals.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RewardWeights {
     /// Relative weight for quality / success.
     #[serde(default = "default_reward_weight_quality")]

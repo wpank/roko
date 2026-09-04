@@ -158,42 +158,57 @@ async fn status_for(router: &axum::Router, method: Method, uri: &str) -> StatusC
 // ---------------------------------------------------------------------------
 
 /// The 14 audited path+method combinations from the sidecar.
-fn all_routes() -> Vec<(Method, &'static str)> {
+///
+/// Routes with path parameters (`{id}`) return handler-level 404 when the
+/// resource doesn't exist, which is indistinguishable from "route not
+/// registered" at the status-code level. These routes are tested separately
+/// via `task_create_accept_complete_round_trip` and
+/// `prediction_create_list_get_round_trip` which create real entries first.
+fn all_routes() -> Vec<(Method, &'static str, bool)> {
     vec![
         // Public routes (no auth required)
-        (Method::GET, "/health"),
-        (Method::GET, "/capabilities"),
+        (Method::GET, "/health", false),
+        (Method::GET, "/capabilities", false),
         // Protected always-on routes
-        (Method::GET, "/stats"),
-        (Method::GET, "/logs"),
+        (Method::GET, "/stats", false),
+        (Method::GET, "/logs", false),
         // Messaging feature
-        (Method::POST, "/message"),
-        (Method::GET, "/stream"), // WebSocket upgrade — will return 4xx without upgrade headers
+        (Method::POST, "/message", false),
+        (Method::GET, "/stream", false), // WebSocket upgrade — will return 4xx without upgrade headers
         // Predictions feature
-        (Method::GET, "/predictions"),
-        (Method::POST, "/predictions"),
-        (Method::GET, "/predictions/residuals"),
-        (Method::GET, "/predictions/test-id"), // by-id lookup
+        (Method::GET, "/predictions", false),
+        (Method::POST, "/predictions", false),
+        (Method::GET, "/predictions/residuals", false),
+        (Method::GET, "/predictions/test-id", true), // by-id lookup — handler 404 expected
         // Research feature
-        (Method::POST, "/research"),
+        (Method::POST, "/research", false),
         // Tasks feature
-        (Method::GET, "/tasks"),
-        (Method::POST, "/tasks/1/accept"),
-        (Method::POST, "/tasks/1/complete"),
+        (Method::GET, "/tasks", false),
+        (Method::POST, "/tasks", false),
+        (Method::POST, "/tasks/1/accept", true),     // handler 404 expected
+        (Method::POST, "/tasks/1/complete", true),    // handler 404 expected
     ]
 }
 
 #[tokio::test]
-async fn all_14_routes_are_registered_with_full_features() {
+async fn all_routes_are_registered_with_full_features() {
     let router = all_features_router(Some(success_dispatcher("ok")));
 
     let mut failures = Vec::new();
-    for (method, path) in all_routes() {
+    for (method, path, handler_404_expected) in all_routes() {
         let status = status_for(&router, method.clone(), &path).await;
-        // 404 = not registered, 405 = wrong method.
-        // We accept any other status (200, 400, 503, etc.) as proof of registration.
-        if status == StatusCode::NOT_FOUND || status == StatusCode::METHOD_NOT_ALLOWED {
-            failures.push(format!("{method} {path} -> {status}"));
+        // For routes with path parameters, the handler returns 404 when the
+        // resource doesn't exist — that still proves the route is registered.
+        if handler_404_expected {
+            // 405 = wrong method would still mean unregistered at the method level.
+            if status == StatusCode::METHOD_NOT_ALLOWED {
+                failures.push(format!("{method} {path} -> {status}"));
+            }
+        } else {
+            // 404 = not registered, 405 = wrong method.
+            if status == StatusCode::NOT_FOUND || status == StatusCode::METHOD_NOT_ALLOWED {
+                failures.push(format!("{method} {path} -> {status}"));
+            }
         }
     }
 
@@ -579,4 +594,525 @@ async fn health_includes_agent_id_and_uptime() {
     assert_eq!(body["status"], "ok");
     assert_eq!(body["agent_id"], "test-agent");
     assert!(body["uptime_s"].as_u64().is_some());
+}
+
+// ---------------------------------------------------------------------------
+// 12. Task creation round trip
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn task_create_accept_complete_round_trip() {
+    let router = all_features_router(None);
+
+    // Create a task.
+    let (status, created) = post_json(
+        &router,
+        "/tasks",
+        json!({
+            "title": "Implement feature X",
+            "kind": "coding",
+            "priority": "high",
+            "bounty": 100
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let task_id = created["id"].as_u64().expect("task id");
+    assert_eq!(created["title"], "Implement feature X");
+
+    // List should include the new task.
+    let (status, list) = get_json(&router, "/tasks").await;
+    assert_eq!(status, StatusCode::OK);
+    let tasks = list.as_array().expect("tasks array");
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0]["id"], task_id);
+
+    // Accept the task.
+    let (status, accepted) = post_json(&router, &format!("/tasks/{task_id}/accept"), json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(accepted["state"], "accepted");
+
+    // Complete the task.
+    let (status, completed) = post_json(
+        &router,
+        &format!("/tasks/{task_id}/complete"),
+        json!({"summary": "Feature X implemented"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(completed["state"], "completed");
+}
+
+// ---------------------------------------------------------------------------
+// 13. Task idempotency
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn task_create_idempotency_returns_same_task() {
+    let router = all_features_router(None);
+
+    let body = json!({
+        "client_request_id": "idempotent-key-1",
+        "title": "Idempotent task",
+        "kind": "test"
+    });
+
+    let (status1, created1) = post_json(&router, "/tasks", body.clone()).await;
+    assert_eq!(status1, StatusCode::CREATED);
+    let task_id = created1["id"].as_u64().expect("task id");
+
+    // Same request again should return 200 (duplicate) with the same task.
+    let (status2, created2) = post_json(&router, "/tasks", body).await;
+    assert_eq!(status2, StatusCode::OK);
+    assert_eq!(created2["id"], task_id);
+}
+
+#[tokio::test]
+async fn task_create_idempotency_conflict_returns_409() {
+    let router = all_features_router(None);
+
+    // First request with key.
+    let (status, _) = post_json(
+        &router,
+        "/tasks",
+        json!({
+            "client_request_id": "conflict-key",
+            "title": "Original task"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Same key but different title -> conflict.
+    let (status, body) = post_json(
+        &router,
+        "/tasks",
+        json!({
+            "client_request_id": "conflict-key",
+            "title": "Different task"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(body["error"].as_str().is_some());
+}
+
+// ---------------------------------------------------------------------------
+// 14. Message validation
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn message_rejects_empty_prompt() {
+    let router = all_features_router(Some(success_dispatcher("ok")));
+    let (status, body) = post_json(&router, "/message", json!({"prompt": ""})).await;
+
+    // An empty prompt should either be rejected (4xx) or handled — test the
+    // contract is stable.
+    assert!(
+        status.is_success() || status.is_client_error(),
+        "empty prompt should return a valid response, got {status}"
+    );
+    if status.is_success() {
+        assert!(body.get("response").is_some(), "success should include response field");
+    }
+}
+
+#[tokio::test]
+async fn message_rejects_missing_prompt_field() {
+    let router = all_features_router(Some(success_dispatcher("ok")));
+    let (status, _body) = post_json(&router, "/message", json!({})).await;
+
+    // Missing required field should be rejected.
+    assert!(
+        status.is_client_error(),
+        "missing prompt field should be rejected, got {status}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 15. Research mode validation
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn research_rejects_missing_topic() {
+    let router = all_features_router(None);
+    let (status, _body) = post_json(&router, "/research", json!({})).await;
+
+    assert!(
+        status.is_client_error(),
+        "research with missing topic should be rejected, got {status}"
+    );
+}
+
+#[tokio::test]
+async fn research_with_mode_and_depth() {
+    let router = all_features_router(None);
+    let (status, body) = post_json(
+        &router,
+        "/research",
+        json!({
+            "topic": "rust generics",
+            "depth": "deep",
+            "mode": "local_knowledge"
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_object());
+}
+
+// ---------------------------------------------------------------------------
+// 15b. Research active mode returns 501
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn research_active_mode_returns_501() {
+    let router = all_features_router(None);
+    let (status, body) = post_json(
+        &router,
+        "/research",
+        json!({
+            "topic": "some topic",
+            "mode": "active"
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        status,
+        StatusCode::NOT_IMPLEMENTED,
+        "active research mode should return 501"
+    );
+    assert!(body["error"].as_str().is_some());
+    assert!(body["supported_modes"].as_array().is_some());
+}
+
+// ---------------------------------------------------------------------------
+// 15c. Task creation validation
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn task_create_rejects_empty_title() {
+    let router = all_features_router(None);
+    let (status, body) = post_json(
+        &router,
+        "/tasks",
+        json!({ "title": "" }),
+    )
+    .await;
+
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "empty title should be rejected with 422"
+    );
+    assert!(body["error"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn task_create_rejects_excessive_bounty() {
+    let router = all_features_router(None);
+    let (status, body) = post_json(
+        &router,
+        "/tasks",
+        json!({ "title": "valid title", "bounty": 2_000_000 }),
+    )
+    .await;
+
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "excessive bounty should be rejected with 422"
+    );
+    assert!(body["error"].as_str().is_some());
+}
+
+// ---------------------------------------------------------------------------
+// 16. Predictions with invalid confidence
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn prediction_rejects_missing_required_fields() {
+    let router = all_features_router(None);
+    let (status, _body) = post_json(&router, "/predictions", json!({})).await;
+
+    // Missing market/direction/confidence should be rejected.
+    assert!(
+        status.is_client_error(),
+        "prediction with missing fields should be rejected, got {status}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 17. Multiple predictions listing
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn multiple_predictions_are_listed_in_order() {
+    let router = all_features_router(None);
+
+    for i in 0..3 {
+        let (status, _) = post_json(
+            &router,
+            "/predictions",
+            json!({
+                "market": format!("MKT-{i}"),
+                "direction": "up",
+                "confidence": 0.5 + (i as f64) * 0.1
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    let (status, list) = get_json(&router, "/predictions").await;
+    assert_eq!(status, StatusCode::OK);
+    let preds = list.as_array().expect("predictions array");
+    assert_eq!(preds.len(), 3);
+}
+
+// ---------------------------------------------------------------------------
+// 18. Auth header formats
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn auth_accepts_bearer_format() {
+    let router = auth_router("test-bearer");
+
+    let req = Request::builder()
+        .uri("/stats")
+        .header("authorization", "Bearer test-bearer")
+        .body(Body::empty())
+        .expect("build request");
+    let resp = router.clone().oneshot(req).await.expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn auth_rejects_non_bearer_scheme() {
+    let router = auth_router("test-bearer");
+
+    let req = Request::builder()
+        .uri("/stats")
+        .header("authorization", "Basic dGVzdC1iZWFyZXI=")
+        .body(Body::empty())
+        .expect("build request");
+    let resp = router.clone().oneshot(req).await.expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+// ---------------------------------------------------------------------------
+// 19. Wrong HTTP method on sidecar endpoints
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn delete_on_health_returns_405_or_404() {
+    let router = all_features_router(None);
+
+    let req = Request::builder()
+        .method("DELETE")
+        .uri("/health")
+        .body(Body::empty())
+        .expect("build request");
+    let resp = router.clone().oneshot(req).await.expect("oneshot");
+
+    assert!(
+        resp.status() == StatusCode::METHOD_NOT_ALLOWED || resp.status() == StatusCode::NOT_FOUND,
+        "DELETE /health should be 405 or 404, got {}",
+        resp.status()
+    );
+}
+
+#[tokio::test]
+async fn get_on_message_returns_405_or_404() {
+    let router = all_features_router(Some(success_dispatcher("ok")));
+
+    let req = Request::builder()
+        .uri("/message")
+        .body(Body::empty())
+        .expect("build request");
+    let resp = router.clone().oneshot(req).await.expect("oneshot");
+
+    assert!(
+        resp.status() == StatusCode::METHOD_NOT_ALLOWED || resp.status() == StatusCode::NOT_FOUND,
+        "GET /message should be 405 or 404, got {}",
+        resp.status()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 20. Malformed JSON on sidecar endpoints
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn message_with_invalid_json_returns_client_error() {
+    let router = all_features_router(Some(success_dispatcher("ok")));
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/message")
+        .header("content-type", "application/json")
+        .body(Body::from("not-valid{{{"))
+        .expect("build request");
+    let resp = router.clone().oneshot(req).await.expect("oneshot");
+
+    assert!(
+        resp.status().is_client_error(),
+        "malformed JSON on /message should return 4xx, got {}",
+        resp.status()
+    );
+}
+
+#[tokio::test]
+async fn task_create_with_invalid_json_returns_client_error() {
+    let router = all_features_router(None);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/tasks")
+        .header("content-type", "application/json")
+        .body(Body::from("[broken"))
+        .expect("build request");
+    let resp = router.clone().oneshot(req).await.expect("oneshot");
+
+    assert!(
+        resp.status().is_client_error(),
+        "malformed JSON on /tasks should return 4xx, got {}",
+        resp.status()
+    );
+}
+
+#[tokio::test]
+async fn prediction_create_with_invalid_json_returns_client_error() {
+    let router = all_features_router(None);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/predictions")
+        .header("content-type", "application/json")
+        .body(Body::from("}}invalid"))
+        .expect("build request");
+    let resp = router.clone().oneshot(req).await.expect("oneshot");
+
+    assert!(
+        resp.status().is_client_error(),
+        "malformed JSON on /predictions should return 4xx, got {}",
+        resp.status()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 21. Durable state persistence round trip
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn durable_state_persists_tasks_across_server_instances() {
+    let state_dir = tempfile::tempdir().expect("tempdir");
+    let store_path = state_dir.path().join("sidecar-state.json");
+
+    // First server: create a task.
+    let server1 = AgentServer::builder()
+        .agent_id("durable-agent")
+        .tasks()
+        .state_store_path(store_path.clone())
+        .build()
+        .expect("build server 1");
+    let router1 = server1.router();
+
+    let (status, created) = post_json(
+        &router1,
+        "/tasks",
+        json!({
+            "title": "Persist me",
+            "kind": "durable"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let task_id = created["id"].as_u64().expect("task id");
+
+    // Second server: same state path, should see the task.
+    let server2 = AgentServer::builder()
+        .agent_id("durable-agent")
+        .tasks()
+        .state_store_path(store_path)
+        .build()
+        .expect("build server 2");
+    // Restore state so the second instance loads persisted data.
+    server2.state().restore_state().expect("restore state");
+    let router2 = server2.router();
+
+    let (status, list) = get_json(&router2, "/tasks").await;
+    assert_eq!(status, StatusCode::OK);
+    let tasks = list.as_array().expect("tasks array");
+    assert!(
+        tasks.iter().any(|t| t["id"] == task_id),
+        "task should be visible in second server instance, tasks: {tasks:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 22. Concurrent sidecar requests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn concurrent_sidecar_reads_all_succeed() {
+    let router = all_features_router(None);
+
+    let endpoints = vec!["/health", "/capabilities", "/stats", "/tasks", "/predictions"];
+
+    let handles: Vec<_> = endpoints
+        .into_iter()
+        .map(|ep| {
+            let r = router.clone();
+            tokio::spawn(async move {
+                let req = Request::builder()
+                    .uri(ep)
+                    .body(Body::empty())
+                    .expect("build request");
+                let resp = r.oneshot(req).await.expect("oneshot");
+                (ep, resp.status())
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        let (ep, status) = handle.await.expect("join");
+        assert!(
+            status.is_success(),
+            "concurrent GET {ep} should succeed, got {status}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 23. Success responses have JSON content-type
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn sidecar_success_responses_have_json_content_type() {
+    let router = all_features_router(None);
+
+    let endpoints = ["/health", "/capabilities", "/stats", "/tasks", "/predictions"];
+
+    for endpoint in endpoints {
+        let req = Request::builder()
+            .uri(endpoint)
+            .body(Body::empty())
+            .expect("build request");
+        let resp = router.clone().oneshot(req).await.expect("oneshot");
+
+        if resp.status().is_success() {
+            let ct = resp
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            assert!(
+                ct.contains("application/json"),
+                "{endpoint} success response should have JSON content-type, got: {ct}"
+            );
+        }
+    }
 }

@@ -13,9 +13,10 @@ workspace = true
 
 [features]
 default = ["chain", "hdc"]
-# Backend-neutral chain tools remain cheap and are available in the shipping
-# CLI. Real RPC/provider support is an explicit build choice.
-chain = ["roko-serve/chain"]
+# Backend-neutral chain tools: propagates to roko-std (17 chain tool
+# handlers), roko-agent (test assertions), and roko-serve (route marker).
+# Real RPC/provider support is an explicit build choice via alloy-backend.
+chain = ["dep:roko-chain", "roko-std/chain", "roko-agent/chain", "roko-serve/chain"]
 # Full HDC fingerprint pipeline: neuro store, prompt composition, substrate
 # persistence, and serve webhook handling.
 hdc = ["roko-compose/hdc", "roko-fs/hdc", "roko-serve/hdc"]
@@ -64,7 +65,7 @@ roko-serve = { path = "../roko-serve" }
 roko-index = { path = "../roko-index", features = ["sqlite"] }
 roko-graph = { path = "../roko-graph" }
 roko-execution = { path = "../roko-execution" }
-roko-chain = { path = "../roko-chain" }
+roko-chain = { path = "../roko-chain", optional = true }
 roko-acp = { path = "../roko-acp", optional = true }
 roko-mcp-github = { path = "../roko-mcp-github" }
 
@@ -122,6 +123,7 @@ tempfile = { workspace = true }
 agent-relay = { path = "../../apps/agent-relay" }
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
+roko-graph = { path = "../roko-graph", features = ["test-support"] }
 wat = "1"
 
 [package.metadata.roko]

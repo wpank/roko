@@ -260,9 +260,51 @@ impl GatePipelineCell {
         })
     }
 
+    /// Convert a `ProductionGateVerdictV1` into the graph-consumable `GateResult`.
+    fn verdict_to_gate_result(verdict: &ProductionGateVerdictV1) -> roko_core::GateResult {
+        let rung_results: Vec<roko_core::RungResult> = verdict
+            .rung_verdicts
+            .iter()
+            .filter(|rv| !rv.skipped())
+            .map(|rv| {
+                let score = if rv.passed() { 1.0 } else { 0.0 };
+                let evidence = if rv.diagnostic.is_empty() {
+                    None
+                } else {
+                    Some(rv.diagnostic.clone())
+                };
+                roko_core::RungResult {
+                    rung_name: rv.gate_name.clone(),
+                    passed: rv.passed(),
+                    score,
+                    evidence,
+                }
+            })
+            .collect();
+
+        let total = rung_results.len() as f64;
+        let passed_count = rung_results.iter().filter(|r| r.passed).count() as f64;
+        let overall_score = if total > 0.0 {
+            passed_count / total
+        } else {
+            if verdict.passed() { 1.0 } else { 0.0 }
+        };
+
+        roko_core::GateResult {
+            passed: verdict.passed(),
+            rung_results,
+            overall_score,
+        }
+    }
+
     /// Encode a `ProductionGateVerdictV1` into an output Signal.
+    ///
+    /// The Signal body carries the typed `GateResult` payload for graph
+    /// consumers, while the full `ProductionGateVerdictV1` is the internal
+    /// service contract.
     fn encode_verdict(verdict: &ProductionGateVerdictV1) -> roko_core::Result<Signal> {
-        let body = Body::from_json(verdict).map_err(|e| {
+        let gate_result = Self::verdict_to_gate_result(verdict);
+        let body = Body::from_json(&gate_result).map_err(|e| {
             roko_core::RokoError::Invalid(format!(
                 "GatePipelineCell: failed to encode verdict: {e}"
             ))

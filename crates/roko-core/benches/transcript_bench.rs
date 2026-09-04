@@ -17,11 +17,14 @@ fn make_meta(seq: u64, agent_id: &str) -> TranscriptEventMeta {
         provider: "anthropic".into(),
         model: "claude-opus-4-6".into(),
         parent_event_id: None,
+        task_id: None,
+        attempt_id: None,
     }
 }
 
 fn make_text_delta(seq: u64) -> TranscriptRecord {
     TranscriptRecord {
+        schema_version: TranscriptRecord::CURRENT_SCHEMA_VERSION,
         meta: make_meta(seq, "agent-bench"),
         event: TranscriptEvent::AssistantDelta {
             text: "The quick brown fox jumps over the lazy dog. ".into(),
@@ -37,6 +40,7 @@ fn make_tool_pair(seq_start: u64) -> (TranscriptRecord, TranscriptRecord) {
         1_700_000_000_000 + (seq_start as i64),
     );
     let started = TranscriptRecord {
+        schema_version: TranscriptRecord::CURRENT_SCHEMA_VERSION,
         meta: make_meta(seq_start, "agent-bench"),
         event: TranscriptEvent::ToolStarted {
             call,
@@ -45,6 +49,7 @@ fn make_tool_pair(seq_start: u64) -> (TranscriptRecord, TranscriptRecord) {
         },
     };
     let finished = TranscriptRecord {
+        schema_version: TranscriptRecord::CURRENT_SCHEMA_VERSION,
         meta: make_meta(seq_start + 1, "agent-bench"),
         event: TranscriptEvent::ToolFinished {
             call_id: format!("call-{seq_start}"),
@@ -102,6 +107,7 @@ fn bench_query_by_agent_id_10k(c: &mut Criterion) {
     let jsonl: Vec<String> = (0..10_000u64)
         .map(|i| {
             let record = TranscriptRecord {
+                schema_version: TranscriptRecord::CURRENT_SCHEMA_VERSION,
                 meta: make_meta(i, agents[(i % 3) as usize]),
                 event: TranscriptEvent::AssistantDelta {
                     text: format!("delta {i}"),
@@ -130,6 +136,7 @@ fn bench_query_by_agent_id_10k(c: &mut Criterion) {
 fn bench_replay_from_sequence_10k(c: &mut Criterion) {
     let records: Vec<TranscriptRecord> = (0..10_000u64)
         .map(|i| TranscriptRecord {
+            schema_version: TranscriptRecord::CURRENT_SCHEMA_VERSION,
             meta: make_meta(i, "agent-bench"),
             event: TranscriptEvent::AssistantDelta {
                 text: format!("delta {i}"),
@@ -164,6 +171,7 @@ fn bench_replay_from_sequence_10k(c: &mut Criterion) {
 
 fn bench_transcript_record_serde_roundtrip(c: &mut Criterion) {
     let record = TranscriptRecord {
+        schema_version: TranscriptRecord::CURRENT_SCHEMA_VERSION,
         meta: make_meta(1, "agent-bench"),
         event: TranscriptEvent::ToolFinished {
             call_id: "call-1".into(),

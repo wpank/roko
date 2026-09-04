@@ -688,6 +688,10 @@ struct RunnerLifecycleSchema {
     plans: HashMap<String, PlanLifecycleStatusSchema>,
     #[serde(default)]
     tasks: HashMap<String, TaskLifecycleSchema>,
+    /// Synthetic plan-verification lifecycle entries (separate from executable
+    /// `tasks` so they never count against `total_tasks`).
+    #[serde(default)]
+    plan_verification: HashMap<String, TaskLifecycleSchema>,
     #[serde(default)]
     task_attempts: HashMap<String, TaskAttemptLifecycleSchema>,
     #[serde(default)]
@@ -912,6 +916,31 @@ fn validate_run_state_semantics(path: &Path, run_state: &RunStateSchema) -> io::
         }
     }
 
+    // Validate plan_verification entries (same identity/plan constraints as
+    // tasks, but they never count against total_tasks).
+    for (key, task) in &lifecycle.plan_verification {
+        let expected = format!("{}:{}", task.plan_id, task.task_id);
+        if key != &expected || !identities.insert(expected.clone()) {
+            return Err(invalid_embedded(
+                path,
+                "run_state_json",
+                format!(
+                    "lifecycle plan_verification key {key:?} does not uniquely bind body {expected:?}"
+                ),
+            ));
+        }
+        if !lifecycle.plans.is_empty() && !lifecycle.plans.contains_key(&task.plan_id) {
+            return Err(invalid_embedded(
+                path,
+                "run_state_json",
+                format!(
+                    "lifecycle plan_verification {key:?} refers to missing plan {:?}",
+                    task.plan_id
+                ),
+            ));
+        }
+    }
+
     let mut attempt_identities = std::collections::HashSet::new();
     for (key, attempt) in &lifecycle.task_attempts {
         let expected = format!(
@@ -926,7 +955,9 @@ fn validate_run_state_semantics(path: &Path, run_state: &RunStateSchema) -> io::
             ));
         }
         let task_key = format!("{}:{}", attempt.plan_id, attempt.task_id);
-        if !lifecycle.tasks.contains_key(&task_key) {
+        if !lifecycle.tasks.contains_key(&task_key)
+            && !lifecycle.plan_verification.contains_key(&task_key)
+        {
             return Err(invalid_embedded(
                 path,
                 "run_state_json",
@@ -1700,6 +1731,212 @@ mod tests {
             assert_eq!(plan_states.len(), 1);
             assert!(plan_states.contains_key(plan_id));
         }
+    }
+
+    /// Build a snapshot with both a real task and a plan-verify entry in
+    /// `plan_verification`. This is the shape the runner produces after a
+    /// successful one-task plan with plan verification enabled.
+    fn fixture_snapshot_with_plan_verification(plan_id: &str) -> StateSnapshot {
+        let executor = serde_json::json!({
+            "schema_version": 1,
+            "plan_states": {
+                (plan_id): {
+                    "plan_id": plan_id,
+                    "current_phase": { "kind": "implementing" },
+                    "assigned_agents": []
+                }
+            },
+            "queue_order": [plan_id],
+            "speculative_executions": {},
+            "timestamp_ms": 42
+        });
+        StateSnapshot::new(
+            42,
+            executor.to_string(),
+            serde_json::json!({
+                "schema_version": 1,
+                "executor": executor,
+                "timestamp_ms": 42
+            })
+            .to_string(),
+            serde_json::json!({
+                "schema_version": 1,
+                "run_id": format!("run-{plan_id}"),
+                "timestamp_ms": 42,
+                "tasks_total": 1,
+                "tasks_completed": 1,
+                "tasks_failed": 0,
+                "total_tokens_in": 0,
+                "total_tokens_out": 0,
+                "total_cost_usd": 0.0,
+                "total_agent_calls": 1,
+                "completed_tasks": { (plan_id): ["task-1"] },
+                "lifecycle": {
+                    "run_id": format!("run-{plan_id}"),
+                    "status": "completed",
+                    "total_tasks": 1,
+                    "plans": {
+                        (plan_id): "succeeded"
+                    },
+                    "tasks": {
+                        (format!("{plan_id}:task-1")): {
+                            "plan_id": plan_id,
+                            "task_id": "task-1",
+                            "status": "passed",
+                            "current_attempt": 1,
+                            "next_attempt": 2,
+                            "started_at_ms": 42,
+                            "completed_at_ms": 50
+                        }
+                    },
+                    "plan_verification": {
+                        (format!("{plan_id}:plan-verify")): {
+                            "plan_id": plan_id,
+                            "task_id": "plan-verify",
+                            "status": "passed",
+                            "current_attempt": 1,
+                            "next_attempt": 2,
+                            "started_at_ms": 50,
+                            "completed_at_ms": 55
+                        }
+                    },
+                    "task_attempts": {
+                        (format!("{plan_id}:task-1:1")): {
+                            "plan_id": plan_id,
+                            "task_id": "task-1",
+                            "attempt": 1,
+                            "status": "passed",
+                            "started_at_ms": 42,
+                            "completed_at_ms": 50,
+                            "agent_id": "agent-1"
+                        },
+                        (format!("{plan_id}:plan-verify:1")): {
+                            "plan_id": plan_id,
+                            "task_id": "plan-verify",
+                            "attempt": 1,
+                            "status": "passed",
+                            "started_at_ms": 50,
+                            "completed_at_ms": 55
+                        }
+                    },
+                    "events_seen": 4
+                },
+                "replan_ledger": {}
+            })
+            .to_string(),
+            serde_json::json!({"rungs": {}}).to_string(),
+        )
+    }
+
+    #[test]
+    fn plan_verification_entries_pass_snapshot_validation() {
+        let dir = tempfile::tempdir().unwrap();
+        let snapshot = fixture_snapshot_with_plan_verification("pv");
+        write_snapshot(dir.path(), &snapshot);
+        let projection = load_durable_runner_projection(dir.path())
+            .unwrap()
+            .expect("plan_verification snapshot must validate");
+        assert_eq!(projection.source, RunnerProjectionSource::StateSnapshot);
+    }
+
+    #[test]
+    fn plan_verification_never_inflates_task_count() {
+        // A snapshot where plan-verify is in `tasks` instead of
+        // `plan_verification` must fail because tasks.len() > total_tasks.
+        let dir = tempfile::tempdir().unwrap();
+        let executor = serde_json::json!({
+            "schema_version": 1,
+            "plan_states": {
+                "bad": {
+                    "plan_id": "bad",
+                    "current_phase": { "kind": "implementing" },
+                    "assigned_agents": []
+                }
+            },
+            "queue_order": ["bad"],
+            "speculative_executions": {},
+            "timestamp_ms": 42
+        });
+        let snapshot = StateSnapshot::new(
+            42,
+            executor.to_string(),
+            serde_json::json!({
+                "schema_version": 1,
+                "executor": executor,
+                "timestamp_ms": 42
+            })
+            .to_string(),
+            serde_json::json!({
+                "schema_version": 1,
+                "run_id": "run-bad",
+                "timestamp_ms": 42,
+                "tasks_total": 1,
+                "tasks_completed": 1,
+                "tasks_failed": 0,
+                "total_tokens_in": 0,
+                "total_tokens_out": 0,
+                "total_cost_usd": 0.0,
+                "total_agent_calls": 1,
+                "completed_tasks": { "bad": ["task-1"] },
+                "lifecycle": {
+                    "run_id": "run-bad",
+                    "status": "completed",
+                    "total_tasks": 1,
+                    "plans": { "bad": "succeeded" },
+                    "tasks": {
+                        "bad:task-1": {
+                            "plan_id": "bad",
+                            "task_id": "task-1",
+                            "status": "passed",
+                            "current_attempt": 1,
+                            "next_attempt": 2,
+                            "started_at_ms": 42,
+                            "completed_at_ms": 50
+                        },
+                        "bad:plan-verify": {
+                            "plan_id": "bad",
+                            "task_id": "plan-verify",
+                            "status": "passed",
+                            "current_attempt": 1,
+                            "next_attempt": 2,
+                            "started_at_ms": 50,
+                            "completed_at_ms": 55
+                        }
+                    },
+                    "task_attempts": {
+                        "bad:task-1:1": {
+                            "plan_id": "bad",
+                            "task_id": "task-1",
+                            "attempt": 1,
+                            "status": "passed",
+                            "started_at_ms": 42,
+                            "completed_at_ms": 50,
+                            "agent_id": "agent-1"
+                        },
+                        "bad:plan-verify:1": {
+                            "plan_id": "bad",
+                            "task_id": "plan-verify",
+                            "attempt": 1,
+                            "status": "passed",
+                            "started_at_ms": 50,
+                            "completed_at_ms": 55
+                        }
+                    },
+                    "events_seen": 4
+                },
+                "replan_ledger": {}
+            })
+            .to_string(),
+            serde_json::json!({"rungs": {}}).to_string(),
+        );
+        write_snapshot(dir.path(), &snapshot);
+        let err = load_durable_runner_projection(dir.path())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("more tasks than total_tasks"),
+            "plan-verify in tasks map must be rejected: {err}"
+        );
     }
 
     #[test]

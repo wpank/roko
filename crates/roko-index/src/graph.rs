@@ -23,10 +23,6 @@ static TYPE_REF_RE: LazyLock<Regex> =
 
 /// The kind of relationship between two symbols.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(
-    feature = "rkyv",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
 #[non_exhaustive]
 pub enum EdgeKind {
     /// One symbol calls another.
@@ -43,10 +39,6 @@ pub enum EdgeKind {
 
 /// A directed edge in the symbol graph.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(
-    feature = "rkyv",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
 pub struct SymbolEdge {
     /// Source symbol.
     pub from_id: SymbolId,
@@ -192,94 +184,6 @@ impl SymbolGraph {
         }
 
         results
-    }
-}
-
-// ─── rkyv zero-copy snapshots ────────────────────────────────────────────
-
-/// Flat snapshot of a graph's edges for rkyv serialization.
-///
-/// The graph's internal `HashMap`/`HashSet` structures do not derive rkyv
-/// directly, so we serialize a flat edge list instead and rebuild on load.
-#[cfg(feature = "rkyv")]
-#[derive(Clone, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-pub struct SymbolGraphSnapshot {
-    /// All edges as `(from, to, kind)` triples.
-    pub edges: Vec<SymbolEdge>,
-}
-
-#[cfg(feature = "rkyv")]
-impl SymbolGraph {
-    /// Create a flat snapshot suitable for rkyv serialization.
-    #[must_use]
-    pub fn snapshot(&self) -> SymbolGraphSnapshot {
-        let mut edges = Vec::new();
-        for (from_id, targets) in &self.forward {
-            for (to_id, kind) in targets {
-                edges.push(SymbolEdge {
-                    from_id: from_id.clone(),
-                    to_id: to_id.clone(),
-                    kind: kind.clone(),
-                });
-            }
-        }
-        SymbolGraphSnapshot { edges }
-    }
-
-    /// Rebuild a graph from a snapshot.
-    #[must_use]
-    pub fn from_snapshot(snapshot: &SymbolGraphSnapshot) -> Self {
-        let mut nodes = HashSet::new();
-        let mut forward: HashMap<SymbolId, Vec<(SymbolId, EdgeKind)>> = HashMap::new();
-        let mut reverse: HashMap<SymbolId, Vec<(SymbolId, EdgeKind)>> = HashMap::new();
-        for edge in &snapshot.edges {
-            nodes.insert(edge.from_id.clone());
-            nodes.insert(edge.to_id.clone());
-            forward
-                .entry(edge.from_id.clone())
-                .or_default()
-                .push((edge.to_id.clone(), edge.kind.clone()));
-            reverse
-                .entry(edge.to_id.clone())
-                .or_default()
-                .push((edge.from_id.clone(), edge.kind.clone()));
-        }
-        Self {
-            nodes,
-            forward,
-            reverse,
-        }
-    }
-
-    /// Serialize the graph to an rkyv archive and write it to `path`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the graph cannot be serialized or the file cannot
-    /// be written.
-    pub fn save_rkyv(&self, path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
-        let snapshot = self.snapshot();
-        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&snapshot)
-            .map_err(|e| format!("rkyv ser: {e}"))?;
-        std::fs::write(path, &bytes)?;
-        Ok(())
-    }
-
-    /// Load a graph from an rkyv archive at `path`.
-    ///
-    /// Deserializes the snapshot and rebuilds the graph indices.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the file cannot be read or the archive is invalid.
-    pub fn load_rkyv(path: &std::path::Path) -> Result<Self, Box<dyn std::error::Error>> {
-        let bytes = std::fs::read(path)?;
-        let archived = rkyv::access::<ArchivedSymbolGraphSnapshot, rkyv::rancor::Error>(&bytes)
-            .map_err(|e| format!("rkyv access: {e}"))?;
-        let snapshot: SymbolGraphSnapshot =
-            rkyv::deserialize::<SymbolGraphSnapshot, rkyv::rancor::Error>(archived)
-                .map_err(|e| format!("rkyv deser: {e}"))?;
-        Ok(Self::from_snapshot(&snapshot))
     }
 }
 

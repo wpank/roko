@@ -605,7 +605,6 @@ pub(crate) fn gate_timeout(config: &RunConfig, rung: u32) -> Duration {
 }
 
 /// Resolve HTTP request timeout from `TimeoutConfig`.
-#[allow(dead_code)]
 pub(crate) fn http_request_timeout(config: &RunConfig) -> Duration {
     config.roko_config.as_deref().map_or_else(
         || roko_core::config::TimeoutConfig::default().http_request(),
@@ -614,7 +613,6 @@ pub(crate) fn http_request_timeout(config: &RunConfig) -> Duration {
 }
 
 /// Resolve health check timeout from `TimeoutConfig`.
-#[allow(dead_code)]
 pub(crate) fn health_check_timeout(config: &RunConfig) -> Duration {
     config.roko_config.as_deref().map_or_else(
         || roko_core::config::TimeoutConfig::default().health_check(),
@@ -21100,6 +21098,7 @@ fn record_agent_event_to_transcript(
     };
 
     let record = TranscriptRecord {
+        schema_version: TranscriptRecord::CURRENT_SCHEMA_VERSION,
         meta: TranscriptEventMeta {
             run_id: run_id.to_string(),
             turn_id: 0,
@@ -21109,6 +21108,8 @@ fn record_agent_event_to_transcript(
             provider: state.agent_provider.clone(),
             model: state.agent_model.clone(),
             parent_event_id: None,
+            task_id: Some(state.current_task.clone()),
+            attempt_id: None,
         },
         event: transcript_event,
     };

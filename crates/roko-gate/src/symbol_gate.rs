@@ -25,11 +25,11 @@
 //!
 //! ```text
 //! 4 symbol expectations unmet:
-//!   MISSING: struct RateLimiter at golem_core::rate_limit
-//!   WRONG_VIS: fn check_rate at golem_core::rate_limit (found: private, expected: pub)
-//!   WRONG_KIND: Limiter at golem_core::rate_limit (found: struct, expected: trait)
-//!   WRONG_PATH: struct Clock at golem_core::time (found at: golem_core::clock)
-//!   AMBIGUOUS: fn foo at golem_core::util (2 matches)
+//!   MISSING: struct RateLimiter at roko_core::rate_limit
+//!   WRONG_VIS: fn check_rate at roko_core::rate_limit (found: private, expected: pub)
+//!   WRONG_KIND: Limiter at roko_core::rate_limit (found: struct, expected: trait)
+//!   WRONG_PATH: struct Clock at roko_core::time (found at: roko_core::clock)
+//!   AMBIGUOUS: fn foo at roko_core::util (2 matches)
 //! ```
 
 use async_trait::async_trait;
@@ -127,7 +127,7 @@ pub struct SymbolExpectation {
     pub kind: SymbolKind,
     /// Expected visibility.
     pub visibility: Visibility,
-    /// Logical module path (Rust: `"golem_core::rate_limit"`). Matching
+    /// Logical module path (Rust: `"roko_core::rate_limit"`). Matching
     /// tolerates minor whitespace differences around the `::` separator.
     pub module_path: String,
     /// Optional signature substring that must appear in the found symbol's

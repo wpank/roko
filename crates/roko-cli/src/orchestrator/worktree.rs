@@ -546,6 +546,18 @@ impl WorktreeManager {
         })
     }
 
+    /// Return the configured repository root path.
+    #[must_use]
+    pub fn repo_root(&self) -> &Path {
+        &self.config.repo_root
+    }
+
+    /// Return the configured base branch name.
+    #[must_use]
+    pub fn base_branch(&self) -> &str {
+        &self.config.base_branch
+    }
+
     /// Compute the path the manager would use for `id`. This is a pure
     /// function of the config and does not touch the filesystem.
     #[must_use]

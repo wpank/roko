@@ -15,7 +15,6 @@
 //! # Feature disposition (backlog #362)
 //!
 //! - **SQLite** (`sqlite`): canonical CLI persistence. Enabled by `roko-cli`.
-//! - **rkyv** (`rkyv`): library-only opt-in. CLI does not enable it.
 //! - **tree-sitter** (`roko-lang-rust/tree-sitter`): disabled, experimental.
 //! - **HDC search**: library-only per backlog #335.
 

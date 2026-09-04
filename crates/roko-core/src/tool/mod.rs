@@ -73,6 +73,7 @@ pub mod pointer;
 pub mod registry;
 pub mod relevance;
 pub mod role_allowlist;
+pub mod source_adapter;
 pub mod trace;
 /// RAII guard ensuring TraceSink::finish is called on every terminal path.
 pub mod trace_finish_guard;
@@ -101,4 +102,8 @@ pub use trace::{
     TraceBuilder, TraceId, TraceSink, TraceStep, classify_tool_error,
 };
 pub use trace_finish_guard::TraceFinishGuard;
+pub use source_adapter::{
+    AcpAdapter, AdapterContext, CliJsonlAdapter, EventSourceKind, ProviderStreamAdapter,
+    RawSourceEvent, RemoteRelayAdapter, RuntimeAdapter, SourceAdapter,
+};
 pub use transcript::{ToolLifecycleStatus, TranscriptEvent, TranscriptEventMeta, TranscriptRecord};

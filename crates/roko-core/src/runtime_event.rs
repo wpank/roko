@@ -105,6 +105,7 @@ pub enum RuntimeEventDelivery {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RuntimeEventEnvelope {
     /// Stable UUID string created once and preserved on replay.
+    #[serde(default = "new_event_id")]
     pub event_id: String,
     /// Required run scope.
     pub run_id: String,
@@ -145,6 +146,10 @@ pub struct RuntimeEventEnvelope {
     pub idempotency_key: Option<String>,
     /// The event payload.
     pub payload: RuntimeEvent,
+}
+
+fn new_event_id() -> String {
+    Uuid::new_v4().to_string()
 }
 
 fn default_mode() -> RuntimeEventMode {

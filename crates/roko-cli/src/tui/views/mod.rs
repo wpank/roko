@@ -1,6 +1,6 @@
 //! Tab content views for the Mori-style TUI.
 //!
-//! Each view corresponds to one top-level tab (F1-F9) and renders
+//! Each view corresponds to one top-level tab (F1-F10) and renders
 //! the full content area for that tab. Views accept the shared
 //! dashboard data, theme, and per-view state parameters.
 //!

@@ -6,6 +6,24 @@ use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
 /// Maximum number of episode lines to include in analyze context.
 const ANALYZE_MAX_LINES: usize = 2_000;
 
+/// Maximum bytes of context to include from a single file before truncation.
+const CONTEXT_MAX_BYTES: usize = 256_000;
+
+/// Truncate file content to at most `max_bytes` on a UTF-8 boundary.
+/// Returns `(truncated_content, was_truncated, original_bytes)`.
+fn bounded_context(content: &str, max_bytes: usize) -> (&str, bool, usize) {
+    let total = content.len();
+    if total <= max_bytes {
+        return (content, false, total);
+    }
+    // Find the last char boundary at or before max_bytes.
+    let mut end = max_bytes;
+    while end > 0 && !content.is_char_boundary(end) {
+        end -= 1;
+    }
+    (&content[..end], true, total)
+}
+
 /// Build a deterministic output filename from a topic slug and optional suffix.
 fn research_output_path(workdir: &Path, topic: &str, suffix: &str) -> PathBuf {
     let slug = topic
@@ -75,7 +93,11 @@ fn tail_lines_bounded(path: &Path, max_lines: usize) -> Result<(String, usize, u
 }
 
 #[allow(clippy::too_many_lines)]
-pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
+pub(crate) async fn cmd_research(
+    cli: &Cli,
+    cmd: ResearchCmd,
+    resolved: &roko_cli::resolved_overrides::ResolvedExecutionOverrides,
+) -> Result<i32> {
     use roko_cli::agent_config::{command_from_config, load_gateway_env, model_from_config};
     use roko_cli::agent_exec::{AgentExecOpts, run_agent_capture_silent};
     use roko_cli::research::{
@@ -96,16 +118,25 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
 
     roko_cli::research::ensure_dirs(&workdir)?;
     let gw = load_gateway_env(&workdir);
-    let model = cli.model.clone().or_else(|| model_from_config(&workdir));
+    // Use resolved overrides for model/effort/role instead of re-reading from cli.
+    let model = resolved
+        .model
+        .clone()
+        .or_else(|| model_from_config(&workdir));
     let model_ref = model.as_deref();
-    let cli_effort = cli.effort.map(|effort| effort.to_string());
-    let cli_effort_ref = cli_effort.as_deref();
-    let resume_session = cli.resume.as_deref();
+    let resume_session = resolved.resume.as_deref();
     let agent_command = command_from_config(&workdir).unwrap_or_else(|| "claude".to_string());
     let config = roko_core::config::loader::load_config_unified(&workdir).unwrap_or_default();
-    // #181: resolve per-role effort for the researcher role; CLI --effort wins.
-    let researcher_effort =
-        cli_effort_ref.unwrap_or_else(|| config.agent.effort_for_role("researcher"));
+    // Use resolved role (defaults to "researcher" via for_research); honor explicit --role.
+    let resolved_role = resolved
+        .role
+        .as_deref()
+        .unwrap_or("researcher");
+    // #181: resolve per-role effort; CLI --effort (via resolved) wins.
+    let researcher_effort = resolved
+        .effort
+        .as_deref()
+        .unwrap_or_else(|| config.agent.effort_for_role(resolved_role));
 
     match cmd {
         ResearchCmd::Topic {
@@ -144,7 +175,7 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
                                 "auto_deep config"
                             };
                             println!("  Backend: perplexity-deep ({reason})");
-                            return run_perplexity_deep(&workdir, &config, &topic, resume_session)
+                            return run_perplexity_deep(&workdir, &config, &topic, resume_session, resolved_role)
                                 .await;
                         }
                         // deep requested but no Perplexity research model configured
@@ -161,14 +192,14 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
                             &workdir,
                             &config,
                             &topic,
-                            model_ref,
                             resume_session,
+                            resolved_role,
                         )
                         .await;
                     }
                     if config.perplexity.default_search_model.is_some() {
                         println!("  Backend: perplexity (auto: search model configured)");
-                        return run_perplexity_standard(&workdir, &config, &topic, resume_session)
+                        return run_perplexity_standard(&workdir, &config, &topic, resume_session, resolved_role)
                             .await;
                     }
                     println!("  Backend: agent (auto: fallback)");
@@ -180,6 +211,7 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
                         resume_session,
                         &gw.vars,
                         &agent_command,
+                        resolved_role,
                     )
                     .await
                 }
@@ -191,7 +223,7 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
                             );
                         }
                         println!("  Backend: perplexity-deep (explicit)");
-                        return run_perplexity_deep(&workdir, &config, &topic, resume_session)
+                        return run_perplexity_deep(&workdir, &config, &topic, resume_session, resolved_role)
                             .await;
                     }
                     if config.perplexity.default_search_model.is_none() {
@@ -200,7 +232,7 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
                         );
                     }
                     println!("  Backend: perplexity (explicit)");
-                    run_perplexity_standard(&workdir, &config, &topic, resume_session).await
+                    run_perplexity_standard(&workdir, &config, &topic, resume_session, resolved_role).await
                 }
                 ResearchBackend::Gemini => {
                     if config.gemini.grounding_model.is_none() {
@@ -209,7 +241,7 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
                         );
                     }
                     println!("  Backend: gemini (explicit)");
-                    run_gemini_grounded(&workdir, &config, &topic, model_ref, resume_session).await
+                    run_gemini_grounded(&workdir, &config, &topic, resume_session, resolved_role).await
                 }
                 ResearchBackend::Agent => {
                     println!("  Backend: agent (explicit)");
@@ -221,6 +253,7 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
                         resume_session,
                         &gw.vars,
                         &agent_command,
+                        resolved_role,
                     )
                     .await
                 }
@@ -228,9 +261,18 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
         }
         ResearchCmd::EnhancePrd { slug } => {
             let prd_path = crate::commands::prd::find_prd(&workdir, &slug)?;
-            let content = std::fs::read_to_string(&prd_path)
+            let raw_content = std::fs::read_to_string(&prd_path)
                 .with_context(|| format!("read {}", prd_path.display()))?;
+            let (content, truncated, total_bytes) =
+                bounded_context(&raw_content, CONTEXT_MAX_BYTES);
             println!("🔬 Enhancing PRD: {slug}");
+            if truncated {
+                println!(
+                    "  Note: PRD truncated to {}KB of {}KB for context",
+                    CONTEXT_MAX_BYTES / 1024,
+                    total_bytes / 1024,
+                );
+            }
             let task_prompt = format!(
                 "Read the PRD at {path} and enhance it: \
                  (1) Add academic citations [AUTHOR-YEAR] for every design decision. \
@@ -240,7 +282,7 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
                  Update the file in place. Also save a research summary to .roko/research/enhance-{slug}.md",
                 path = prd_path.display()
             );
-            let system = build_research_prompt(&workdir, &slug, &content, ResearchMode::EnhancePrd);
+            let system = build_research_prompt(&workdir, &slug, content, ResearchMode::EnhancePrd);
             let started = Instant::now();
             let (exit_code, output) = run_agent_capture_silent(AgentExecOpts {
                 prompt: &task_prompt,
@@ -250,7 +292,7 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
                 system_prompt: Some(&system),
                 resume_session,
                 env_vars: &gw.vars,
-                role: Some("researcher"),
+                role: Some(resolved_role),
                 allowed_tools: Some("Read,Write,Edit"),
             })
             .await?;
@@ -293,7 +335,15 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
             for name in ["plan.md", "tasks.toml"] {
                 let p = plan_dir.join(name);
                 if p.exists() {
-                    let c = std::fs::read_to_string(&p).unwrap_or_default();
+                    let raw = std::fs::read_to_string(&p).unwrap_or_default();
+                    let (c, truncated, total) = bounded_context(&raw, CONTEXT_MAX_BYTES / 2);
+                    if truncated {
+                        println!(
+                            "  Note: {name} truncated to {}KB of {}KB",
+                            CONTEXT_MAX_BYTES / 2 / 1024,
+                            total / 1024,
+                        );
+                    }
                     let _ = write!(context, "### {name}\n```\n{c}\n```\n\n");
                 }
             }
@@ -308,7 +358,7 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
                 system_prompt: Some(&system),
                 resume_session,
                 env_vars: &gw.vars,
-                role: Some("researcher"),
+                role: Some(resolved_role),
                 allowed_tools: Some("Read,Write,Edit"),
             })
             .await?;
@@ -337,7 +387,16 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
                 anyhow::bail!("tasks.toml not found: {}", tasks_path.display());
             }
             println!("🔬 Optimizing tasks: {plan}");
-            let content = std::fs::read_to_string(&tasks_path)?;
+            let raw_content = std::fs::read_to_string(&tasks_path)?;
+            let (content, truncated, total_bytes) =
+                bounded_context(&raw_content, CONTEXT_MAX_BYTES);
+            if truncated {
+                println!(
+                    "  Note: tasks.toml truncated to {}KB of {}KB for context",
+                    CONTEXT_MAX_BYTES / 1024,
+                    total_bytes / 1024,
+                );
+            }
             // Use the resolved tasks path, not hardcoded .roko/plans/
             let task_prompt = format!(
                 "Read {tasks_path} and optimize every task: \
@@ -360,7 +419,7 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
                 system_prompt: Some(&system),
                 resume_session,
                 env_vars: &gw.vars,
-                role: Some("researcher"),
+                role: Some(resolved_role),
                 allowed_tools: Some("Read,Write,Edit"),
             })
             .await?;
@@ -432,7 +491,7 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
                 system_prompt: Some(&system),
                 resume_session,
                 env_vars: &gw.vars,
-                role: Some("researcher"),
+                role: Some(resolved_role),
                 allowed_tools: Some("Read,Write,Edit"),
             })
             .await?;
@@ -644,6 +703,7 @@ async fn run_perplexity_deep(
     config: &RokoConfig,
     topic: &str,
     resume_session: Option<&str>,
+    role: &str,
 ) -> Result<i32> {
     use roko_agent::perplexity::types::PerplexityMetadata;
     use roko_cli::research::{ResearchMode, build_research_prompt_perplexity};
@@ -681,7 +741,7 @@ async fn run_perplexity_deep(
             bare_mode: false,
             dangerously_skip_permissions: false,
             name: String::new(),
-            role: Some("researcher".to_string()),
+            role: Some(role.to_string()),
         },
         format!("create Perplexity deep research agent for model {model_slug}"),
     )?;
@@ -767,8 +827,8 @@ async fn run_gemini_grounded(
     workdir: &Path,
     config: &RokoConfig,
     topic: &str,
-    _model_override: Option<&str>,
     resume_session: Option<&str>,
+    role: &str,
 ) -> Result<i32> {
     use roko_cli::research::{
         ResearchMode, build_research_prompt_gemini, grounding_to_citations,
@@ -882,7 +942,7 @@ async fn run_gemini_grounded(
             extra_args: Vec::new(),
             bare_mode: false,
             dangerously_skip_permissions: false,
-            role: Some("researcher".to_string()),
+            role: Some(role.to_string()),
         },
         format!("create Gemini research agent for model {model_slug}"),
     )?;
@@ -964,6 +1024,7 @@ async fn run_perplexity_standard(
     config: &RokoConfig,
     topic: &str,
     resume_session: Option<&str>,
+    role: &str,
 ) -> Result<i32> {
     use roko_agent::perplexity::types::PerplexityMetadata;
     use roko_cli::research::{ResearchMode, build_research_prompt_perplexity};
@@ -1005,7 +1066,7 @@ async fn run_perplexity_standard(
             bare_mode: false,
             dangerously_skip_permissions: false,
             name: String::new(),
-            role: Some("researcher".to_string()),
+            role: Some(role.to_string()),
         },
         format!("create Perplexity research agent for model {model_slug}"),
     )?;
@@ -1083,6 +1144,7 @@ async fn run_agent_fallback(
     resume_session: Option<&str>,
     env_vars: &[(String, String)],
     agent_command: &str,
+    role: &str,
 ) -> Result<i32> {
     use roko_cli::agent_exec::{AgentExecOpts, run_agent_capture_silent};
     use roko_cli::research::{ResearchMode, build_research_prompt};
@@ -1103,7 +1165,7 @@ async fn run_agent_fallback(
         system_prompt: Some(&system),
         resume_session,
         env_vars,
-        role: Some("researcher"),
+        role: Some(role),
         allowed_tools: Some("Read,Write,Edit"),
     })
     .await?;
@@ -1342,5 +1404,46 @@ mod tests {
         // (plans_dir returns /project/.roko/plans when no top-level plans/ exists,
         // but the point is that it uses the resolver, not a literal)
         assert!(prompt.contains(&plan_dir.display().to_string()));
+    }
+
+    // ── bounded_context ────────────────────────────────────────────────
+
+    #[test]
+    fn bounded_context_short_content_unchanged() {
+        let text = "hello world";
+        let (out, truncated, total) = bounded_context(text, 1024);
+        assert_eq!(out, text);
+        assert!(!truncated);
+        assert_eq!(total, text.len());
+    }
+
+    #[test]
+    fn bounded_context_long_content_truncated() {
+        let text = "a".repeat(500);
+        let (out, truncated, total) = bounded_context(&text, 100);
+        assert!(truncated);
+        assert_eq!(total, 500);
+        assert!(out.len() <= 100);
+        assert_eq!(out.len(), 100);
+    }
+
+    #[test]
+    fn bounded_context_utf8_boundary_safe() {
+        // Multi-byte UTF-8: each character is 4 bytes
+        let text = "\u{1F600}".repeat(10); // 40 bytes
+        let (out, truncated, total) = bounded_context(&text, 6);
+        assert!(truncated);
+        assert_eq!(total, 40);
+        // Must cut at a char boundary (4 bytes per emoji)
+        assert_eq!(out.len(), 4);
+        assert_eq!(out, "\u{1F600}");
+    }
+
+    #[test]
+    fn bounded_context_exact_boundary() {
+        let text = "abcde";
+        let (out, truncated, _) = bounded_context(text, 5);
+        assert!(!truncated);
+        assert_eq!(out, "abcde");
     }
 }

@@ -410,6 +410,24 @@ impl ChatAgentSession {
         workdir: PathBuf,
         model_selection: EffectiveModelSelection,
     ) -> Result<Self> {
+        // #245: validate against ChatLight profile.
+        let chat_overrides = roko_execution::overrides_for_chat(
+            Some(model_selection.effective_model_key.clone()),
+            None,
+        );
+        let service_request = roko_execution::NonPlanServiceRequest::new(
+            roko_execution::profiles::RuntimeProfile::ChatLight,
+            workdir.clone(),
+            chat_overrides,
+        );
+        let _service_handle = roko_execution::build_non_plan_services(&service_request)
+            .map_err(|e| anyhow::anyhow!("chat session service validation: {e}"))?;
+        tracing::debug!(
+            instance_id = %_service_handle.instance_id(),
+            profile = %_service_handle.profile(),
+            "validated ChatAgentSession service request"
+        );
+
         let system_prompt = build_chat_system_prompt(&workdir, config);
         let allowed_tools_csv = resolve_tool_policy(&workdir);
         let mcp_config = resolve_mcp_config(&workdir, config);

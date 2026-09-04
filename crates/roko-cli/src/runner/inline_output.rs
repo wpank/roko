@@ -66,11 +66,6 @@ impl RunnerInlineTerminal {
         }
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn is_enabled(&self) -> bool {
-        !matches!(self.target, InlineTarget::Disabled)
-    }
-
     pub(crate) fn warm_cache_started(&mut self) {
         self.push_lines(&[styled::section_start(
             &self.theme,

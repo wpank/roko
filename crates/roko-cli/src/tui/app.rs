@@ -1,6 +1,6 @@
 //! Interactive TUI application shell.
 //!
-//! Integrates the Mori-style tab system (F1-F7), modal dialogs, TuiState,
+//! Integrates the Mori-style tab system (F1-F10), modal dialogs, TuiState,
 //! TuiAction dispatch, PostFX pipeline, and atmosphere animations.
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -55,7 +55,7 @@ use super::ws_client::{AgentStreamClient, StreamChunk};
 /// Interactive dashboard shell backed by the existing snapshot renderer.
 ///
 /// Supports two rendering paths:
-/// - **Mori-style tabs** (F1-F7): full TuiState + views + modals + postfx
+/// - **Mori-style tabs** (F1-F10): full TuiState + views + modals + postfx
 /// - **Legacy scaffold pages**: original PageId-based rendering
 ///
 /// All expensive I/O stays off the render path. System metrics run on a

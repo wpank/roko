@@ -34,25 +34,30 @@ pub enum ReplayFormat {
 impl ReplayFormat {
     /// Resolve the output format from the `--format` flag and the global `--json` flag.
     ///
-    /// Returns `Err` if both are specified but contradictory (e.g. `--json --format tree`).
-    pub fn resolve(format_flag: &str, global_json: bool) -> Result<Self, String> {
+    /// When `format_flag` is `None` the user did not pass `--format`, so
+    /// global `--json` wins. When `format_flag` is `Some("tree")` AND
+    /// `global_json` is true, the two are contradictory and we return `Err`.
+    pub fn resolve(format_flag: Option<&str>, global_json: bool) -> Result<Self, String> {
         let from_flag = match format_flag {
-            "json" => Some(Self::Json),
-            "tree" => Some(Self::Tree),
-            _ => None,
+            Some("json") => Some(Self::Json),
+            Some("tree") => Some(Self::Tree),
+            Some(other) => return Err(format!("unknown format: {other}")),
+            None => None,
         };
 
         match (from_flag, global_json) {
-            // --format json and/or --json: both select JSON
-            (Some(Self::Json), true) | (Some(Self::Json), false) | (None, true) => Ok(Self::Json),
-            // --format tree (no --json): tree
-            (Some(Self::Tree), false) | (None, false) => Ok(Self::Tree),
+            // --format json (with or without --json): JSON
+            (Some(Self::Json), _) => Ok(Self::Json),
+            // --format tree without --json: tree
+            (Some(Self::Tree), false) => Ok(Self::Tree),
             // --format tree AND --json: contradiction
             (Some(Self::Tree), true) => {
                 Err("contradictory output flags: --json and --format tree".to_string())
             }
-            // Unknown format value
-            _ => Err(format!("unknown format: {format_flag}")),
+            // No --format: global --json decides
+            (None, true) => Ok(Self::Json),
+            (None, false) => Ok(Self::Tree),
+            _ => unreachable!(),
         }
     }
 }
@@ -752,17 +757,26 @@ mod tests {
     // ── Format resolution tests ─────────────────────────────────────
 
     #[test]
-    fn format_resolve_tree_default() {
+    fn format_resolve_tree_explicit() {
         assert_eq!(
-            ReplayFormat::resolve("tree", false).unwrap(),
+            ReplayFormat::resolve(Some("tree"), false).unwrap(),
             ReplayFormat::Tree
         );
     }
 
     #[test]
-    fn format_resolve_json_flag() {
+    fn format_resolve_tree_default_no_json() {
+        // No --format, no --json: default to tree.
         assert_eq!(
-            ReplayFormat::resolve("tree", true).unwrap_err(),
+            ReplayFormat::resolve(None, false).unwrap(),
+            ReplayFormat::Tree
+        );
+    }
+
+    #[test]
+    fn format_resolve_explicit_tree_contradicts_global_json() {
+        assert_eq!(
+            ReplayFormat::resolve(Some("tree"), true).unwrap_err(),
             "contradictory output flags: --json and --format tree"
         );
     }
@@ -770,7 +784,7 @@ mod tests {
     #[test]
     fn format_resolve_format_json() {
         assert_eq!(
-            ReplayFormat::resolve("json", false).unwrap(),
+            ReplayFormat::resolve(Some("json"), false).unwrap(),
             ReplayFormat::Json
         );
     }
@@ -778,17 +792,23 @@ mod tests {
     #[test]
     fn format_resolve_both_json() {
         assert_eq!(
-            ReplayFormat::resolve("json", true).unwrap(),
+            ReplayFormat::resolve(Some("json"), true).unwrap(),
             ReplayFormat::Json
         );
     }
 
     #[test]
-    fn format_resolve_global_json_alone() {
-        // global --json with default format "tree" text doesn't override;
-        // but if format is left as default we must handle it in the caller.
-        // Here we test with "tree" explicitly:
-        assert!(ReplayFormat::resolve("tree", true).is_err());
+    fn format_resolve_global_json_without_format() {
+        // --json without --format: global --json wins, selects JSON.
+        assert_eq!(
+            ReplayFormat::resolve(None, true).unwrap(),
+            ReplayFormat::Json
+        );
+    }
+
+    #[test]
+    fn format_resolve_unknown_format() {
+        assert!(ReplayFormat::resolve(Some("xml"), false).is_err());
     }
 
     // ── Diamond fixture with FileSubstrate ──────────────────────────
@@ -884,4 +904,266 @@ mod tests {
         assert_eq!(parsed["tags"]["priority"], "high");
         assert_eq!(parsed["tags"]["domain"], "infra");
     }
+
+    // ── FileSubstrate integration test ────────────────────────────────
+
+    #[tokio::test]
+    async fn diamond_dag_via_file_substrate() {
+        use roko_core::Store;
+        use roko_fs::FileSubstrate;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let substrate = FileSubstrate::open(tmp.path()).await.unwrap();
+
+        //   D
+        //  / \
+        // B   C
+        //  \ /
+        //   A
+        //
+        // `put` may recompute the content hash (e.g. HDC fingerprinting),
+        // so we store in dependency order and use the returned IDs for
+        // subsequent lineage references.
+        let a = make_signal("A", "alice", vec![]);
+        let a_id = substrate.put(a).await.unwrap();
+
+        let b = make_signal("B", "bob", vec![a_id]);
+        let b_id = substrate.put(b).await.unwrap();
+
+        let c = make_signal("C", "carol", vec![a_id]);
+        let c_id = substrate.put(c).await.unwrap();
+
+        let d = make_signal("D", "dave", vec![b_id, c_id]);
+        let d_id = substrate.put(d).await.unwrap();
+
+        // Re-open to verify persistence across open/close.
+        drop(substrate);
+        let substrate = FileSubstrate::open(tmp.path()).await.unwrap();
+
+        // Build lookup from substrate (mirroring cmd_replay's approach).
+        let mut lookup = HashMap::new();
+        let mut visit_queue = VecDeque::new();
+        let mut seen = HashSet::new();
+        visit_queue.push_back(d_id);
+        while let Some(id) = visit_queue.pop_front() {
+            if !seen.insert(id) {
+                continue;
+            }
+            if let Some(sig) = substrate.get(&id).await.unwrap() {
+                for parent in &sig.lineage {
+                    visit_queue.push_back(*parent);
+                }
+                lookup.insert(sig.id, sig);
+            }
+        }
+
+        // Traverse and verify.
+        let result = traverse_dag(&d_id, &lookup, 0);
+        let records = match result {
+            ReplayResult::Ok(r) => r,
+            ReplayResult::Err(e) => panic!("unexpected error: {e:?}"),
+        };
+
+        assert_eq!(records.len(), 4, "all four signals should be visited");
+        assert_eq!(records[0].hash, d_id.to_string(), "root should be first");
+        assert_eq!(records[3].hash, a_id.to_string(), "shared ancestor should be last");
+
+        // Middle two are B and C in lexicographic hash order.
+        let mid: Vec<String> = records[1..3].iter().map(|r| r.hash.clone()).collect();
+        assert!(mid[0] < mid[1], "BFS parents should be lexicographically sorted");
+        let bc: HashSet<String> = [b_id.to_string(), c_id.to_string()].into();
+        let actual: HashSet<String> = mid.into_iter().collect();
+        assert_eq!(bc, actual);
+
+        // JSON Lines output should be valid.
+        let lines = render_json(&records);
+        assert_eq!(lines.len(), 4);
+        for line in &lines {
+            let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+            assert!(parsed.is_object());
+            assert!(parsed["event"].is_number());
+        }
+    }
+
+    // ── Wide branching and multi-parent DAG tests ──────────────────
+
+    #[test]
+    fn wide_fan_out_deterministic_order() {
+        // Root R has 5 children: A, B, C, D, E (as parents in lineage).
+        // All children should appear in lexicographic hash order after R.
+        let a = make_signal("A", "alice", vec![]);
+        let b = make_signal("B", "bob", vec![]);
+        let c = make_signal("C", "carol", vec![]);
+        let d = make_signal("D", "dave", vec![]);
+        let e = make_signal("E", "eve", vec![]);
+        let r = make_signal("root", "root", vec![a.id, b.id, c.id, d.id, e.id]);
+
+        let lookup = make_lookup(&[
+            a.clone(),
+            b.clone(),
+            c.clone(),
+            d.clone(),
+            e.clone(),
+            r.clone(),
+        ]);
+
+        let result = traverse_dag(&r.id, &lookup, 0);
+        let records = match result {
+            ReplayResult::Ok(r) => r,
+            ReplayResult::Err(e) => panic!("unexpected error: {e:?}"),
+        };
+
+        assert_eq!(records.len(), 6);
+        assert_eq!(records[0].hash, r.id.to_string(), "root first");
+
+        // The 5 children (indices 1..6) should be in lexicographic hash order.
+        let child_hashes: Vec<String> = records[1..6].iter().map(|r| r.hash.clone()).collect();
+        let mut sorted = child_hashes.clone();
+        sorted.sort();
+        assert_eq!(
+            child_hashes, sorted,
+            "wide fan-out children must be in lexicographic hash order"
+        );
+    }
+
+    #[test]
+    fn multi_level_depth_tracking() {
+        // Chain: D -> C -> B -> A  (depth 0, 1, 2, 3)
+        let a = make_signal("A", "alice", vec![]);
+        let b = make_signal("B", "bob", vec![a.id]);
+        let c = make_signal("C", "carol", vec![b.id]);
+        let d = make_signal("D", "dave", vec![c.id]);
+        let lookup = make_lookup(&[a.clone(), b.clone(), c.clone(), d.clone()]);
+
+        let result = traverse_dag(&d.id, &lookup, 0);
+        let records = match result {
+            ReplayResult::Ok(r) => r,
+            ReplayResult::Err(e) => panic!("unexpected error: {e:?}"),
+        };
+
+        assert_eq!(records.len(), 4);
+        assert_eq!(records[0].depth, 0, "root depth");
+        assert_eq!(records[1].depth, 1, "first parent depth");
+        assert_eq!(records[2].depth, 2, "grandparent depth");
+        assert_eq!(records[3].depth, 3, "great-grandparent depth");
+    }
+
+    // ── Multi-missing ancestor determinism ─────────────────────────
+
+    #[test]
+    fn multiple_missing_ancestors_reports_first_in_deterministic_order() {
+        // Root R references two phantom parents P1 and P2 (both missing).
+        // The error should report whichever comes first in lexicographic
+        // order, deterministically.
+        let p1 = ContentHash([0x11; 32]);
+        let p2 = ContentHash([0x22; 32]);
+
+        let r = make_signal("root", "root", vec![p1, p2]);
+        let lookup = make_lookup(&[r.clone()]);
+
+        let result = traverse_dag(&r.id, &lookup, 0);
+        match result {
+            ReplayResult::Err(e) => {
+                assert_eq!(e.code, "replay_ancestor_not_found");
+                // The error should reference one of the phantom parents.
+                // Determinism: the hash in the error must be the lex-first
+                // phantom parent (after sorting).
+                let mut sorted_phantoms =
+                    vec![p1.to_string(), p2.to_string()];
+                sorted_phantoms.sort();
+                assert_eq!(
+                    e.hash, sorted_phantoms[0],
+                    "must report the lex-first missing ancestor"
+                );
+                assert_eq!(
+                    e.referenced_by.as_deref(),
+                    Some(r.id.to_string().as_str()),
+                    "must reference the child that declared the missing parent"
+                );
+            }
+            ReplayResult::Ok(_) => panic!("expected ancestor_not_found error"),
+        }
+    }
+
+    // ── Filter boundary edge cases ─────────────────────────────────
+
+    #[test]
+    fn from_event_exact_boundary_includes_target() {
+        // Three nodes: C -> B -> A (events 1, 2, 3).
+        // from_event=2 should include event 2 (B) and 3 (A), skip event 1 (C).
+        let a = make_signal("A", "alice", vec![]);
+        let b = make_signal("B", "bob", vec![a.id]);
+        let c = make_signal("C", "carol", vec![b.id]);
+        let lookup = make_lookup(&[a.clone(), b.clone(), c.clone()]);
+
+        let result = traverse_dag(&c.id, &lookup, 2);
+        let records = match result {
+            ReplayResult::Ok(r) => r,
+            ReplayResult::Err(e) => panic!("unexpected error: {e:?}"),
+        };
+
+        assert_eq!(records.len(), 2);
+        // event indices 2 and 3 (B and A)
+        assert_eq!(records[0].event, 2);
+        assert_eq!(records[0].hash, b.id.to_string());
+        assert_eq!(records[1].event, 3);
+        assert_eq!(records[1].hash, a.id.to_string());
+    }
+
+    #[test]
+    fn from_event_last_only() {
+        // from_event=3 on a 3-node chain should return only the last node.
+        let a = make_signal("A", "alice", vec![]);
+        let b = make_signal("B", "bob", vec![a.id]);
+        let c = make_signal("C", "carol", vec![b.id]);
+        let lookup = make_lookup(&[a.clone(), b.clone(), c.clone()]);
+
+        let result = traverse_dag(&c.id, &lookup, 3);
+        let records = match result {
+            ReplayResult::Ok(r) => r,
+            ReplayResult::Err(e) => panic!("unexpected error: {e:?}"),
+        };
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].event, 3);
+        assert_eq!(records[0].hash, a.id.to_string());
+    }
+
+    // ── JSONL validity for complex DAGs ────────────────────────────
+
+    #[test]
+    fn jsonl_every_line_is_independent_json_object() {
+        // Diamond DAG rendered to JSONL: each line must parse independently.
+        let a = make_signal("A", "alice", vec![]);
+        let b = make_signal("B", "bob", vec![a.id]);
+        let c = make_signal("C", "carol", vec![a.id]);
+        let d = make_signal("D", "dave", vec![b.id, c.id]);
+        let lookup = make_lookup(&[a.clone(), b.clone(), c.clone(), d.clone()]);
+
+        let result = traverse_dag(&d.id, &lookup, 0);
+        let records = match result {
+            ReplayResult::Ok(r) => r,
+            ReplayResult::Err(e) => panic!("unexpected error: {e:?}"),
+        };
+
+        let lines = render_json(&records);
+        assert_eq!(lines.len(), 4);
+
+        // Each line must be a self-contained JSON object (no arrays, no trailing commas).
+        for (i, line) in lines.iter().enumerate() {
+            let parsed: serde_json::Value = serde_json::from_str(line)
+                .unwrap_or_else(|e| panic!("JSONL line {i} is not valid JSON: {e}"));
+            assert!(parsed.is_object(), "line {i} must be an object");
+            // Required fields present
+            assert!(parsed["event"].is_number(), "line {i} missing event");
+            assert!(parsed["hash"].is_string(), "line {i} missing hash");
+            assert!(parsed["kind"].is_string(), "line {i} missing kind");
+            assert!(parsed["author"].is_string(), "line {i} missing author");
+            assert!(
+                parsed["created_at_ms"].is_number(),
+                "line {i} missing created_at_ms"
+            );
+        }
+    }
+
 }

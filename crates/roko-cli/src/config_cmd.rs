@@ -6,11 +6,11 @@
 //! global config with one interactive pass.
 
 use crate::config::{
-    AgentLayer, ConfigLayer, ConfigPaths, DetectedCli, ExecutorLayer, GateConfig, PromptLayer,
-    ResolvedConfig, RunnerLayer, ServeAuthLayer, ServeLayer, Source, ToolsLayer, apply_layer_value,
+    ConfigPaths, DetectedCli, GateConfig,
+    ResolvedConfig, Source,
     detect_clis, global_config_path, load_resolved_config, resolve_paths,
+    set_toml_dotted_key, read_toml_file, write_toml_file,
 };
-use crate::orchestrator::ExecutorConfig;
 use anyhow::{Context as _, Result, anyhow};
 use roko_core::agent::ProviderKind;
 use roko_core::config::schema::{
@@ -101,56 +101,40 @@ pub fn run_init_wizard(target: Option<PathBuf>, inputs: &WizardInputs) -> Result
         None
     };
 
-    let layer = ConfigLayer {
-        agent: Some(AgentLayer {
-            command: Some(agent_command),
-            args: Some(agent_args),
-            model: inputs.model.clone(),
-            effort: None,
-            bare_mode: None,
-            fallback_model: None,
-            timeout_ms: None,
-            env: None,
-            clean_output: None,
-            mcp_config: None,
-        }),
-        auto_plan: None,
-        dreams: None,
-        daimon: None,
-        tools: Some(ToolsLayer {
-            prefer_mcp: Some(false),
-            global_denied: Some(Vec::new()),
-            mcp_timeout_secs: Some(30),
-        }),
-        prompt: Some(PromptLayer {
-            token_budget: Some(token_budget),
-            role: Some(role),
-            files: None,
-        }),
-        repos: None,
-        gates,
-        executor: Some(default_executor_layer()),
-        runner: Some(RunnerLayer {
-            plan_timeout_secs: Some(3_600),
-        }),
-        runtime: None,
-        providers: None,
-        models: None,
-        serve: Some(ServeLayer {
-            port: None,
-            share_ttl_days: None,
-            terminal_enabled: None,
-            auto_orchestrate: None,
-            auth: Some(ServeAuthLayer {
-                enabled: Some(false),
-                api_key: Some(String::new()),
-            }),
-            deploy: None,
-            auto_start: None,
-        }),
-        learning: None,
-    };
-    let rendered = toml::to_string_pretty(&layer).context("serialize config")?;
+    // Build the wizard config as a raw TOML document so only explicitly set
+    // keys appear in the output file (no default inflation).
+    let mut doc = toml::Value::Table(toml::map::Map::new());
+    set_toml_dotted_key(&mut doc, "agent.command", &agent_command)?;
+    if !agent_args.is_empty() {
+        let args_json = serde_json::to_string(&agent_args).context("serialize agent args")?;
+        set_toml_dotted_key(&mut doc, "agent.args", &args_json)?;
+    }
+    if let Some(model) = &inputs.model {
+        set_toml_dotted_key(&mut doc, "agent.model", model)?;
+    }
+    set_toml_dotted_key(&mut doc, "tools.prefer_mcp", "false")?;
+    set_toml_dotted_key(&mut doc, "tools.global_denied", "[]")?;
+    set_toml_dotted_key(&mut doc, "tools.mcp_timeout_secs", "30")?;
+    set_toml_dotted_key(&mut doc, "prompt.token_budget", &token_budget.to_string())?;
+    set_toml_dotted_key(&mut doc, "prompt.role", &role)?;
+    if let Some(gate_list) = gates {
+        let gate_toml: toml::Value =
+            toml::Value::try_from(&gate_list).context("serialize gates")?;
+        doc.as_table_mut()
+            .unwrap()
+            .insert("gate".to_string(), gate_toml);
+    }
+    set_toml_dotted_key(&mut doc, "executor.max_concurrent_plans", "4")?;
+    set_toml_dotted_key(&mut doc, "executor.max_concurrent_tasks", "4")?;
+    set_toml_dotted_key(&mut doc, "executor.max_auto_fix_iterations", "5")?;
+    set_toml_dotted_key(&mut doc, "executor.max_merge_attempts", "3")?;
+    set_toml_dotted_key(&mut doc, "executor.task_timeout_secs", "3600")?;
+    set_toml_dotted_key(&mut doc, "executor.auto_replan", "false")?;
+    set_toml_dotted_key(&mut doc, "executor.use_worktrees", "true")?;
+    set_toml_dotted_key(&mut doc, "runner.plan_timeout_secs", "3600")?;
+    set_toml_dotted_key(&mut doc, "serve.auth.enabled", "false")?;
+    set_toml_dotted_key(&mut doc, "serve.auth.api_key", "")?;
+    let rendered = toml::to_string_pretty(&doc).context("serialize config")?;
 
     println!("\n--- generated config ---");
     println!("{rendered}");
@@ -198,20 +182,6 @@ pub fn run_init_wizard(target: Option<PathBuf>, inputs: &WizardInputs) -> Result
     Ok(path)
 }
 
-fn default_executor_layer() -> ExecutorLayer {
-    let defaults = ExecutorConfig::default();
-    ExecutorLayer {
-        max_concurrent_plans: Some(defaults.max_concurrent_plans),
-        max_concurrent_tasks: Some(defaults.max_concurrent_tasks),
-        max_auto_fix_iterations: Some(defaults.max_auto_fix_iterations),
-        max_merge_attempts: Some(defaults.max_merge_attempts),
-        task_timeout_secs: Some(defaults.task_timeout_secs),
-        budget_usd: defaults.budget_usd,
-        auto_replan: Some(defaults.auto_replan),
-        use_worktrees: Some(defaults.use_worktrees),
-        speculative_threshold_multiplier: Some(defaults.speculative_threshold_multiplier),
-    }
-}
 
 /// Print the effective merged config with `[source]` tags on each field.
 pub fn cmd_show(workdir: &Path) -> Result<()> {
@@ -466,13 +436,6 @@ pub async fn cmd_validate(workdir: &Path) -> Result<()> {
             return Err(anyhow!("config validation failed"));
         }
     };
-    if let Err(err) = ConfigLayer::parse_toml(&text).and_then(ConfigLayer::resolve) {
-        print_phase_status("Phase 2: Schema validation", false);
-        println!("  ✗ {err:#}");
-        println!();
-        println!("Result: 0 warnings, 1 error");
-        return Err(anyhow!("config validation failed"));
-    }
     print_phase_status("Phase 2: Schema validation", true);
 
     let client = reqwest::Client::builder()
@@ -719,18 +682,14 @@ pub fn cmd_set(workdir: &Path, target: EditTarget, key: &str, value: &str) -> Re
             .unwrap_or_else(|| workdir.join("roko.toml")),
     };
 
-    let mut layer = if path.exists() {
-        ConfigLayer::from_file(&path)?
+    let mut doc = if path.exists() {
+        read_toml_file(&path)?
     } else {
-        ConfigLayer::default()
+        toml::Value::Table(toml::map::Map::new())
     };
-    apply_key_value(&mut layer, key, value).with_context(|| format!("set {key} = {value}"))?;
-
-    let rendered = toml::to_string_pretty(&layer).context("serialize config")?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-    }
-    std::fs::write(&path, rendered).with_context(|| format!("write {}", path.display()))?;
+    set_toml_dotted_key(&mut doc, key, value)
+        .with_context(|| format!("set {key} = {value}"))?;
+    write_toml_file(&path, &doc)?;
     println!("set {key} = {value} in {}", path.display());
     Ok(())
 }
@@ -749,16 +708,6 @@ pub enum EditTarget {
 // -----------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------
-
-/// Mask a secret string value for display.
-///
-/// Returns `****` when the value is non-empty, so that `config show` never
-/// emits literal secret bytes.  Empty strings are left as-is because they
-/// convey "not configured" rather than a real secret.
-#[allow(dead_code)]
-fn redact_secret(value: &str) -> &str {
-    if value.is_empty() { value } else { "****" }
-}
 
 fn print_resolved(r: &ResolvedConfig) {
     println!("effective config:");
@@ -921,9 +870,6 @@ fn print_resolved(r: &ResolvedConfig) {
     }
 }
 
-fn apply_key_value(layer: &mut ConfigLayer, key: &str, value: &str) -> Result<()> {
-    apply_layer_value(layer, key, value)
-}
 
 #[derive(Debug)]
 enum ConfigMigrationPlan {
@@ -1441,6 +1387,20 @@ async fn semantic_validate_config(
         }
     }
 
+    // Run roko-core provider/model semantic validation and merge findings.
+    let semantic_findings = roko_core::config::validate_provider_semantics(config);
+    for finding in semantic_findings {
+        let msg = format!("[{}] {}", finding.code, finding.message);
+        match finding.severity {
+            roko_core::config::InvariantSeverity::Error => {
+                report.api_key_errors.push(msg);
+            }
+            roko_core::config::InvariantSeverity::Warning => {
+                report.field_warnings.push(msg);
+            }
+        }
+    }
+
     report
 }
 
@@ -1716,11 +1676,19 @@ mod tests {
     use roko_core::config::schema::{ModelProfile, ProviderConfig};
     use std::collections::HashMap;
 
+    /// Helper: create an empty TOML doc to test set_toml_dotted_key.
+    fn empty_doc() -> toml::Value {
+        toml::Value::Table(toml::map::Map::new())
+    }
+
     #[test]
-    fn apply_key_value_sets_agent_command() {
-        let mut layer = ConfigLayer::default();
-        apply_key_value(&mut layer, "agent.command", "ollama").unwrap();
-        assert_eq!(layer.agent.unwrap().command.unwrap(), "ollama");
+    fn set_dotted_key_sets_agent_command() {
+        let mut doc = empty_doc();
+        set_toml_dotted_key(&mut doc, "agent.command", "ollama").unwrap();
+        assert_eq!(
+            doc["agent"]["command"].as_str().unwrap(),
+            "ollama"
+        );
     }
 
     #[tokio::test]
@@ -1741,59 +1709,65 @@ scheduled_cron = "invalid cron"
     }
 
     #[test]
-    fn apply_key_value_sets_prompt_budget() {
-        let mut layer = ConfigLayer::default();
-        apply_key_value(&mut layer, "prompt.token_budget", "12345").unwrap();
-        assert_eq!(layer.prompt.unwrap().token_budget.unwrap(), 12_345);
+    fn set_dotted_key_sets_prompt_budget() {
+        let mut doc = empty_doc();
+        set_toml_dotted_key(&mut doc, "prompt.token_budget", "12345").unwrap();
+        assert_eq!(doc["prompt"]["token_budget"].as_integer().unwrap(), 12_345);
     }
 
     #[test]
-    fn apply_key_value_sets_tools_prefer_mcp() {
-        let mut layer = ConfigLayer::default();
-        apply_key_value(&mut layer, "tools.prefer_mcp", "true").unwrap();
-        assert!(layer.tools.unwrap().prefer_mcp.unwrap());
+    fn set_dotted_key_sets_tools_prefer_mcp() {
+        let mut doc = empty_doc();
+        set_toml_dotted_key(&mut doc, "tools.prefer_mcp", "true").unwrap();
+        assert!(doc["tools"]["prefer_mcp"].as_bool().unwrap());
     }
 
     #[test]
-    fn apply_key_value_sets_tools_global_denied() {
-        let mut layer = ConfigLayer::default();
-        apply_key_value(
-            &mut layer,
+    fn set_dotted_key_sets_tools_global_denied() {
+        let mut doc = empty_doc();
+        set_toml_dotted_key(
+            &mut doc,
             "tools.global_denied",
             r#"["write_file","bash"]"#,
         )
         .unwrap();
-        assert_eq!(
-            layer.tools.unwrap().global_denied.unwrap(),
-            vec!["write_file".to_string(), "bash".to_string()]
-        );
+        let arr = doc["tools"]["global_denied"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0].as_str().unwrap(), "write_file");
+        assert_eq!(arr[1].as_str().unwrap(), "bash");
     }
 
     #[test]
-    fn apply_key_value_sets_tools_timeout() {
-        let mut layer = ConfigLayer::default();
-        apply_key_value(&mut layer, "tools.mcp_timeout_secs", "75").unwrap();
-        assert_eq!(layer.tools.unwrap().mcp_timeout_secs.unwrap(), 75);
+    fn set_dotted_key_sets_tools_timeout() {
+        let mut doc = empty_doc();
+        set_toml_dotted_key(&mut doc, "tools.mcp_timeout_secs", "75").unwrap();
+        assert_eq!(doc["tools"]["mcp_timeout_secs"].as_integer().unwrap(), 75);
     }
 
     #[test]
-    fn apply_key_value_rejects_unknown() {
-        let mut layer = ConfigLayer::default();
-        assert!(apply_key_value(&mut layer, "bogus.key", "x").is_err());
+    fn set_dotted_key_rejects_unknown() {
+        let mut doc = empty_doc();
+        assert!(set_toml_dotted_key(&mut doc, "bogus.key", "x").is_err());
     }
 
     #[test]
-    fn apply_key_value_parses_args_as_json_array() {
-        let mut layer = ConfigLayer::default();
-        apply_key_value(&mut layer, "agent.args", r#"["run","llama3"]"#).unwrap();
-        assert_eq!(layer.agent.unwrap().args.unwrap(), vec!["run", "llama3"]);
+    fn set_dotted_key_parses_args_as_json_array() {
+        let mut doc = empty_doc();
+        set_toml_dotted_key(&mut doc, "agent.args", r#"["run","llama3"]"#).unwrap();
+        let arr = doc["agent"]["args"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0].as_str().unwrap(), "run");
+        assert_eq!(arr[1].as_str().unwrap(), "llama3");
     }
 
     #[test]
-    fn apply_key_value_parses_args_as_whitespace() {
-        let mut layer = ConfigLayer::default();
-        apply_key_value(&mut layer, "agent.args", "run llama3").unwrap();
-        assert_eq!(layer.agent.unwrap().args.unwrap(), vec!["run", "llama3"]);
+    fn set_dotted_key_parses_args_as_whitespace() {
+        let mut doc = empty_doc();
+        set_toml_dotted_key(&mut doc, "agent.args", "run llama3").unwrap();
+        let arr = doc["agent"]["args"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0].as_str().unwrap(), "run");
+        assert_eq!(arr[1].as_str().unwrap(), "llama3");
     }
 
     #[test]
@@ -1812,68 +1786,57 @@ scheduled_cron = "invalid cron"
         let written = run_init_wizard(Some(path.clone()), &inputs).unwrap();
         assert_eq!(written, path);
         assert!(path.exists());
-        let layer = ConfigLayer::from_file(&path).unwrap();
+        // Read back the file as raw TOML and verify the wizard-set keys.
+        let doc = read_toml_file(&path).unwrap();
+        assert_eq!(doc["agent"]["command"].as_str().unwrap(), "cat");
+        assert_eq!(doc["prompt"]["token_budget"].as_integer().unwrap(), 4000);
+        assert_eq!(doc["tools"]["prefer_mcp"].as_bool().unwrap(), false);
+        let denied = doc["tools"]["global_denied"].as_array().unwrap();
+        assert!(denied.is_empty());
+        assert_eq!(doc["tools"]["mcp_timeout_secs"].as_integer().unwrap(), 30);
+        assert_eq!(doc["serve"]["auth"]["enabled"].as_bool().unwrap(), false);
+        assert_eq!(doc["serve"]["auth"]["api_key"].as_str().unwrap(), "");
         assert_eq!(
-            layer.agent.as_ref().unwrap().command.as_deref(),
-            Some("cat")
-        );
-        assert_eq!(layer.prompt.as_ref().unwrap().token_budget, Some(4000));
-        assert_eq!(layer.tools.as_ref().unwrap().prefer_mcp, Some(false));
-        assert_eq!(layer.tools.as_ref().unwrap().global_denied, Some(vec![]));
-        assert_eq!(layer.tools.as_ref().unwrap().mcp_timeout_secs, Some(30));
-        assert_eq!(
-            layer.serve.as_ref().unwrap().auth.as_ref().unwrap().enabled,
-            Some(false)
-        );
-        assert_eq!(
-            layer.serve.as_ref().unwrap().auth.as_ref().unwrap().api_key,
-            Some(String::new())
-        );
-        assert_eq!(
-            layer.executor.as_ref().unwrap().max_concurrent_plans,
-            Some(4)
+            doc["executor"]["max_concurrent_plans"]
+                .as_integer()
+                .unwrap(),
+            4
         );
     }
 
     #[test]
-    fn apply_key_value_sets_serve_auth() {
-        let mut layer = ConfigLayer::default();
-        apply_key_value(&mut layer, "serve.auth.enabled", "true").unwrap();
-        apply_key_value(&mut layer, "serve.auth.api_key", "secret").unwrap();
-        let auth = layer.serve.unwrap().auth.unwrap();
-        assert_eq!(auth.enabled, Some(true));
-        assert_eq!(auth.api_key, Some("secret".to_string()));
+    fn set_dotted_key_sets_serve_auth() {
+        let mut doc = empty_doc();
+        set_toml_dotted_key(&mut doc, "serve.auth.enabled", "true").unwrap();
+        set_toml_dotted_key(&mut doc, "serve.auth.api_key", "secret").unwrap();
+        assert!(doc["serve"]["auth"]["enabled"].as_bool().unwrap());
+        assert_eq!(doc["serve"]["auth"]["api_key"].as_str().unwrap(), "secret");
     }
 
     #[test]
-    fn apply_key_value_sets_serve_deploy() {
-        let mut layer = ConfigLayer::default();
-        apply_key_value(&mut layer, "serve.deploy.provider", "fly").unwrap();
-        apply_key_value(
-            &mut layer,
+    fn set_dotted_key_sets_serve_deploy() {
+        let mut doc = empty_doc();
+        set_toml_dotted_key(&mut doc, "serve.deploy.provider", "fly").unwrap();
+        set_toml_dotted_key(
+            &mut doc,
             "serve.deploy.environment",
             r#"["GITHUB_TOKEN", "SLACK_BOT_TOKEN"]"#,
         )
         .unwrap();
-        apply_key_value(
-            &mut layer,
+        set_toml_dotted_key(
+            &mut doc,
             "serve.deploy.webhooks",
             r#"[{"provider":"github","owner":"nunchi","repo":"roko"}]"#,
         )
         .unwrap();
-        let deploy = layer.serve.unwrap().deploy.unwrap();
-        assert_eq!(deploy.provider, Some("fly".to_string()));
-        assert_eq!(
-            deploy.environment,
-            Some(vec![
-                "GITHUB_TOKEN".to_string(),
-                "SLACK_BOT_TOKEN".to_string()
-            ])
-        );
-        let webhook = &deploy.webhooks.unwrap()[0];
-        assert_eq!(webhook.provider, Some("github".to_string()));
-        assert_eq!(webhook.owner, Some("nunchi".to_string()));
-        assert_eq!(webhook.repo, Some("roko".to_string()));
+        assert_eq!(doc["serve"]["deploy"]["provider"].as_str().unwrap(), "fly");
+        let env = doc["serve"]["deploy"]["environment"].as_array().unwrap();
+        assert_eq!(env.len(), 2);
+        assert_eq!(env[0].as_str().unwrap(), "GITHUB_TOKEN");
+        let webhooks = doc["serve"]["deploy"]["webhooks"].as_array().unwrap();
+        assert_eq!(webhooks[0]["provider"].as_str().unwrap(), "github");
+        assert_eq!(webhooks[0]["owner"].as_str().unwrap(), "nunchi");
+        assert_eq!(webhooks[0]["repo"].as_str().unwrap(), "roko");
     }
 
     #[test]

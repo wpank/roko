@@ -7,7 +7,6 @@
 //!
 //! - **SQLite** (`roko-index/sqlite`): canonical CLI persistence at `<root>/.roko/index.db`.
 //!   Enabled by `roko-cli`.
-//! - **rkyv** (`roko-index/rkyv`): library-only opt-in. CLI does not enable it.
 //! - **tree-sitter** (`roko-lang-rust/tree-sitter`): disabled and experimental. CLI/index
 //!   code must not branch on it.
 //! - **HDC search**: library-only per backlog #335.
@@ -911,12 +910,7 @@ impl IndexStore {
 
     /// Compute a feature fingerprint string for the current build.
     fn feature_fingerprint() -> String {
-        let mut features = Vec::new();
-        features.push("sqlite");
-        if cfg!(feature = "rkyv") {
-            features.push("rkyv");
-        }
-        features.join(",")
+        "sqlite".to_string()
     }
 
     /// Validate that the DB path is safely inside `.roko/`.

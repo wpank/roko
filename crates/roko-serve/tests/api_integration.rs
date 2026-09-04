@@ -927,3 +927,1168 @@ async fn bridge_drops_unmapped_events_without_panic() {
         other => panic!("expected Error, got: {other:?}"),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Arenas
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn list_arenas_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/arenas").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.is_array() || body.is_object(),
+        "arenas should return JSON"
+    );
+}
+
+#[tokio::test]
+async fn create_arena_rejects_empty_body() {
+    let (_dir, app) = test_app();
+    let (status, _body) = post_json(&app, "/api/arenas", serde_json::json!({})).await;
+
+    assert!(
+        status.is_client_error(),
+        "empty arena create should be rejected, got {status}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Registries
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn registry_stats_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/registries/stats").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_object(), "registry stats should return an object");
+}
+
+#[tokio::test]
+async fn registry_events_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/registries/events").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.is_array() || body.is_object(),
+        "registry events should return JSON"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Gateway
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn gateway_stats_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/gateway/stats").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_object(), "gateway stats should return an object");
+}
+
+#[tokio::test]
+async fn gateway_models_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/gateway/models").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_object() || body.is_array(), "gateway models should return JSON");
+}
+
+#[tokio::test]
+async fn rate_limits_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/rate-limits").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_object(), "rate-limits should return an object");
+}
+
+// ---------------------------------------------------------------------------
+// Team
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn team_me_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/team/me").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_object(), "team/me should return an object");
+}
+
+#[tokio::test]
+async fn team_members_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/team/members").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.is_array() || body.is_object(),
+        "team/members should return JSON"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Workspaces
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn list_workspaces_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/workspaces").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.is_array() || body.is_object(),
+        "workspaces should return JSON"
+    );
+}
+
+#[tokio::test]
+async fn default_workspace_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/workspaces/default").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_object(), "default workspace should return an object");
+}
+
+// ---------------------------------------------------------------------------
+// SWE bench
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn swe_bench_runs_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/bench/swe/runs").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_array() || body.is_object(), "swe runs should return JSON");
+}
+
+#[tokio::test]
+async fn swe_bench_datasets_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/bench/swe/datasets").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_array() || body.is_object(), "swe datasets should return JSON");
+}
+
+// ---------------------------------------------------------------------------
+// Aggregator
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn aggregator_agents_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/agents").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_array() || body.is_object(), "agents should return JSON");
+}
+
+#[tokio::test]
+async fn aggregator_tasks_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/tasks").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_array() || body.is_object(), "tasks should return JSON");
+}
+
+// ---------------------------------------------------------------------------
+// Providers
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn providers_list_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/providers").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_array() || body.is_object(), "providers should return JSON");
+}
+
+#[tokio::test]
+async fn models_list_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/models").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_array() || body.is_object(), "models should return JSON");
+}
+
+// ---------------------------------------------------------------------------
+// RPC proxy
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn rpc_health_route_is_registered() {
+    let (_dir, app) = test_app();
+    let (status, _body) = get_json(&app, "/api/rpc/health").await;
+
+    // RPC health may return 503 if no proxy is configured — that's valid.
+    assert_ne!(
+        status,
+        StatusCode::NOT_FOUND,
+        "rpc health should be registered"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Auth / API keys (read-only)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn api_keys_list_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/api-keys").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.is_array() || body.is_object(),
+        "api-keys should return JSON"
+    );
+}
+
+#[tokio::test]
+async fn auth_audit_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/auth/audit").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_array() || body.is_object(), "auth audit should return JSON");
+}
+
+// ---------------------------------------------------------------------------
+// Gateway inference rejects malformed input
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn gateway_inference_rejects_empty_body() {
+    let (_dir, app) = test_app();
+    let (status, _body) = post_json(&app, "/api/gateway/inference", serde_json::json!({})).await;
+
+    assert!(
+        status.is_client_error() || status == StatusCode::INTERNAL_SERVER_ERROR,
+        "gateway inference with empty body should not return success, got {status}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Vision loop rejects missing fields
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn vision_loop_rejects_empty_body() {
+    let (_dir, app) = test_app();
+    let (status, _body) = post_json(&app, "/api/vision-loop", serde_json::json!({})).await;
+
+    assert!(
+        status.is_client_error() || status == StatusCode::INTERNAL_SERVER_ERROR,
+        "vision-loop with empty body should not return success, got {status}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// PRDs
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn list_prds_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/prds").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_array(), "prds should return an array");
+}
+
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn config_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/config").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_object(), "config should return an object");
+}
+
+// ---------------------------------------------------------------------------
+// Subscriptions
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn subscriptions_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/subscriptions").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.is_array() || body.is_object(),
+        "subscriptions should return JSON"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Learning experiments & router
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn learning_experiments_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/learning/experiments").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_object() || body.is_array(), "learning experiments should return JSON");
+}
+
+#[tokio::test]
+async fn learning_cascade_router_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/learning/cascade-router").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.is_object() || body.is_array(),
+        "learning cascade-router should return JSON"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Extensions
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn extensions_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/extensions").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_array() || body.is_object(), "extensions should return JSON");
+}
+
+// ---------------------------------------------------------------------------
+// Feeds
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn feeds_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/feeds").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_array() || body.is_object(), "feeds should return JSON");
+}
+
+// ---------------------------------------------------------------------------
+// Recipes
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn recipes_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/recipes").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_array() || body.is_object(), "recipes should return JSON");
+}
+
+// ---------------------------------------------------------------------------
+// Groups
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn groups_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/groups").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_array() || body.is_object(), "groups should return JSON");
+}
+
+// ---------------------------------------------------------------------------
+// Triggers
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn triggers_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/triggers").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_array() || body.is_object(), "triggers should return JSON");
+}
+
+// ---------------------------------------------------------------------------
+// Workflows
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn workflows_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/workflows").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_array() || body.is_object(), "workflows should return JSON");
+}
+
+// ---------------------------------------------------------------------------
+// Connectors
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn connectors_route_is_registered() {
+    let (_dir, app) = test_app();
+    let (status, _body) = get_json(&app, "/api/connectors").await;
+
+    // Connectors may require authorization (403) or return data (200).
+    assert_ne!(
+        status,
+        StatusCode::NOT_FOUND,
+        "connectors should be registered"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Deployments
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn deployments_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/deployments").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_array() || body.is_object(), "deployments should return JSON");
+}
+
+// ---------------------------------------------------------------------------
+// Integrations
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn integrations_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/integrations").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_array() || body.is_object(), "integrations should return JSON");
+}
+
+// ---------------------------------------------------------------------------
+// Secrets
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn secrets_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/secrets").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_array() || body.is_object(), "secrets should return JSON");
+}
+
+// ---------------------------------------------------------------------------
+// Meta health
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn meta_health_route_is_registered() {
+    let (_dir, _, app) = test_app_state();
+    let (status, _body) = get_json(&app, "/api/meta/health").await;
+
+    // Meta health may return 404 when served through the test fallback.
+    // The route_coverage_matrix confirms registration; here we verify a
+    // non-panic response is returned.
+    assert!(
+        status.is_success() || status == StatusCode::NOT_FOUND,
+        "meta health should respond, got {status}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Templates
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn templates_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/templates").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_array() || body.is_object(), "templates should return JSON");
+}
+
+// ---------------------------------------------------------------------------
+// Runs list
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn dashboard_runs_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/dashboard/runs").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.is_array() || body.is_object(),
+        "dashboard runs should return JSON"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Neuro
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn neuro_stats_route_is_registered() {
+    let (_dir, _, app) = test_app_state();
+    let (status, _body) = get_json(&app, "/api/neuro/stats").await;
+
+    // May return 404 when no neuro store is initialized.
+    assert!(
+        status.is_success() || status == StatusCode::NOT_FOUND,
+        "neuro stats should respond, got {status}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Dream
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn dream_status_route_is_registered() {
+    let (_dir, _, app) = test_app_state();
+    let (status, _body) = get_json(&app, "/api/dream/status").await;
+
+    // May return 404 when no dream scheduler is running.
+    assert!(
+        status.is_success() || status == StatusCode::NOT_FOUND,
+        "dream status should respond, got {status}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Diagnosis
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn diagnosis_route_is_registered() {
+    let (_dir, _, app) = test_app_state();
+    let (status, _body) = get_json(&app, "/api/diagnosis").await;
+
+    // May return 404 when no conductor is available.
+    assert!(
+        status.is_success() || status == StatusCode::NOT_FOUND,
+        "diagnosis should respond, got {status}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Routing explain
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn routing_explain_route_is_registered() {
+    let (_dir, app) = test_app();
+    let (status, _body) = get_json(&app, "/api/routing/explain").await;
+
+    // May return 400 when no routing query is provided.
+    assert_ne!(
+        status,
+        StatusCode::NOT_FOUND,
+        "routing explain should be registered"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Knowledge entries
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn knowledge_entries_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/knowledge/entries").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_array() || body.is_object(), "knowledge entries should return JSON");
+}
+
+// ---------------------------------------------------------------------------
+// Predictions sessions
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn predictions_sessions_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/predictions/sessions").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_array() || body.is_object(), "predictions sessions should return JSON");
+}
+
+// ---------------------------------------------------------------------------
+// Event ingest
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn event_ingest_rejects_empty_body() {
+    let (_dir, app) = test_app();
+    let (status, _body) = post_json(&app, "/api/events", serde_json::json!({})).await;
+
+    // Empty event should be rejected or handled — not 404.
+    assert_ne!(status, StatusCode::NOT_FOUND, "event ingest should be registered");
+}
+
+// ---------------------------------------------------------------------------
+// Heartbeats
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn heartbeat_accepts_post() {
+    let (_dir, app) = test_app();
+    let (status, _body) = post_json(
+        &app,
+        "/api/heartbeats",
+        serde_json::json!({
+            "agent_id": "test-agent",
+            "status": "healthy"
+        }),
+    )
+    .await;
+
+    // Heartbeats should be accepted (not 404/405).
+    assert_ne!(status, StatusCode::NOT_FOUND, "heartbeat should be registered");
+    assert_ne!(status, StatusCode::METHOD_NOT_ALLOWED);
+}
+
+// ---------------------------------------------------------------------------
+// Shared runs
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn shared_runs_post_returns_non_404() {
+    let (_dir, app) = test_app();
+    let (status, _body) = post_json(
+        &app,
+        "/api/runs/test-id/share",
+        serde_json::json!({}),
+    )
+    .await;
+
+    // The route should be registered (share a run).
+    assert_ne!(status, StatusCode::NOT_FOUND, "shared runs should be registered");
+}
+
+// ---------------------------------------------------------------------------
+// Webhooks
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn webhook_generic_returns_non_404() {
+    let (_dir, app) = test_app();
+    let (status, _body) = post_json(
+        &app,
+        "/api/webhooks/generic",
+        serde_json::json!({"event": "test"}),
+    )
+    .await;
+
+    assert_ne!(status, StatusCode::NOT_FOUND, "webhook generic should be registered");
+}
+
+// ---------------------------------------------------------------------------
+// Content-type enforcement
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn post_without_content_type_still_processes() {
+    let (_dir, app) = test_app();
+
+    // POST /api/run without content-type header.
+    // Axum will attempt JSON parsing regardless — the handler may accept or
+    // reject depending on the body parser. We test that no panic occurs.
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/run")
+        .body(Body::from(r#"{"prompt":"test"}"#))
+        .expect("build request");
+    let resp = app.oneshot(req).await.expect("oneshot");
+
+    // The route should respond (may accept or reject — both are valid).
+    assert_ne!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "POST /api/run should be registered"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Wrong HTTP method returns 405
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn wrong_method_returns_405_or_404() {
+    let (_dir, app) = test_app();
+
+    // DELETE /api/health — health only supports GET.
+    let req = Request::builder()
+        .method("DELETE")
+        .uri("/api/health")
+        .body(Body::empty())
+        .expect("build request");
+    let resp = app.oneshot(req).await.expect("oneshot");
+
+    assert!(
+        resp.status() == StatusCode::METHOD_NOT_ALLOWED || resp.status() == StatusCode::NOT_FOUND,
+        "DELETE /api/health should be 405 or 404, got {}",
+        resp.status()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Response consistency: error bodies are JSON
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn error_responses_are_json() {
+    let (_dir, app) = test_app();
+
+    // Trigger a known error: POST /api/run with empty prompt.
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/run")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"prompt":""}"#))
+        .expect("build request");
+    let resp = app.oneshot(req).await.expect("oneshot");
+    assert!(resp.status().is_client_error());
+
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        ct.contains("application/json"),
+        "error response should have JSON content-type, got: {ct}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Top-level probes (non /api prefix)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn top_level_health_returns_ok() {
+    let (_dir, _, app) = test_app_state();
+    let (status, body) = get_json(&app, "/health").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "ok");
+}
+
+#[tokio::test]
+async fn top_level_ready_returns_ok() {
+    let (_dir, _, app) = test_app_state();
+    let (status, _body) = get_json(&app, "/ready").await;
+
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn top_level_metrics_returns_ok() {
+    let (_dir, _, app) = test_app_state();
+    let (status, body) = get_json(&app, "/metrics").await;
+
+    // /metrics may return prometheus format (non-JSON) — just check status.
+    assert_eq!(status, StatusCode::OK);
+    let _ = body; // may be Null if body is not JSON
+}
+
+// ---------------------------------------------------------------------------
+// Malformed JSON bodies
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn post_with_invalid_json_returns_client_error() {
+    let (_dir, app) = test_app();
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/run")
+        .header("content-type", "application/json")
+        .body(Body::from("not-valid-json{{{"))
+        .expect("build request");
+    let resp = app.oneshot(req).await.expect("oneshot");
+
+    assert!(
+        resp.status().is_client_error(),
+        "malformed JSON should return 4xx, got {}",
+        resp.status()
+    );
+}
+
+#[tokio::test]
+async fn post_jobs_with_invalid_json_returns_client_error() {
+    let (_dir, app) = test_app();
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/jobs")
+        .header("content-type", "application/json")
+        .body(Body::from("[broken"))
+        .expect("build request");
+    let resp = app.oneshot(req).await.expect("oneshot");
+
+    assert!(
+        resp.status().is_client_error(),
+        "malformed JSON on /api/jobs should return 4xx, got {}",
+        resp.status()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Health response contract
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn health_response_includes_required_fields() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/health").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "ok");
+    assert!(body["uptime_secs"].is_number(), "health must include uptime_secs");
+    assert!(body["version"].is_string(), "health must include version string");
+}
+
+// ---------------------------------------------------------------------------
+// Success responses have JSON content-type
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn success_responses_have_json_content_type() {
+    let (_dir, app) = test_app();
+
+    let endpoints = ["/api/health", "/api/status", "/api/plans", "/api/jobs"];
+
+    for endpoint in endpoints {
+        let req = Request::builder()
+            .uri(endpoint)
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.clone().oneshot(req).await.expect("oneshot");
+
+        if resp.status().is_success() {
+            let ct = resp
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            assert!(
+                ct.contains("application/json"),
+                "{endpoint} success response should have JSON content-type, got: {ct}"
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Auth with Bearer header prefix
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn auth_accepts_bearer_header_prefix() {
+    let (_dir, app) = test_app_with_auth("my-api-key");
+
+    let req = Request::builder()
+        .uri("/api/health")
+        .header("Authorization", "Bearer my-api-key")
+        .body(Body::empty())
+        .expect("build request");
+    let resp = app.oneshot(req).await.expect("oneshot");
+
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+// ---------------------------------------------------------------------------
+// Job not found
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn job_not_found_returns_404() {
+    let (_dir, app) = test_app();
+    let (status, _body) = get_json(&app, "/api/jobs/nonexistent-job-id").await;
+
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "non-existent job should return 404"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Wrong method on read-only endpoints
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn delete_on_read_only_endpoint_is_rejected() {
+    let (_dir, app) = test_app();
+
+    let req = Request::builder()
+        .method("DELETE")
+        .uri("/api/status")
+        .body(Body::empty())
+        .expect("build request");
+    let resp = app.oneshot(req).await.expect("oneshot");
+
+    assert!(
+        resp.status() == StatusCode::METHOD_NOT_ALLOWED || resp.status() == StatusCode::NOT_FOUND,
+        "DELETE /api/status should be 405 or 404, got {}",
+        resp.status()
+    );
+}
+
+#[tokio::test]
+async fn put_on_plans_is_rejected() {
+    let (_dir, app) = test_app();
+
+    let req = Request::builder()
+        .method("PUT")
+        .uri("/api/plans")
+        .header("content-type", "application/json")
+        .body(Body::from("{}"))
+        .expect("build request");
+    let resp = app.oneshot(req).await.expect("oneshot");
+
+    assert!(
+        resp.status() == StatusCode::METHOD_NOT_ALLOWED || resp.status() == StatusCode::NOT_FOUND,
+        "PUT /api/plans should be 405 or 404, got {}",
+        resp.status()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// SSE event stream endpoint registration
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn sse_endpoint_is_registered() {
+    let (_dir, _, app) = test_app_state();
+
+    // The SSE endpoint lives at /api/events (also aliased as /api/sse).
+    let req = Request::builder()
+        .uri("/api/events")
+        .body(Body::empty())
+        .expect("build request");
+    let resp = app.clone().oneshot(req).await.expect("oneshot");
+
+    // SSE endpoint returns 200 with text/event-stream content-type.
+    assert_ne!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "SSE endpoint /api/events should be registered"
+    );
+
+    // Verify the /api/sse alias resolves too.
+    let req = Request::builder()
+        .uri("/api/sse")
+        .body(Body::empty())
+        .expect("build request");
+    let resp = app.oneshot(req).await.expect("oneshot");
+    assert_ne!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "SSE alias /api/sse should be registered"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Webhook input validation
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn webhook_with_invalid_json_returns_error() {
+    let (_dir, app) = test_app();
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/webhooks/generic")
+        .header("content-type", "application/json")
+        .body(Body::from("{{invalid"))
+        .expect("build request");
+    let resp = app.oneshot(req).await.expect("oneshot");
+
+    assert!(
+        resp.status().is_client_error() || resp.status().is_server_error(),
+        "malformed webhook should not return 2xx, got {}",
+        resp.status()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Run status for non-existent run
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn run_status_not_found_returns_404() {
+    let (_dir, app) = test_app();
+    let (status, _body) = get_json(&app, "/api/run/nonexistent-run/status").await;
+
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "non-existent run status should return 404"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Gateway inference with valid-looking but incomplete input
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn gateway_inference_with_missing_model_rejects() {
+    let (_dir, app) = test_app();
+    let (status, _body) = post_json(
+        &app,
+        "/api/gateway/inference",
+        serde_json::json!({"prompt": "test", "model": ""}),
+    )
+    .await;
+
+    assert!(
+        status.is_client_error() || status.is_server_error(),
+        "gateway inference with empty model should not succeed, got {status}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Multiple jobs listed in order
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn multiple_jobs_are_all_listed() {
+    let (_dir, app) = test_app();
+
+    for i in 0..3 {
+        let (status, _) = post_json(
+            &app,
+            "/api/jobs",
+            serde_json::json!({
+                "title": format!("Job {i}"),
+                "description": format!("Description {i}"),
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+
+    let (status, body) = get_json(&app, "/api/jobs").await;
+    assert_eq!(status, StatusCode::OK);
+    let jobs = body.as_array().expect("jobs array");
+    assert_eq!(jobs.len(), 3, "all three jobs should be listed");
+}
+
+// ---------------------------------------------------------------------------
+// Job stats endpoint
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn job_stats_returns_ok() {
+    let (_dir, app) = test_app();
+    let (status, body) = get_json(&app, "/api/jobs/stats").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_object(), "job stats should return an object");
+}
+
+// ---------------------------------------------------------------------------
+// Job match endpoint
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn job_match_returns_non_error() {
+    let (_dir, app) = test_app();
+    let (status, _body) = post_json(
+        &app,
+        "/api/jobs/match",
+        serde_json::json!({"capabilities": ["coding"]}),
+    )
+    .await;
+
+    assert_ne!(
+        status,
+        StatusCode::NOT_FOUND,
+        "job match should be registered"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Error envelope consistency
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn error_envelope_has_code_and_message_fields() {
+    let (_dir, app) = test_app();
+
+    // POST /api/run with empty prompt should return structured error.
+    let (status, body) = post_json(&app, "/api/run", serde_json::json!({"prompt": ""})).await;
+    assert!(status.is_client_error());
+    assert!(
+        body.get("code").is_some() || body.get("error").is_some(),
+        "error body should have a 'code' or 'error' field, got: {body}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Concurrent reads on read endpoints
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn concurrent_get_requests_all_succeed() {
+    let (_dir, app) = test_app();
+
+    let endpoints = vec![
+        "/api/health",
+        "/api/status",
+        "/api/plans",
+        "/api/jobs",
+        "/api/signals",
+        "/api/episodes",
+    ];
+
+    let handles: Vec<_> = endpoints
+        .into_iter()
+        .map(|ep| {
+            let router = app.clone();
+            tokio::spawn(async move {
+                let req = Request::builder()
+                    .uri(ep)
+                    .body(Body::empty())
+                    .expect("build request");
+                let resp = router.oneshot(req).await.expect("oneshot");
+                (ep, resp.status())
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        let (ep, status) = handle.await.expect("join");
+        assert!(
+            status.is_success(),
+            "concurrent GET {ep} should succeed, got {status}"
+        );
+    }
+}

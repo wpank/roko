@@ -119,9 +119,8 @@ impl NonPlanServiceRequest {
 /// lifetime. It carries the profile that was used to construct it, the
 /// validated bundle set, and the original overrides for introspection.
 ///
-/// When #243 lands, this will wrap the concrete `ServiceBundle` from
-/// `roko-serve::ServiceFactory`. Until then, callers use it as a
-/// validation-only type that proves the profile matrix was satisfied.
+/// Callers that need the concrete `RuntimeServices` with constructed
+/// bundles should use `RuntimeServicesBuilder::from_config()` directly.
 #[derive(Debug, Clone)]
 pub struct NonPlanServiceHandle {
     /// Profile used to construct this handle.
@@ -227,16 +226,6 @@ pub enum ServiceConstructionError {
         profile: RuntimeProfile,
         bundle: ServiceBundleId,
     },
-    /// The #243 `RuntimeServicesBuilder` is not yet available.
-    ///
-    /// This is returned by `build_non_plan_services` until the builder is
-    /// implemented. Callers should fall back to their current `ServiceFactory`
-    /// construction path.
-    #[error(
-        "SPEC_DRIFT: RuntimeServicesBuilder not yet available (blocked on #243); \
-             profile={profile}, use ServiceFactory::build as interim"
-    )]
-    BuilderNotAvailable { profile: RuntimeProfile },
 }
 
 // ---------------------------------------------------------------------------
@@ -280,32 +269,26 @@ pub fn validate_service_request(
     })
 }
 
-/// Attempt to build runtime services for a non-plan surface.
+/// Build runtime services for a non-plan surface.
 ///
-/// **Status: blocked on #243.** Returns `Err(BuilderNotAvailable)` until
-/// the `RuntimeServicesBuilder` is implemented. Callers should:
+/// Validates the request against the profile matrix, then constructs
+/// a validated service handle. The `RuntimeServicesBuilder` (#243) is
+/// now available — callers that need the concrete `RuntimeServices`
+/// should use `RuntimeServicesBuilder::from_config()` directly.
 ///
-/// 1. Call `validate_service_request()` to get a validated handle.
-/// 2. Fall back to `ServiceFactory::build(ServiceConfig { ... })` for the
-///    actual bundle construction.
-/// 3. Store the handle for cost settlement and process registration
-///    correlation.
-///
-/// When #243 lands, this function will call `RuntimeServicesBuilder::build()`
-/// directly and return the concrete `ServiceBundle`.
+/// This function remains the recommended entry point for non-plan
+/// surfaces that only need handle validation and instance correlation.
 pub fn build_non_plan_services(
     request: &NonPlanServiceRequest,
 ) -> Result<NonPlanServiceHandle, ServiceConstructionError> {
     // Phase 1: validate the request against the profile matrix.
     let handle = validate_service_request(request)?;
 
-    // Phase 2: actual construction — blocked on #243.
-    // TODO(#243): Replace with RuntimeServicesBuilder::build(request).
     tracing::debug!(
         profile = %request.profile,
         instance_id = %handle.instance_id,
         required = ?handle.required_bundles,
-        "validated non-plan service request (builder pending #243)"
+        "validated non-plan service request"
     );
 
     Ok(handle)

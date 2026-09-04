@@ -402,6 +402,10 @@ pub struct GraphEngine {
     /// Set to `true` after [`validate_for_start`] succeeds, so Hot Graph tick
     /// loops do not re-validate on every iteration.
     pre_validated: std::sync::atomic::AtomicBool,
+    /// When `true`, test-stub descriptors are allowed in the graph. Production
+    /// starts set this to `false` (the default) and reject any graph containing
+    /// stub descriptors.
+    allow_test_stubs: bool,
 }
 
 impl GraphEngine {
@@ -420,6 +424,7 @@ impl GraphEngine {
             event_seq: crate::events::EventSeqCounter::new(),
             tick_state: parking_lot::Mutex::new(HashMap::new()),
             pre_validated: std::sync::atomic::AtomicBool::new(false),
+            allow_test_stubs: false,
         }
     }
 
@@ -515,6 +520,17 @@ impl GraphEngine {
         self
     }
 
+    /// Allow test-stub descriptors to pass validation.
+    ///
+    /// By default, `validate_for_start` rejects graphs containing nodes whose
+    /// registry descriptors have `is_stub = true`. Call this method with `true`
+    /// to permit stubs (test environments only).
+    #[must_use]
+    pub fn with_allow_test_stubs(mut self, allow: bool) -> Self {
+        self.allow_test_stubs = allow;
+        self
+    }
+
     /// Return a reference to the graph event sequence counter.
     ///
     /// Useful for callers that need to pre-allocate sequence numbers or
@@ -547,6 +563,30 @@ impl GraphEngine {
         // Skip if already validated (Hot Graph tick loops call this path once).
         if self.pre_validated.load(Ordering::Acquire) {
             return Ok(ValidatedGraph { _private: () });
+        }
+
+        // Reject test-stub descriptors in production mode.
+        if !self.allow_test_stubs {
+            let stub_nodes: Vec<String> = self
+                .graph
+                .inner
+                .node_weights()
+                .filter_map(|node| {
+                    self.registry
+                        .descriptor(&node.cell_type)
+                        .filter(|d| d.is_stub)
+                        .map(|_| node.id.clone())
+                })
+                .collect();
+            if !stub_nodes.is_empty() {
+                return Err(GraphError::InvalidGraph {
+                    reason: format!(
+                        "graph contains {} test-stub node(s): {}",
+                        stub_nodes.len(),
+                        stub_nodes.join(", ")
+                    ),
+                });
+            }
         }
 
         // Validate edge type compatibility using descriptor introspection.
@@ -1443,6 +1483,27 @@ impl GraphEngine {
         registry: CellRegistry,
         ctx: &CellContext,
     ) -> Result<GraphOutput, GraphError> {
+        // Reject test-stub descriptors (resume is always a production path).
+        let stub_nodes: Vec<String> = graph
+            .inner
+            .node_weights()
+            .filter_map(|node| {
+                registry
+                    .descriptor(&node.cell_type)
+                    .filter(|d| d.is_stub)
+                    .map(|_| node.id.clone())
+            })
+            .collect();
+        if !stub_nodes.is_empty() {
+            return Err(GraphError::InvalidGraph {
+                reason: format!(
+                    "graph contains {} test-stub node(s): {}",
+                    stub_nodes.len(),
+                    stub_nodes.join(", ")
+                ),
+            });
+        }
+
         // Validate edges before any resumption work.
         let edge_errors = graph.validate_edges(&registry);
         if !edge_errors.is_empty() {
@@ -4249,7 +4310,7 @@ to = "b"
         }
 
         #[test]
-        fn graph_validation_test_stub_descriptor() {
+        fn graph_validation_rejects_stub_descriptors_by_default() {
             let mut registry = CellRegistry::new();
             registry.register_with_descriptor(
                 "stub-cell",
@@ -4266,8 +4327,61 @@ to = "b"
             graph.add_edge(make_edge("a", "b")).unwrap();
 
             let engine = GraphEngine::new(graph, registry);
-            // Stub descriptors have no schemas, so edge validation passes.
-            assert!(engine.validate_for_start().is_ok());
+            let err = engine.validate_for_start().unwrap_err();
+            assert!(
+                matches!(err, GraphError::InvalidGraph { ref reason } if reason.contains("test-stub")),
+                "expected InvalidGraph with stub mention, got: {err:?}"
+            );
+        }
+
+        #[test]
+        fn graph_validation_allows_stubs_when_flag_set() {
+            let mut registry = CellRegistry::new();
+            registry.register_with_descriptor(
+                "stub-cell",
+                CellDescriptor::test_stub("stub-cell"),
+                |_| Box::new(NoopCell::default()),
+            );
+
+            let mut graph = Graph::new(GraphMetadata {
+                name: "stub-allowed".to_string(),
+                ..Default::default()
+            });
+            graph.add_node(make_node("a", "stub-cell")).unwrap();
+            graph.add_node(make_node("b", "stub-cell")).unwrap();
+            graph.add_edge(make_edge("a", "b")).unwrap();
+
+            let engine = GraphEngine::new(graph, registry).with_allow_test_stubs(true);
+            assert!(
+                engine.validate_for_start().is_ok(),
+                "stubs should pass when allow_test_stubs is true"
+            );
+        }
+
+        #[test]
+        fn graph_validation_stub_error_lists_node_ids() {
+            let mut registry = CellRegistry::new();
+            registry.register_with_descriptor(
+                "stub-cell",
+                CellDescriptor::test_stub("stub-cell"),
+                |_| Box::new(NoopCell::default()),
+            );
+
+            let mut graph = Graph::new(GraphMetadata {
+                name: "stub-names".to_string(),
+                ..Default::default()
+            });
+            graph.add_node(make_node("my-stub-a", "stub-cell")).unwrap();
+            graph.add_node(make_node("my-stub-b", "stub-cell")).unwrap();
+            graph.add_edge(make_edge("my-stub-a", "my-stub-b")).unwrap();
+
+            let engine = GraphEngine::new(graph, registry);
+            let err = engine.validate_for_start().unwrap_err();
+            let msg = err.to_string();
+            assert!(
+                msg.contains("my-stub-a") && msg.contains("my-stub-b"),
+                "error should list stub node IDs: {msg}"
+            );
         }
 
         #[test]
@@ -4344,6 +4458,109 @@ to = "b"
                 result.is_ok(),
                 "default registry cognitive loop should validate: {:?}",
                 result.err()
+            );
+        }
+
+        #[test]
+        fn graph_validation_conditional_edge_type_mismatch() {
+            let registry = typed_registry();
+            let mut graph = Graph::new(GraphMetadata {
+                name: "conditional-mismatch".to_string(),
+                ..Default::default()
+            });
+            graph
+                .add_node(make_node("src", "agent-msg-source"))
+                .unwrap();
+            graph.add_node(make_node("tgt", "episode-sink")).unwrap();
+            graph
+                .add_edge(crate::types::Edge {
+                    from: "src".to_string(),
+                    to: "tgt".to_string(),
+                    condition: Some(crate::types::EdgeCondition::OutputEquals {
+                        key: "status".to_string(),
+                        value: "ok".to_string(),
+                    }),
+                })
+                .unwrap();
+
+            let engine = GraphEngine::new(graph, registry).with_allow_test_stubs(true);
+            let result = engine.validate_for_start();
+            assert!(
+                result.is_err(),
+                "conditional edges with incompatible schemas should still fail"
+            );
+        }
+
+        #[test]
+        fn graph_validation_conditional_edge_compatible_passes() {
+            let registry = typed_registry();
+            let mut graph = Graph::new(GraphMetadata {
+                name: "conditional-ok".to_string(),
+                ..Default::default()
+            });
+            graph
+                .add_node(make_node("src", "agent-msg-source"))
+                .unwrap();
+            graph.add_node(make_node("tgt", "agent-msg-sink")).unwrap();
+            graph
+                .add_edge(crate::types::Edge {
+                    from: "src".to_string(),
+                    to: "tgt".to_string(),
+                    condition: Some(crate::types::EdgeCondition::Success),
+                })
+                .unwrap();
+
+            let engine = GraphEngine::new(graph, registry).with_allow_test_stubs(true);
+            assert!(
+                engine.validate_for_start().is_ok(),
+                "conditional edge with compatible schemas should pass"
+            );
+        }
+
+        #[test]
+        fn graph_validation_mixed_stub_and_production_rejected() {
+            let mut registry = typed_registry();
+            registry.register_with_descriptor(
+                "stub-cell",
+                CellDescriptor::test_stub("stub-cell"),
+                |_| Box::new(NoopCell::default()),
+            );
+
+            let mut graph = Graph::new(GraphMetadata {
+                name: "mixed".to_string(),
+                ..Default::default()
+            });
+            graph
+                .add_node(make_node("prod", "agent-msg-source"))
+                .unwrap();
+            graph.add_node(make_node("stub", "stub-cell")).unwrap();
+            graph.add_edge(make_edge("prod", "stub")).unwrap();
+
+            let engine = GraphEngine::new(graph, registry);
+            let err = engine.validate_for_start().unwrap_err();
+            assert!(
+                matches!(err, GraphError::InvalidGraph { ref reason } if reason.contains("stub")),
+                "mixed graph should be rejected: {err:?}"
+            );
+        }
+
+        #[test]
+        fn graph_validation_production_only_descriptors_pass() {
+            let registry = typed_registry();
+            let mut graph = Graph::new(GraphMetadata {
+                name: "production-only".to_string(),
+                ..Default::default()
+            });
+            graph
+                .add_node(make_node("src", "agent-msg-source"))
+                .unwrap();
+            graph.add_node(make_node("tgt", "agent-msg-sink")).unwrap();
+            graph.add_edge(make_edge("src", "tgt")).unwrap();
+
+            let engine = GraphEngine::new(graph, registry);
+            assert!(
+                engine.validate_for_start().is_ok(),
+                "production-only graph should pass"
             );
         }
     }

@@ -3484,7 +3484,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
                 )
                 .await;
             }
-            commands::util::cmd_run(cli, workdir, prompt, serve, share, provider, max_retries).await
+            commands::util::cmd_run(cli, workdir, prompt, serve, share, provider, max_retries, None).await
         }
         Command::Do {
             plan,

@@ -426,6 +426,241 @@ async fn evidence_fingerprints_preserved() {
     );
 }
 
+// ─── SharedGateEvaluator implementation tests (#275) ──────────────────────
+
+/// Verify that `RunnerProductionGateAdapter` implements `SharedGateEvaluator`
+/// and can be used as `CellContext.resources.gates`.
+#[test]
+fn adapter_is_object_safe_shared_gate_evaluator() {
+    use roko_core::SharedGateEvaluator;
+
+    let runner = FixtureGateRunner {
+        rungs: vec![],
+        cancelled: false,
+        timed_out: false,
+    };
+    let adapter =
+        roko_cli::runner::gate_dispatch::RunnerProductionGateAdapter::new(Arc::new(runner));
+    let _arc: Arc<dyn SharedGateEvaluator> = Arc::new(adapter);
+}
+
+/// Verify that `RunnerProductionGateAdapter::verify_rung` returns an unknown
+/// rung error for a nonexistent rung name.
+#[tokio::test]
+async fn adapter_verify_rung_unknown_returns_error() {
+    use roko_core::{SharedGateEvaluator, SharedGateRequest};
+
+    let runner = FixtureGateRunner {
+        rungs: vec![],
+        cancelled: false,
+        timed_out: false,
+    };
+    let adapter =
+        roko_cli::runner::gate_dispatch::RunnerProductionGateAdapter::new(Arc::new(runner));
+
+    let req = SharedGateRequest {
+        task_id: "t".into(),
+        attempt_id: 0,
+        rung: "nonexistent_rung".into(),
+        plan_dir: String::new(),
+        worktree_path: PathBuf::from("/tmp"),
+        changed_files: Vec::new(),
+        context: Default::default(),
+    };
+    let result = adapter.verify_rung(&req).await;
+    assert!(result.is_err());
+    assert!(
+        matches!(
+            result.unwrap_err(),
+            roko_core::SharedGateError::UnknownRung { .. }
+        ),
+        "expected UnknownRung error"
+    );
+}
+
+/// Verify that `RunnerProductionGateAdapter::verify_rung` returns a passing
+/// verdict when the underlying service passes.
+#[tokio::test]
+async fn adapter_verify_rung_passing() {
+    use roko_core::{SharedGateEvaluator, SharedGateRequest};
+
+    let runner = FixtureGateRunner {
+        rungs: vec![FixtureRung {
+            rung: "compile".into(),
+            rung_index: 0,
+            state: "passed".into(),
+            gate_name: "compile:cargo".into(),
+            diagnostic: "ok".into(),
+            duration_ms: 50,
+            failure_classification: None,
+            test_counts: None,
+            evidence_fingerprint: Some("fp1".into()),
+            preexisting: false,
+        }],
+        cancelled: false,
+        timed_out: false,
+    };
+    let adapter =
+        roko_cli::runner::gate_dispatch::RunnerProductionGateAdapter::new(Arc::new(runner));
+
+    let req = SharedGateRequest {
+        task_id: "t".into(),
+        attempt_id: 0,
+        rung: "compile".into(),
+        plan_dir: String::new(),
+        worktree_path: PathBuf::from("/tmp"),
+        changed_files: vec!["src/lib.rs".into()],
+        context: Default::default(),
+    };
+    let result = adapter.verify_rung(&req).await;
+    assert!(result.is_ok(), "verify_rung should succeed: {result:?}");
+    let verdict = result.unwrap();
+    assert!(verdict.passed, "compile should pass");
+    assert!(!verdict.skipped, "compile should not be skipped");
+    assert!(verdict.failed_reasons.is_empty());
+}
+
+/// Verify that `RunnerProductionGateAdapter::verify_rung` returns a failing
+/// verdict when the underlying service fails.
+#[tokio::test]
+async fn adapter_verify_rung_failing() {
+    use roko_core::{SharedGateEvaluator, SharedGateRequest};
+
+    let runner = FixtureGateRunner {
+        rungs: vec![FixtureRung {
+            rung: "compile".into(),
+            rung_index: 0,
+            state: "failed".into(),
+            gate_name: "compile:cargo".into(),
+            diagnostic: "error[E0433]".into(),
+            duration_ms: 100,
+            failure_classification: None,
+            test_counts: None,
+            evidence_fingerprint: None,
+            preexisting: false,
+        }],
+        cancelled: false,
+        timed_out: false,
+    };
+    let adapter =
+        roko_cli::runner::gate_dispatch::RunnerProductionGateAdapter::new(Arc::new(runner));
+
+    let req = SharedGateRequest {
+        task_id: "t".into(),
+        attempt_id: 0,
+        rung: "compile".into(),
+        plan_dir: String::new(),
+        worktree_path: PathBuf::from("/tmp"),
+        changed_files: Vec::new(),
+        context: Default::default(),
+    };
+    let result = adapter.verify_rung(&req).await;
+    assert!(
+        result.is_ok(),
+        "verify_rung should succeed even on fail: {result:?}"
+    );
+    let verdict = result.unwrap();
+    assert!(!verdict.passed, "compile should fail");
+    assert!(!verdict.skipped);
+    assert!(
+        !verdict.failed_reasons.is_empty(),
+        "should have failure reasons"
+    );
+    assert!(
+        verdict.evidence.is_some(),
+        "should have evidence from diagnostic"
+    );
+}
+
+/// Verify that `RunnerProductionGateAdapter::verify_rung` returns `Cancelled`
+/// error when the pipeline was cancelled.
+#[tokio::test]
+async fn adapter_verify_rung_cancelled() {
+    use roko_core::{SharedGateEvaluator, SharedGateRequest};
+
+    let runner = FixtureGateRunner {
+        rungs: vec![],
+        cancelled: true,
+        timed_out: false,
+    };
+    let adapter =
+        roko_cli::runner::gate_dispatch::RunnerProductionGateAdapter::new(Arc::new(runner));
+
+    let req = SharedGateRequest {
+        task_id: "t".into(),
+        attempt_id: 0,
+        rung: "compile".into(),
+        plan_dir: String::new(),
+        worktree_path: PathBuf::from("/tmp"),
+        changed_files: Vec::new(),
+        context: Default::default(),
+    };
+    let result = adapter.verify_rung(&req).await;
+    assert!(
+        result.is_err(),
+        "cancelled pipeline should produce error"
+    );
+    if let Err(err) = result {
+        assert!(
+            matches!(err, roko_core::SharedGateError::Cancelled),
+            "expected Cancelled, got: {err}"
+        );
+    }
+}
+
+/// Verify that `RunnerProductionGateAdapter::verify_rung` returns `Timeout`
+/// error when the pipeline times out.
+#[tokio::test]
+async fn adapter_verify_rung_timed_out() {
+    use roko_core::{SharedGateEvaluator, SharedGateRequest};
+
+    let runner = FixtureGateRunner {
+        rungs: vec![],
+        cancelled: false,
+        timed_out: true,
+    };
+    let adapter =
+        roko_cli::runner::gate_dispatch::RunnerProductionGateAdapter::new(Arc::new(runner));
+
+    let req = SharedGateRequest {
+        task_id: "t".into(),
+        attempt_id: 0,
+        rung: "compile".into(),
+        plan_dir: String::new(),
+        worktree_path: PathBuf::from("/tmp"),
+        changed_files: Vec::new(),
+        context: Default::default(),
+    };
+    let result = adapter.verify_rung(&req).await;
+    assert!(result.is_err(), "timed-out pipeline should produce error");
+    if let Err(err) = result {
+        assert!(
+            matches!(err, roko_core::SharedGateError::Timeout { .. }),
+            "expected Timeout, got: {err}"
+        );
+    }
+}
+
+/// Verify that the adapter can be stored in `CellResources` as the
+/// `gates` field, exactly as the Graph engine would use it.
+#[test]
+fn adapter_stored_in_cell_resources() {
+    use roko_core::SharedGateEvaluator;
+    use roko_graph::cell::CellResources;
+
+    let runner = FixtureGateRunner {
+        rungs: vec![],
+        cancelled: false,
+        timed_out: false,
+    };
+    let adapter =
+        roko_cli::runner::gate_dispatch::RunnerProductionGateAdapter::new(Arc::new(runner));
+    let resources = CellResources {
+        gates: Some(Arc::new(adapter) as Arc<dyn SharedGateEvaluator>),
+    };
+    assert!(resources.gates.is_some());
+}
+
 // ─── Graph GatePipelineCell parity tests ─────────────────────────────────
 
 /// For each fixture case, run the fake gate runner through the Graph

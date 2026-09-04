@@ -7,7 +7,7 @@
 use std::time::Instant;
 
 use roko_core::runtime_event::RuntimeEventEnvelope;
-use roko_runtime::workflow_engine::{GateOutcome, WorkflowRunReport};
+use roko_runtime::workflow_contract::{GateOutcome, WorkflowRunReport};
 
 use super::controller::{WorkflowGraphController, WorkflowTermination};
 

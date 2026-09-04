@@ -25,6 +25,7 @@ reqwest = { workspace = true }
 roko-primitives = { path = "../roko-primitives" }
 roko-core = { path = "../roko-core" }
 sha2 = { workspace = true }
+blake3 = { workspace = true }
 fs2 = "0.4"
 
 [target.'cfg(unix)'.dependencies]

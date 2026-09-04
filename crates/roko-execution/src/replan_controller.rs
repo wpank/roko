@@ -24,6 +24,7 @@ use roko_core::plan_mutation::{
     PlanMutationErrorV1, PlanMutationOpV1, PlanMutationV1, apply_mutation, canonical_fingerprint,
 };
 use roko_gate::{FailureClass, GateFailureAction, GateFailureClassification};
+use roko_graph::snapshot::{CheckpointExtension, EXT_REPLAN};
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
@@ -194,6 +195,94 @@ pub enum ReplanEvent {
         plan_id: String,
         cap: u32,
     },
+}
+
+// ---------------------------------------------------------------------------
+// Checkpoint state (durable extension `roko.replan@1`)
+// ---------------------------------------------------------------------------
+
+/// Durable checkpoint state for replan history.
+///
+/// Stored as the `roko.replan@1` extension in the snapshot ledger. On resume,
+/// this state is read to reconstruct `prior_attempts` and ordinal so the
+/// controller never repeats a (strategy, evidence_fingerprint) pair.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ReplanCheckpointState {
+    /// All receipts produced so far, in ordinal order.
+    pub receipts: Vec<ReplanReceiptV1>,
+    /// Current generation (next ordinal to assign).
+    pub generation: u32,
+    /// Whether the replan cap has been reached for this run.
+    pub cap_reached: bool,
+}
+
+impl ReplanCheckpointState {
+    /// Create a new empty checkpoint state.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record an applied replan receipt.
+    pub fn record(&mut self, receipt: ReplanReceiptV1) {
+        self.generation = receipt.ordinal + 1;
+        self.receipts.push(receipt);
+    }
+
+    /// Mark that the replan cap has been reached.
+    pub fn mark_cap_reached(&mut self) {
+        self.cap_reached = true;
+    }
+
+    /// Reconstruct `prior_attempts` from the checkpoint for feeding into a
+    /// [`ReplanRequest`].
+    #[must_use]
+    pub fn prior_attempts(&self) -> Vec<(ReplanStrategy, String)> {
+        self.receipts
+            .iter()
+            .map(|r| (r.strategy.clone(), r.evidence_fingerprint.clone()))
+            .collect()
+    }
+
+    /// Build a [`CheckpointExtension`] for storage in the snapshot extension ledger.
+    ///
+    /// The extension uses namespace `roko.replan@1` (required). The fingerprint
+    /// is a BLAKE3 hash of the canonical JSON so idempotent re-registration
+    /// with the same content succeeds.
+    #[must_use]
+    pub fn to_extension(&self) -> CheckpointExtension {
+        let value = serde_json::to_value(self)
+            .unwrap_or_else(|_| serde_json::json!({"error": "serialization_failed"}));
+        let fingerprint = blake3::hash(
+            serde_json::to_string(&value)
+                .unwrap_or_default()
+                .as_bytes(),
+        );
+
+        // Parse the namespace and version from the constant.
+        let parts: Vec<&str> = EXT_REPLAN.split('@').collect();
+        let namespace = parts[0].to_string();
+        let schema_version: u32 = parts.get(1).and_then(|v| v.parse().ok()).unwrap_or(1);
+
+        CheckpointExtension {
+            namespace,
+            schema_version,
+            required: true,
+            fingerprint: fingerprint.to_hex()[..16].to_string(),
+            value,
+        }
+    }
+
+    /// Restore checkpoint state from a [`CheckpointExtension`] value.
+    ///
+    /// Returns `None` if deserialization fails, allowing the caller to start
+    /// fresh (which is safe because the controller is conservative -- starting
+    /// fresh just means it may re-try strategies that already failed, which
+    /// the plan mutation layer will reject if the plan fingerprint changed).
+    #[must_use]
+    pub fn from_extension_value(value: &serde_json::Value) -> Option<Self> {
+        serde_json::from_value(value.clone()).ok()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -368,6 +457,56 @@ impl ReplanController {
                 plan_id: request.plan_id.clone(),
                 cap: request.max_replans.min(ABSOLUTE_MAX_REPLANS),
             },
+        }
+    }
+
+    /// Full decide-apply-checkpoint cycle.
+    ///
+    /// Given a gate failure, checkpoint state, and the current plan:
+    /// 1. Builds a `ReplanRequest` from the checkpoint's prior attempts.
+    /// 2. Calls `decide_with_plan` to find an applicable strategy.
+    /// 3. On `Apply`, applies the mutation and records the receipt.
+    /// 4. Returns the decision, the mutated plan (if any), and updated checkpoint.
+    ///
+    /// The caller is responsible for persisting the checkpoint state to the
+    /// extension ledger after a successful apply.
+    pub fn decide_apply_checkpoint(
+        run_id: &str,
+        plan: &MutablePlanV1,
+        failed_task_id: &str,
+        gate_classification: GateFailureClassification,
+        completed_task_ids: &[String],
+        max_replans: u32,
+        checkpoint: &mut ReplanCheckpointState,
+    ) -> Result<(ReplanDecision, Option<MutablePlanV1>), PlanMutationErrorV1> {
+        if checkpoint.cap_reached {
+            return Ok((ReplanDecision::CapReached, None));
+        }
+
+        let request = ReplanRequest {
+            run_id: run_id.to_string(),
+            plan_id: plan.plan_id.clone(),
+            failed_task_id: failed_task_id.to_string(),
+            gate_classification,
+            plan_fingerprint: canonical_fingerprint(plan),
+            completed_task_ids: completed_task_ids.to_vec(),
+            prior_attempts: checkpoint.prior_attempts(),
+            max_replans,
+        };
+
+        let decision = Self::decide_with_plan(&request, plan);
+
+        match &decision {
+            ReplanDecision::Apply { strategy, mutation } => {
+                let (new_plan, receipt) = Self::apply(&request, plan, strategy, mutation)?;
+                checkpoint.record(receipt);
+                Ok((decision, Some(new_plan)))
+            }
+            ReplanDecision::CapReached => {
+                checkpoint.mark_cap_reached();
+                Ok((decision, None))
+            }
+            ReplanDecision::Reject { .. } => Ok((decision, None)),
         }
     }
 }
@@ -1282,5 +1421,443 @@ mod tests {
         assert_eq!(decoded.strategy, ReplanStrategy::SplitTask);
         assert_eq!(decoded.ordinal, 2);
         assert_eq!(decoded.mutation_id, "mut-1");
+    }
+
+    // ── Checkpoint state ──────────────────────────────────────────────
+
+    #[test]
+    fn checkpoint_state_new_is_empty() {
+        let state = ReplanCheckpointState::new();
+        assert!(state.receipts.is_empty());
+        assert_eq!(state.generation, 0);
+        assert!(!state.cap_reached);
+        assert!(state.prior_attempts().is_empty());
+    }
+
+    #[test]
+    fn checkpoint_state_records_receipt() {
+        let mut state = ReplanCheckpointState::new();
+
+        let receipt = ReplanReceiptV1 {
+            strategy: ReplanStrategy::ChangeApproach,
+            evidence_fingerprint: "fp1".to_string(),
+            before_fingerprint: "before".to_string(),
+            after_fingerprint: "after".to_string(),
+            ordinal: 0,
+            mutation_id: "mut-0".to_string(),
+        };
+
+        state.record(receipt);
+
+        assert_eq!(state.receipts.len(), 1);
+        assert_eq!(state.generation, 1);
+        assert!(!state.cap_reached);
+
+        let attempts = state.prior_attempts();
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts[0].0, ReplanStrategy::ChangeApproach);
+        assert_eq!(attempts[0].1, "fp1");
+    }
+
+    #[test]
+    fn checkpoint_state_mark_cap_reached() {
+        let mut state = ReplanCheckpointState::new();
+        assert!(!state.cap_reached);
+        state.mark_cap_reached();
+        assert!(state.cap_reached);
+    }
+
+    #[test]
+    fn checkpoint_extension_roundtrip() {
+        let mut state = ReplanCheckpointState::new();
+        state.record(ReplanReceiptV1 {
+            strategy: ReplanStrategy::SplitTask,
+            evidence_fingerprint: "fp-split".to_string(),
+            before_fingerprint: "before-split".to_string(),
+            after_fingerprint: "after-split".to_string(),
+            ordinal: 0,
+            mutation_id: "mut-split".to_string(),
+        });
+        state.record(ReplanReceiptV1 {
+            strategy: ReplanStrategy::AddPrerequisite,
+            evidence_fingerprint: "fp-prereq".to_string(),
+            before_fingerprint: "before-prereq".to_string(),
+            after_fingerprint: "after-prereq".to_string(),
+            ordinal: 1,
+            mutation_id: "mut-prereq".to_string(),
+        });
+
+        let ext = state.to_extension();
+
+        // Verify extension metadata.
+        assert_eq!(ext.namespace, "roko.replan");
+        assert_eq!(ext.schema_version, 1);
+        assert!(ext.required);
+        assert!(!ext.fingerprint.is_empty());
+
+        // Roundtrip via JSON (simulating snapshot persistence).
+        let restored = ReplanCheckpointState::from_extension_value(&ext.value);
+        assert!(restored.is_some(), "should deserialize successfully");
+
+        let restored = restored.unwrap();
+        assert_eq!(restored.receipts.len(), 2);
+        assert_eq!(restored.generation, 2);
+        assert!(!restored.cap_reached);
+
+        let attempts = restored.prior_attempts();
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts[0].0, ReplanStrategy::SplitTask);
+        assert_eq!(attempts[1].0, ReplanStrategy::AddPrerequisite);
+    }
+
+    #[test]
+    fn checkpoint_extension_idempotent_fingerprint() {
+        let mut state = ReplanCheckpointState::new();
+        state.record(ReplanReceiptV1 {
+            strategy: ReplanStrategy::ChangeApproach,
+            evidence_fingerprint: "fp1".to_string(),
+            before_fingerprint: "b".to_string(),
+            after_fingerprint: "a".to_string(),
+            ordinal: 0,
+            mutation_id: "m".to_string(),
+        });
+
+        let ext1 = state.to_extension();
+        let ext2 = state.to_extension();
+
+        // Same state should produce the same fingerprint.
+        assert_eq!(ext1.fingerprint, ext2.fingerprint);
+    }
+
+    #[test]
+    fn checkpoint_extension_different_state_different_fingerprint() {
+        let mut state1 = ReplanCheckpointState::new();
+        state1.record(ReplanReceiptV1 {
+            strategy: ReplanStrategy::ChangeApproach,
+            evidence_fingerprint: "fp1".to_string(),
+            before_fingerprint: "b".to_string(),
+            after_fingerprint: "a".to_string(),
+            ordinal: 0,
+            mutation_id: "m1".to_string(),
+        });
+
+        let mut state2 = ReplanCheckpointState::new();
+        state2.record(ReplanReceiptV1 {
+            strategy: ReplanStrategy::SplitTask,
+            evidence_fingerprint: "fp2".to_string(),
+            before_fingerprint: "b2".to_string(),
+            after_fingerprint: "a2".to_string(),
+            ordinal: 0,
+            mutation_id: "m2".to_string(),
+        });
+
+        let ext1 = state1.to_extension();
+        let ext2 = state2.to_extension();
+
+        assert_ne!(ext1.fingerprint, ext2.fingerprint);
+    }
+
+    #[test]
+    fn checkpoint_from_invalid_value_returns_none() {
+        let invalid = serde_json::json!({"not": "a checkpoint"});
+        assert!(ReplanCheckpointState::from_extension_value(&invalid).is_none());
+    }
+
+    #[test]
+    fn checkpoint_cap_reached_roundtrips() {
+        let mut state = ReplanCheckpointState::new();
+        state.mark_cap_reached();
+
+        let ext = state.to_extension();
+        let restored = ReplanCheckpointState::from_extension_value(&ext.value).unwrap();
+        assert!(restored.cap_reached);
+    }
+
+    // ── Checkpoint-driven decide-apply cycle ──────────────────────────
+
+    #[test]
+    fn decide_apply_checkpoint_cycle() {
+        let plan = test_plan(&[("t1", &[]), ("t2", &["t1"])]);
+        let mut checkpoint = ReplanCheckpointState::new();
+        let classification = test_classification(
+            FailureClass::ArchitecturalConflictRequiresReplan,
+            GateFailureAction::NeedsReplan,
+            "test failure for checkpoint cycle",
+        );
+
+        // First replan: should pick ChangeApproach.
+        let (decision, new_plan) = ReplanController::decide_apply_checkpoint(
+            "run-cp",
+            &plan,
+            "t2",
+            classification.clone(),
+            &[],
+            3,
+            &mut checkpoint,
+        )
+        .unwrap();
+
+        match &decision {
+            ReplanDecision::Apply { strategy, .. } => {
+                assert_eq!(strategy, &ReplanStrategy::ChangeApproach);
+            }
+            other => panic!("expected Apply(ChangeApproach), got: {:?}", other),
+        }
+        assert!(new_plan.is_some());
+        assert_eq!(checkpoint.receipts.len(), 1);
+        assert_eq!(checkpoint.generation, 1);
+
+        let plan_after_first = new_plan.unwrap();
+
+        // Second replan on the mutated plan: should pick SplitTask.
+        let (decision2, new_plan2) = ReplanController::decide_apply_checkpoint(
+            "run-cp",
+            &plan_after_first,
+            "t2",
+            classification.clone(),
+            &[],
+            3,
+            &mut checkpoint,
+        )
+        .unwrap();
+
+        match &decision2 {
+            ReplanDecision::Apply { strategy, .. } => {
+                assert_eq!(strategy, &ReplanStrategy::SplitTask);
+            }
+            other => panic!("expected Apply(SplitTask), got: {:?}", other),
+        }
+        assert!(new_plan2.is_some());
+        assert_eq!(checkpoint.receipts.len(), 2);
+        assert_eq!(checkpoint.generation, 2);
+
+        let plan_after_second = new_plan2.unwrap();
+
+        // Third replan: should pick AddPrerequisite, then cap reached.
+        let (decision3, _) = ReplanController::decide_apply_checkpoint(
+            "run-cp",
+            &plan_after_second,
+            "t2",
+            classification,
+            &[],
+            3,
+            &mut checkpoint,
+        )
+        .unwrap();
+
+        match &decision3 {
+            ReplanDecision::Apply { strategy, .. } => {
+                assert_eq!(strategy, &ReplanStrategy::AddPrerequisite);
+            }
+            other => panic!("expected Apply(AddPrerequisite), got: {:?}", other),
+        }
+        assert_eq!(checkpoint.receipts.len(), 3);
+        assert_eq!(checkpoint.generation, 3);
+    }
+
+    #[test]
+    fn decide_apply_checkpoint_respects_prior_cap_reached() {
+        let plan = test_plan(&[("t1", &[])]);
+        let mut checkpoint = ReplanCheckpointState::new();
+        checkpoint.mark_cap_reached();
+
+        let classification = test_classification(
+            FailureClass::ArchitecturalConflictRequiresReplan,
+            GateFailureAction::NeedsReplan,
+            "should be blocked by cap",
+        );
+
+        let (decision, new_plan) = ReplanController::decide_apply_checkpoint(
+            "run-cap",
+            &plan,
+            "t1",
+            classification,
+            &[],
+            5,
+            &mut checkpoint,
+        )
+        .unwrap();
+
+        assert!(matches!(decision, ReplanDecision::CapReached));
+        assert!(new_plan.is_none());
+    }
+
+    #[test]
+    fn checkpoint_resume_skips_tried_strategies() {
+        // Simulate a checkpoint with one receipt from a previous run.
+        let mut checkpoint = ReplanCheckpointState::new();
+        checkpoint.record(ReplanReceiptV1 {
+            strategy: ReplanStrategy::ChangeApproach,
+            evidence_fingerprint: "fp-resume".to_string(),
+            before_fingerprint: "b".to_string(),
+            after_fingerprint: "a".to_string(),
+            ordinal: 0,
+            mutation_id: "m-resume".to_string(),
+        });
+
+        // Persist and restore via extension.
+        let ext = checkpoint.to_extension();
+        let restored = ReplanCheckpointState::from_extension_value(&ext.value).unwrap();
+        let attempts = restored.prior_attempts();
+
+        // Build a request with the restored attempts.
+        let plan = test_plan(&[("t1", &[])]);
+        let request = ReplanRequest {
+            run_id: "run-resume".to_string(),
+            plan_id: plan.plan_id.clone(),
+            failed_task_id: "t1".to_string(),
+            gate_classification: test_classification(
+                FailureClass::ArchitecturalConflictRequiresReplan,
+                GateFailureAction::NeedsReplan,
+                "test failure",
+            ),
+            plan_fingerprint: canonical_fingerprint(&plan),
+            completed_task_ids: vec![],
+            prior_attempts: attempts,
+            max_replans: 5,
+        };
+
+        // The checkpoint has "fp-resume" but the new evidence_fp is computed
+        // from the test classification. They differ, so ChangeApproach will
+        // be tried again (correct -- different evidence means it hasn't been
+        // tried for THIS failure).
+        let decision = ReplanController::decide(&request);
+        match &decision {
+            ReplanDecision::Apply { strategy, .. } => {
+                assert_eq!(strategy, &ReplanStrategy::ChangeApproach);
+            }
+            other => panic!("expected Apply(ChangeApproach), got: {:?}", other),
+        }
+
+        // Now test with matching fingerprints.
+        let evidence_fp = evidence_fingerprint(&request.gate_classification);
+        let mut request2 = request.clone();
+        request2.prior_attempts = vec![(ReplanStrategy::ChangeApproach, evidence_fp)];
+
+        let decision2 = ReplanController::decide(&request2);
+        match &decision2 {
+            ReplanDecision::Apply { strategy, .. } => {
+                assert_eq!(strategy, &ReplanStrategy::SplitTask);
+            }
+            other => panic!("expected Apply(SplitTask), got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn checkpoint_cap_exhaustion_terminal() {
+        let plan = test_plan(&[("t1", &[])]);
+        let mut checkpoint = ReplanCheckpointState::new();
+        let classification = test_classification(
+            FailureClass::ArchitecturalConflictRequiresReplan,
+            GateFailureAction::NeedsReplan,
+            "cap test",
+        );
+
+        // Set max_replans to 1 so we hit the cap after one attempt.
+        let (decision, _) = ReplanController::decide_apply_checkpoint(
+            "run-cap-test",
+            &plan,
+            "t1",
+            classification.clone(),
+            &[],
+            1,
+            &mut checkpoint,
+        )
+        .unwrap();
+
+        assert!(matches!(decision, ReplanDecision::Apply { .. }));
+        assert_eq!(checkpoint.receipts.len(), 1);
+
+        // Second attempt should hit cap.
+        let (decision2, _) = ReplanController::decide_apply_checkpoint(
+            "run-cap-test",
+            &plan,
+            "t1",
+            classification,
+            &[],
+            1,
+            &mut checkpoint,
+        )
+        .unwrap();
+
+        assert!(matches!(decision2, ReplanDecision::CapReached));
+        assert!(checkpoint.cap_reached);
+
+        // Verify the cap state persists through checkpoint.
+        let ext = checkpoint.to_extension();
+        let restored = ReplanCheckpointState::from_extension_value(&ext.value).unwrap();
+        assert!(restored.cap_reached);
+    }
+
+    #[test]
+    fn checkpoint_preserves_completed_task_ids() {
+        let mut plan = test_plan(&[("t1", &[]), ("t2", &["t1"]), ("t3", &["t2"])]);
+        // Mark t1 as completed.
+        plan.tasks.get_mut("t1").unwrap().completed = true;
+
+        let mut checkpoint = ReplanCheckpointState::new();
+        let classification = test_classification(
+            FailureClass::ArchitecturalConflictRequiresReplan,
+            GateFailureAction::NeedsReplan,
+            "test with completed tasks",
+        );
+
+        let (decision, new_plan) = ReplanController::decide_apply_checkpoint(
+            "run-completed",
+            &plan,
+            "t2",
+            classification,
+            &["t1".to_string()],
+            3,
+            &mut checkpoint,
+        )
+        .unwrap();
+
+        assert!(matches!(decision, ReplanDecision::Apply { .. }));
+        let new_plan = new_plan.unwrap();
+
+        // t1 should still be present and completed.
+        assert!(new_plan.tasks.contains_key("t1"));
+    }
+
+    #[test]
+    fn checkpoint_extension_with_register_extension() {
+        use roko_graph::snapshot::register_extension;
+        use std::collections::BTreeMap as BTreeMapStd;
+
+        let mut state = ReplanCheckpointState::new();
+        state.record(ReplanReceiptV1 {
+            strategy: ReplanStrategy::ChangeApproach,
+            evidence_fingerprint: "fp".to_string(),
+            before_fingerprint: "b".to_string(),
+            after_fingerprint: "a".to_string(),
+            ordinal: 0,
+            mutation_id: "m".to_string(),
+        });
+
+        let ext = state.to_extension();
+
+        // Register into a BTreeMap the same way the snapshot ledger does.
+        let mut extensions = BTreeMapStd::new();
+        register_extension(&mut extensions, ext.clone())
+            .expect("first registration should succeed");
+
+        // Idempotent re-registration with the same content should succeed.
+        register_extension(&mut extensions, ext)
+            .expect("idempotent registration should succeed");
+
+        assert_eq!(extensions.len(), 1);
+
+        // The key should be "roko.replan@1".
+        assert!(extensions.contains_key("roko.replan@1"));
+
+        // Restore from the ledger entry.
+        let ledger_entry = &extensions["roko.replan@1"];
+        let restored = ReplanCheckpointState::from_extension_value(&ledger_entry.value).unwrap();
+        assert_eq!(restored.receipts.len(), 1);
+        assert_eq!(
+            restored.receipts[0].strategy,
+            ReplanStrategy::ChangeApproach
+        );
     }
 }

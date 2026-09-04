@@ -5,6 +5,7 @@
 //! graph engine in topological order.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
@@ -77,6 +78,16 @@ pub struct CellContext {
     /// Cells access specific services through typed fields, e.g.
     /// `ctx.resources.gates` for gate evaluation.
     pub resources: CellResources,
+    /// Shared cancellation flag for cooperative cell shutdown (#255).
+    ///
+    /// When `Some` and the inner `AtomicBool` is `true`, the cell should
+    /// abort work as soon as practical. Checked via [`CellContext::is_cancelled`].
+    pub cancel_flag: Option<Arc<AtomicBool>>,
+    /// Shared pause flag for cooperative cell suspension (#255).
+    ///
+    /// When `Some` and the inner `AtomicBool` is `true`, the cell should
+    /// pause new work and yield. Checked via [`CellContext::is_paused`].
+    pub pause_flag: Option<Arc<AtomicBool>>,
 }
 
 impl CellContext {
@@ -94,6 +105,8 @@ impl CellContext {
             wave_index: None,
             total_waves: None,
             resources: CellResources::default(),
+            cancel_flag: None,
+            pause_flag: None,
         }
     }
 
@@ -174,6 +187,48 @@ impl CellContext {
     pub fn with_resources(mut self, resources: CellResources) -> Self {
         self.resources = resources;
         self
+    }
+
+    /// Builder: attach a shared cancellation flag (#255).
+    ///
+    /// When the flag is set to `true`, [`is_cancelled`](Self::is_cancelled)
+    /// will return `true` and the cell should abort work.
+    #[must_use]
+    pub fn with_cancel_flag(mut self, flag: Arc<AtomicBool>) -> Self {
+        self.cancel_flag = Some(flag);
+        self
+    }
+
+    /// Builder: attach a shared pause flag (#255).
+    ///
+    /// When the flag is set to `true`, [`is_paused`](Self::is_paused)
+    /// will return `true` and the cell should yield.
+    #[must_use]
+    pub fn with_pause_flag(mut self, flag: Arc<AtomicBool>) -> Self {
+        self.pause_flag = Some(flag);
+        self
+    }
+
+    /// Returns `true` if cancellation has been requested (#255).
+    ///
+    /// Returns `false` when no cancel flag is set. Cells should check
+    /// this periodically during long-running operations and abort if true.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel_flag
+            .as_ref()
+            .is_some_and(|f| f.load(Ordering::Acquire))
+    }
+
+    /// Returns `true` if the executor is paused (#255).
+    ///
+    /// Returns `false` when no pause flag is set. Cells should check
+    /// this to delay starting new work until unpaused.
+    #[must_use]
+    pub fn is_paused(&self) -> bool {
+        self.pause_flag
+            .as_ref()
+            .is_some_and(|f| f.load(Ordering::Acquire))
     }
 }
 

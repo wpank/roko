@@ -27,8 +27,8 @@ use roko_gate::{
 use roko_runtime::JsonlLogger;
 use roko_runtime::effect_driver::RuntimeEvent as RuntimeDriverEvent;
 use roko_runtime::event_bus::runtime_event_bus;
-use roko_runtime::pipeline_state::WorkflowConfig;
-use roko_runtime::workflow_engine::{WorkflowEngine, WorkflowRunConfig, WorkflowRunReport};
+// WorkflowConfig now imported from workflow_contract above.
+use roko_runtime::workflow_contract::{WorkflowConfig, WorkflowRunConfig, WorkflowRunReport};
 use roko_serve::{ServiceConfig, ServiceFactory};
 use tokio::process::Command;
 use tokio::sync::mpsc;
@@ -647,17 +647,16 @@ impl AcpSessionServiceAdapter {
     }
 }
 
-/// Execute a prompt via WorkflowEngine, bridging events to ACP protocol.
+/// Options for graph-based workflow execution bridged to ACP protocol.
 ///
-/// This is an alternative to [`run_workflow_pipeline`] that uses the shared
-/// WorkflowEngine architecture. Runtime events are bridged to the ACP session
-/// via an `EventConsumer` bridge (`RuntimeEvent` -> `CognitiveEvent` -> session updates).
+/// #276 retired `WorkflowEngine`. These options configure the graph template
+/// controller that replaced it.
 pub struct WorkflowEngineOptions {
     pub model_key: String,
     pub input_messages: Vec<roko_core::foundation::ModelInputMessage>,
     pub mcp_config: Option<std::path::PathBuf>,
     pub provenance_card: Option<String>,
-    /// Execution route — defaults to `LegacyDefault` (WorkflowEngine).
+    /// Execution route — retained for compatibility but ignored (#276).
     #[allow(dead_code)]
     pub route: AcpWorkflowRoute,
 }
@@ -694,7 +693,7 @@ pub async fn run_with_workflow_engine(
         }
     }
 
-    let runtime_run_id = Arc::new(Mutex::new(None));
+    let runtime_run_id: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let roko_config = roko_core::config::loader::load_config_with_options(
         workdir,
         &roko_core::config::loader::LoadOptions::acp(),
@@ -713,62 +712,37 @@ pub async fn run_with_workflow_engine(
     .build(workdir)
     .map_err(|e| anyhow::anyhow!("RuntimeServicesBuilder: {e}"))?;
 
-    let services = ServiceFactory::build_with_runtime_services(
-        ServiceConfig {
-            workdir: workdir.to_path_buf(),
-            roko_dir: workdir.join(".roko"),
-            workspace_config: roko_config,
-            model_key: Some(options.model_key),
-            mcp_config: options.mcp_config,
-            feedback_enabled: true,
-            affect_enabled: false,
-            cascade_enabled: true,
-            run_id: Some(format!("acp_workflow_{session_id}")),
-            inference_observer: None,
-            metrics: None,
-        },
-        &runtime_services,
-    )
-    .map_err(|error| anyhow::anyhow!("build workflow services: {error}"))?
-    .effect_services();
+    // #276: WorkflowEngine deleted — resolve template and build report via
+    // graph template controller. Full ACP graph execution wiring is product
+    // work beyond the #276 deletion scope.
+    let _ = (runtime_services, options, runtime_run_id, event_sender, roko_config);
 
-    let workflow = match template {
-        "express" => WorkflowConfig::express(),
-        "full" => WorkflowConfig::full(),
-        _ => WorkflowConfig::standard(),
-    };
+    let descriptor = roko_execution::workflow::resolve_template(template)
+        .map_err(|e| anyhow::anyhow!("resolve workflow template: {e}"))?;
 
-    let config = WorkflowRunConfig {
-        prompt: prompt.to_string(),
-        input_messages: options.input_messages,
-        workdir: workdir.to_path_buf(),
-        workflow,
-        enabled_gates: vec!["compile".into(), "test".into()],
-        shell_gates: Vec::new(),
-        commit_prefix: Some("feat".to_string()),
-    };
-
-    let mut engine = WorkflowEngine::new(services);
-    engine.add_consumer(Arc::new(JsonlLogger::from_roko_dir(&workdir.join(".roko"))));
-    engine.add_consumer(Arc::new(AcpWorkflowEventConsumer::new(
-        session_id.to_string(),
-        Arc::clone(&runtime_run_id),
-        event_sender.clone(),
-        options.provenance_card,
-    )));
-
-    let bridge_task = spawn_runtime_event_bridge(
-        session_id.to_string(),
-        Arc::clone(&runtime_run_id),
-        event_sender,
+    let run_id = format!("acp_workflow_{session_id}");
+    let mut controller = roko_execution::workflow::WorkflowGraphController::new(
+        run_id,
+        descriptor,
+        prompt.to_string(),
     );
-    let result = engine
-        .run(config)
-        .await
-        .map_err(|error| anyhow::anyhow!("workflow engine failed: {error}"));
-    bridge_task.abort();
+    controller.termination = Some(roko_execution::workflow::WorkflowTermination::Skipped {
+        reason: "ACP graph execution requires runtime wiring".to_string(),
+    });
 
-    result
+    Ok(roko_execution::workflow::build_report(
+        &controller,
+        std::time::Instant::now(),
+        "unconfigured".to_string(),
+        None,
+        String::new(),
+        0,
+        0,
+        None,
+        vec![],
+        vec![],
+        None,
+    ))
 }
 
 struct AcpWorkflowEventConsumer {

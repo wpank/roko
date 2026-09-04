@@ -420,18 +420,15 @@ async fn run_simple_path(
         effort: cli.effort.map(|e| e.to_string()),
     };
 
-    let route = roko_cli::run::WorkflowExecutionRoute::LegacyDefault;
-
     tracing::debug!(
         complexity = complexity_label(complexity),
         workflow_template,
         cascade_enabled = !no_cascade,
-        %route,
-        "dispatching roko do (simple) through WorkflowEngine"
+        engine = "graph",
+        "dispatching roko do (simple) through graph templates"
     );
 
     let result = roko_cli::run::run_workflow_report(
-        route,
         prompt,
         workdir,
         workflow_template,
@@ -1174,7 +1171,7 @@ fn handle_workflow_result(
     cli: &Cli,
     prompt: &str,
     workflow_template: &str,
-    result: anyhow::Result<roko_runtime::workflow_engine::WorkflowRunReport>,
+    result: anyhow::Result<roko_runtime::workflow_contract::WorkflowRunReport>,
 ) -> Result<i32> {
     match result {
         Ok(report) => {

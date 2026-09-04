@@ -188,6 +188,8 @@ pub mod recipe;
 pub mod recipe_store;
 /// Shared retention policy type for all data-management subsystems.
 pub mod retention;
+/// ULID-based plan-scoped run identifier.
+pub mod run_id;
 pub mod runtime_event;
 pub mod score;
 pub mod secrets;
@@ -361,6 +363,7 @@ pub use query::{Budget, Query};
 pub use recipe::{Recipe, RecipeEdge, RecipeNode, ScoreOp};
 pub use recipe_store::RecipeStore;
 pub use roko_primitives::HdcVector;
+pub use run_id::{RunId, RunIdParseError};
 pub use runtime_event::{
     RuntimeEvent, RuntimeEventDelivery, RuntimeEventMode, RuntimeEventProjector,
     RuntimeEventPublishDisposition, RuntimeEventPublisher, ToolCallSummary, WorkflowOutcome,

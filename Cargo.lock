@@ -6410,6 +6410,7 @@ dependencies = [
  "notify 6.1.1",
  "parking_lot",
  "proptest",
+ "rand 0.8.7",
  "regex",
  "roko-primitives",
  "serde",
@@ -6817,6 +6818,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum 0.8.9",
+ "blake3",
  "chrono",
  "fs2",
  "http-body-util",

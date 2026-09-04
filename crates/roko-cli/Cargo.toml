@@ -21,6 +21,9 @@ chain = ["dep:roko-chain", "roko-std/chain", "roko-agent/chain", "roko-serve/cha
 # persistence, and serve webhook handling.
 hdc = ["roko-compose/hdc", "roko-fs/hdc", "roko-serve/hdc"]
 acp = ["dep:roko-acp"]
+# Graph-based workflow execution path (#258). Existence of this feature
+# in Cargo.toml is the sole integration signal for #260.
+graph_canary = []
 alloy-backend = [
     "chain",
     "roko-chain/alloy-backend",

@@ -265,6 +265,7 @@ pub(crate) async fn cmd_run(
     share: bool,
     provider: Option<String>,
     max_retries: Option<u32>,
+    engine: Option<String>,
 ) -> Result<i32> {
     // Build CLI overrides from clap-parsed args instead of re-parsing
     // process args or laundering through env vars.
@@ -330,9 +331,9 @@ pub(crate) async fn cmd_run(
     let enabled_gates = roko_cli::run::workflow_enabled_gate_names(&config.gates);
     let shell_gates = roko_cli::run::workflow_shell_gate_commands(&config.gates);
 
-    let route = roko_cli::run::WorkflowExecutionRoute::LegacyDefault;
+    // #258: --engine flag is accepted but graph is now the only engine.
+    let _engine_label = roko_cli::run::resolve_engine_flag(engine.as_deref());
     let result = roko_cli::run::run_workflow_report(
-        route,
         &prompt,
         &workdir,
         template,

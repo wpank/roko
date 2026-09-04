@@ -23,7 +23,7 @@ use roko_learn::playbook::PlaybookStore;
 use roko_learn::provider_health::ProviderHealthRegistry;
 use roko_learn::section_effect::SectionEffectivenessRegistry;
 use roko_neuro::knowledge_store::KnowledgeStore;
-use roko_runtime::{JsonlLogger, effect_driver::EffectServices};
+use roko_runtime::JsonlLogger;
 
 #[derive(Debug, Default)]
 struct RuntimeBusInferenceObserver;
@@ -209,19 +209,8 @@ pub struct ServiceBundle {
 }
 
 impl ServiceBundle {
-    /// Build the `EffectServices` value consumed by `WorkflowEngine`.
-    #[must_use]
-    pub fn effect_services(&self) -> EffectServices {
-        let model_caller: Arc<dyn ModelCaller> = self.model_call_service.clone();
-        EffectServices {
-            default_model: self.model.clone(),
-            model_caller,
-            prompt_assembler: Arc::clone(&self.prompt_assembler),
-            feedback_sink: Arc::clone(&self.feedback_sink),
-            gate_runner: Arc::clone(&self.gate_runner),
-            affect_policy: self.affect_policy.clone(),
-        }
-    }
+    // effect_services() removed by #276 -- EffectServices/WorkflowEngine are deleted.
+    // Callers access individual service handles directly from the bundle.
 }
 
 /// Factory for constructing the shared service bundle.

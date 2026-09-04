@@ -25,11 +25,13 @@
 //! - [`overrides`] -- Layer-safe ExecutionOverrides value object with policy enums.
 //! - [`profiles`] -- RuntimeProfile enum and profile bundle matrix.
 //! - [`prompt`] -- Layer-3 prompt assembly handles and cache.
+//! - [`authored_graph`] -- AuthoredGraph controller lifecycle and config (#267).
 //! - [`replan_controller`] -- Durable Graph gate-failure replan controller.
 //! - [`runtime_services`] -- Non-plan service construction for workflow/chat/ACP.
 //! - [`plan_generator`] -- Shared PlanGenerator trait and value types (#280).
 //! - [`workflow`] -- Workflow graph cells and templates.
 
+pub mod authored_graph;
 pub mod builder;
 pub mod diagnostics;
 pub mod dispatch;
@@ -90,3 +92,10 @@ pub use plan_generator::{
 };
 pub use prompt::builder::PromptBuildHandle;
 pub use prompt::cache::PromptCacheHandle;
+
+// ---- Authored graph controller re-exports (#267) ----------------------------
+
+pub use authored_graph::{
+    AuthoredGraphConfig, AuthoredGraphController, AuthoredGraphReport, ControllerError,
+    ControllerLifecycle, PreflightCategory, PreflightError, drive_controller,
+};

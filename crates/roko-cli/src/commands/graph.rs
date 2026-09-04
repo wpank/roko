@@ -70,7 +70,14 @@ pub async fn cmd_graph(cmd: GraphCmd) -> Result<i32> {
 /// Execute a graph: load the TOML, build the runtime profile, validate
 /// capabilities, build the engine with the default registry, run all nodes,
 /// and print the results.
+///
+/// Uses the `AuthoredGraphController` lifecycle (#267) for pre-start
+/// capability validation and the `AuthoredGraphProfile` for capability
+/// scoping. RuntimeServices are constructed via `RuntimeServicesBuilder`
+/// with the `AuthoredGraph` profile.
 async fn cmd_graph_run(path: &Path, json: bool, quiet: bool) -> Result<i32> {
+    use roko_execution::authored_graph::{AuthoredGraphConfig, AuthoredGraphController};
+
     // Load the graph to inspect its policy and metadata before building the
     // profile.
     let graph = loader::load_from_file(path)
@@ -78,14 +85,41 @@ async fn cmd_graph_run(path: &Path, json: bool, quiet: bool) -> Result<i32> {
 
     // Build the AuthoredGraph runtime profile with capability validation.
     // For the standalone CLI command, the workspace grant defaults to the
-    // baseline set (ReadFs + Bus). A real workspace config would supply a
-    // broader grant; this keeps the standalone command safe by default.
+    // baseline set (ReadFs + Bus + Shell). A real workspace config would
+    // supply a broader grant; this keeps the standalone command safe by default.
     let workspace_grant = CapabilitySet::from([
         roko_core::Capability::ReadFs,
         roko_core::Capability::Bus,
         roko_core::Capability::Shell,
     ]);
 
+    // Construct the AuthoredGraphController for preflight validation (#267).
+    let controller = AuthoredGraphController::new(workspace_grant.clone());
+    let config = AuthoredGraphConfig {
+        graph_path: path.to_path_buf(),
+        capabilities: graph.policy.capabilities.clone(),
+        budget_usd: None,
+        json_output: json,
+        quiet,
+    };
+
+    // Run preflight validation: capability intersection + cell checks + graph
+    // structural validation + budget validation.
+    use roko_execution::authored_graph::ControllerLifecycle;
+    let preflight_errors = controller.preflight(&config);
+    if !preflight_errors.is_empty() {
+        let detail = preflight_errors
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(anyhow!(
+            "authored graph preflight failed ({} error(s)): {detail}",
+            preflight_errors.len()
+        ));
+    }
+
+    // Build profile for the execution (already validated by preflight).
     let profile = AuthoredGraphProfile::builder(&graph.metadata.name)
         .graph_policy(&graph.policy)
         .workspace_grant(workspace_grant)
@@ -94,7 +128,8 @@ async fn cmd_graph_run(path: &Path, json: bool, quiet: bool) -> Result<i32> {
         .build()
         .map_err(|e| anyhow!("profile validation failed: {e}"))?;
 
-    // Pre-start cell capability validation
+    // Pre-start cell capability validation (redundant with preflight but
+    // kept for defense-in-depth).
     let cell_denials = validate_cell_capabilities(&graph, &profile);
     if !cell_denials.is_empty() {
         let detail = cell_denials
@@ -108,15 +143,30 @@ async fn cmd_graph_run(path: &Path, json: bool, quiet: bool) -> Result<i32> {
         ));
     }
 
+    // Construct RuntimeServices via the builder with AuthoredGraph profile.
+    // This ensures the graph gets dispatch, prompt, observation, and guards
+    // bundles but does NOT inherit plan-level feedback or extensions.
+    let workdir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let _services = roko_execution::RuntimeServicesBuilder::for_test(
+        roko_execution::RuntimeProfile::AuthoredGraph,
+    )
+    .with_budget_ceiling_usd(config.budget_usd.unwrap_or(0.0))
+    .build(&workdir)
+    .map_err(|e| anyhow!("failed to build runtime services: {e}"))?;
+
     let telemetry_hub = SharedStateHub::new_in_process();
     let output = execute_graph(path, &telemetry_hub, None, Some(profile.effective())).await?;
 
     if json {
-        // JSON output: emit a canonical JSON summary
+        // JSON output: emit a canonical JSON summary with profile metadata
         let summary = serde_json::json!({
+            "event_type": "run_terminal",
             "graph": output.graph_name,
             "success": output.success,
             "profile": profile.kind().to_string(),
+            "effective_capabilities": profile.effective().iter()
+                .map(|c| c.to_string())
+                .collect::<Vec<_>>(),
             "node_count": output.node_results.len(),
             "total_duration_ms": output.total_duration.as_millis() as u64,
             "nodes": output.node_results.iter().map(|nr| {
@@ -136,6 +186,11 @@ async fn cmd_graph_run(path: &Path, json: bool, quiet: bool) -> Result<i32> {
     } else if !quiet {
         // Human-readable output
         println!("{}", output.summary());
+        // Show effective capabilities
+        let caps: Vec<_> = profile.effective().iter().map(|c| c.to_string()).collect();
+        if !caps.is_empty() {
+            println!("Effective capabilities: {}", caps.join(", "));
+        }
         let projections = telemetry_hub.projections();
         if !projections.is_empty() {
             println!("Telemetry projections:");

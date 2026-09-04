@@ -65,12 +65,15 @@ pub mod projection;
 pub mod pulse_bus;
 pub mod resource;
 pub mod run_ledger;
+/// Plan-scoped run registry: tracks all runs for a plan with state.
+pub mod run_registry;
 pub mod runtime_event_dashboard;
 pub mod state_hub;
 pub mod state_snapshot;
 pub mod task_scheduler;
 pub mod telemetry_projection_aggregator;
 pub mod theta_consumer;
+pub mod workflow_contract;
 pub mod workflow_engine;
 
 pub use builtin_lenses_derived::{
@@ -113,6 +116,11 @@ pub use roko_core::foundation::{
     ChatMessage, EventConsumer, FeedbackEvent, FeedbackSink, GateConfig, GateReport, GateRunner,
     GateVerdict, MessageRole, ModelCallRequest, ModelCallResponse, ModelCaller, PromptAssembler,
     PromptSpec, ShellGateCommand, TokenUsage,
+};
+pub use run_registry::{
+    ExecutionRunContext, RunIndex, RunIndexEntry, RunIntent, RunManifest, RunRegistry,
+    RunRegistryError, RunScope, RunStartDecision, RunStatus, compute_plan_fingerprint,
+    compute_task_graph_fingerprint, migrate_legacy_singleton,
 };
 pub use run_ledger::{
     AgentOutcome, ArtifactOutcome, CancellationOutcome, EffectErrorKind, EventPersistenceHealth,

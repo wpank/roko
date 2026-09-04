@@ -90,6 +90,8 @@ pub struct RungExecutionConfig {
     pub verdict_publisher: Option<crate::verdict_publisher::VerdictPublisher>,
     /// Optional timeout override for concrete gates in this rung.
     pub timeout_ms: Option<u64>,
+    /// Optional sender for live line-by-line output streaming from shell gates.
+    pub line_sink: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 }
 
 /// Builds a [`ComposedGatePipeline`] from gate config and plan complexity.
@@ -201,13 +203,14 @@ impl GatePipelineBuilder {
         inputs: RungExecutionInputs,
         execution: RungExecutionConfig,
     ) -> Box<dyn Verify> {
+        let line_sink = execution.line_sink.clone();
         let gate: Box<dyn Verify> = if rung_config.command.trim().is_empty() {
             known_rung_from_name(&rung_config.name).map_or_else(
-                || shell_gate_from_config(rung_config),
+                || shell_gate_from_config_with_sink(rung_config, line_sink),
                 |rung| Self::gate_from_known_rung(rung, rung_config.timeout(), inputs, execution),
             )
         } else {
-            shell_gate_from_config(rung_config)
+            shell_gate_from_config_with_sink(rung_config, line_sink)
         };
         optional_gate_if_needed(gate, rung_config.required)
     }
@@ -514,14 +517,24 @@ fn known_rung_from_name(name: &str) -> Option<Rung> {
 }
 
 fn shell_gate_from_config(rung_config: &GateRungConfig) -> Box<dyn Verify> {
+    shell_gate_from_config_with_sink(rung_config, None)
+}
+
+fn shell_gate_from_config_with_sink(
+    rung_config: &GateRungConfig,
+    line_sink: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+) -> Box<dyn Verify> {
     let timeout_ms = duration_ms(rung_config.timeout());
-    let gate = if cfg!(windows) {
+    let mut gate = if cfg!(windows) {
         ShellGate::new("cmd", vec!["/C".into(), rung_config.command.clone()])
     } else {
         ShellGate::new("sh", vec!["-c".into(), rung_config.command.clone()])
     }
     .with_name(rung_config.name.clone())
     .with_timeout_ms(timeout_ms);
+    if let Some(sink) = line_sink {
+        gate = gate.with_line_sink(sink);
+    }
     Box::new(gate)
 }
 

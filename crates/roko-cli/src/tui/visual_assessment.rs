@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result};
 use serde::Serialize;
 
-use super::screenshot_diff::{DiffMode, ScreenshotDiff, compare, compare_text};
+use super::screenshot_diff::{ScreenshotDiff, compare, compare_text};
 use super::snapshot::{SnapshotConfig, SnapshotResult, capture_snapshots};
 
 // ---------------------------------------------------------------------------

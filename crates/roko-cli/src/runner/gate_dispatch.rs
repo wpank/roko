@@ -1289,6 +1289,7 @@ pub fn spawn_gate(
     main_target_dir: Option<PathBuf>,
     expected_input_fingerprint: Option<String>,
     gate_adapter: Option<Arc<RunnerProductionGateAdapter>>,
+    line_sink: Option<mpsc::UnboundedSender<String>>,
 ) -> (JoinHandle<()>, oneshot::Sender<()>) {
     let (start_tx, start_rx) = oneshot::channel();
     let handle = tokio::spawn(async move {
@@ -1354,6 +1355,7 @@ pub fn spawn_gate(
                     task_context,
                     telemetry_sink,
                     main_target_dir,
+                    line_sink,
                 )
                 .await
             };
@@ -1545,6 +1547,7 @@ pub async fn run_gate_once(
     task_context: Option<GateTaskContext>,
     telemetry_sink: Option<Arc<dyn TelemetryEventSink>>,
     main_target_dir: Option<PathBuf>,
+    line_sink: Option<mpsc::UnboundedSender<String>>,
 ) -> GateCompletion {
     let start = Instant::now();
     let ctx = roko_core::Context::now();
@@ -1853,6 +1856,7 @@ pub async fn run_gate_once(
                 timeout_secs,
                 &verify_steps,
                 verdict_publisher.clone(),
+                line_sink.clone(),
             );
             let pipeline = GatePipelineBuilder::from_config_with_execution(
                 &gates_config,
@@ -1912,6 +1916,7 @@ pub async fn run_gate_once(
                 &task_id,
                 verify_steps,
                 gates_config.compile_concurrency,
+                line_sink.clone(),
             )
             .await,
         );
@@ -1974,6 +1979,7 @@ pub async fn run_gate_once(
                             timeout_secs,
                             &verify_steps_for_retry,
                             verdict_publisher.clone(),
+                            line_sink.clone(),
                         );
                         let pipeline_retry = GatePipelineBuilder::from_config_with_execution(
                             &gates_config,
@@ -2019,6 +2025,7 @@ pub async fn run_gate_once(
                             &task_id,
                             verify_steps_for_retry,
                             gates_config.compile_concurrency,
+                            line_sink.clone(),
                         )
                         .await,
                     );
@@ -2199,6 +2206,7 @@ pub fn spawn_plan_verify(
     gate_tx: mpsc::Sender<GateCompletion>,
     gate_sem: Arc<Semaphore>,
     main_target_dir: Option<PathBuf>,
+    line_sink: Option<mpsc::UnboundedSender<String>>,
 ) -> (JoinHandle<()>, oneshot::Sender<()>) {
     let (start_tx, start_rx) = oneshot::channel();
     let handle = tokio::spawn(async move {
@@ -2227,6 +2235,7 @@ pub fn spawn_plan_verify(
             let plan_id_for_run = plan_id.clone();
             let workdir_for_run = workdir.clone();
 
+            let line_sink_for_run = line_sink;
             let run = async move {
                 let before =
                     match accepted_input_snapshot(workdir_for_run.clone(), &expected_oid).await {
@@ -2244,7 +2253,7 @@ pub fn spawn_plan_verify(
                         main_target_dir.as_deref(),
                     );
                     all.extend(
-                        run_verify_steps(&signal, &ctx, &plan_id_for_run, &task_id, steps, 1).await,
+                        run_verify_steps(&signal, &ctx, &plan_id_for_run, &task_id, steps, 1, line_sink_for_run.clone()).await,
                     );
                 }
                 if accepted_input_snapshot(workdir_for_run, &expected_oid).await != Ok(before) {
@@ -2445,6 +2454,7 @@ fn build_rung_execution_config(
     timeout_secs: u64,
     verify_steps: &[VerifyStep],
     verdict_publisher: Option<VerdictPublisher>,
+    line_sink: Option<mpsc::UnboundedSender<String>>,
 ) -> RungExecutionConfig {
     let integration_test_pattern = verify_steps
         .iter()
@@ -2489,6 +2499,7 @@ fn build_rung_execution_config(
         generated_test_artifacts,
         verdict_publisher,
         fact_check_oracle,
+        line_sink,
         ..Default::default()
     }
 }
@@ -2583,6 +2594,7 @@ async fn run_verify_steps(
     task_id: &str,
     verify_steps: Vec<VerifyStep>,
     compile_concurrency: usize,
+    line_sink: Option<mpsc::UnboundedSender<String>>,
 ) -> Vec<Verdict> {
     let payload = signal.body.as_json::<GatePayload>().ok();
     let workdir = payload
@@ -2623,7 +2635,7 @@ async fn run_verify_steps(
         } else {
             None
         };
-        let gate = verify_step_gate(task_id, &effective_step);
+        let gate = verify_step_gate(task_id, &effective_step, line_sink.clone());
         let verdict = gate.verify(signal, ctx).await;
         let (cache_hits, cache_misses) = cargo_cache_counts(&verdict);
         drop(compile_permit);
@@ -2712,7 +2724,7 @@ async fn run_focused_baseline_verify(
     );
     let ctx = roko_core::Context::now();
     let verdicts =
-        run_verify_steps(&signal, &ctx, plan_id, task_id, steps, compile_concurrency).await;
+        run_verify_steps(&signal, &ctx, plan_id, task_id, steps, compile_concurrency, None).await;
     let removal = timeout(
         Duration::from_secs(10),
         Command::new("git")
@@ -2816,8 +2828,12 @@ impl Drop for RegisteredBaselineWorktree {
     }
 }
 
-fn verify_step_gate(task_id: &str, step: &VerifyStep) -> ShellGate {
-    ShellGate::new(
+fn verify_step_gate(
+    task_id: &str,
+    step: &VerifyStep,
+    line_sink: Option<mpsc::UnboundedSender<String>>,
+) -> ShellGate {
+    let mut gate = ShellGate::new(
         "bash",
         vec![
             "-o".into(),
@@ -2827,7 +2843,11 @@ fn verify_step_gate(task_id: &str, step: &VerifyStep) -> ShellGate {
         ],
     )
     .with_name(format!("task-verify:{}:{}", task_id, step.phase))
-    .with_timeout_ms(step.timeout_ms)
+    .with_timeout_ms(step.timeout_ms);
+    if let Some(sink) = line_sink {
+        gate = gate.with_line_sink(sink);
+    }
+    gate
 }
 
 fn render_output(verdicts: &[Verdict]) -> String {
@@ -3570,6 +3590,7 @@ path = "src/shared.rs"
             None,
             Some(telemetry_sink),
             None,
+            None,
         )
         .await;
         assert!(completion.passed, "preflight should pass: {completion:#?}");
@@ -3643,6 +3664,7 @@ path = "src/shared.rs"
             None, // main_target_dir
             None, // expected_input_fingerprint
             None, // gate_adapter
+            None, // line_sink
         );
         (handle, start, rx)
     }
@@ -3699,6 +3721,7 @@ path = "src/shared.rs"
             tx,
             Arc::new(Semaphore::new(1)),
             None, // main_target_dir
+            None, // line_sink
         );
         tokio::task::yield_now().await;
         assert!(matches!(
@@ -3735,6 +3758,7 @@ path = "src/shared.rs"
             tx,
             semaphore,
             None, // main_target_dir
+            None, // line_sink
         );
         start.send(()).unwrap();
         let completion = rx.recv().await.unwrap();
@@ -3776,6 +3800,7 @@ path = "src/shared.rs"
             None, // main_target_dir
             None, // expected_input_fingerprint
             None, // gate_adapter
+            None, // line_sink
         );
 
         start.send(()).expect("owner starts producer");
@@ -3852,7 +3877,7 @@ path = "src/shared.rs"
             timeout_ms: 10_000,
         };
 
-        let verdicts = run_verify_steps(&signal, &ctx, "plan", "T01", vec![step], 1).await;
+        let verdicts = run_verify_steps(&signal, &ctx, "plan", "T01", vec![step], 1, None).await;
 
         assert_eq!(verdicts.first().map(|verdict| verdict.passed), Some(false));
     }
@@ -3869,7 +3894,7 @@ path = "src/shared.rs"
             timeout_ms: 10_000,
         };
 
-        let verdicts = run_verify_steps(&signal, &ctx, "plan", "T01", vec![step], 1).await;
+        let verdicts = run_verify_steps(&signal, &ctx, "plan", "T01", vec![step], 1, None).await;
 
         assert_eq!(verdicts.first().map(|verdict| verdict.passed), Some(true));
     }
@@ -3898,6 +3923,7 @@ path = "src/shared.rs"
                 Some(Vec::new()),
                 10,
                 Vec::new(),
+                None,
                 None,
                 None,
                 None,
@@ -3953,6 +3979,7 @@ path = "src/shared.rs"
             None,
             None,
             None,
+            None,
         )
         .await;
 
@@ -4001,6 +4028,7 @@ path = "src/shared.rs"
             None,
             None,
             None,
+            None,
         )
         .await;
         let baseline_failures = baseline
@@ -4022,6 +4050,7 @@ path = "src/shared.rs"
             Some(baseline_failures),
             10,
             Vec::new(),
+            None,
             None,
             None,
             None,
@@ -4060,6 +4089,7 @@ path = "src/shared.rs"
             Some(Vec::new()),
             10,
             Vec::new(),
+            None,
             None,
             None,
             None,
@@ -4181,6 +4211,7 @@ path = "src/shared.rs"
                 None,
                 None,
                 None,
+                None,
             ),
         )
         .await
@@ -4217,6 +4248,7 @@ path = "src/shared.rs"
             Some(Vec::new()),
             1,
             Vec::new(),
+            None,
             None,
             None,
             None,
@@ -4286,6 +4318,7 @@ path = "src/shared.rs"
             10,
             Vec::new(),
             Some(publisher),
+            None,
             None,
             None,
             None,

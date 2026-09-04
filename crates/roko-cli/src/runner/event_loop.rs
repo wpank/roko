@@ -483,6 +483,29 @@ fn duration_secs(duration: Duration) -> u64 {
     duration.as_secs().max(1)
 }
 
+/// Create an unbounded channel for live gate output streaming.
+///
+/// Returns the sender (to pass into `spawn_gate`) and spawns a background task
+/// that forwards each received line to the TUI bridge's `gate_output_line`.
+fn spawn_gate_line_forwarder(
+    tui: &TuiBridge,
+    plan_id: &str,
+    task_id: &str,
+    gate_label: &str,
+) -> mpsc::UnboundedSender<String> {
+    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    let tui = tui.clone();
+    let plan_id = plan_id.to_string();
+    let task_id = task_id.to_string();
+    let gate_label = gate_label.to_string();
+    tokio::spawn(async move {
+        while let Some(line) = rx.recv().await {
+            tui.gate_output_line(&plan_id, &task_id, &gate_label, &line);
+        }
+    });
+    tx
+}
+
 fn duration_millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis())
         .unwrap_or(u64::MAX)
@@ -2041,6 +2064,7 @@ async fn run_candidate_replay(
                 spec.task_context.clone(),
                 None,
                 spec.main_target_dir.clone(),
+                None,
             )
             .await
         };
@@ -4917,19 +4941,10 @@ pub async fn run_with_tui_commands(
                     }
                 }
 
-                let gate_label = completion
-                    .verdicts
-                    .first()
-                    .map_or("gate", |verdict| verdict.gate_name.as_str());
-                let gate_lines = completion.output.lines().rev().take(500).collect::<Vec<_>>();
-                for line in gate_lines.into_iter().rev() {
-                    tui.gate_output_line(
-                        &completion.plan_id,
-                        &completion.task_id,
-                        gate_label,
-                        line,
-                    );
-                }
+                // Gate output lines are now streamed live through the
+                // line_sink channel wired into spawn_gate. The bulk
+                // post-completion send has been removed to avoid duplicate
+                // lines in the TUI.
 
                 for (verdict_index, v) in completion.verdicts.iter().enumerate() {
                     tui.gate_result_with_output(
@@ -6507,6 +6522,182 @@ pub async fn run_with_tui_commands(
                         }
                         RunnerCommandEffect::Cancel { .. } => {
                             cancel.cancel();
+                        }
+                        RunnerCommandEffect::SoftRetry { plan_id } => {
+                            // Reset all failed tasks in the plan's DAG so they
+                            // become eligible for dispatch again, then clear
+                            // the corresponding RunState bookkeeping.
+                            let reset_ids = task_dag.reset_failed_for_retry(&plan_id);
+                            if reset_ids.is_empty() {
+                                tui.status("command.retry", &format!(
+                                    "No failed tasks to retry in plan '{plan_id}'"
+                                ));
+                            } else {
+                                // Clear RunState tracking for the reset tasks
+                                // so the DAG controller can re-dispatch them.
+                                if let Some(failed_set) = state.failed_tasks.get_mut(&plan_id) {
+                                    for id in &reset_ids {
+                                        failed_set.remove(id);
+                                    }
+                                }
+                                if let Some(skipped_map) = state.skipped_tasks.get_mut(&plan_id) {
+                                    for id in &reset_ids {
+                                        skipped_map.remove(id);
+                                    }
+                                }
+                                // Reset the executor plan state so it can
+                                // re-enter the implementing phase.
+                                if let Some(ps) = executor.plan_state_mut(&plan_id) {
+                                    ps.reset_for_retry();
+                                    ps.current_phase = PlanPhase::Implementing;
+                                }
+                                task_capacity.wake();
+                                let count = reset_ids.len();
+                                info!(
+                                    plan_id = %plan_id,
+                                    count,
+                                    tasks = ?reset_ids,
+                                    "soft retry: reset failed tasks for re-dispatch"
+                                );
+                                tui.status("command.retry", &format!(
+                                    "Retrying {count} task(s) in plan '{plan_id}'"
+                                ));
+                            }
+                        }
+                        RunnerCommandEffect::Skip { plan_id, task_id } => {
+                            // Mark the specified task as user-skipped in the
+                            // DAG and RunState, then wake the scheduler so
+                            // downstream tasks can proceed.
+                            use super::task_dag::SkippedReason;
+                            let newly_skipped = task_dag.mark_skipped(
+                                &plan_id,
+                                &task_id,
+                                SkippedReason::UserSkipped,
+                            );
+                            if newly_skipped {
+                                state.mark_task_skipped(
+                                    &plan_id,
+                                    &task_id,
+                                    SkippedReason::UserSkipped,
+                                );
+                                // Remove from failed set if it was there
+                                // (user may be skipping a failed task).
+                                if let Some(failed_set) = state.failed_tasks.get_mut(&plan_id) {
+                                    failed_set.remove(&task_id);
+                                }
+                                // If the executor still considers this plan
+                                // stuck, nudge it back to implementing.
+                                if let Some(ps) = executor.plan_state_mut(&plan_id) {
+                                    if ps.current_phase.kind() == PhaseKind::Failed {
+                                        ps.current_phase = PlanPhase::Implementing;
+                                    }
+                                }
+                                task_capacity.wake();
+                                info!(
+                                    plan_id = %plan_id,
+                                    task_id = %task_id,
+                                    "skip: task marked as user-skipped"
+                                );
+                                tui.status("command.skip", &format!(
+                                    "Skipped task '{task_id}' in plan '{plan_id}'"
+                                ));
+                            } else {
+                                tui.status("command.skip", &format!(
+                                    "Task '{task_id}' is already terminal; skip had no effect"
+                                ));
+                            }
+                        }
+                        RunnerCommandEffect::Repair { plan_id, preserve_completed } => {
+                            // Repair is similar to soft-retry but can
+                            // optionally clear completed tasks too.
+                            let reset_ids = if preserve_completed {
+                                // Only reset failed + downstream-skipped.
+                                task_dag.reset_failed_for_retry(&plan_id)
+                            } else {
+                                // Reset everything — also clear completed
+                                // tasks so the entire plan re-runs.
+                                let plan_dag = task_dag.plan_mut(&plan_id);
+                                let mut all_ids: Vec<String> =
+                                    plan_dag.failed.drain().collect();
+                                all_ids.extend(
+                                    plan_dag.skipped.drain().map(|(id, _)| id),
+                                );
+                                all_ids.extend(
+                                    plan_dag.completed.drain(),
+                                );
+                                plan_dag.retry_not_before = None;
+                                all_ids
+                            };
+
+                            if reset_ids.is_empty() {
+                                tui.status("command.repair", &format!(
+                                    "No tasks to repair in plan '{plan_id}'"
+                                ));
+                            } else {
+                                // Clear corresponding RunState bookkeeping.
+                                if !preserve_completed {
+                                    state.completed_tasks.remove(&plan_id);
+                                }
+                                if let Some(failed_set) = state.failed_tasks.get_mut(&plan_id) {
+                                    for id in &reset_ids {
+                                        failed_set.remove(id);
+                                    }
+                                }
+                                if let Some(skipped_map) = state.skipped_tasks.get_mut(&plan_id) {
+                                    for id in &reset_ids {
+                                        skipped_map.remove(id);
+                                    }
+                                }
+                                if let Some(ps) = executor.plan_state_mut(&plan_id) {
+                                    ps.restart_for_replan();
+                                }
+                                task_capacity.wake();
+                                let count = reset_ids.len();
+                                info!(
+                                    plan_id = %plan_id,
+                                    preserve_completed,
+                                    count,
+                                    "repair: reset tasks for re-dispatch"
+                                );
+                                tui.status("command.repair", &format!(
+                                    "Repairing plan '{plan_id}': {count} task(s) reset"
+                                ));
+                            }
+                        }
+                        RunnerCommandEffect::ReverifyGates { plan_id } => {
+                            // Re-queue completed tasks for gate verification
+                            // without re-executing them. This lets the user
+                            // re-run gates after external fixes.
+                            let completed = state
+                                .plan_completed_tasks(&plan_id)
+                                .to_vec();
+                            if completed.is_empty() {
+                                tui.status("command.reverify", &format!(
+                                    "No completed tasks to reverify in plan '{plan_id}'"
+                                ));
+                            } else {
+                                let count = completed.len();
+                                for tid in &completed {
+                                    queue_pending_gate_task(
+                                        &mut pending_gate_tasks,
+                                        &plan_id,
+                                        tid,
+                                    );
+                                }
+                                if let Some(ps) = executor.plan_state_mut(&plan_id) {
+                                    ps.gate_results.clear();
+                                    ps.current_phase = PlanPhase::Gating;
+                                }
+                                task_capacity.wake();
+                                info!(
+                                    plan_id = %plan_id,
+                                    count,
+                                    "reverify gates: re-queued completed tasks for gating"
+                                );
+                                tui.status("command.reverify", &format!(
+                                    "Re-verifying gates for {count} task(s) in plan '{plan_id}'"
+                                ));
+                            }
                         }
                         RunnerCommandEffect::NotImplemented { message, .. } => {
                             tui.error(&message);
@@ -11847,6 +12038,12 @@ async fn dispatch_action(
                             pipeline_rung,
                         ),
                     );
+                    let gate_line_sink = spawn_gate_line_forwarder(
+                        ctx.tui,
+                        &plan_id,
+                        &task_id,
+                        "preflight",
+                    );
                     let (gate_handle, start_tx) = gate_dispatch::spawn_gate(
                         preflight_effect.clone(),
                         plan_id.clone(),
@@ -11867,6 +12064,7 @@ async fn dispatch_action(
                         Some(ctx.config.workdir.join("target")),
                         None,
                         ctx.gate_adapter.clone(),
+                        Some(gate_line_sink),
                     );
                     let AgentRuntimeResource::AwaitingGate { permit } = gate_claim
                         .replace_resource(AgentRuntimeResource::AwaitingGate { permit: None })
@@ -13969,27 +14167,36 @@ async fn dispatch_action(
                 let complexity =
                     gate_plan_complexity_for_task_with_files(task_def, changed_files.as_deref());
                 let target_crates = task_target_crates(task_def);
-                gate_dispatch::spawn_gate(
-                    gate_effect.clone(),
-                    plan_id.clone(),
-                    task_id.clone(),
-                    pipeline_rung,
-                    plan_workdir,
-                    gates_config,
-                    complexity,
-                    verify_steps,
-                    ctx.baseline_gate_failures.get(&attempt_ref).cloned(),
-                    duration_secs(gate_timeout(ctx.config, pipeline_rung)),
-                    ctx.gate_tx.clone(),
-                    ctx.gate_sem.clone(),
-                    target_crates,
-                    Some(ctx.verdict_publisher.clone()),
-                    gate_dispatch::GateTaskContext::from_task_def(plan_id, task_def),
-                    Some(Arc::clone(ctx.telemetry_sink)),
-                    Some(ctx.config.workdir.join("target")),
-                    expected_salvage_input,
-                    ctx.gate_adapter.clone(),
-                )
+                {
+                    let gate_line_sink = spawn_gate_line_forwarder(
+                        ctx.tui,
+                        &plan_id,
+                        &task_id,
+                        "gate",
+                    );
+                    gate_dispatch::spawn_gate(
+                        gate_effect.clone(),
+                        plan_id.clone(),
+                        task_id.clone(),
+                        pipeline_rung,
+                        plan_workdir,
+                        gates_config,
+                        complexity,
+                        verify_steps,
+                        ctx.baseline_gate_failures.get(&attempt_ref).cloned(),
+                        duration_secs(gate_timeout(ctx.config, pipeline_rung)),
+                        ctx.gate_tx.clone(),
+                        ctx.gate_sem.clone(),
+                        target_crates,
+                        Some(ctx.verdict_publisher.clone()),
+                        gate_dispatch::GateTaskContext::from_task_def(plan_id, task_def),
+                        Some(Arc::clone(ctx.telemetry_sink)),
+                        Some(ctx.config.workdir.join("target")),
+                        expected_salvage_input,
+                        ctx.gate_adapter.clone(),
+                        Some(gate_line_sink),
+                    )
+                }
             };
             let AgentRuntimeResource::AwaitingGate { permit } =
                 gate_claim.replace_resource(AgentRuntimeResource::AwaitingGate { permit: None })
@@ -14211,6 +14418,12 @@ async fn dispatch_action(
                 task_count = verify_steps.len(),
                 "dispatching plan verify"
             );
+            let plan_verify_line_sink = spawn_gate_line_forwarder(
+                ctx.tui,
+                &plan_id,
+                "plan-verify",
+                "plan-verify",
+            );
             let (gate_handle, start_tx) = gate_dispatch::spawn_plan_verify(
                 gate_effect.clone(),
                 plan_id.clone(),
@@ -14221,6 +14434,7 @@ async fn dispatch_action(
                 ctx.gate_tx.clone(),
                 ctx.gate_sem.clone(),
                 Some(ctx.config.workdir.join("target")),
+                Some(plan_verify_line_sink),
             );
             gate_claim.replace_resource(AgentRuntimeResource::Gate {
                 effect: gate_effect.clone(),
@@ -20538,6 +20752,7 @@ fn classify_report_task(
             SkippedReason::CognitiveAutonomyTerminal => {
                 "cognitive autonomy entered Terminal phase".to_string()
             }
+            SkippedReason::UserSkipped => "skipped by user".to_string(),
         };
         (TaskRunCategory::Skipped, reason)
     } else if let Some(reason) = blocked.get(&task.id) {

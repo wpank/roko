@@ -113,26 +113,63 @@ pub fn render_task_detail_modal(
 
     // ── Acceptance Criteria ──────────────────────────────────────────
     push_section_header(&mut lines, "Acceptance Criteria", sep_width, theme);
-    // Placeholder: no criteria data on TaskRow
-    lines.push(Line::from(vec![
-        Span::styled("  1. ", theme.metadata()),
-        Span::styled("\u{2014}", theme.muted()),
-    ]));
+    if let Some(acceptance) = &task.acceptance_text {
+        for (idx, criterion) in acceptance.split("; ").enumerate() {
+            let trimmed = criterion.trim();
+            if !trimmed.is_empty() {
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {}. ", idx + 1), theme.metadata()),
+                    Span::styled(trimmed.to_string(), theme.value()),
+                ]));
+            }
+        }
+    } else {
+        lines.push(Line::from(Span::styled(
+            "  No acceptance criteria defined.",
+            theme.muted(),
+        )));
+    }
     lines.push(Line::from(""));
 
     // ── Verify Command (code block) ─────────────────────────────────
     push_section_header(&mut lines, "Verify Command", sep_width, theme);
-    push_code_block(&mut lines, "\u{2014}", sep_width, theme);
+    if let Some(verify) = &task.verify_command {
+        push_code_block(&mut lines, verify, sep_width, theme);
+    } else {
+        push_code_block(&mut lines, "\u{2014}", sep_width, theme);
+    }
     lines.push(Line::from(""));
 
     // ── Files ────────────────────────────────────────────────────────
     push_section_header(&mut lines, "Files", sep_width, theme);
-    lines.push(Line::from(Span::styled("  \u{2014}", theme.muted())));
+    if task.files.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  No files specified.",
+            theme.muted(),
+        )));
+    } else {
+        for file in &task.files {
+            lines.push(Line::from(vec![
+                Span::styled("  \u{2022} ", theme.metadata()),
+                Span::styled(file.clone(), theme.value()),
+            ]));
+        }
+    }
     lines.push(Line::from(""));
 
     // ── Dependencies ─────────────────────────────────────────────────
     push_section_header(&mut lines, "Dependencies", sep_width, theme);
-    lines.push(Line::from(Span::styled("  \u{2014}", theme.muted())));
+    if task.depends_on.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  No dependencies.",
+            theme.muted(),
+        )));
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled("  ", theme.text()),
+            Span::styled(task.depends_on.join(", "), theme.value()),
+        ]));
+    }
     lines.push(Line::from(""));
 
     // ── Routing Context ──────────────────────────────────────────────

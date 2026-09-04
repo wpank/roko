@@ -10,7 +10,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use super::super::state::{PlanEntry, TuiState};
+use super::super::state::{PlanEntry, TaskStatus, TuiState};
 use super::rosedust::gradient_ocean;
 use crate::tui::Theme;
 use crate::tui::util::truncate_middle;
@@ -698,6 +698,102 @@ fn render_plan_line(
             lines.push(Line::from(detail_spans));
         }
     }
+
+    // -- Expanded task tree with dependency annotations (P1.6) --
+    if plan.expanded && !plan.tasks.is_empty() {
+        render_task_subtree(lines, plan, indent, area);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Task sub-tree within an expanded plan
+// ---------------------------------------------------------------------------
+
+/// Render individual tasks underneath an expanded plan node with tree
+/// connectors and authored dependency annotations.
+fn render_task_subtree(
+    lines: &mut Vec<Line<'static>>,
+    plan: &PlanEntry,
+    indent: &str,
+    area: Rect,
+) {
+    let task_count = plan.tasks.len();
+    for (i, task) in plan.tasks.iter().enumerate() {
+        let is_last = i + 1 == task_count;
+        let connector = if is_last {
+            "\u{2514}\u{2500}" // └─
+        } else {
+            "\u{251c}\u{2500}" // ├─
+        };
+
+        let (icon, icon_color) = task_icon(&task.status);
+
+        let task_label = if task.name.is_empty() {
+            task.id.as_str()
+        } else {
+            task.name.as_str()
+        };
+
+        // Build dependency suffix
+        let dep_suffix = if task.depends_on.is_empty() {
+            String::new()
+        } else {
+            let short_deps: Vec<&str> = task
+                .depends_on
+                .iter()
+                .map(|d| d.split(':').last().unwrap_or(d.as_str()))
+                .collect();
+            format!(" \u{2190} {}", short_deps.join(", ")) // ← T1, T3
+        };
+
+        // Budget for task name: total width minus prefix and suffix
+        let prefix_len = indent.len() + 2 + 2 + 1; // indent + connector(2) + icon(1)+space + space
+        let suffix_len = dep_suffix.chars().count();
+        let avail = (area.width.saturating_sub(2) as usize)
+            .saturating_sub(prefix_len + suffix_len)
+            .max(4);
+        let display_name = truncate_middle(task_label, avail);
+
+        let status_color = match task.status {
+            TaskStatus::Done => Theme::SAGE,
+            TaskStatus::Active => Theme::WARNING,
+            TaskStatus::Failed => Theme::EMBER,
+            TaskStatus::Blocked => Theme::TEXT_GHOST,
+            TaskStatus::Pending => Theme::TEXT_DIM,
+        };
+
+        let mut spans = vec![
+            Span::styled(
+                format!("{indent}  {connector}"),
+                Style::default().fg(Theme::TEXT_GHOST),
+            ),
+            Span::styled(
+                format!("{icon} "),
+                Style::default().fg(icon_color),
+            ),
+            Span::styled(display_name, Style::default().fg(status_color)),
+        ];
+
+        if !dep_suffix.is_empty() {
+            spans.push(Span::styled(
+                dep_suffix,
+                Style::default().fg(Theme::DREAM),
+            ));
+        }
+
+        lines.push(Line::from(spans));
+    }
+}
+
+/// Status icon for a task entry.
+fn task_icon(status: &TaskStatus) -> (&'static str, Color) {
+    match status {
+        TaskStatus::Done => ("\u{2713}", Theme::SAGE),       // ✓
+        TaskStatus::Active => ("\u{25b6}", Theme::WARNING),  // ►
+        TaskStatus::Failed => ("\u{2717}", Theme::EMBER),    // ✗
+        TaskStatus::Blocked => ("\u{25cb}", Theme::TEXT_GHOST), // ○
+        TaskStatus::Pending => ("\u{00b7}", Theme::TEXT_DIM),  // ·
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -990,7 +1086,7 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    use crate::tui::state::Wave;
+    use crate::tui::state::{TaskEntry, Wave};
 
     fn sample_state() -> TuiState {
         use crate::tui::dashboard::DashboardData;
@@ -1184,5 +1280,138 @@ mod tests {
         assert!(empty.is_empty());
         let full = compact_progress_glyphs(4, 1.0);
         assert!(full.contains('\u{2588}'));
+    }
+
+    #[test]
+    fn expanded_plan_shows_task_dependencies() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = sample_state();
+        // Add tasks with dependencies to plan-alpha and expand it
+        state.plans[0].tasks = vec![
+            TaskEntry {
+                id: "T1".into(),
+                name: "Setup scaffolding".into(),
+                status: TaskStatus::Done,
+                depends_on: vec![],
+                ..Default::default()
+            },
+            TaskEntry {
+                id: "T2".into(),
+                name: "Implement core logic".into(),
+                status: TaskStatus::Active,
+                depends_on: vec!["T1".into()],
+                ..Default::default()
+            },
+            TaskEntry {
+                id: "T3".into(),
+                name: "Write tests".into(),
+                status: TaskStatus::Pending,
+                depends_on: vec!["T1".into(), "T2".into()],
+                ..Default::default()
+            },
+        ];
+        state.plans[0].expanded = true;
+
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_plan_tree(frame, area, &state, true);
+            })
+            .unwrap();
+
+        let rendered = rendered_text(&terminal);
+        // Task names should appear
+        assert!(
+            rendered.contains("Setup scaffolding"),
+            "missing T1 name: {rendered}"
+        );
+        assert!(
+            rendered.contains("Implement core logic"),
+            "missing T2 name: {rendered}"
+        );
+        assert!(
+            rendered.contains("Write tests"),
+            "missing T3 name: {rendered}"
+        );
+        // Dependency annotation should appear for T2 and T3
+        assert!(
+            rendered.contains("T1"),
+            "missing dep annotation for T2: {rendered}"
+        );
+        // Tree connectors should appear
+        assert!(
+            rendered.contains("\u{251c}") || rendered.contains("\u{2514}"),
+            "missing tree connectors: {rendered}"
+        );
+    }
+
+    #[test]
+    fn collapsed_plan_hides_tasks() {
+        let backend = TestBackend::new(100, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = sample_state();
+        state.plans[0].tasks = vec![TaskEntry {
+            id: "T1".into(),
+            name: "hidden task".into(),
+            status: TaskStatus::Pending,
+            ..Default::default()
+        }];
+        // expanded is false by default
+        state.plans[0].expanded = false;
+
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_plan_tree(frame, area, &state, true);
+            })
+            .unwrap();
+
+        let rendered = rendered_text(&terminal);
+        assert!(
+            !rendered.contains("hidden task"),
+            "collapsed plan should not show tasks: {rendered}"
+        );
+    }
+
+    #[test]
+    fn flat_plan_shows_expanded_tasks() {
+        let backend = TestBackend::new(100, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = sample_state();
+        state.execution_waves.clear();
+        state.plans[0].tasks = vec![
+            TaskEntry {
+                id: "T1".into(),
+                name: "first task".into(),
+                status: TaskStatus::Done,
+                ..Default::default()
+            },
+            TaskEntry {
+                id: "T2".into(),
+                name: "second task".into(),
+                status: TaskStatus::Pending,
+                depends_on: vec!["T1".into()],
+                ..Default::default()
+            },
+        ];
+        state.plans[0].expanded = true;
+
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_plan_tree(frame, area, &state, false);
+            })
+            .unwrap();
+
+        let rendered = rendered_text(&terminal);
+        assert!(
+            rendered.contains("first task"),
+            "flat expanded plan should show tasks: {rendered}"
+        );
+        assert!(
+            rendered.contains("second task"),
+            "flat expanded plan should show task 2: {rendered}"
+        );
     }
 }

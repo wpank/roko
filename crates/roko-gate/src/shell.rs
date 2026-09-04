@@ -11,7 +11,9 @@ use async_trait::async_trait;
 use roko_core::{Context, Signal, Verdict, Verify};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
+use tokio::sync::mpsc;
 use tokio::time::timeout;
 
 /// A gate that runs a fixed shell command; pass = exit code 0.
@@ -24,6 +26,9 @@ pub struct ShellGate {
     args: Vec<String>,
     timeout_ms: u64,
     name: String,
+    /// Optional sender for live line-by-line output streaming.
+    /// Each line from stdout/stderr is forwarded as it arrives.
+    line_sink: Option<mpsc::UnboundedSender<String>>,
 }
 
 impl ShellGate {
@@ -37,6 +42,7 @@ impl ShellGate {
             args,
             timeout_ms: 300_000, // 5 minutes
             name,
+            line_sink: None,
         }
     }
 
@@ -51,6 +57,16 @@ impl ShellGate {
     #[must_use]
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name = name.into();
+        self
+    }
+
+    /// Attach a line sink for live output streaming.
+    ///
+    /// Each line from stdout and stderr will be sent through this channel as
+    /// it arrives, enabling real-time TUI display during gate execution.
+    #[must_use]
+    pub fn with_line_sink(mut self, sink: mpsc::UnboundedSender<String>) -> Self {
+        self.line_sink = Some(sink);
         self
     }
 }
@@ -91,23 +107,81 @@ impl Verify for ShellGate {
         }
 
         let child = cmd.spawn();
-        let (child_pid, result) = match child {
-            Ok(child) => {
-                let child_pid = child.id();
-                let result = timeout(
-                    Duration::from_millis(self.timeout_ms),
-                    child.wait_with_output(),
-                )
-                .await;
-                (child_pid, result.map_err(|_| ()))
+        let mut child = match child {
+            Ok(child) => child,
+            Err(io_err) => {
+                #[allow(clippy::cast_possible_truncation)]
+                let elapsed = started.elapsed().as_millis() as u64;
+                let reason = format!("spawn failed: {io_err}");
+                let classification =
+                    structured_gate_failure(&self.name, &reason, reason.clone(), elapsed);
+                return Verdict::fail(&self.name, reason)
+                    .with_error_digest(render_failure_classification(&classification))
+                    .with_duration(elapsed);
             }
-            Err(err) => (None, Ok(Err(err))),
         };
+
+        let child_pid = child.id();
+        let stdout_pipe = child.stdout.take();
+        let stderr_pipe = child.stderr.take();
+        let line_sink = self.line_sink.clone();
+
+        // Stream stdout and stderr line-by-line, forwarding each line through
+        // the optional sink for live TUI display while accumulating the full
+        // output for the final verdict.
+        let stream_output = async {
+            let mut stdout_buf = String::new();
+            let mut stderr_buf = String::new();
+
+            let stdout_task = {
+                let sink = line_sink.clone();
+                async move {
+                    if let Some(pipe) = stdout_pipe {
+                        let reader = BufReader::new(pipe);
+                        let mut lines = reader.lines();
+                        while let Ok(Some(line)) = lines.next_line().await {
+                            if let Some(ref sink) = sink {
+                                let _ = sink.send(line.clone());
+                            }
+                            stdout_buf.push_str(&line);
+                            stdout_buf.push('\n');
+                        }
+                    }
+                    stdout_buf
+                }
+            };
+
+            let stderr_task = async move {
+                if let Some(pipe) = stderr_pipe {
+                    let reader = BufReader::new(pipe);
+                    let mut lines = reader.lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        if let Some(ref line_sink) = line_sink {
+                            let _ = line_sink.send(line.clone());
+                        }
+                        stderr_buf.push_str(&line);
+                        stderr_buf.push('\n');
+                    }
+                }
+                stderr_buf
+            };
+
+            let (stdout_out, stderr_out) = tokio::join!(stdout_task, stderr_task);
+            let status = child.wait().await;
+            (stdout_out, stderr_out, status)
+        };
+
+        let result = timeout(
+            Duration::from_millis(self.timeout_ms),
+            stream_output,
+        )
+        .await;
+
         #[allow(clippy::cast_possible_truncation)]
         let elapsed = started.elapsed().as_millis() as u64;
 
         match result {
-            Err(()) => {
+            Err(_timeout) => {
                 terminate_child_process_group(child_pid).await;
                 let reason = format!("timed out after {} ms", self.timeout_ms);
                 let classification =
@@ -116,29 +190,26 @@ impl Verify for ShellGate {
                     .with_error_digest(render_failure_classification(&classification))
                     .with_duration(elapsed)
             }
-            Ok(Err(io_err)) => {
-                let reason = format!("spawn failed: {io_err}");
+            Ok((stdout, stderr, Err(io_err))) => {
+                let reason = format!("wait failed: {io_err}");
                 let classification =
                     structured_gate_failure(&self.name, &reason, reason.clone(), elapsed);
                 Verdict::fail(&self.name, reason)
                     .with_error_digest(render_failure_classification(&classification))
                     .with_duration(elapsed)
             }
-            Ok(Ok(output)) => {
-                let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-                let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+            Ok((stdout, stderr, Ok(status))) => {
                 let combined = if stderr.is_empty() {
                     stdout
                 } else {
                     format!("{stdout}\n---stderr---\n{stderr}")
                 };
-                if output.status.success() {
+                if status.success() {
                     Verdict::pass(&self.name)
                         .with_detail(combined)
                         .with_duration(elapsed)
                 } else {
-                    let code = output
-                        .status
+                    let code = status
                         .code()
                         .map_or_else(|| "terminated by signal".into(), |c| c.to_string());
                     let reason = format!("exit code: {code}");

@@ -74,6 +74,7 @@ pub(crate) fn render(
             );
         }
         5 => render_three_panel_inspect(frame, area, tui_state, theme),
+        6 => render_cfactor_detail(frame, area, tui_state, theme),
         _ => {
             let ctx_data = build_context_data(tui_state);
             render_with_context_data(
@@ -1607,6 +1608,317 @@ fn render_prompt_stats_panel(
     ]));
 
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}
+
+// ---------------------------------------------------------------------------
+// C-Factor detail view (sub-tab 6, W3 visualization)
+// ---------------------------------------------------------------------------
+
+/// Render a full-page C-Factor detail panel with overall gauge, component
+/// breakdown bars, trend direction, and agent contribution table.
+fn render_cfactor_detail(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    tui_state: &TuiState,
+    theme: &Theme,
+) {
+    let block = Block::bordered()
+        .title(Span::styled(" C-Factor Detail ", theme.section_header()))
+        .border_style(theme.accent());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let cf = match tui_state.cfactor.as_ref() {
+        Some(cf) => cf,
+        None => {
+            let empty = Paragraph::new("C-Factor not yet computed. Data appears during active plan runs.")
+                .style(theme.muted())
+                .alignment(Alignment::Center)
+                .wrap(Wrap { trim: false });
+            frame.render_widget(empty, inner);
+            return;
+        }
+    };
+
+    // Layout: top gauge row, middle component bars, bottom agent contributions.
+    let sections = Layout::vertical([
+        Constraint::Length(5),  // Overall score gauge + trend
+        Constraint::Min(12),   // Component breakdown bars
+        Constraint::Length(8), // Agent contributions table
+    ])
+    .split(inner);
+
+    // ── Section 1: Overall score gauge + trend ─────────────────────────
+    render_cfactor_gauge(frame, sections[0], cf, tui_state, theme);
+
+    // ── Section 2: Component breakdown bars ────────────────────────────
+    render_cfactor_components(frame, sections[1], cf, theme);
+
+    // ── Section 3: Agent contributions ─────────────────────────────────
+    render_cfactor_agents(frame, sections[2], cf, theme);
+}
+
+/// Render the overall C-Factor score as a colored bar gauge with trend indicator.
+fn render_cfactor_gauge(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    cf: &roko_learn::cfactor::CFactor,
+    tui_state: &TuiState,
+    theme: &Theme,
+) {
+    let mut lines: Vec<Line<'_>> = Vec::new();
+
+    // Score value with tier coloring
+    let score_style = cfactor_tier_style(cf.overall, theme);
+    let pct = (cf.overall * 100.0).round() as u16;
+
+    // Compute trend from buckets
+    let trend = compute_cfactor_trend(&tui_state.cfactor_trend_buckets);
+    let trend_indicator = match trend {
+        Trend::Improving => Span::styled(" ^ improving", theme.success()),
+        Trend::Declining => Span::styled(" v declining", theme.danger()),
+        Trend::Stable => Span::styled(" ~ stable", theme.metadata()),
+        Trend::Unknown => Span::styled(" ? insufficient data", theme.metadata()),
+    };
+
+    lines.push(Line::from(vec![
+        Span::styled("Overall: ", theme.label()),
+        Span::styled(format!("{:.3}", cf.overall), score_style),
+        Span::styled(format!(" ({pct}%)"), theme.metadata()),
+        Span::raw("  "),
+        trend_indicator,
+    ]));
+
+    // ASCII gauge bar
+    let bar_width = (area.width as usize).saturating_sub(4).min(60);
+    let filled = ((cf.overall * bar_width as f64).round() as usize).min(bar_width);
+    let empty_part = bar_width.saturating_sub(filled);
+    let bar_str = format!(
+        "[{}{}]",
+        "\u{2588}".repeat(filled),
+        "\u{2500}".repeat(empty_part),
+    );
+    lines.push(Line::from(Span::styled(bar_str, score_style)));
+
+    // Episode count and timestamp
+    lines.push(Line::from(vec![
+        Span::styled("Episodes: ", theme.label()),
+        Span::styled(cf.episode_count.to_string(), theme.value()),
+        Span::styled(
+            format!("   computed: {}", cf.computed_at.format("%H:%M:%S")),
+            theme.metadata(),
+        ),
+    ]));
+
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+}
+
+/// Render individual C-Factor component scores as labeled horizontal bars.
+fn render_cfactor_components(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    cf: &roko_learn::cfactor::CFactor,
+    theme: &Theme,
+) {
+    let c = &cf.components;
+
+    // Component list: (label, value, short_name)
+    let components: Vec<(&str, f64)> = vec![
+        ("Gate pass rate     ", c.gate_pass_rate),
+        ("First-try rate     ", c.first_try_rate),
+        ("Cost efficiency    ", c.cost_efficiency),
+        ("Speed              ", c.speed),
+        ("Knowledge growth   ", c.knowledge_growth),
+        ("Turn-taking equal. ", c.turn_taking_equality),
+        ("HDC diversity      ", c.hdc_diversity),
+        ("Convergence vel.   ", c.convergence_velocity),
+        ("Info flow rate     ", c.information_flow_rate),
+        ("Knowledge integr.  ", c.knowledge_integration_rate),
+        ("Social perceptive. ", c.social_perceptiveness),
+    ];
+
+    let bar_budget = (area.width as usize).saturating_sub(30).min(40);
+    let visible = (area.height as usize).min(components.len());
+    let mut lines: Vec<Line<'_>> = vec![Line::from(Span::styled(
+        "Component Breakdown:",
+        theme.section_header(),
+    ))];
+
+    for (label, value) in components.iter().take(visible) {
+        let v = value.clamp(0.0, 1.0);
+        let filled = (v * bar_budget as f64).round() as usize;
+        let empty_part = bar_budget.saturating_sub(filled);
+        let bar = format!(
+            "{}{}",
+            "\u{2588}".repeat(filled),
+            "\u{2500}".repeat(empty_part),
+        );
+        let val_style = cfactor_tier_style(*value, theme);
+        lines.push(Line::from(vec![
+            Span::styled(*label, theme.label()),
+            Span::styled(format!("{:.2} ", value), val_style),
+            Span::styled(bar, val_style),
+        ]));
+    }
+
+    // Pathology alerts
+    if !cf.pathologies.is_empty() {
+        lines.push(Line::raw(""));
+        lines.push(Line::from(Span::styled(
+            "Pathologies:",
+            Style::default()
+                .fg(Theme::EMBER)
+                .add_modifier(Modifier::BOLD),
+        )));
+        for p in cf.pathologies.iter().take(3) {
+            let desc = format!("  ! {}", cfactor_pathology_label(p));
+            lines.push(Line::from(Span::styled(desc, theme.danger())));
+        }
+    }
+
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+}
+
+/// Render the per-agent contribution table.
+fn render_cfactor_agents(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    cf: &roko_learn::cfactor::CFactor,
+    theme: &Theme,
+) {
+    if cf.agent_contributions.is_empty() {
+        let empty = Paragraph::new("No per-agent contributions available")
+            .style(theme.muted())
+            .alignment(Alignment::Center);
+        frame.render_widget(empty, area);
+        return;
+    }
+
+    let header = Row::new(["Agent", "Episodes", "Contribution", "Impact"])
+        .style(theme.section_header())
+        .bottom_margin(0);
+
+    let visible = (area.height as usize).saturating_sub(2);
+    let rows: Vec<Row<'_>> = cf
+        .agent_contributions
+        .iter()
+        .take(visible)
+        .map(|ac| {
+            let impact_style = if ac.contribution_score > 0.01 {
+                theme.success()
+            } else if ac.contribution_score < -0.01 {
+                theme.danger()
+            } else {
+                theme.metadata()
+            };
+            let impact_label = if ac.contribution_score > 0.01 {
+                "positive"
+            } else if ac.contribution_score < -0.01 {
+                "negative"
+            } else {
+                "neutral"
+            };
+            Row::new([
+                Cell::from(Span::styled(
+                    truncate(&ac.agent_id, 16),
+                    theme.value(),
+                )),
+                Cell::from(Span::styled(
+                    ac.episode_count.to_string(),
+                    theme.text(),
+                )),
+                Cell::from(Span::styled(
+                    format!("{:+.4}", ac.contribution_score),
+                    impact_style,
+                )),
+                Cell::from(Span::styled(impact_label, impact_style)),
+            ])
+        })
+        .collect();
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Percentage(35),
+            Constraint::Percentage(15),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+        ],
+    )
+    .header(header)
+    .block(
+        Block::bordered()
+            .title(Span::styled(" Agent Contributions ", theme.section_header()))
+            .border_style(theme.accent()),
+    );
+
+    frame.render_widget(table, area);
+}
+
+/// Trend direction derived from C-Factor buckets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Trend {
+    Improving,
+    Declining,
+    Stable,
+    Unknown,
+}
+
+/// Compute trend from recent C-Factor trend buckets.
+///
+/// Compares the average of the last two buckets against the two before them.
+/// Requires at least 3 buckets for a directional signal.
+fn compute_cfactor_trend(buckets: &[roko_learn::aggregate::CFactorBucket]) -> Trend {
+    if buckets.len() < 3 {
+        return Trend::Unknown;
+    }
+    let n = buckets.len();
+    // Recent half vs older half
+    let mid = n / 2;
+    let older_avg: f64 = buckets[..mid].iter().map(|b| b.avg).sum::<f64>() / mid as f64;
+    let recent_avg: f64 = buckets[mid..].iter().map(|b| b.avg).sum::<f64>()
+        / (n - mid) as f64;
+    let delta = recent_avg - older_avg;
+
+    if delta > 0.02 {
+        Trend::Improving
+    } else if delta < -0.02 {
+        Trend::Declining
+    } else {
+        Trend::Stable
+    }
+}
+
+/// Map a C-Factor score (0..1) to a tier style.
+fn cfactor_tier_style(score: f64, theme: &Theme) -> Style {
+    if score >= 0.7 {
+        theme.success()
+    } else if score >= 0.4 {
+        theme.warning()
+    } else {
+        theme.danger()
+    }
+}
+
+/// Return a short human label for a collective pathology variant.
+fn cfactor_pathology_label(p: &roko_learn::cfactor::CollectivePathology) -> &'static str {
+    match p {
+        roko_learn::cfactor::CollectivePathology::Cascade { .. } => {
+            "Cascade: failure triggering downstream failures"
+        }
+        roko_learn::cfactor::CollectivePathology::Groupthink { .. } => {
+            "Groupthink: fleet converged on narrow model set"
+        }
+        roko_learn::cfactor::CollectivePathology::EchoChamber { .. } => {
+            "EchoChamber: repeated knowledge across agents"
+        }
+        roko_learn::cfactor::CollectivePathology::Deadlock { .. } => {
+            "Deadlock: agents blocked on the same task"
+        }
+        roko_learn::cfactor::CollectivePathology::Hallucination { .. } => {
+            "Hallucination: ungrounded claims without gate support"
+        }
+    }
 }
 
 #[cfg(test)]

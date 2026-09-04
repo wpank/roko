@@ -102,6 +102,8 @@ pub enum SubView {
     CostByModel,
     /// Three-panel MCP / Learning / Prompt Stats inspect view.
     ThreePanelInspect,
+    /// C-Factor detail view with gauge, component breakdown, and trend.
+    CFactorDetail,
 
     // ── Region 8: Marketplace (F8) ──
     /// Job list browser.
@@ -165,6 +167,7 @@ impl SubView {
                 SubView::KnowledgeBrowse,
                 SubView::CostByModel,
                 SubView::ThreePanelInspect,
+                SubView::CFactorDetail,
             ],
             Tab::Marketplace => &[SubView::JobList, SubView::JobDetail, SubView::CreateJob],
             Tab::Atelier => &[SubView::PrdWorkshop, SubView::PlanExplorer],
@@ -201,6 +204,7 @@ impl SubView {
             Self::KnowledgeBrowse => "Knowledge",
             Self::CostByModel => "Cost/Model",
             Self::ThreePanelInspect => "Runtime",
+            Self::CFactorDetail => "C-Factor",
             Self::JobList => "Jobs",
             Self::JobDetail => "Detail",
             Self::CreateJob => "New Job",

@@ -1348,6 +1348,8 @@ pub(crate) struct PlanTaskSnapshot {
     pub acceptance_text: Option<String>,
     /// First verify command, if any (from tasks.toml).
     pub verify_command: Option<String>,
+    /// Files this task will create or modify (from tasks.toml).
+    pub files: Vec<String>,
 }
 
 /// Per-plan snapshot used to hydrate `TuiState::plans`.
@@ -2382,6 +2384,7 @@ fn build_plan_task_snapshots(
                     dependencies: task.depends_on.clone(),
                     acceptance_text,
                     verify_command,
+                    files: task.files.clone(),
                 }
             })
             .collect();

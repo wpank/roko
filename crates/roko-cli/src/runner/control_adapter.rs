@@ -26,6 +26,17 @@ pub enum RunnerCommandEffect {
     Resume,
     /// The runner should cancel the current run via `CancellationToken`.
     Cancel { plan_id: Option<String> },
+    /// Re-queue all failed tasks in the plan for retry from scratch.
+    SoftRetry { plan_id: String },
+    /// Skip a specific task and advance the plan past it.
+    Skip { plan_id: String, task_id: String },
+    /// Repair a plan: re-run failed/pending tasks (optionally preserve completed).
+    Repair {
+        plan_id: String,
+        preserve_completed: bool,
+    },
+    /// Re-run the gate pipeline on a plan's tasks without re-executing them.
+    ReverifyGates { plan_id: String },
     /// An approval was resolved. The runner should unblock the pending
     /// approval gate for the given approval ID.
     ApprovalResolved {
@@ -118,75 +129,122 @@ impl RunnerExecutionCommandAdapter {
                 )
             }
             ExecutionCommandKind::SoftRetry => {
-                let plan_id_str = cmd.plan_id.as_deref().unwrap_or("?");
-                warn!(
-                    command_id = %cmd.command_id,
-                    plan_id = %plan_id_str,
-                    "execution command rejected: soft retry is not implemented"
-                );
-                let msg = "Soft retry is not available during this run; no state changed";
-                (
-                    RunnerCommandEffect::NotImplemented {
-                        kind: cmd.kind.clone(),
-                        message: msg.to_string(),
-                    },
-                    CommandAckStatus::Rejected,
-                    Some(msg.to_string()),
-                )
+                let plan_id = cmd.plan_id.clone().unwrap_or_default();
+                if plan_id.is_empty() {
+                    warn!(
+                        command_id = %cmd.command_id,
+                        "execution command rejected: soft retry requires a plan_id"
+                    );
+                    let msg = "Soft retry requires a plan ID";
+                    (
+                        RunnerCommandEffect::Rejected {
+                            message: msg.to_string(),
+                        },
+                        CommandAckStatus::Rejected,
+                        Some(msg.to_string()),
+                    )
+                } else {
+                    info!(
+                        command_id = %cmd.command_id,
+                        plan_id = %plan_id,
+                        "execution command: soft retry"
+                    );
+                    (
+                        RunnerCommandEffect::SoftRetry { plan_id },
+                        CommandAckStatus::Accepted,
+                        None,
+                    )
+                }
             }
             ExecutionCommandKind::Repair { preserve_completed } => {
-                let plan_id_str = cmd.plan_id.as_deref().unwrap_or("?");
-                warn!(
-                    command_id = %cmd.command_id,
-                    plan_id = %plan_id_str,
-                    preserve_completed,
-                    "execution command rejected: repair is not implemented"
-                );
-                let msg = "Repair is not available during this run; no state changed";
-                (
-                    RunnerCommandEffect::NotImplemented {
-                        kind: cmd.kind.clone(),
-                        message: msg.to_string(),
-                    },
-                    CommandAckStatus::Rejected,
-                    Some(msg.to_string()),
-                )
+                let plan_id = cmd.plan_id.clone().unwrap_or_default();
+                if plan_id.is_empty() {
+                    warn!(
+                        command_id = %cmd.command_id,
+                        "execution command rejected: repair requires a plan_id"
+                    );
+                    let msg = "Repair requires a plan ID";
+                    (
+                        RunnerCommandEffect::Rejected {
+                            message: msg.to_string(),
+                        },
+                        CommandAckStatus::Rejected,
+                        Some(msg.to_string()),
+                    )
+                } else {
+                    info!(
+                        command_id = %cmd.command_id,
+                        plan_id = %plan_id,
+                        preserve_completed,
+                        "execution command: repair"
+                    );
+                    (
+                        RunnerCommandEffect::Repair {
+                            plan_id,
+                            preserve_completed: *preserve_completed,
+                        },
+                        CommandAckStatus::Accepted,
+                        None,
+                    )
+                }
             }
             ExecutionCommandKind::ReverifyGates => {
-                let plan_id_str = cmd.plan_id.as_deref().unwrap_or("?");
-                warn!(
-                    command_id = %cmd.command_id,
-                    plan_id = %plan_id_str,
-                    "execution command rejected: gate reverify is not implemented"
-                );
-                let msg = "Gate reverify is not available during this run; no state changed";
-                (
-                    RunnerCommandEffect::NotImplemented {
-                        kind: cmd.kind.clone(),
-                        message: msg.to_string(),
-                    },
-                    CommandAckStatus::Rejected,
-                    Some(msg.to_string()),
-                )
+                let plan_id = cmd.plan_id.clone().unwrap_or_default();
+                if plan_id.is_empty() {
+                    warn!(
+                        command_id = %cmd.command_id,
+                        "execution command rejected: gate reverify requires a plan_id"
+                    );
+                    let msg = "Gate reverify requires a plan ID";
+                    (
+                        RunnerCommandEffect::Rejected {
+                            message: msg.to_string(),
+                        },
+                        CommandAckStatus::Rejected,
+                        Some(msg.to_string()),
+                    )
+                } else {
+                    info!(
+                        command_id = %cmd.command_id,
+                        plan_id = %plan_id,
+                        "execution command: reverify gates"
+                    );
+                    (
+                        RunnerCommandEffect::ReverifyGates { plan_id },
+                        CommandAckStatus::Accepted,
+                        None,
+                    )
+                }
             }
             ExecutionCommandKind::Skip => {
-                let plan_id_str = cmd.plan_id.as_deref().unwrap_or("?");
-                let task_id_str = cmd.task_id.as_deref().unwrap_or("?");
-                warn!(
-                    command_id = %cmd.command_id,
-                    plan_id = %plan_id_str,
-                    task_id = %task_id_str,
-                    "execution command rejected: task skip is not implemented"
-                );
-                let msg = "Task skip is not available during this run; no state changed";
-                (
-                    RunnerCommandEffect::NotImplemented {
-                        kind: cmd.kind.clone(),
-                        message: msg.to_string(),
-                    },
-                    CommandAckStatus::Rejected,
-                    Some(msg.to_string()),
-                )
+                let plan_id = cmd.plan_id.clone().unwrap_or_default();
+                let task_id = cmd.task_id.clone().unwrap_or_default();
+                if plan_id.is_empty() || task_id.is_empty() {
+                    warn!(
+                        command_id = %cmd.command_id,
+                        "execution command rejected: skip requires both plan_id and task_id"
+                    );
+                    let msg = "Skip requires both a plan ID and a task ID";
+                    (
+                        RunnerCommandEffect::Rejected {
+                            message: msg.to_string(),
+                        },
+                        CommandAckStatus::Rejected,
+                        Some(msg.to_string()),
+                    )
+                } else {
+                    info!(
+                        command_id = %cmd.command_id,
+                        plan_id = %plan_id,
+                        task_id = %task_id,
+                        "execution command: skip task"
+                    );
+                    (
+                        RunnerCommandEffect::Skip { plan_id, task_id },
+                        CommandAckStatus::Accepted,
+                        None,
+                    )
+                }
             }
             ExecutionCommandKind::Approve { approval_id } => {
                 info!(
@@ -321,38 +379,124 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tui_command_unimplemented_kinds_rejected() {
-        let (sender, mut cmd_rx, ack_tx, ack_rx) = ExecutionCommandSender::channel("run-unimpl");
-        let adapter = RunnerExecutionCommandAdapter::new("run-unimpl", ack_tx);
+    async fn tui_command_recovery_kinds_accepted() {
+        let (sender, mut cmd_rx, ack_tx, ack_rx) = ExecutionCommandSender::channel("run-recov");
+        let adapter = RunnerExecutionCommandAdapter::new("run-recov", ack_tx);
         let mut ack_receiver = crate::execution_control::CommandAckReceiver::new(ack_rx);
 
-        let unimplemented_kinds = vec![
+        // SoftRetry with plan_id
+        let cmd = sender.build_command(
             ExecutionCommandKind::SoftRetry,
+            Some("plan-x".into()),
+            None,
+            None,
+        );
+        sender.try_send(cmd).unwrap();
+        let received = cmd_rx.recv().await.unwrap();
+        let effect = adapter.process(&received).await;
+        assert_eq!(
+            effect,
+            RunnerCommandEffect::SoftRetry {
+                plan_id: "plan-x".into()
+            }
+        );
+
+        // Skip with plan_id + task_id
+        let cmd = sender.build_command(
+            ExecutionCommandKind::Skip,
+            Some("plan-x".into()),
+            Some("task-y".into()),
+            None,
+        );
+        sender.try_send(cmd).unwrap();
+        let received = cmd_rx.recv().await.unwrap();
+        let effect = adapter.process(&received).await;
+        assert_eq!(
+            effect,
+            RunnerCommandEffect::Skip {
+                plan_id: "plan-x".into(),
+                task_id: "task-y".into(),
+            }
+        );
+
+        // Repair with plan_id
+        let cmd = sender.build_command(
             ExecutionCommandKind::Repair {
                 preserve_completed: true,
             },
-            ExecutionCommandKind::ReverifyGates,
-            ExecutionCommandKind::Skip,
-        ];
+            Some("plan-x".into()),
+            None,
+            None,
+        );
+        sender.try_send(cmd).unwrap();
+        let received = cmd_rx.recv().await.unwrap();
+        let effect = adapter.process(&received).await;
+        assert_eq!(
+            effect,
+            RunnerCommandEffect::Repair {
+                plan_id: "plan-x".into(),
+                preserve_completed: true,
+            }
+        );
 
-        for kind in &unimplemented_kinds {
-            let cmd = sender.build_command(
-                kind.clone(),
-                Some("plan-x".into()),
-                Some("task-y".into()),
-                None,
-            );
-            sender.try_send(cmd).unwrap();
-            let received = cmd_rx.recv().await.unwrap();
-            let effect = adapter.process(&received).await;
-            assert!(
-                matches!(effect, RunnerCommandEffect::NotImplemented { .. }),
-                "expected NotImplemented for {kind}, got {effect:?}"
-            );
-        }
+        // ReverifyGates with plan_id
+        let cmd = sender.build_command(
+            ExecutionCommandKind::ReverifyGates,
+            Some("plan-x".into()),
+            None,
+            None,
+        );
+        sender.try_send(cmd).unwrap();
+        let received = cmd_rx.recv().await.unwrap();
+        let effect = adapter.process(&received).await;
+        assert_eq!(
+            effect,
+            RunnerCommandEffect::ReverifyGates {
+                plan_id: "plan-x".into()
+            }
+        );
 
         let acks = ack_receiver.drain();
-        assert_eq!(acks.len(), unimplemented_kinds.len());
+        assert_eq!(acks.len(), 4);
+        assert!(
+            acks.iter().all(|a| a.status == CommandAckStatus::Accepted),
+            "all recovery commands should be accepted"
+        );
+    }
+
+    #[tokio::test]
+    async fn tui_command_recovery_kinds_rejected_without_ids() {
+        let (sender, mut cmd_rx, ack_tx, ack_rx) = ExecutionCommandSender::channel("run-noid");
+        let adapter = RunnerExecutionCommandAdapter::new("run-noid", ack_tx);
+        let mut ack_receiver = crate::execution_control::CommandAckReceiver::new(ack_rx);
+
+        // SoftRetry without plan_id → rejected
+        let cmd = sender.build_command(ExecutionCommandKind::SoftRetry, None, None, None);
+        sender.try_send(cmd).unwrap();
+        let received = cmd_rx.recv().await.unwrap();
+        let effect = adapter.process(&received).await;
+        assert!(
+            matches!(effect, RunnerCommandEffect::Rejected { .. }),
+            "SoftRetry without plan_id should be rejected"
+        );
+
+        // Skip without task_id → rejected
+        let cmd = sender.build_command(
+            ExecutionCommandKind::Skip,
+            Some("plan-x".into()),
+            None,
+            None,
+        );
+        sender.try_send(cmd).unwrap();
+        let received = cmd_rx.recv().await.unwrap();
+        let effect = adapter.process(&received).await;
+        assert!(
+            matches!(effect, RunnerCommandEffect::Rejected { .. }),
+            "Skip without task_id should be rejected"
+        );
+
+        let acks = ack_receiver.drain();
+        assert_eq!(acks.len(), 2);
         assert!(acks.iter().all(|a| a.status == CommandAckStatus::Rejected));
     }
 
@@ -472,22 +616,22 @@ mod tests {
         assert_eq!(effects.len(), 10);
         assert_eq!(effects[0], RunnerCommandEffect::Pause);
         assert_eq!(effects[1], RunnerCommandEffect::Resume);
-        assert!(matches!(
-            effects[2],
-            RunnerCommandEffect::NotImplemented { .. }
-        ));
-        assert!(matches!(
-            effects[3],
-            RunnerCommandEffect::NotImplemented { .. }
-        ));
-        assert!(matches!(
-            effects[4],
-            RunnerCommandEffect::NotImplemented { .. }
-        ));
-        assert!(matches!(
-            effects[5],
-            RunnerCommandEffect::NotImplemented { .. }
-        ));
+        assert!(
+            matches!(effects[2], RunnerCommandEffect::SoftRetry { .. }),
+            "SoftRetry should produce SoftRetry effect"
+        );
+        assert!(
+            matches!(effects[3], RunnerCommandEffect::Repair { .. }),
+            "Repair should produce Repair effect"
+        );
+        assert!(
+            matches!(effects[4], RunnerCommandEffect::ReverifyGates { .. }),
+            "ReverifyGates should produce ReverifyGates effect"
+        );
+        assert!(
+            matches!(effects[5], RunnerCommandEffect::Skip { .. }),
+            "Skip should produce Skip effect"
+        );
         assert!(matches!(effects[6], RunnerCommandEffect::Cancel { .. }));
         assert!(matches!(
             effects[7],

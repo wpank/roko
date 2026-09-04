@@ -57,6 +57,8 @@ pub enum SkippedReason {
     PlanTimedOut,
     /// The daimon entered its terminal behavioral phase and disabled dispatch.
     CognitiveAutonomyTerminal,
+    /// The user explicitly skipped this task via TUI/CLI command.
+    UserSkipped,
 }
 
 // ─── Progress classification ────────────────────────────────────────────
@@ -601,6 +603,62 @@ impl TaskDag {
             }
         }
         newly_skipped
+    }
+
+    /// Reset all failed (and their downstream-skipped) tasks in a plan so
+    /// they become eligible for dispatch again. Completed tasks are preserved.
+    ///
+    /// Returns the task IDs that were reset.
+    pub fn reset_failed_for_retry(&mut self, plan_id: &str) -> Vec<TaskId> {
+        let plan = self.plan_mut(plan_id);
+        let mut reset_ids: Vec<TaskId> = plan.failed.drain().collect();
+        // Also un-skip tasks that were skipped because of a prerequisite
+        // failure — they may become eligible once the failed prerequisite
+        // succeeds on retry.
+        let prerequisite_skipped: Vec<TaskId> = plan
+            .skipped
+            .iter()
+            .filter(|(_, reason)| matches!(reason, SkippedReason::PrerequisiteFailed { .. }))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &prerequisite_skipped {
+            plan.skipped.remove(id);
+        }
+        reset_ids.extend(prerequisite_skipped);
+        // Clear any cooldown so retry begins immediately.
+        plan.retry_not_before = None;
+        reset_ids
+    }
+
+    /// Reset a single failed task (and its downstream-skipped dependents)
+    /// so it becomes eligible for dispatch again.
+    ///
+    /// Returns the task IDs that were reset.
+    pub fn reset_single_task_for_retry(
+        &mut self,
+        plan_id: &str,
+        task_id: &str,
+    ) -> Vec<TaskId> {
+        let plan = self.plan_mut(plan_id);
+        let mut reset_ids = Vec::new();
+        if plan.failed.remove(task_id) {
+            reset_ids.push(task_id.to_string());
+        }
+        // Also un-skip dependents that were blocked by this task.
+        let dependents_to_reset: Vec<TaskId> = plan
+            .skipped
+            .iter()
+            .filter(|(_, reason)| {
+                matches!(reason, SkippedReason::PrerequisiteFailed { prerequisite } if prerequisite == task_id)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &dependents_to_reset {
+            plan.skipped.remove(id);
+        }
+        reset_ids.extend(dependents_to_reset);
+        plan.retry_not_before = None;
+        reset_ids
     }
 
     /// Whether the plan has exceeded its wall-clock deadline.

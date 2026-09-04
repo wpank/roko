@@ -919,6 +919,8 @@ pub struct TaskEntry {
     pub verify_command: Option<String>,
     /// ISO timestamp when task started (from runtime metadata).
     pub started_at: Option<String>,
+    /// Files this task will create or modify (from tasks.toml).
+    pub files: Vec<String>,
 }
 
 /// Cost/budget projection for one plan in the F2 view.
@@ -1610,6 +1612,14 @@ pub struct TaskRow {
     pub status: TaskStatus,
     /// Elapsed seconds for this task.
     pub elapsed_secs: f64,
+    /// Task IDs this task depends on (from tasks.toml).
+    pub depends_on: Vec<String>,
+    /// Free-form acceptance criteria text (joined from tasks.toml).
+    pub acceptance_text: Option<String>,
+    /// First verify command, if any (from tasks.toml).
+    pub verify_command: Option<String>,
+    /// Files this task will create or modify (from tasks.toml).
+    pub files: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -3375,11 +3385,12 @@ impl TuiState {
                                     acceptance_text: task.acceptance_text.clone(),
                                     verify_command: task.verify_command.clone(),
                                     started_at: task.started_at.clone(),
+                                    files: task.files.clone(),
                                 })
                                 .collect()
                         })
                         .unwrap_or_default(),
-                    branch: None,
+                    branch: Some(crate::orchestrator::worktree::format_branch_name(&p.id)),
                     worktree_path: None,
                     last_commit: None,
                     files_modified: None,
@@ -3542,6 +3553,9 @@ impl TuiState {
 
         // Build current_task_checklist from active_tasks + task-trackers (Task 3)
         self.current_task_checklist = build_task_checklist_from_execution(data);
+
+        // Populate task detail fields (P5.1-P5.2) from plan TaskEntry data.
+        populate_task_row_details(&mut self.current_task_checklist, &self.plans);
 
         self.execution_waves = rebuild_execution_waves(&self.plans, &self.execution_waves);
 
@@ -3754,6 +3768,10 @@ impl TuiState {
                     },
                     status,
                     elapsed_secs: prev_task_elapsed.get(&task.task_id).copied().unwrap_or(0.0),
+                    depends_on: Vec::new(),
+                    acceptance_text: None,
+                    verify_command: None,
+                    files: Vec::new(),
                 }
             })
             .collect();
@@ -3787,7 +3805,7 @@ impl TuiState {
                     wave: prev_plan_wave.get(plan_id).copied().flatten(),
                     expanded: prev_plan_expanded.get(plan_id).copied().unwrap_or(false),
                     tasks,
-                    branch: None,
+                    branch: Some(crate::orchestrator::worktree::format_branch_name(plan_id)),
                     worktree_path: None,
                     last_commit: None,
                     files_modified: None,
@@ -3839,7 +3857,7 @@ impl TuiState {
                 wave: prev_plan_wave.get(&plan_id).copied().flatten(),
                 expanded: prev_plan_expanded.get(&plan_id).copied().unwrap_or(false),
                 tasks,
-                branch: None,
+                branch: Some(crate::orchestrator::worktree::format_branch_name(&plan_id)),
                 worktree_path: None,
                 last_commit: None,
                 files_modified: None,
@@ -3848,6 +3866,9 @@ impl TuiState {
                 started_at: if active { Some(Instant::now()) } else { None },
             });
         }
+
+        // Populate task detail fields (P5.1-P5.2) from plan TaskEntry data.
+        populate_task_row_details(&mut self.current_task_checklist, &self.plans);
 
         let mut agent_ids: Vec<String> = snap.agents.keys().cloned().collect();
         agent_ids.sort_by(|lhs, rhs| {
@@ -5599,6 +5620,10 @@ fn build_task_checklist_from_execution(data: &DashboardData) -> Vec<TaskRow> {
                     title: t.title.clone(),
                     status,
                     elapsed_secs,
+                    depends_on: Vec::new(),
+                    acceptance_text: None,
+                    verify_command: None,
+                    files: Vec::new(),
                 }
             })
             .collect();
@@ -5614,9 +5639,43 @@ fn build_task_checklist_from_execution(data: &DashboardData) -> Vec<TaskRow> {
                 title: t.task_id.clone(),
                 status,
                 elapsed_secs: 0.0,
+                depends_on: Vec::new(),
+                acceptance_text: None,
+                verify_command: None,
+                files: Vec::new(),
             }
         })
         .collect()
+}
+
+/// Populate task detail fields on `TaskRow` by looking up the corresponding
+/// `TaskEntry` from the plan's task list.  This enriches the task checklist
+/// with depends_on, acceptance criteria, verify command, and file lists
+/// that originate from `tasks.toml` (P5.1-P5.2).
+fn populate_task_row_details(checklist: &mut [TaskRow], plans: &[PlanEntry]) {
+    // Build a lookup: task_id -> &TaskEntry (across all plans).
+    let mut task_entry_by_id: HashMap<&str, &TaskEntry> = HashMap::new();
+    for plan in plans {
+        for task_entry in &plan.tasks {
+            task_entry_by_id.insert(&task_entry.id, task_entry);
+        }
+    }
+    for row in checklist.iter_mut() {
+        if let Some(entry) = task_entry_by_id.get(row.id.as_str()) {
+            if row.depends_on.is_empty() && !entry.depends_on.is_empty() {
+                row.depends_on.clone_from(&entry.depends_on);
+            }
+            if row.acceptance_text.is_none() && entry.acceptance_text.is_some() {
+                row.acceptance_text.clone_from(&entry.acceptance_text);
+            }
+            if row.verify_command.is_none() && entry.verify_command.is_some() {
+                row.verify_command.clone_from(&entry.verify_command);
+            }
+            if row.files.is_empty() && !entry.files.is_empty() {
+                row.files.clone_from(&entry.files);
+            }
+        }
+    }
 }
 
 /// Parse a duration string like "5s", "2m 30s", "120ms" into seconds.
@@ -7221,6 +7280,10 @@ tier = "focused"
             title: "task-2".into(),
             status: TaskStatus::Active,
             elapsed_secs: 15.0,
+            depends_on: Vec::new(),
+            acceptance_text: None,
+            verify_command: None,
+            files: Vec::new(),
         }];
 
         let mut snap = roko_core::DashboardSnapshot::default();

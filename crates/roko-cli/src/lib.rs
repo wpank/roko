@@ -161,7 +161,6 @@ pub mod github_ops_impl;
 pub mod graph_checkpoint;
 #[path = "commands/graph.rs"]
 pub(crate) mod graph_command;
-pub mod graph_execution;
 pub mod graph_task_dispatch;
 pub mod hints;
 pub mod index;
@@ -186,7 +185,6 @@ pub mod pipe;
 pub mod plan;
 pub mod plan_generate;
 pub mod plan_generator;
-pub mod plan_generator_adapters;
 pub mod plan_policy;
 pub mod prd;
 pub mod prd_prompt;

@@ -1,0 +1,24 @@
+ ● roko  gate-failures-jsonl  Wave 1/1│  ─────────────── ERR:0/1│  0s  F2:plans
+W0 ─────────────────────────────────────────────────────────────────────────────
+┌ Plans (0/1 1▸) ───────┐ ┌ Plan Detail ───────────────────────────────────────┐
+│ ◈ Pipeline ░░░░ 0/1   │ │ plan: gate-failures-jsonl                          │
+│ ▶ gat…sonl│   0/1│────│ │ status: ▶ failed  id gate-failures-jsonl           │
+│    ────────  running ·│ │ tasks: 0/1 done  1 failed  0/0 gates               │
+│                       │ │ progress: 0/1  ░░░░░░░░░░░░░░░░░░░░░░░░ 0%         │
+│                       │ │ cost: $0.000 / unlimited  projected $0.000         │
+│                       │ │ ─────────────────────────────────────────────────  │
+│                       │ │ Tasks ─────────────────────────────────────────────│
+│                       │ │    task             status       agent    cost / bu│
+│                       │ │ ✗  T01              failed       -        $0.000/∞ │
+│                       │ │ Verify Results ────────────────────────────────────│
+│                       │ │ no gate results yet                                │
+│                       │ │                                                    │
+│                       │ │                                                    │
+│                       │ │                                                    │
+│                       │ │                                                    │
+│                       │ │ Timing ────────────────────────────────────────────│
+│                       │ │ timing not available                               │
+│                       │ │                                                    │
+│                       │ │                                                    │
+└───────────────────────┘ └────────────────────────────────────────────────────┘
+ · ERR:1  1▸ 0ag ✗1 $61.61 / unlimited │  ↑↓:nav  Enter:detail  e:expand  ?:help

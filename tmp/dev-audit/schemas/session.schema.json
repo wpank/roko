@@ -1,0 +1,188 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://roko.local/schemas/dev-audit-session-v1.json",
+  "title": "Roko development audit session summary (historical v1 proposal)",
+  "description": "Preserved design artifact for schema v1. The implemented evidence harness emits and validates schema v2 as documented in docs/v2/30-EVIDENCE-BUNDLES.md; this file must not be used to promote a v2 bundle.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "run_id",
+    "started_at",
+    "base_commit",
+    "tier",
+    "outcome",
+    "terminal_events",
+    "actual_agent_launches",
+    "attempts",
+    "timings_ms",
+    "evidence"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "finished_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "base_commit": {
+      "type": "string",
+      "minLength": 7
+    },
+    "tier": {
+      "enum": [
+        "T0",
+        "T1",
+        "T2",
+        "T3"
+      ]
+    },
+    "model": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "effort": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "outcome": {
+      "enum": [
+        "passed",
+        "failed",
+        "timed_out",
+        "cancelled",
+        "blocked",
+        "needs_decomposition"
+      ]
+    },
+    "terminal_events": {
+      "const": 1
+    },
+    "actual_agent_launches": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "attempts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "task_id",
+          "attempt_id",
+          "dispatches",
+          "outcome"
+        ],
+        "properties": {
+          "task_id": {
+            "type": "string"
+          },
+          "attempt_id": {
+            "type": "string"
+          },
+          "dispatches": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "outcome": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "timings_ms": {
+      "type": "object",
+      "required": [
+        "total"
+      ],
+      "properties": {
+        "startup": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "capacity_wait": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "agent": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "compile": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "test": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "smoke": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "total": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "changed_files": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "required": [
+        "events_valid",
+        "exit_matches_terminal",
+        "scope_valid",
+        "secrets_detected"
+      ],
+      "properties": {
+        "events_valid": {
+          "type": "boolean"
+        },
+        "exit_matches_terminal": {
+          "type": "boolean"
+        },
+        "scope_valid": {
+          "type": "boolean"
+        },
+        "runtime_probe": {
+          "type": "boolean"
+        },
+        "screenshots": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "secrets_detected": {
+          "const": false
+        }
+      }
+    },
+    "first_failure": {
+      "type": [
+        "object",
+        "null"
+      ]
+    }
+  }
+}

@@ -3,6 +3,7 @@
 **Date:** 2026-08-31
 
 **Merged baseline:** `53e275a22` (PR #74), audited at `c28b2d618`
+
 **Live command:** `cargo run -p roko-cli -- plan run plans/doctor-network-v2 --engine runner-v2 --tui --force-backend codex --fresh`
 
 ## Verdict
@@ -18,7 +19,25 @@ audit. At the merged baseline:
 
 The follow-up fixes made during this audit move P0.2 and P0.4 from partial to
 verified, making the current working tree **21 verified, 9 partial, 8 not
-operational**. This is still not 38/38.
+operational** at the source level. This is still not 38/38, and the 21 count is
+not a claim that the final rebased integration has completed a new live run.
+
+## Reconciliation after the development-speed integration
+
+The later dev-audit branch adds source-level fixes adjacent to this audit:
+
+- `88c724744` honors configured redraw cadence, skips connected idle redraws, omits the broad
+  filesystem watcher when StateHub is authoritative, and excludes worktrees/targets/caches from
+  fallback recursion.
+- `52d5f4df4` freezes terminal duration/ETA, converges active plan/agent state, preserves degraded
+  PID ownership, and makes replayed plan/task/agent counters idempotent.
+- The active handoff retains the P0.2/P0.4 denominator/history/EMA fixes and the panic-hook/post-FX
+  overflow fixes described below.
+
+These are implementation facts from the source/diffs. The coordinator intentionally deferred all
+compilation and interactive checks to one final batch, so this audit does not promote any of them
+to final-tree live-verified status yet. The original matrix remains the canonical description of
+the still-partial and non-operational P0–P7 paths.
 
 ## What caused the TUI to exit
 
@@ -62,61 +81,38 @@ runs.
 - Convert the connected snapshot's bounded token-delta ring into cumulative
   TUI history and update token/cost rates on connected snapshots.
 
-### Live recheck after the fix
+### Historical working-tree live recheck after the fix
 
 A fresh rerun (`run-1788172543820`) crossed the former crash point: T1 spawned
 an active Codex agent, emitted token usage, completed, and entered gate
 dispatch. After nearly three minutes the TUI/runner process was still alive,
 `.roko/runner-stderr.log` was empty, and macOS had produced no crash report
 newer than the 12:28 baseline. This validates the active-agent effects abort
-fix; the run was still in progress and is not evidence that every plan-run or
-gate behavior is correct.
+fix in that working tree; it predates the final rebased dev-audit tree. The run
+was still in progress and is not evidence that every plan-run or gate behavior
+is correct.
 
 ### 17:37 visual recheck: effects were crash-safe but not usable
 
 A later Full-preset run confirmed that surviving the former overflow was not
 the same as having acceptable rendering. The composite effect painted dense
 braille progress bands, guide lines, data rain, ripples, and particles across
-the full dashboard. Its "blank-cell-only" guard did not protect usability:
-widget padding, table spacing, paragraph whitespace, and empty panel regions
-are all blank cells. Effects therefore covered nearly every panel and competed
-directly with operational data.
+the full dashboard. Widget padding, table spacing, paragraph whitespace, and
+empty panel regions are all blank cells, so a blank-cell-only guard did not
+protect the operational data.
 
-Comparison with the current Mori codebase found three architectural
-differences:
+Comparison with Mori established three architectural changes for the follow-up:
 
-1. Mori starts from an explicit true-black canvas and uses low-contrast raised
-   surfaces and phantom inactive borders.
-2. Its ordinary post-processing brightens existing foregrounds or changes
-   backgrounds; it does not turn all panel whitespace into a glyph layer.
-3. Effects run before modal dimming/content, so modal legibility is invariant.
+1. Start from an explicit true-black canvas with restrained raised surfaces.
+2. Brighten existing foregrounds or alter backgrounds instead of turning panel
+   whitespace into a screen-wide glyph layer.
+3. Render effects before modal dimming/content so modal legibility is invariant.
 
-The follow-up working tree now uses that model while preserving Roko's state
-effects: Full NervViz is background-only, particles are sparse and require a
-clear 3x3 whitespace neighborhood, effects render beneath modals, and the main
-Dashboard/Plans/Agents layouts use Mori-style one-cell VOID gutters and more
-content-aware sizing. See `visual-density-effects.md` for the detailed visual
-resolution matrix.
-
-The follow-up also removes permanently allocated empty chrome: token/system
-metrics are local to the Agents dashboard, Plans no longer duplicates a fixed
-pipeline header and plan summary, Agents no longer duplicates its roster in a
-second status grid, and the six-row Diagnosis panel is absent until an actual
-diagnosis exists.
-
-### Automated acceptance for the visual follow-up
-
-- All 302 `tui::` library tests pass.
-- A full-effects 180x55 active-agent render keeps the live transcript readable
-  and limits ambient braille to a sparse upper bound.
-- PostFX tests require symbol/foreground preservation and a clear 3x3
-  neighborhood around particles.
-- A 100x24 dashboard regression requires the agent route model row to remain
-  visible, preventing empty chrome from squeezing out operational data again.
-
-This is automated render evidence, not a claim that the remaining disconnected
-P0-P7 producer/action paths have become operational. Their status below is
-unchanged.
+The integrated visual follow-up applies that model while preserving Roko's
+state effects: Full NervViz is background-only, particles are sparse and need a
+clear 3x3 neighborhood, Dashboard/Plans/Agents use one-cell VOID gutters, and
+empty fixed chrome no longer crowds out transcripts and route rows. See
+`visual-density-effects.md` for the resolution matrix and render regressions.
 
 ## P0-P7 claim matrix
 
@@ -126,9 +122,9 @@ Legend: **V** verified at merge, **P** partial/scaffolded, **N** not operational
 | Item | Merge | Evidence and limitation |
 |---|:---:|---|
 | P0.1 token sparkline fallback | V | Connected widgets fall back to cumulative values in `TuiState`. |
-| P0.2 plan task denominator | P | `PlanStarted` carried the total, but `TaskStarted` incremented it again (`0/8` for seven tasks). **Fixed here.** |
+| P0.2 plan task denominator | P | `PlanStarted` carried the total, but `TaskStarted` incremented it again (`0/8` for seven tasks). **Source-fixed and strengthened for idempotent replay; final-tree live check pending.** |
 | P0.3 cost ordering race | V | Agent lookup includes recently inactive agents, covering the completion/cost ordering window. |
-| P0.4 connected token rate/history | P | The ring existed, but `update_from_dashboard_snapshot()` neither copied it into `token_history` nor called the rate updater. **Fixed here.** |
+| P0.4 connected token rate/history | P | The ring existed, but `update_from_dashboard_snapshot()` neither copied it into `token_history` nor called the rate updater. **Source-fixed with cumulative history/zero-delta EMA handling; final-tree live check pending.** |
 | P0.5 connected learning/efficiency bridge | P | Some JSON and aggregate fields are copied and cost-by-model has a fallback, but typed live efficiency/learning event data remains empty or incomplete. |
 | P1.1 working pause/retry/skip channel | P | The enum/channel exists. `p` only flips local UI state; runner pause is not consulted before dispatch, and soft-retry/repair/reverify/skip handlers mostly only log “next tick.” Cancel is process-wide. |
 | P1.2 log search | V | Search state is compiled and used for filtering/highlighting in `logs_view.rs`. |
@@ -157,7 +153,7 @@ Legend: **V** verified at merge, **P** partial/scaffolded, **N** not operational
 | P6.1 number-key shadowing | V | Agents and Logs keep their local digit handlers; other tabs use digit tab switching. |
 | P6.2 `v` means verify | V | Global `v` maps to reverify rather than cycling effects. |
 | P6.3 focus zones on remaining tabs | P | New enum variants cycle, but most focused scrolling still falls through to the shared `diff_scroll`; several panels do not consume the new zones. |
-| P6.4 correct, scrollable help | P | Scrolling works and the stale `v` effects label was corrected to verify/re-verify in the visual follow-up; pause/recovery behavior is still advertised more strongly than its runner wiring supports. |
+| P6.4 correct, scrollable help | P | Scrolling works and the stale `v` effects label now says verify/re-verify; pause/recovery behavior is still advertised more strongly than its runner wiring supports. |
 | P6.5 independent Diff/Procs scroll | N | `procs_scroll` renders separately but is never changed by input; input still mutates `diff_scroll`. |
 | P7.1 background `git_diff` refresh | N | The git watcher refreshes branch/commit/worktree summaries, not `TuiState.git_diff`; connected mode therefore keeps the Diff sub-tab empty/stale. |
 | P7.2 Log/Signals split | V | Signals sub-view filters to signal/episode sources. |

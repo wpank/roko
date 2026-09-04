@@ -1,0 +1,60 @@
+{
+  "schema_version": 2,
+  "renderer": "app.draw/full-frame",
+  "timestamp": "2026-09-01T09:46:05.697633+00:00",
+  "label": "Mori baseline reduced-motion 120x40",
+  "width": 120,
+  "height": 40,
+  "tabs": [
+    {
+      "tab": "Dashboard",
+      "fkey": "F1",
+      "file": "f01-dashboard.txt"
+    },
+    {
+      "tab": "Plans",
+      "fkey": "F2",
+      "file": "f02-plans.txt"
+    },
+    {
+      "tab": "Agents",
+      "fkey": "F3",
+      "file": "f03-agents.txt"
+    },
+    {
+      "tab": "Git",
+      "fkey": "F4",
+      "file": "f04-git.txt"
+    },
+    {
+      "tab": "Logs",
+      "fkey": "F5",
+      "file": "f05-logs.txt"
+    },
+    {
+      "tab": "Config",
+      "fkey": "F6",
+      "file": "f06-config.txt"
+    },
+    {
+      "tab": "Inspect",
+      "fkey": "F7",
+      "file": "f07-inspect.txt"
+    },
+    {
+      "tab": "Marketplace",
+      "fkey": "F8",
+      "file": "f08-marketplace.txt"
+    },
+    {
+      "tab": "Atelier",
+      "fkey": "F9",
+      "file": "f09-atelier.txt"
+    },
+    {
+      "tab": "Learning",
+      "fkey": "F10",
+      "file": "f10-learning.txt"
+    }
+  ]
+}

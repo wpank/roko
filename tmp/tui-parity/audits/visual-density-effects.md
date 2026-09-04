@@ -47,7 +47,7 @@ Direct comparison with the current Mori implementation in
 
 ### Verification
 
-- `cargo test -p roko-cli --lib 'tui::'`: **302 passed, 0 failed**.
+- Integrated `cargo test -p roko-cli --lib 'tui::'`: **301 passed, 0 failed**.
 - A 180x55 active-agent `TestBackend` render with Full effects verifies the
   operational transcript survives and caps braille particles at 32 cells.
 - Background-only and 3x3 particle-clearance tests enforce the two effect

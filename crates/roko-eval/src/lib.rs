@@ -13,9 +13,7 @@
 //!
 //! The existing gate pipeline in `roko-gate` continues to work unchanged.
 //! [`LegacyCriterion`] wraps any [`Verify`](roko_core::Verify) implementation
-//! as a [`Criterion`], and [`BridgeGateRunner`] wraps the evaluation service
-//! behind the existing [`GateRunner`](roko_core::foundation::GateRunner) trait
-//! so that `gate_dispatch.rs` can continue calling `run_gates()` unchanged.
+//! as a [`Criterion`].
 //!
 //! # Phase 1 scope
 //!
@@ -995,44 +993,6 @@ impl Criterion for LegacyCriterion {
     }
 }
 
-/// Wraps an existing [`GateRunner`](roko_core::foundation::GateRunner)
-/// implementation behind the same trait so that the runner-v2
-/// `gate_dispatch.rs` call site remains unchanged.
-///
-/// In Phase 1, this bridge simply delegates to the wrapped `GateRunner`.
-/// In Phase 2, it will route migrated gate names through the new criterion
-/// pipeline while falling back to the legacy runner for unmigrated gates.
-pub struct BridgeGateRunner {
-    /// The inner legacy gate runner (typically `GateService`).
-    inner: Box<dyn roko_core::foundation::GateRunner>,
-}
-
-impl BridgeGateRunner {
-    /// Construct a bridge that delegates to the given legacy gate runner.
-    pub fn new(inner: Box<dyn roko_core::foundation::GateRunner>) -> Self {
-        Self { inner }
-    }
-}
-
-impl fmt::Debug for BridgeGateRunner {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("BridgeGateRunner").finish()
-    }
-}
-
-#[async_trait]
-impl roko_core::foundation::GateRunner for BridgeGateRunner {
-    async fn run_gates(
-        &self,
-        config: roko_core::foundation::GateConfig,
-    ) -> roko_core::Result<roko_core::foundation::GateReport> {
-        // Phase 1: pure delegation. The bridge becomes meaningful in Phase 2
-        // when migrated criteria are registered and can intercept specific
-        // gate names before they reach the legacy runner.
-        self.inner.run_gates(config).await
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Convenience re-exports
 // ---------------------------------------------------------------------------
@@ -1507,76 +1467,6 @@ mod tests {
         let back = verdict_to_criterion_result(&verdict);
         assert!(!back.passed);
         assert_eq!(back.duration_ms, 150);
-    }
-
-    // -- BridgeGateRunner tests --
-
-    /// A mock GateRunner for testing the bridge.
-    struct MockGateRunner {
-        passed: bool,
-    }
-
-    #[async_trait]
-    impl roko_core::foundation::GateRunner for MockGateRunner {
-        async fn run_gates(
-            &self,
-            _config: roko_core::foundation::GateConfig,
-        ) -> roko_core::Result<roko_core::foundation::GateReport> {
-            Ok(roko_core::foundation::GateReport {
-                verdicts: vec![roko_core::foundation::GateVerdict {
-                    gate_name: "mock".to_string(),
-                    classification: roko_core::foundation::GateClassification::default(),
-                    passed: self.passed,
-                    skipped: false,
-                    skip_reason: None,
-                    output: "mock output".to_string(),
-                    duration_ms: 10,
-                }],
-            })
-        }
-    }
-
-    #[tokio::test]
-    async fn bridge_gate_runner_delegates_to_inner() {
-        use roko_core::foundation::GateRunner;
-
-        let bridge = BridgeGateRunner::new(Box::new(MockGateRunner { passed: true }));
-        let config = roko_core::foundation::GateConfig {
-            workdir: ".".into(),
-            enabled_gates: vec!["mock".into()],
-            shell_gates: vec![],
-            max_rung: None,
-        };
-
-        let report = bridge
-            .run_gates(config)
-            .await
-            .expect("bridge should delegate successfully");
-
-        assert_eq!(report.verdicts.len(), 1);
-        assert!(report.verdicts[0].passed);
-        assert!(report.all_passed());
-    }
-
-    #[tokio::test]
-    async fn bridge_gate_runner_reports_failures() {
-        use roko_core::foundation::GateRunner;
-
-        let bridge = BridgeGateRunner::new(Box::new(MockGateRunner { passed: false }));
-        let config = roko_core::foundation::GateConfig {
-            workdir: ".".into(),
-            enabled_gates: vec!["mock".into()],
-            shell_gates: vec![],
-            max_rung: None,
-        };
-
-        let report = bridge
-            .run_gates(config)
-            .await
-            .expect("bridge should delegate successfully");
-
-        assert!(!report.all_passed());
-        assert!(report.first_failure().is_some());
     }
 
     // -- Serialization tests --

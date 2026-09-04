@@ -108,6 +108,8 @@ pub mod episode_logger;
 pub mod error;
 /// Cheap pre-processing of noisy gate failures into retry-ready diagnoses.
 pub mod error_enrichment;
+/// Crash-durable prompt-experiment receipt shared across all dispatch surfaces.
+pub mod experiment_receipt;
 /// Persistent storage for error patterns discovered during plan execution.
 pub mod error_pattern_store;
 /// Event subscriber that fans runtime events into learning subsystems.

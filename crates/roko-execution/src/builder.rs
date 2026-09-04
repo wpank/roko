@@ -605,6 +605,120 @@ mod tests {
     }
 
     #[test]
+    fn injected_observation_bundle_is_used() {
+        let workdir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(workdir.path().join(".roko")).unwrap();
+
+        let obs = ObservationBundle {
+            event_publisher: None,
+            telemetry_enabled: true,
+        };
+        let services = RuntimeServicesBuilder::for_test(RuntimeProfile::FullPlan)
+            .with_observation(obs)
+            .build(workdir.path())
+            .unwrap();
+        assert!(services.observation.telemetry_enabled);
+    }
+
+    #[test]
+    fn injected_extensions_bundle_is_used() {
+        let workdir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(workdir.path().join(".roko")).unwrap();
+
+        let ext = ExtensionsBundle::for_test();
+        let services = RuntimeServicesBuilder::for_test(RuntimeProfile::FullPlan)
+            .with_extensions(ext)
+            .build(workdir.path())
+            .unwrap();
+        assert!(services.extensions.mcp_runtime.is_none());
+        assert!(services.extensions.local_tool_runtime.is_none());
+    }
+
+    #[test]
+    fn builder_ceiling_takes_priority_over_override_budget() {
+        let workdir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(workdir.path().join(".roko")).unwrap();
+
+        let overrides = DetailedOverrides {
+            budget_override: Some(5.0),
+            ..Default::default()
+        };
+        let services = RuntimeServicesBuilder::new(RuntimeProfile::FullPlan, overrides)
+            .with_budget_ceiling_usd(20.0)
+            .build(workdir.path())
+            .unwrap();
+        // Builder-level ceiling wins over override budget.
+        assert!(
+            (services.guards.budget_ceiling_usd.unwrap() - 20.0).abs() < f64::EPSILON,
+            "expected 20.0, got {:?}",
+            services.guards.budget_ceiling_usd
+        );
+    }
+
+    #[test]
+    fn summary_serializes_and_deserializes() {
+        let workdir = tempfile::tempdir().unwrap();
+        let roko_dir = workdir.path().join(".roko");
+        std::fs::create_dir_all(roko_dir.join("learn")).unwrap();
+
+        let services = RuntimeServicesBuilder::for_test(RuntimeProfile::FullPlan)
+            .with_budget_ceiling_usd(10.0)
+            .build(workdir.path())
+            .unwrap();
+        let summary = services.summary();
+        let json = serde_json::to_string(&summary).unwrap();
+        let back: RuntimeServicesSummary = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.profile, "FullPlan");
+        assert!(back.guards_has_budget);
+        assert!(!back.guards_has_process_supervisor);
+        assert!(!back.observation_has_event_publisher);
+    }
+
+    #[test]
+    fn prompt_bundle_for_test_is_fresh() {
+        let bundle = PromptBundle::for_test();
+        assert!(bundle.cache.neuro_entries.is_empty());
+        assert!(bundle.cache.episodes.is_empty());
+        assert!(!bundle.cache.is_stale());
+    }
+
+    #[test]
+    fn feedback_bundle_for_test_has_health_registry() {
+        let bundle = FeedbackBundle::for_test();
+        assert!(bundle.cascade_router.is_none());
+        assert_eq!(bundle.learn_dir, PathBuf::from("/tmp/learn"));
+    }
+
+    #[test]
+    fn feedback_absent_when_no_learn_dir_for_optional_profile() {
+        let workdir = tempfile::tempdir().unwrap();
+        // Only .roko, no .roko/learn/ -- feedback is optional for DirectLight
+        std::fs::create_dir_all(workdir.path().join(".roko")).unwrap();
+
+        let services = RuntimeServicesBuilder::for_test(RuntimeProfile::DirectLight)
+            .build(workdir.path())
+            .unwrap();
+        assert!(
+            services.feedback.is_none(),
+            "DirectLight with no learn dir should have no feedback"
+        );
+    }
+
+    #[test]
+    fn feedback_present_when_learn_dir_exists_for_optional_profile() {
+        let workdir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(workdir.path().join(".roko").join("learn")).unwrap();
+
+        let services = RuntimeServicesBuilder::for_test(RuntimeProfile::DirectLight)
+            .build(workdir.path())
+            .unwrap();
+        assert!(
+            services.feedback.is_some(),
+            "DirectLight with learn dir should have feedback"
+        );
+    }
+
+    #[test]
     fn builder_fullplan_and_graphplan_produce_same_bundle_structure() {
         let workdir = tempfile::tempdir().unwrap();
         let roko_dir = workdir.path().join(".roko");

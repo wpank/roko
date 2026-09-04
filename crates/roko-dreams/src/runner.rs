@@ -82,8 +82,16 @@ pub struct DreamAgentConfig {
 }
 
 impl DreamAgentConfig {
+    /// Build a dream review agent from local configuration.
+    ///
+    /// This is the **standalone binary boundary** fallback: it reads routing
+    /// config directly from disk and constructs a subprocess agent without
+    /// going through the shared model gateway. Production callers should
+    /// prefer [`Self::build_agent_via_gateway`] so that routing, caching,
+    /// budget, and telemetry participate in the normal observation pipeline.
     fn build_agent(&self, workdir: &Path) -> Result<DreamReviewAgent> {
-        // TODO(gateway): remove direct construction once all callers provide a ModelCaller.
+        // Standalone config path: reads routing from disk without the shared
+        // gateway. Production callers should prefer build_agent_via_gateway().
         let routing_config = roko_core::config::loader::load_config_unified(workdir)
             .with_context(|| format!("load routing config from {}", workdir.display()))?;
         let has_routing = !routing_config.providers.is_empty() || !routing_config.models.is_empty();

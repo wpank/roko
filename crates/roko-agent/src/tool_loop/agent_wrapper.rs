@@ -20,6 +20,7 @@ use crate::task_runner::task_id_from_context;
 use crate::tool_loop::StreamEvent;
 use roko_core::{ModelInputMessage, validate_model_input_messages};
 
+use super::context_factory::ToolExecutionContextFactory;
 use super::{StopReason, ToolLoop, ToolLoopOutput, ToolLoopTurnTrace};
 
 use tokio::sync::mpsc;
@@ -189,25 +190,28 @@ impl ToolLoopAgent {
         self
     }
 
+    /// Build a [`ToolExecutionContextFactory`] from the agent's configured
+    /// sinks, cancel token, capabilities, and correlation data.
+    fn context_factory(&self) -> ToolExecutionContextFactory {
+        let mut factory = ToolExecutionContextFactory::new(&self.worktree_path)
+            .with_timeout(self.timeout)
+            .with_capabilities(self.capabilities)
+            .with_audit_sink(Arc::clone(&self.audit_sink))
+            .with_trace_sink(Arc::clone(&self.trace_sink))
+            .with_metrics_sink(Arc::clone(&self.metrics_sink))
+            .with_cancel_token(Arc::clone(&self.cancel_token))
+            .with_correlation(self.correlation.clone())
+            .with_taint_level(CamelTaintLevel::External);
+        if let Some(ref root) = self.immune_root_path {
+            factory = factory.with_immune_root(root);
+        }
+        factory
+    }
+
     /// Build a production [`ToolContext`] using the configured sinks,
     /// cancel token, capabilities, and correlation data.
     fn build_tool_context(&self) -> ToolContext {
-        ToolContext::production(
-            &self.worktree_path,
-            self.timeout,
-            self.capabilities,
-            Arc::clone(&self.audit_sink),
-            Arc::clone(&self.trace_sink),
-            Arc::clone(&self.metrics_sink),
-            Arc::clone(&self.cancel_token),
-            self.correlation.clone(),
-        )
-        .with_immune_root(
-            self.immune_root_path
-                .as_deref()
-                .unwrap_or(&self.worktree_path),
-        )
-        .with_taint_level(CamelTaintLevel::External)
+        self.context_factory().build()
     }
 
     fn structured_messages(&self) -> Vec<serde_json::Value> {

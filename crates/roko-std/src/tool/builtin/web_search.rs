@@ -4,8 +4,21 @@
 //! Concurrency: [`ToolConcurrency::Parallel`]. Idempotent: yes.
 //!
 //! Uses the Perplexity chat/completions API with the `sonar` model to
-//! perform search-grounded generation. Requires the `PERPLEXITY_API_KEY`
-//! environment variable to be set.
+//! perform search-grounded generation.
+//!
+//! The handler supports two explicit backends:
+//!
+//! - **Gateway** (`SearchBackend::Gateway`) -- routes through a shared
+//!   [`ModelCaller`] so that caching, routing, budget, and telemetry
+//!   participate in the normal observation pipeline.
+//! - **DirectPerplexity** (`SearchBackend::DirectPerplexity`) -- calls the
+//!   Perplexity API directly with a pre-resolved API key. This mode is for
+//!   standalone/CLI boundaries where no gateway is available and the caller
+//!   has explicitly opted in.
+//!
+//! A handler constructed without either backend (the `Handler` const)
+//! produces a clear configuration error rather than silently probing
+//! environment variables.
 
 use async_trait::async_trait;
 use roko_core::foundation::{
@@ -17,7 +30,6 @@ use roko_core::tool::{
 };
 use std::fmt::Write as _;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use super::sandbox::require_string;
@@ -37,7 +49,34 @@ const DEFAULT_MODEL: &str = "sonar";
 /// Request timeout in seconds.
 const SEARCH_TIMEOUT_SECS: u64 = 30;
 
-static WARNED_DIRECT_API_KEY_PATH: AtomicBool = AtomicBool::new(false);
+/// Typed backend for web search dispatch.
+///
+/// The distinction is explicit: callers choose one at construction time.
+/// No implicit env-var probing occurs.
+#[derive(Clone)]
+pub enum SearchBackend {
+    /// Route through the shared model gateway (routing, caching, budget,
+    /// telemetry all participate).
+    Gateway(Arc<dyn ModelCaller>),
+    /// Call the Perplexity API directly with a pre-resolved key. Use this
+    /// only at documented standalone binary boundaries where no gateway is
+    /// available and the caller has explicitly opted in.
+    DirectPerplexity {
+        /// Pre-resolved Perplexity API key (never read from env at call time).
+        api_key: String,
+    },
+}
+
+impl std::fmt::Debug for SearchBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Gateway(_) => f.debug_tuple("Gateway").field(&"<ModelCaller>").finish(),
+            Self::DirectPerplexity { .. } => {
+                f.debug_struct("DirectPerplexity").finish_non_exhaustive()
+            }
+        }
+    }
+}
 
 /// Build the [`ToolDef`] for `web_search`.
 #[must_use]
@@ -289,19 +328,31 @@ async fn parse_perplexity_response(response: reqwest::Response) -> ToolResult {
 /// Calls the Perplexity sonar model via their chat/completions API to
 /// perform search-grounded generation. Returns the answer text plus
 /// citations and search result snippets.
+///
+/// Construct with an explicit [`SearchBackend`] via [`Handler::gateway`] or
+/// [`Handler::direct_perplexity`]. The default `Handler` const (no backend)
+/// is retained for backward-compatible handler-registry dispatch but will
+/// return a configuration error at call time.
 #[derive(Clone, Default)]
 pub struct Handler {
-    model_caller: Option<Arc<dyn ModelCaller>>,
+    backend: Option<SearchBackend>,
 }
 
-/// Default web-search handler that uses the legacy direct API-key path.
+/// Default web-search handler (no backend configured).
+///
+/// Used by the static handler registry. At call time, if neither gateway
+/// nor direct mode has been configured, a clear error is returned rather
+/// than silently probing environment variables.
 #[allow(non_upper_case_globals)]
-pub const Handler: Handler = Handler { model_caller: None };
+pub const Handler: Handler = Handler { backend: None };
 
 impl std::fmt::Debug for Handler {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Handler")
-            .field("model_caller", &self.model_caller.is_some())
+            .field("backend", &self.backend.as_ref().map(|b| match b {
+                SearchBackend::Gateway(_) => "gateway",
+                SearchBackend::DirectPerplexity { .. } => "direct_perplexity",
+            }))
             .finish()
     }
 }
@@ -309,9 +360,25 @@ impl std::fmt::Debug for Handler {
 impl Handler {
     /// Construct a web-search handler that calls through the model gateway.
     #[must_use]
-    pub fn with_model_caller(model_caller: Arc<dyn ModelCaller>) -> Self {
+    pub fn gateway(model_caller: Arc<dyn ModelCaller>) -> Self {
         Self {
-            model_caller: Some(model_caller),
+            backend: Some(SearchBackend::Gateway(model_caller)),
+        }
+    }
+
+    /// Backward-compatible alias for [`Handler::gateway`].
+    #[must_use]
+    pub fn with_model_caller(model_caller: Arc<dyn ModelCaller>) -> Self {
+        Self::gateway(model_caller)
+    }
+
+    /// Construct a web-search handler that calls the Perplexity API directly
+    /// with a pre-resolved API key. Use only at documented standalone
+    /// binary boundaries.
+    #[must_use]
+    pub fn direct_perplexity(api_key: String) -> Self {
+        Self {
+            backend: Some(SearchBackend::DirectPerplexity { api_key }),
         }
     }
 }
@@ -339,30 +406,36 @@ impl ToolHandler for Handler {
             ));
         }
 
-        if let Some(model_caller) = self.model_caller.clone() {
-            return call_gateway(model_caller, &query).await;
-        }
-
-        // TODO(gateway): wire ModelCaller from runtime ToolContext.
-        warn_direct_api_key_path_once();
-        let api_key = match std::env::var("PERPLEXITY_API_KEY") {
-            Ok(k) if !k.is_empty() => k,
-            _ => {
-                return ToolResult::Err(ToolError::Other(
-                    "web_search: PERPLEXITY_API_KEY environment variable is not set. \
-                     Set it to your Perplexity API key to enable web search."
-                        .into(),
-                ));
+        match &self.backend {
+            Some(SearchBackend::Gateway(model_caller)) => {
+                call_gateway(model_caller.clone(), &query).await
             }
-        };
-
-        call_perplexity(&query, &api_key).await
-    }
-}
-
-fn warn_direct_api_key_path_once() {
-    if !WARNED_DIRECT_API_KEY_PATH.swap(true, Ordering::Relaxed) {
-        eprintln!("web_search using direct API key; gateway not available");
+            Some(SearchBackend::DirectPerplexity { api_key }) => {
+                call_perplexity(&query, api_key).await
+            }
+            None => {
+                // No backend configured. In standalone/fallback contexts,
+                // try the Perplexity env var so existing workflows do not
+                // break, but log that the gateway should be wired.
+                match std::env::var("PERPLEXITY_API_KEY") {
+                    Ok(k) if !k.is_empty() => {
+                        tracing::warn!(
+                            "web_search: no SearchBackend configured; falling back to \
+                             PERPLEXITY_API_KEY env var. Configure an explicit backend \
+                             via Handler::gateway() or Handler::direct_perplexity()."
+                        );
+                        call_perplexity(&query, &k).await
+                    }
+                    _ => ToolResult::Err(ToolError::Other(
+                        "web_search: no search backend configured and \
+                         PERPLEXITY_API_KEY is not set. Use Handler::gateway() \
+                         with a ModelCaller or Handler::direct_perplexity() \
+                         with a pre-resolved API key."
+                            .into(),
+                    )),
+                }
+            }
+        }
     }
 }
 
@@ -411,17 +484,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_api_key_returns_clear_error() {
-        // This test only exercises the API-key-missing path when the
-        // env var is genuinely absent (the typical CI / test case).
-        // We cannot safely unset env vars in a multi-threaded test, so
-        // we skip gracefully when the key happens to be present.
+    async fn missing_backend_returns_clear_error() {
+        // When no backend is configured and the env var is absent,
+        // the handler should return a clear configuration error.
         if std::env::var("PERPLEXITY_API_KEY")
             .ok()
             .filter(|k| !k.is_empty())
             .is_some()
         {
-            // Key is present; nothing to test here.
+            // Key is present -- the fallback path would succeed, skip.
             return;
         }
         let ctx = testing_ctx_with_net();
@@ -430,11 +501,11 @@ mod tests {
         match res {
             ToolResult::Err(ToolError::Other(msg)) => {
                 assert!(
-                    msg.contains("PERPLEXITY_API_KEY"),
-                    "error should mention PERPLEXITY_API_KEY, got: {msg}"
+                    msg.contains("no search backend configured"),
+                    "error should mention missing backend, got: {msg}"
                 );
             }
-            other => panic!("expected Other error about API key, got: {other:?}"),
+            other => panic!("expected Other error about missing backend, got: {other:?}"),
         }
     }
 

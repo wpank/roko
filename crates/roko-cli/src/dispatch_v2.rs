@@ -16,7 +16,6 @@ use anyhow::{Context as _, Result as AnyhowResult};
 use roko_agent::AgentRuntimeEvent;
 /// Streaming chunk from a provider session, used for agent event bridging.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub(crate) enum StreamChunk {
     /// Plain content delta from the agent.
     ContentDelta(String),

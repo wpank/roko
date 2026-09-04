@@ -377,8 +377,38 @@ pub(crate) async fn cmd_job(cli: &Cli, cmd: JobCmd) -> Result<i32> {
                     _ => job.description.clone(),
                 };
 
+                // Take the cancellation receiver so we can race it against
+                // the dispatch. If the job is cancelled while running, the
+                // receiver fires and we transition to `cancelled`.
+                let cancel_rx = svc.take_cancel_receiver(&receipt.job_id);
+
                 let config = resolve_config_for_workdir(cli, &wd)?;
-                let result = run_once(&wd, &config, &prompt, None, None).await;
+
+                // Dispatch through run_once_inline (the canonical execution
+                // path) rather than calling run_once directly. This provides
+                // proper inline terminal output and consistent observation.
+                let result = if let Some(mut rx) = cancel_rx {
+                    tokio::select! {
+                        biased;
+                        _ = &mut rx => {
+                            // Cancellation acknowledged.
+                            let cancel_receipt = svc
+                                .cancel(&receipt.job_id, mode)
+                                .await
+                                .map_err(|e| anyhow::anyhow!("{e}"))?;
+                            if cli.json {
+                                println!("{}", serde_json::to_string_pretty(&cancel_receipt)?);
+                            } else {
+                                println!("Job '{}' cancelled during execution.", receipt.job_id);
+                            }
+                            return Ok(EXIT_SUCCESS);
+                        }
+                        res = roko_cli::run_inline::run_once_inline(&wd, &config, &prompt, None) => res,
+                    }
+                } else {
+                    roko_cli::run_inline::run_once_inline(&wd, &config, &prompt, None).await
+                };
+
                 match result {
                     Ok(report) => {
                         let submission = serde_json::json!({
@@ -428,6 +458,25 @@ pub(crate) async fn cmd_job(cli: &Cli, cmd: JobCmd) -> Result<i32> {
                 };
                 println!(
                     "Job '{}' cancelled ({} -> {}){ack_note}.",
+                    receipt.job_id, receipt.prior_status, receipt.new_status
+                );
+            }
+            Ok(EXIT_SUCCESS)
+        }
+        JobCmd::Recover { id, workdir } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            let svc = roko_core::JobExecutionService::new(jobs_dir(&wd));
+
+            let receipt = svc
+                .recover(&id, roko_core::JobExecutionMode::Local)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&receipt)?);
+            } else {
+                println!(
+                    "Job '{}' recovered ({} -> {}).",
                     receipt.job_id, receipt.prior_status, receipt.new_status
                 );
             }

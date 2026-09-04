@@ -110,7 +110,6 @@ pub struct GraphPlanBudgetSnapshot {
 }
 
 impl GraphPlanBudgetSnapshot {
-    #[allow(dead_code)]
     fn remaining_usd(self) -> f64 {
         self.ceiling_usd.map_or(f64::INFINITY, |ceiling| {
             (ceiling - self.spent_usd - self.reserved_usd).max(0.0)

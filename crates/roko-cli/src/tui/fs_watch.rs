@@ -40,6 +40,7 @@ pub struct FsWatchHandle {
     _backend: FsWatchBackend,
 }
 
+// Variants hold resources (debouncer, poll thread) that are cleaned up on Drop.
 #[allow(dead_code)]
 enum FsWatchBackend {
     Notify(NotifyDebouncer),

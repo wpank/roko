@@ -879,8 +879,8 @@ fn apply_prompt_experiment_assignments(
 struct PromptSection {
     name: String,
     body: String,
-    #[allow(dead_code)]
-    drop_priority: u32,
+    // Reserved for future context-pressure token budgeting; not read yet.
+    _drop_priority: u32,
     knowledge_ids: Vec<String>,
     playbook_ids: Vec<String>,
 }
@@ -890,7 +890,7 @@ impl PromptSection {
         Self {
             name: name.into(),
             body: body.into(),
-            drop_priority,
+            _drop_priority: drop_priority,
             knowledge_ids: Vec::new(),
             playbook_ids: Vec::new(),
         }

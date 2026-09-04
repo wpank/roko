@@ -3482,10 +3482,9 @@ bogus_field = "x"
     }
 
     #[test]
-    fn context_pressure_enabled_still_parses_with_deprecation_info() {
-        // The field remains in ConductorConfig for compatibility; it must
-        // parse without error. The deprecation diagnostic comes from doctor,
-        // not from path validation (the key is still in the schema).
+    fn context_pressure_enabled_removed_from_schema() {
+        // The field was removed from ConductorConfig. Config files that still
+        // contain it should now report it as an unknown key via path validation.
         let value: toml::Value = r#"
 schema_version = 2
 config_version = 2
@@ -3495,18 +3494,14 @@ context_pressure_enabled = true
         .parse()
         .unwrap();
         let diags = validate_known_config_paths(&value);
-        // context_pressure_enabled is a valid schema field (deprecated but parseable).
-        let unexpected: Vec<_> = diags
+        let flagged: Vec<_> = diags
             .iter()
             .filter(|d| d.key.contains("context_pressure_enabled"))
             .collect();
         assert!(
-            unexpected.is_empty(),
-            "context_pressure_enabled must remain parseable, got: {unexpected:?}"
+            !flagged.is_empty(),
+            "context_pressure_enabled should be flagged as unknown after removal"
         );
-        // Also confirm it actually deserializes.
-        let config: RokoConfig = value.try_into().expect("must deserialize");
-        assert!(config.conductor.context_pressure_enabled);
     }
 
     #[test]

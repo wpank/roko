@@ -1,8 +1,6 @@
 //! Context window pressure watcher: fires when token usage exceeds threshold.
 //!
-//! # STATUS: GATED
-//!
-//! Only active when `conductor.context_pressure_enabled = true` in `roko.toml`.
+//! Included in the default watcher set via `Conductor::default_watchers`.
 //! Extended in 2026-05 to read `context_window` from `ModelProfile` config for
 //! non-Anthropic models (via a precomputed map passed at construction time).
 //! Uses a lookback window (`PRESSURE_LOOKBACK = 3`) over recent `TokenUsage`

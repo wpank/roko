@@ -48,7 +48,6 @@ pub enum LogGrouping {
 
 impl LogGrouping {
     /// Cycle to the next grouping mode (used by the G key toggle).
-    #[allow(dead_code)]
     pub(crate) fn next(self) -> Self {
         match self {
             Self::Chronological => Self::ByPlan,

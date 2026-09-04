@@ -42,6 +42,7 @@ pub(crate) struct GitWatchHandle {
     _backend: GitWatchBackend,
 }
 
+// Variants hold resources (debouncer, poll thread) that are cleaned up on Drop.
 #[allow(dead_code)]
 enum GitWatchBackend {
     Notify(NotifyDebouncer),

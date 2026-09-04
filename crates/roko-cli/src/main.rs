@@ -323,7 +323,7 @@ fn long_version() -> &'static str {
     about = "Roko --- agent toolkit\n\nQuick start: roko setup, roko do <task>, roko status\nRun roko help <command> for details.",
     after_long_help = "\
 COMMAND GROUPS:
-  Core workflow:     init, do, develop, run, status, doctor
+  Core workflow:     init, do, run, status, doctor
   Planning:          plan, prd
   Agents:            agent (create, start, stop, chat, serve)
   Research:          research, think, note
@@ -494,13 +494,8 @@ Examples:
         #[arg(value_name = "PROMPT")]
         prompt: Vec<String>,
     },
-    /// Plan-first development: generate plan, approve, execute.
-    #[command(after_help = "\
-Examples:
-  roko develop \"Add user auth\"          Generate plan, approve, execute
-  roko develop --dry-run \"Add auth\"     Show plan without executing
-  roko develop --yes \"Quick fix\"        Skip approval, auto-execute
-  roko develop --continue                Resume from last snapshot")]
+    /// (Removed) Use `roko do --plan <prompt>` instead.
+    #[command(hide = true)]
     Develop {
         /// Preview the generated plan without executing.
         #[arg(long)]
@@ -585,11 +580,16 @@ Examples:
   roko show learning                Routing, experiments, gates, and C-Factor
   roko show history                 Recent chronological state events
   roko show auth-redesign           Detail for a work item or plan id
-  roko show --live                  Open the dashboard/TUI
+  roko show --dashboard              Open the dashboard/TUI
+  roko show --live                  (deprecated alias for --dashboard)
   roko show --follow                Stream live events from roko serve")]
     Show {
-        /// Delegate to the existing dashboard/TUI.
+        /// Open the interactive TUI dashboard.
         #[arg(long)]
+        dashboard: bool,
+        /// Deprecated alias for --dashboard. Hidden in help; emits a
+        /// deprecation warning and delegates identically.
+        #[arg(long, hide = true)]
         live: bool,
         /// Stream live events from a running roko serve instance via SSE.
         #[arg(long, short = 'f')]
@@ -2424,6 +2424,17 @@ enum JobCmd {
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
+    /// Recover an interrupted in_progress job.
+    ///
+    /// If the job has a durable submission, it completes. Otherwise it
+    /// transitions back to open for re-execution.
+    Recover {
+        /// Job ID.
+        id: String,
+        /// Working directory (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
 }
 
 // Internal enum used by cmd_neuro — mirrors the old top-level NeuroCmd.
@@ -3520,27 +3531,22 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             )
             .await
         }
-        Command::Develop {
-            dry_run,
-            yes,
-            r#continue,
-            workdir,
-            provider,
-            prompt,
-        } => {
-            // Resolve typed overrides before any side effects (#262).
-            let _resolved = ResolvedExecutionOverrides::for_develop(
-                &global_cli_flags(cli),
-                &DevelopInput {
-                    dry_run,
-                    yes,
-                    provider: provider.clone(),
-                },
+        Command::Develop { .. } => {
+            // #363: `develop` is removed. Emit a migration error and exit
+            // without executing any provider/server/git effects.
+            eprintln!(
+                "error: `roko develop` was removed. Use `roko do --plan <prompt>` instead."
             );
-            tracing::debug!(?_resolved, "resolved execution overrides for `develop`");
-
-            commands::develop::cmd_develop(cli, workdir, prompt, dry_run, yes, r#continue, provider)
-                .await
+            if cli.json {
+                let msg = serde_json::json!({
+                    "error": "command_removed",
+                    "command": "develop",
+                    "migration": "roko do --plan <prompt>",
+                    "deprecated_since": "2026-09-04",
+                });
+                println!("{}", serde_json::to_string_pretty(&msg).unwrap_or_default());
+            }
+            Ok(EXIT_FAILURE)
         }
         Command::Status {
             workdir,
@@ -3553,12 +3559,22 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
         }
         Command::Github { cmd } => commands::github::cmd_github(cli, cmd).await,
         Command::Show {
+            dashboard,
             live,
             follow,
             serve_url,
             workdir,
             subject,
-        } => commands::show::cmd_show(cli, workdir, live, follow, serve_url, subject).await,
+        } => {
+            // #363: --live is a deprecated alias for --dashboard.
+            let use_dashboard = dashboard || live;
+            if live && !dashboard {
+                eprintln!(
+                    "warning: --live is deprecated; use --dashboard instead"
+                );
+            }
+            commands::show::cmd_show(cli, workdir, use_dashboard, follow, serve_url, subject).await
+        }
         Command::Doctor {
             subject,
             workdir,

@@ -1653,11 +1653,6 @@ pub struct ConductorConfig {
     pub max_auto_fix_attempts: u32,
     #[serde(default = "default_auto_fix_model")]
     pub auto_fix_model: String,
-    /// Deprecated/runtime-dead in runner-v2: opt in to the context-window
-    /// pressure watcher after its `TokenUsage` producer is wired into the
-    /// runner conductor ring. The setting remains parseable for compatibility.
-    #[serde(default)]
-    pub context_pressure_enabled: bool,
     /// Runtime-live per-watcher threshold overrides for runner-v2 conductor
     /// supervision. These are consumed by `Conductor::from_config`.
     #[serde(default)]
@@ -1720,7 +1715,6 @@ impl Default for ConductorConfig {
             express_mode: false,
             max_auto_fix_attempts: default_max_auto_fix(),
             auto_fix_model: default_auto_fix_model(),
-            context_pressure_enabled: false,
             watchers: WatcherThresholds::default(),
             silence_timeout_secs: default_silence_timeout_secs(),
             compile_fail_threshold: default_compile_fail_threshold(),

@@ -12,6 +12,7 @@
 //! - [`prune`] — context-growth guard (§36.55).
 //! - [`result_msg`] — tool-result message construction (§36.56).
 //! - [`checkpoint`] — resumable state (§36.57).
+//! - [`context_factory`] — production [`ToolContext`] builder (T026).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -73,6 +74,7 @@ pub mod agent_wrapper;
 pub mod backends;
 pub mod checkpoint;
 pub mod compaction;
+pub mod context_factory;
 pub mod max_iter;
 pub mod prune;
 pub mod result_msg;

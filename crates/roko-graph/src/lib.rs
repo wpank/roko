@@ -59,6 +59,7 @@ pub mod plan_mutation;
 pub mod profile;
 pub mod registry;
 pub mod replay;
+pub mod snapshot;
 pub mod topo;
 pub mod types;
 pub mod workspace;
@@ -128,4 +129,13 @@ pub use delivery::{
 pub use profile::{
     AuthoredGraphProfile, AuthoredGraphProfileBuilder, CapabilityDenial, CellCapabilityDenial,
     DenialReason, ProfileValidationError, RuntimeProfileKind, validate_cell_capabilities,
+};
+
+// Re-export layered snapshot v2, extension ledger, and receipt state machine (#251).
+pub use snapshot::{
+    CheckpointExtension, ExtensionError, ExtensionRegistry, ReconcileAction, ReceiptError,
+    ReceiptLedgerEntry, ReceiptState, commit_receipt, prepare_receipt, register_extension,
+    register_known_namespaces, settle_receipt, EXT_ACTIVITY, EXT_APPROVAL, EXT_CONTROL,
+    EXT_COST, EXT_DELIVERY, EXT_EXPERIMENT, EXT_FEEDBACK, EXT_GATE_HISTORY, EXT_REPLAN,
+    EXT_RUN_CONTEXT, EXT_SAFETY_PROVENANCE,
 };

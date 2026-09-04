@@ -10,7 +10,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use petgraph::visit::EdgeRef as _;
-use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -31,78 +30,29 @@ pub use crate::delivery::{MergeEnqueuer, MergeRequest};
 
 // ─── GraphSnapshot ──────────────────────────────────────────────────────────
 
-/// Serializable snapshot of a graph execution in progress or completed (v2).
+// Snapshot types are now defined in snapshot.rs (#251). Re-export them here
+// for backward compatibility with existing callers.
+pub use crate::snapshot::{
+    GRAPH_SNAPSHOT_SCHEMA_VERSION, GraphSnapshot, GraphSnapshotV2, SerializableNodeStatus,
+    SerializableSignal,
+};
+
+// Re-export reconciliation helper. The snapshot module returns ReconcileAction;
+// this wrapper preserves the original NodeStatus return for existing callers.
+/// Reconcile an ambiguous `Running` status from a restored snapshot.
 ///
-/// Captures per-node status, Activity node outputs, policy, budget state, and
-/// a stable graph fingerprint so the engine can be resumed safely. Only
-/// Activity node outputs are included -- Workflow node outputs are re-derived
-/// on resume.
-///
-/// V2 adds `schema_version`, `graph_fingerprint`, budget tracking fields, and
-/// `last_event_seq` for monotonic event replay.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GraphSnapshotV2 {
-    /// On-disk schema version. Always `2` for this struct.
-    #[serde(default = "default_snapshot_schema_version")]
-    pub schema_version: u8,
-    /// Name of the graph.
-    pub graph_name: String,
-    /// Graph ID (from metadata).
-    pub graph_id: String,
-    /// Stable BLAKE3 fingerprint of the execution-relevant graph definition.
-    /// Used to reject resume after graph definition or policy drift.
-    #[serde(default)]
-    pub graph_fingerprint: String,
-    /// Per-node execution status at snapshot time.
-    pub node_statuses: HashMap<String, SerializableNodeStatus>,
-    /// Activity node outputs. Workflow nodes are excluded (re-derived on resume).
-    pub node_outputs: HashMap<String, Vec<SerializableSignal>>,
-    /// Hot Graph tick count at snapshot time.
-    pub tick_count: u64,
-    /// Cumulative budget spent in micro-USD (1 USD = 1_000_000).
-    #[serde(default)]
-    pub budget_spent_micro_usd: u64,
-    /// Budget reserved but not yet settled in micro-USD.
-    #[serde(default)]
-    pub budget_reserved_micro_usd: u64,
-    /// Monotonic event sequence number at snapshot time. Replay must not emit
-    /// events with sequence numbers at or below this value.
-    #[serde(default)]
-    pub last_event_seq: u64,
-    /// Unix milliseconds when the snapshot was captured.
-    pub created_at_ms: i64,
-    /// Graph policy preserved for resume.
-    pub policy: GraphPolicy,
+/// Graph callers that do not have a registered reconciliation owner should
+/// call this to convert `Running` to `Pending` before resume. This preserves
+/// backward compatibility for callers that do not implement owner-based
+/// reconciliation.
+pub fn reconcile_running_status(status: SerializableNodeStatus) -> NodeStatus {
+    match status {
+        SerializableNodeStatus::Running => NodeStatus::Pending,
+        other => other.into(),
+    }
 }
 
-/// Current schema version for [`GraphSnapshotV2`].
-pub const GRAPH_SNAPSHOT_SCHEMA_VERSION: u8 = 2;
-
-fn default_snapshot_schema_version() -> u8 {
-    GRAPH_SNAPSHOT_SCHEMA_VERSION
-}
-
-/// Primary snapshot type. Callers use this alias; the underlying versioned
-/// struct name is kept for migration clarity.
-pub type GraphSnapshot = GraphSnapshotV2;
-
-/// Serializable node status (mirrors [`NodeStatus`] but with serde support).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SerializableNodeStatus {
-    /// Not yet started.
-    Pending,
-    /// Currently executing (treated as Pending on resume).
-    Running,
-    /// Completed successfully.
-    Complete,
-    /// Failed during execution.
-    Failed,
-    /// Skipped because an upstream node failed.
-    Skipped,
-    /// Skipped because no incoming conditional route selected this node.
-    ConditionSkipped,
-}
+// ─── SerializableNodeStatus <-> NodeStatus conversions ──────────────────────
 
 impl From<NodeStatus> for SerializableNodeStatus {
     fn from(s: NodeStatus) -> Self {
@@ -130,30 +80,6 @@ impl From<SerializableNodeStatus> for NodeStatus {
             SerializableNodeStatus::ConditionSkipped => Self::ConditionSkipped,
         }
     }
-}
-
-/// Reconcile an ambiguous `Running` status from a restored snapshot.
-///
-/// Graph callers that do not have a registered reconciliation owner should
-/// call this to convert `Running` to `Pending` before resume. This preserves
-/// backward compatibility for callers that do not implement owner-based
-/// reconciliation.
-pub fn reconcile_running_status(status: SerializableNodeStatus) -> NodeStatus {
-    match status {
-        SerializableNodeStatus::Running => NodeStatus::Pending,
-        other => other.into(),
-    }
-}
-
-/// Lightweight serializable signal reference for snapshots.
-///
-/// Full [`roko_core::Signal`] is already serde-compatible, but we wrap the
-/// JSON representation to keep the snapshot format stable even if Signal
-/// internals change.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SerializableSignal {
-    /// JSON-serialized signal.
-    pub json: serde_json::Value,
 }
 
 // ─── Node types ─────────────────────────────────────────────────────────────

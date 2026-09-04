@@ -2218,6 +2218,7 @@ fn load_agents(state: &Value) -> Vec<AgentSummary> {
 struct RuntimeAgentEntry {
     name: String,
     pid: u32,
+    // Present in agents.json; required for deserialization but not read.
     #[allow(dead_code)]
     bind: String,
 }

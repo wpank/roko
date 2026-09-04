@@ -1738,15 +1738,15 @@ struct RunContext<'a> {
     worktrees: &'a WorktreeManager,
     gate_thresholds: &'a GateThresholds,
     snapshot_writer: &'a SnapshotWriter,
-    #[allow(dead_code)]
-    prompt_cache: &'a Arc<PromptCache>,
+    // Stored for future use; not currently read from the struct.
+    _prompt_cache: &'a Arc<PromptCache>,
     factory: &'a SharedAgentFactory,
     task_capacity: &'a TaskCapacity,
     disk_budget: &'a mut DiskBudgetTracker,
     gate_sem: Arc<tokio::sync::Semaphore>,
     task_runtime_states: &'a mut HashMap<String, TaskRuntimeState>,
-    #[allow(dead_code)]
-    legacy_gate_attempts: &'a mut HashMap<String, TaskAttemptRef>,
+    // Retained for legacy gate reconciliation; not currently read.
+    _legacy_gate_attempts: &'a mut HashMap<String, TaskAttemptRef>,
     preflight_attempted: &'a mut HashSet<TaskAttemptRef>,
     baseline_gate_failures: &'a mut HashMap<TaskAttemptRef, Vec<GateVerdictSummary>>,
     /// Prompt section diagnostics per attempt key — populated at dispatch,
@@ -2116,7 +2116,6 @@ async fn run_candidate_replay(
     }
 }
 
-#[allow(dead_code)]
 fn default_runner_worktree_manager(workdir: &Path) -> WorktreeManager {
     default_runner_worktree_manager_with_ttl(workdir, RUNNER_WORKTREE_IDLE_TTL_SECS)
 }
@@ -6392,13 +6391,13 @@ pub async fn run_with_tui_commands(
                         worktrees: &worktrees,
                         gate_thresholds: &gate_thresholds,
                         snapshot_writer: &snapshot_writer,
-                        prompt_cache: &prompt_cache,
+                        _prompt_cache: &prompt_cache,
                         factory: &factory,
                         task_capacity: &task_capacity,
                         disk_budget: &mut disk_budget,
                         gate_sem: gate_sem.clone(),
                         task_runtime_states: &mut task_runtime_states,
-                        legacy_gate_attempts: &mut legacy_gate_attempts,
+                        _legacy_gate_attempts: &mut legacy_gate_attempts,
                         preflight_attempted: &mut preflight_attempted,
                         baseline_gate_failures: &mut baseline_gate_failures,
                         section_diagnostics: &mut section_diagnostics,
@@ -9038,7 +9037,6 @@ fn emit_runner_event(
 /// runner-level emits still cover the lifecycle events these helpers
 /// produce because the helpers themselves only emit on their plan's
 /// completion which is also republished from `run()`.
-#[allow(dead_code)]
 fn emit_runner_event_facadeless(
     paths: &PersistPaths,
     state: &mut RunState,
@@ -15917,7 +15915,6 @@ fn format_discovered_patterns_section(
 /// Collect playbook rule IDs whose file-glob triggers match any of the given
 /// files in scope. Used during context assembly to surface relevant playbook
 /// rules in the agent system prompt.
-#[allow(dead_code)]
 pub(crate) fn collect_plan_playbook_scope(
     files_in_scope: &[String],
     playbook_rules: &[roko_learn::playbook_rules::Rule],
@@ -17260,8 +17257,8 @@ enum AttemptCleanupTerminal {
 
 #[derive(Debug)]
 struct CancelAttemptSummary {
-    #[allow(dead_code)]
-    attempt: TaskAttemptRef,
+    // Retained for Debug formatting; not read directly.
+    _attempt: TaskAttemptRef,
     outcome: CancelAttemptOutcome,
 }
 
@@ -18365,7 +18362,7 @@ async fn stop_all_agents(
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
                 summaries.push(CancelAttemptSummary {
-                    attempt,
+                    _attempt: attempt,
                     outcome: CancelAttemptOutcome::Unconfirmed(vec![
                         "global settlement budget exhausted before cleanup".to_string(),
                     ]),
@@ -18398,7 +18395,7 @@ async fn stop_all_agents(
         if let CancelAttemptOutcome::Unconfirmed(errors) = &outcome {
             error!(attempt = %attempt.key(), ?errors, "attempt cancellation remains unconfirmed");
         }
-        summaries.push(CancelAttemptSummary { attempt, outcome });
+        summaries.push(CancelAttemptSummary { _attempt: attempt, outcome });
     }
     let survivors = ownership.surviving_agent_metadata();
     state.agent_active = survivors.active;
@@ -22641,13 +22638,13 @@ slug = "fixture-model"
             worktrees: &worktrees,
             gate_thresholds: &thresholds,
             snapshot_writer: &writer,
-            prompt_cache: &prompt_cache,
+            _prompt_cache: &prompt_cache,
             factory: &factory,
             task_capacity: &task_capacity,
             disk_budget: &mut disk_budget,
             gate_sem: Arc::new(tokio::sync::Semaphore::new(1)),
             task_runtime_states: &mut runtimes,
-            legacy_gate_attempts: &mut legacy,
+            _legacy_gate_attempts: &mut legacy,
             preflight_attempted: &mut preflight,
             baseline_gate_failures: &mut baseline_gate_failures,
             section_diagnostics: &mut diagnostics,
@@ -22885,13 +22882,13 @@ slug = "fixture-model"
                 worktrees: &worktrees,
                 gate_thresholds: &thresholds,
                 snapshot_writer: &writer,
-                prompt_cache: &prompt_cache,
+                _prompt_cache: &prompt_cache,
                 factory: &factory,
                 task_capacity: &task_capacity,
                 disk_budget: &mut disk_budget,
                 gate_sem: Arc::new(tokio::sync::Semaphore::new(1)),
                 task_runtime_states: &mut runtimes,
-                legacy_gate_attempts: &mut legacy,
+                _legacy_gate_attempts: &mut legacy,
                 preflight_attempted: &mut preflight,
                 baseline_gate_failures: &mut baseline_gate_failures,
                 section_diagnostics: &mut diagnostics,
@@ -25206,7 +25203,7 @@ depends_on = []
     fn cancellation_summary_requires_every_attempt_and_quarantine_to_settle() {
         let attempt = TaskAttemptRef::new("plan", "task", 1);
         let confirmed = CancelAttemptSummary {
-            attempt: attempt.clone(),
+            _attempt: attempt.clone(),
             outcome: CancelAttemptOutcome::Confirmed(TaskAttemptOutcome::Cancelled),
         };
         assert!(
@@ -25220,7 +25217,7 @@ depends_on = []
         assert!(
             !CancelAllSummary {
                 attempts: vec![CancelAttemptSummary {
-                    attempt: attempt.clone(),
+                    _attempt: attempt.clone(),
                     outcome: CancelAttemptOutcome::Unconfirmed(vec!["kill not confirmed".into()]),
                 }],
                 quarantined: Vec::new(),

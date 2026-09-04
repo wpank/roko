@@ -9,7 +9,7 @@
 //! 3. The runner forwards a `FeedbackEvent::TaskCompleted` to the
 //!    `FeedbackFacade`, which fans out to:
 //!    - `EpisodeSink` → durable `.roko/episodes.jsonl`
-//!    - `RoutingObservationSink` → `CascadeRouter::record_outcome`
+//!    - `RoutingObservationSink` → `CascadeRouter::record_confidence_outcome`
 //!    - `KnowledgeIngestionSink` → `.roko/learn/knowledge-candidates.jsonl`
 //! 4. The runner publishes a `ProjectionEvent` to `Projection` and the
 //!    CLI progress projection renders it into a structured progress

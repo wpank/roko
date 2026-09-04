@@ -284,7 +284,7 @@ mod tests {
 
         let provider_health =
             std::fs::read_to_string(learn_dir.join("provider-health.json")).expect("health");
-        assert!(provider_health.contains("provider-id"));
+        assert!(provider_health.contains("provider_id"));
 
         let cascade =
             std::fs::read_to_string(learn_dir.join("cascade-router.json")).expect("cascade");

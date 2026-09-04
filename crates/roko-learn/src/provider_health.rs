@@ -281,22 +281,30 @@ impl ProviderHealthRegistry {
     }
 
     /// Record a successful request for `provider_id`.
+    ///
+    /// The key is normalized (hyphens to underscores, lowercased) so that
+    /// `"claude-cli"` and `"claude_cli"` map to the same circuit breaker.
     pub fn record_success(&self, provider_id: &str) {
+        let key = normalize_provider_key(provider_id);
         let mut providers = self.providers.lock();
         let health = providers
-            .entry(provider_id.to_owned())
-            .or_insert_with(|| new_provider_health(provider_id));
+            .entry(key.clone())
+            .or_insert_with(|| new_provider_health(&key));
         health.record_success();
         drop(providers);
         self.schedule_persist();
     }
 
     /// Record a failed request for `provider_id`.
+    ///
+    /// The key is normalized (hyphens to underscores, lowercased) so that
+    /// `"claude-cli"` and `"claude_cli"` map to the same circuit breaker.
     pub fn record_failure(&self, provider_id: &str, error: ErrorClass) {
+        let key = normalize_provider_key(provider_id);
         let mut providers = self.providers.lock();
         let health = providers
-            .entry(provider_id.to_owned())
-            .or_insert_with(|| new_provider_health(provider_id));
+            .entry(key.clone())
+            .or_insert_with(|| new_provider_health(&key));
         health.record_failure(error, unix_ms_now());
         drop(providers);
         self.schedule_persist();
@@ -304,11 +312,13 @@ impl ProviderHealthRegistry {
 
     /// Return whether `provider_id` is currently available for routing.
     ///
-    /// Unknown providers are treated as available.
+    /// Unknown providers are treated as available.  The key is normalized
+    /// before lookup.
     pub fn is_available(&self, provider_id: &str) -> bool {
+        let key = normalize_provider_key(provider_id);
         let mut providers = self.providers.lock();
         let mut should_persist = false;
-        let available = match providers.get_mut(provider_id) {
+        let available = match providers.get_mut(&key) {
             Some(health) => {
                 let previous_state = health.state;
                 let available = health.is_available(unix_ms_now());
@@ -327,11 +337,13 @@ impl ProviderHealthRegistry {
     /// Return whether `provider_id` currently looks healthy without mutating
     /// the circuit state.
     ///
-    /// Unknown providers are treated as healthy.
+    /// Unknown providers are treated as healthy.  The key is normalized
+    /// before lookup.
     #[must_use]
     pub fn is_healthy(&self, provider_id: &str) -> bool {
+        let key = normalize_provider_key(provider_id);
         let providers = self.providers.lock();
-        match providers.get(provider_id) {
+        match providers.get(&key) {
             None => true,
             Some(health) => match health.state {
                 CircuitState::Closed | CircuitState::HalfOpen => true,
@@ -343,6 +355,8 @@ impl ProviderHealthRegistry {
     }
 
     /// Filter `candidates` to only providers that are currently available.
+    ///
+    /// Each candidate key is normalized before the health check.
     pub fn available_providers(&self, candidates: &[String]) -> Vec<String> {
         candidates
             .iter()
@@ -359,13 +373,16 @@ impl ProviderHealthRegistry {
 
     /// Return the current snapshot for `provider_id`, defaulting to a
     /// healthy record when the provider has never been seen.
+    ///
+    /// The key is normalized before lookup.
     #[must_use]
     pub fn get(&self, provider_id: &str) -> ProviderHealth {
+        let key = normalize_provider_key(provider_id);
         self.providers
             .lock()
-            .get(provider_id)
+            .get(&key)
             .cloned()
-            .unwrap_or_else(|| new_provider_health(provider_id))
+            .unwrap_or_else(|| new_provider_health(&key))
     }
 
     /// Persist the registry to `path` as JSON.
@@ -383,15 +400,21 @@ impl ProviderHealthRegistry {
     }
 
     /// Load the registry from `path`, or return a new empty registry.
+    ///
+    /// Persisted keys are re-normalized on load so that health files written
+    /// before key normalization was introduced are migrated transparently.
+    /// When two raw keys collapse to the same normalized form the entry with
+    /// the higher `total_requests` count wins.
     pub fn load_or_new(path: &Path) -> Self {
         let snapshot = std::fs::read_to_string(path)
             .ok()
             .and_then(|s| serde_json::from_str::<ProviderHealthRegistrySnapshot>(&s).ok());
 
-        match snapshot {
-            Some(snapshot) => Self::with_persistence(path.to_path_buf(), snapshot.providers),
-            None => Self::with_persistence(path.to_path_buf(), HashMap::new()),
-        }
+        let providers = match snapshot {
+            Some(snap) => normalize_snapshot_keys(snap.providers),
+            None => HashMap::new(),
+        };
+        Self::with_persistence(path.to_path_buf(), providers)
     }
 
     fn with_persistence(path: PathBuf, providers: HashMap<String, ProviderHealth>) -> Self {
@@ -489,6 +512,46 @@ fn save_snapshot(
     snapshot: &ProviderHealthRegistrySnapshot,
 ) -> Result<(), std::io::Error> {
     roko_fs::atomic_write_json(path, snapshot)
+}
+
+/// Re-key a loaded snapshot so that every provider ID uses the canonical
+/// normalized form.  When two raw keys collapse (e.g. `"claude-cli"` and
+/// `"claude_cli"`) the entry with the higher `total_requests` is kept.
+fn normalize_snapshot_keys(
+    raw: HashMap<String, ProviderHealth>,
+) -> HashMap<String, ProviderHealth> {
+    let mut merged: HashMap<String, ProviderHealth> = HashMap::with_capacity(raw.len());
+    for (raw_key, mut health) in raw {
+        let canonical = normalize_provider_key(&raw_key);
+        health.provider_id = canonical.clone();
+        merged
+            .entry(canonical)
+            .and_modify(|existing| {
+                if health.total_requests > existing.total_requests {
+                    *existing = health.clone();
+                }
+            })
+            .or_insert(health);
+    }
+    merged
+}
+
+/// Normalize a provider health key to a canonical form.
+///
+/// Provider identifiers reach the health registry from multiple sources:
+///
+/// - `ProviderKind::label()` — always `snake_case` (e.g. `"claude_cli"`)
+/// - `Agent::backend_id()` — mixed (`"claude_cli"`, `"hermes-acp"`)
+/// - Config `ModelProfile.provider` — user-written, may use hyphens
+///
+/// Without normalization the same logical provider can accumulate separate
+/// circuit-breaker state under `"claude_cli"` and `"claude-cli"`.
+///
+/// The canonical form is lowercase with hyphens replaced by underscores,
+/// matching the convention established by `ProviderKind::label()`.
+#[must_use]
+pub fn normalize_provider_key(key: &str) -> String {
+    key.to_ascii_lowercase().replace('-', "_")
 }
 
 fn new_provider_health(provider_id: &str) -> ProviderHealth {
@@ -630,17 +693,21 @@ impl ProviderHealthTracker {
     ///
     /// Resets `consecutive_failures` to 0 and transitions the provider to
     /// [`HealthState::Healthy`] regardless of current state.
+    ///
+    /// The key is normalized before storage so that `"claude-cli"` and
+    /// `"claude_cli"` share one circuit breaker.
     #[allow(clippy::significant_drop_tightening)]
     pub fn record_success(&self, provider: &str) {
         if let Some(registry) = &self.registry {
             registry.record_success(provider);
             return;
         }
+        let key = normalize_provider_key(provider);
         let now = Utc::now();
         let mut map = self.providers.write();
         let status = map
-            .entry(provider.to_owned())
-            .or_insert_with(|| ProviderStatus::new(provider.to_owned()));
+            .entry(key.clone())
+            .or_insert_with(|| ProviderStatus::new(key));
 
         status.total_attempts += 1;
         status.total_successes += 1;
@@ -654,18 +721,21 @@ impl ProviderHealthTracker {
     /// Increments consecutive failures. When the counter reaches the
     /// configured threshold the provider transitions to
     /// [`HealthState::Unhealthy`].
+    ///
+    /// The key is normalized before storage.
     #[allow(clippy::significant_drop_tightening)]
     pub fn record_failure(&self, provider: &str) {
         if let Some(registry) = &self.registry {
             registry.record_failure(provider, ErrorClass::Unknown);
             return;
         }
+        let key = normalize_provider_key(provider);
         let now = Utc::now();
         let recovery_at = Instant::now() + self.recovery_window;
         let mut map = self.providers.write();
         let status = map
-            .entry(provider.to_owned())
-            .or_insert_with(|| ProviderStatus::new(provider.to_owned()));
+            .entry(key.clone())
+            .or_insert_with(|| ProviderStatus::new(key));
 
         status.total_attempts += 1;
         status.consecutive_failures = status.consecutive_failures.saturating_add(1);
@@ -687,14 +757,17 @@ impl ProviderHealthTracker {
     /// - [`HealthState::Probing`] (already transitioned) → `false`
     /// - [`HealthState::Unhealthy`] not yet expired → `false`
     /// - Unknown provider → `true` (lazily treated as healthy).
+    ///
+    /// The key is normalized before lookup.
     pub fn is_healthy(&self, provider: &str) -> bool {
         if let Some(registry) = &self.registry {
             return registry.is_available(provider);
         }
+        let key = normalize_provider_key(provider);
         // Fast path: read lock only.
         {
             let map = self.providers.read();
-            match map.get(provider) {
+            match map.get(&key) {
                 None => return true,
                 Some(s) => match s.state {
                     HealthState::Healthy => return true,
@@ -711,7 +784,7 @@ impl ProviderHealthTracker {
 
         // Slow path: upgrade to write lock and transition to Probing.
         let mut map = self.providers.write();
-        if let Some(status) = map.get_mut(provider) {
+        if let Some(status) = map.get_mut(&key) {
             // Re-check after acquiring write lock (another thread may have
             // already transitioned).
             match status.state {
@@ -786,16 +859,19 @@ impl ProviderHealthTracker {
     }
 
     /// Return the current status for `provider`, defaulting to a healthy entry.
+    ///
+    /// The key is normalized before lookup.
     #[must_use]
     pub fn get(&self, provider: &str) -> ProviderStatus {
         if let Some(registry) = &self.registry {
             return provider_status_from_persisted(registry.get(provider));
         }
+        let key = normalize_provider_key(provider);
         self.providers
             .read()
-            .get(provider)
+            .get(&key)
             .cloned()
-            .unwrap_or_else(|| ProviderStatus::new(provider.to_owned()))
+            .unwrap_or_else(|| ProviderStatus::new(key))
     }
 }
 
@@ -869,6 +945,7 @@ fn health_rank(status: &ProviderStatus, now: Instant) -> (u8, u32, u128, u64) {
 
 impl roko_agent::model_call_service::ProviderOutcomeRecorder for ProviderHealthRegistry {
     fn record_provider_success(&self, provider_id: &str) {
+        // Normalization happens inside record_success.
         self.record_success(provider_id);
     }
 
@@ -882,6 +959,7 @@ impl roko_agent::model_call_service::ProviderOutcomeRecorder for ProviderHealthR
             "context_overflow" => ErrorClass::ContextOverflow,
             _ => ErrorClass::Unknown,
         };
+        // Normalization happens inside record_failure.
         self.record_failure(provider_id, error_class);
     }
 }
@@ -896,8 +974,9 @@ impl roko_agent::model_call_service::ProviderOutcomeRecorder for ProviderHealthR
 
 impl roko_agent::rate_limit::ProviderHealthChecker for ProviderHealthRegistry {
     fn circuit_state(&self, provider_id: &str) -> roko_agent::rate_limit::CircuitState {
+        let key = normalize_provider_key(provider_id);
         let providers = self.providers.lock();
-        match providers.get(provider_id) {
+        match providers.get(&key) {
             None => roko_agent::rate_limit::CircuitState::Closed,
             Some(health) => match health.state {
                 CircuitState::Closed => roko_agent::rate_limit::CircuitState::Closed,
@@ -920,10 +999,12 @@ impl roko_agent::rate_limit::ProviderHealthChecker for ProviderHealthRegistry {
     }
 
     fn record_probe_success(&self, provider_id: &str) {
+        // Normalization happens inside record_success.
         self.record_success(provider_id);
     }
 
     fn record_probe_failure(&self, provider_id: &str) {
+        // Normalization happens inside record_failure.
         self.record_failure(provider_id, ErrorClass::Unknown);
     }
 }
@@ -1752,8 +1833,8 @@ mod tests {
     #[test]
     fn tracker_get_unknown_returns_healthy_default() {
         let tracker = ProviderHealthTracker::new();
-        let status = tracker.get("never-seen-before");
-        assert_eq!(status.provider, "never-seen-before");
+        let status = tracker.get("never_seen_before");
+        assert_eq!(status.provider, "never_seen_before");
         assert_eq!(status.state, HealthState::Healthy);
         assert_eq!(status.consecutive_failures, 0);
         assert_eq!(status.total_attempts, 0);
@@ -1763,8 +1844,8 @@ mod tests {
     #[test]
     fn registry_get_unknown_returns_healthy_default() {
         let registry = ProviderHealthRegistry::new();
-        let health = registry.get("unknown-provider");
-        assert_eq!(health.provider_id, "unknown-provider");
+        let health = registry.get("unknown_provider");
+        assert_eq!(health.provider_id, "unknown_provider");
         assert_eq!(health.state, CircuitState::Closed);
         assert_eq!(health.consecutive_failures, 0);
     }
@@ -2246,5 +2327,133 @@ mod tests {
         tracker.record_success("anthropic");
         assert_eq!(registry.get("anthropic").state, CircuitState::Closed);
         assert_eq!(tracker.get("anthropic").total_attempts, 5);
+    }
+
+    // ─── Key normalization ──────────────────────────────────────────────
+
+    /// `normalize_provider_key` converts hyphens to underscores and
+    /// lowercases the input.
+    #[test]
+    fn normalize_provider_key_basic() {
+        assert_eq!(normalize_provider_key("claude-cli"), "claude_cli");
+        assert_eq!(normalize_provider_key("claude_cli"), "claude_cli");
+        assert_eq!(normalize_provider_key("Claude-CLI"), "claude_cli");
+        assert_eq!(normalize_provider_key("hermes-acp"), "hermes_acp");
+        assert_eq!(normalize_provider_key("openclaw-infer"), "openclaw_infer");
+        assert_eq!(normalize_provider_key("openai_compat"), "openai_compat");
+        assert_eq!(normalize_provider_key("anthropic"), "anthropic");
+    }
+
+    /// Recording failures via hyphenated key and querying via underscore
+    /// key share the same circuit breaker in the registry.
+    #[test]
+    fn registry_hyphen_underscore_share_circuit() {
+        let registry = ProviderHealthRegistry::new();
+
+        // Record failures via the hyphenated variant.
+        registry.record_failure("claude-cli", ErrorClass::Timeout);
+        registry.record_failure("claude-cli", ErrorClass::Timeout);
+        registry.record_failure("claude-cli", ErrorClass::Timeout);
+
+        // Query via the underscore variant — same circuit.
+        assert!(
+            !registry.is_available("claude_cli"),
+            "claude_cli must see the circuit opened by claude-cli"
+        );
+
+        // Record success via the underscore variant.
+        registry.record_success("claude_cli");
+
+        // The snapshot should have exactly one entry, not two.
+        let snap = registry.snapshot();
+        assert_eq!(
+            snap.len(),
+            1,
+            "hyphen and underscore keys must collapse to a single entry"
+        );
+        let entry = snap.values().next().unwrap();
+        assert_eq!(entry.provider_id, "claude_cli");
+        assert_eq!(entry.total_requests, 4); // 3 failures + 1 success
+    }
+
+    /// The tracker's in-memory path also normalizes keys.
+    #[test]
+    fn tracker_hyphen_underscore_share_circuit() {
+        let tracker = ProviderHealthTracker::with_config(3, Duration::from_secs(600));
+
+        tracker.record_failure("cursor-cli");
+        tracker.record_failure("cursor_cli");
+        tracker.record_failure("cursor-cli");
+
+        assert!(
+            !tracker.is_healthy("cursor_cli"),
+            "3 failures across hyphen/underscore variants must trip the breaker"
+        );
+
+        let snap = tracker.snapshot();
+        assert_eq!(
+            snap.len(),
+            1,
+            "hyphen and underscore keys must collapse to one entry"
+        );
+        assert_eq!(snap[0].provider, "cursor_cli");
+        assert_eq!(snap[0].total_attempts, 3);
+    }
+
+    /// Persisted health files with mixed key formats are normalized on
+    /// load, collapsing duplicates.
+    #[test]
+    fn load_normalizes_persisted_keys() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("health.json");
+
+        // Manually write a snapshot with two entries that should normalize
+        // to the same key.
+        let mut providers = HashMap::new();
+        let mut h1 = new_provider_health("claude-cli");
+        h1.total_requests = 5;
+        h1.total_failures = 2;
+        providers.insert("claude-cli".to_owned(), h1);
+
+        let mut h2 = new_provider_health("claude_cli");
+        h2.total_requests = 10;
+        h2.total_failures = 3;
+        providers.insert("claude_cli".to_owned(), h2);
+
+        let snapshot = ProviderHealthRegistrySnapshot { providers };
+        roko_fs::atomic_write_json(&path, &snapshot).unwrap();
+
+        // Load — should collapse to one entry (the one with higher
+        // total_requests).
+        let loaded = ProviderHealthRegistry::load_or_new(&path);
+        let snap = loaded.snapshot();
+        assert_eq!(
+            snap.len(),
+            1,
+            "duplicate keys must be collapsed on load"
+        );
+        let entry = snap.get("claude_cli").expect("normalized key must exist");
+        assert_eq!(entry.provider_id, "claude_cli");
+        assert_eq!(entry.total_requests, 10, "higher-traffic entry should win");
+    }
+
+    /// `get` returns a healthy default with a normalized key even when
+    /// the provider has never been seen.
+    #[test]
+    fn registry_get_normalizes_unknown_key() {
+        let registry = ProviderHealthRegistry::new();
+        let health = registry.get("hermes-acp");
+        assert_eq!(health.provider_id, "hermes_acp");
+        assert_eq!(health.state, CircuitState::Closed);
+    }
+
+    /// `get` on the tracker returns a healthy default with a normalized
+    /// key.
+    #[test]
+    fn tracker_get_normalizes_unknown_key() {
+        let tracker = ProviderHealthTracker::new();
+        let status = tracker.get("openclaw-infer");
+        assert_eq!(status.provider, "openclaw_infer");
+        assert_eq!(status.state, HealthState::Healthy);
     }
 }

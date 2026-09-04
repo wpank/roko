@@ -1374,19 +1374,6 @@ impl CascadeRouter {
         );
     }
 
-    /// Deprecated alias for callers that have not migrated to the
-    /// confidence-only API name yet.
-    ///
-    /// Follow-up packet: migrate remaining non-`roko-learn` callers to
-    /// `record_confidence_outcome` and remove this wrapper.
-    #[deprecated(
-        since = "0.1.0",
-        note = "use record_confidence_outcome; this path does not update contextual LinUCB observations"
-    )]
-    pub fn record_outcome(&self, model_slug: &str, success: bool) -> bool {
-        self.record_confidence_outcome(model_slug, success)
-    }
-
     /// Record a manual model override outcome for learning (UX34).
     ///
     /// Called when the operator used `--model` / `--force-model` /

@@ -1609,6 +1609,27 @@ pub fn validate_references(config: &RokoConfig) -> Vec<ValidationWarning> {
         });
     }
 
+    // Routing tier model slugs.
+    for (field, slug) in [
+        ("routing.fast_task_model", config.routing.fast_task_model.as_str()),
+        ("routing.standard_task_model", config.routing.standard_task_model.as_str()),
+        ("routing.complex_task_model", config.routing.complex_task_model.as_str()),
+    ] {
+        let slug = slug.trim();
+        if slug.is_empty() || explicit_model_keys.contains(slug) {
+            continue;
+        }
+        // Also accept well-known builtin model slugs that don't need an
+        // explicit `[models.*]` entry.
+        if super::model_registry::builtin_model(slug).is_some() {
+            continue;
+        }
+        warnings.push(ValidationWarning::UnknownModel {
+            field: field.to_string(),
+            model: slug.to_string(),
+        });
+    }
+
     warnings
 }
 
@@ -2924,6 +2945,70 @@ max_output = 16384
             ValidationWarning::UnknownModel { field, model }
                 if field == "agent.tier_models.mechanical" && model == "claude-haiku-4-5"
         )));
+    }
+
+    #[test]
+    fn validate_references_warns_on_unknown_routing_tier_model() {
+        let mut cfg = RokoConfig::default();
+        cfg.models.clear();
+        cfg.routing.fast_task_model = "nonexistent-fast".to_string();
+        cfg.routing.standard_task_model = "nonexistent-standard".to_string();
+        // Use a known builtin slug for complex -- should NOT produce a warning.
+        cfg.routing.complex_task_model = "claude-opus-4-6".to_string();
+
+        let warnings = validate_references(&cfg);
+        assert!(
+            warnings.iter().any(|w| matches!(
+                w,
+                ValidationWarning::UnknownModel { field, model }
+                    if field == "routing.fast_task_model" && model == "nonexistent-fast"
+            )),
+            "expected warning for unknown fast_task_model, got: {warnings:?}"
+        );
+        assert!(
+            warnings.iter().any(|w| matches!(
+                w,
+                ValidationWarning::UnknownModel { field, model }
+                    if field == "routing.standard_task_model" && model == "nonexistent-standard"
+            )),
+            "expected warning for unknown standard_task_model, got: {warnings:?}"
+        );
+        // Builtin slug should not trigger a warning.
+        assert!(
+            !warnings.iter().any(|w| matches!(
+                w,
+                ValidationWarning::UnknownModel { field, .. }
+                    if field == "routing.complex_task_model"
+            )),
+            "builtin slug should not produce a warning, got: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn validate_references_accepts_explicit_routing_tier_model() {
+        let mut cfg = RokoConfig::default();
+        cfg.models.clear();
+        cfg.models.insert(
+            "my-fast".to_string(),
+            ModelProfile {
+                provider: String::new(),
+                slug: "my-fast".to_string(),
+                context_window: 128_000,
+                max_output: Some(16_384),
+                ..ModelProfile::default()
+            },
+        );
+        cfg.routing.fast_task_model = "my-fast".to_string();
+
+        let warnings = validate_references(&cfg);
+        assert!(
+            !warnings.iter().any(|w| matches!(
+                w,
+                ValidationWarning::UnknownModel { field, .. }
+                    if field == "routing.fast_task_model"
+            )),
+            "explicit model key should not produce a warning, got: {warnings:?}"
+        );
     }
 
     #[test]

@@ -72,5 +72,4 @@ mod wasm_extension;
 pub use event_loop::{PlanReport, RunReport, run, run_with_tui_commands};
 pub use plan_loader::{Plan, load_plan, load_plan_lenient, load_plans, scaffold_missing_crates};
 pub use sse_stream::SseStreamClient;
-#[allow(deprecated)]
-pub use types::{RunConfig, TuiCommand};
+pub use types::RunConfig;

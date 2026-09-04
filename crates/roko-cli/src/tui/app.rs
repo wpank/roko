@@ -923,22 +923,6 @@ impl App {
         self
     }
 
-    /// Attach a sender for in-process TUI commands to the runner event loop.
-    ///
-    /// **Deprecated**: prefer [`with_execution_command_sender`] for new code.
-    #[must_use]
-    #[allow(deprecated)]
-    pub fn with_tui_command_tx(
-        mut self,
-        tx: tokio::sync::mpsc::Sender<crate::runner::TuiCommand>,
-    ) -> Self {
-        // Legacy path: wrap the raw mpsc sender in the new transport.
-        // Callers that still pass a raw TuiCommand sender get the same
-        // behavior, but the TUI internally uses ExecutionCommandSender.
-        let _ = tx;
-        self
-    }
-
     /// Attach the executor-neutral command sender and acknowledgement
     /// receiver (#233). This replaces the legacy `with_tui_command_tx`.
     #[must_use]

@@ -76,53 +76,6 @@ impl ControlCommand {
     }
 }
 
-// ---------------------------------------------------------------------------
-// TuiCommand — DEPRECATED: use `execution_control::ExecutionCommand` (#233)
-// ---------------------------------------------------------------------------
-
-/// **Deprecated**: use [`crate::execution_control::ExecutionCommand`] instead.
-///
-/// This enum is retained only for backward-compatible type signatures.
-/// All production callers have migrated to `ExecutionCommand`; this enum
-/// will be removed in a future cleanup pass.
-#[deprecated(note = "use execution_control::ExecutionCommand instead (#233)")]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TuiCommand {
-    /// Pause the runner: finish the current agent turn, then stop dispatching.
-    Pause,
-    /// Resume dispatching after a pause.
-    Resume,
-    /// Retry failed tasks in a plan from scratch.
-    SoftRetry {
-        /// The plan to retry.
-        plan_id: String,
-    },
-    /// Repair a plan: re-run only failed/pending tasks, preserving completed ones.
-    Repair {
-        /// The plan to repair.
-        plan_id: String,
-        /// If true, keep completed tasks as-is; only re-run failed/pending.
-        preserve_completed: bool,
-    },
-    /// Re-run gate checks for a plan without re-executing tasks.
-    ReverifyGates {
-        /// The plan whose gates should be re-verified.
-        plan_id: String,
-    },
-    /// Skip a specific task within a plan.
-    Skip {
-        /// The plan containing the task to skip.
-        plan_id: String,
-        /// The task to skip.
-        task_id: String,
-    },
-    /// Cancel a running plan.
-    Cancel {
-        /// The plan to cancel.
-        plan_id: String,
-    },
-}
-
 /// Effective plan wall-clock timeout in seconds.
 ///
 /// `[timeouts].plan_total_secs` is the canonical setting. If that field is

@@ -93,7 +93,7 @@ pub static TOPICS: &[TopicEntry] = &[
                  distillation pipeline extracts key insights from completed episodes \
                  and stores them with embeddings for retrieval. Tier progression \
                  (novice -> competent -> proficient -> expert) tracks mastery of \
-                 topics. Use `roko neuro search <query>` to query the knowledge base.",
+                 topics. Use `roko knowledge query <query>` to query the knowledge base.",
         internals: "Implementation lives in `crates/roko-neuro/`. Signals persist as \
                     JSONL in `.roko/neuro/`. The knowledge graph uses HDC vectors \
                     from `roko-primitives` for similarity search. Distillation runs \

@@ -68,19 +68,24 @@ impl ToolSelector {
 
     /// Check whether a specific tool is allowed by this selector.
     ///
+    /// The incoming `tool_name` is first resolved through
+    /// [`canonicalize_tool_name`] so that common aliases (e.g. `read` →
+    /// `read_file`, `list_dir` → `ls`) are accepted transparently.
+    ///
     /// Returns `true` if:
     /// - The base set is empty (allow-all mode), OR
     /// - The tool is in `base_tools` or `extra_tools`
     /// AND the tool is NOT in `blocked_tools`.
     #[must_use]
     pub fn is_allowed(&self, tool_name: &str) -> bool {
-        if self.blocked_tools.contains(tool_name) {
+        let canonical = canonicalize_tool_name(tool_name);
+        if self.blocked_tools.contains(canonical) {
             return false;
         }
         if self.base_tools.is_empty() && self.extra_tools.is_empty() {
             return true; // allow-all mode
         }
-        self.base_tools.contains(tool_name) || self.extra_tools.contains(tool_name)
+        self.base_tools.contains(canonical) || self.extra_tools.contains(canonical)
     }
 
     /// Filter a list of tool names, returning only allowed tools.
@@ -99,29 +104,49 @@ impl ToolSelector {
     }
 }
 
+// ── Alias resolution ────────────────────────────────────────────────────
+
+/// Map common agent tool-name variants to their canonical roko-std names.
+///
+/// Providers emit varying tool names (Claude's `Read` becomes `read`,
+/// OpenAI-compatible backends use `list_dir`, etc.). Resolving here means
+/// the selector and the downstream dispatcher both see the canonical name.
+///
+/// Returns the canonical name if `name` is a known alias, otherwise returns
+/// the input unchanged.
+pub fn canonicalize_tool_name(name: &str) -> &str {
+    match name {
+        // Read-only aliases
+        "read" => "read_file",
+        "list_directory" | "list_dir" => "ls",
+        "search_files" => "grep",
+        "filesystem__read_file" => "read_file",
+
+        // Write aliases
+        "write" => "write_file",
+        "edit" => "edit_file",
+        "create_file" => "write_file",
+
+        // Exec aliases
+        "run_command" | "execute_command" | "shell" => "bash",
+
+        _ => name,
+    }
+}
+
 // ── Read-only tools (available to ALL roles) ────────────────────────────
 
 fn read_only_tools() -> HashSet<String> {
-    [
-        "read_file",
-        "read",
-        "glob",
-        "grep",
-        "list_directory",
-        "search_files",
-        "find_definition",
-        "find_references",
-        "get_symbols",
-    ]
-    .iter()
-    .map(|s| (*s).to_string())
-    .collect()
+    ["read_file", "glob", "grep", "ls"]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect()
 }
 
 // ── Write tools (coding agents) ─────────────────────────────────────────
 
 fn write_tools() -> HashSet<String> {
-    ["write_file", "write", "edit_file", "edit", "create_file"]
+    ["write_file", "edit_file", "multi_edit"]
         .iter()
         .map(|s| (*s).to_string())
         .collect()
@@ -130,7 +155,7 @@ fn write_tools() -> HashSet<String> {
 // ── Exec tools (agents that run commands) ───────────────────────────────
 
 fn exec_tools() -> HashSet<String> {
-    ["bash", "execute_command", "shell"]
+    ["bash"]
         .iter()
         .map(|s| (*s).to_string())
         .collect()
@@ -474,5 +499,85 @@ mod tests {
         let implementer = ToolSelector::for_role(AgentRole::Implementer);
         // Implementer should have more tools than researcher.
         assert!(implementer.base_tool_count() > researcher.base_tool_count());
+    }
+
+    // ── Alias / canonicalization tests ──────────────────────────────────
+
+    #[test]
+    fn canonicalize_maps_known_aliases() {
+        assert_eq!(canonicalize_tool_name("read"), "read_file");
+        assert_eq!(canonicalize_tool_name("list_directory"), "ls");
+        assert_eq!(canonicalize_tool_name("list_dir"), "ls");
+        assert_eq!(canonicalize_tool_name("search_files"), "grep");
+        assert_eq!(canonicalize_tool_name("write"), "write_file");
+        assert_eq!(canonicalize_tool_name("edit"), "edit_file");
+        assert_eq!(canonicalize_tool_name("create_file"), "write_file");
+        assert_eq!(canonicalize_tool_name("run_command"), "bash");
+        assert_eq!(canonicalize_tool_name("execute_command"), "bash");
+        assert_eq!(canonicalize_tool_name("shell"), "bash");
+        assert_eq!(
+            canonicalize_tool_name("filesystem__read_file"),
+            "read_file"
+        );
+    }
+
+    #[test]
+    fn canonicalize_passes_through_canonical_names() {
+        for name in ["read_file", "write_file", "edit_file", "grep", "ls", "bash", "glob"] {
+            assert_eq!(canonicalize_tool_name(name), name);
+        }
+    }
+
+    #[test]
+    fn canonicalize_passes_through_unknown_names() {
+        assert_eq!(canonicalize_tool_name("my_custom_tool"), "my_custom_tool");
+        assert_eq!(canonicalize_tool_name("web_fetch"), "web_fetch");
+    }
+
+    #[test]
+    fn is_allowed_resolves_aliases() {
+        let selector = ToolSelector::for_role(AgentRole::Researcher);
+        // "read" should resolve to "read_file" and be allowed.
+        assert!(selector.is_allowed("read"));
+        // "list_directory" should resolve to "ls" and be allowed.
+        assert!(selector.is_allowed("list_directory"));
+        // "list_dir" should resolve to "ls" and be allowed.
+        assert!(selector.is_allowed("list_dir"));
+        // "search_files" should resolve to "grep" and be allowed.
+        assert!(selector.is_allowed("search_files"));
+        // "filesystem__read_file" should resolve to "read_file" and be allowed.
+        assert!(selector.is_allowed("filesystem__read_file"));
+    }
+
+    #[test]
+    fn is_allowed_denies_write_aliases_for_read_only_role() {
+        let selector = ToolSelector::for_role(AgentRole::Researcher);
+        // "write" resolves to "write_file" — still denied for researchers.
+        assert!(!selector.is_allowed("write"));
+        // "edit" resolves to "edit_file" — still denied.
+        assert!(!selector.is_allowed("edit"));
+        // "run_command" resolves to "bash" — still denied.
+        assert!(!selector.is_allowed("run_command"));
+    }
+
+    #[test]
+    fn is_allowed_permits_write_aliases_for_implementer() {
+        let selector = ToolSelector::for_role(AgentRole::Implementer);
+        assert!(selector.is_allowed("write"));
+        assert!(selector.is_allowed("edit"));
+        assert!(selector.is_allowed("create_file"));
+        assert!(selector.is_allowed("run_command"));
+        assert!(selector.is_allowed("execute_command"));
+        assert!(selector.is_allowed("shell"));
+    }
+
+    #[test]
+    fn blocked_tools_apply_to_aliases() {
+        let selector = ToolSelector::for_role(AgentRole::Implementer)
+            .with_blocked_tools(vec!["bash".to_string()]);
+        // "run_command" canonicalizes to "bash" which is blocked.
+        assert!(!selector.is_allowed("run_command"));
+        assert!(!selector.is_allowed("shell"));
+        assert!(!selector.is_allowed("execute_command"));
     }
 }

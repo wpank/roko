@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use crate::conventions::detect_conventions;
 use crate::role_prompts::role_identity_for;
 use crate::system_prompt_builder::SystemPromptBuilder;
-use crate::templates::common::{AdaptiveBudget, REFERENCE_CONTEXT_WINDOW_TOKENS};
+use crate::templates::common::{AdaptiveBudget, MCP_TOOLS_STANZA, REFERENCE_CONTEXT_WINDOW_TOKENS};
 use crate::token_counter::TokenCounter;
 
 const SOURCE_SAMPLE_LIMIT: usize = 12;
@@ -87,6 +87,13 @@ pub struct PromptAssemblyService {
     model_context_window_resolver: Option<Arc<ModelContextWindowResolver>>,
     /// Per-section effectiveness scores used to skip low-value sections and scale budget.
     section_effectiveness: Option<HashMap<String, f64>>,
+    /// Whether MCP server tools are available for dispatched agents.
+    ///
+    /// When `true`, the MCP tools guidance stanza is prepended to the tool
+    /// instructions so agents know they can use MCP tools. When `false` (the
+    /// default), it is omitted so agents are not told about tools that do not
+    /// exist.
+    has_mcp_tools: bool,
 }
 
 impl PromptAssemblyService {
@@ -106,6 +113,7 @@ impl PromptAssemblyService {
             model_context_window_tokens: None,
             model_context_window_resolver: None,
             section_effectiveness: None,
+            has_mcp_tools: false,
         }
     }
 
@@ -179,6 +187,17 @@ impl PromptAssemblyService {
     #[must_use]
     pub fn with_tool_instructions(mut self, tools: String) -> Self {
         self.tool_instructions = Some(tools);
+        self
+    }
+
+    /// Declare that MCP server tools are available for dispatched agents.
+    ///
+    /// When set, the rendered system prompt includes the MCP tools guidance
+    /// stanza so agents know they can use MCP tools instead of shelling out.
+    /// When not set (the default), the stanza is omitted.
+    #[must_use]
+    pub const fn with_mcp_tools(mut self) -> Self {
+        self.has_mcp_tools = true;
         self
     }
 
@@ -473,11 +492,19 @@ impl PromptAssembler for PromptAssemblyService {
             self.record_prompt_section_id("task_context");
         }
 
-        if self.should_include("tools")
-            && let Some(tools) = &self.tool_instructions
-        {
-            builder = builder.with_tools(tools.clone());
-            self.record_prompt_section_id("tool_instructions");
+        if self.should_include("tools") {
+            let mcp_prefix = if self.has_mcp_tools {
+                format!("{MCP_TOOLS_STANZA}\n")
+            } else {
+                String::new()
+            };
+            if let Some(tools) = &self.tool_instructions {
+                builder = builder.with_tools(format!("{mcp_prefix}{tools}"));
+                self.record_prompt_section_id("tool_instructions");
+            } else if self.has_mcp_tools {
+                builder = builder.with_tools(mcp_prefix);
+                self.record_prompt_section_id("tool_instructions");
+            }
         }
 
         if self.should_include("gate_feedback") {

@@ -2194,6 +2194,7 @@ async fn ensure_attempt_workdir(
         .await
         .map_err(|err| format!("worktree unavailable for attempt {}: {err}", attempt.key()))?;
     worktrees.touch(&handle.id);
+    clean_stale_index_lock(&handle.path);
     Ok(handle.path)
 }
 
@@ -2224,6 +2225,7 @@ async fn ensure_attempt_workdir_controlled(
     {
         Ok(handle) => {
             worktrees.touch(&handle.id);
+            clean_stale_index_lock(&handle.path);
             Ok(Ok(handle.path))
         }
         Err(WorktreeOperationError::Cancelled) => Err(DispatchInterruption::Cancelled),
@@ -2232,6 +2234,46 @@ async fn ensure_attempt_workdir_controlled(
             "worktree unavailable for attempt {}: {error}",
             attempt.key()
         ))),
+    }
+}
+
+/// Remove a stale `index.lock` left behind by a crash so that the next
+/// agent spawn can run git operations without a spurious "Unable to create
+/// lock file" error.  Only locks older than 5 minutes are removed.
+fn clean_stale_index_lock(worktree_path: &Path) {
+    let git_path = worktree_path.join(".git");
+    let git_dir = if git_path.is_file() {
+        // Worktree: `.git` is a file containing "gitdir: /path/to/actual/git/dir"
+        let Ok(content) = std::fs::read_to_string(&git_path) else {
+            return;
+        };
+        let Some(dir) = content.strip_prefix("gitdir: ") else {
+            return;
+        };
+        PathBuf::from(dir.trim())
+    } else if git_path.is_dir() {
+        git_path
+    } else {
+        return;
+    };
+
+    let lock = git_dir.join("index.lock");
+    if lock.exists() {
+        let age = lock
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.elapsed().ok());
+        if let Some(age) = age {
+            if age > Duration::from_secs(300) {
+                let _ = std::fs::remove_file(&lock);
+                tracing::warn!(
+                    path = %git_dir.display(),
+                    age_secs = age.as_secs(),
+                    "removed stale index.lock before agent spawn"
+                );
+            }
+        }
     }
 }
 
@@ -23796,7 +23838,7 @@ depends_on = []
             health_filtered_knowledge_candidates(&router, &health, Some(&config), &candidates,),
             vec!["fallback-model-v1".to_string()]
         );
-        assert!(health.snapshot().contains_key("primary-provider"));
+        assert!(health.snapshot().contains_key("primary_provider"));
         assert!(!health.snapshot().contains_key("primary-model-v1"));
     }
 

@@ -237,6 +237,10 @@ pub async fn run_doctor(options: &DoctorOptions) -> Result<DoctorReport> {
     checks.push(check_provider_usable(&workdir));
     checks.push(check_available_providers(&loaded_config));
     checks.push(check_default_model_configured(&loaded_config));
+    checks.extend(check_routing_tier_models(
+        &workdir,
+        options.config_override.as_deref(),
+    ));
     checks.push(check_rust_version());
     checks.push(check_node_version());
     checks.push(check_serve_auth(&loaded_config));
@@ -716,6 +720,80 @@ fn check_default_model_configured(loaded_config: &LoadedConfig) -> DoctorCheck {
             fix: Some("Set default_model in roko.toml [agent] section".to_string()),
         }
     }
+}
+
+/// Validate that `routing.{fast,standard,complex}_task_model` slugs match a
+/// configured `[models.*]` key or a well-known builtin model.
+fn check_routing_tier_models(workdir: &Path, config_override: Option<&Path>) -> Vec<DoctorCheck> {
+    let roko_cfg = if let Some(path) = config_override
+        && let Ok(text) = std::fs::read_to_string(path)
+        && let Ok(config) = roko_core::config::schema::RokoConfig::from_toml(&text)
+    {
+        config
+    } else {
+        match roko_core::config::loader::load_config_validated_with_options(
+            workdir,
+            &roko_core::config::loader::LoadOptions::default(),
+        ) {
+            Ok(loaded) => loaded.config().clone(),
+            Err(_) => return vec![],
+        }
+    };
+
+    let model_keys: std::collections::HashSet<&str> =
+        roko_cfg.models.keys().map(String::as_str).collect();
+
+    let tiers = [
+        ("fast_task_model", roko_cfg.routing.fast_task_model.as_str()),
+        (
+            "standard_task_model",
+            roko_cfg.routing.standard_task_model.as_str(),
+        ),
+        (
+            "complex_task_model",
+            roko_cfg.routing.complex_task_model.as_str(),
+        ),
+    ];
+
+    let mut checks = Vec::new();
+    for (tier_name, slug) in tiers {
+        let slug = slug.trim();
+        if slug.is_empty() {
+            continue;
+        }
+        let known = model_keys.contains(slug)
+            || roko_core::config::model_registry::builtin_model(slug).is_some();
+        checks.push(DoctorCheck {
+            id: format!("routing_{tier_name}"),
+            status: if known {
+                DoctorStatus::Ok
+            } else {
+                DoctorStatus::Warn
+            },
+            message: if known {
+                format!("routing.{tier_name} \"{slug}\" is valid")
+            } else {
+                format!(
+                    "routing.{tier_name} references \"{slug}\" which is not in [models.*] config"
+                )
+            },
+            detail: if known {
+                None
+            } else {
+                Some("learned routing may silently fail to match this slug".to_string())
+            },
+            path: None,
+            url: None,
+            fix: if known {
+                None
+            } else {
+                Some(format!(
+                    "Add [models.{slug}] to roko.toml or change routing.{tier_name}"
+                ))
+            },
+        });
+    }
+    checks
 }
 
 fn check_serve_auth(loaded_config: &LoadedConfig) -> DoctorCheck {

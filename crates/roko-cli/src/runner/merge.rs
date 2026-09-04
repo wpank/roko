@@ -247,12 +247,25 @@ impl MergeBackend for GitMergeBackend {
             );
         }
 
-        let output = tokio::process::Command::new("git")
-            .args(["merge", "--no-ff", "--no-edit", &request.branch_name])
+        // G05: try fast-forward first to avoid unnecessary merge commits.
+        // Fall back to --no-ff only when the history has diverged.
+        let ff_result = tokio::process::Command::new("git")
+            .args(["merge", "--ff-only", &request.branch_name])
             .current_dir(&config.workdir)
             .env("GIT_TERMINAL_PROMPT", "0")
             .output()
             .await;
+        let output = match &ff_result {
+            Ok(o) if o.status.success() => ff_result,
+            _ => {
+                tokio::process::Command::new("git")
+                    .args(["merge", "--no-ff", "--no-edit", &request.branch_name])
+                    .current_dir(&config.workdir)
+                    .env("GIT_TERMINAL_PROMPT", "0")
+                    .output()
+                    .await
+            }
+        };
         let duration_ms = started.elapsed().as_millis() as u64;
         match output {
             Ok(output) if output.status.success() => MergeBackendOutcome::pass(

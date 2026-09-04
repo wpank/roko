@@ -322,6 +322,7 @@ impl ServiceFactory {
         if let Some(observer) = config.inference_observer {
             model_call_service = model_call_service.with_inference_observer(observer);
         }
+        let has_mcp = config.mcp_config.is_some();
         if let Some(mcp_config) = config.mcp_config {
             model_call_service = model_call_service.with_mcp_config(mcp_config);
         }
@@ -357,6 +358,9 @@ impl ServiceFactory {
         }
         if let Some(tools) = tool_instructions {
             prompt_service = prompt_service.with_tool_instructions(tools);
+        }
+        if has_mcp {
+            prompt_service = prompt_service.with_mcp_tools();
         }
         if !section_effectiveness.is_empty() {
             prompt_service = prompt_service.with_section_effectiveness(section_effectiveness);

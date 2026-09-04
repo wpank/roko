@@ -34,6 +34,12 @@ pub struct PromptBuildOptions {
     /// based on historical effectiveness data, promoting sections with positive
     /// lift and demoting those with negative lift.
     pub section_effectiveness: Option<SectionEffectivenessRegistry>,
+    /// Whether MCP server tools are available for this dispatch.
+    ///
+    /// When `true`, the MCP tools guidance stanza is included in the system
+    /// prompt. When `false` (the default), it is omitted so agents are not
+    /// told about tools that do not exist.
+    pub has_mcp_tools: bool,
 }
 
 fn build_spec(
@@ -68,6 +74,9 @@ fn build_spec(
     }
     if !options.relevant_playbooks.is_empty() {
         spec = spec.with_relevant_playbooks(&options.relevant_playbooks);
+    }
+    if options.has_mcp_tools {
+        spec = spec.with_mcp_tools();
     }
     spec
 }

@@ -27,8 +27,9 @@ use crate::dispatcher::HandlerResolver;
 use crate::http::ReqwestPoster;
 use crate::mcp::{DynamicToolRegistry as McpDynamicToolRegistry, McpConfig, discover_mcp_runtime};
 use crate::provider::{
-    AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, build_tool_dispatcher,
-    tool_limit_for_temperament, tool_loop_max_iterations_for_profile,
+    AgentCreationError, AgentOptions, ProviderAdapter, ProviderError,
+    build_tool_dispatcher_with_audit, tool_limit_for_temperament,
+    tool_loop_max_iterations_for_profile,
 };
 use crate::tool_loop::backends::create_openai_compat_backend;
 use crate::tool_loop::{MultimodalInputFormat, ToolLoop, ToolLoopAgent};
@@ -500,7 +501,8 @@ impl ProviderAdapter for OpenAiCompatAdapter {
 
         if model.supports_tools {
             let (registry, tools, resolver) = tool_registry_for_options(model, options)?;
-            let dispatcher = build_tool_dispatcher(registry, resolver);
+            let dispatcher =
+                build_tool_dispatcher_with_audit(registry, resolver, options.tool_audit.clone());
             let translator: Arc<dyn Translator> = Arc::new(OpenAiTranslator);
             let mut tool_loop_provider = provider.clone();
             tool_loop_provider.timeout_ms = Some(timeout);
@@ -527,6 +529,9 @@ impl ProviderAdapter for OpenAiCompatAdapter {
             }
             if let Some(root) = options.effective_immune_root() {
                 agent = agent.with_immune_root(root);
+            }
+            if let Some(ref token) = options.cancel_token {
+                agent = agent.with_cancel_token(Arc::clone(token));
             }
 
             return Ok(Box::new(agent));

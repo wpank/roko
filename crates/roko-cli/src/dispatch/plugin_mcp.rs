@@ -274,7 +274,7 @@ async fn handle_mcp(
                 Arc::clone(&state.resolver),
             )
             .with_safety(safety);
-            let mut context = ToolContext::testing(&claims.worktree)
+            let mut context = ToolContext::external_pre_check(&claims.worktree)
                 .with_immune_root(&claims.immune_root)
                 .with_allowed_tools(claims.contract.allowed_tools.clone())
                 .with_denied_tools(Some(claims.contract.forbidden_tool_names()))

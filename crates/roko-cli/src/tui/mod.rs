@@ -14,6 +14,8 @@ pub mod config_meta;
 mod cursors;
 pub mod dashboard;
 pub mod dashboard_gen;
+pub(crate) mod dashboard_model;
+pub(crate) mod dashboard_types;
 pub mod display_utils;
 pub mod effects_config;
 pub mod empty_state;

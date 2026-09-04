@@ -446,8 +446,22 @@ pub fn build_tool_dispatcher(
     registry: Arc<dyn ToolRegistry>,
     resolver: Arc<dyn HandlerResolver>,
 ) -> Arc<ToolDispatcher> {
+    build_tool_dispatcher_with_audit(registry, resolver, None)
+}
+
+/// Build a `ToolDispatcher` with an optional persistent JSONL file audit adapter.
+#[must_use]
+pub fn build_tool_dispatcher_with_audit(
+    registry: Arc<dyn ToolRegistry>,
+    resolver: Arc<dyn HandlerResolver>,
+    file_audit: Option<Arc<roko_fs::tool_audit::ScrubAuditAdapter>>,
+) -> Arc<ToolDispatcher> {
     let layer = current_safety_layer().unwrap_or_else(SafetyLayer::with_defaults);
-    Arc::new(ToolDispatcher::new(registry, resolver).with_safety(layer))
+    let mut dispatcher = ToolDispatcher::new(registry, resolver).with_safety(layer);
+    if let Some(audit) = file_audit {
+        dispatcher = dispatcher.with_file_audit(audit);
+    }
+    Arc::new(dispatcher)
 }
 
 /// Return the safety layer currently scoped to provider-backed construction, if any.
@@ -725,7 +739,7 @@ impl LocalToolRuntime {
 }
 
 #[allow(clippy::struct_excessive_bools)]
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct AgentOptions {
     /// Resolved safety layer for this agent construction.
     ///
@@ -828,6 +842,45 @@ pub struct AgentOptions {
     /// Gemini-specific per-category safety thresholds from `[gemini].safety_settings`.
     /// Forwarded verbatim as `safetySettings` in `GenerateContentRequest`.
     pub gemini_safety_settings: Vec<roko_core::config::schema::SafetySetting>,
+    /// Cancellation token propagated from the runner to the tool loop.
+    ///
+    /// When set, provider adapters that construct a `ToolLoopAgent` wire this
+    /// token via [`ToolLoopAgent::with_cancel_token`] so that runner-level task
+    /// cancellation (Skip/Cancel) immediately halts in-progress tool execution
+    /// rather than waiting for the current LLM turn to complete.
+    pub cancel_token: Option<Arc<dyn roko_core::tool::CancelToken>>,
+    /// Persistent JSONL tool audit adapter.
+    ///
+    /// When set, the tool dispatcher records scrubbed admit/result lines
+    /// to `.roko/tool_audit.jsonl` for every executed tool call.
+    pub tool_audit: Option<Arc<roko_fs::tool_audit::ScrubAuditAdapter>>,
+}
+
+impl std::fmt::Debug for AgentOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentOptions")
+            .field("safety_layer", &self.safety_layer)
+            .field("temperament", &self.temperament)
+            .field("command", &self.command)
+            .field("timeout_ms", &self.timeout_ms)
+            .field(
+                "system_prompt",
+                &self
+                    .system_prompt
+                    .as_ref()
+                    .map(|s| format!("{}...", &s[..s.len().min(40)])),
+            )
+            .field("input_messages", &self.input_messages.len())
+            .field("bare_mode", &self.bare_mode)
+            .field(
+                "dangerously_skip_permissions",
+                &self.dangerously_skip_permissions,
+            )
+            .field("name", &self.name)
+            .field("cancel_token", &self.cancel_token.is_some())
+            .field("tool_audit", &self.tool_audit.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 /// Authenticated per-call MCP endpoint for an ACP provider subprocess.

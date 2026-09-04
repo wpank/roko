@@ -16,8 +16,8 @@ use crate::http::{HttpPoster, ReqwestPoster};
 use crate::model_call_service::{ProviderOutcomeRecorder, provider_error_kind};
 use crate::provider::openai_compat::tool_registry_for_options;
 use crate::provider::{
-    AgentCreationError, AgentOptions, ProviderError, ProviderSemaphores, build_tool_dispatcher,
-    map_provider_error, tool_loop_max_iterations_for_profile,
+    AgentCreationError, AgentOptions, ProviderError, ProviderSemaphores,
+    build_tool_dispatcher_with_audit, map_provider_error, tool_loop_max_iterations_for_profile,
 };
 use crate::rate_limit::ProviderRateLimiter;
 use crate::tool_loop::{
@@ -46,7 +46,7 @@ pub(super) fn create_tool_loop_agent(
     options: &AgentOptions,
 ) -> Result<Box<dyn Agent>, AgentCreationError> {
     let (registry, tools, resolver) = tool_registry_for_options(model, options)?;
-    let dispatcher = build_tool_dispatcher(registry, resolver);
+    let dispatcher = build_tool_dispatcher_with_audit(registry, resolver, options.tool_audit.clone());
     let translator: Arc<dyn Translator> = Arc::new(AnthropicTranslator);
     let backend = create_tool_loop_backend_with_api_key(
         api_key,
@@ -80,6 +80,9 @@ pub(super) fn create_tool_loop_agent(
     }
     if let Some(root) = options.effective_immune_root() {
         agent = agent.with_immune_root(root);
+    }
+    if let Some(ref token) = options.cancel_token {
+        agent = agent.with_cancel_token(Arc::clone(token));
     }
 
     Ok(Box::new(agent))
@@ -954,6 +957,7 @@ mod tests {
     use super::*;
     use crate::http::HttpPostError;
     use crate::provider::AgentOptions;
+    use crate::provider::build_tool_dispatcher;
     use crate::provider::openai_compat::tool_registry_for_options;
     use crate::tool_loop::{LlmBackend, ToolLoop};
     use crate::translate::Translator;

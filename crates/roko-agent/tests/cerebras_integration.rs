@@ -252,7 +252,6 @@ async fn cerebras_workarounds_are_applied_in_backend() {
     });
 
     // Build a Cerebras backend through the factory.
-    use roko_agent::tool_loop::LlmBackend;
     use roko_agent::tool_loop::backends::create_openai_compat_backend;
     use roko_agent::translate::{RenderedTools, SessionState};
     use roko_core::agent::ProviderKind;

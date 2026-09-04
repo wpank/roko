@@ -1989,6 +1989,8 @@ fn build_agent(
             safety_layer: None,
             temperament: None,
             gemini_safety_settings: Vec::new(),
+            cancel_token: None,
+            tool_audit: None,
         },
     )
     .with_context(|| format!("create agent for template '{}'", template.name))

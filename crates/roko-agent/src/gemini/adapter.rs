@@ -10,8 +10,8 @@ use crate::agent::Agent;
 use crate::http::ReqwestPoster;
 use crate::provider::openai_compat::{max_tokens_for_model, tool_registry_for_options};
 use crate::provider::{
-    AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, build_tool_dispatcher,
-    current_safety_layer, tool_loop_max_iterations_for_profile,
+    AgentCreationError, AgentOptions, ProviderAdapter, ProviderError,
+    build_tool_dispatcher_with_audit, current_safety_layer, tool_loop_max_iterations_for_profile,
 };
 use crate::safety::SafetyLayer;
 use crate::tool_loop::backends::create_tool_loop_backend;
@@ -43,7 +43,7 @@ fn gemini_tool_loop_agent(
     options: &AgentOptions,
 ) -> Result<Box<dyn Agent>, AgentCreationError> {
     let (registry, tools, resolver) = tool_registry_for_options(model, options)?;
-    let dispatcher = build_tool_dispatcher(registry, resolver);
+    let dispatcher = build_tool_dispatcher_with_audit(registry, resolver, options.tool_audit.clone());
     let translator: Arc<dyn Translator> = Arc::new(OpenAiTranslator);
     let timeout_ms = options.effective_timeout_ms(None);
     let mut extra_body_params = serde_json::Map::new();
@@ -91,6 +91,9 @@ fn gemini_tool_loop_agent(
     if let Some(root) = options.effective_immune_root() {
         agent = agent.with_immune_root(root);
     }
+    if let Some(ref token) = options.cancel_token {
+        agent = agent.with_cancel_token(Arc::clone(token));
+    }
 
     Ok(Box::new(agent))
 }
@@ -101,7 +104,7 @@ fn gemini_native_tool_loop_agent(
     options: &AgentOptions,
 ) -> Result<Box<dyn Agent>, AgentCreationError> {
     let (registry, tools, resolver) = tool_registry_for_options(model, options)?;
-    let dispatcher = build_tool_dispatcher(registry, resolver);
+    let dispatcher = build_tool_dispatcher_with_audit(registry, resolver, options.tool_audit.clone());
     let translator: Arc<dyn Translator> = Arc::new(GeminiTranslator);
     let backend =
         create_tool_loop_backend(provider, model, options, Arc::new(ReqwestPoster::new()))?;
@@ -130,6 +133,9 @@ fn gemini_native_tool_loop_agent(
     }
     if let Some(root) = options.effective_immune_root() {
         agent = agent.with_immune_root(root);
+    }
+    if let Some(ref token) = options.cancel_token {
+        agent = agent.with_cancel_token(Arc::clone(token));
     }
 
     Ok(Box::new(agent))

@@ -19,25 +19,6 @@ use roko_agent::dispatcher::{HandlerResolver, ToolDispatcher};
 use roko_agent::mcp::{McpClient, StdioTransport as McpStdioTransport, mcp_to_tool_def};
 use roko_agent::rate_limit::{ProviderRateLimitSnapshot, ProviderRateLimiter};
 use roko_agent::safety::{DispatchSafetyContext, SafetyLayer, ViolationSeverity};
-/// Streaming chunk from a tool-loop provider session.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub(crate) enum StreamChunk {
-    /// Plain content delta from the agent.
-    ContentDelta(String),
-    /// Reasoning delta emitted by the backend.
-    ReasoningDelta(String),
-    /// Tool-call delta emitted by the backend.
-    ToolCallDelta { id: String, json_fragment: String },
-    /// Tool progress update.
-    ToolProgress { id: String, progress: f64 },
-    /// Usage payload emitted by the backend.
-    Usage(serde_json::Value),
-    /// Stream-local error message.
-    Error(String),
-    /// Stream completed with the given finish reason.
-    Done(String),
-}
 use roko_agent::tool_loop::backends::create_openai_compat_backend_with_limiter;
 use roko_agent::tool_loop::{StopReason as ToolLoopStopReason, ToolLoop};
 use roko_agent::translate::{OpenAiTranslator, StrictOpenAiTranslator, Translator};

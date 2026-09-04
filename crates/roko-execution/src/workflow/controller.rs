@@ -523,6 +523,7 @@ impl ControllerAction {
 }
 
 #[cfg(test)]
+#[allow(unused_must_use)] // Many ctrl.step() calls are for setup, not assertion.
 mod tests {
     use super::*;
     use crate::workflow::templates::WorkflowTemplateDescriptor;

@@ -65,6 +65,8 @@ pub struct SharedAgentFactory {
     /// directly at those call sites; the learning event subscriber deliberately
     /// does not mirror them through the event bus.
     pub health_registry: Arc<ProviderHealthRegistry>,
+    /// Persistent JSONL tool audit adapter shared across all dispatches.
+    tool_audit: Option<Arc<roko_fs::tool_audit::ScrubAuditAdapter>>,
 }
 
 /// Bridge task returned only after its worker reaches the provider boundary.
@@ -172,6 +174,7 @@ impl SharedAgentFactory {
             resolver,
             rate_limiter,
             health_registry,
+            tool_audit: None,
         }
     }
 
@@ -188,6 +191,19 @@ impl SharedAgentFactory {
     #[must_use]
     pub fn with_health_registry(mut self, registry: Arc<ProviderHealthRegistry>) -> Self {
         self.health_registry = registry;
+        self
+    }
+
+    /// Attach a persistent JSONL tool audit adapter.
+    ///
+    /// When set, every tool call dispatched through agents created by this
+    /// factory records scrubbed admit/result lines to disk.
+    #[must_use]
+    pub fn with_tool_audit(
+        mut self,
+        adapter: Arc<roko_fs::tool_audit::ScrubAuditAdapter>,
+    ) -> Self {
+        self.tool_audit = Some(adapter);
         self
     }
 
@@ -307,10 +323,13 @@ impl SharedAgentFactory {
         });
         let local_tool_mcp_bridge_ready =
             self.cli_plugin_mcp_bridge.is_some() && request.agent_contract.is_some();
-        let dispatcher =
+        let mut dispatcher =
             AgentDispatcherV2::with_shared(Arc::clone(&self.config), Arc::clone(&self.semaphores))
                 .with_rate_limiter(Arc::clone(&self.rate_limiter))
                 .with_health_registry(Arc::clone(&self.health_registry));
+        if let Some(audit) = &self.tool_audit {
+            dispatcher = dispatcher.with_tool_audit(Arc::clone(audit));
+        }
 
         dispatcher
             .run_agent_result_bridge_with_tools_and_cli_mcp(
@@ -325,10 +344,14 @@ impl SharedAgentFactory {
 
     /// Spawn an API/provider-backed agent using shared semaphores and
     /// pre-discovered MCP tools.
+    ///
+    /// `cancel_token` is threaded into the `ToolLoopAgent` so runner-level
+    /// task cancellation halts in-progress tool execution.
     pub fn spawn_shared_agent_bridge(
         &self,
         request: AgentDispatchRequest,
         event_tx: mpsc::Sender<AgentRuntimeEvent>,
+        cancel_token: Option<Arc<dyn roko_core::tool::CancelToken>>,
     ) -> tokio::task::JoinHandle<()> {
         let local_tool_mcp = request.agent_contract.as_ref().and_then(|contract| {
             self.cli_plugin_mcp_config(
@@ -345,11 +368,18 @@ impl SharedAgentFactory {
         let local_tool_runtime = self.local_tool_runtime.clone();
         let rate_limiter = Arc::clone(&self.rate_limiter);
         let health_registry = Arc::clone(&self.health_registry);
+        let tool_audit = self.tool_audit.clone();
 
         tokio::spawn(async move {
-            let dispatcher = AgentDispatcherV2::with_shared(config, semaphores)
+            let mut dispatcher = AgentDispatcherV2::with_shared(config, semaphores)
                 .with_rate_limiter(rate_limiter)
                 .with_health_registry(health_registry);
+            if let Some(token) = cancel_token {
+                dispatcher = dispatcher.with_cancel_token(token);
+            }
+            if let Some(audit) = tool_audit {
+                dispatcher = dispatcher.with_tool_audit(audit);
+            }
             match dispatcher
                 .run_agent_result_bridge_with_tools_and_cli_mcp(
                     request,
@@ -384,12 +414,16 @@ impl SharedAgentFactory {
     /// Spawn a bridge and wait for a typed startup checkpoint. A deadline or
     /// cancellation aborts and joins the worker before returning, proving that
     /// no unowned provider future survives dispatch startup.
+    ///
+    /// `cancel_token` is threaded into the `ToolLoopAgent` so runner-level
+    /// task cancellation halts in-progress tool execution.
     pub async fn spawn_shared_agent_bridge_controlled(
         &self,
         request: AgentDispatchRequest,
         event_tx: mpsc::Sender<AgentRuntimeEvent>,
         deadline: tokio::time::Instant,
         cancel: CancellationToken,
+        cancel_token: Option<Arc<dyn roko_core::tool::CancelToken>>,
     ) -> Result<StartedSharedAgentBridge, SharedBridgeStartupError> {
         let local_tool_mcp = request.agent_contract.as_ref().and_then(|contract| {
             self.cli_plugin_mcp_config(
@@ -406,12 +440,19 @@ impl SharedAgentFactory {
         let local_tool_runtime = self.local_tool_runtime.clone();
         let rate_limiter = Arc::clone(&self.rate_limiter);
         let health_registry = Arc::clone(&self.health_registry);
+        let tool_audit = self.tool_audit.clone();
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
 
         let mut handle = tokio::spawn(async move {
-            let dispatcher = AgentDispatcherV2::with_shared(config, semaphores)
+            let mut dispatcher = AgentDispatcherV2::with_shared(config, semaphores)
                 .with_rate_limiter(rate_limiter)
                 .with_health_registry(health_registry);
+            if let Some(token) = cancel_token {
+                dispatcher = dispatcher.with_cancel_token(token);
+            }
+            if let Some(audit) = tool_audit {
+                dispatcher = dispatcher.with_tool_audit(audit);
+            }
             if started_tx.send(()).is_err() {
                 return;
             }

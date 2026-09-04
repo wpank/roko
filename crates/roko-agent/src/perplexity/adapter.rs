@@ -14,7 +14,7 @@ use crate::perplexity::types::SearchOptions;
 use crate::provider::openai_compat::tool_registry_for_options;
 use crate::provider::{
     AgentCreationError, AgentOptions, PERPLEXITY_SEARCH_OPTIONS_ARG_PREFIX, ProviderAdapter,
-    ProviderError, build_tool_dispatcher, tool_loop_max_iterations_for_profile,
+    ProviderError, build_tool_dispatcher_with_audit, tool_loop_max_iterations_for_profile,
 };
 use crate::tool_loop::ToolLoop;
 use crate::translate::{OpenAiTranslator, Translator};
@@ -168,7 +168,7 @@ fn perplexity_tool_loop_agent(
     options: &AgentOptions,
 ) -> Result<Box<dyn Agent>, AgentCreationError> {
     let (registry, tools, resolver) = tool_registry_for_options(model, options)?;
-    let dispatcher = build_tool_dispatcher(registry, resolver);
+    let dispatcher = build_tool_dispatcher_with_audit(registry, resolver, options.tool_audit.clone());
     let translator: Arc<dyn Translator> = Arc::new(OpenAiTranslator);
     let timeout_ms = options.effective_timeout_ms(None);
     let backend = Arc::new(PerplexityToolLoopBackend::new(

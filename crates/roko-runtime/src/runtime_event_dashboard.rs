@@ -547,7 +547,7 @@ mod tests {
     use chrono::Utc;
 
     use roko_core::runtime_event::{
-        RuntimeEvent, RuntimeEventDelivery, RuntimeEventEnvelope, RuntimeEventMode,
+        RuntimeEvent, RuntimeEventEnvelope, RuntimeEventMode,
     };
 
     use super::*;

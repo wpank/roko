@@ -2181,7 +2181,7 @@ pub(crate) async fn run_openai_compat_provider_test(
     provider_name: &str,
     provider: &ProviderConfig,
     model: &ModelProfile,
-    _json: bool,
+    json: bool,
 ) -> Result<ProviderTestReport> {
     let endpoint = openai_compat_test_endpoint(provider);
     let api_key_env = provider
@@ -2203,22 +2203,26 @@ pub(crate) async fn run_openai_compat_provider_test(
     let body_text = serde_json::to_string(&body).context("serialize provider test body")?;
 
     if let (Some(env_name), None) = (api_key_env, api_key.as_ref()) {
-        println!("Testing provider '{provider_name}' ({})...", provider.kind);
-        println!("  Endpoint: {endpoint}");
-        println!("  API Key:  missing ({env_name})");
+        if !json {
+            println!("Testing provider '{provider_name}' ({})...", provider.kind);
+            println!("  Endpoint: {endpoint}");
+            println!("  API Key:  missing ({env_name})");
+        }
         bail!("missing API key: env var {env_name} not set");
     }
 
-    println!("Testing provider '{provider_name}' ({})...", provider.kind);
-    println!("  Endpoint: {endpoint}");
-    match (api_key_env, api_key.as_ref()) {
-        (Some(env_name), Some(_)) => println!("  API Key:  set ({env_name})"),
-        (None, _) => println!("  API Key:  not required"),
-        _ => {}
+    if !json {
+        println!("Testing provider '{provider_name}' ({})...", provider.kind);
+        println!("  Endpoint: {endpoint}");
+        match (api_key_env, api_key.as_ref()) {
+            (Some(env_name), Some(_)) => println!("  API Key:  set ({env_name})"),
+            (None, _) => println!("  API Key:  not required"),
+            _ => {}
+        }
+        println!("  Model:    {}", model.slug);
+        println!();
+        println!("  Sending: {body_text}");
     }
-    println!("  Model:    {}", model.slug);
-    println!();
-    println!("  Sending: {body_text}");
 
     let client = reqwest::Client::builder()
         .user_agent("roko-cli/0.1")
@@ -2259,12 +2263,14 @@ pub(crate) async fn run_openai_compat_provider_test(
         .context("read provider test response body")?;
 
     if !status.is_success() {
-        println!(
-            "  Response: {} ({})",
-            status_line,
-            format_provider_test_duration(elapsed)
-        );
-        println!("  Error:    {response_text}");
+        if !json {
+            println!(
+                "  Response: {} ({})",
+                status_line,
+                format_provider_test_duration(elapsed)
+            );
+            println!("  Error:    {response_text}");
+        }
         bail!("provider '{provider_name}' test failed");
     }
 
@@ -2275,29 +2281,31 @@ pub(crate) async fn run_openai_compat_provider_test(
     let usage = backend_response.extract_usage();
     let cost = estimate_provider_test_cost(model, &usage);
 
-    println!(
-        "  Response: {} ({})",
-        status_line,
-        format_provider_test_duration(elapsed)
-    );
-    if content.is_empty() {
-        println!("  Content:  content_empty");
-    } else {
+    if !json {
         println!(
-            "  Content:  {}",
-            serde_json::to_string(&content).context("format provider test content")?
+            "  Response: {} ({})",
+            status_line,
+            format_provider_test_duration(elapsed)
         );
+        if content.is_empty() {
+            println!("  Content:  content_empty");
+        } else {
+            println!(
+                "  Content:  {}",
+                serde_json::to_string(&content).context("format provider test content")?
+            );
+        }
+        println!(
+            "  Tokens:   input={}, output={}",
+            usage.input_tokens, usage.output_tokens
+        );
+        match cost {
+            Some(cost) => println!("  Cost:     ${cost:.6}"),
+            None => println!("  Cost:     n/a"),
+        }
+        println!();
+        println!("  \u{2713} Provider '{provider_name}' is working");
     }
-    println!(
-        "  Tokens:   input={}, output={}",
-        usage.input_tokens, usage.output_tokens
-    );
-    match cost {
-        Some(cost) => println!("  Cost:     ${cost:.6}"),
-        None => println!("  Cost:     n/a"),
-    }
-    println!();
-    println!("  ✓ Provider '{provider_name}' is working");
 
     Ok(build_provider_test_report(
         provider_name,
@@ -2360,7 +2368,7 @@ pub(crate) async fn run_anthropic_provider_test(
     provider_name: &str,
     provider: &ProviderConfig,
     model: &ModelProfile,
-    _json: bool,
+    json: bool,
 ) -> Result<ProviderTestReport> {
     let base = provider
         .base_url
@@ -2382,14 +2390,16 @@ pub(crate) async fn run_anthropic_provider_test(
         "messages": [{"role": "user", "content": "Say hello"}]
     });
 
-    println!("Testing provider '{provider_name}' ({})...", provider.kind);
-    println!("  Endpoint: {endpoint}");
-    println!(
-        "  API Key:  set ({})",
-        provider.api_key_env.as_deref().unwrap_or("?")
-    );
-    println!("  Model:    {}", model.slug);
-    println!();
+    if !json {
+        println!("Testing provider '{provider_name}' ({})...", provider.kind);
+        println!("  Endpoint: {endpoint}");
+        println!(
+            "  API Key:  set ({})",
+            provider.api_key_env.as_deref().unwrap_or("?")
+        );
+        println!("  Model:    {}", model.slug);
+        println!();
+    }
 
     let client = reqwest::Client::builder()
         .user_agent("roko-cli/0.1")
@@ -2416,12 +2426,14 @@ pub(crate) async fn run_anthropic_provider_test(
     let response_text = response.text().await.context("read response body")?;
 
     if !status.is_success() {
-        println!(
-            "  Response: {} ({})",
-            status,
-            format_provider_test_duration(elapsed)
-        );
-        println!("  Error:    {response_text}");
+        if !json {
+            println!(
+                "  Response: {} ({})",
+                status,
+                format_provider_test_duration(elapsed)
+            );
+            println!("  Error:    {response_text}");
+        }
         bail!("provider '{provider_name}' test failed");
     }
 
@@ -2436,19 +2448,21 @@ pub(crate) async fn run_anthropic_provider_test(
         .as_u64()
         .unwrap_or(0);
 
-    println!(
-        "  Response: {} ({})",
-        status,
-        format_provider_test_duration(elapsed)
-    );
-    if content.is_empty() {
-        println!("  Content:  content_empty");
-    } else {
-        println!("  Content:  {content}");
+    if !json {
+        println!(
+            "  Response: {} ({})",
+            status,
+            format_provider_test_duration(elapsed)
+        );
+        if content.is_empty() {
+            println!("  Content:  content_empty");
+        } else {
+            println!("  Content:  {content}");
+        }
+        println!("  Tokens:   input={input_tokens}, output={output_tokens}");
+        println!();
+        println!("  \u{2713} Provider '{provider_name}' is working");
     }
-    println!("  Tokens:   input={input_tokens}, output={output_tokens}");
-    println!();
-    println!("  \u{2713} Provider '{provider_name}' is working");
     let usage = roko_core::Usage {
         input_tokens: input_tokens as u32,
         output_tokens: output_tokens as u32,
@@ -2470,16 +2484,18 @@ pub(crate) async fn run_claude_cli_provider_test(
     provider_name: &str,
     provider: &ProviderConfig,
     model: Option<&ModelProfile>,
-    _json: bool,
+    json: bool,
 ) -> Result<ProviderTestReport> {
     let cmd = provider.command.as_deref().unwrap_or("claude");
 
-    println!("Testing provider '{provider_name}' ({})...", provider.kind);
-    println!("  Command: {cmd}");
-    if let Some(model) = model {
-        println!("  Model:    {}", model.slug);
+    if !json {
+        println!("Testing provider '{provider_name}' ({})...", provider.kind);
+        println!("  Command: {cmd}");
+        if let Some(model) = model {
+            println!("  Model:    {}", model.slug);
+        }
+        println!();
     }
-    println!();
 
     let started = Instant::now();
     let output = tokio::process::Command::new(cmd)
@@ -2490,24 +2506,28 @@ pub(crate) async fn run_claude_cli_provider_test(
     let elapsed = started.elapsed();
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        println!(
-            "  Status: exit {} ({})",
-            output.status,
-            format_provider_test_duration(elapsed)
-        );
-        println!("  Error:  {stderr}");
+        if !json {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            println!(
+                "  Status: exit {} ({})",
+                output.status,
+                format_provider_test_duration(elapsed)
+            );
+            println!("  Error:  {stderr}");
+        }
         bail!("provider '{provider_name}' test failed");
     }
 
-    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    println!(
-        "  Status:  exit 0 ({})",
-        format_provider_test_duration(elapsed)
-    );
-    println!("  Version: {version}");
-    println!();
-    println!("  \u{2713} Provider '{provider_name}' is working");
+    if !json {
+        let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        println!(
+            "  Status:  exit 0 ({})",
+            format_provider_test_duration(elapsed)
+        );
+        println!("  Version: {version}");
+        println!();
+        println!("  \u{2713} Provider '{provider_name}' is working");
+    }
 
     Ok(build_provider_test_report(
         provider_name,
@@ -2524,7 +2544,7 @@ pub(crate) async fn run_gemini_provider_test(
     provider_name: &str,
     provider: &ProviderConfig,
     model: &ModelProfile,
-    _json: bool,
+    json: bool,
 ) -> Result<ProviderTestReport> {
     let base = provider
         .base_url
@@ -2548,17 +2568,19 @@ pub(crate) async fn run_gemini_provider_test(
         "generationConfig": {"maxOutputTokens": 10}
     });
 
-    println!("Testing provider '{provider_name}' ({})...", provider.kind);
-    println!(
-        "  Endpoint: {base}/v1beta/models/{}:generateContent",
-        model.slug
-    );
-    println!(
-        "  API Key:  set ({})",
-        provider.api_key_env.as_deref().unwrap_or("?")
-    );
-    println!("  Model:    {}", model.slug);
-    println!();
+    if !json {
+        println!("Testing provider '{provider_name}' ({})...", provider.kind);
+        println!(
+            "  Endpoint: {base}/v1beta/models/{}:generateContent",
+            model.slug
+        );
+        println!(
+            "  API Key:  set ({})",
+            provider.api_key_env.as_deref().unwrap_or("?")
+        );
+        println!("  Model:    {}", model.slug);
+        println!();
+    }
 
     let client = reqwest::Client::builder()
         .user_agent("roko-cli/0.1")
@@ -2583,12 +2605,14 @@ pub(crate) async fn run_gemini_provider_test(
     let response_text = response.text().await.context("read response body")?;
 
     if !status.is_success() {
-        println!(
-            "  Response: {} ({})",
-            status,
-            format_provider_test_duration(elapsed)
-        );
-        println!("  Error:    {response_text}");
+        if !json {
+            println!(
+                "  Response: {} ({})",
+                status,
+                format_provider_test_duration(elapsed)
+            );
+            println!("  Error:    {response_text}");
+        }
         bail!("provider '{provider_name}' test failed");
     }
 
@@ -2605,19 +2629,21 @@ pub(crate) async fn run_gemini_provider_test(
         .as_u64()
         .unwrap_or(0);
 
-    println!(
-        "  Response: {} ({})",
-        status,
-        format_provider_test_duration(elapsed)
-    );
-    if content.is_empty() {
-        println!("  Content:  content_empty");
-    } else {
-        println!("  Content:  {content}");
+    if !json {
+        println!(
+            "  Response: {} ({})",
+            status,
+            format_provider_test_duration(elapsed)
+        );
+        if content.is_empty() {
+            println!("  Content:  content_empty");
+        } else {
+            println!("  Content:  {content}");
+        }
+        println!("  Tokens:   input={prompt_tokens}, output={output_tokens}");
+        println!();
+        println!("  \u{2713} Provider '{provider_name}' is working");
     }
-    println!("  Tokens:   input={prompt_tokens}, output={output_tokens}");
-    println!();
-    println!("  \u{2713} Provider '{provider_name}' is working");
     let usage = roko_core::Usage {
         input_tokens: prompt_tokens as u32,
         output_tokens: output_tokens as u32,
@@ -2639,19 +2665,21 @@ pub(crate) async fn run_cursor_provider_test(
     provider_name: &str,
     provider: &ProviderConfig,
     model: Option<&ModelProfile>,
-    _json: bool,
+    json: bool,
 ) -> Result<ProviderTestReport> {
     let base_url = provider
         .base_url
         .as_deref()
         .unwrap_or("http://localhost:3000");
 
-    println!("Testing provider '{provider_name}' ({})...", provider.kind);
-    println!("  Base URL: {base_url}");
-    if let Some(model) = model {
-        println!("  Model:    {}", model.slug);
+    if !json {
+        println!("Testing provider '{provider_name}' ({})...", provider.kind);
+        println!("  Base URL: {base_url}");
+        if let Some(model) = model {
+            println!("  Model:    {}", model.slug);
+        }
+        println!();
     }
-    println!();
 
     let url = reqwest::Url::parse(base_url)
         .with_context(|| format!("parse cursor base_url '{base_url}'"))?;
@@ -2670,12 +2698,14 @@ pub(crate) async fn run_cursor_provider_test(
     {
         Ok(Ok(_stream)) => {
             let elapsed = started.elapsed();
-            println!(
-                "  TCP:     connected ({})",
-                format_provider_test_duration(elapsed)
-            );
-            println!();
-            println!("  \u{2713} Provider '{provider_name}' is reachable");
+            if !json {
+                println!(
+                    "  TCP:     connected ({})",
+                    format_provider_test_duration(elapsed)
+                );
+                println!();
+                println!("  \u{2713} Provider '{provider_name}' is reachable");
+            }
             Ok(build_provider_test_report(
                 provider_name,
                 provider.kind,
@@ -2688,14 +2718,18 @@ pub(crate) async fn run_cursor_provider_test(
         }
         Ok(Err(e)) => {
             let elapsed = started.elapsed();
-            println!(
-                "  TCP:     failed ({}) \u{2014} {e}",
-                format_provider_test_duration(elapsed)
-            );
+            if !json {
+                println!(
+                    "  TCP:     failed ({}) \u{2014} {e}",
+                    format_provider_test_duration(elapsed)
+                );
+            }
             bail!("provider '{provider_name}' test failed: {e}")
         }
         Err(_) => {
-            println!("  TCP:     timed out (5s)");
+            if !json {
+                println!("  TCP:     timed out (5s)");
+            }
             bail!("provider '{provider_name}' test failed: connection timed out")
         }
     }

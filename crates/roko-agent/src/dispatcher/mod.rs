@@ -328,6 +328,12 @@ pub struct ToolDispatcher {
     /// from `roko-cli` via [`ToolDispatcher::with_safety_denial_callback`] to
     /// record denials durably in `.roko/learn/safety-denials.jsonl`.
     safety_denial_callback: Option<SafetyDenialCallback>,
+    /// Optional persistent JSONL audit adapter.
+    ///
+    /// When set, every dispatched tool call is recorded to disk via
+    /// [`roko_fs::tool_audit::ScrubAuditAdapter`]. The adapter scrubs
+    /// secrets before persistence so raw arguments never land on disk.
+    file_audit: Option<Arc<roko_fs::tool_audit::ScrubAuditAdapter>>,
 }
 
 impl ToolDispatcher {
@@ -351,6 +357,7 @@ impl ToolDispatcher {
             production_safety_chain: Some(chain),
             tool_selector: None,
             safety_denial_callback: None,
+            file_audit: None,
         }
     }
 
@@ -375,6 +382,7 @@ impl ToolDispatcher {
             production_safety_chain: None,
             tool_selector: None,
             safety_denial_callback: None,
+            file_audit: None,
         }
     }
 
@@ -471,6 +479,19 @@ impl ToolDispatcher {
         self
     }
 
+    /// Attach a persistent JSONL file audit adapter.
+    ///
+    /// When set, every dispatched tool call records a scrubbed admit + result
+    /// line to `.roko/tool_audit.jsonl` via the provided adapter.
+    #[must_use]
+    pub fn with_file_audit(
+        mut self,
+        adapter: Arc<roko_fs::tool_audit::ScrubAuditAdapter>,
+    ) -> Self {
+        self.file_audit = Some(adapter);
+        self
+    }
+
     /// Returns the hook chain, if one is attached.
     #[must_use]
     pub const fn hook_chain(&self) -> Option<&hook_chain::SafetyHookChain> {
@@ -532,11 +553,23 @@ impl ToolDispatcher {
             self.emit_terminal_audit(ctx, &placeholder, &result, timeout_ms);
             return result;
         }
+        // Persistent file audit: record the admitted call before execution.
+        if let Some(fa) = &self.file_audit {
+            if let Err(e) = fa.record_admit(&call).await {
+                tracing::warn!(err = %e, tool = %call.name, "file audit admit write failed");
+            }
+        }
         let result = self
             .dispatch_unfinalized(&mut call, ctx, result_limit)
             .await;
         let result = self.finalize_result_with_limit(result, result_limit);
         self.emit_terminal_audit(ctx, &call, &result, timeout_ms);
+        // Persistent file audit: record the terminal result after execution.
+        if let Some(fa) = &self.file_audit {
+            if let Err(e) = fa.record_result(&call, &result).await {
+                tracing::warn!(err = %e, tool = %call.name, "file audit result write failed");
+            }
+        }
         result
     }
 

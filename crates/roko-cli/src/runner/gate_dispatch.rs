@@ -1,30 +1,31 @@
 //! Verify dispatch — runs gate rungs as background tokio tasks and sends
 //! results through a channel.
+//!
+//! Sub-modules extracted for clarity:
+//! - [`cargo_command`](super::cargo_command) — Cargo command parsing/fingerprinting
+//! - [`gate_input`](super::gate_input) — deterministic worktree fingerprinting
+//! - [`gate_report`](super::gate_report) — output rendering and failure classification
+//! - [`gate_adapter`](super::gate_adapter) — `RunnerProductionGateAdapter` and artifact store
 
-use std::collections::{BTreeSet, HashMap};
-use std::fs::OpenOptions;
-use std::io::Read;
+use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Instant;
 
 use futures::FutureExt;
-use roko_core::config::{GateMode, GateRungConfig, GatesConfig};
+use roko_core::config::{GateMode, GatesConfig};
 use roko_core::{
     Body, Kind, LensScope, ObservableEvent, Provenance, Signal, SignalBuilder, TelemetryEventSink,
     Verdict, Verify,
 };
 use roko_fs::RokoLayout;
-use roko_gate::classify_gate_failure;
-use roko_gate::generated_test_gate::ArtifactStore as GeneratedArtifactStore;
 use roko_gate::llm_judge_gate::JudgePayload;
 use roko_gate::rung_dispatch::{GatePipelineBuilder, RungExecutionConfig, RungExecutionInputs};
 use roko_gate::rung_for_gate_name;
 use roko_gate::symbol_gate::{SymbolExpectation, SymbolKind, SymbolManifest, Visibility};
 use roko_gate::verdict_publisher::VerdictPublisher;
 use roko_gate::{GatePayload, PlanComplexity, ShellGate};
-use sha2::{Digest, Sha256};
 use tokio::process::Command;
 use tokio::sync::{Semaphore, mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -37,6 +38,28 @@ use super::types::{
     GateCompletion, GateCompletionKind, GateEffectRef, GateVerdictSummary, RunnerFailureKind,
 };
 use super::{impact_analysis, impact_analysis::ImpactReport};
+
+// Re-export items from extracted modules for backward compatibility.
+pub use super::gate_adapter::{RunnerProductionGateAdapter, default_gate_adapter};
+pub(crate) use super::gate_adapter::FsGeneratedArtifactStore;
+
+// Import extracted helpers used within this module.
+use super::cargo_command::{
+    canonical_verify_commands, cargo_command_fingerprint, cargo_command_with_profile,
+    cargo_profile_available, command_uses_cargo, deduplicate_verify_steps, focused_verify_steps,
+    scope_authored_verify_steps, targeted_cargo_check, with_targeted_compile_rung,
+};
+use super::gate_input::{
+    GateInputSnapshot, accepted_input_snapshot, fetch_git_diff, gate_input_fingerprint_id,
+    gate_input_snapshot,
+};
+use super::gate_report::{
+    classify_failure_kind, filter_preexisting_failures, gate_failure_input, raw_gate_name,
+    render_output,
+};
+
+// Re-export for callers that access these through `gate_dispatch::`.
+pub(crate) use super::gate_input::{owned_input_fingerprint_id, reflex_input_fingerprint};
 
 /// Sentinel rung value for plan-level verification (not a per-task rung).
 pub const RUNG_PLAN_VERIFY: u32 = 1000;
@@ -112,7 +135,7 @@ impl GateTaskContext {
     }
 }
 
-fn fast_mode_enabled() -> bool {
+pub(super) fn fast_mode_enabled() -> bool {
     std::env::var("ROKO_FAST_MODE").is_ok_and(|value| {
         matches!(
             value.trim().to_ascii_lowercase().as_str(),
@@ -152,12 +175,7 @@ fn effective_gate_mode(configured: GateMode, fast_mode: bool, task_verify_only: 
     }
 }
 
-fn command_uses_cargo(command: &str) -> bool {
-    cargo_command_fingerprint(command).is_some()
-        || command
-            .split(|character: char| character.is_ascii_whitespace() || ";&|()".contains(character))
-            .any(|token| token == "cargo")
-}
+// ── Compile coordination ────────────────────────────────────────────────
 
 #[derive(Default)]
 struct CompileCoordinatorRegistry {
@@ -238,7 +256,7 @@ async fn compile_coordinator(workdir: &Path, permits: usize) -> Arc<Semaphore> {
     coordinator
 }
 
-async fn acquire_compile_ownership(
+pub(super) async fn acquire_compile_ownership(
     workdir: &Path,
     permits: usize,
     max_wait: Duration,
@@ -263,11 +281,11 @@ async fn acquire_compile_ownership(
     Ok(permit)
 }
 
-fn elapsed_millis(started: Instant) -> u64 {
+pub(super) fn elapsed_millis(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
-fn cargo_cache_counts(verdict: &Verdict) -> (u64, u64) {
+pub(super) fn cargo_cache_counts(verdict: &Verdict) -> (u64, u64) {
     verdict
         .detail
         .as_deref()
@@ -290,980 +308,12 @@ fn cargo_cache_counts(verdict: &Verdict) -> (u64, u64) {
         })
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum CargoTargetSelector {
-    Lib,
-    Bin(String),
-    Test(String),
-}
-
-impl CargoTargetSelector {
-    fn command_args(&self) -> (&'static str, Option<&str>) {
-        match self {
-            Self::Lib => ("--lib", None),
-            Self::Bin(name) => ("--bin", Some(name)),
-            Self::Test(name) => ("--test", Some(name)),
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct TargetedCargoCheck {
-    package: String,
-    target: CargoTargetSelector,
-    command: String,
-}
-
-fn safe_cargo_name(value: &str) -> bool {
-    !value.is_empty()
-        && !value.starts_with('-')
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-}
-
-fn git_changed_files(workdir: &Path) -> Option<Vec<String>> {
-    fn collect_git_paths(workdir: &Path, args: &[&str], paths: &mut BTreeSet<String>) -> bool {
-        let output = std::process::Command::new("git")
-            .args(args)
-            .current_dir(workdir)
-            .output();
-        let Ok(output) = output else {
-            return false;
-        };
-        if !output.status.success() {
-            return false;
-        }
-        paths.extend(
-            String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .map(str::trim)
-                .filter(|line| !line.is_empty())
-                .map(ToOwned::to_owned),
-        );
-        true
-    }
-
-    // Deletions, renames/copies, type changes, conflicts, and unknown status
-    // cannot be represented by one positive Cargo target. Fail closed to the
-    // original broad gate whenever any such change is present.
-    let mut unsafe_paths = BTreeSet::new();
-    if !collect_git_paths(
-        workdir,
-        &["diff", "--name-only", "--diff-filter=CDRTUXB", "HEAD", "--"],
-        &mut unsafe_paths,
-    ) || !unsafe_paths.is_empty()
-    {
-        return None;
-    }
-
-    let mut paths = BTreeSet::new();
-    if !collect_git_paths(
-        workdir,
-        &["diff", "--name-only", "--diff-filter=AM", "HEAD", "--"],
-        &mut paths,
-    ) || !collect_git_paths(
-        workdir,
-        &["ls-files", "--others", "--exclude-standard"],
-        &mut paths,
-    ) {
-        return None;
-    }
-    Some(paths.into_iter().collect())
-}
-
-fn cargo_manifest_for_file(workdir: &Path, file: &str) -> Option<(PathBuf, String)> {
-    let relative = Path::new(file);
-    if relative.is_absolute()
-        || relative
-            .components()
-            .any(|part| matches!(part, std::path::Component::ParentDir))
-    {
-        return None;
-    }
-    let absolute_file = workdir.join(relative);
-    let mut cursor = absolute_file.parent()?.to_path_buf();
-    loop {
-        if cursor.join("Cargo.toml").is_file() {
-            let within_package = absolute_file.strip_prefix(&cursor).ok()?;
-            return within_package
-                .to_str()
-                .map(|path| (cursor, path.to_string()));
-        }
-        if cursor == workdir || !cursor.pop() || !cursor.starts_with(workdir) {
-            return None;
-        }
-    }
-}
-
-fn manifest_target_for_path(
-    manifest: &toml::Value,
-    package: &str,
-    path: &str,
-) -> Option<CargoTargetSelector> {
-    let normalize = |value: &str| {
-        value
-            .replace('\\', "/")
-            .trim_start_matches("./")
-            .to_string()
-    };
-    let path = normalize(path);
-    let package_config = manifest.get("package").and_then(toml::Value::as_table);
-    let auto_lib = package_config
-        .and_then(|table| table.get("autolib"))
-        .and_then(toml::Value::as_bool)
-        .unwrap_or(true);
-    let auto_bins = package_config
-        .and_then(|table| table.get("autobins"))
-        .and_then(toml::Value::as_bool)
-        .unwrap_or(true);
-    let auto_tests = package_config
-        .and_then(|table| table.get("autotests"))
-        .and_then(toml::Value::as_bool)
-        .unwrap_or(true);
-    let mut matches = BTreeSet::new();
-
-    if let Some(lib) = manifest.get("lib").and_then(toml::Value::as_table) {
-        let lib_path = lib
-            .get("path")
-            .and_then(toml::Value::as_str)
-            .map_or_else(|| "src/lib.rs".to_string(), normalize);
-        if path == lib_path {
-            matches.insert(CargoTargetSelector::Lib);
-        }
-    } else if auto_lib && path == "src/lib.rs" {
-        matches.insert(CargoTargetSelector::Lib);
-    }
-
-    if let Some(bins) = manifest.get("bin").and_then(toml::Value::as_array) {
-        for bin in bins.iter().filter_map(toml::Value::as_table) {
-            let Some(name) = bin.get("name").and_then(toml::Value::as_str) else {
-                continue;
-            };
-            let bin_path = bin
-                .get("path")
-                .and_then(toml::Value::as_str)
-                .map_or_else(|| format!("src/bin/{name}.rs"), normalize);
-            if path == bin_path {
-                if !safe_cargo_name(name) {
-                    return None;
-                }
-                matches.insert(CargoTargetSelector::Bin(name.to_string()));
-            }
-        }
-    }
-    if auto_bins && path == "src/main.rs" && safe_cargo_name(package) {
-        matches.insert(CargoTargetSelector::Bin(package.to_string()));
-    }
-    if auto_bins && let Some(rest) = path.strip_prefix("src/bin/") {
-        if let Some(name) = rest
-            .strip_suffix("/main.rs")
-            .or_else(|| rest.strip_suffix(".rs"))
-            && !name.contains('/')
-            && safe_cargo_name(name)
-        {
-            matches.insert(CargoTargetSelector::Bin(name.to_string()));
-        }
-    }
-
-    if let Some(tests) = manifest.get("test").and_then(toml::Value::as_array) {
-        for test in tests.iter().filter_map(toml::Value::as_table) {
-            let Some(name) = test.get("name").and_then(toml::Value::as_str) else {
-                continue;
-            };
-            let test_path = test
-                .get("path")
-                .and_then(toml::Value::as_str)
-                .map_or_else(|| format!("tests/{name}.rs"), normalize);
-            if path == test_path {
-                if !safe_cargo_name(name) {
-                    return None;
-                }
-                matches.insert(CargoTargetSelector::Test(name.to_string()));
-            }
-        }
-    }
-    if auto_tests && let Some(rest) = path.strip_prefix("tests/") {
-        if let Some(name) = rest
-            .strip_suffix("/main.rs")
-            .or_else(|| rest.strip_suffix(".rs"))
-            && !name.contains('/')
-            && safe_cargo_name(name)
-        {
-            matches.insert(CargoTargetSelector::Test(name.to_string()));
-        }
-    }
-    if matches.len() != 1 {
-        return None;
-    }
-    matches.into_iter().next()
-}
-
-/// Select a single Cargo target only when FAST mode can prove every changed
-/// Rust file belongs to that exact target.  Module files are intentionally
-/// ambiguous because Cargo metadata does not reveal which roots include them.
-fn targeted_cargo_check(workdir: &Path, target_crates: &[String]) -> Option<TargetedCargoCheck> {
-    if !fast_mode_enabled() {
-        return None;
-    }
-    let packages = target_crates
-        .iter()
-        .filter(|package| package.as_str() != "workspace")
-        .collect::<BTreeSet<_>>();
-    let package = packages.iter().next()?.as_str().to_string();
-    if packages.len() != 1 || !safe_cargo_name(&package) {
-        return None;
-    }
-
-    let files = git_changed_files(workdir)?;
-    // A non-Rust input may affect build scripts, generated source, features,
-    // or `include_*` data. Without dependency metadata that is ambiguous, so
-    // target narrowing fails closed even for apparently harmless side files.
-    if files.is_empty() || files.iter().any(|file| !file.ends_with(".rs")) {
-        return None;
-    }
-
-    let mut selected: Option<(PathBuf, CargoTargetSelector)> = None;
-    let mut saw_rust = false;
-    for file in files.iter().filter(|file| file.ends_with(".rs")) {
-        saw_rust = true;
-        let (package_root, package_path) = cargo_manifest_for_file(workdir, file)?;
-        let manifest_text = std::fs::read_to_string(package_root.join("Cargo.toml")).ok()?;
-        let manifest = toml::from_str::<toml::Value>(&manifest_text).ok()?;
-        let manifest_package = manifest
-            .get("package")
-            .and_then(toml::Value::as_table)
-            .and_then(|package| package.get("name"))
-            .and_then(toml::Value::as_str)?;
-        if manifest_package != package {
-            return None;
-        }
-        let target = manifest_target_for_path(&manifest, manifest_package, &package_path)?;
-        match &selected {
-            Some((root, prior)) if root != &package_root || prior != &target => return None,
-            None => selected = Some((package_root, target)),
-            _ => {}
-        }
-    }
-    if !saw_rust {
-        return None;
-    }
-    let (_, target) = selected?;
-    let (target_flag, target_name) = target.command_args();
-    let mut command = format!("cargo check -p {package} {target_flag}");
-    if let Some(target_name) = target_name {
-        command.push(' ');
-        command.push_str(target_name);
-    }
-    command.push_str(" --message-format=json");
-    Some(TargetedCargoCheck {
-        package,
-        target,
-        command,
-    })
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct CargoCommandFingerprint {
-    action: String,
-    arguments: Vec<String>,
-    tool_arguments: Vec<String>,
-}
-
-fn simple_command_tokens(command: &str) -> Option<Vec<&str>> {
-    if command.trim().is_empty()
-        || command.chars().any(|ch| {
-            matches!(
-                ch,
-                '\n' | '\r' | '\'' | '"' | '`' | '$' | '|' | ';' | '&' | '<' | '>'
-            )
-        })
-    {
-        return None;
-    }
-    Some(command.split_ascii_whitespace().collect())
-}
-
-/// Add an explicit Cargo profile to a simple runner-owned gate command.
-///
-/// Environment variables such as `CARGO_PROFILE_DEV_*` only configure a
-/// profile; Cargo does not select that profile unless the command includes
-/// `--profile`. Shell composition and quoted commands are intentionally left
-/// untouched because rewriting them safely requires a shell parser.
-fn cargo_command_with_profile(command: &str, profile: &str) -> Option<String> {
-    let tokens = simple_command_tokens(command)?;
-    if tokens.first().copied() != Some("cargo")
-        || !matches!(tokens.get(1).copied(), Some("check" | "clippy" | "test"))
-    {
-        return None;
-    }
-    if tokens
-        .iter()
-        .any(|token| *token == "--profile" || token.strip_prefix("--profile=").is_some())
-    {
-        return Some(command.trim().to_string());
-    }
-
-    let mut selected = tokens.into_iter().map(str::to_string).collect::<Vec<_>>();
-    let insertion = selected
-        .iter()
-        .position(|token| token == "--")
-        .unwrap_or(selected.len());
-    selected.splice(
-        insertion..insertion,
-        ["--profile".to_string(), profile.to_string()],
-    );
-    Some(selected.join(" "))
-}
-
-fn cargo_profile_available(workdir: &Path, profile: &str) -> bool {
-    std::fs::read_to_string(workdir.join("Cargo.toml"))
-        .ok()
-        .and_then(|manifest| toml::from_str::<toml::Value>(&manifest).ok())
-        .and_then(|manifest| manifest.get("profile").cloned())
-        .and_then(|profiles| profiles.get(profile).cloned())
-        .is_some_and(|profile| profile.is_table())
-}
-
-/// Normalize simple Cargo verification commands while deliberately rejecting
-/// shell composition.  Only presentation/cache flags are ignored; flags that
-/// can change what is compiled remain part of the fingerprint.
-fn cargo_command_fingerprint(command: &str) -> Option<CargoCommandFingerprint> {
-    let tokens = simple_command_tokens(command)?;
-    if tokens.first().copied()? != "cargo" {
-        return None;
-    }
-    let action = tokens.get(1).copied()?;
-    if !matches!(action, "check" | "clippy" | "test") {
-        return None;
-    }
-
-    let mut arguments = Vec::new();
-    let mut tool_arguments = Vec::new();
-    let mut index = 2;
-    let mut after_separator = false;
-    while index < tokens.len() {
-        let token = tokens[index];
-        if after_separator {
-            tool_arguments.push(token.to_string());
-            index += 1;
-            continue;
-        }
-        if token == "--" {
-            after_separator = true;
-            index += 1;
-            continue;
-        }
-        if matches!(token, "-q" | "--quiet" | "-v" | "--verbose") {
-            index += 1;
-            continue;
-        }
-        if matches!(
-            token,
-            "--color" | "--message-format" | "-j" | "--jobs" | "--target-dir"
-        ) {
-            index += 2;
-            if index > tokens.len() {
-                return None;
-            }
-            continue;
-        }
-        if ["--color=", "--message-format=", "--jobs=", "--target-dir="]
-            .iter()
-            .any(|prefix| token.starts_with(prefix))
-        {
-            index += 1;
-            continue;
-        }
-
-        let canonical_value_flag = match token {
-            "-p" | "--package" => Some("--package"),
-            "--bin" => Some("--bin"),
-            "--test" => Some("--test"),
-            "--example" => Some("--example"),
-            "--bench" => Some("--bench"),
-            "--features" => Some("--features"),
-            "--profile" => Some("--profile"),
-            "--target" => Some("--target"),
-            "--manifest-path" => Some("--manifest-path"),
-            _ => None,
-        };
-        if let Some(flag) = canonical_value_flag {
-            let value = *tokens.get(index + 1)?;
-            let value = if flag == "--features" {
-                let mut features = value.split(',').collect::<Vec<_>>();
-                features.sort_unstable();
-                features.join(",")
-            } else {
-                value.to_string()
-            };
-            arguments.push(format!("{flag}={value}"));
-            index += 2;
-            continue;
-        }
-        if let Some((flag, value)) = token.split_once('=') {
-            let flag = match flag {
-                "-p" | "--package" => "--package",
-                "--bin" => "--bin",
-                "--test" => "--test",
-                "--example" => "--example",
-                "--bench" => "--bench",
-                "--features" => "--features",
-                "--profile" => "--profile",
-                "--target" => "--target",
-                "--manifest-path" => "--manifest-path",
-                _ => flag,
-            };
-            let value = if flag == "--features" {
-                let mut features = value.split(',').collect::<Vec<_>>();
-                features.sort_unstable();
-                features.join(",")
-            } else {
-                value.to_string()
-            };
-            arguments.push(format!("{flag}={value}"));
-        } else {
-            arguments.push(token.to_string());
-        }
-        index += 1;
-    }
-    arguments.sort();
-    Some(CargoCommandFingerprint {
-        action: action.to_string(),
-        arguments,
-        tool_arguments,
-    })
-}
-
-fn default_cargo_scope(target_crates: &[String]) -> String {
-    let packages = target_crates
-        .iter()
-        .filter(|package| !package.is_empty() && package.as_str() != "workspace")
-        .collect::<BTreeSet<_>>();
-    if packages.is_empty() {
-        "--workspace".to_string()
-    } else {
-        packages
-            .into_iter()
-            .map(|package| format!("-p {package}"))
-            .collect::<Vec<_>>()
-            .join(" ")
-    }
-}
-
-fn canonical_verify_commands(
-    gates_config: &GatesConfig,
-    complexity: PlanComplexity,
-    target_crates: &[String],
-    targeted_check: Option<&TargetedCargoCheck>,
-) -> Vec<String> {
-    if gates_config.has_custom_rungs() {
-        return gates_config
-            .effective_rungs()
-            .into_iter()
-            .filter(|rung| rung.required)
-            .map(|rung| rung.command)
-            .filter(|command| !command.trim().is_empty())
-            .collect();
-    }
-
-    let selected = GatePipelineBuilder::selected_rung_labels(gates_config, complexity);
-    let scope = default_cargo_scope(target_crates);
-    selected
-        .iter()
-        .filter_map(|rung| match rung.as_str() {
-            "compile" => Some(targeted_check.map_or_else(
-                || format!("cargo check {scope} --lib --message-format=json"),
-                |targeted| targeted.command.clone(),
-            )),
-            "lint" => Some(format!(
-                "cargo clippy {scope} --lib --no-deps -- -D warnings"
-            )),
-            "test" => Some(format!("cargo test {scope}")),
-            _ => None,
-        })
-        .collect()
-}
-
-fn deduplicate_verify_steps(
-    task_id: &str,
-    verify_steps: Vec<VerifyStep>,
-    canonical_commands: &[String],
-) -> Vec<VerifyStep> {
-    let covered = canonical_commands
-        .iter()
-        .filter_map(|command| cargo_command_fingerprint(command))
-        .collect::<BTreeSet<_>>();
-    let total = verify_steps.len();
-    let mut retained = Vec::with_capacity(total);
-    for step in verify_steps {
-        let fingerprint = cargo_command_fingerprint(&step.command);
-        let exact_duplicate = fingerprint
-            .as_ref()
-            .is_some_and(|fingerprint| covered.contains(fingerprint));
-        if exact_duplicate {
-            info!(
-                task_id = %task_id,
-                phase = %step.phase,
-                command = %step.command,
-                reason = "semantic-duplicate",
-                "skipping redundant authored verify command"
-            );
-            continue;
-        }
-        retained.push(step);
-    }
-    if retained.len() != total {
-        info!(
-            task_id = %task_id,
-            original_steps = total,
-            retained_steps = retained.len(),
-            "verify command deduplication complete"
-        );
-    }
-    retained
-}
-
-fn scoped_test_command(workdir: &Path, command: &str, report: &ImpactReport) -> Option<String> {
-    let target = report.one_target()?;
-    let tokens = simple_command_tokens(command)?;
-    if tokens.get(1).copied() != Some("test")
-        || tokens.contains(&"--")
-        || tokens.iter().any(|token| {
-            matches!(
-                *token,
-                "--lib" | "--bin" | "--test" | "--example" | "--bench" | "--all-targets"
-            ) || token.starts_with("--bin=")
-                || token.starts_with("--test=")
-                || token.starts_with("--example=")
-                || token.starts_with("--bench=")
-        })
-    {
-        return None;
-    }
-    let selected_package = tokens
-        .windows(2)
-        .find_map(|pair| matches!(pair[0], "-p" | "--package").then_some(pair[1]));
-    if selected_package != Some(target.package.as_str()) {
-        return None;
-    }
-
-    match &target.selector {
-        impact_analysis::CargoTargetSelector::Test(name) => {
-            Some(format!("{} --test {name}", command.trim()))
-        }
-        impact_analysis::CargoTargetSelector::Lib => {
-            let changed = report
-                .changed_files
-                .iter()
-                .filter(|path| path.ends_with(".rs"))
-                .collect::<Vec<_>>();
-            let path = changed.as_slice().first().copied()?;
-            if changed.len() != 1 {
-                return None;
-            }
-            let source = std::fs::read_to_string(workdir.join(path)).ok()?;
-            if !source.contains("#[test]") && !source.contains("mod tests") {
-                return None;
-            }
-            let module = path
-                .split("/src/")
-                .nth(1)?
-                .strip_suffix(".rs")?
-                .trim_end_matches("/mod")
-                .replace('/', "::");
-            if module.is_empty() || matches!(module.as_str(), "lib" | "main") {
-                return None;
-            }
-            Some(format!("{} --lib -- {module}::", command.trim()))
-        }
-        _ => None,
-    }
-}
-
-fn scope_authored_verify_steps(
-    workdir: &Path,
-    task_id: &str,
-    steps: Vec<VerifyStep>,
-    report: &ImpactReport,
-) -> Vec<VerifyStep> {
-    steps
-        .into_iter()
-        .map(|mut step| {
-            if let Some(scoped) = scoped_test_command(workdir, &step.command, report) {
-                info!(
-                    task_id,
-                    original_command = %step.command,
-                    scoped_command = %scoped,
-                    "focused gate scoped authored Cargo test"
-                );
-                step.command = scoped;
-            }
-            step
-        })
-        .collect()
-}
-
-fn focused_verify_steps(
-    report: &ImpactReport,
-    task_id: &str,
-    authored: Vec<VerifyStep>,
-    timeout_secs: u64,
-    cargo_profile: Option<&str>,
-) -> Vec<VerifyStep> {
-    let commands = report
-        .focused_commands()
-        .into_iter()
-        .map(|command| {
-            cargo_profile
-                .and_then(|profile| cargo_command_with_profile(&command, profile))
-                .unwrap_or(command)
-        })
-        .collect::<Vec<_>>();
-    let authored = deduplicate_verify_steps(task_id, authored, &commands);
-    let mut selected = commands
-        .into_iter()
-        .map(|command| VerifyStep {
-            phase: "impact-compile".into(),
-            command,
-            fail_msg: Some("impact-selected Cargo check failed".into()),
-            timeout_ms: timeout_secs.max(1).saturating_mul(1_000),
-        })
-        .collect::<Vec<_>>();
-    selected.extend(authored);
-    selected
-}
-
-fn with_targeted_compile_rung(
-    gates_config: &GatesConfig,
-    complexity: PlanComplexity,
-    targeted: Option<&TargetedCargoCheck>,
-    timeout_secs: u64,
-    cargo_profile: Option<&str>,
-) -> GatesConfig {
-    let Some(targeted) = targeted else {
-        return gates_config.clone();
-    };
-    if gates_config.has_custom_rungs() {
-        return gates_config.clone();
-    }
-    let mut optimized = gates_config.clone();
-    optimized.custom_rungs = GatePipelineBuilder::selected_rung_labels(gates_config, complexity)
-        .into_iter()
-        .map(|name| GateRungConfig {
-            command: if name == "compile" {
-                cargo_profile
-                    .and_then(|profile| cargo_command_with_profile(&targeted.command, profile))
-                    .unwrap_or_else(|| targeted.command.clone())
-            } else {
-                String::new()
-            },
-            name,
-            timeout_secs: timeout_secs.max(1),
-            required: true,
-            parallel_with: Vec::new(),
-        })
-        .collect();
-    optimized
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct GateInputSnapshot(String, [u8; 32], bool);
-const MAX_UNTRACKED_FILES: usize = 1024;
-const MAX_UNTRACKED_FILE_BYTES: u64 = 8 * 1024 * 1024;
-const MAX_GATE_INPUT_BYTES: u64 = 32 * 1024 * 1024;
-fn hash_part(hasher: &mut Sha256, bytes: &[u8]) {
-    hasher.update((bytes.len() as u64).to_le_bytes());
-    hasher.update(bytes);
-}
-#[cfg(unix)]
-fn metadata_unchanged(before: &std::fs::Metadata, after: &std::fs::Metadata) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    before.file_type() == after.file_type()
-        && before.len() == after.len()
-        && before.modified().ok() == after.modified().ok()
-        && before.dev() == after.dev()
-        && before.ino() == after.ino()
-        && before.mode() == after.mode()
-}
-
-#[cfg(unix)]
-fn metadata_mode(metadata: &std::fs::Metadata) -> u32 {
-    use std::os::unix::fs::MetadataExt;
-    metadata.mode()
-}
-
-#[cfg(not(unix))]
-fn metadata_mode(_metadata: &std::fs::Metadata) -> u32 {
-    0
-}
-fn gate_input_snapshot_blocking(workdir: &Path) -> Result<GateInputSnapshot, String> {
-    #[cfg(not(unix))]
-    return Err("stable gate input identity is unavailable on this platform".into());
-    let git = |args: &[&str]| {
-        let output = std::process::Command::new("git")
-            .args(args)
-            .current_dir(workdir)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .output()
-            .map_err(|error| error.to_string())?;
-        if output.status.success() {
-            Ok(output.stdout)
-        } else {
-            Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
-        }
-    };
-    let base_commit = String::from_utf8_lossy(&git(&["rev-parse", "HEAD"])?)
-        .trim()
-        .to_string();
-    let diff = git(&["diff", "--binary", "HEAD", "--"])?;
-    if diff.len() as u64 > MAX_GATE_INPUT_BYTES {
-        return Err("tracked diff exceeds gate input byte limit".into());
-    }
-    let status = git(&[
-        "status",
-        "--porcelain=v1",
-        "-z",
-        "--ignored=matching",
-        "-uall",
-    ])?;
-    crate::orchestrator::worktree::validate_workspace_file_kinds(workdir, &status)
-        .map_err(|error| error.to_string())?;
-    let untracked = git(&["ls-files", "--others", "--exclude-standard", "-z"])?;
-    let mut hasher = Sha256::new();
-    hash_part(&mut hasher, base_commit.as_bytes());
-    hash_part(&mut hasher, &diff);
-    let mut total_bytes = diff.len() as u64;
-    for (index, raw_path) in untracked
-        .split(|byte| *byte == 0)
-        .filter(|path| !path.is_empty())
-        .enumerate()
-    {
-        if index >= MAX_UNTRACKED_FILES {
-            return Err("untracked file count exceeds input limit".into());
-        }
-        let relative = std::str::from_utf8(raw_path).map_err(|error| error.to_string())?;
-        let path = workdir.join(relative);
-        let before = std::fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
-        hash_part(&mut hasher, raw_path);
-        hasher.update(metadata_mode(&before).to_le_bytes());
-        if before.file_type().is_symlink() {
-            let target_path = std::fs::read_link(&path).map_err(|error| error.to_string())?;
-            let target = target_path.as_os_str().as_encoded_bytes();
-            total_bytes = total_bytes.saturating_add(target.len() as u64);
-            if target.len() as u64 > MAX_UNTRACKED_FILE_BYTES || total_bytes > MAX_GATE_INPUT_BYTES
-            {
-                return Err("untracked symlink exceeds input limit".into());
-            }
-            hasher.update([b'l']);
-            hash_part(&mut hasher, target);
-            if std::fs::read_link(&path).ok().as_ref() != Some(&target_path) {
-                return Err("untracked symlink changed while hashing".into());
-            }
-        } else if before.is_file() {
-            if before.len() > MAX_UNTRACKED_FILE_BYTES
-                || total_bytes.saturating_add(before.len()) > MAX_GATE_INPUT_BYTES
-            {
-                return Err("untracked file exceeds input limit".into());
-            }
-            let mut options = OpenOptions::new();
-            options.read(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-            }
-            let mut file = options.open(&path).map_err(|error| error.to_string())?;
-            let opened = file.metadata().map_err(|error| error.to_string())?;
-            if !opened.is_file() || !metadata_unchanged(&before, &opened) {
-                return Err("untracked file changed before hashing".into());
-            }
-            hasher.update([b'f']);
-            hasher.update(before.len().to_le_bytes());
-            let read_bytes = std::io::copy(&mut (&mut file).take(before.len() + 1), &mut hasher)
-                .map_err(|error| error.to_string())?;
-            let after = std::fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
-            if read_bytes != before.len() || !metadata_unchanged(&before, &after) {
-                return Err("untracked file changed while hashing".into());
-            }
-            total_bytes += read_bytes;
-        } else {
-            return Err("untracked path is not a regular file or symlink".into());
-        }
-    }
-    let owned_diff: [u8; 32] = hasher.finalize().into();
-    let has_owned_diff = !diff.is_empty() || !untracked.is_empty();
-    Ok(GateInputSnapshot(base_commit, owned_diff, has_owned_diff))
-}
-async fn gate_input_snapshot(workdir: PathBuf) -> Result<GateInputSnapshot, String> {
-    tokio::task::spawn_blocking(move || gate_input_snapshot_blocking(&workdir))
-        .await
-        .map_err(|error| error.to_string())?
-}
-
-/// Fetch the `git diff HEAD` output for the LlmJudge gate.
-///
-/// Runs `git diff HEAD -- .` in a blocking task with a bounded 5 s timeout.
-/// Returns `None` on any error or timeout so the caller can fall back to
-/// description-only evaluation.
-async fn fetch_git_diff(workdir: &Path) -> Option<String> {
-    let workdir = workdir.to_path_buf();
-    tokio::time::timeout(
-        Duration::from_secs(5),
-        tokio::task::spawn_blocking(move || {
-            std::process::Command::new("git")
-                .args(["diff", "HEAD", "--", "."])
-                .current_dir(&workdir)
-                .env("GIT_TERMINAL_PROMPT", "0")
-                .output()
-                .ok()
-                .and_then(|o| {
-                    if o.status.success() {
-                        String::from_utf8(o.stdout).ok()
-                    } else {
-                        None
-                    }
-                })
-        }),
-    )
-    .await
-    .ok()
-    .and_then(|r| r.ok())
-    .flatten()
-}
-
-/// Stable identity of a task worktree's base commit plus all tracked and
-/// untracked owned bytes. Reflex promotion reuses the same attribution proof
-/// as the gate so an isolated replay can be compared with the Premium source
-/// attempt without inventing a weaker diff format.
-pub(super) async fn reflex_input_fingerprint(
-    workdir: PathBuf,
-) -> Result<(String, [u8; 32], bool), String> {
-    let GateInputSnapshot(base, digest, has_owned_diff) = gate_input_snapshot(workdir).await?;
-    Ok((base, digest, has_owned_diff))
-}
-
-fn gate_input_fingerprint_id(snapshot: &GateInputSnapshot) -> String {
-    let mut identity = Sha256::new();
-    hash_part(&mut identity, snapshot.0.as_bytes());
-    identity.update(snapshot.1);
-    identity.update([u8::from(snapshot.2)]);
-    format!("{:x}", identity.finalize())
-}
-
-/// Combined identity of the immutable base plus every tracked/untracked byte
-/// and mode in a task checkout.
-pub(super) async fn owned_input_fingerprint_id(workdir: PathBuf) -> Result<String, String> {
-    let snapshot = gate_input_snapshot(workdir).await?;
-    snapshot
-        .2
-        .then(|| gate_input_fingerprint_id(&snapshot))
-        .ok_or_else(|| "worktree has no owned diff to fingerprint".to_string())
-}
-async fn accepted_input_snapshot(
-    workdir: PathBuf,
-    expected_oid: &str,
-) -> Result<GateInputSnapshot, String> {
-    let snapshot = gate_input_snapshot(workdir).await?;
-    (snapshot.0 == expected_oid && !snapshot.2)
-        .then_some(snapshot)
-        .ok_or_else(|| "accepted plan input differs from immutable commit".into())
-}
-fn raw_gate_name(name: &str) -> &str {
-    name.strip_prefix("baseline+owned:")
-        .or_else(|| name.strip_prefix("baseline:"))
-        .or_else(|| name.strip_prefix("owned-diff:"))
-        .or_else(|| name.strip_prefix("unattributed:"))
-        .unwrap_or(name)
-}
-
-fn normalized_failure_fingerprint(digest: Option<&str>) -> Option<String> {
-    fn remove_volatile(value: &mut serde_json::Value) {
-        match value {
-            serde_json::Value::Object(object) => {
-                object.remove("duration_ms");
-                for child in object.values_mut() {
-                    remove_volatile(child);
-                }
-            }
-            serde_json::Value::Array(array) => {
-                for child in array {
-                    remove_volatile(child);
-                }
-            }
-            _ => {}
-        }
-    }
-    let digest = digest?.trim();
-    if digest.is_empty() {
-        return None;
-    }
-    let mut value = serde_json::from_str::<serde_json::Value>(digest).ok()?;
-    remove_volatile(&mut value);
-    serde_json::to_string(&value).ok()
-}
-
-fn filter_preexisting_failures(
-    task_id: &str,
-    verdicts: &mut [Verdict],
-    baseline: Option<&[GateVerdictSummary]>,
-) {
-    let Some(baseline) = baseline else {
-        return;
-    };
-    for verdict in verdicts
-        .iter_mut()
-        .filter(|verdict| !verdict.passed && !verdict.skipped)
-    {
-        let current_name = raw_gate_name(&verdict.gate);
-        let current_fingerprint = normalized_failure_fingerprint(verdict.error_digest.as_deref());
-        let unchanged = baseline.iter().any(|prior| {
-            !prior.passed
-                && raw_gate_name(&prior.gate_name) == current_name
-                && current_fingerprint.is_some()
-                && current_fingerprint
-                    == normalized_failure_fingerprint(prior.error_digest.as_deref())
-        });
-        if unchanged {
-            let original = verdict.gate.clone();
-            verdict.passed = true;
-            verdict.gate = format!("pre-existing-filtered:{original}");
-            verdict.reason = "unchanged pre-existing verification failure filtered".into();
-            info!(
-                task_id,
-                gate = %original,
-                "filtered unchanged pre-existing gate failure"
-            );
-        }
-    }
-}
-
-fn gate_failure_input(
-    kind: GateCompletionKind,
-    before: &GateInputSnapshot,
-    baseline_failed_gates: Option<&[GateVerdictSummary]>,
-    gate: &str,
-) -> &'static str {
-    match (kind, before.2, baseline_failed_gates) {
-        (GateCompletionKind::Preflight, _, _) | (GateCompletionKind::Gate, false, _) => "baseline",
-        (GateCompletionKind::Gate, true, Some(failures))
-            if failures
-                .iter()
-                .any(|failure| raw_gate_name(&failure.gate_name) == raw_gate_name(gate)) =>
-        {
-            "baseline+owned"
-        }
-        (GateCompletionKind::Gate, true, Some(_)) => "owned-diff",
-        (GateCompletionKind::Gate, true, None) => "unattributed",
-        (GateCompletionKind::PlanVerify, _, _) => "accepted-plan",
-        (GateCompletionKind::Merge, _, _) => "post-merge",
-    }
-}
 macro_rules! proof_failure {
     ($gate:expr, $reason:expr, $digest:expr $(,)?) => {
         Verdict::fail($gate, $reason).with_error_digest($digest)
     };
 }
+
 /// Spawn a gate rung as a background task. Sends `GateCompletion` when done.
 ///
 /// When `gate_adapter` is provided, the worker body delegates through the
@@ -1385,7 +435,7 @@ pub fn spawn_gate(
     (handle, start_tx)
 }
 
-fn failed_gate_completion(
+pub(super) fn failed_gate_completion(
     effect: GateEffectRef,
     plan_id: String,
     task_id: String,
@@ -2348,13 +1398,6 @@ pub fn spawn_plan_verify(
 /// E05-T05: Populates real signal fields from the task definition so that
 /// advanced gate rungs (Symbol, FactCheck, LlmJudge) receive genuine inputs
 /// instead of defaulting to `None` and immediately returning skipped stubs.
-///
-/// - `symbol_signal`: Built from task context symbols as a `SymbolManifest`.
-/// - `fact_check_signal`: Built from task acceptance criteria as text.
-/// - `llm_judge_signal`: Built from task description as a `JudgePayload`
-///    (diff is not available synchronously; the gate degrades gracefully
-///    with an empty diff).
-/// - `code_intel_hints`: Target crate names for focused verification.
 fn build_rung_execution_inputs(
     target_crates: &[String],
     task_ctx: Option<&GateTaskContext>,
@@ -2442,13 +1485,6 @@ fn build_rung_execution_inputs(
 }
 
 /// Build enriched [`RungExecutionConfig`] from task workdir and verify steps.
-///
-/// E05-T05: Populates `source_roots`, `timeout_ms`, `integration_test_pattern`,
-/// `integration_build_system`, and `generated_test_artifacts` from available
-/// task context. The `fact_check_oracle` is populated when the workspace
-/// provides a Perplexity API key; other oracle fields remain `None` and the
-/// rung dispatch fails closed with explicit skipped/not-wired verdicts when
-/// required oracles are absent.
 fn build_rung_execution_config(
     workdir: &Path,
     timeout_secs: u64,
@@ -2467,10 +1503,7 @@ fn build_rung_execution_config(
         None
     };
 
-    // E05-T05: Wire generated_test_artifacts when the workdir contains
-    // generated test files. This allows the GeneratedTest rung to run
-    // real tests instead of returning a skipped stub.
-    let generated_test_artifacts: Option<Arc<dyn GeneratedArtifactStore>> = {
+    let generated_test_artifacts: Option<Arc<dyn roko_gate::generated_test_gate::ArtifactStore>> = {
         let store = FsGeneratedArtifactStore::new(workdir.to_path_buf());
         if store.matching_entries("generated-tests/gen_").is_empty() {
             None
@@ -2479,9 +1512,6 @@ fn build_rung_execution_config(
         }
     };
 
-    // Wire the FactCheck oracle when a Perplexity API key is available.
-    // Checks the environment directly (PERPLEXITY_API_KEY); the oracle is
-    // `None` when absent, causing the gate to return Skipped as before.
     let fact_check_oracle: Option<Arc<dyn roko_gate::fact_check::SearchOracle>> =
         std::env::var("PERPLEXITY_API_KEY")
             .ok()
@@ -2529,31 +1559,19 @@ fn gate_signal(
             "ROKO_GATE_ATTEMPT_SENTINEL",
             attempt_sentinel.to_string_lossy().to_string(),
         )
-        // Limit build parallelism to nproc/2 to prevent CPU exhaustion
-        // when multiple agents run gate checks concurrently (#206).
         .with_env("CARGO_BUILD_JOBS", cargo_build_jobs());
 
     if fast_mode_enabled() {
-        // Tauri's build script otherwise invokes a frontend build from Cargo,
-        // duplicating work that the evidence owner runs explicitly.
         payload = payload.with_env("SKIP_FRONTEND_BUILD", "1");
         if cargo_profile_available(workdir, "dev-fast") {
             payload = payload.with_cargo_profile("dev-fast");
         }
     }
 
-    // Shared FAST-mode targets rely on Cargo's incremental artifacts. Rust
-    // incremental crates are not sccache-cacheable, and combining the two was
-    // producing wrapper overhead with zero hits. Keep the existing sccache
-    // behavior for isolated/normal runs.
     if sccache_available() && !(fast_mode_enabled() && main_target_dir.is_some()) {
         payload = payload.with_env("RUSTC_WRAPPER", "sccache");
     }
 
-    // Share the main workspace build cache with worktree gate commands so
-    // that `cargo check`/`cargo clippy`/`cargo test` inside a task worktree
-    // reuse incremental artifacts instead of rebuilding all crates from
-    // scratch.
     if let Some(target_dir) = main_target_dir {
         payload = payload.with_target_dir(target_dir);
     }
@@ -2689,9 +1707,6 @@ async fn run_focused_baseline_verify(
         .ok()?;
     let mut baseline_guard = RegisteredBaselineWorktree::new(workdir, parent);
     let baseline = baseline_guard.checkout.clone();
-    // `git worktree add` can be interrupted after registration but before a
-    // successful exit. Arm cleanup before spawning so timeout/cancellation
-    // cannot leave a stale Git worktree record behind.
     baseline_guard.cleanup_required = true;
     let add = timeout(
         Duration::from_secs(10),
@@ -2761,11 +1776,6 @@ async fn run_focused_baseline_verify(
 }
 
 /// Cancellation-safe owner for a temporary registered Git worktree.
-///
-/// The normal path uses bounded async cleanup above. Drop is only a fallback
-/// for timeout, cancellation, panic, or a failed async removal. If Git refuses
-/// the fallback removal, the checkout is preserved rather than recursively
-/// deleted while Git may still consider it registered.
 struct RegisteredBaselineWorktree {
     repository: PathBuf,
     checkout: PathBuf,
@@ -2813,9 +1823,6 @@ impl Drop for RegisteredBaselineWorktree {
                 );
             }
         } else {
-            // The checkout may have disappeared during a partially completed
-            // add/remove. Prune only stale administrative records before the
-            // TempDir owner removes its now-unregistered parent.
             let _ = std::process::Command::new("git")
                 .args(["worktree", "prune", "--expire", "now"])
                 .current_dir(&self.repository)
@@ -2850,389 +1857,12 @@ fn verify_step_gate(
     gate
 }
 
-fn render_output(verdicts: &[Verdict]) -> String {
-    verdicts
-        .iter()
-        .map(render_verdict_output)
-        .collect::<Vec<_>>()
-        .join("; ")
-}
-
-fn render_verdict_output(v: &Verdict) -> String {
-    let status = if v.skipped {
-        "SKIP"
-    } else if v.passed {
-        "pass"
-    } else {
-        "FAIL"
-    };
-    let detail = v.detail.as_deref().unwrap_or("").trim();
-    let digest = v.error_digest.as_deref().unwrap_or("").trim();
-    let reason = v.reason.trim();
-
-    let message = if v.passed {
-        first_non_empty([detail, reason, digest])
-    } else if !detail.is_empty() && !digest.is_empty() {
-        format!("{detail}\n\nclassification:\n{digest}")
-    } else {
-        first_non_empty([detail, reason, digest])
-    };
-
-    if message.is_empty() {
-        format!("{}: {status}", v.gate)
-    } else {
-        format!("{}: {status} — {message}", v.gate)
-    }
-}
-
-fn first_non_empty<const N: usize>(values: [&str; N]) -> String {
-    values
-        .into_iter()
-        .find(|value| !value.is_empty())
-        .unwrap_or("")
-        .to_string()
-}
-
-fn classify_failure_kind(verdicts: &[Verdict], output: &str) -> RunnerFailureKind {
-    let combined = verdicts
-        .iter()
-        .filter(|v| !v.passed)
-        .map(|v| {
-            format!(
-                "{}\n{}\n{}",
-                v.reason,
-                v.detail.as_deref().unwrap_or(""),
-                v.error_digest.as_deref().unwrap_or("")
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let text = if combined.trim().is_empty() {
-        output
-    } else {
-        &combined
-    };
-    let classification = classify_gate_failure("runner", text);
-    let rendered = serde_json::to_string(&classification).unwrap_or_default();
-    let fallback = RunnerFailureKind::from_output(text);
-    match classification.recommended_action {
-        roko_gate::GateFailureAction::Blocked => RunnerFailureKind::Resource,
-        roko_gate::GateFailureAction::NeedsHuman => RunnerFailureKind::Permanent,
-        roko_gate::GateFailureAction::NeedsReplan => RunnerFailureKind::Structural,
-        roko_gate::GateFailureAction::Retry => {
-            if rendered.contains("external_environment") {
-                RunnerFailureKind::Transient
-            } else {
-                match fallback {
-                    RunnerFailureKind::Resource | RunnerFailureKind::Transient => fallback,
-                    RunnerFailureKind::Permanent
-                    | RunnerFailureKind::Structural
-                    | RunnerFailureKind::ContextOverflow
-                    | RunnerFailureKind::Unknown => RunnerFailureKind::Structural,
-                }
-            }
-        }
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// RunnerProductionGateAdapter (#275)
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Adapter that converts Runner-v2 gate parameters into a
-/// [`ProductionGateRequest`], calls the injected
-/// [`ProductionGateRunner`], and converts the
-/// [`ProductionGateVerdictV1`] back into a [`GateCompletion`].
-///
-/// This is the single point of conversion between the Runner-v2 types
-/// (which own event-loop integration, attempt ownership, and TUI events)
-/// and the shared production gate service (which owns rung selection,
-/// execution, and verdict normalization).
-///
-/// ## Call-site manifest
-///
-/// Four production boundaries redirect through this adapter:
-///
-/// 1. `run_gate_once` — delegates to `Self::run` instead of inline rung execution.
-/// 2. `spawn_gate` worker body — the spawned task calls `Self::run`.
-/// 3. Preflight spawn branch in `event_loop.rs` — injects the same shared service.
-/// 4. Normal/plan-verify spawn branch in `event_loop.rs` — injects the same shared service.
-pub struct RunnerProductionGateAdapter {
-    /// The injected shared gate service.
-    service: Arc<dyn roko_gate::production_service::ProductionGateRunner>,
-}
-
-impl std::fmt::Debug for RunnerProductionGateAdapter {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RunnerProductionGateAdapter")
-            .finish_non_exhaustive()
-    }
-}
-
-impl RunnerProductionGateAdapter {
-    /// Create an adapter wrapping the given shared service.
-    pub fn new(service: Arc<dyn roko_gate::production_service::ProductionGateRunner>) -> Self {
-        Self { service }
-    }
-
-    /// Convert Runner-v2 parameters into a `ProductionGateRequest`.
-    fn build_request(
-        effect: &GateEffectRef,
-        plan_id: &str,
-        task_id: &str,
-        workdir: &Path,
-        gates_config: &GatesConfig,
-        verify_steps: &[VerifyStep],
-        timeout_secs: u64,
-        target_crates: &[String],
-        task_context: Option<&GateTaskContext>,
-        cancel: tokio_util::sync::CancellationToken,
-    ) -> roko_gate::ProductionGateRequest {
-        // Convert CLI VerifyStep -> neutral VerifyStepSpec.
-        let verify_step_specs: Vec<roko_gate::VerifyStepSpec> = verify_steps
-            .iter()
-            .map(|step| {
-                roko_gate::VerifyStepSpec::from_command(&step.command)
-                    .with_phase(&step.phase)
-                    .with_timeout_ms(step.timeout_ms)
-            })
-            .collect();
-
-        // Convert GateTaskContext -> GateTaskContextSpec.
-        let task_context_spec = task_context
-            .map(|ctx| roko_gate::GateTaskContextSpec {
-                title: ctx.task_title.clone(),
-                description: ctx.task_description.clone(),
-                symbols: ctx.symbols.clone(),
-                acceptance: ctx.acceptance.clone(),
-            })
-            .unwrap_or_default();
-
-        // Compute workspace fingerprint synchronously from the workdir.
-        let workspace_fingerprint = format!("{}:{}:{}", plan_id, task_id, effect.generation);
-
-        roko_gate::ProductionGateRequest {
-            run_id: format!("{}:{}", plan_id, effect.generation),
-            plan_id: plan_id.to_string(),
-            task_id: task_id.to_string(),
-            attempt: effect.attempt.attempt,
-            workspace: workdir.to_path_buf(),
-            workspace_fingerprint,
-            changed_files: target_crates.to_vec(),
-            verify_steps: verify_step_specs,
-            gates_config: gates_config.clone(),
-            task_context: task_context_spec,
-            timeout_secs,
-            cancel,
-            baseline_fingerprint: None,
-            adaptive_thresholds: None,
-        }
-    }
-
-    /// Convert a `ProductionGateVerdictV1` back into a `GateCompletion`.
-    fn verdict_to_completion(
-        effect: GateEffectRef,
-        plan_id: String,
-        task_id: String,
-        rung: u32,
-        verdict: &roko_gate::ProductionGateVerdictV1,
-    ) -> GateCompletion {
-        let passed = verdict.passed();
-
-        // Map per-rung verdicts to GateVerdictSummary.
-        let summaries: Vec<GateVerdictSummary> = verdict
-            .rung_verdicts
-            .iter()
-            .map(|rv| {
-                let failure_kind = if rv.skipped() || rv.passed() {
-                    None
-                } else {
-                    rv.failure_classification
-                        .as_ref()
-                        .map(|fc| match fc.recommended_action {
-                            roko_gate::GateFailureAction::Blocked => RunnerFailureKind::Resource,
-                            roko_gate::GateFailureAction::NeedsHuman => {
-                                RunnerFailureKind::Permanent
-                            }
-                            roko_gate::GateFailureAction::NeedsReplan => {
-                                RunnerFailureKind::Structural
-                            }
-                            roko_gate::GateFailureAction::Retry => RunnerFailureKind::Transient,
-                        })
-                        .or(Some(RunnerFailureKind::Unknown))
-                };
-                GateVerdictSummary {
-                    gate_name: rv.gate_name.clone(),
-                    passed: rv.passed(),
-                    skipped: rv.skipped(),
-                    summary: rv.diagnostic.chars().take(500).collect(),
-                    error_digest: rv
-                        .failure_classification
-                        .as_ref()
-                        .map(|fc| format!("{:?}", fc.primary)),
-                    failure_kind,
-                    rung_index: Some(rv.rung.as_index()),
-                }
-            })
-            .collect();
-
-        let selected_rungs: Vec<String> = verdict
-            .rung_verdicts
-            .iter()
-            .filter(|rv| !rv.skipped())
-            .map(|rv| rv.rung.label().to_string())
-            .collect();
-
-        let failure_kind = if !passed {
-            summaries
-                .iter()
-                .find_map(|s| s.failure_kind)
-                .or(Some(RunnerFailureKind::Unknown))
-        } else {
-            None
-        };
-
-        // Collect output from rung diagnostics.
-        let output: String = verdict
-            .rung_verdicts
-            .iter()
-            .filter(|rv| !rv.diagnostic.is_empty())
-            .map(|rv| format!("{}: {}", rv.gate_name, rv.diagnostic))
-            .collect::<Vec<_>>()
-            .join("; ");
-
-        GateCompletion {
-            kind: effect.kind,
-            attempt: Some(effect.attempt.clone()),
-            effect: Some(effect),
-            plan_id,
-            task_id,
-            rung,
-            passed,
-            failure_kind,
-            verdicts: summaries,
-            output,
-            duration_ms: verdict.total_duration.as_millis() as u64,
-            selected_rungs,
-        }
-    }
-
-    /// Run the production gate pipeline through the shared service and return
-    /// a `GateCompletion` compatible with the Runner-v2 event loop.
-    ///
-    /// This is the primary entry point that replaces the inline execution in
-    /// `run_gate_once`. The existing `run_gate_once` delegates to this method
-    /// when a `RunnerProductionGateAdapter` is available.
-    pub async fn run(
-        &self,
-        effect: GateEffectRef,
-        plan_id: String,
-        task_id: String,
-        rung: u32,
-        workdir: PathBuf,
-        gates_config: GatesConfig,
-        _complexity: PlanComplexity,
-        verify_steps: Vec<VerifyStep>,
-        _baseline_failed_gates: Option<Vec<GateVerdictSummary>>,
-        timeout_secs: u64,
-        target_crates: Vec<String>,
-        task_context: Option<GateTaskContext>,
-    ) -> GateCompletion {
-        let cancel = tokio_util::sync::CancellationToken::new();
-        let request = Self::build_request(
-            &effect,
-            &plan_id,
-            &task_id,
-            &workdir,
-            &gates_config,
-            &verify_steps,
-            timeout_secs,
-            &target_crates,
-            task_context.as_ref(),
-            cancel,
-        );
-
-        let progress = Arc::new(roko_gate::production_service::NoopProgressSink);
-        match self.service.run(request, progress).await {
-            Ok(verdict) => Self::verdict_to_completion(effect, plan_id, task_id, rung, &verdict),
-            Err(err) => {
-                error!(%err, "production gate service error");
-                failed_gate_completion(
-                    effect,
-                    plan_id,
-                    task_id,
-                    rung,
-                    format!("production gate service error: {err}"),
-                )
-            }
-        }
-    }
-}
-
-/// Create a default `RunnerProductionGateAdapter` with the production service.
-///
-/// Used by the event loop when no custom service is injected.
-pub fn default_gate_adapter() -> RunnerProductionGateAdapter {
-    RunnerProductionGateAdapter::new(Arc::new(
-        roko_gate::production_service::ProductionGateService::new(),
-    )
-        as Arc<dyn roko_gate::production_service::ProductionGateRunner>)
-}
-
-// ── Generated-test artifact store ───────────────────────────────────────
-
-/// Filesystem-backed store for generated test artifacts, keyed by plan.
-#[derive(Clone, Debug)]
-pub(crate) struct FsGeneratedArtifactStore {
-    root: PathBuf,
-}
-
-impl FsGeneratedArtifactStore {
-    pub(crate) fn new(root: PathBuf) -> Self {
-        Self { root }
-    }
-
-    fn artifact_dir(&self) -> PathBuf {
-        self.root.join("generated-tests")
-    }
-
-    pub(crate) fn matching_entries(&self, prefix: &str) -> Vec<String> {
-        let dir = self.artifact_dir();
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            return Vec::new();
-        };
-
-        let mut names: Vec<String> = entries
-            .filter_map(std::result::Result::ok)
-            .filter_map(|entry| {
-                entry.file_type().ok().filter(|kind| kind.is_file())?;
-                let name = entry.file_name().to_string_lossy().into_owned();
-                let logical = format!("generated-tests/{name}");
-                logical.starts_with(prefix).then_some(logical)
-            })
-            .collect();
-        names.sort();
-        names
-    }
-}
-
-impl GeneratedArtifactStore for FsGeneratedArtifactStore {
-    fn list(&self, _plan: &str, prefix: &str) -> Vec<String> {
-        self.matching_entries(prefix)
-    }
-
-    fn read(&self, _plan: &str, name: &str) -> Option<Vec<u8>> {
-        let relative = name.strip_prefix("generated-tests/")?;
-        if relative.contains("..") || relative.contains('/') {
-            return None;
-        }
-        std::fs::read(self.artifact_dir().join(relative)).ok()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::cargo_command::*;
+    use super::super::gate_input::*;
+    use super::super::gate_report::*;
 
     use std::collections::BTreeMap;
     use std::fs::File;
@@ -3295,7 +1925,7 @@ mod tests {
         assert_eq!(repeated.len(), 2, "authored repetitions remain intentional");
 
         let mut gates = GatesConfig::default();
-        gates.custom_rungs = vec![GateRungConfig {
+        gates.custom_rungs = vec![roko_core::config::GateRungConfig {
             name: "compile".to_string(),
             command: exact.to_string(),
             timeout_secs: 30,
@@ -4119,6 +2749,7 @@ path = "src/shared.rs"
     #[test]
     fn equal_kind_len_mtime_inode_replacement_is_detected() {
         use std::os::unix::fs::MetadataExt;
+        use std::fs::OpenOptions;
 
         let dir = git_repo();
         let input = dir.path().join("input");
@@ -4348,12 +2979,9 @@ path = "src/shared.rs"
 
     // ── E45-T02: auto-fix path tests ─────────────────────────────────────────
 
-    /// Gate output that does NOT look like a cargo_fix_candidate should result
-    /// in `was_candidate = false` and no fix command attempted.
     #[tokio::test]
     async fn auto_fix_skips_non_candidate_output() {
         let dir = tempfile::tempdir().unwrap();
-        // A plain test failure string — no compile errors, so cargo_fix_candidate = false.
         let non_compile_output = "test result: FAILED. 2 passed; 1 failed; 0 ignored";
         let outcome = attempt_auto_fix(dir.path(), "test", non_compile_output)
             .await
@@ -4369,12 +2997,9 @@ path = "src/shared.rs"
         assert_eq!(outcome.gate_name, "test");
     }
 
-    /// A gate name that is neither "compile" nor "clippy" should produce a
-    /// not-candidate outcome even if the output looks fixable.
     #[tokio::test]
     async fn auto_fix_skips_unknown_gate_name() {
         let dir = tempfile::tempdir().unwrap();
-        // Even with compile-looking output, an unrecognised gate name is not fixable.
         let output = "error[E0433]: failed to resolve: use of undeclared crate `foo`";
         let outcome = attempt_auto_fix(dir.path(), "docs", output)
             .await
@@ -4384,9 +3009,6 @@ path = "src/shared.rs"
         assert_eq!(outcome.gate_name, "docs");
     }
 
-    /// `AutoFixOutcome` must accurately record the command string when a fix is attempted.
-    /// We cannot easily run real cargo fix in a unit test, but we can verify that when
-    /// `cargo_fix_candidate` is false, the command field stays None.
     #[tokio::test]
     async fn auto_fix_outcome_command_is_none_for_non_candidates() {
         let dir = tempfile::tempdir().unwrap();
@@ -4395,8 +3017,6 @@ path = "src/shared.rs"
             .await
             .unwrap();
 
-        // classify_gate_failure("compile", ...) on empty/non-error output should
-        // set cargo_fix_candidate = false.
         assert!(!outcome.fix_applied);
         assert!(
             outcome.command.is_none(),
@@ -4404,7 +3024,6 @@ path = "src/shared.rs"
         );
     }
 
-    /// `cargo_fix_enabled` defaults to `true` in `GatesConfig::default()`.
     #[test]
     fn gates_config_cargo_fix_enabled_default_is_true() {
         let cfg = GatesConfig::default();
@@ -4414,7 +3033,6 @@ path = "src/shared.rs"
         );
     }
 
-    /// `cargo_fix_enabled = false` must round-trip through TOML deserialization.
     #[test]
     fn gates_config_cargo_fix_enabled_toml_roundtrip() {
         use roko_core::config::schema::RokoConfig;

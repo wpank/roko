@@ -195,6 +195,8 @@ impl DreamAgentConfig {
             local_tool_mcp_servers: None,
             rate_limiter: None,
             gemini_safety_settings: Vec::new(),
+            cancel_token: None,
+            tool_audit: None,
         }
     }
 }

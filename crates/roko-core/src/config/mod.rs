@@ -6,8 +6,6 @@
 //! - [`compat`] -- Reader for legacy Mori `config.toml` format.
 //! - [`presets`] -- Named presets (minimal / balanced / thorough).
 
-use std::path::Path;
-
 use thiserror::Error;
 
 pub mod agent;
@@ -168,82 +166,10 @@ pub enum LoadConfigError {
     },
 }
 
-/// Trust level for workspace config loading.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
-enum ConfigTrust {
-    /// Config may be inherited — reject safety-sensitive overrides.
-    Shared,
-    /// Config is locally owned — permit all settings.
-    Local,
-}
-
-#[allow(dead_code)]
-fn load_config_impl(
-    workdir: &Path,
-    trust: ConfigTrust,
-) -> Result<ValidatedConfig, LoadConfigError> {
-    let path = workdir.join("roko.toml");
-    if !path.exists() {
-        let mut validated = ValidatedConfig::from_config(RokoConfig::default());
-        validated.provenance.push(ConfigProvenance::default(
-            "roko.toml",
-            "missing file; using built-in defaults",
-        ));
-        return Ok(validated);
-    }
-
-    let text = std::fs::read_to_string(&path).map_err(|source| LoadConfigError::Read {
-        path: path.clone(),
-        source,
-    })?;
-
-    // Only apply strict safety checks when the config might be inherited
-    // from an untrusted source. Local configs (serve, daemon) skip this.
-    if trust == ConfigTrust::Shared {
-        let strict_source = StrictConfigSource::shared(Some(path.clone()));
-        validate_strict_config_toml(&text, &strict_source).map_err(|source| {
-            LoadConfigError::Validation {
-                path: path.clone(),
-                source,
-            }
-        })?;
-    }
-
-    let raw: RokoConfig = toml::from_str(&text).map_err(|source| LoadConfigError::Parse {
-        path: path.clone(),
-        source,
-    })?;
-
-    let mut migrated = raw.clone();
-    migrated.interpolate_env_vars();
-    migrated.resolve_file_secrets();
-
-    let mut diagnostics = Vec::new();
-    if raw.config_version < schema::CURRENT_CONFIG_VERSION {
-        diagnostics.push(ConfigDiagnostic {
-            key: "config_version".to_string(),
-            message: format!(
-                "config_version={} is older than current {}; consider running a migration",
-                raw.config_version,
-                schema::CURRENT_CONFIG_VERSION,
-            ),
-        });
-    }
-
-    let provenance = vec![ConfigProvenance::file(path.clone(), "roko.toml")];
-
-    Ok(ValidatedConfig {
-        raw,
-        migrated,
-        diagnostics,
-        provenance,
-        merge_context: MergeContext::default(),
-    })
-}
-
 #[cfg(test)]
 mod load_config_tests {
+    use std::path::Path;
+
     use super::*;
 
     fn isolated_load_options() -> loader::LoadOptions {

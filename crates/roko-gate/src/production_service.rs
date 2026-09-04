@@ -770,7 +770,7 @@ mod tests {
     #[tokio::test]
     async fn cancelled_pipeline_returns_cancelled() {
         let svc = ProductionGateService::new();
-        let mut req = test_request();
+        let req = test_request();
         req.cancel.cancel(); // Pre-cancel.
 
         let progress = Arc::new(CountingProgressSink::new());

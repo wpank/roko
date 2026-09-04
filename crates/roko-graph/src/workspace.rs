@@ -410,14 +410,6 @@ pub mod fake {
             )
         }
 
-        fn active_count(&self) -> usize {
-            self.leases
-                .lock()
-                .values()
-                .filter(|(_, state)| state.is_active())
-                .count()
-        }
-
         /// Reconcile all tracked leases and return results keyed by fingerprint.
         ///
         /// This is the fake equivalent of the CLI manager's batch reconciliation

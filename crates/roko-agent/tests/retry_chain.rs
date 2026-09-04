@@ -77,8 +77,8 @@ fn retry_policy_allows_rate_limit_retry_with_correct_delays() {
 /// first 429, then 200 success, producing valid usage from the success.
 #[tokio::test]
 async fn retry_chain_429_then_200_produces_usage_from_success() {
-    use std::io::{Read, Write};
-    use std::net::{TcpListener, TcpStream};
+    use std::io::Write;
+    use std::net::TcpListener;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::thread;

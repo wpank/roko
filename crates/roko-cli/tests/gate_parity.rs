@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 // ─── Fixture schema ──────────────────────────────────────────────────────────
 
@@ -35,6 +35,7 @@ struct FixtureFile {
 #[derive(Debug, Deserialize)]
 struct FixtureCase {
     id: String,
+    #[allow(dead_code)] // Deserialized from fixture JSON; not read in assertions.
     description: String,
     rungs: Vec<FixtureRung>,
     expected: FixtureExpected,
@@ -43,11 +44,13 @@ struct FixtureCase {
 #[derive(Debug, Clone, Deserialize)]
 struct FixtureRung {
     rung: String,
+    #[allow(dead_code)] // Deserialized from fixture JSON; not read in assertions.
     rung_index: u32,
     state: String,
     gate_name: String,
     diagnostic: String,
     duration_ms: u64,
+    #[allow(dead_code)] // Deserialized from fixture JSON; not read in assertions.
     failure_classification: Option<serde_json::Value>,
     test_counts: Option<FixtureTestCounts>,
     evidence_fingerprint: Option<String>,
@@ -65,7 +68,9 @@ struct FixtureTestCounts {
 #[derive(Debug, Deserialize)]
 struct FixtureExpected {
     passed: bool,
+    #[allow(dead_code)] // Deserialized from fixture JSON; not read in assertions.
     failure_class: Option<String>,
+    #[allow(dead_code)] // Deserialized from fixture JSON; not read in assertions.
     mostly_passing: bool,
     selected_rungs: Vec<String>,
     outcome: String,

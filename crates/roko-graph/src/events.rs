@@ -823,7 +823,6 @@ pub fn make_terminal_stats(elapsed: Duration, completed: u32, total: u32) -> Ter
 /// This is the single emission path shared by sequential, parallel, `start()`,
 /// resume, and Hot Graph execution. It does NOT replace `TelemetryEventSink`;
 /// the engine emits to both sinks independently.
-#[allow(dead_code)]
 pub(crate) async fn emit_graph_event(
     sink: Option<&Arc<dyn GraphEventSink>>,
     event: &GraphExecutionEvent,

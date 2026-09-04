@@ -1397,7 +1397,7 @@ impl ProviderDispatchResolver {
 }
 
 /// Provider-neutral agent construction facade.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AgentDispatcherV2 {
     config: Arc<RokoConfig>,
     resolver: ProviderDispatchResolver,
@@ -1416,6 +1416,28 @@ pub struct AgentDispatcherV2 {
     /// circuit-state changes are immediately visible to the next routing
     /// decision.
     health_registry: Option<Arc<ProviderHealthRegistry>>,
+    /// Cancellation token from the runner, threaded into every
+    /// `ToolLoopAgent` constructed by this dispatcher.
+    cancel_token: Option<Arc<dyn roko_core::tool::CancelToken>>,
+    /// Persistent JSONL tool audit adapter, shared across all dispatches.
+    ///
+    /// When set, every tool call records scrubbed admit/result lines to
+    /// `.roko/tool_audit.jsonl` for durable observability.
+    tool_audit: Option<Arc<roko_fs::tool_audit::ScrubAuditAdapter>>,
+}
+
+impl std::fmt::Debug for AgentDispatcherV2 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentDispatcherV2")
+            .field("config", &self.config)
+            .field("resolver", &self.resolver)
+            .field("semaphores", &self.semaphores)
+            .field("rate_limiter", &self.rate_limiter)
+            .field("health_registry", &self.health_registry)
+            .field("cancel_token", &self.cancel_token.is_some())
+            .field("tool_audit", &self.tool_audit)
+            .finish()
+    }
 }
 
 impl AgentDispatcherV2 {
@@ -1430,6 +1452,8 @@ impl AgentDispatcherV2 {
             semaphores,
             rate_limiter: None,
             health_registry: None,
+            cancel_token: None,
+            tool_audit: None,
         }
     }
 
@@ -1445,6 +1469,8 @@ impl AgentDispatcherV2 {
             semaphores,
             rate_limiter: None,
             health_registry: None,
+            cancel_token: None,
+            tool_audit: None,
         }
     }
 
@@ -1467,6 +1493,28 @@ impl AgentDispatcherV2 {
     /// and threads it through both paths.
     pub fn with_health_registry(mut self, registry: Arc<ProviderHealthRegistry>) -> Self {
         self.health_registry = Some(registry);
+        self
+    }
+
+    /// Attach a cancellation token from the runner.
+    ///
+    /// When set, this token is threaded into every `ToolLoopAgent` constructed
+    /// by `create_agent_for_model`, allowing runner-level task cancellation
+    /// (Skip/Cancel) to halt in-progress tool execution immediately.
+    pub fn with_cancel_token(mut self, token: Arc<dyn roko_core::tool::CancelToken>) -> Self {
+        self.cancel_token = Some(token);
+        self
+    }
+
+    /// Attach a persistent JSONL tool audit adapter.
+    ///
+    /// When set, every tool call dispatched through this factory records
+    /// scrubbed admit/result lines to `.roko/tool_audit.jsonl`.
+    pub fn with_tool_audit(
+        mut self,
+        adapter: Arc<roko_fs::tool_audit::ScrubAuditAdapter>,
+    ) -> Self {
+        self.tool_audit = Some(adapter);
         self
     }
 
@@ -1802,6 +1850,12 @@ impl AgentDispatcherV2 {
             // `limiter.acquire(provider_id)` before each live LLM request so that
             // all concurrent task dispatches share one RPM/TPM budget per provider.
             rate_limiter: self.rate_limiter.clone(),
+            // Thread the runner cancel token through to the ToolLoopAgent so
+            // task-level cancellation halts in-progress tool execution.
+            cancel_token: self.cancel_token.clone(),
+            // Thread the persistent file audit adapter so every tool call
+            // records scrubbed admit/result lines to disk.
+            tool_audit: self.tool_audit.clone(),
             ..Default::default()
         }
     }

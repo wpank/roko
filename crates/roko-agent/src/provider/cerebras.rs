@@ -16,8 +16,9 @@ use std::sync::Arc;
 use crate::Agent;
 use crate::http::ReqwestPoster;
 use crate::provider::{
-    AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, build_tool_dispatcher,
-    openai_compat::tool_registry_for_options, tool_loop_max_iterations_for_profile,
+    AgentCreationError, AgentOptions, ProviderAdapter, ProviderError,
+    build_tool_dispatcher_with_audit, openai_compat::tool_registry_for_options,
+    tool_loop_max_iterations_for_profile,
 };
 use crate::tool_loop::ToolLoop;
 use crate::tool_loop::agent_wrapper::ToolLoopAgent;
@@ -55,7 +56,8 @@ impl ProviderAdapter for CerebrasAdapter {
 
         if model.supports_tools {
             let (registry, tools, resolver) = tool_registry_for_options(model, options)?;
-            let dispatcher = build_tool_dispatcher(registry, resolver);
+            let dispatcher =
+                build_tool_dispatcher_with_audit(registry, resolver, options.tool_audit.clone());
 
             // Strict translator for constrained decoding on small models.
             let translator: Arc<dyn Translator> = Arc::new(StrictOpenAiTranslator);
@@ -93,6 +95,9 @@ Call one tool at a time. After each tool result, decide your next action.\n\n";
             }
             if let Some(root) = options.effective_immune_root() {
                 agent = agent.with_immune_root(root);
+            }
+            if let Some(ref token) = options.cancel_token {
+                agent = agent.with_cancel_token(Arc::clone(token));
             }
 
             return Ok(Box::new(agent));

@@ -15,6 +15,11 @@ workspace = true
 # Run with: cargo test -p roko-agent --features integration
 # Requires real API keys (e.g. ZAI_API_KEY) to be set.
 integration = []
+# Legacy streaming test gates (tests reference APIs that no longer exist).
+__codex_streaming_legacy = []
+__cursor_streaming_legacy = []
+# Forwarded from roko-std; gates chain-tool count assertions in provider_parity tests.
+chain = []
 
 [dependencies]
 roko-core = { path = "../roko-core" }

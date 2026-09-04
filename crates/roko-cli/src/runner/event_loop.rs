@@ -28,9 +28,10 @@ use crate::orchestrator::{
 use roko_core::runtime_event::WorkflowOutcome as RuntimeWorkflowOutcome;
 use roko_core::tool::MetricsSink as _;
 use roko_core::tool::trace::{ToolTraceEvent, TraceSink};
+use roko_core::tool::transcript::{TranscriptEvent, TranscriptEventMeta, TranscriptRecord};
 use roko_core::{
     AgentRole, Body, ContentHash, Kind, LensScope, ObservableEvent, PhaseKind, PlanPhase, Signal,
-    TelemetryEventSink,
+    TelemetryEventSink, TranscriptStore,
 };
 use roko_daimon::{
     AffectEngine as _, AffectEvent, DispatchParams, SomaticSignal, StrategyCoordinates,
@@ -2601,6 +2602,16 @@ pub async fn run_with_tui_commands(
     }
     let snapshot_writer = SnapshotWriter::new(4);
     persist::cleanup_orphaned_agents(&paths);
+
+    // ── Transcript store for tool execution audit ──────────────────────
+    //
+    // Bounded in-memory store that records ToolStarted / ToolFinished /
+    // error events as they flow through the agent event loop. The store
+    // uses a priority eviction policy that sheds text deltas under memory
+    // pressure while preserving control (lifecycle) events.
+    let transcript_store = Arc::new(TranscriptStore::new(8192));
+    info!("transcript store initialized (capacity=8192)");
+
     let mut gate_thresholds = persist::load_gate_thresholds(&paths).unwrap_or_default();
     // E07-T10: Counter for incremental gate-threshold flushing.
     // Tracks observations since the last incremental flush to the
@@ -3185,6 +3196,24 @@ pub async fn run_with_tui_commands(
             &config.layout.learn_dir().join("provider-health.json"),
         ),
     ));
+    // Wire persistent JSONL tool audit so every tool call is recorded to disk.
+    match roko_fs::tool_audit::ToolAuditLog::open_at(
+        config.layout.root().join("tool_audit.jsonl"),
+    )
+    .await
+    {
+        Ok(log) => {
+            let scrubber = std::sync::Arc::new(roko_core::obs::LogScrubber::new());
+            let adapter = std::sync::Arc::new(roko_fs::tool_audit::ScrubAuditAdapter::new(
+                std::sync::Arc::new(log),
+                scrubber,
+            ));
+            factory = factory.with_tool_audit(adapter);
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "failed to open tool audit log; tool calls will not be audited to disk");
+        }
+    }
     if let Some(runtime) = plugin_tool_runtime {
         factory = factory.with_local_tool_runtime(runtime);
     }
@@ -3928,6 +3957,15 @@ pub async fn run_with_tui_commands(
                 }
 
                 handle_agent_event(&event, &mut state, &tui, sink);
+
+                // ── Record tool events in the transcript store ──────────
+                record_agent_event_to_transcript(
+                    &transcript_store,
+                    &event,
+                    &state,
+                    &run_id,
+                );
+
                 let usage_committed = is_turn_done
                     && !fired_reflexes.contains_key(&event_attempt)
                     && state.record_task_attempt_usage(
@@ -6920,6 +6958,16 @@ pub async fn run_with_tui_commands(
                         }
                     }
                 }
+                // Log transcript store stats on cancellation path.
+                {
+                    let stats = transcript_store.stats();
+                    info!(
+                        total_appended = stats.total_appended,
+                        current_count = stats.current_count,
+                        dropped = stats.dropped_count,
+                        "transcript store shutdown (cancelled)"
+                    );
+                }
                 shutdown_subsystems(config, &tui).await;
 
                 // ── Graceful-shutdown worktree cleanup ───────────────────
@@ -7190,6 +7238,18 @@ pub async fn run_with_tui_commands(
         drop(learning_event_bus);
         if let Err(err) = learning_subscriber_handle.await {
             warn!(error = %err, "learning subscriber task failed during shutdown");
+        }
+
+        // ── Log transcript store stats before shutdown ──────────────────
+        {
+            let stats = transcript_store.stats();
+            info!(
+                total_appended = stats.total_appended,
+                current_count = stats.current_count,
+                dropped = stats.dropped_count,
+                capacity = stats.capacity,
+                "transcript store shutdown"
+            );
         }
 
         // Shutdown Phase 0 subsystems and persist learned state.
@@ -14011,6 +14071,8 @@ async fn dispatch_action(
                         .await;
                         return ActionDispatchOutcome::Noop;
                     }
+                    let bridge_cancel_token: Option<Arc<dyn roko_core::tool::CancelToken>> =
+                        Some(Arc::new(RunnerToolCancel(ctx.cancel.clone())));
                     let bridge_start = if let Some((control, _)) = startup_control.as_ref() {
                         ctx.factory
                             .spawn_shared_agent_bridge_controlled(
@@ -14018,11 +14080,14 @@ async fn dispatch_action(
                                 raw_agent_tx,
                                 control.deadline,
                                 control.cancel.clone(),
+                                bridge_cancel_token,
                             )
                             .await
                     } else {
                         Ok(crate::dispatch::factory::StartedSharedAgentBridge {
-                            handle: ctx.factory.spawn_shared_agent_bridge(request, raw_agent_tx),
+                            handle: ctx
+                                .factory
+                                .spawn_shared_agent_bridge(request, raw_agent_tx, bridge_cancel_token),
                         })
                     };
                     let bridge = match bridge_start {
@@ -20976,6 +21041,81 @@ fn make_obs_trace_id() -> roko_core::tool::trace::TraceId {
     bytes[..8].copy_from_slice(&h1.to_le_bytes());
     bytes[8..].copy_from_slice(&h2.to_le_bytes());
     roko_core::tool::trace::TraceId::from_bytes(bytes)
+}
+
+// ─── Transcript store recording ─────────────────────────────────────────
+
+/// Convert a runner `AgentEvent` into a [`TranscriptRecord`] and append it
+/// to the shared [`TranscriptStore`].
+///
+/// Only tool-lifecycle and error events are recorded; text deltas and token
+/// usage are intentionally excluded to keep the store focused on auditable
+/// tool execution history.
+fn record_agent_event_to_transcript(
+    store: &TranscriptStore,
+    event: &AgentEvent,
+    state: &RunState,
+    run_id: &str,
+) {
+    let transcript_event = match event {
+        AgentEvent::ToolCall { id, name } => TranscriptEvent::ToolStarted {
+            call: roko_core::tool::call::ToolCall::at(
+                id.clone(),
+                name.clone(),
+                serde_json::Value::Null,
+                now_unix_ms(),
+            ),
+            status: roko_core::tool::transcript::ToolLifecycleStatus::Pending,
+            category: None,
+        },
+
+        AgentEvent::ToolOutput { id, output } => TranscriptEvent::ToolFinished {
+            call_id: id.clone(),
+            result: roko_core::tool::call::ToolResult::text(output.clone()),
+            status: roko_core::tool::transcript::ToolLifecycleStatus::Succeeded,
+            execution_ms: None,
+        },
+
+        AgentEvent::Error { message } => TranscriptEvent::Error {
+            code: "AGENT_ERROR".into(),
+            message: message.clone(),
+            recoverable: true,
+        },
+
+        AgentEvent::TurnCompleted {
+            is_error,
+            num_turns,
+            ..
+        } => TranscriptEvent::RunFinished {
+            success: !is_error,
+            total_turns: num_turns.unwrap_or(0),
+            total_tool_calls: 0,
+            wall_ms: 0,
+        },
+
+        // Other event types (MessageDelta, TokenUsage, Started, SystemInit,
+        // Exited) are not recorded to keep the transcript focused on tool
+        // lifecycle and errors.
+        _ => return,
+    };
+
+    let record = TranscriptRecord {
+        meta: TranscriptEventMeta {
+            run_id: run_id.to_string(),
+            turn_id: 0,
+            agent_id: format!("{}/{}", state.plan_id, state.current_task),
+            sequence: 0, // auto-assigned by the store
+            timestamp_ms: now_unix_ms(),
+            provider: state.agent_provider.clone(),
+            model: state.agent_model.clone(),
+            parent_event_id: None,
+        },
+        event: transcript_event,
+    };
+
+    if let Err(err) = store.append(record) {
+        debug!(error = %err, "transcript store append failed");
+    }
 }
 
 /// Current UTC timestamp as milliseconds since epoch.

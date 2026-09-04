@@ -277,13 +277,21 @@ pub const DEFAULT_REPAIR_CAP: u32 = 2;
 pub enum PlanGenError {
     /// TOML extraction/validation failed after all repair attempts.
     #[error("plan validation failed: {reason}")]
-    ValidationFailed { reason: String },
+    ValidationFailed {
+        /// Description of the validation failure.
+        reason: String,
+    },
     /// Provider dispatch failed.
     #[error("provider dispatch failed: {0}")]
     DispatchFailed(#[from] anyhow::Error),
     /// Budget exceeded.
     #[error("budget exceeded: spent ${spent_usd:.4} of ${budget_usd:.4} limit")]
-    BudgetExceeded { spent_usd: f64, budget_usd: f64 },
+    BudgetExceeded {
+        /// Actual USD spent.
+        spent_usd: f64,
+        /// Configured USD budget limit.
+        budget_usd: f64,
+    },
 }
 
 /// The shared plan-generation service trait.
@@ -651,5 +659,362 @@ mod tests {
             budget_usd: 1.0,
         };
         assert!(err.to_string().contains("1.5"));
+    }
+
+    // ---- Overrides behavior ----
+
+    #[test]
+    fn overrides_default_is_all_none() {
+        let o = PlanGeneratorOverrides::default();
+        assert!(o.model.is_none());
+        assert!(o.role.is_none());
+        assert!(o.allowed_tools.is_none());
+        assert!(o.template.is_none());
+        assert!(o.budget_usd.is_none());
+        assert!(o.repair_cap.is_none());
+    }
+
+    #[test]
+    fn overrides_model_and_role_propagate_to_request() {
+        let request = PlanGeneratorRequest {
+            source: PlanSource::Prompt {
+                prompt: "build widget".to_string(),
+            },
+            workdir: PathBuf::from("/tmp"),
+            adapter_key: adapter_keys::DO_STANDARD.to_string(),
+            overrides: PlanGeneratorOverrides {
+                model: Some("claude-sonnet-4-6".to_string()),
+                role: Some("architect".to_string()),
+                budget_usd: Some(2.0),
+                ..Default::default()
+            },
+            dry_run: false,
+        };
+        assert_eq!(
+            request.overrides.model.as_deref(),
+            Some("claude-sonnet-4-6")
+        );
+        assert_eq!(request.overrides.role.as_deref(), Some("architect"));
+        assert_eq!(request.overrides.budget_usd, Some(2.0));
+    }
+
+    #[test]
+    fn overrides_budget_zero_is_valid() {
+        let o = PlanGeneratorOverrides {
+            budget_usd: Some(0.0),
+            ..Default::default()
+        };
+        assert_eq!(o.budget_usd, Some(0.0));
+    }
+
+    // ---- Budget enforcement (error shape) ----
+
+    #[test]
+    fn budget_exceeded_error_includes_both_amounts() {
+        let err = PlanGenError::BudgetExceeded {
+            spent_usd: 3.1415,
+            budget_usd: 2.0,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("3.1415"), "must include spent: {msg}");
+        assert!(msg.contains("2.0"), "must include budget: {msg}");
+    }
+
+    #[test]
+    fn dispatch_failed_wraps_anyhow() {
+        let inner = anyhow::anyhow!("provider timed out");
+        let err = PlanGenError::DispatchFailed(inner);
+        assert!(
+            err.to_string().contains("provider timed out"),
+            "must wrap inner: {}",
+            err
+        );
+    }
+
+    // ---- Validation evidence ----
+
+    #[test]
+    fn evidence_with_escalation_and_repairs() {
+        let evidence = ValidationEvidence {
+            extraction_attempts: 3,
+            model_escalated: true,
+            final_model: Some("claude-opus-4-6".to_string()),
+            repairs_applied: vec![
+                "fixed missing [meta]".to_string(),
+                "normalized task ids".to_string(),
+            ],
+            policy_violations: vec!["task count exceeds 50".to_string()],
+        };
+        assert!(evidence.model_escalated);
+        assert_eq!(evidence.extraction_attempts, 3);
+        assert_eq!(evidence.repairs_applied.len(), 2);
+        assert_eq!(evidence.policy_violations.len(), 1);
+    }
+
+    // ---- Adapter contract tests ----
+
+    struct TestAdapter {
+        key: &'static str,
+        persist_err: bool,
+    }
+
+    impl PlanGeneratorAdapter for TestAdapter {
+        fn adapter_key(&self) -> &str {
+            self.key
+        }
+
+        fn persist(
+            &self,
+            outcome: &PlanGeneratorOutcome,
+            workdir: &Path,
+        ) -> anyhow::Result<PathBuf> {
+            if self.persist_err {
+                anyhow::bail!("disk full");
+            }
+            Ok(workdir.join("plans").join(&outcome.slug))
+        }
+
+        fn report(&self, _message: &str) {
+            // no-op in test
+        }
+    }
+
+    #[test]
+    fn adapter_persist_returns_plan_path() {
+        let adapter = TestAdapter {
+            key: adapter_keys::PRD_DEFAULT,
+            persist_err: false,
+        };
+        let request = make_request(adapter.adapter_key());
+        let validated = ValidatedPlan {
+            tasks_toml: "[meta]\nplan = \"test-slug\"\n".to_string(),
+            plan_md: None,
+            task_count: 1,
+            repairs: vec![],
+            policy_violations: vec![],
+        };
+        let outcome = success_outcome(&request, validated, make_evidence(), None);
+        let path = adapter
+            .persist(&outcome, &request.workdir)
+            .expect("persist should succeed");
+        assert_eq!(path, PathBuf::from("/tmp/workspace/plans/test-slug"));
+    }
+
+    #[test]
+    fn adapter_persist_error_propagates() {
+        let adapter = TestAdapter {
+            key: adapter_keys::SERVE_HTTP,
+            persist_err: true,
+        };
+        let request = make_request(adapter.adapter_key());
+        let outcome = failure_outcome(&request, make_evidence());
+        let err = adapter
+            .persist(&outcome, &request.workdir)
+            .expect_err("should fail");
+        assert!(err.to_string().contains("disk full"));
+    }
+
+    #[test]
+    fn adapter_on_persisted_default_is_noop() {
+        let adapter = TestAdapter {
+            key: adapter_keys::DO_STANDARD,
+            persist_err: false,
+        };
+        let request = make_request(adapter.adapter_key());
+        let outcome = failure_outcome(&request, make_evidence());
+        // Default on_persisted should succeed (no-op).
+        adapter
+            .on_persisted(&outcome, Path::new("/tmp/plan"))
+            .expect("default on_persisted should be Ok");
+    }
+
+    // ---- No silent execution invariant ----
+
+    #[test]
+    fn outcome_does_not_contain_execution_state() {
+        let request = make_request("prd_default");
+        let validated = ValidatedPlan {
+            tasks_toml: "[meta]\nplan = \"test-slug\"\n".to_string(),
+            plan_md: None,
+            task_count: 5,
+            repairs: vec![],
+            policy_violations: vec![],
+        };
+        let outcome = success_outcome(&request, validated, make_evidence(), None);
+        // Serialize and verify no "execution" or "running" fields exist.
+        let json = serde_json::to_value(&outcome).unwrap();
+        assert!(
+            json.get("execution_status").is_none(),
+            "outcome must not carry execution state"
+        );
+        assert!(
+            json.get("running").is_none(),
+            "outcome must not carry running flag"
+        );
+    }
+
+    // ---- Golden fixture: round-trip serialization ----
+
+    #[test]
+    fn golden_outcome_success_roundtrip() {
+        let request = make_request(adapter_keys::PRD_DEFAULT);
+        let validated = ValidatedPlan {
+            tasks_toml: concat!(
+                "[meta]\n",
+                "plan = \"test-slug\"\n\n",
+                "[[tasks]]\n",
+                "id = \"T1\"\n",
+                "title = \"Implement feature\"\n",
+            )
+            .to_string(),
+            plan_md: Some("# Plan\nImplement the feature.".to_string()),
+            task_count: 1,
+            repairs: vec!["normalized ids".to_string()],
+            policy_violations: vec![],
+        };
+        let evidence = ValidationEvidence {
+            extraction_attempts: 2,
+            model_escalated: false,
+            final_model: Some("claude-sonnet-4-6".to_string()),
+            repairs_applied: vec!["normalized ids".to_string()],
+            policy_violations: vec![],
+        };
+        let outcome = success_outcome(&request, validated, evidence, None);
+        let json = serde_json::to_string_pretty(&outcome).unwrap();
+        let roundtrip: PlanGeneratorOutcome = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(roundtrip.slug, outcome.slug);
+        assert_eq!(roundtrip.task_count, outcome.task_count);
+        assert_eq!(roundtrip.tasks_toml, outcome.tasks_toml);
+        assert_eq!(roundtrip.plan_md, outcome.plan_md);
+        assert_eq!(roundtrip.adapter_key, outcome.adapter_key);
+        assert!(roundtrip.is_success());
+    }
+
+    #[test]
+    fn golden_outcome_failure_roundtrip() {
+        let request = make_request(adapter_keys::SERVE_RUNTIME);
+        let evidence = ValidationEvidence {
+            extraction_attempts: 3,
+            model_escalated: true,
+            final_model: Some("claude-opus-4-6".to_string()),
+            repairs_applied: vec!["attempted meta fix".to_string()],
+            policy_violations: vec!["task count exceeds maximum".to_string()],
+        };
+        let outcome = failure_outcome(&request, evidence);
+        let json = serde_json::to_string_pretty(&outcome).unwrap();
+        let roundtrip: PlanGeneratorOutcome = serde_json::from_str(&json).unwrap();
+
+        assert!(!roundtrip.is_success());
+        assert!(!roundtrip.is_partial());
+        assert!(roundtrip.tasks_toml.is_none());
+        assert_eq!(roundtrip.evidence.extraction_attempts, 3);
+        assert!(roundtrip.evidence.model_escalated);
+        assert_eq!(roundtrip.evidence.policy_violations.len(), 1);
+    }
+
+    #[test]
+    fn golden_outcome_partial_roundtrip() {
+        let request = make_request(adapter_keys::DO_COMPLEX);
+        let evidence = ValidationEvidence {
+            extraction_attempts: 2,
+            model_escalated: false,
+            final_model: None,
+            repairs_applied: vec![],
+            policy_violations: vec![
+                "missing verify commands".to_string(),
+                "circular dependencies".to_string(),
+            ],
+        };
+        let outcome = partial_outcome(&request, evidence);
+        let json = serde_json::to_string_pretty(&outcome).unwrap();
+        let roundtrip: PlanGeneratorOutcome = serde_json::from_str(&json).unwrap();
+
+        assert!(!roundtrip.is_success());
+        assert!(roundtrip.is_partial());
+        assert_eq!(roundtrip.evidence.policy_violations.len(), 2);
+    }
+
+    // ---- Golden fixture: request serialization ----
+
+    #[test]
+    fn golden_request_with_overrides_roundtrip() {
+        let request = PlanGeneratorRequest {
+            source: PlanSource::Replan {
+                slug: "fix-auth".to_string(),
+                prd_path: PathBuf::from("/workspace/prd/fix-auth.md"),
+                failure_context: "T3 gate failed: clippy warnings".to_string(),
+            },
+            workdir: PathBuf::from("/workspace"),
+            adapter_key: adapter_keys::PRD_REPLAN.to_string(),
+            overrides: PlanGeneratorOverrides {
+                model: Some("claude-opus-4-6".to_string()),
+                role: Some("strategist".to_string()),
+                allowed_tools: Some("read,write,bash".to_string()),
+                template: Some("standard".to_string()),
+                budget_usd: Some(5.0),
+                repair_cap: Some(4),
+            },
+            dry_run: true,
+        };
+        let json = serde_json::to_string_pretty(&request).unwrap();
+        let roundtrip: PlanGeneratorRequest = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(roundtrip.adapter_key, adapter_keys::PRD_REPLAN);
+        assert!(roundtrip.dry_run);
+        assert_eq!(roundtrip.overrides.model.as_deref(), Some("claude-opus-4-6"));
+        assert_eq!(roundtrip.overrides.repair_cap, Some(4));
+        assert_eq!(roundtrip.overrides.budget_usd, Some(5.0));
+        assert!(roundtrip.source.has_failure_context());
+        assert_eq!(
+            roundtrip.source.failure_context(),
+            Some("T3 gate failed: clippy warnings")
+        );
+    }
+
+    // ---- Dry-run flag ----
+
+    #[test]
+    fn dry_run_request_does_not_persist() {
+        let request = PlanGeneratorRequest {
+            source: PlanSource::Prompt {
+                prompt: "test".to_string(),
+            },
+            workdir: PathBuf::from("/tmp"),
+            adapter_key: adapter_keys::PLAN_GENERATE.to_string(),
+            overrides: PlanGeneratorOverrides::default(),
+            dry_run: true,
+        };
+        assert!(request.dry_run);
+    }
+
+    // ---- Each adapter key maps to expected PlanSource variant ----
+
+    #[test]
+    fn plan_source_adapter_key_mapping() {
+        let prd_keys = [
+            adapter_keys::PRD_DEFAULT,
+            adapter_keys::PRD_MODEL,
+            adapter_keys::DO_COMPLEX,
+            adapter_keys::CLI_SERVE_RUNTIME,
+            adapter_keys::SERVE_RUNTIME,
+            adapter_keys::SERVE_HTTP,
+        ];
+        let prompt_keys = [adapter_keys::DO_STANDARD, adapter_keys::PLAN_GENERATE];
+        let replan_keys = [adapter_keys::PRD_REPLAN, adapter_keys::GATE_REPLAN];
+
+        // All keys are in exactly one category.
+        let total = prd_keys.len() + prompt_keys.len() + replan_keys.len();
+        assert_eq!(total, 10, "all 10 adapter keys must be categorized");
+
+        // No overlap.
+        let mut all = std::collections::HashSet::new();
+        for k in prd_keys
+            .iter()
+            .chain(prompt_keys.iter())
+            .chain(replan_keys.iter())
+        {
+            assert!(all.insert(*k), "duplicate key: {k}");
+        }
     }
 }

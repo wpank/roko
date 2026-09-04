@@ -600,15 +600,12 @@ impl std::str::FromStr for AcpWorkflowRoute {
 // #245: Non-plan service migration adapter (Lane D2)
 // ---------------------------------------------------------------------------
 
-/// Thin adapter that validates an ACP workflow request against the
-/// [`roko_execution::profiles::ProfileMatrix`] before delegating to the
-/// existing `ServiceFactory::build` path.
+/// Validates an ACP workflow request against the
+/// [`roko_execution::profiles::ProfileMatrix`] before service construction.
 ///
-/// When #243 lands, this adapter will be replaced by a direct call to
-/// `RuntimeServicesBuilder::build()`. Until then it serves as the
-/// consumer-side contract: ACP session params are translated into
-/// `ExecutionOverrides` and validated against the `Workflow` profile
-/// (ACP workflow calls use the same service bundle as CLI workflows).
+/// #243 landed: `run_with_workflow_engine` now uses `RuntimeServicesBuilder`
+/// + `ServiceFactory::build_with_runtime_services` to share handles.
+/// This adapter remains as the per-session validation entry point.
 ///
 /// **Spec constraint (Lane D2):** this adapter does not edit
 /// `commands/plan.rs`, `runner/event_loop.rs`, or any plan-path type.
@@ -617,10 +614,6 @@ pub struct AcpSessionServiceAdapter;
 impl AcpSessionServiceAdapter {
     /// Validate that an ACP workflow request satisfies the profile matrix
     /// and return a handle for cost settlement correlation.
-    ///
-    /// The caller must still call `ServiceFactory::build` directly —
-    /// this adapter only validates the profile matrix and provides the
-    /// correlation handle.
     ///
     /// # Errors
     ///

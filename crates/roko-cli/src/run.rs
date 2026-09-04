@@ -514,19 +514,20 @@ impl WorkflowServiceAdapter {
     ///
     /// 1. Translates [`CliOverrides`] into builder-layer
     ///    [`roko_execution::overrides::ExecutionOverrides`].
-    /// 2. Builds [`RuntimeServices`] via `RuntimeServicesBuilder`, which
+    /// 2. Validates the request against the profile matrix.
+    /// 3. Builds [`RuntimeServices`] via `RuntimeServicesBuilder`, which
     ///    constructs shared handles (health registry, cascade router,
     ///    prompt cache) once.
-    /// 3. Validates the request against the profile matrix.
-    /// 4. Delegates to `ServiceFactory::build` for the trait-object
-    ///    services, sharing the RuntimeServices handles.
+    /// 4. Delegates to `ServiceFactory::build_with_runtime_services` for
+    ///    the trait-object services, sharing the RuntimeServices handles
+    ///    rather than constructing them twice.
     /// 5. Returns `EffectServices` and a validated handle for cost
     ///    settlement correlation.
     ///
     /// # Errors
     ///
     /// Returns `anyhow::Error` if the profile matrix validation fails,
-    /// RuntimeServicesBuilder fails, or `ServiceFactory::build` fails.
+    /// RuntimeServicesBuilder fails, or `ServiceFactory::build_with_runtime_services` fails.
     pub fn build(
         workdir: &std::path::Path,
         config: &Config,

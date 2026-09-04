@@ -6,11 +6,12 @@
 //!
 //! The mapping rule is:
 //!
-//! | `tool_format` (from profile)      | Translator            |
-//! |-----------------------------------|-----------------------|
-//! | `AnthropicBlocks`                 | [`ClaudeTranslator`]  |
-//! | `OpenAiJson`                      | [`OllamaTranslator`]  |
-//! | `ReActText`                       | [`ReActTranslator`]   |
+//! | `tool_format` (from profile)      | Translator                |
+//! |-----------------------------------|---------------------------|
+//! | `AnthropicBlocks`                 | [`ClaudeTranslator`]      |
+//! | `OpenAiJson`                      | [`OllamaTranslator`]      |
+//! | `HermesJson`                      | [`HermesXmlTranslator`]   |
+//! | `ReActText`                       | [`ReActTranslator`]       |
 //! | anything else, OR `supports_tools: false` | [`ReActTranslator`] (safe fallback) |
 //!
 //! `OpenAiJson` routes through [`OllamaTranslator`] deliberately — both
@@ -23,7 +24,10 @@ use std::sync::Arc;
 use roko_core::config::schema::ModelProfile;
 use roko_core::tool::{ToolDef, ToolFormat, format::profile_for_model};
 
-use super::{ClaudeTranslator, GeminiTranslator, OllamaTranslator, ReActTranslator, Translator};
+use super::{
+    ClaudeTranslator, GeminiTranslator, HermesXmlTranslator, OllamaTranslator, ReActTranslator,
+    Translator,
+};
 
 /// Snapshot of a model's tool-calling capabilities.
 ///
@@ -177,9 +181,10 @@ pub fn translator_for_capabilities(capabilities: &ModelCapabilities) -> Arc<dyn 
     match &capabilities.tool_format {
         ToolFormat::AnthropicBlocks => Arc::new(ClaudeTranslator),
         ToolFormat::OpenAiJson => Arc::new(OllamaTranslator),
+        ToolFormat::HermesJson => Arc::new(HermesXmlTranslator),
         ToolFormat::Custom(name) if name == "gemini_native" => Arc::new(GeminiTranslator),
         // `ReActText` plus every format without a dedicated translator yet
-        // (HermesJson, Gemma4Tokens, MistralTokens, Pythonic, QwenXml,
+        // (Gemma4Tokens, MistralTokens, Pythonic, QwenXml,
         // JsonMode, Custom) all fall through to the ReAct fallback.
         _ => Arc::new(ReActTranslator),
     }
@@ -212,9 +217,10 @@ pub fn translator_name_for_capabilities(capabilities: &ModelCapabilities) -> &'s
     match &capabilities.tool_format {
         ToolFormat::AnthropicBlocks => "claude",
         ToolFormat::OpenAiJson => "openai",
+        ToolFormat::HermesJson => "hermes",
         ToolFormat::Custom(name) if name == "gemini_native" => "gemini",
         // ReActText + every format without a dedicated translator
-        // (HermesJson, Gemma4Tokens, MistralTokens, Pythonic, QwenXml,
+        // (Gemma4Tokens, MistralTokens, Pythonic, QwenXml,
         // JsonMode, Custom) falls through to the ReAct fallback.
         _ => "react",
     }
@@ -450,14 +456,14 @@ mod tests {
     }
 
     #[test]
-    fn translator_for_native_format_without_dedicated_translator_uses_react() {
-        // Qwen3's preferred format is HermesJson — Roko doesn't have a
-        // dedicated translator for it yet, so we fall through to ReAct.
+    fn translator_for_hermes_json_uses_hermes_translator() {
+        // Qwen3's preferred format is HermesJson — routed to
+        // HermesXmlTranslator for native XML tool-call support.
         let caps = capabilities_for("qwen3-32b");
         assert_eq!(caps.tool_format, ToolFormat::HermesJson);
         assert!(caps.supports_tools);
         let t = translator_for("qwen3-32b");
-        assert_eq!(t.format(), ToolFormat::ReActText);
+        assert_eq!(t.format(), ToolFormat::HermesJson);
     }
 
     #[test]
@@ -468,8 +474,8 @@ mod tests {
         assert_eq!(translator_name_for("gpt-4.1"), "openai");
         assert_eq!(translator_name_for("random-model-123"), "react");
         assert_eq!(translator_name_for("llama3.2-3b"), "react");
-        // HermesJson has no dedicated translator → react
-        assert_eq!(translator_name_for("qwen3-32b"), "react");
+        // HermesJson routes to the dedicated Hermes translator.
+        assert_eq!(translator_name_for("qwen3-32b"), "hermes");
     }
 
     #[test]

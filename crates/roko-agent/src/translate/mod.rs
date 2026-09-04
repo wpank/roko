@@ -19,6 +19,7 @@
 //!
 //! - [`claude`] — Claude CLI (`--tools=...` flag + stream-json `tool_use` blocks)
 //! - [`gemini`] — Gemini native `functionDeclarations` / `functionCall` / `functionResponse`
+//! - [`hermes`] — Hermes XML `<tool_call>` format (NousResearch Hermes, Qwen 3)
 //! - [`ollama`] — OpenAI-compatible JSON over `/api/chat`
 //! - [`openai`] — `/v1/chat/completions` (mostly same wire as Ollama)
 //! - [`react`] — prompt-level `ReAct` fallback for models without native tools
@@ -41,6 +42,7 @@ use roko_core::tool::{ToolCall, ToolDef, ToolFormat, ToolResult};
 pub mod capability;
 pub mod claude;
 pub mod gemini;
+pub mod hermes;
 pub mod ollama;
 pub mod openai;
 pub mod react;
@@ -52,6 +54,7 @@ pub use capability::{
 };
 pub use claude::ClaudeTranslator;
 pub use gemini::GeminiTranslator;
+pub use hermes::HermesXmlTranslator;
 pub use ollama::OllamaTranslator;
 pub use openai::{OpenAiTranslator, StrictOpenAiTranslator};
 pub use react::ReActTranslator;

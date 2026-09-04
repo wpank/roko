@@ -1836,6 +1836,8 @@ pub struct TuiState {
     pub agent_output_history: AgentOutputHistory,
     /// Agent output search state for F3:Agents tab (#367).
     pub agent_output_search: AgentOutputSearchState,
+    /// Tool IDs whose results are unfolded in the stream output widget.
+    pub agent_output_unfolded: HashSet<String>,
     // -- navigation --
     /// Active top-level tab.
     pub active_tab: Tab,
@@ -2255,6 +2257,7 @@ impl Default for TuiState {
             agent_streams: HashMap::new(),
             agent_output_history: AgentOutputHistory::default(),
             agent_output_search: AgentOutputSearchState::default(),
+            agent_output_unfolded: HashSet::new(),
             active_tab: Tab::default(),
             selected_plan_idx: 0,
             selected_plan_name: None,

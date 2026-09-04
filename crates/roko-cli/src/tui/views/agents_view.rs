@@ -805,17 +805,24 @@ fn render_output_body(
         history_records.iter().map(|r| r.text.clone()).collect()
     };
     let has_stream_records = collected.iter().any(|l| l.starts_with('\x1e'));
-    let output_lines = if collected.is_empty() {
-        Vec::new()
-    } else if has_stream_records {
-        stream_output::render_output_lines(&collected, theme)
-    } else {
-        tui_state.render_agent_output_lines(selected_id, &collected, theme)
-    };
 
     // Agent output search state (#367)
     let search = &tui_state.agent_output_search;
     let search_active = search.active && !search.pattern.is_empty();
+
+    // Build RenderOptions for fold/unfold and search highlighting.
+    let render_opts = stream_output::RenderOptions {
+        unfolded_tool_ids: tui_state.agent_output_unfolded.clone(),
+        search_pattern: search.compiled.clone(),
+    };
+
+    let output_lines = if collected.is_empty() {
+        Vec::new()
+    } else if has_stream_records {
+        stream_output::render_output_lines_styled(&collected, theme, &render_opts)
+    } else {
+        tui_state.render_agent_output_lines(selected_id, &collected, theme)
+    };
 
     let block = Block::default()
         .borders(Borders::ALL)

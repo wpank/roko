@@ -516,10 +516,6 @@ fn known_rung_from_name(name: &str) -> Option<Rung> {
     }
 }
 
-fn shell_gate_from_config(rung_config: &GateRungConfig) -> Box<dyn Verify> {
-    shell_gate_from_config_with_sink(rung_config, None)
-}
-
 fn shell_gate_from_config_with_sink(
     rung_config: &GateRungConfig,
     line_sink: Option<tokio::sync::mpsc::UnboundedSender<String>>,

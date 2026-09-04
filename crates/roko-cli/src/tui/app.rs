@@ -2786,6 +2786,47 @@ impl App {
                     }
                 }
             }
+            TuiAction::ToggleAgentOutputFold => {
+                // Collect tool IDs from the selected agent's output and toggle
+                // the most recent one. Falls back to toggling the last tool ID
+                // when no scroll position context is available.
+                use crate::tui::widgets::stream_output::{StreamRecord, parse_stream_line};
+                let selected_id = self
+                    .tui_state
+                    .agents
+                    .get(self.tui_state.selected_agent)
+                    .map(|a| a.id.as_str())
+                    .unwrap_or("");
+                let history_records = self
+                    .tui_state
+                    .agent_output_history
+                    .records_for(selected_id);
+                let lines: Vec<String> = if history_records.is_empty() {
+                    self.tui_state
+                        .agents
+                        .get(self.tui_state.selected_agent)
+                        .map(|a| a.output_lines.clone())
+                        .unwrap_or_default()
+                } else {
+                    history_records.iter().map(|r| r.text.clone()).collect()
+                };
+                // Find the last tool ID in the output.
+                let mut last_tool_id: Option<String> = None;
+                for line in &lines {
+                    match parse_stream_line(line) {
+                        StreamRecord::ToolStart { tool_id, .. }
+                        | StreamRecord::ToolResult { tool_id, .. } => {
+                            last_tool_id = Some(tool_id);
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some(tid) = last_tool_id {
+                    if !self.tui_state.agent_output_unfolded.remove(&tid) {
+                        self.tui_state.agent_output_unfolded.insert(tid);
+                    }
+                }
+            }
 
             // -- Recovery keybindings (#119) --
             TuiAction::SoftRetry => {

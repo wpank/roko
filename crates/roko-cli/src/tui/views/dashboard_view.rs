@@ -778,7 +778,11 @@ fn render_output_panel(
         return;
     }
 
-    let text: Vec<Line<'static>> = stream_output::render_output_lines(&collected, theme);
+    let render_opts = stream_output::RenderOptions {
+        unfolded_tool_ids: tui_state.agent_output_unfolded.clone(),
+        search_pattern: tui_state.agent_output_search.compiled.clone(),
+    };
+    let text: Vec<Line<'static>> = stream_output::render_output_lines_styled(&collected, theme, &render_opts);
     let scroll = if view_state.auto_tail {
         text.len()
             .saturating_sub(inner.height as usize)

@@ -57,7 +57,6 @@ pub mod queue_manifest;
 pub(crate) mod reflex;
 pub mod resume;
 pub mod screenshot_collector;
-pub mod services_adapter;
 pub mod snapshot_writer;
 pub mod sse_stream;
 pub mod state;

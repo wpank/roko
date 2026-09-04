@@ -12,7 +12,6 @@ use crate::http::{HttpPoster, ReqwestPoster};
 use crate::tool_loop::{LlmBackend, LlmError, StopReason, ToolLoop};
 use crate::translate::{BackendResponse, RenderedTools, SessionState};
 use async_trait::async_trait;
-use roko_core::extension::CamelTaintLevel;
 use roko_core::tool::{ToolContext, ToolDef};
 use roko_core::{Body, Context, Kind, Provenance, Signal};
 use roko_fs::RokoLayout;
@@ -242,13 +241,11 @@ impl PerplexityToolLoopAgent {
 impl Agent for PerplexityToolLoopAgent {
     async fn run(&self, input: &Signal, ctx: &Context) -> AgentResult {
         let prompt = input.body.as_text().unwrap_or_default();
-        let tool_ctx = ToolContext::testing(&self.worktree_path)
-            .with_immune_root(
-                self.immune_root_path
-                    .as_deref()
-                    .unwrap_or(&self.worktree_path),
-            )
-            .with_taint_level(CamelTaintLevel::External);
+        let tool_ctx = ToolContext::external_pre_check(&self.worktree_path).with_immune_root(
+            self.immune_root_path
+                .as_deref()
+                .unwrap_or(&self.worktree_path),
+        );
         let tool_loop = match self.checkpoint_path(ctx) {
             Some(path) => self.tool_loop.clone().with_checkpoint_path(path),
             None => self.tool_loop.clone(),

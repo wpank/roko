@@ -103,6 +103,7 @@ impl Translator for HermesXmlTranslator {
             let Some(end_offset) = text[abs_start..].find("</tool_call>") else {
                 // Unclosed tag -- try to parse what we have up to end-of-string.
                 let body = text[abs_start..].trim();
+                #[allow(clippy::collapsible_if)]
                 if !body.is_empty() {
                     if let Some(call) = parse_tool_call_body(body, calls.len()) {
                         calls.push(call);
@@ -113,6 +114,7 @@ impl Translator for HermesXmlTranslator {
             let abs_end = abs_start + end_offset;
             let body = text[abs_start..abs_end].trim();
 
+            #[allow(clippy::collapsible_if)]
             if !body.is_empty() {
                 // Try to parse the JSON body inside the tags.
                 if let Some(call) = parse_tool_call_body(body, calls.len()) {

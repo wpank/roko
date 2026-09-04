@@ -3,7 +3,6 @@
 mod common;
 
 use common::{ScriptedResponse, scripted_response, spawn_scripted_server};
-use roko_agent::Agent;
 use roko_agent::provider::{AgentOptions, ProviderAdapter};
 use roko_core::agent::ProviderKind;
 use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
@@ -62,21 +61,6 @@ fn anthropic_model(supports_tools: bool) -> ModelProfile {
     }
 }
 
-fn simple_anthropic_response(text: &str) -> String {
-    json!({
-        "id": "msg_test",
-        "model": "claude-sonnet-4-6",
-        "stop_reason": "end_turn",
-        "content": [{"type": "text", "text": text}],
-        "usage": {
-            "input_tokens": 15,
-            "output_tokens": 8,
-            "cache_read_input_tokens": 3,
-            "cache_creation_input_tokens": 2
-        }
-    })
-    .to_string()
-}
 
 // ─── Happy path ─────────────────────────────────────────────────────
 

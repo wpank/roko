@@ -190,7 +190,7 @@ impl Verify for ShellGate {
                     .with_error_digest(render_failure_classification(&classification))
                     .with_duration(elapsed)
             }
-            Ok((stdout, stderr, Err(io_err))) => {
+            Ok((_stdout, _stderr, Err(io_err))) => {
                 let reason = format!("wait failed: {io_err}");
                 let classification =
                     structured_gate_failure(&self.name, &reason, reason.clone(), elapsed);

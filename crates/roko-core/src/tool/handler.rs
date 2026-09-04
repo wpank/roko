@@ -397,6 +397,35 @@ impl ToolContext {
         }
     }
 
+    /// Construct a context for safety pre-execution checks in production
+    /// code paths (e.g. provider adapters that inspect tool calls before
+    /// dispatch).
+    ///
+    /// Unlike [`Self::testing`], this uses [`CamelTaintLevel::External`] so
+    /// taint-aware safety gates fire correctly, and grants read-only
+    /// capabilities since the check itself does not mutate the worktree.
+    /// Sinks are no-op because no tool execution occurs — only the
+    /// pre-check predicates run.
+    #[must_use]
+    pub fn external_pre_check(worktree_path: impl Into<PathBuf>) -> Self {
+        let worktree_path = worktree_path.into();
+        Self {
+            immune_root_path: normalize_immune_root(&worktree_path),
+            worktree_path,
+            timeout: Duration::from_secs(30),
+            capabilities: ToolPermission::read_only(),
+            allowed_tools: None,
+            denied_tools: None,
+            audit_sink: Arc::new(NoopAuditSink),
+            trace_sink: Arc::new(NoopTraceSink),
+            metrics_sink: Arc::new(NoopMetricsSink),
+            cancel_token: Arc::new(NeverCancel),
+            external_actions: Arc::new(RwLock::new(Vec::new())),
+            taint_level: Arc::new(RwLock::new(CamelTaintLevel::External)),
+            correlation: CorrelationEnvelope::empty(),
+        }
+    }
+
     /// Replace the trace sink (builder-style for test setup).
     #[must_use]
     pub fn with_trace_sink(mut self, sink: Arc<dyn TraceSink>) -> Self {

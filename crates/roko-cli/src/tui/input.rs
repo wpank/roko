@@ -496,6 +496,8 @@ pub enum TuiAction {
     NextAgentOutputMatch,
     /// Jump to the previous agent output search match.
     PrevAgentOutputMatch,
+    /// Toggle fold/unfold for the nearest tool result in agent output.
+    ToggleAgentOutputFold,
 
     // -- recovery (#119) --
     /// Soft retry: re-dispatch only failed tasks.
@@ -1095,6 +1097,8 @@ fn handle_agents_key(key: KeyEvent, focus: FocusZone) -> TuiAction {
         KeyCode::Char('/') => TuiAction::StartAgentOutputSearch,
         KeyCode::Char('n') => TuiAction::NextAgentOutputMatch,
         KeyCode::Char('N') => TuiAction::PrevAgentOutputMatch,
+        // Fold/unfold tool output: f toggles nearest tool result
+        KeyCode::Char('f') => TuiAction::ToggleAgentOutputFold,
         _ => TuiAction::None,
     }
 }

@@ -45,8 +45,6 @@ pub mod theme;
 pub mod util;
 pub mod verdicts;
 pub mod views;
-#[cfg(feature = "tui-png")]
-pub mod visual_assessment;
 pub mod widgets;
 pub mod ws_client;
 

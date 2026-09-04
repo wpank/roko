@@ -5,7 +5,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use roko_core::config::schema::ModelProfile;
 use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
-use roko_core::extension::CamelTaintLevel;
 use serde_json::Value;
 
 use crate::gemini::native::{
@@ -312,8 +311,8 @@ impl LlmBackend for GeminiNativeBackend {
         let calls = GeminiTranslator
             .parse_calls(&response)
             .map_err(|err| LlmError::Backend(format!("parse tool calls for safety: {err}")))?;
-        let tool_ctx = ToolContext::testing(std::env::current_dir().unwrap_or_else(|_| ".".into()))
-            .with_taint_level(CamelTaintLevel::External);
+        let tool_ctx =
+            ToolContext::external_pre_check(std::env::current_dir().unwrap_or_else(|_| ".".into()));
         for call in &calls {
             if let Err(err) = self.safety.check_pre_execution(call, &tool_ctx) {
                 return Err(LlmError::Backend(format!(

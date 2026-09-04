@@ -15,7 +15,6 @@ use crate::usage::{UsageObservation, UsageSource};
 use crate::{Agent, AgentResult};
 use async_trait::async_trait;
 use roko_core::config::schema::ModelProfile;
-use roko_core::extension::CamelTaintLevel;
 use roko_core::tool::{ToolCall, ToolContext, ToolDef, ToolResult};
 use roko_core::{
     Body, Context, Kind, MessageRole, ModelInputBlock, ModelInputMessage, Provenance, Signal,
@@ -486,8 +485,8 @@ impl Agent for GeminiNativeAgent {
             Ok(parsed) => parsed,
             Err(error) => return self.failure(input, error, &started),
         };
-        let tool_ctx = ToolContext::testing(std::env::current_dir().unwrap_or_else(|_| ".".into()))
-            .with_taint_level(CamelTaintLevel::External);
+        let tool_ctx =
+            ToolContext::external_pre_check(std::env::current_dir().unwrap_or_else(|_| ".".into()));
         for call in &parsed.tool_calls {
             if let Err(err) = self.safety.check_pre_execution(call, &tool_ctx) {
                 return self.failure(

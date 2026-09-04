@@ -237,6 +237,7 @@ fn test_integration_ok() {
         integration_build_system: None,
         verdict_publisher: None,
         timeout_ms: None,
+        line_sink: None,
     };
 
     let ctx = Context::now();

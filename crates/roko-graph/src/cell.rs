@@ -82,7 +82,6 @@ pub struct CellContext {
 impl CellContext {
     /// Construct a new `CellContext` with no trace or budget info.
     #[must_use]
-    #[must_use]
     pub fn new() -> Self {
         Self {
             trace_id: None,
@@ -267,4 +266,62 @@ pub trait Cell: Send + Sync + 'static {
     /// The graph engine calls this in topological order, feeding outputs from
     /// upstream cells as inputs to downstream cells.
     async fn execute(&self, input: Vec<Signal>, ctx: &CellContext) -> Result<Vec<Signal>>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cell_resources_default_has_no_gates() {
+        let r = CellResources::default();
+        assert!(r.gates.is_none());
+    }
+
+    #[test]
+    fn cell_resources_debug_shows_presence() {
+        let r = CellResources::default();
+        let debug = format!("{r:?}");
+        assert!(debug.contains("gates: false"));
+    }
+
+    #[test]
+    fn cell_context_new_has_default_resources() {
+        let ctx = CellContext::new();
+        assert!(ctx.resources.gates.is_none());
+    }
+
+    #[test]
+    fn cell_context_with_resources() {
+        // Verify the builder method works.
+        let r = CellResources::default();
+        let ctx = CellContext::new().with_resources(r);
+        assert!(ctx.resources.gates.is_none());
+    }
+
+    #[test]
+    fn cell_context_with_gates_resource() {
+        use roko_core::{SharedGateEvaluator, SharedGateError, SharedGateRequest, SharedGateVerdict};
+
+        struct MockEvaluator;
+
+        #[async_trait]
+        impl SharedGateEvaluator for MockEvaluator {
+            async fn verify_rung(
+                &self,
+                _request: &SharedGateRequest,
+            ) -> std::result::Result<SharedGateVerdict, SharedGateError> {
+                Ok(SharedGateVerdict::pass("mock"))
+            }
+        }
+
+        let r = CellResources {
+            gates: Some(Arc::new(MockEvaluator)),
+        };
+        let ctx = CellContext::new().with_resources(r);
+        assert!(ctx.resources.gates.is_some());
+
+        let debug = format!("{:?}", ctx.resources);
+        assert!(debug.contains("gates: true"));
+    }
 }

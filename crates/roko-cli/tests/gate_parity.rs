@@ -471,18 +471,17 @@ async fn graph_cell_matches_fixture_expectations() {
             .await
             .expect(&format!("case '{}': cell should complete", case.id));
 
-        // Decode the verdict from the output signal.
-        let verdict: roko_gate::ProductionGateVerdictV1 = output
+        // Decode the GateResult from the output signal.
+        let gate_result: roko_core::GateResult = output
             .body
             .as_json()
-            .expect(&format!("case '{}': decode verdict", case.id));
+            .expect(&format!("case '{}': decode gate result", case.id));
 
-        // Verify the selected rungs match.
-        let selected: Vec<String> = verdict
-            .rung_verdicts
+        // Verify the selected (non-skipped) rungs match.
+        let selected: Vec<String> = gate_result
+            .rung_results
             .iter()
-            .filter(|rv| !rv.skipped())
-            .map(|rv| rv.rung.label().to_string())
+            .map(|r| r.rung_name.clone())
             .collect();
         assert_eq!(
             selected, case.expected.selected_rungs,
@@ -490,26 +489,16 @@ async fn graph_cell_matches_fixture_expectations() {
             case.id
         );
 
-        // Verify rung count for non-timeout cases.
-        if case.expected.outcome != "timed_out" {
-            assert_eq!(
-                verdict.rung_verdicts.len(),
-                case.rungs.len(),
-                "case '{}': graph cell verdict count mismatch",
-                case.id
-            );
-        }
-
         // Verify pass/fail parity with the runner adapter.
         if case.expected.outcome == "timed_out" || case.expected.outcome == "cancelled" {
             assert!(
-                !verdict.passed(),
+                !gate_result.passed,
                 "case '{}': timed-out/cancelled should not pass (graph cell)",
                 case.id
             );
         } else {
             assert_eq!(
-                verdict.passed(),
+                gate_result.passed,
                 case.expected.passed,
                 "case '{}': graph cell passed mismatch",
                 case.id
@@ -581,58 +570,52 @@ async fn runner_and_graph_verdicts_converge() {
             .execute_gate(signal)
             .await
             .expect(&format!("case '{}': convergence cell failed", case.id));
-        let verdict: roko_gate::ProductionGateVerdictV1 = output.body.as_json().unwrap();
+        let gate_result: roko_core::GateResult = output.body.as_json().unwrap();
 
         // --- Convergence assertions ---
         // Both paths should agree on pass/fail.
         assert_eq!(
             completion.passed,
-            verdict.passed(),
+            gate_result.passed,
             "case '{}': runner/graph pass convergence mismatch",
             case.id
         );
 
-        // Both should agree on verdict count (for non-timeout cases).
-        if case.expected.outcome != "timed_out" {
-            assert_eq!(
-                completion.verdicts.len(),
-                verdict.rung_verdicts.len(),
-                "case '{}': runner/graph verdict count convergence mismatch",
-                case.id
-            );
-        }
-
-        // Selected rungs must match.
-        let graph_selected: Vec<String> = verdict
-            .rung_verdicts
+        // GateResult only includes non-skipped rungs; compare against
+        // runner's selected (non-skipped) rungs.
+        let runner_selected: Vec<&str> = completion
+            .selected_rungs
             .iter()
-            .filter(|rv| !rv.skipped())
-            .map(|rv| rv.rung.label().to_string())
+            .map(|s| s.as_str())
+            .collect();
+        let graph_selected: Vec<&str> = gate_result
+            .rung_results
+            .iter()
+            .map(|r| r.rung_name.as_str())
             .collect();
         assert_eq!(
-            completion.selected_rungs, graph_selected,
+            runner_selected, graph_selected,
             "case '{}': runner/graph selected_rungs convergence mismatch",
             case.id
         );
 
-        // Per-rung pass/fail/skipped state must match.
+        // Per-rung pass/fail state must match for non-skipped rungs.
         if case.expected.outcome != "timed_out" {
-            for (i, rv) in verdict.rung_verdicts.iter().enumerate() {
-                let summary = &completion.verdicts[i];
-                assert_eq!(
-                    summary.passed,
-                    rv.passed(),
-                    "case '{}' rung {}: runner/graph passed convergence mismatch",
-                    case.id,
-                    i
-                );
-                assert_eq!(
-                    summary.skipped,
-                    rv.skipped(),
-                    "case '{}' rung {}: runner/graph skipped convergence mismatch",
-                    case.id,
-                    i
-                );
+            let runner_non_skipped: Vec<_> = completion
+                .verdicts
+                .iter()
+                .filter(|s| !s.skipped)
+                .collect();
+            for (i, rr) in gate_result.rung_results.iter().enumerate() {
+                if i < runner_non_skipped.len() {
+                    assert_eq!(
+                        runner_non_skipped[i].passed,
+                        rr.passed,
+                        "case '{}' rung {}: runner/graph passed convergence mismatch",
+                        case.id,
+                        i
+                    );
+                }
             }
         }
     }

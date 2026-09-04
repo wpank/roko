@@ -6499,6 +6499,7 @@ dependencies = [
 name = "roko-execution"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "blake3",
  "indexmap 2.14.0",

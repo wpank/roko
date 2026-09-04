@@ -27,6 +27,7 @@ roko-daimon = { path = "../roko-daimon" }
 roko-fs = { path = "../roko-fs" }
 roko-plugin = { path = "../roko-plugin" }
 
+anyhow = { workspace = true }
 blake3 = { workspace = true }
 indexmap = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

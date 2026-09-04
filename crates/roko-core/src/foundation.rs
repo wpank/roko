@@ -1257,4 +1257,95 @@ mod tests {
             "knowledge"
         );
     }
+
+    // ── SharedGateRequest / SharedGateVerdict / SharedGateError tests ────
+
+    #[test]
+    fn shared_gate_request_round_trip() {
+        let req = SharedGateRequest {
+            task_id: "task-1".into(),
+            attempt_id: 2,
+            rung: "compile".into(),
+            plan_dir: "plans/foo".into(),
+            worktree_path: PathBuf::from("/tmp/ws"),
+            changed_files: vec!["src/lib.rs".into()],
+            context: [("key".into(), "val".into())].into_iter().collect(),
+        };
+        let json = serde_json::to_string(&req).expect("serialize");
+        let back: SharedGateRequest = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.task_id, "task-1");
+        assert_eq!(back.attempt_id, 2);
+        assert_eq!(back.rung, "compile");
+        assert_eq!(back.changed_files.len(), 1);
+        assert_eq!(back.context.get("key").map(String::as_str), Some("val"));
+    }
+
+    #[test]
+    fn shared_gate_verdict_pass() {
+        let v = SharedGateVerdict::pass("compile");
+        assert!(v.passed);
+        assert!(!v.skipped);
+        assert!(v.failed_reasons.is_empty());
+        assert_eq!(v.rung, "compile");
+    }
+
+    #[test]
+    fn shared_gate_verdict_fail() {
+        let v = SharedGateVerdict::fail("test", vec!["3 failures".into()]);
+        assert!(!v.passed);
+        assert!(!v.skipped);
+        assert_eq!(v.failed_reasons, vec!["3 failures"]);
+    }
+
+    #[test]
+    fn shared_gate_verdict_skip() {
+        let v = SharedGateVerdict::skip("lint");
+        assert!(!v.passed);
+        assert!(v.skipped);
+        assert!(v.failed_reasons.is_empty());
+    }
+
+    #[test]
+    fn shared_gate_verdict_with_evidence_and_cost() {
+        let v = SharedGateVerdict::pass("compile")
+            .with_evidence("ok")
+            .with_cost(1000);
+        assert_eq!(v.evidence.as_deref(), Some("ok"));
+        assert_eq!(v.cost_micro_usd, 1000);
+    }
+
+    #[test]
+    fn shared_gate_verdict_round_trip() {
+        let v = SharedGateVerdict::fail("test", vec!["error1".into()])
+            .with_evidence("details")
+            .with_cost(500);
+        let json = serde_json::to_string(&v).expect("serialize");
+        let back: SharedGateVerdict = serde_json::from_str(&json).expect("deserialize");
+        assert!(!back.passed);
+        assert_eq!(back.rung, "test");
+        assert_eq!(back.failed_reasons, vec!["error1"]);
+        assert_eq!(back.evidence.as_deref(), Some("details"));
+        assert_eq!(back.cost_micro_usd, 500);
+    }
+
+    #[test]
+    fn shared_gate_error_display() {
+        let e = SharedGateError::UnknownRung {
+            rung: "foo".into(),
+        };
+        assert!(e.to_string().contains("unknown rung"));
+        assert!(e.to_string().contains("foo"));
+
+        let e = SharedGateError::Timeout { timeout_secs: 60 };
+        assert!(e.to_string().contains("timed out"));
+        assert!(e.to_string().contains("60"));
+
+        let e = SharedGateError::Cancelled;
+        assert!(e.to_string().contains("cancelled"));
+
+        let e = SharedGateError::Internal {
+            reason: "boom".into(),
+        };
+        assert!(e.to_string().contains("boom"));
+    }
 }

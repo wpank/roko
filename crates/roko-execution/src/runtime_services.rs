@@ -646,4 +646,101 @@ mod tests {
         );
         assert!(request.validate_non_plan().is_ok());
     }
+
+    // -----------------------------------------------------------------------
+    // #245 conformance: one test per non-plan profile proving mandatory
+    // services are declared active.
+    // -----------------------------------------------------------------------
+
+    /// Helper: build a handle and verify it has the mandatory bundles for a
+    /// non-plan profile (Dispatch, Prompt, Observation, Guards).
+    fn assert_mandatory_bundles(profile: RuntimeProfile) {
+        let overrides = match profile {
+            RuntimeProfile::ChatLight => overrides_for_chat(None, None),
+            RuntimeProfile::AgentServer => overrides_for_acp("conformance", None, None),
+            _ => overrides_for_workflow(None, None, None, None, None),
+        };
+        let request = NonPlanServiceRequest::new(
+            profile,
+            PathBuf::from("/tmp/conformance"),
+            overrides,
+        );
+        let handle = build_non_plan_services(&request)
+            .unwrap_or_else(|e| panic!("profile {profile} should validate: {e}"));
+        assert_eq!(handle.profile(), profile);
+
+        let required = handle.required_bundles();
+        assert!(
+            required.contains(&ServiceBundleId::Dispatch),
+            "{profile}: Dispatch must be required"
+        );
+        assert!(
+            required.contains(&ServiceBundleId::Prompt),
+            "{profile}: Prompt must be required"
+        );
+        assert!(
+            required.contains(&ServiceBundleId::Observation),
+            "{profile}: Observation must be required"
+        );
+        assert!(
+            required.contains(&ServiceBundleId::Guards),
+            "{profile}: Guards must be required"
+        );
+    }
+
+    #[test]
+    fn conformance_workflow_mandatory_services() {
+        assert_mandatory_bundles(RuntimeProfile::Workflow);
+    }
+
+    #[test]
+    fn conformance_chat_light_mandatory_services() {
+        assert_mandatory_bundles(RuntimeProfile::ChatLight);
+    }
+
+    #[test]
+    fn conformance_agent_server_mandatory_services() {
+        assert_mandatory_bundles(RuntimeProfile::AgentServer);
+    }
+
+    #[test]
+    fn conformance_direct_light_mandatory_services() {
+        assert_mandatory_bundles(RuntimeProfile::DirectLight);
+    }
+
+    #[test]
+    fn conformance_authored_graph_mandatory_services() {
+        assert_mandatory_bundles(RuntimeProfile::AuthoredGraph);
+    }
+
+    /// Verify that RuntimeServicesBuilder produces working services for
+    /// each non-plan profile.
+    #[test]
+    fn conformance_builder_produces_services_for_non_plan_profiles() {
+        let workdir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(workdir.path().join(".roko")).unwrap();
+
+        let non_plan_profiles = [
+            RuntimeProfile::Workflow,
+            RuntimeProfile::ChatLight,
+            RuntimeProfile::AgentServer,
+            RuntimeProfile::DirectLight,
+            RuntimeProfile::AuthoredGraph,
+        ];
+
+        for profile in non_plan_profiles {
+            let services = crate::RuntimeServicesBuilder::for_test(profile)
+                .build(workdir.path())
+                .unwrap_or_else(|e| panic!("builder should succeed for {profile}: {e}"));
+
+            assert_eq!(services.profile, profile);
+            // All six bundle slots are populated for non-plan profiles.
+            // Feedback is optional (may or may not be Some).
+            let summary = services.summary();
+            assert!(summary.has_dispatch, "{profile}: dispatch required");
+            assert!(summary.has_prompt, "{profile}: prompt required");
+            assert!(summary.has_observation, "{profile}: observation required");
+            assert!(summary.has_guards, "{profile}: guards required");
+        }
+    }
 }

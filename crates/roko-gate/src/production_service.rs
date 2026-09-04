@@ -965,4 +965,70 @@ mod tests {
             skip_reason: None,
         }
     }
+
+    // ── DefaultGateService (SharedGateEvaluator) tests ──────────────────
+
+    #[test]
+    fn default_gate_service_can_be_constructed() {
+        let _svc = DefaultGateService::new();
+        let _svc2 = DefaultGateService::default();
+    }
+
+    #[test]
+    fn default_gate_service_implements_debug() {
+        let svc = DefaultGateService::new();
+        let debug = format!("{svc:?}");
+        assert!(debug.contains("DefaultGateService"));
+    }
+
+    #[test]
+    fn default_gate_service_is_object_safe() {
+        use roko_core::SharedGateEvaluator;
+        let svc = DefaultGateService::new();
+        let _arc: std::sync::Arc<dyn SharedGateEvaluator> = std::sync::Arc::new(svc);
+    }
+
+    #[tokio::test]
+    async fn default_gate_service_unknown_rung_returns_error() {
+        use roko_core::{SharedGateEvaluator, SharedGateRequest};
+        let svc = DefaultGateService::new();
+        let req = SharedGateRequest {
+            task_id: "t".into(),
+            attempt_id: 0,
+            rung: "nonexistent".into(),
+            plan_dir: String::new(),
+            worktree_path: PathBuf::from("/tmp"),
+            changed_files: Vec::new(),
+            context: Default::default(),
+        };
+        let result = svc.verify_rung(&req).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, roko_core::SharedGateError::UnknownRung { .. }),
+            "expected UnknownRung, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn default_gate_service_compile_rung_executes() {
+        use roko_core::{SharedGateEvaluator, SharedGateRequest};
+        let svc = DefaultGateService::new();
+        let req = SharedGateRequest {
+            task_id: "t".into(),
+            attempt_id: 0,
+            rung: "compile".into(),
+            plan_dir: String::new(),
+            // Point to the workspace root so cargo works (tests run from project root)
+            worktree_path: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."),
+            changed_files: vec!["src/lib.rs".into()],
+            context: Default::default(),
+        };
+        // This actually runs `cargo check` so it may take a while in CI,
+        // but for unit tests it validates the wiring.
+        let result = svc.verify_rung(&req).await;
+        // The result depends on whether cargo is available and the workspace
+        // compiles, but the call should not error with UnknownRung.
+        assert!(result.is_ok(), "compile rung should succeed: {result:?}");
+    }
 }

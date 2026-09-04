@@ -1142,14 +1142,15 @@ mod tests {
             .execute_gate(input_signal())
             .await
             .expect("should complete");
-        let verdict: ProductionGateVerdictV1 = output.body.as_json().expect("decode");
+        let gate_result: GateResult = output.body.as_json().expect("decode");
 
-        // The verdict outcome is Failed, which the graph engine uses to
+        // The GateResult is Failed, which the graph engine uses to
         // prevent dependent task execution.
-        assert_eq!(verdict.outcome, PipelineOutcome::Failed);
-        assert_eq!(verdict.failed_rung_count(), 1);
-        assert_eq!(verdict.failed_rung_names(), vec!["test"]);
-        assert_eq!(verdict.executed_rung_count(), 3);
+        assert!(!gate_result.passed);
+        assert_eq!(gate_result.failed_count(), 1);
+        assert_eq!(gate_result.failed_rung_names(), vec!["test"]);
+        // Only non-skipped rungs appear in rung_results.
+        assert_eq!(gate_result.rung_results.len(), 3);
     }
 
     // ── Integration: per-rung progress before pipeline finish ────────────
@@ -1215,15 +1216,12 @@ mod tests {
             .execute_gate(input_signal())
             .await
             .expect("should complete");
-        let verdict: ProductionGateVerdictV1 = output.body.as_json().expect("decode");
+        let gate_result: GateResult = output.body.as_json().expect("decode");
 
-        assert_eq!(verdict.outcome, PipelineOutcome::Passed);
-        assert_eq!(verdict.rung_verdicts.len(), 3);
-        assert_eq!(verdict.executed_rung_count(), 2); // compile + test
-        assert!(verdict.rung_verdicts[1].skipped());
-        assert_eq!(
-            verdict.rung_verdicts[1].skip_reason.as_deref(),
-            Some("mock skip")
-        );
+        assert!(gate_result.passed);
+        // Skipped rungs are filtered out of rung_results.
+        assert_eq!(gate_result.rung_results.len(), 2); // compile + test (lint skipped)
+        assert_eq!(gate_result.rung_results[0].rung_name, "compile");
+        assert_eq!(gate_result.rung_results[1].rung_name, "test");
     }
 }

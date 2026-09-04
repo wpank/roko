@@ -402,7 +402,6 @@ impl ServiceFactory {
             affect_policy,
         })
     }
-}
 
     /// Build services using pre-built handles from [`RuntimeServices`].
     ///

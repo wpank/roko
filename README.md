@@ -571,12 +571,31 @@ wrapper instead of `cargo run`:
 Every FAST task must author exactly one `verify` command. The patching agent is instructed not to
 build or test; the runner owns that one check, preserves the warm target, runs headlessly with a
 bounded deadline, and writes a private evidence bundle under `.roko/runs/`. The gate fails closed
-when the task has zero or multiple verification commands.
+when the task has zero or multiple verification commands. FAST also serializes compile ownership
+and rejects severe disk pressure before launch unless the operator records an explicit override.
+
+```bash
+./dev.sh feedback --run-id <run-id>             # deterministic factual debrief
+./dev.sh evidence-validate .roko/runs/<run-id>  # strict terminal/JSONL/secret/size checks
+./dev.sh score --bundle-root .roko/runs         # p50/p95 across captured runs
+./dev.sh cache status                           # inspect caches without mutation
+roko run-index repair                           # bounded historical-index dry run
+python3 scripts/dev_benchmark.py list           # inspect fixed-SHA benchmark lanes
+```
+
+Cache pruning and historical index repair are dry-run by default; mutation requires their explicit
+`--apply` flag. Benchmark automation is implemented, but FAST promotion still requires real
+cold/warm repetitions, manual-lane evidence, escaped-regression review, and a full-CI baseline.
 
 FAST is an interactive feedback lane, not release proof. Do not use it for migrations, auth,
 safety, persistence, payment, or other high-risk changes, and still run the contribution checks
 below before merging. See [Fast development](docs/v2/29-FAST-DEVELOPMENT.md) for the contract,
-security boundaries, and deferred work.
+security boundaries, and deferred work, and [run evidence bundles](docs/v2/30-EVIDENCE-BUNDLES.md)
+for optional safe GET, CLI, text, and browser proof collection.
+The measured before-state and implementation-vs-verification ledger live in the tracked
+[development-speed audit](tmp/dev-audit/README.md). TUI claims are reconciled separately in the
+[TUI parity index](tmp/tui-parity/00-INDEX.md); source-complete items there are not considered live
+verified until the named interactive run succeeds.
 
 ## CLI quick reference
 

@@ -308,3 +308,5 @@ curl http://127.0.0.1:9090/api/models
 - adding a slug heuristic when config-driven resolution is enough
 - introducing a new translator even though the provider already matches an existing tool format
 - skipping adapter registration in `crates/roko-agent/src/provider/mod.rs`
+
+The "no slug heuristic" advice means do not add *new* ones — it does not mean none exist. The codebase already carries ~25 slug-pattern matchers (cascade routing, pricing tables, tokenizer selection, tool-format defaults) that config does not override for an unknown slug; see "Slug heuristics config doesn't cover" in [adding-a-provider.md](./adding-a-provider.md) for the audited inventory before assuming a config entry alone covers a new slug family.

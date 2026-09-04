@@ -1,8 +1,6 @@
 //! dashboard command handlers.
-#![allow(unused_imports)]
 
 use crate::*;
-use roko_cli::tui::tabs::Tab;
 use roko_fs::RokoLayout;
 
 pub(crate) async fn cmd_dashboard(
@@ -16,6 +14,10 @@ pub(crate) async fn cmd_dashboard(
     let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
     prepare_runtime_hooks(&workdir, cli.quiet);
 
+    // Acquire a shared lock so the read-only TUI can coexist with other
+    // readers but will fail if an exclusive writer holds the lock.
+    let _lock = roko_cli::workspace_lock::acquire_workspace_lock_shared(&workdir.join(".roko"))?;
+
     let initial_page = page.as_deref().map(|page| {
         parse_dashboard_page(page).ok_or_else(|| {
             anyhow!(
@@ -28,11 +30,15 @@ pub(crate) async fn cmd_dashboard(
 
     if !text && !list_pages && std::io::stdout().is_terminal() {
         // Use the Mori-style interactive TUI with 60fps event loop.
-        let app = if let Some(state_hub) = state_hub.as_ref() {
+        let mut app = if let Some(state_hub) = state_hub.as_ref() {
             App::new_connected_with_page(&workdir, initial_page, state_hub)
         } else {
             App::new_with_page(&workdir, initial_page)
         };
+        // --no-mouse disables terminal mouse capture (#368).
+        if std::env::var("ROKO_NO_MOUSE").is_ok() {
+            app = app.without_mouse_capture();
+        }
         let tui_result = tokio::task::spawn_blocking(move || app.run())
             .await
             .context("dashboard TUI worker failed")?;
@@ -57,46 +63,23 @@ pub(crate) async fn cmd_dashboard_snapshot(
     let width: u16 = 240;
     let height: u16 = 60;
 
-    let mut app = App::new(&workdir);
-    let rendered = app.render_all_tabs_to_text(width, height);
-
-    tokio::fs::create_dir_all(snapshot_dir).await?;
-
-    let mut manifest_tabs = Vec::new();
-    for (tab, text) in &rendered {
-        let key = tab.snapshot_key();
-        let name = tab.label();
-        let filename = format!("{key}-{}.txt", name.to_ascii_lowercase());
-        let path = snapshot_dir.join(&filename);
-        tokio::fs::write(&path, text).await?;
-        manifest_tabs.push(json!({
-            "key": key,
-            "name": name,
-            "file": filename,
-        }));
-    }
-
-    let manifest = json!({
-        "timestamp": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        "terminal_size": { "width": width, "height": height },
-        "tabs": manifest_tabs,
-    });
-    let manifest_path = snapshot_dir.join("manifest.json");
-    tokio::fs::write(&manifest_path, serde_json::to_string_pretty(&manifest)?).await?;
+    let result = roko_cli::tui::snapshot::capture_snapshots(
+        &workdir,
+        &roko_cli::tui::snapshot::SnapshotConfig {
+            width,
+            height,
+            output_dir: snapshot_dir.to_path_buf(),
+            tabs: None,
+            label: Some("dashboard --snapshot".to_string()),
+        },
+    )?;
 
     println!(
         "Snapshot: {} tabs written to {}",
-        rendered.len(),
+        result.tabs_captured,
         snapshot_dir.display()
     );
-    for (tab, _) in &rendered {
-        println!(
-            "  {} {}-{}.txt",
-            tab.snapshot_key(),
-            tab.snapshot_key(),
-            tab.label().to_ascii_lowercase()
-        );
-    }
+    println!("Manifest: {}", result.manifest_path.display());
     Ok(EXIT_SUCCESS)
 }
 

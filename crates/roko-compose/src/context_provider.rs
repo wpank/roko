@@ -1482,8 +1482,8 @@ impl ContextProvider {
 
     /// Resolve context for a task at the given operating frequency.
     ///
-    /// This is the main entry point — called from `dispatch_agent` in
-    /// orchestrate.rs between task parsing and prompt composition.
+    /// This is the main entry point — called from the runner-v2 dispatch
+    /// path between task parsing and prompt composition.
     pub fn resolve(
         &self,
         frequency: OperatingFrequency,

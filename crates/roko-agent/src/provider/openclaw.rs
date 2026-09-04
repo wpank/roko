@@ -6,8 +6,7 @@ use crate::provider::{
     AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, configured_resource_limits,
 };
 use roko_core::agent::ProviderKind;
-use roko_core::config::schema::{ModelProfile, ProviderConfig};
-use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
+use roko_core::config::schema::{ModelProfile, ProviderConfig, ProviderTransport};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -35,10 +34,7 @@ impl ProviderAdapter for OpenClawProviderAdapter {
             return Err(AgentCreationError::InvalidKind(provider.kind));
         }
 
-        let timeout_ms = options
-            .timeout_ms
-            .or(provider.timeout_ms)
-            .unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS);
+        let timeout_ms = options.effective_timeout_ms(provider.timeout_ms);
         let timeout = Duration::from_millis(timeout_ms);
 
         let working_dir = options
@@ -46,88 +42,63 @@ impl ProviderAdapter for OpenClawProviderAdapter {
             .clone()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-        let binary = provider
-            .command
-            .as_deref()
-            .map(str::trim)
-            .filter(|c| !c.is_empty())
-            .unwrap_or("openclaw");
-
-        let is_acp = provider
-            .args
-            .as_ref()
-            .is_some_and(|args| args.iter().any(|a| a == "acp"));
         let resource_limits = configured_resource_limits(provider)?;
+        let transport = provider.transport();
 
-        if is_acp {
-            // Tier 3: ACP over stdio.
-            let config = OpenClawAcpConfig {
-                binary: binary.to_string(),
-                cwd: working_dir,
-                gateway_url: provider.base_url.clone(),
-                session_key: Some("agent:main:roko".to_string()),
-                timeout,
-                auto_approve_permissions: true,
-                resource_limits,
-            };
-            let agent = OpenClawAcpAgent::new(config);
-            Ok(Box::new(agent))
-        } else {
-            // Tier 2: CLI infer.
-            let mut config = OpenClawInferConfig {
-                binary: binary.into(),
-                timeout,
-                resource_limits,
-                ..Default::default()
-            };
-            if !model.slug.is_empty() {
-                config.model_override = Some(model.slug.clone());
+        match transport {
+            ProviderTransport::Acp { ref command, .. } => {
+                // Tier 3: ACP over stdio.
+                let binary = command.trim();
+                let binary = if binary.is_empty() {
+                    "openclaw"
+                } else {
+                    binary
+                };
+                let config = OpenClawAcpConfig {
+                    binary: binary.to_string(),
+                    cwd: working_dir,
+                    gateway_url: provider.base_url.clone(),
+                    session_key: Some("agent:main:roko".to_string()),
+                    timeout,
+                    auto_approve_permissions: !provider.require_confirmation,
+                    resource_limits,
+                    system_prompt: options.system_prompt.clone(),
+                };
+                let agent = OpenClawAcpAgent::new(config);
+                Ok(Box::new(agent))
             }
-            let agent = OpenClawInferAgent::new(config)
-                .map_err(|e| AgentCreationError::MissingConfig(e.to_string()))?;
-            Ok(Box::new(agent))
+            _ => {
+                // Tier 2: CLI infer.
+                let binary = match &transport {
+                    ProviderTransport::Cli { command, .. } => {
+                        let trimmed = command.trim();
+                        if trimmed.is_empty() {
+                            "openclaw"
+                        } else {
+                            trimmed
+                        }
+                    }
+                    _ => "openclaw",
+                };
+                let mut config = OpenClawInferConfig {
+                    binary: binary.into(),
+                    timeout,
+                    resource_limits,
+                    system_prompt: options.system_prompt.clone(),
+                    ..Default::default()
+                };
+                if !model.slug.is_empty() {
+                    config.model_override = Some(model.slug.clone());
+                }
+                let agent = OpenClawInferAgent::new(config)
+                    .map_err(|e| AgentCreationError::MissingConfig(e.to_string()))?;
+                Ok(Box::new(agent))
+            }
         }
     }
 
     fn classify_error(&self, status: u16, body: &Value) -> ProviderError {
-        let stderr = body
-            .as_str()
-            .or_else(|| body.pointer("/error").and_then(Value::as_str))
-            .or_else(|| body.pointer("/message").and_then(Value::as_str))
-            .unwrap_or("");
-        let lower = stderr.to_ascii_lowercase();
-
-        if lower.contains("rate limit") {
-            return ProviderError::RateLimit {
-                retry_after_ms: None,
-            };
-        }
-        if lower.contains("unauthorized") || lower.contains("permission denied") {
-            return ProviderError::AuthFailure;
-        }
-        if lower.contains("timed out") || lower.contains("timeout") {
-            return ProviderError::Timeout;
-        }
-        if lower.contains("model not found") || lower.contains("unknown model") {
-            return ProviderError::ModelNotFound;
-        }
-
-        match status {
-            429 => ProviderError::RateLimit {
-                retry_after_ms: None,
-            },
-            401 | 403 => ProviderError::AuthFailure,
-            404 => ProviderError::ModelNotFound,
-            408 => ProviderError::Timeout,
-            500..=599 => ProviderError::ServerError(status),
-            _ => {
-                if stderr.is_empty() {
-                    ProviderError::Other(format!("OpenClaw exit status {status}"))
-                } else {
-                    ProviderError::Other(stderr.to_string())
-                }
-            }
-        }
+        super::error_classify::classify_cli_error(status, body, "OpenClaw")
     }
 }
 
@@ -155,6 +126,7 @@ mod tests {
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         let model = ModelProfile {
             provider: "openclaw".to_string(),
@@ -185,6 +157,7 @@ mod tests {
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         let model = ModelProfile {
             provider: "openclaw".to_string(),
@@ -215,6 +188,7 @@ mod tests {
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         let model = ModelProfile::default();
         let options = AgentOptions::default();

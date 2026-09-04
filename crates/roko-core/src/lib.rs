@@ -26,7 +26,7 @@
 //! query substrate → score → route/compose → gate verdict → write back → policy fires
 //! ```
 //!
-//! See [`loop_tick`] for the concrete implementation.
+//! See [`select_compose_verify_persist`] for the concrete implementation.
 //!
 //! # Extensibility
 //!
@@ -83,6 +83,8 @@ pub mod connector;
 pub mod context;
 /// Five-head lexicographic corrigibility ordering (Nayebi 2024).
 pub mod corrigibility;
+/// Durable crash report written by the global panic hook.
+pub mod crash_report;
 pub mod dashboard_snapshot;
 pub mod datum;
 pub mod decay;
@@ -93,6 +95,8 @@ pub mod demurrage;
 pub mod dispatch_plan;
 /// Domain profiles for agent specialization: gate defaults, tool sets, context templates.
 pub mod domain_profile;
+/// Canonical single-unit duration parser (`ms`, `s`, `m`, `h`, `d`).
+pub mod duration;
 pub mod engram;
 pub mod error;
 /// Payload contracts carried by MCP, A2A, and x402 transports.
@@ -165,6 +169,8 @@ pub mod obs {
 }
 pub mod operating_frequency;
 pub mod phase;
+/// Executor-neutral plan mutation contract (v1) — deterministic DAG mutation kernel.
+pub mod plan_mutation;
 pub mod plugin;
 pub mod policy_manifest;
 pub mod polyglot;
@@ -191,8 +197,11 @@ pub mod task;
 pub mod telemetry_observe;
 pub mod telemetry_projections;
 pub mod temperament;
+pub mod todo_dag;
 pub mod tool;
 pub mod traits;
+/// Bounded in-memory transcript store with lossless control events.
+pub mod transcript_store;
 /// Trigger protocol types — TriggerProtocol, TriggerBinding, TriggerEvent, TriggerHandle,
 /// TriggerState, TriggerSource, and related configuration types.
 pub mod trigger;
@@ -242,6 +251,11 @@ pub use connector::{
     ConnectorStatus,
 };
 pub use context::Context;
+pub use crash_report::{
+    CRASH_REPORT_FILENAME, CrashReport, build_crash_report, clear_active_plan,
+    clear_active_provider, clear_active_task, crash_report_path, has_recent_crash_report,
+    read_crash_report, set_active_plan, set_active_provider, set_active_task, write_crash_report,
+};
 pub use datum::Datum;
 pub use decay::Decay;
 pub use demurrage::{Demurrage, DemurrageConfig, demurrage_tick};
@@ -251,6 +265,7 @@ pub use dispatch_plan::{
     TransportAuth, TransportPlan,
 };
 pub use domain_profile::{DomainProfile, TypedContext};
+pub use duration::{DurationParseError, parse_duration, parse_duration_ms};
 pub use engram::{Engram, EngramBuilder, GraduationError, HdcFingerprint, SignalStatus};
 pub use error::{Result, RokoError};
 pub use feed::{
@@ -274,10 +289,11 @@ pub use forensic::{
 pub use foundation::{
     BoxModelStream, ChatMessage as FoundationChatMessage, Effect, EffectExecutor, EffectOutcome,
     EventConsumer, FeedbackEvent, FeedbackSink, GateClassification, GateConfig, GateReport,
-    GateRunner, GateVerdict, MessageRole, ModelCallRequest, ModelCallResponse, ModelCaller,
-    ModelInputBlock, ModelInputImage, ModelInputMessage, ModelStreamEvent, PromptAssembler,
-    PromptSpec, ShellGateCommand, TokenUsage, model_call_failure_to_stream,
-    model_call_response_to_stream, validate_model_input_images, validate_model_input_messages,
+    GateRunner, GateVerdict, GenerationSettings, KnowledgeQuery, MessageRole, ModelCallRequest,
+    ModelCallResponse, ModelCaller, ModelInputBlock, ModelInputImage, ModelInputMessage,
+    ModelStreamEvent, PromptAssembler, PromptSpec, ShellGateCommand, TokenUsage,
+    model_call_failure_to_stream, model_call_response_to_stream, validate_model_input_images,
+    validate_model_input_messages,
 };
 pub use groups::{
     AssignmentStrategy, CoordinationMode, Group, GroupConfig, GroupContextBidder, GroupEvent,
@@ -298,17 +314,18 @@ pub use immune::{
 };
 pub use kind::{Kind, KindEntry, KindRegistry};
 pub use language::{Import, ImportKind, LanguageProvider, Symbol, SymbolKind, Visibility};
-#[allow(deprecated)]
-pub use loop_tick::{
-    SignalSelectionOutcome, TickConfig, TickOutcome, loop_tick, loop_tick_with_config,
-    select_compose_verify_persist,
-};
+pub use loop_tick::{SignalSelectionOutcome, select_compose_verify_persist};
 pub use metric::{ConfigHash, Headlines, TaskMetric, compute_headlines};
 pub use operating_frequency::{
     OperatingFrequency, OperatingFrequencyAffect, OperatingFrequencyScheduleContext,
     OperatingFrequencyScheduler,
 };
 pub use phase::{FailureKind, PhaseKind, PlanPhase, is_monotonic_progression, valid_transitions};
+pub use plan_mutation::{
+    MutablePlanV1, MutableTaskV1, MutationAuthorKind, MutationAuthorV1, MutationEvidenceV1,
+    PlanMutationErrorV1, PlanMutationOpV1, PlanMutationResultV1, PlanMutationV1, apply_mutation,
+    canonical_fingerprint,
+};
 pub use policy_manifest::{
     BUILTIN_ROLE_POLICY_MANIFEST_PATH, BUILTIN_ROLE_POLICY_MANIFEST_TOML,
     CURRENT_POLICY_MANIFEST_SCHEMA_VERSION, CapabilityDeclaration, ContextPolicyRef,
@@ -340,7 +357,10 @@ pub use query::{Budget, Query};
 pub use recipe::{Recipe, RecipeEdge, RecipeNode, ScoreOp};
 pub use recipe_store::RecipeStore;
 pub use roko_primitives::HdcVector;
-pub use runtime_event::{RuntimeEvent, ToolCallSummary, WorkflowOutcome};
+pub use runtime_event::{
+    RuntimeEvent, RuntimeEventDelivery, RuntimeEventMode, RuntimeEventProjector,
+    RuntimeEventPublishDisposition, RuntimeEventPublisher, ToolCallSummary, WorkflowOutcome,
+};
 pub use score::Score;
 pub use signal::{ArtifactKind, ArtifactLineage, ArtifactRef, Signal, SignalBuilder};
 pub use signal_kinds::*;
@@ -360,9 +380,10 @@ pub use dashboard_snapshot::{
     TrendBuckets,
 };
 pub use job::{
-    CreateJobRequest, FileJobStore, JobError, JobEvaluation, JobFilter, JobGateResult,
-    JobProgressEntry, JobStats, JobStatus, JobSubmission, JobType, MarketplaceJob, PrdSummary,
-    TaskSummary as JobTaskSummary,
+    CreateJobRequest, FileJobStore, JobError, JobEvaluation, JobExecutionMode, JobExecutionService,
+    JobFilter, JobGateResult, JobPriority, JobProgressEntry, JobStats, JobStatus, JobSubmission,
+    JobTransitionReceipt, JobType, LegacyMigrationDiagnostic, MalformedJobFile, MarketplaceJob,
+    PrdSummary, TaskSummary as JobTaskSummary,
 };
 pub use lens_registry::{LensConfig, LensRegistration, LensRegistry, parse_scope};
 pub use namespace::{
@@ -377,17 +398,26 @@ pub use telemetry_observe::{
     turn_taking_entropy,
 };
 pub use temperament::Temperament;
+pub use todo_dag::{
+    TodoChanges, TodoDag, TodoDagError, TodoDelta, TodoItem, TodoSnapshot, TodoSource, TodoStatus,
+};
 pub use tool::{
     ArmEntry, Artifact, AuditSink, BanditKey, CancelSource, CancelToken, EpsilonGreedyBandit,
     FailureTrace, FormatBandit, KeywordOverlapScorer, MemoryPointer, MetricsKey, MetricsSink,
     ProfileBandit, RewardConfig, ToolCall, ToolCategory, ToolConcurrency, ToolContext, ToolDef,
-    ToolError, ToolFormat, ToolFormatProfile, ToolHandler, ToolMetrics, ToolOutcome,
-    ToolPermission, ToolRegistry, ToolRelevanceScorer, ToolResult, ToolSchema, ToolSource,
-    ToolTrace, ToolTraceEvent, TraceBuilder, TraceId, TraceSink, TraceStep, VecToolRegistry,
-    classify_tool_error, compute_reward, galileo_tsq, profile_for_model,
+    ToolError, ToolExecutionEnvelope, ToolExecutionRecord, ToolFormat, ToolFormatProfile,
+    ToolHandler, ToolLifecycleStatus, ToolMetrics, ToolOutcome, ToolPermission, ToolRegistry,
+    ToolRelevanceScorer, ToolResult, ToolResultContent, ToolSchema, ToolSource, ToolTrace,
+    ToolTraceEvent, TraceBuilder, TraceFinishGuard, TraceId, TraceSink, TraceStep, TranscriptEvent,
+    TranscriptEventMeta, TranscriptRecord, VecToolRegistry, classify_tool_error, compute_reward,
+    galileo_tsq, profile_for_model,
 };
 pub use traits::{
     Bus, ColdStore, Compose, Connect, Observe, React, Route, Store, Substrate, Trigger, Verify,
+};
+pub use transcript_store::{
+    ChannelDropReport, PriorityEventChannel, ReplayMismatch, StoreError, StoreStats,
+    TranscriptFilter, TranscriptPage, TranscriptReplayContract, TranscriptStore,
 };
 pub use trigger::{
     Author, BusTrigger, ChainEventTrigger, ConcurrencyPolicy, CronTrigger, Expr, FileWatchEvent,

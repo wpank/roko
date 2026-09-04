@@ -1,6 +1,6 @@
 //! The `Agent` trait and `AgentResult` type.
 
-use crate::streaming::StreamChunk;
+use crate::tool_loop::{StreamEvent, StreamEventKind};
 use crate::usage::{Usage, UsageObservation};
 use async_trait::async_trait;
 use roko_core::{Body, ContentHash, Context, Kind, Signal, SignalBuilder};
@@ -88,6 +88,7 @@ impl AgentResult {
     /// Compatibility alias for older docs and callers that still use the
     /// `all_engrams` name.
     #[must_use]
+    #[deprecated(note = "Use all_signals() instead")]
     pub fn all_engrams(&self) -> Vec<Signal> {
         self.all_signals()
     }
@@ -168,25 +169,29 @@ pub trait Agent: Send + Sync {
     /// Run the agent with streaming output.
     ///
     /// Agents that support real streaming override this to forward
-    /// [`StreamChunk`]s as they arrive from the backend. The default
+    /// [`StreamEvent`]s as they arrive from the backend. The default
     /// implementation falls back to [`run`](Self::run) and emits a single
-    /// `ContentDelta` with the full output text.
+    /// `TextDelta` with the full output text.
     async fn run_streaming(
         &self,
         input: &Signal,
         ctx: &Context,
-        event_tx: mpsc::Sender<StreamChunk>,
+        event_tx: mpsc::Sender<StreamEvent>,
     ) -> AgentResult {
         let result = self.run(input, ctx).await;
         if let Ok(text) = result.output.body.as_text()
             && !text.is_empty()
         {
             let _ = event_tx
-                .send(StreamChunk::ContentDelta(text.to_string()))
+                .send(StreamEvent::now(StreamEventKind::TextDelta(
+                    text.to_string(),
+                )))
                 .await;
         }
         if result.usage.total_tokens() > 0 {
-            let _ = event_tx.send(StreamChunk::Usage(result.usage)).await;
+            let _ = event_tx
+                .send(StreamEvent::now(StreamEventKind::Usage(result.usage)))
+                .await;
         }
         result
     }

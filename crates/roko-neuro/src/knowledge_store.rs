@@ -1479,6 +1479,11 @@ impl KnowledgeStore {
                 if entry.frozen {
                     return None;
                 }
+                // Audit #80: skip entries with empty or whitespace-only content
+                // to prevent noise from polluting query results.
+                if entry.content.trim().is_empty() {
+                    return None;
+                }
                 if !include(&entry) {
                     return None;
                 }

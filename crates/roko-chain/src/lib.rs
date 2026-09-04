@@ -52,6 +52,8 @@ pub mod arena;
 #[cfg(feature = "alloy-backend")]
 pub mod block_watcher;
 pub mod chain_profile;
+/// Backend-independent chain observation records and bounded live state.
+pub mod chain_state;
 pub mod client;
 /// Collusion ring detection via assignment graph clique analysis (P2-11).
 pub mod collusion;

@@ -48,5 +48,6 @@ pub use runtime_snapshot::{
 };
 pub use worktree::{
     WorktreeConfig, WorktreeError, WorktreeHandle, WorktreeHealth, WorktreeIsolationStatus,
-    WorktreeManager, WorktreeSnapshot, format_branch_name, format_task_branch_name,
+    WorktreeManager, WorktreeOperationError, WorktreeSnapshot, format_branch_name,
+    format_task_branch_name,
 };

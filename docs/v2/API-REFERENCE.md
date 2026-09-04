@@ -757,7 +757,9 @@ done
 
 Handler module: `routes/runs.rs`
 
-`GET /api/dashboard/runs` summarizes runs from the runtime event log (`.roko/runtime-events.jsonl`). This is what the TUI's run history view reads.
+`GET /api/dashboard/runs` summarizes a bounded set of hashed per-run indexes. It does not replay
+the global `.roko/runtime-events.jsonl` compatibility log on each refresh. This is what the TUI's
+run history view reads.
 
 <details>
 <summary>Response shape</summary>
@@ -782,6 +784,68 @@ Handler module: `routes/runs.rs`
 ```
 
 </details>
+
+### Run-scoped observability
+
+New runner and workflow events are projected at write time into hashed files under
+`.roko/events-by-run/` and `.roko/runtime-events-by-run/`. The global JSONL files remain the
+authoritative compatibility logs, while the per-run files are relaxed/buffered, non-fatal read
+indexes. A selected runtime index is flushed before an API read and at terminal/gate boundaries.
+Responses report index integrity and whether bounded scanning left more data.
+
+`source=auto` intentionally prefers the runner index for detail/events because it contains exact
+plan, task-attempt, and gate-rung lifecycle records, then falls back to the runtime index for
+workflow-only runs. Dashboard discovery prefers runtime summaries, while run SSE always uses the
+runtime index. Runner agent-output indexes buffer up to 64 KiB and flush at task/gate/terminal
+boundaries, so a mid-attempt read can lag the latest output while terminal evidence stays complete.
+
+These routes are read-only. They are available when the server binds to loopback or API
+authentication is enabled; a non-loopback unauthenticated server receives `403`. Run and task IDs
+accept only 1–128 bytes of ASCII letters, numbers, `.`, `_`, `-`, and `:`. IDs are SHA-256 hashed
+before path selection and are never interpolated into filesystem paths.
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/runs/{run_id}` | Bounded run detail, terminal state, counts, integrity, and discovery links |
+| GET | `/api/runs/{run_id}/events?cursor=&limit=&types=&source=` | Cursor-paginated events; `limit` is 1–200 and `source` is `auto`, `runner`, or `runtime` |
+| GET | `/api/runs/{run_id}/events/stream` | Run-filtered SSE with bounded durable replay and live frames |
+| GET | `/api/runs/{run_id}/tasks` | Task summaries and observed attempt numbers |
+| GET | `/api/runs/{run_id}/tasks/{task_id}/attempts` | Events grouped by attempt |
+| GET | `/api/runs/{run_id}/gates` | Bounded gate lifecycle/results |
+| GET | `/api/runs/{run_id}/logs?source=&level=&since=` | Scrubbed, capped event-derived log previews |
+| GET | `/api/runs/{run_id}/metrics` | Tokens, cost, duration, tasks, attempts, and gate counts |
+| GET | `/api/runs/{run_id}/artifacts` | Safe metadata for canonical evidence artifacts and checkpoint basenames |
+| GET | `/api/runs/{run_id}/screenshots` | Screenshot manifest and file metadata; no file content |
+| GET | `/api/runs/{run_id}/bundle` | Evidence-bundle manifest and bounded file inventory; no archive download |
+
+`GET /api/runs/{run_id}/events` also returns SSE when the request includes
+`Accept: text/event-stream`. Cursor values are opaque byte-boundary cursors: clients must reuse the
+returned `next_cursor` or SSE `id` and must not synthesize offsets. Filters are bounded to 16 event
+types. Lines over 256 KiB fail closed. Malformed JSON and records whose embedded run ID disagrees
+with the selected index are quarantined from responses; more than 32 bad records fails the request
+closed. A non-newline final record is reported as a partial tail and the returned cursor remains at
+its start so a concurrent append cannot make clients skip the completed record.
+
+Evidence bundles are discovered below `.roko/runs/` by a bounded manifest scan. Only canonical
+bundle names and screenshot metadata are listed. Symlinks, traversal, arbitrary file serving, and
+on-demand archive creation are intentionally rejected. All JSON and SSE payloads pass through the
+secret scrubber.
+
+The old public transcript alias at `/api/runs/{id}` is replaced by this authenticated/loopback
+observability route. Public shared transcripts remain available through the opaque-token endpoint
+`GET /api/shared/{token}` and the self-contained page `GET /runs/{token}`.
+
+Existing global-log records created before per-run indexing are never rebuilt during an HTTP
+request or server startup, because doing so would reintroduce the multi-hundred-megabyte latency
+spike. Operators can inspect the historical repair plan with
+`roko run-index repair --max-bytes <bytes> --max-records <records> --deadline-secs <seconds>` and
+apply it explicitly with `--apply`. Dry-run is the default. The offline command scans the live
+runner/runtime logs and recognized immutable rotation generations under one aggregate budget,
+validates top-level and canonical nested run ownership, and atomically replaces only hashed
+per-run files after a complete scan. A byte, record, or deadline truncation replaces nothing.
+Malformed, oversized, missing-ID, invalid-ID, and cross-run records are rejected and counted.
+Apply also refuses symlink/escape targets and any active workspace, JSONL-writer, cache-GC, or
+repair lock. The command is not called by HTTP handlers or process startup.
 
 ---
 

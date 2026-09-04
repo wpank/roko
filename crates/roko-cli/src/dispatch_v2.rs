@@ -14,7 +14,29 @@ use std::time::Instant;
 
 use anyhow::{Context as _, Result as AnyhowResult};
 use roko_agent::AgentRuntimeEvent;
-use roko_agent::StreamChunk;
+/// Streaming chunk from a provider session, used for agent event bridging.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(crate) enum StreamChunk {
+    /// Plain content delta from the agent.
+    ContentDelta(String),
+    /// Reasoning delta emitted by the backend.
+    ReasoningDelta(String),
+    /// Tool-call delta emitted by the backend.
+    ToolCallDelta {
+        id_delta: Option<String>,
+        name_delta: Option<String>,
+        args_delta: Option<String>,
+    },
+    /// Tool progress update.
+    ToolProgress { tool: String, status: String },
+    /// Usage payload emitted by the backend.
+    Usage(roko_core::Usage),
+    /// Stream-local error message.
+    Error(String),
+    /// Stream completed with the given finish reason.
+    Done(String),
+}
 use roko_agent::model_call_service::ProviderOutcomeRecorder;
 use roko_agent::process::ResourceLimits;
 use roko_agent::provider::{AgentOptions, LocalToolMcpServer, ProviderSemaphores};
@@ -215,7 +237,7 @@ impl CliProtocol {
     pub const fn provider_kind(self) -> ProviderKind {
         match self {
             Self::ClaudeStreamJson => ProviderKind::ClaudeCli,
-            Self::CodexExecJson => ProviderKind::OpenAiCompat,
+            Self::CodexExecJson => ProviderKind::CodexCli,
             Self::GeminiStreamJson => ProviderKind::GeminiCli,
         }
     }
@@ -233,6 +255,40 @@ impl CliProtocol {
     /// Whether this CLI has a native system-prompt flag.
     pub const fn supports_system_prompt_flag(self) -> bool {
         matches!(self, Self::ClaudeStreamJson)
+    }
+
+    /// Whether the provider accepts a binding native turn/session limit.
+    pub const fn supports_native_turn_limit(self) -> bool {
+        matches!(self, Self::ClaudeStreamJson | Self::GeminiStreamJson)
+    }
+}
+
+/// How the requested turn limit is enforced by the selected CLI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CliTurnLimitEnforcement {
+    /// The limit is passed through a provider-owned binding setting.
+    Native,
+    /// The CLI exposes no binding turn-count setting. Runner wall-clock
+    /// deadlines still apply, but must not be reported as a native turn cap.
+    Unsupported,
+}
+
+/// Serialized receipt describing the requested and effective turn policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CliTurnLimitReceipt {
+    pub requested_max_turns: u32,
+    pub effective_max_turns: Option<u32>,
+    pub enforcement: CliTurnLimitEnforcement,
+}
+
+impl Default for CliTurnLimitReceipt {
+    fn default() -> Self {
+        Self {
+            requested_max_turns: 0,
+            effective_max_turns: None,
+            enforcement: CliTurnLimitEnforcement::Unsupported,
+        }
     }
 }
 
@@ -356,17 +412,27 @@ impl CliProviderConfig {
         match provider.kind {
             ProviderKind::ClaudeCli => {
                 let command = required_command(&provider_id, provider)?;
-                let mut config = if executable_name(&command).contains("codex") {
-                    Self::codex(provider_id, command)
-                } else {
-                    Self::claude(provider_id, command)
-                };
+                let mut config = Self::claude(provider_id, command);
+                config.provider_args = provider.args.clone().unwrap_or_default();
+                config.resource_limits = configured_cli_resource_limits(provider)?;
+                Ok(config)
+            }
+            ProviderKind::CodexCli => {
+                let command = provider
+                    .command
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|command| !command.is_empty())
+                    .unwrap_or("codex");
+                let mut config = Self::codex(provider_id, command);
                 config.provider_args = provider.args.clone().unwrap_or_default();
                 config.resource_limits = configured_cli_resource_limits(provider)?;
                 Ok(config)
             }
             ProviderKind::OpenAiCompat => {
                 let command = required_command(&provider_id, provider)?;
+                // Legacy backward compat: an OpenAiCompat provider whose
+                // command is a codex binary is dispatched as codex protocol.
                 if executable_name(&command).contains("codex") {
                     let mut config = Self::codex(provider_id, command);
                     config.provider_args = provider.args.clone().unwrap_or_default();
@@ -522,12 +588,25 @@ impl CliProviderConfig {
         // rather than hard-failing, since many safety contracts include tool
         // denials that are irrelevant to codex's tool surface.
         if request.allowed_tools.is_some() || !request.disallowed_tools.is_empty() {
+            if env_flag_enabled("ROKO_REQUIRE_BINDING_TOOL_POLICY") {
+                return Err(DispatchV2Error::ToolPolicyUnsupported {
+                    provider_id: self.descriptor.provider_id.clone(),
+                    protocol: self.descriptor.protocol,
+                });
+            }
             tracing::warn!(
                 provider_id = %self.descriptor.provider_id,
                 allowed_tools = ?request.allowed_tools,
                 disallowed_tools = ?request.disallowed_tools,
                 "codex CLI cannot enforce tool policy; proceeding without enforcement"
             );
+        }
+        if env_flag_enabled("ROKO_REQUIRE_NATIVE_TURN_LIMIT") {
+            return Err(DispatchV2Error::TurnLimitUnsupported {
+                provider_id: self.descriptor.provider_id.clone(),
+                protocol: self.descriptor.protocol,
+                requested_max_turns: request.max_turns,
+            });
         }
         let mut args = vec!["exec".to_string()];
         args.extend(self.provider_args.clone());
@@ -540,6 +619,22 @@ impl CliProviderConfig {
         args.push("--skip-git-repo-check".to_string());
         args.push("--color".to_string());
         args.push("never".to_string());
+
+        if env_flag_enabled("ROKO_FAST_MODE") {
+            // Codex has no native general tool allowlist or turn-count flag.
+            // Disable avoidable expansion surfaces that do have binding config
+            // switches; the runner's hard wall-clock deadline remains the
+            // authoritative bound for the opaque process.
+            for setting in [
+                "tools.web_search=false",
+                "history.persistence=\"none\"",
+                "features.multi_agent=false",
+                "sandbox_workspace_write.network_access=false",
+            ] {
+                args.push("--config".to_string());
+                args.push(setting.to_string());
+            }
+        }
 
         if request.dangerously_skip_permissions {
             args.push("--dangerously-bypass-approvals-and-sandbox".to_string());
@@ -674,7 +769,12 @@ fn codex_shared_target_dir(request: &CliDispatchRequest) -> Option<PathBuf> {
     } else {
         request.workdir.join(configured)
     };
-    let target_dir = normalize_absolute_path(&absolute)?;
+    // Compare resolved filesystem identities throughout. On macOS, temporary
+    // paths are commonly spelled through `/var` while `canonicalize` returns
+    // the equivalent `/private/var` path; mixing those forms would reject the
+    // repository's legitimate shared target. Canonicalizing here also makes a
+    // nested symlink escape fail the later repository-target containment check.
+    let target_dir = std::fs::canonicalize(&absolute).ok()?;
     let workdir = std::fs::canonicalize(&request.workdir)
         .ok()
         .or_else(|| normalize_absolute_path(&request.workdir))?;
@@ -724,12 +824,11 @@ fn codex_shared_target_dir(request: &CliDispatchRequest) -> Option<PathBuf> {
     {
         return None;
     }
-    let resolved_target = std::fs::canonicalize(&target_dir).ok()?;
     let resolved_allowed = std::fs::canonicalize(&allowed_target).ok()?;
-    if resolved_allowed != allowed_target || !resolved_target.starts_with(&resolved_allowed) {
+    if resolved_allowed != allowed_target || !target_dir.starts_with(&resolved_allowed) {
         return None;
     }
-    Some(resolved_target)
+    Some(target_dir)
 }
 
 fn normalize_absolute_path(path: &Path) -> Option<PathBuf> {
@@ -789,7 +888,9 @@ pub struct CliDispatchRequest {
     /// Tool names the agent must not invoke, translated into native policy.
     ///
     /// Claude and Gemini support this binding restriction. Codex has no
-    /// equivalent built-in-tool flag and rejects such requests fail-closed.
+    /// equivalent built-in-tool flag: ordinary runs record a degradation and
+    /// rely on its sandbox, while `ROKO_REQUIRE_BINDING_TOOL_POLICY=1` rejects
+    /// the dispatch fail-closed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disallowed_tools: Vec<String>,
     /// Contract-scoped bridge for local plugin handlers, when the runner has
@@ -1026,6 +1127,9 @@ pub struct CliInvocation {
     pub model: String,
     /// Agent id associated with this invocation.
     pub agent_id: String,
+    /// Truthful receipt for the provider's native turn-limit capability.
+    #[serde(default)]
+    pub turn_limit: CliTurnLimitReceipt,
     /// OS resource limits to install before spawning the CLI.
     pub resource_limits: Option<ResourceLimits>,
     /// Provider configuration that must exist for the subprocess lifetime.
@@ -1099,6 +1203,19 @@ impl CliInvocation {
             event_provider: provider.descriptor.event_provider.clone(),
             model: request.model.clone(),
             agent_id: request.agent_id.clone(),
+            turn_limit: if provider.descriptor.protocol.supports_native_turn_limit() {
+                CliTurnLimitReceipt {
+                    requested_max_turns: request.max_turns,
+                    effective_max_turns: Some(request.max_turns),
+                    enforcement: CliTurnLimitEnforcement::Native,
+                }
+            } else {
+                CliTurnLimitReceipt {
+                    requested_max_turns: request.max_turns,
+                    effective_max_turns: None,
+                    enforcement: CliTurnLimitEnforcement::Unsupported,
+                }
+            },
             resource_limits: provider.resource_limits.clone(),
             ephemeral_config: None,
         }
@@ -1464,12 +1581,14 @@ impl AgentDispatcherV2 {
             })
             .await;
 
-        // Set up streaming channel: chunks flow from agent -> forwarder -> event_tx.
-        let (chunk_tx, mut chunk_rx) =
-            mpsc::channel::<StreamChunk>(roko_core::defaults::DEFAULT_CHANNEL_BUFFER);
+        // Set up streaming channel: StreamEvents flow from agent -> forwarder -> event_tx.
+        let (chunk_tx, mut chunk_rx) = mpsc::channel::<roko_agent::tool_loop::StreamEvent>(
+            roko_core::defaults::DEFAULT_CHANNEL_BUFFER,
+        );
         let forwarder_tx = event_tx.clone();
         let forwarder = tokio::spawn(async move {
-            while let Some(chunk) = chunk_rx.recv().await {
+            while let Some(stream_event) = chunk_rx.recv().await {
+                let chunk = stream_chunk_from_event(stream_event);
                 let event = agent_event_from_chunk(chunk);
                 if forwarder_tx.send(event).await.is_err() {
                     break;
@@ -1501,6 +1620,7 @@ impl AgentDispatcherV2 {
                     output_tokens: u64::from(result.usage.output_tokens),
                     cache_read_tokens: u64::from(result.usage.cache_read_tokens),
                     cache_write_tokens: u64::from(result.usage.cache_create_tokens),
+                    reasoning_tokens: 0,
                 })
                 .await;
         }
@@ -1770,6 +1890,7 @@ async fn record_agent_dispatch_feedback(
             latency_ms,
             success: result.success,
             provider_success: Some(result.success),
+            error_class: None,
         })
         .await
     {
@@ -1869,12 +1990,30 @@ pub type DispatchEvent = AgentRuntimeEvent;
 
 /// Back-fill `usage.cost_usd` from the model profile's per-million token
 /// pricing when the provider did not report a dollar amount natively.
+///
+/// When the profile carries no pricing (or no profile exists), fall back to
+/// the shared registry rates for known slugs (glm-5.1, kimi-k2.5, sonar,
+/// gpt-5.x, codex, …) so token-bearing usage is not silently recorded as
+/// $0.00. Truly unknown models stay at 0.0, which
+/// `Usage::has_known_cost` reports as "unknown" rather than "free".
 fn fill_cost_from_profile(result: &mut AgentResult, target: &ProviderDispatchSpec) {
     if let Some(profile) = target.model_profile.as_ref() {
         result.usage.fill_cost_from_pricing(
             profile.cost_input_per_m,
             profile.cost_output_per_m,
             profile.cost_cache_read_per_m,
+            profile.cost_cache_write_per_m,
+        );
+    }
+    if result.usage.cost_usd.abs() <= f32::EPSILON
+        && let Some(pricing) =
+            roko_core::config::model_registry::builtin_pricing(&target.model_slug)
+    {
+        result.usage.fill_cost_from_pricing(
+            Some(pricing.input_per_m),
+            Some(pricing.output_per_m),
+            Some(pricing.cache_read_per_m),
+            Some(pricing.cache_write_per_m),
         );
     }
 }
@@ -1914,6 +2053,7 @@ fn dispatch_events_from_result(
             output_tokens: u64::from(result.usage.output_tokens),
             cache_read_tokens: u64::from(result.usage.cache_read_tokens),
             cache_write_tokens: u64::from(result.usage.cache_create_tokens),
+            reasoning_tokens: 0,
         });
     }
 
@@ -1939,11 +2079,43 @@ fn dispatch_events_from_result(
     events
 }
 
+/// Convert a [`roko_agent::tool_loop::StreamEvent`] into a local [`StreamChunk`].
+fn stream_chunk_from_event(event: roko_agent::tool_loop::StreamEvent) -> StreamChunk {
+    use roko_agent::tool_loop::StreamEventKind;
+    match event.kind {
+        StreamEventKind::TextDelta(text) => StreamChunk::ContentDelta(text),
+        StreamEventKind::ReasoningDelta(text) => StreamChunk::ReasoningDelta(text),
+        StreamEventKind::ToolCallStart { id, name } => StreamChunk::ToolCallDelta {
+            id_delta: Some(id),
+            name_delta: Some(name),
+            args_delta: None,
+        },
+        StreamEventKind::ToolCallDelta { id, json_fragment } => StreamChunk::ToolCallDelta {
+            id_delta: Some(id),
+            name_delta: None,
+            args_delta: Some(json_fragment),
+        },
+        StreamEventKind::ToolCallEnd { id, name, .. } => StreamChunk::ToolCallDelta {
+            id_delta: Some(id),
+            name_delta: Some(name),
+            args_delta: None,
+        },
+        StreamEventKind::Usage(usage) => StreamChunk::Usage(usage),
+        StreamEventKind::Done { finish_reason } => StreamChunk::Done(finish_reason),
+    }
+}
+
 /// Convert a [`StreamChunk`] into the corresponding [`AgentRuntimeEvent`].
 fn agent_event_from_chunk(chunk: StreamChunk) -> AgentRuntimeEvent {
     match chunk {
         StreamChunk::ContentDelta(text) => AgentRuntimeEvent::MessageDelta { text },
-        StreamChunk::ReasoningDelta(text) => AgentRuntimeEvent::MessageDelta { text },
+        StreamChunk::ReasoningDelta(text) => AgentRuntimeEvent::MessageDelta {
+            text: format!(
+                "{}{}",
+                crate::runner::agent_events::REASONING_DELTA_PREFIX,
+                text
+            ),
+        },
         StreamChunk::ToolCallDelta {
             id_delta,
             name_delta,
@@ -1957,6 +2129,7 @@ fn agent_event_from_chunk(chunk: StreamChunk) -> AgentRuntimeEvent {
             output_tokens: u64::from(usage.output_tokens),
             cache_read_tokens: u64::from(usage.cache_read_tokens),
             cache_write_tokens: u64::from(usage.cache_create_tokens),
+            reasoning_tokens: 0,
         },
         StreamChunk::Done(_) => AgentRuntimeEvent::TurnCompleted {
             session_id: None,
@@ -1989,7 +2162,7 @@ fn classify_runtime(
         Err(DispatchV2Error::MissingCommand { .. }) => {
             if matches!(
                 provider_kind,
-                ProviderKind::ClaudeCli | ProviderKind::CursorAcp
+                ProviderKind::ClaudeCli | ProviderKind::CodexCli | ProviderKind::CursorAcp
             ) {
                 return ProviderRuntime::Unsupported(UnsupportedProvider {
                     reason: UnsupportedProviderReason::MissingCommand,
@@ -2022,10 +2195,12 @@ fn classify_runtime(
         | ProviderKind::CerebrasApi
         | ProviderKind::Hermes
         | ProviderKind::OpenClaw => ProviderRuntime::AgentResultBridge { provider_kind },
-        ProviderKind::ClaudeCli => ProviderRuntime::Unsupported(UnsupportedProvider {
-            reason: UnsupportedProviderReason::UnsupportedCliProvider,
-            detail: format!("provider `{provider_id}` is not dispatchable as configured"),
-        }),
+        ProviderKind::ClaudeCli | ProviderKind::CodexCli => {
+            ProviderRuntime::Unsupported(UnsupportedProvider {
+                reason: UnsupportedProviderReason::UnsupportedCliProvider,
+                detail: format!("provider `{provider_id}` is not dispatchable as configured"),
+            })
+        }
     }
 }
 
@@ -2093,6 +2268,11 @@ pub enum DispatchV2Error {
         provider_id: String,
         protocol: CliProtocol,
     },
+    TurnLimitUnsupported {
+        provider_id: String,
+        protocol: CliProtocol,
+        requested_max_turns: u32,
+    },
     McpConfigUnsupported {
         provider_id: String,
         protocol: CliProtocol,
@@ -2149,6 +2329,14 @@ impl fmt::Display for DispatchV2Error {
                 f,
                 "provider `{provider_id}` ({protocol:?}) cannot enforce the requested tool policy"
             ),
+            Self::TurnLimitUnsupported {
+                provider_id,
+                protocol,
+                requested_max_turns,
+            } => write!(
+                f,
+                "provider `{provider_id}` ({protocol:?}) cannot natively enforce the requested {requested_max_turns}-turn limit"
+            ),
             Self::McpConfigUnsupported {
                 provider_id,
                 protocol,
@@ -2179,6 +2367,15 @@ impl fmt::Display for DispatchV2Error {
 }
 
 impl Error for DispatchV2Error {}
+
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
 
 #[cfg(test)]
 mod tests {
@@ -2395,6 +2592,11 @@ mod tests {
 
         let invocation = provider.build_invocation(&request).unwrap();
         assert_eq!(invocation.protocol, CliProtocol::CodexExecJson);
+        assert_eq!(
+            invocation.turn_limit.enforcement,
+            CliTurnLimitEnforcement::Unsupported
+        );
+        assert_eq!(invocation.turn_limit.effective_max_turns, None);
         assert!(invocation.args.iter().any(|arg| arg == "--model"));
         assert_eq!(invocation.stdin, "system\n\n---\n\nimplement it");
     }
@@ -2424,6 +2626,11 @@ mod tests {
         };
 
         let invocation = provider.build_invocation(&request).unwrap();
+        assert_eq!(
+            invocation.turn_limit.enforcement,
+            CliTurnLimitEnforcement::Native
+        );
+        assert_eq!(invocation.turn_limit.effective_max_turns, Some(50));
         let tools_index = invocation
             .args
             .iter()
@@ -2735,6 +2942,7 @@ mod tests {
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         assert!(matches!(
             classify_runtime("gemini", ProviderKind::GeminiCli, Some(&gemini)),
@@ -2759,6 +2967,7 @@ mod tests {
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         assert!(matches!(
             classify_runtime("openclaw", ProviderKind::OpenClaw, Some(&openclaw)),
@@ -2787,6 +2996,7 @@ mod tests {
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             }),
             model_profile: None,
             runtime: ProviderRuntime::AgentResultBridge {
@@ -2853,6 +3063,7 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"dispatch-ok"}}'
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
         config.models.insert(
@@ -2989,5 +3200,88 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"dispatch-ok"}}'
                 "secret leak violations must be Block severity per E04-T05"
             );
         }
+    }
+
+    fn cost_test_target(model_slug: &str, profile: Option<ModelProfile>) -> ProviderDispatchSpec {
+        ProviderDispatchSpec {
+            model_key: model_slug.to_string(),
+            model_slug: model_slug.to_string(),
+            provider_id: "test".to_string(),
+            provider_kind: ProviderKind::OpenAiCompat,
+            model_profile: profile,
+            provider_config: None,
+            runtime: ProviderRuntime::AgentResultBridge {
+                provider_kind: ProviderKind::OpenAiCompat,
+            },
+        }
+    }
+
+    #[test]
+    fn fill_cost_falls_back_to_registry_pricing_for_known_slug() {
+        // No profile at all (or a profile without cost fields): known slugs
+        // still get priced from the shared registry instead of staying $0.
+        let target = cost_test_target("glm-5.1", None);
+        let mut result = AgentResult::ok(
+            Signal::builder(Kind::AgentOutput)
+                .body(Body::text("done"))
+                .build(),
+        );
+        result.usage.input_tokens = 1_000_000;
+        result.usage.output_tokens = 1_000_000;
+
+        fill_cost_from_profile(&mut result, &target);
+
+        // glm-5.1 registry rates: $1.40/M input + $4.40/M output.
+        assert!(
+            (f64::from(result.usage.cost_usd) - 5.80).abs() < 1e-6,
+            "registry-priced cost, got {}",
+            result.usage.cost_usd
+        );
+        assert!(result.usage.has_known_cost());
+    }
+
+    #[test]
+    fn fill_cost_leaves_unknown_slug_zero_and_marked_unknown() {
+        let target = cost_test_target("totally-unknown-llm-9000", None);
+        let mut result = AgentResult::ok(
+            Signal::builder(Kind::AgentOutput)
+                .body(Body::text("done"))
+                .build(),
+        );
+        result.usage.input_tokens = 1_000;
+
+        fill_cost_from_profile(&mut result, &target);
+
+        // Unknown model: cost stays 0.0 and reports as unknown, not free.
+        assert!(result.usage.cost_usd.abs() <= f32::EPSILON);
+        assert!(!result.usage.has_known_cost());
+    }
+
+    #[test]
+    fn fill_cost_profile_pricing_wins_over_registry() {
+        let profile = ModelProfile {
+            provider: "zai".to_string(),
+            slug: "glm-5.1".to_string(),
+            cost_input_per_m: Some(9.0),
+            cost_output_per_m: Some(9.0),
+            ..ModelProfile::default()
+        };
+        let target = cost_test_target("glm-5.1", Some(profile));
+        let mut result = AgentResult::ok(
+            Signal::builder(Kind::AgentOutput)
+                .body(Body::text("done"))
+                .build(),
+        );
+        result.usage.input_tokens = 1_000_000;
+        result.usage.output_tokens = 1_000_000;
+
+        fill_cost_from_profile(&mut result, &target);
+
+        // Configured profile rates ($9/$9) beat the registry ($1.40/$4.40).
+        assert!(
+            (f64::from(result.usage.cost_usd) - 18.0).abs() < 1e-6,
+            "profile-priced cost, got {}",
+            result.usage.cost_usd
+        );
     }
 }

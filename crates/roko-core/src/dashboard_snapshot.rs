@@ -72,7 +72,7 @@ pub const fn inbox_routing(category: InboxCategory) -> InboxRouting {
 /// These map 1:1 to the interesting subset of `ServerEvent` variants from
 /// `roko-serve`. The conversion happens at the call-site so that `roko-core`
 /// stays free of server dependencies.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DashboardEvent {
     /// A plan execution started.
@@ -84,6 +84,19 @@ pub enum DashboardEvent {
     },
     /// A plan execution completed.
     PlanCompleted { plan_id: String, success: bool },
+    /// The owning runner reached a terminal outcome.  This is separate from
+    /// per-plan completion so cancellation and hard deadlines can converge all
+    /// live dashboard projections in one idempotent event.
+    RunCompleted {
+        outcome: String,
+        duration_ms: u64,
+        #[serde(default)]
+        cleanup_degraded: bool,
+        #[serde(default)]
+        surviving_agent_ids: Vec<String>,
+        #[serde(default)]
+        surviving_agent_pids: Vec<u32>,
+    },
     /// A task started executing.
     TaskStarted {
         plan_id: String,
@@ -120,6 +133,10 @@ pub enum DashboardEvent {
         role: String,
         #[serde(default)]
         model: String,
+        /// Provider label (e.g. `"claude-cli"`, `"codex-cli"`); empty when the
+        /// emitter does not know it.
+        #[serde(default)]
+        provider: String,
     },
     /// Incremental agent output.
     AgentOutput {
@@ -379,6 +396,19 @@ pub enum DashboardEvent {
     /// Published after `AgentSpawned` or `AgentCompleted` events so the TUI
     /// can display the current agent relationship graph.
     AgentTopologyUpdated { topology: crate::AgentTopology },
+    /// Critical-path ETA updated after a task state change.
+    CriticalPathEtaUpdated {
+        plan_id: String,
+        /// Remaining minutes on the critical path. `None` clears the value.
+        eta_minutes: Option<u32>,
+    },
+    /// A cost anomaly (spike) was detected by the anomaly detector.
+    CostAnomaly {
+        /// Z-score of the cost observation relative to the EWMA baseline.
+        z_score: f64,
+        /// The cost observation that triggered the anomaly, in USD.
+        cost_usd: f64,
+    },
     /// An error occurred.
     Error { message: String },
 }
@@ -456,6 +486,9 @@ pub struct AgentState {
     /// Model slug (e.g. "claude-sonnet-4-20250514").
     #[serde(default)]
     pub model: String,
+    /// Provider label (e.g. "claude-cli", "codex-cli"); empty when unknown.
+    #[serde(default)]
+    pub provider: String,
     /// Cumulative input tokens.
     #[serde(default)]
     pub input_tokens: u64,
@@ -504,6 +537,15 @@ pub struct GateVerdictView {
     pub passed: bool,
     /// Unix timestamp in milliseconds.
     pub ts_millis: u64,
+}
+
+/// Gate pipeline currently executing for the live dashboard.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActiveGateRung {
+    pub plan_id: String,
+    pub task_id: String,
+    pub rung_name: String,
+    pub started_at_ms: u64,
 }
 
 /// Context required to project a canonical [`foundation::GateVerdict`] into
@@ -567,7 +609,7 @@ pub enum DiagnosisSeverity {
 }
 
 /// A summarized conductor diagnosis surfaced to the dashboard and HTTP API.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DiagnosisSummary {
     /// Stable identifier for deduplication.
     #[serde(default)]
@@ -998,6 +1040,19 @@ pub struct InboxItemState {
 /// through a `watch::Receiver` for zero-copy reads.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DashboardSnapshot {
+    /// Immutable wall-clock duration once the latest runner invocation is
+    /// terminal. `None` means the run is idle or still active.
+    #[serde(default)]
+    pub run_duration_ms: Option<u64>,
+    /// Terminal outcome for the latest runner invocation.
+    #[serde(default)]
+    pub run_outcome: Option<String>,
+    /// Whether terminal cleanup left exact runtime ownership for recovery.
+    #[serde(default)]
+    pub run_cleanup_degraded: bool,
+    /// PIDs retained by terminal settlement for startup orphan cleanup.
+    #[serde(default)]
+    pub surviving_agent_pids: Vec<u32>,
     /// Active and recently completed plans.
     pub plans: HashMap<String, PlanState>,
     /// Active tasks keyed by `"{plan_id}/{task_id}"`.
@@ -1083,9 +1138,15 @@ pub struct DashboardSnapshot {
     /// Gate output lines from rung executions (bounded to 500).
     #[serde(default)]
     pub gate_output_lines: VecDeque<String>,
+    /// Gate pipeline currently in progress, cleared on the next verdict.
+    #[serde(default)]
+    pub active_gate_rung: Option<ActiveGateRung>,
     /// Rolling ring of recent token counts from efficiency events (bounded to 120).
     #[serde(default)]
     pub token_event_ring: VecDeque<u64>,
+    /// Remaining ETA minutes from the critical-path computation.
+    #[serde(default)]
+    pub critical_path_eta_minutes: Option<u32>,
     /// Overall counts.
     pub stats: SnapshotStats,
 }
@@ -1177,20 +1238,28 @@ impl DashboardSnapshot {
                 plan_id,
                 tasks_total,
             } => {
-                self.stats.plans_active += 1;
-                self.plans.insert(
-                    plan_id.clone(),
-                    PlanState {
+                self.run_duration_ms = None;
+                self.run_outcome = None;
+                self.run_cleanup_degraded = false;
+                self.surviving_agent_pids.clear();
+                let plan = self
+                    .plans
+                    .entry(plan_id.clone())
+                    .or_insert_with(|| PlanState {
                         plan_id: plan_id.clone(),
-                        phase: "started".into(),
-                        tasks_total: *tasks_total,
-                        active: true,
                         ..Default::default()
-                    },
-                );
+                    });
+                if !plan.active {
+                    self.stats.plans_active += 1;
+                }
+                plan.phase = "started".into();
+                plan.tasks_total = plan.tasks_total.max(*tasks_total);
+                plan.active = true;
             }
             DashboardEvent::PlanCompleted { plan_id, success } => {
+                let mut newly_terminal = false;
                 if let Some(plan) = self.plans.get_mut(plan_id) {
+                    newly_terminal = plan.active;
                     plan.active = false;
                     plan.phase = if *success {
                         "completed".into()
@@ -1198,12 +1267,48 @@ impl DashboardSnapshot {
                         "failed".into()
                     };
                 }
-                self.stats.plans_active = self.stats.plans_active.saturating_sub(1);
-                if *success {
-                    self.stats.plans_completed += 1;
-                } else {
-                    self.stats.plans_failed += 1;
+                if newly_terminal {
+                    self.stats.plans_active = self.stats.plans_active.saturating_sub(1);
+                    if *success {
+                        self.stats.plans_completed += 1;
+                    } else {
+                        self.stats.plans_failed += 1;
+                    }
                 }
+            }
+            DashboardEvent::RunCompleted {
+                outcome,
+                duration_ms,
+                cleanup_degraded,
+                surviving_agent_ids,
+                surviving_agent_pids,
+            } => {
+                // Preserve the first terminal duration for this invocation.
+                // Duplicate terminal publications and event-log replay must
+                // never make elapsed time move again.
+                if self.run_duration_ms.is_none() {
+                    self.run_duration_ms = Some(*duration_ms);
+                    self.run_outcome = Some(outcome.clone());
+                }
+                self.run_cleanup_degraded = *cleanup_degraded;
+                self.surviving_agent_pids.clone_from(surviving_agent_pids);
+                for plan in self.plans.values_mut().filter(|plan| plan.active) {
+                    plan.active = false;
+                    plan.phase = match outcome.as_str() {
+                        "succeeded" => "completed",
+                        "cancelled" => "cancelled",
+                        _ => "failed",
+                    }
+                    .into();
+                }
+                for agent in self.agents.values_mut() {
+                    agent.active =
+                        *cleanup_degraded && surviving_agent_ids.contains(&agent.agent_id);
+                    agent.last_event_at_ms = ts;
+                }
+                self.stats.plans_active = 0;
+                self.stats.agents_active =
+                    self.agents.values().filter(|agent| agent.active).count();
             }
             DashboardEvent::TaskStarted {
                 plan_id,
@@ -1211,8 +1316,11 @@ impl DashboardSnapshot {
                 title,
                 phase,
             } => {
-                self.stats.tasks_active += 1;
                 let key = format!("{plan_id}/{task_id}");
+                let newly_active = self
+                    .tasks
+                    .get(&key)
+                    .is_none_or(|task| task.outcome.is_some());
                 self.tasks.insert(
                     key,
                     TaskState {
@@ -1223,16 +1331,19 @@ impl DashboardSnapshot {
                         outcome: None,
                     },
                 );
+                if newly_active {
+                    self.stats.tasks_active += 1;
+                }
                 let observed_tasks = self
                     .tasks
                     .values()
                     .filter(|task| task.plan_id == *plan_id)
                     .count();
                 if let Some(plan) = self.plans.get_mut(plan_id) {
-                    // `PlanStarted` carries the authoritative denominator.
-                    // Retain support for older/partial event streams where it
-                    // was zero by deriving a lower bound from unique tasks,
-                    // without double-counting each subsequent TaskStarted.
+                    // `PlanStarted` is authoritative when it supplied a
+                    // nonzero total. For legacy/partial streams that started
+                    // at zero, unique observed tasks provide a monotonic lower
+                    // bound without double-counting repeated starts.
                     plan.tasks_total = plan.tasks_total.max(observed_tasks);
                 }
                 // Note: current_task / current_plan are now set directly from
@@ -1246,20 +1357,24 @@ impl DashboardSnapshot {
             } => {
                 let key = format!("{plan_id}/{task_id}");
                 let failed = outcome.contains("fail") || outcome.contains("error");
+                let mut newly_terminal = false;
                 if let Some(task) = self.tasks.get_mut(&key) {
+                    newly_terminal = task.outcome.is_none();
                     task.phase = "completed".into();
                     task.outcome = Some(outcome.clone());
                 }
-                self.stats.tasks_active = self.stats.tasks_active.saturating_sub(1);
-                if failed {
-                    self.stats.tasks_failed += 1;
-                    if let Some(plan) = self.plans.get_mut(plan_id) {
-                        plan.tasks_failed += 1;
-                    }
-                } else {
-                    self.stats.tasks_completed += 1;
-                    if let Some(plan) = self.plans.get_mut(plan_id) {
-                        plan.tasks_done += 1;
+                if newly_terminal {
+                    self.stats.tasks_active = self.stats.tasks_active.saturating_sub(1);
+                    if failed {
+                        self.stats.tasks_failed += 1;
+                        if let Some(plan) = self.plans.get_mut(plan_id) {
+                            plan.tasks_failed += 1;
+                        }
+                    } else {
+                        self.stats.tasks_completed += 1;
+                        if let Some(plan) = self.plans.get_mut(plan_id) {
+                            plan.tasks_done += 1;
+                        }
                     }
                 }
             }
@@ -1281,6 +1396,7 @@ impl DashboardSnapshot {
                 attempt,
                 role,
                 model,
+                provider,
             } => {
                 if model.trim().is_empty() {
                     self.push_event_log(
@@ -1304,9 +1420,19 @@ impl DashboardSnapshot {
                         agent.active = true;
                         if !role.is_empty() {
                             agent.role.clone_from(role);
+                        } else if agent.role.is_empty() {
+                            // Fallback: use model name so Token Burn doesn't show "unknown".
+                            if !model.is_empty() {
+                                agent.role.clone_from(model);
+                            } else {
+                                agent.role = "impl".to_string();
+                            }
                         }
                         if !model.is_empty() {
                             agent.model.clone_from(model);
+                        }
+                        if !provider.is_empty() {
+                            agent.provider.clone_from(provider);
                         }
                         // Re-stamp spawn time on reactivation; update liveness.
                         agent.spawned_at_ms = ts;
@@ -1325,12 +1451,22 @@ impl DashboardSnapshot {
                     }
                     std::collections::hash_map::Entry::Vacant(e) => {
                         self.stats.agents_active += 1;
+                        let effective_role = if role.is_empty() {
+                            if !model.is_empty() {
+                                model.clone()
+                            } else {
+                                "impl".to_string()
+                            }
+                        } else {
+                            role.clone()
+                        };
                         e.insert(AgentState {
                             agent_id: agent_id.clone(),
-                            role: role.clone(),
+                            role: effective_role,
                             active: true,
                             output_bytes: 0,
                             model: model.clone(),
+                            provider: provider.clone(),
                             input_tokens: 0,
                             output_tokens: 0,
                             cache_read_tokens: 0,
@@ -1369,8 +1505,20 @@ impl DashboardSnapshot {
                 task_id,
                 gate,
                 passed,
-                ..
+                output_text,
             } => {
+                self.active_gate_rung = None;
+                if let Some(output) = output_text {
+                    self.gate_output_lines.clear();
+                    let lines = output
+                        .lines()
+                        .rev()
+                        .take(MAX_GATE_OUTPUT_LINES)
+                        .collect::<Vec<_>>();
+                    for line in lines.into_iter().rev() {
+                        self.gate_output_lines.push_back(line.to_string());
+                    }
+                }
                 if *passed {
                     self.stats.gates_passed += 1;
                 } else {
@@ -1534,10 +1682,12 @@ impl DashboardSnapshot {
             }
             DashboardEvent::AgentCompleted { agent_id, .. } => {
                 if let Some(agent) = self.agents.get_mut(agent_id) {
+                    if agent.active {
+                        self.stats.agents_active = self.stats.agents_active.saturating_sub(1);
+                    }
                     agent.active = false;
                     agent.last_event_at_ms = ts;
                 }
-                self.stats.agents_active = self.stats.agents_active.saturating_sub(1);
             }
             DashboardEvent::Error { message } => {
                 self.stats.errors_total += 1;
@@ -1643,6 +1793,15 @@ impl DashboardSnapshot {
                 task_id,
                 rung_name,
             } => {
+                // Output belongs to the active rung. Do not display the
+                // previous rung's tail while a new verification is running.
+                self.gate_output_lines.clear();
+                self.active_gate_rung = Some(ActiveGateRung {
+                    plan_id: plan_id.clone(),
+                    task_id: task_id.clone(),
+                    rung_name: rung_name.clone(),
+                    started_at_ms: ts,
+                });
                 self.push_event_log(
                     ts,
                     "gate_rung_started".to_string(),
@@ -1673,6 +1832,18 @@ impl DashboardSnapshot {
             }
             DashboardEvent::AgentTopologyUpdated { topology } => {
                 self.agent_topology = topology.clone();
+            }
+            DashboardEvent::CriticalPathEtaUpdated { eta_minutes, .. } => {
+                self.critical_path_eta_minutes = *eta_minutes;
+            }
+            DashboardEvent::CostAnomaly { z_score, cost_usd } => {
+                self.push_event_log(
+                    ts,
+                    "cost_anomaly".to_string(),
+                    String::new(),
+                    String::new(),
+                    format!("Cost spike detected: ${cost_usd:.4} (z={z_score:.2})"),
+                );
             }
         }
     }
@@ -2396,6 +2567,7 @@ fn bootstrap_plan_state(
                     active: false,
                     output_bytes: 0,
                     model: String::new(),
+                    provider: String::new(),
                     input_tokens: 0,
                     output_tokens: 0,
                     cache_read_tokens: 0,
@@ -2748,6 +2920,7 @@ fn apply_runner_lifecycle_projection(
                 active,
                 output_bytes: 0,
                 model: String::new(),
+                provider: String::new(),
                 input_tokens: 0,
                 output_tokens: 0,
                 cache_read_tokens: 0,
@@ -3538,7 +3711,7 @@ mod tests {
 
         snap.apply(&DashboardEvent::PlanStarted {
             plan_id: "p1".into(),
-            tasks_total: 1,
+            tasks_total: 0,
         });
         assert_eq!(snap.stats.plans_active, 1);
         assert!(snap.plans["p1"].active);
@@ -3579,9 +3752,8 @@ mod tests {
     }
 
     #[test]
-    fn task_started_preserves_known_total_and_derives_unknown_total() {
+    fn task_started_preserves_known_total_and_grows_unknown_total() {
         let mut snap = DashboardSnapshot::default();
-
         snap.apply(&DashboardEvent::PlanStarted {
             plan_id: "known".into(),
             tasks_total: 7,
@@ -3733,6 +3905,45 @@ mod tests {
     }
 
     #[test]
+    fn active_gate_rung_and_output_follow_gate_lifecycle() {
+        let mut snap = DashboardSnapshot::default();
+        snap.apply_with_ts(
+            &DashboardEvent::GateRungStarted {
+                plan_id: "plan-a".into(),
+                task_id: "task-1".into(),
+                rung_name: "compile, test".into(),
+            },
+            1_000,
+        );
+        assert_eq!(
+            snap.active_gate_rung
+                .as_ref()
+                .map(|rung| (rung.rung_name.as_str(), rung.started_at_ms)),
+            Some(("compile, test", 1_000))
+        );
+
+        snap.apply(&DashboardEvent::GateOutputLine {
+            plan_id: "plan-a".into(),
+            task_id: "task-1".into(),
+            gate: "compile".into(),
+            line: "Checking roko-core".into(),
+        });
+        assert_eq!(
+            snap.gate_output_lines.back().map(String::as_str),
+            Some("Checking roko-core")
+        );
+
+        snap.apply(&DashboardEvent::GateResult {
+            plan_id: "plan-a".into(),
+            task_id: "task-1".into(),
+            gate: "compile".into(),
+            passed: true,
+            output_text: Some("Checking roko-core".into()),
+        });
+        assert!(snap.active_gate_rung.is_none());
+    }
+
+    #[test]
     fn gate_results_update_trends_and_recent_failures() {
         let mut snap = DashboardSnapshot::default();
 
@@ -3817,6 +4028,7 @@ mod tests {
             attempt: 0,
             role: "coder".into(),
             model: String::new(),
+            provider: String::new(),
         });
         snap.apply(&DashboardEvent::AgentOutput {
             agent_id: "a1".into(),
@@ -3839,6 +4051,7 @@ mod tests {
                 attempt: 0,
                 role: "coder".into(),
                 model: String::new(),
+                provider: String::new(),
             },
             42,
         );
@@ -3847,6 +4060,28 @@ mod tests {
         assert_eq!(warning.timestamp_ms, 42);
         assert_eq!(warning.event_type, "validation_warning");
         assert!(warning.message.contains("empty model"));
+    }
+
+    #[test]
+    fn agent_spawned_records_and_refreshes_provider() {
+        let mut snap = DashboardSnapshot::default();
+        let spawned = |provider: &str| DashboardEvent::AgentSpawned {
+            agent_id: "a1".into(),
+            plan_id: String::new(),
+            task_id: String::new(),
+            attempt: 1,
+            role: "coder".into(),
+            model: "gpt-5.6-sol".into(),
+            provider: provider.into(),
+        };
+        snap.apply(&spawned("codex-cli"));
+        assert_eq!(snap.agents["a1"].provider, "codex-cli");
+        // A re-spawn with a different provider replaces it; an empty provider
+        // never wipes the recorded one (mirrors the model handling).
+        snap.apply(&spawned("openai_compat"));
+        assert_eq!(snap.agents["a1"].provider, "openai_compat");
+        snap.apply(&spawned(""));
+        assert_eq!(snap.agents["a1"].provider, "openai_compat");
     }
 
     #[test]

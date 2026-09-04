@@ -89,6 +89,40 @@ cmd_run_evidence() {
   python3 scripts/run_evidence.py "$@"
 }
 
+cmd_evidence_validate() {
+  command -v python3 >/dev/null 2>&1 || die "python3 is required for evidence-validate"
+  python3 scripts/run_evidence.py validate "$@"
+}
+
+cmd_feedback() {
+  command -v python3 >/dev/null 2>&1 || die "python3 is required for feedback"
+  python3 scripts/run_evidence.py feedback "$@"
+}
+
+cmd_score() {
+  command -v python3 >/dev/null 2>&1 || die "python3 is required for score"
+  python3 scripts/run_evidence.py score "$@"
+}
+
+cmd_benchmark() {
+  command -v python3 >/dev/null 2>&1 || die "python3 is required for benchmark"
+  python3 scripts/dev_benchmark.py "$@"
+}
+
+# Read-only by default. This delegates to the prebuilt CLI and never invokes
+# Cargo itself, so cache inspection cannot trigger a build.
+cmd_cache() {
+  local roko_bin
+  if [ -x "$ROKO_BIN" ]; then
+    roko_bin="$ROKO_BIN"
+  elif [ -x "./target/release/roko" ]; then
+    roko_bin="./target/release/roko"
+  else
+    die "A repo-local target/debug/roko or target/release/roko is required for cache commands"
+  fi
+  "$roko_bin" cache "$@"
+}
+
 cmd_fast() {
   local deadline="${ROKO_FAST_DEADLINE:-300}"
   local bundle_root="${ROKO_EVIDENCE_ROOT:-.roko/runs}"
@@ -100,7 +134,11 @@ cmd_fast() {
   local max_tasks=1
   local plans_dir=""
   local show_fast_help=false
+  local collect_screenshots=false
   local extra_args=()
+  # Always validate the structured runner lifecycle. Optional behavior probes
+  # are appended only when the operator explicitly selects them.
+  local evidence_args=(--require-events --admit-resources)
 
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -134,6 +172,21 @@ cmd_fast() {
         shift
         ;;
       --max-tasks=*) max_tasks="${1#--max-tasks=}" ;;
+      --status-file|--status-interval|--endpoint-base|--endpoint|--endpoint-run-id|--endpoint-timeout|--plan-id|--cli-smoke|--text-snapshot|--png-hook|--browser-hook|--hook-timeout|--append-log|--min-free-gib|--min-free-percent)
+        [ $# -ge 2 ] || die "$1 requires a value"
+        evidence_args+=("$1" "$2")
+        shift
+        ;;
+      --status-file=*|--status-interval=*|--endpoint-base=*|--endpoint=*|--endpoint-run-id=*|--endpoint-timeout=*|--plan-id=*|--cli-smoke=*|--text-snapshot=*|--png-hook=*|--browser-hook=*|--hook-timeout=*|--append-log=*|--min-free-gib=*|--min-free-percent=*)
+        evidence_args+=("$1")
+        ;;
+      --screenshots)
+        collect_screenshots=true
+        evidence_args+=(--collect-roko-screenshots)
+        ;;
+      --require-status-sample|--require-cli-smoke-pass|--require-endpoints-pass|--require-screenshots|--allow-remote-endpoints|--no-openapi|--no-default-endpoints|--allow-low-disk)
+        evidence_args+=("$1")
+        ;;
       --help|-h) show_fast_help=true ;;
       --)
         shift
@@ -162,6 +215,9 @@ event log, and these truthy environment variables:
 
   ROKO_FAST_MODE=1
   ROKO_FAST_PLAN_DEADLINE_SECS=<deadline minus settlement headroom>
+  ROKO_GATE_MODE=focused
+  ROKO_COMPILE_CONCURRENCY=1
+  ROKO_FAST_SETTLEMENT_HEADROOM_SECS=<reserved settlement seconds>
   ROKO_TASK_VERIFY_ONLY=1
   ROKO_SKIP_PREFLIGHT=1
   SKIP_FRONTEND_BUILD=1
@@ -172,6 +228,22 @@ Wrapper options:
   --label <name>          Run-ID label (default: roko-fast)
   --max-retries <n>       Runner retries (default: 0)
   --max-tasks <n>         Concurrent tasks (default: 1; explicit override)
+  --endpoint-base <url>    Collect bounded, redirect-free GET evidence (loopback by default)
+  --endpoint <path>        Add a safe GET path (repeatable)
+  --no-default-endpoints   Collect only explicit --endpoint paths
+  --cli-smoke NAME=CMD     Run a bounded, shell-free CLI proof after the plan (repeatable)
+  --text-snapshot NAME=CMD Capture command stdout as a text screenshot (repeatable)
+  --png-hook NAME=CMD      Optional browser hook; CMD writes PNG to {output}
+  --screenshots            Enable/import Roko event-driven text screenshots
+  --min-free-gib <gib>     Disk admission absolute floor (default: 5 GiB)
+  --min-free-percent <pct> Disk admission percentage floor (default: 3%)
+  --allow-low-disk         Explicitly override severe disk-pressure rejection
+
+Evidence requirements are opt-in with --require-status-sample,
+--require-cli-smoke-pass, --require-endpoints-pass, and --require-screenshots.
+FAST always requires a valid one-start/one-terminal structured event stream.
+Before launch it records disk, swap, and target size evidence and rejects severe
+disk pressure unless --allow-low-disk (or ROKO_EVIDENCE_ALLOW_LOW_DISK=1) is explicit.
 
 Native options after -- are appended to `roko plan run`. FAST does not add
 --fresh, --force, --dangerously-skip-permissions, endpoint probes, screenshots,
@@ -184,6 +256,8 @@ the canonical pipeline is skipped in this experimental lane.
 Examples:
   ./dev.sh fast plans/my-plan
   ./dev.sh fast --deadline 420 plans/my-plan -- --resume-plan
+  ./dev.sh fast --endpoint-base http://127.0.0.1:6677 --cli-smoke 'status=target/debug/roko status --json' plans/my-plan
+  ./dev.sh fast --screenshots plans/my-plan
   ./dev.sh fast --max-tasks 2 plans/my-plan -- --force-backend gpt-5.6-terra
 HELP
     return 0
@@ -218,6 +292,9 @@ HELP
         --approval|--approval=*|--tui)
           die "$native_arg conflicts with FAST mode's required --no-tui automation"
           ;;
+        --log-file|--log-file=*|--screenshots|--engine|--engine=*|--max-retries|--max-retries=*|--max-tasks|--max-tasks=*|--skip-preflight)
+          die "$native_arg is owned by the FAST wrapper; pass the corresponding wrapper option before the plan directory"
+          ;;
       esac
     done
   fi
@@ -234,6 +311,9 @@ HELP
     --log-file "{bundle}/events.jsonl"
   )
   command_args+=(--max-tasks "$max_tasks")
+  if $collect_screenshots; then
+    command_args+=(--screenshots)
+  fi
   # Bash 3.2 + `set -u` treats expansion of an empty array as unbound.
   if [ "${#extra_args[@]}" -gt 0 ]; then
     command_args+=("${extra_args[@]}")
@@ -244,6 +324,9 @@ HELP
   # runner internals and is recorded in the allowlisted evidence metadata.
   export ROKO_FAST_MODE=1
   export ROKO_FAST_PLAN_DEADLINE_SECS="$runner_deadline"
+  export ROKO_GATE_MODE=focused
+  export ROKO_COMPILE_CONCURRENCY=1
+  export ROKO_FAST_SETTLEMENT_HEADROOM_SECS="$settlement_headroom"
   export ROKO_TASK_VERIFY_ONLY=1
   export ROKO_SKIP_PREFLIGHT=1
   export SKIP_FRONTEND_BUILD=1
@@ -251,6 +334,7 @@ HELP
   info "FAST mode is opt-in: prebuilt binary, patch-only agent, bounded run, evidence capture"
   info "Plan: $plans_dir (run budget=${runner_deadline}s + settlement headroom=${settlement_headroom}s, retries=$max_retries)"
   cmd_run_evidence \
+    "${evidence_args[@]}" \
     --deadline "$deadline" \
     --label "$label" \
     --bundle-root "$bundle_root" \
@@ -2059,6 +2143,7 @@ COMMANDS
   test [crate] (t)                         Run tests (nextest if available)
   build [--release] [crate] (b)            Build with timing + binary size
   clean [mode]                             Clean artifacts (-i|--incremental|--target|--all|--sccache)
+  cache status|prune [--apply]             Safe target/evidence cleanup (dry-run first)
   doctor (doc)                             Toolchain + disk + ports + swap diagnostics
   dump                                     Full diagnostic snapshot (pipe to Claude)
   nuke-ports                               SIGKILL everything on :6677 and :5173
@@ -2066,6 +2151,10 @@ COMMANDS
   reset-state --confirm                    Clear .roko/ data (preserves structure)
   fast [options] <plans-dir> [-- <args>]   Opt-in bounded plan run using prebuilt debug Roko
   run-evidence [options] -- <command...>   Run any command with deadline + evidence bundle
+  evidence-validate <bundle>               Strict JSONL/terminal/secret/size bundle validation
+  feedback [--run-id ID]                   Show a deterministic run debrief (latest by default)
+  score [bundle|run-id...]                 Aggregate p50/p95 evidence scorecard metrics
+  benchmark list|run|summarize|history     Fixed-SHA scorecards + bounded regression dashboard
   pipeline <name> [options] (p)             Run demo pipeline end-to-end in ephemeral workspace
   clean-workspaces [--confirm]             List/remove pipeline workspaces
   mirage                                   Start mirage-rs in mainnet fork mode (:8545)
@@ -2092,6 +2181,13 @@ EXAMPLES
   ./dev.sh check --fix                                 Format, then lint + test
   ./dev.sh fast plans/my-plan                          Five-minute FAST plan run + evidence
   ./dev.sh run-evidence --deadline 30 -- git status    Capture a bounded read-only command
+  ./dev.sh evidence-validate .roko/runs/<run-id>       Validate one portable bundle
+  ./dev.sh feedback --run-id <run-id>                  Read facts and next action for one run
+  ./dev.sh score --bundle-root .roko/runs              Aggregate all captured runs
+  ./dev.sh benchmark run --dry-run --base HEAD          Preview the benchmark matrix safely
+  ./dev.sh benchmark history                            Refresh history; exit 1 on regressions
+  ./dev.sh cache prune                                  Preview safe cache reclamation
+  ./dev.sh cache prune --apply --target-budget-gb 64    Apply a reviewed plan
   ./dev.sh pipeline prd                                Run PRD pipeline (default model)
   ./dev.sh pipeline prd --model gpt-4o                 Run with GPT-4o
   ./dev.sh pipeline gate --provider anthropic --keep   Gate retry via Anthropic
@@ -2116,6 +2212,7 @@ case "$cmd" in
   test|t)                  cmd_test "$@" ;;
   build|b)                 cmd_build "$@" ;;
   clean)                   cmd_clean "$@" ;;
+  cache)                   cmd_cache "$@" ;;
   doctor|doc)              cmd_doctor ;;
   dump)                    cmd_dump ;;
   nuke-ports)              cmd_nuke_ports ;;
@@ -2123,6 +2220,10 @@ case "$cmd" in
   reset-state)             cmd_reset_state "$@" ;;
   fast)                    cmd_fast "$@" ;;
   run-evidence|evidence)   cmd_run_evidence "$@" ;;
+  evidence-validate)       cmd_evidence_validate "$@" ;;
+  feedback)                cmd_feedback "$@" ;;
+  score)                   cmd_score "$@" ;;
+  benchmark|bench-dev)     cmd_benchmark "$@" ;;
   pipeline|p)              cmd_pipeline "$@" ;;
   clean-workspaces)        cmd_clean_workspaces "$@" ;;
   mirage)                  cmd_mirage ;;

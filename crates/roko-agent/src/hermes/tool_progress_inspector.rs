@@ -4,7 +4,7 @@
 //! events plus this custom event when a tool starts running. The
 //! existing `OpenAiCompatLlmBackend` SSE parser emits nothing for
 //! non-spec events. The inspector intercepts those and converts them
-//! to `StreamChunk::ToolProgress` for surfacing in the TUI / dashboard.
+//! to `StreamEvent::TextDelta` for surfacing in the TUI / dashboard.
 //!
 //! This is the only Hermes-specific protocol code in v1. Everything
 //! else is plain OpenAI Chat Completions.
@@ -16,24 +16,26 @@
 //! data: {"tool": "terminal", "status": "start", "args": {"command": "ls"}}
 //! ```
 
-use crate::streaming::StreamChunk;
+use crate::tool_loop::{StreamEvent, StreamEventKind};
 
 /// The SSE event name that Hermes uses for tool progress updates.
 pub const HERMES_TOOL_PROGRESS_EVENT: &str = "hermes.tool.progress";
 
 /// Inspects `hermes.tool.progress` SSE events and converts them to
-/// `StreamChunk::ToolProgress`.
+/// informational `StreamEvent::TextDelta` events.
 pub struct ToolProgressInspector;
 
 impl ToolProgressInspector {
-    /// Inspect a named SSE event. Returns `Some(StreamChunk::ToolProgress)`
-    /// for `hermes.tool.progress` events, `None` for everything else.
-    pub fn inspect(&self, event_name: &str, data: &serde_json::Value) -> Option<StreamChunk> {
+    /// Inspect a named SSE event. Returns `Some(StreamEvent)` containing
+    /// a `TextDelta` with tool progress info for `hermes.tool.progress`
+    /// events, `None` for everything else.
+    pub fn inspect(&self, event_name: &str, data: &serde_json::Value) -> Option<StreamEvent> {
         if event_name == HERMES_TOOL_PROGRESS_EVENT {
-            Some(StreamChunk::ToolProgress {
-                tool: data["tool"].as_str().unwrap_or("").to_string(),
-                status: data["status"].as_str().unwrap_or("").to_string(),
-            })
+            let tool = data["tool"].as_str().unwrap_or("").to_string();
+            let status = data["status"].as_str().unwrap_or("").to_string();
+            Some(StreamEvent::now(StreamEventKind::TextDelta(format!(
+                "[{tool}] {status}"
+            ))))
         } else {
             None
         }
@@ -54,14 +56,14 @@ mod tests {
             "args": {"command": "ls -la"}
         });
 
-        let chunk = inspector.inspect("hermes.tool.progress", &data);
-        assert!(chunk.is_some());
-        match chunk.unwrap() {
-            StreamChunk::ToolProgress { tool, status } => {
-                assert_eq!(tool, "terminal");
-                assert_eq!(status, "start");
+        let event = inspector.inspect("hermes.tool.progress", &data);
+        assert!(event.is_some());
+        match &event.unwrap().kind {
+            StreamEventKind::TextDelta(text) => {
+                assert!(text.contains("terminal"));
+                assert!(text.contains("start"));
             }
-            other => panic!("expected ToolProgress, got {other:?}"),
+            other => panic!("expected TextDelta, got {other:?}"),
         }
     }
 
@@ -78,13 +80,12 @@ mod tests {
         let inspector = ToolProgressInspector;
         let data = json!({});
 
-        let chunk = inspector.inspect("hermes.tool.progress", &data);
-        match chunk.unwrap() {
-            StreamChunk::ToolProgress { tool, status } => {
-                assert!(tool.is_empty());
-                assert!(status.is_empty());
+        let event = inspector.inspect("hermes.tool.progress", &data);
+        match &event.unwrap().kind {
+            StreamEventKind::TextDelta(text) => {
+                assert_eq!(text, "[] ");
             }
-            other => panic!("expected ToolProgress, got {other:?}"),
+            other => panic!("expected TextDelta, got {other:?}"),
         }
     }
 }

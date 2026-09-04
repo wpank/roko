@@ -42,9 +42,10 @@ use roko_core::tool::{
     ToolCall, ToolContext, ToolDef, ToolError, ToolHandler, ToolRegistry, ToolResult, ToolSource,
 };
 use roko_core::{Body, Kind, Provenance, Signal, ToolPermissions};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::safety::{CorrigibilityHook, HookDecision, SafetyLayer, TaintLevelHook};
+use crate::safety::{HookDecision, SafetyLayer};
 use crate::tool_immune::{
     check_tool_control, is_untrusted_source, screen_tool_result, validate_tool_call_identity,
 };
@@ -56,6 +57,7 @@ pub mod dedup_cache;
 pub mod emit_metric;
 pub mod hook_chain;
 pub mod parallel;
+pub mod production_safety_chain;
 /// Cache primitives for explicit higher-level use. The dispatcher itself does
 /// not cache: every call must reach current authorization, durable immune
 /// control, screening, finalization, and terminal audit state.
@@ -261,6 +263,40 @@ where
 /// over an `EventBus` and publish an `AgentEvent::SafetyDenial`.
 pub type SafetyDenialCallback = Arc<dyn Fn(String, String, String, i64) + Send + Sync>;
 
+/// Provenance snapshot of the effective tool catalog at the time of dispatch.
+///
+/// Records which tools were available, who owned execution authority, and
+/// what policy governed the call — so that audit and replay can reconstruct
+/// the exact authorization state that applied.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EffectiveCatalogSnapshot {
+    /// Number of tools in the active registry at dispatch time.
+    pub tool_count: usize,
+    /// The entity (runner, agent, sidecar) that owns execution authority.
+    pub execution_owner: String,
+    /// The entity (role, profile, contract) that owns policy authority.
+    pub policy_owner: String,
+    /// Whether a profile-based tool selector was active.
+    pub selector_active: bool,
+    /// Whether an extension hook chain was active.
+    pub hook_chain_active: bool,
+    /// Whether the production (IFC/corrigibility) hook chain was active.
+    pub production_hooks_active: bool,
+}
+
+impl Default for EffectiveCatalogSnapshot {
+    fn default() -> Self {
+        Self {
+            tool_count: 0,
+            execution_owner: "unknown".to_string(),
+            policy_owner: "unknown".to_string(),
+            selector_active: false,
+            hook_chain_active: false,
+            production_hooks_active: false,
+        }
+    }
+}
+
 /// Dispatches [`ToolCall`]s through validation → safety → authorization → handler.
 pub struct ToolDispatcher {
     registry: Arc<dyn ToolRegistry>,
@@ -272,11 +308,15 @@ pub struct ToolDispatcher {
     /// When present, each tool call passes through every hook in order
     /// before the handler executes. Rejections short-circuit the chain.
     hook_chain: Option<hook_chain::SafetyHookChain>,
-    /// Mandatory IFC/corrigibility hooks derived from the active contract.
+    /// Mandatory production safety chain with frozen 9-stage enforcement (#350).
+    ///
+    /// Non-optional for production constructors. Contains stages 5-7 as hooks
+    /// (hallucination detector, taint ceiling, corrigibility) and stage 9 as
+    /// the post-handler result filter. Stages 1-4 are inline in `SafetyLayer`.
     ///
     /// Kept separate from the extension hook chain so callers cannot replace
     /// production safety hooks by attaching a custom chain.
-    production_hook_chain: Option<hook_chain::SafetyHookChain>,
+    production_safety_chain: Option<production_safety_chain::ProductionSafetyChain>,
     /// Optional profile-based tool selector (TOOL-03).
     ///
     /// When set, tool calls are filtered against the selector before dispatch.
@@ -293,17 +333,22 @@ pub struct ToolDispatcher {
 impl ToolDispatcher {
     /// Construct a dispatcher backed by the given tool registry and
     /// handler resolver.
+    ///
+    /// The production safety chain is built from the default `SafetyLayer`
+    /// and the provided registry. The chain is non-optional: every
+    /// production dispatcher carries the frozen 9-stage enforcement.
     #[must_use]
     pub fn new(registry: Arc<dyn ToolRegistry>, resolver: Arc<dyn HandlerResolver>) -> Self {
         let safety = SafetyLayer::with_defaults();
-        let production_hook_chain = Some(production_hook_chain(&safety));
+        let chain =
+            production_safety_chain::ProductionSafetyChain::build(&safety, registry.as_ref());
         Self {
             registry,
             resolver,
             max_result_bytes: DEFAULT_MAX_RESULT_BYTES,
             safety,
             hook_chain: None,
-            production_hook_chain,
+            production_safety_chain: Some(chain),
             tool_selector: None,
             safety_denial_callback: None,
         }
@@ -327,7 +372,7 @@ impl ToolDispatcher {
             max_result_bytes: DEFAULT_MAX_RESULT_BYTES,
             safety: SafetyLayer::permissive(),
             hook_chain: None,
-            production_hook_chain: None,
+            production_safety_chain: None,
             tool_selector: None,
             safety_denial_callback: None,
         }
@@ -342,9 +387,15 @@ impl ToolDispatcher {
 
     /// Attach a [`SafetyLayer`] so every dispatched call passes through
     /// pre-execution safety checks and post-execution output scrubbing.
+    ///
+    /// Rebuilds the production safety chain from the new layer and the
+    /// existing registry.
     #[must_use]
     pub fn with_safety(mut self, layer: SafetyLayer) -> Self {
-        self.production_hook_chain = Some(production_hook_chain(&layer));
+        self.production_safety_chain = Some(production_safety_chain::ProductionSafetyChain::build(
+            &layer,
+            self.registry.as_ref(),
+        ));
         self.safety = layer;
         self
     }
@@ -384,6 +435,28 @@ impl ToolDispatcher {
         self.tool_selector.as_ref()
     }
 
+    /// Snapshot the effective catalog state for audit/replay provenance.
+    ///
+    /// The snapshot captures the tool count, whether selectors/hooks are
+    /// active, and the execution/policy owner identifiers. Callers embed
+    /// this in dispatch results so that offline replay can reconstruct
+    /// exactly what authorization state applied.
+    #[must_use]
+    pub fn effective_catalog_snapshot(
+        &self,
+        execution_owner: impl Into<String>,
+        policy_owner: impl Into<String>,
+    ) -> EffectiveCatalogSnapshot {
+        EffectiveCatalogSnapshot {
+            tool_count: self.registry.all().len(),
+            execution_owner: execution_owner.into(),
+            policy_owner: policy_owner.into(),
+            selector_active: self.tool_selector.is_some(),
+            hook_chain_active: self.hook_chain.is_some(),
+            production_hooks_active: self.production_safety_chain.is_some(),
+        }
+    }
+
     /// Attach a callback for safety denial audit events.
     ///
     /// The callback receives `(tool_name, denial_reason, task_id, timestamp_ms)`
@@ -404,10 +477,24 @@ impl ToolDispatcher {
         self.hook_chain.as_ref()
     }
 
-    /// Returns the mandatory production safety hooks, if enforcement is active.
+    /// Returns the mandatory production safety chain, if enforcement is active.
     #[must_use]
-    pub const fn production_hook_chain(&self) -> Option<&hook_chain::SafetyHookChain> {
-        self.production_hook_chain.as_ref()
+    pub const fn production_safety_chain(
+        &self,
+    ) -> Option<&production_safety_chain::ProductionSafetyChain> {
+        self.production_safety_chain.as_ref()
+    }
+
+    /// Returns the pre-handler hook chain from the production safety chain,
+    /// if enforcement is active.
+    ///
+    /// This is the compatibility accessor for callers that previously
+    /// inspected the production hook chain directly.
+    #[must_use]
+    pub fn production_hook_chain(&self) -> Option<&hook_chain::SafetyHookChain> {
+        self.production_safety_chain
+            .as_ref()
+            .map(|c| c.pre_handler_hooks())
     }
 
     /// Configured aggregate byte cap for one result and its artifacts.
@@ -532,6 +619,16 @@ impl ToolDispatcher {
             );
             return ToolResult::err(err);
         };
+        // 2a. T029: Enforce ToolDef::timeout_ms — effective deadline is the
+        //     minimum of the context-level timeout and the per-tool definition
+        //     timeout. Record which source was the limiting factor.
+        let def_timeout = Duration::from_millis(def.timeout_ms);
+        let (timeout, timeout_source) = if def_timeout < timeout {
+            (def_timeout, "tool_definition")
+        } else {
+            (timeout, "context")
+        };
+        let timeout_ms = duration_to_ms(timeout);
         // 2b. Profile-based tool selector check (TOOL-03).
         if let Some(ref selector) = self.tool_selector
             && !selector.is_allowed(&call.name)
@@ -622,9 +719,12 @@ impl ToolDispatcher {
         {
             return ToolResult::err(err);
         }
-        // 3c. The production hooks always evaluate the final parameters.
-        if let Some(ref chain) = self.production_hook_chain
-            && let Err(err) = self.apply_hook_chain(chain, def, call, ctx).await
+        // 3c. The production safety chain (stages 5-7) always evaluates the
+        //     final parameters: hallucination detector, taint ceiling, corrigibility.
+        if let Some(ref chain) = self.production_safety_chain
+            && let Err(err) = self
+                .apply_hook_chain(chain.pre_handler_hooks(), def, call, ctx)
+                .await
         {
             return ToolResult::err(err);
         }
@@ -638,12 +738,10 @@ impl ToolDispatcher {
                 "FAILED at safety pre-execution"
             );
             if let Some(ref cb) = self.safety_denial_callback {
-                // task_id is not available on ToolContext; callers in roko-cli
-                // may derive it from outer task state before wiring the callback.
                 cb(
                     call.name.clone(),
                     self.sanitize_audit_label(&e.to_string()),
-                    String::new(),
+                    ctx.correlation.task_id.clone(),
                     chrono::Utc::now().timestamp_millis(),
                 );
             }
@@ -703,6 +801,7 @@ impl ToolDispatcher {
             &json!({
                 "handler": handler_name,
                 "timeout_ms": timeout_ms,
+                "timeout_source": timeout_source,
             }),
         );
         // Capture source taint before awaiting the handler. Any external
@@ -734,7 +833,15 @@ impl ToolDispatcher {
         ctx.raise_taint(result_taint);
         // 6. Truncate oversized output.
         let result = truncate_result(result, result_limit);
-        // 7. Scrub secrets from output.
+        // 6b. Stage 9: production result filter (size/source annotation)
+        //     runs before the deep secret scrub so that its annotations
+        //     are themselves scrubbed by the final pass.
+        let result = if let Some(ref chain) = self.production_safety_chain {
+            apply_production_result_filter(chain, result, &call.name)
+        } else {
+            result
+        };
+        // 7. Scrub secrets from output (final deep scrub).
         let result = scrub_complete_result(&self.safety, result, is_untrusted_source(def));
         // Redaction markers may be longer than the matched secret. Reapply the
         // aggregate cap before recovery and immune screening.
@@ -900,35 +1007,97 @@ impl ToolDispatcher {
         result: &ToolResult,
         timeout_ms: u64,
     ) {
-        match result {
+        let execution_owner = &ctx.correlation.agent_id;
+        let (phase_status, details) = match result {
             ToolResult::Ok {
                 content,
                 artifacts,
                 is_structured,
-            } => self.emit_audit(
-                ctx,
-                call,
-                "completion",
-                "succeeded",
-                &json!({
-                    "content_bytes": content.len(),
-                    "artifacts": artifacts.len(),
-                    "is_structured": is_structured,
-                    "timeout_ms": timeout_ms,
-                }),
-            ),
-            ToolResult::Err(err) => self.emit_audit(
-                ctx,
-                call,
-                "completion",
+            } => {
+                let content_bytes: usize = content
+                    .iter()
+                    .map(|c| match c {
+                        roko_core::tool::ToolResultContent::Text { text } => text.len(),
+                        roko_core::tool::ToolResultContent::Image { data, .. } => data.len(),
+                    })
+                    .sum();
+                (
+                    "succeeded",
+                    json!({
+                        "content_bytes": content_bytes,
+                        "artifacts": artifacts.len(),
+                        "is_structured": is_structured,
+                        "timeout_ms": timeout_ms,
+                        "correlation": &ctx.correlation,
+                        "execution_owner": execution_owner,
+                    }),
+                )
+            }
+            ToolResult::Err(err) => (
                 "failed",
-                &json!({
+                json!({
                     "error": self.sanitize_audit_label(&err.to_string()),
                     "error_kind": tool_error_kind(err),
                     "timeout_ms": timeout_ms,
+                    "correlation": &ctx.correlation,
+                    "execution_owner": execution_owner,
                 }),
             ),
-        }
+        };
+        // T030: Single emission point that fans out to audit, trace, and metrics sinks.
+        self.emit_audit(ctx, call, "completion", phase_status, &details);
+        // Fan out the canonical terminal observation to trace and metrics sinks.
+        // The trace sink receives a HandlerFinished event; the metrics sink
+        // receives a tool-level completion observation keyed by tool name.
+        let (content_bytes, artifact_count) = match result {
+            ToolResult::Ok {
+                content, artifacts, ..
+            } => {
+                let bytes: usize = content
+                    .iter()
+                    .map(|c| match c {
+                        roko_core::tool::ToolResultContent::Text { text } => text.len(),
+                        roko_core::tool::ToolResultContent::Image { data, .. } => data.len(),
+                    })
+                    .sum();
+                (bytes, u32::try_from(artifacts.len()).unwrap_or(u32::MAX))
+            }
+            ToolResult::Err(_) => (0, 0),
+        };
+        let trace_event = roko_core::tool::ToolTraceEvent::HandlerFinished {
+            exit_ms: timeout_ms,
+            bytes_out: content_bytes,
+            artifacts_count: artifact_count,
+            at_ms: chrono::Utc::now().timestamp_millis(),
+        };
+        // Generate a trace ID from timestamp + hash of call details.
+        let trace_bytes = {
+            let ts = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0) as u64;
+            let mut b = [0u8; 16];
+            b[..8].copy_from_slice(&ts.to_le_bytes());
+            // Use call name hash for remaining bytes.
+            let h = {
+                use std::hash::{Hash, Hasher};
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                call.name.hash(&mut hasher);
+                call.id.hash(&mut hasher);
+                hasher.finish()
+            };
+            b[8..16].copy_from_slice(&h.to_le_bytes());
+            b
+        };
+        ctx.trace_sink.append(
+            roko_core::tool::TraceId::from_bytes(trace_bytes),
+            trace_event,
+        );
+        let metrics_key = roko_core::tool::MetricsKey::new(
+            &call.name,
+            &ctx.correlation.agent_id,
+            roko_core::AgentRole::Implementer,
+            roko_core::tool::ToolFormat::OpenAiJson,
+        );
+        let metrics = roko_core::tool::ToolMetrics::empty();
+        ctx.metrics_sink.record(&metrics_key, &metrics);
     }
 
     fn sanitize_audit_details(&self, details: &Value) -> Value {
@@ -950,20 +1119,14 @@ impl ToolDispatcher {
     fn bounded_audit_fallback(&self, prefix: Vec<u8>, budget: usize) -> Value {
         let scrubbed = self.safety.scrub_text(&String::from_utf8_lossy(&prefix));
         let bounded = truncate_result(ToolResult::text(scrubbed), budget);
-        let ToolResult::Ok { content, .. } = bounded else {
-            unreachable!("text truncation preserves a successful result")
-        };
-        json!({ "detail": content })
+        json!({ "detail": bounded.text_content() })
     }
 
     fn sanitize_audit_label(&self, label: &str) -> String {
         const MAX_AUDIT_LABEL_BYTES: usize = 256;
         let scrubbed = self.safety.scrub_text(label);
         let bounded = truncate_result(ToolResult::text(scrubbed), MAX_AUDIT_LABEL_BYTES);
-        let ToolResult::Ok { content, .. } = bounded else {
-            unreachable!("text truncation preserves a successful result")
-        };
-        content
+        bounded.text_content()
     }
 }
 
@@ -1097,6 +1260,49 @@ const fn tool_error_kind(err: &ToolError) -> &'static str {
     }
 }
 
+/// Apply production stage-9 result filtering (size/source annotation).
+///
+/// Runs on both success and error payloads. The result is then passed to
+/// the deep secret scrub as the final step.
+fn apply_production_result_filter(
+    chain: &production_safety_chain::ProductionSafetyChain,
+    result: ToolResult,
+    tool_name: &str,
+) -> ToolResult {
+    match result {
+        ToolResult::Ok {
+            content,
+            is_structured,
+            artifacts,
+        } => {
+            let filtered: Vec<roko_core::tool::ToolResultContent> = content
+                .into_iter()
+                .map(|block| match block {
+                    roko_core::tool::ToolResultContent::Text { text } => {
+                        roko_core::tool::ToolResultContent::Text {
+                            text: chain.filter_result(&text, tool_name),
+                        }
+                    }
+                    other => other,
+                })
+                .collect();
+            ToolResult::Ok {
+                content: filtered,
+                is_structured,
+                artifacts,
+            }
+        }
+        ToolResult::Err(err) => {
+            // Post-handler filters run even on error payloads per spec:
+            // "Post-handler filters run even when a handler returns an error payload."
+            let filtered_msg = chain.filter_result(&err.to_string(), tool_name);
+            // Reconstruct the error with filtered text. We use the same
+            // error variant but with sanitized content.
+            ToolResult::Err(ToolError::Other(filtered_msg))
+        }
+    }
+}
+
 fn scrub_complete_result(
     safety: &SafetyLayer,
     result: ToolResult,
@@ -1144,11 +1350,28 @@ fn scrub_artifact_body(safety: &SafetyLayer, body: Body) -> Body {
     }
 }
 
-fn scrub_result_content(safety: &SafetyLayer, content: String, is_structured: bool) -> String {
-    if is_structured && let Ok(value) = serde_json::from_str::<Value>(&content) {
-        return scrub_json_value(safety, value).to_string();
-    }
-    safety.scrub_text(&content)
+fn scrub_result_content(
+    safety: &SafetyLayer,
+    content: Vec<roko_core::tool::ToolResultContent>,
+    is_structured: bool,
+) -> Vec<roko_core::tool::ToolResultContent> {
+    content
+        .into_iter()
+        .map(|block| match block {
+            roko_core::tool::ToolResultContent::Text { text } => {
+                let scrubbed =
+                    if is_structured && let Ok(value) = serde_json::from_str::<Value>(&text) {
+                        scrub_json_value(safety, value).to_string()
+                    } else {
+                        safety.scrub_text(&text)
+                    };
+                roko_core::tool::ToolResultContent::Text { text: scrubbed }
+            }
+            // Image blocks are opaque binary — scrubbing text patterns in
+            // base64 would corrupt the payload.
+            other => other,
+        })
+        .collect()
 }
 
 fn scrub_json_value(safety: &SafetyLayer, value: Value) -> Value {
@@ -1228,19 +1451,9 @@ impl std::fmt::Debug for ToolDispatcher {
             .field("resolver", &"Arc<dyn HandlerResolver>")
             .field("safety", &"active")
             .field("hook_chain", &self.hook_chain)
-            .field("production_hook_chain", &self.production_hook_chain)
+            .field("production_safety_chain", &self.production_safety_chain)
             .finish()
     }
-}
-
-fn production_hook_chain(layer: &SafetyLayer) -> hook_chain::SafetyHookChain {
-    let mut chain = hook_chain::SafetyHookChain::new();
-    chain.push(
-        "taint_level_hook",
-        Arc::new(TaintLevelHook::new(layer.contract.max_taint_level)),
-    );
-    chain.push("corrigibility_hook", Arc::new(CorrigibilityHook));
-    chain
 }
 
 #[cfg(test)]
@@ -2125,9 +2338,8 @@ mod tests {
             ),
             true,
         );
-        let ToolResult::Ok { content, .. } = result else {
-            panic!("expected structured result")
-        };
+        assert!(matches!(result, ToolResult::Ok { .. }));
+        let content = result.text_content();
         assert!(!content.contains("hunter2"));
         assert!(!content.contains("other-secret"));
         assert!(content.contains("REDACTED"));
@@ -2218,7 +2430,7 @@ mod tests {
             )
         }));
         assert!(results.iter().any(|(_, result)| {
-            matches!(result, ToolResult::Ok { content, .. } if content == "sibling succeeded")
+            matches!(result, ToolResult::Ok { .. } if result.text_content() == "sibling succeeded")
         }));
 
         let signals = audit.snapshot();
@@ -2348,7 +2560,7 @@ mod tests {
         assert!(matches!(
             write_result,
             ToolResult::Err(ToolError::PermissionDenied(message))
-                if message.contains("taint_level_hook")
+                if message.contains("stage:6:taint_ceiling")
                     && message.contains("exceeds maximum")
         ));
     }
@@ -2367,7 +2579,11 @@ mod tests {
         contract.max_taint_level = CamelTaintLevel::External;
         let dispatcher = ToolDispatcher::new(registry, resolver)
             .with_safety(SafetyLayer::permissive().with_contract(contract));
-        assert_eq!(dispatcher.production_hook_chain().unwrap().len(), 2);
+        assert_eq!(
+            dispatcher.production_hook_chain().unwrap().len(),
+            3,
+            "stages 5 (hallucination), 6 (taint), 7 (corrigibility)"
+        );
         assert!(dispatcher.hook_chain().is_none());
 
         let audit_sink = Arc::new(CollectAuditSink::default());
@@ -2389,20 +2605,37 @@ mod tests {
         assert!(matches!(
             result,
             ToolResult::Err(ToolError::PermissionDenied(message))
-                if message.contains("taint_level_hook")
+                if message.contains("stage:6:taint_ceiling")
                     && message.contains("exceeds maximum")
         ));
         let signals = audit_sink.snapshot();
         let audits = hook_audits(&signals);
-        assert_eq!(audits.len(), 1, "taint rejection must short-circuit");
-        assert_eq!(audits[0]["status"], "rejected");
-        assert_eq!(audits[0]["details"]["hook"], "taint_level_hook");
-        assert_eq!(audits[0]["details"]["decision"], "reject");
-        assert!(
-            audits[0]["details"]["params_hash"]
-                .as_str()
-                .is_some_and(|hash| hash.starts_with("hash:") && hash.len() == 69)
+        // Stage 5 (hallucination) allows, stage 6 (taint) rejects.
+        assert_eq!(
+            audits.len(),
+            2,
+            "taint rejection must short-circuit after stage 5"
         );
+        assert_eq!(audits[0]["status"], "allow");
+        assert_eq!(
+            audits[0]["details"]["hook"],
+            production_safety_chain::stage_id::KNOWN_TOOL_SANITY
+        );
+        assert_eq!(audits[1]["status"], "rejected");
+        assert_eq!(
+            audits[1]["details"]["hook"],
+            production_safety_chain::stage_id::TAINT_CEILING
+        );
+        assert_eq!(audits[1]["details"]["decision"], "reject");
+        // Both audit records must use hashed params, not raw values.
+        for audit in &audits {
+            assert!(
+                audit["details"]["params_hash"]
+                    .as_str()
+                    .is_some_and(|hash| hash.starts_with("hash:") && hash.len() == 69),
+                "audit record must hash params"
+            );
+        }
         assert!(
             signals.iter().all(|signal| !signal
                 .body
@@ -2452,18 +2685,31 @@ mod tests {
         assert!(matches!(
             result,
             ToolResult::Err(ToolError::PermissionDenied(message))
-                if message.contains("corrigibility_hook") && message.contains("Switch")
+                if message.contains("stage:7:corrigibility") && message.contains("Switch")
         ));
         let audits = hook_audits(&audit_sink.snapshot());
-        assert_eq!(audits.len(), 3);
+        // 1 extension hook + 3 production hooks (stages 5,6,7) = 4 total,
+        // but stage 7 rejects so it short-circuits there.
+        assert_eq!(audits.len(), 4);
         assert_eq!(audits[0]["details"]["hook"], "adversarial_modifier");
         assert_eq!(audits[0]["details"]["decision"], "modified");
-        assert_eq!(audits[1]["details"]["hook"], "taint_level_hook");
+        assert_eq!(
+            audits[1]["details"]["hook"],
+            production_safety_chain::stage_id::KNOWN_TOOL_SANITY
+        );
         assert_eq!(audits[1]["details"]["decision"], "allow");
-        assert_eq!(audits[2]["details"]["hook"], "corrigibility_hook");
-        assert_eq!(audits[2]["details"]["decision"], "reject");
+        assert_eq!(
+            audits[2]["details"]["hook"],
+            production_safety_chain::stage_id::TAINT_CEILING
+        );
+        assert_eq!(audits[2]["details"]["decision"], "allow");
+        assert_eq!(
+            audits[3]["details"]["hook"],
+            production_safety_chain::stage_id::CORRIGIBILITY
+        );
+        assert_eq!(audits[3]["details"]["decision"], "reject");
         assert_ne!(
-            audits[0]["details"]["params_hash"], audits[2]["details"]["params_hash"],
+            audits[0]["details"]["params_hash"], audits[3]["details"]["params_hash"],
             "audit hashes must follow parameter replacement"
         );
     }
@@ -2758,7 +3004,7 @@ mod tests {
         let call = ToolCall::new("c", "echo", serde_json::json!({"x": 1}));
         let res = d.dispatch(call, &ToolContext::testing("/tmp")).await;
         match res {
-            ToolResult::Ok { content, .. } => assert!(content.contains("\"x\"")),
+            ToolResult::Ok { .. } => assert!(res.text_content().contains("\"x\"")),
             other => panic!("expected Ok, got {other:?}"),
         }
     }
@@ -2851,10 +3097,11 @@ mod tests {
         let call = ToolCall::new("c", "huge", serde_json::json!({}));
         let res = d.dispatch(call, &ToolContext::testing("/tmp")).await;
         match res {
-            ToolResult::Ok { content, .. } => {
-                assert!(content.contains("[truncated]"));
+            ToolResult::Ok { .. } => {
+                let text = res.text_content();
+                assert!(text.contains("[truncated]"));
                 assert!(
-                    content.len() < 5_000,
+                    text.len() < 5_000,
                     "content should be shorter than the handler output"
                 );
             }
@@ -2886,11 +3133,12 @@ mod tests {
         let call = ToolCall::new("c", "mb", serde_json::json!({}));
         let res = d.dispatch(call, &ToolContext::testing("/tmp")).await;
         match res {
-            ToolResult::Ok { content, .. } => {
+            ToolResult::Ok { .. } => {
+                let text = res.text_content();
                 // Must be valid UTF-8.
-                let _ = std::str::from_utf8(content.as_bytes())
+                let _ = std::str::from_utf8(text.as_bytes())
                     .expect("truncated multibyte content must be valid UTF-8");
-                assert!(content.contains("[truncated]"));
+                assert!(text.contains("[truncated]"));
             }
             other => panic!("expected Ok, got {other:?}"),
         }
@@ -3054,7 +3302,7 @@ mod tests {
         let observations: Vec<usize> = out
             .iter()
             .map(|(_, r)| match r {
-                ToolResult::Ok { content, .. } => content.parse().expect("observation is usize"),
+                ToolResult::Ok { .. } => r.text_content().parse().expect("observation is usize"),
                 ToolResult::Err(e) => panic!("handler failed: {e}"),
             })
             .collect();

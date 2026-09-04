@@ -1,8 +1,8 @@
-//! `roko status` subcommand — queries a running daemon or local substrate.
+//! `roko status` subcommand — queries local substrate and daemon state.
 //!
-//! When a daemon is running, `roko status` connects to its Unix socket and
-//! retrieves live session information. When no daemon is found, it falls
-//! back to reading the local `.roko/` substrate for signal counts.
+//! Reads the on-disk `.roko/` workspace state (signals, episodes, costs,
+//! runner status) and checks whether the daemon PID from `daemon.json` is
+//! still alive.
 
 use std::path::{Path, PathBuf};
 
@@ -12,7 +12,15 @@ use roko_learn::episode_logger::Episode;
 use roko_runtime::process::{
     ProcessSessionLedger, ProcessSessionStateSummary, default_process_session_ledger_path,
 };
-use sysinfo::{Pid, ProcessesToUpdate, System};
+
+/// A non-fatal diagnostic collected during status gathering.
+#[derive(Debug, Clone)]
+pub struct StatusDiagnostic {
+    /// Subsystem that produced the diagnostic (e.g. "costs").
+    pub source: String,
+    /// Human-readable description of the issue.
+    pub message: String,
+}
 
 /// Information about a session's current state.
 #[derive(Debug, Clone)]
@@ -35,10 +43,19 @@ pub struct SessionStatus {
     pub total_cost_usd: Option<f64>,
     /// Recorded cost for the current UTC day in USD.
     pub today_cost_usd: Option<f64>,
+    /// Remaining ETA minutes from the critical-path computation.
+    pub critical_path_eta_minutes: Option<u32>,
+    /// Runner phase from `status.json` (e.g. "dispatch", "gate", "idle",
+    /// "completed", "stale/offline").
+    pub runner_phase: Option<String>,
+    /// Whether a runner process is actively writing `status.json`.
+    pub runner_active: bool,
     /// Durable process-session ledger path, when readable or configured.
     pub process_session_ledger: Option<PathBuf>,
     /// Durable process-session state summary for restart/resume diagnosis.
     pub process_sessions: Option<ProcessSessionStateSummary>,
+    /// Non-fatal diagnostics collected during status gathering.
+    pub diagnostics: Vec<StatusDiagnostic>,
 }
 
 impl SessionStatus {
@@ -55,8 +72,12 @@ impl SessionStatus {
             cfactor: None,
             total_cost_usd: None,
             today_cost_usd: None,
+            critical_path_eta_minutes: None,
+            runner_phase: None,
+            runner_active: false,
             process_session_ledger: None,
             process_sessions: None,
+            diagnostics: Vec::new(),
         }
     }
 
@@ -79,6 +100,13 @@ impl SessionStatus {
             }
         ));
 
+        if let Some(phase) = &self.runner_phase {
+            lines.push(format!(
+                "runner : {phase}{}",
+                if self.runner_active { "" } else { " (stale)" }
+            ));
+        }
+
         if let Some(n) = self.signal_count {
             lines.push(format!("signals: {n}"));
         }
@@ -96,6 +124,9 @@ impl SessionStatus {
         }
         if let Some(cost) = self.today_cost_usd {
             lines.push(format!("today cost: ${:.4}", cost.max(0.0)));
+        }
+        if let Some(eta) = self.critical_path_eta_minutes {
+            lines.push(format!("critical-path ETA: {eta}m"));
         }
         if let Some(summary) = &self.process_sessions {
             lines.push(format!(
@@ -142,6 +173,16 @@ impl SessionStatus {
     /// Format this status as JSON.
     #[must_use]
     pub fn display_json(&self) -> String {
+        let diagnostics_json: Vec<serde_json::Value> = self
+            .diagnostics
+            .iter()
+            .map(|d| {
+                serde_json::json!({
+                    "source": d.source,
+                    "message": d.message,
+                })
+            })
+            .collect();
         serde_json::json!({
             "workdir": self.workdir.display().to_string(),
             "session": &self.session_id,
@@ -152,24 +193,18 @@ impl SessionStatus {
             "cfactor": &self.cfactor,
             "total_cost_usd": self.total_cost_usd,
             "today_cost_usd": self.today_cost_usd,
+            "critical_path_eta_minutes": self.critical_path_eta_minutes,
+            "runner_phase": &self.runner_phase,
+            "runner_active": self.runner_active,
             "process_session_ledger": self
                 .process_session_ledger
                 .as_ref()
                 .map(|path| path.display().to_string()),
             "process_sessions": &self.process_sessions,
+            "diagnostics": diagnostics_json,
         })
         .to_string()
     }
-}
-
-/// Check if a daemon socket exists at the expected location.
-#[must_use]
-pub fn daemon_socket_exists(workdir: &Path, session_id: &str) -> bool {
-    let socket_path = workdir
-        .join(".roko")
-        .join("run")
-        .join(format!("roko-{session_id}.sock"));
-    socket_path.exists()
 }
 
 /// Collect a lightweight status snapshot from on-disk workspace state.
@@ -196,6 +231,25 @@ pub fn collect_session_status_with_process_ledger(
     let (episode_count, last_episode_passed) = read_episode_summary(workdir);
     let process_sessions = read_process_session_summary(ledger_path, stale_after_ms);
 
+    // Read lightweight runner status from status.json for phase/liveness.
+    let state_dir = workdir.join(".roko").join("state");
+    let runner_status = crate::runner::status_file::read_runner_status(&state_dir);
+    let runner_active = runner_status.is_live();
+    let runner_phase = match &runner_status {
+        crate::runner::status_file::RunnerStatusRead::Live(s) => {
+            let phase = if s.current_phase.is_empty() {
+                &s.phase
+            } else {
+                &s.current_phase
+            };
+            Some(phase.clone())
+        }
+        crate::runner::status_file::RunnerStatusRead::Stale(s) => {
+            Some(format!("stale/offline (was: {})", s.phase))
+        }
+        crate::runner::status_file::RunnerStatusRead::Missing => None,
+    };
+
     SessionStatus {
         session_id: daemon_info.as_ref().map(|info| info.session_id.clone()),
         workdir: workdir.to_path_buf(),
@@ -208,8 +262,12 @@ pub fn collect_session_status_with_process_ledger(
         cfactor: None,
         total_cost_usd: None,
         today_cost_usd: None,
+        critical_path_eta_minutes: None,
+        runner_phase,
+        runner_active,
         process_session_ledger: Some(ledger_path.to_path_buf()),
         process_sessions,
+        diagnostics: Vec::new(),
     }
 }
 
@@ -235,10 +293,21 @@ fn read_daemon_info(workdir: &Path) -> Option<DaemonInfo> {
     serde_json::from_str(&text).ok()
 }
 
+/// Check if a process with the given PID is alive using a zero-cost signal
+/// probe instead of enumerating all system processes via sysinfo.
+#[allow(unsafe_code)]
 fn process_is_alive(pid: u32) -> bool {
-    let mut system = System::new_all();
-    system.refresh_processes(ProcessesToUpdate::All, true);
-    system.process(Pid::from_u32(pid)).is_some()
+    #[cfg(unix)]
+    {
+        // SAFETY: kill(pid, 0) is a well-defined POSIX operation that checks
+        // process existence without sending a signal. No memory safety concern.
+        unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        false
+    }
 }
 
 fn count_non_empty_lines(path: &Path) -> usize {
@@ -290,8 +359,12 @@ mod tests {
             cfactor: None,
             total_cost_usd: Some(12.5),
             today_cost_usd: Some(1.25),
+            critical_path_eta_minutes: None,
+            runner_phase: None,
+            runner_active: false,
             process_session_ledger: None,
             process_sessions: None,
+            diagnostics: Vec::new(),
         };
         let text = status.display_text();
         assert!(text.contains("/project"));
@@ -323,8 +396,12 @@ mod tests {
             cfactor: None,
             total_cost_usd: Some(4.2),
             today_cost_usd: Some(0.7),
+            critical_path_eta_minutes: None,
+            runner_phase: None,
+            runner_active: false,
             process_session_ledger: None,
             process_sessions: None,
+            diagnostics: Vec::new(),
         };
         let json = status.display_json();
         assert!(json.contains(r#""session":"s1""#));
@@ -340,12 +417,6 @@ mod tests {
         let json = status.display_json();
         assert!(json.contains(r#""session":null"#));
         assert!(json.contains(r#""signal_count":null"#));
-    }
-
-    #[test]
-    fn daemon_socket_exists_returns_false_for_missing() {
-        let tmp = tempfile::tempdir().unwrap();
-        assert!(!daemon_socket_exists(tmp.path(), "nonexistent"));
     }
 
     #[test]

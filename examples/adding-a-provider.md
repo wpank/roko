@@ -183,6 +183,32 @@ If you are using the HTTP API server:
 curl -X POST http://127.0.0.1:9090/api/config/reload
 ```
 
+## Slug heuristics config doesn't cover
+
+The config fields above are authoritative for dispatch, tool-loop limits, thinking-parameter injection (for `kimi-` family slugs), the pre-dispatch context check, and task-level cost accounting. They are not the whole story: a 2026-09 audit found roughly 25 places in the codebase that still pattern-match the slug string itself, silently. A slug none of them recognize degrades in those subsystems with no warning.
+
+| Heuristic surface | What it controls | Config override |
+|---|---|---|
+| Cascade thinking filter and slug family (`roko-learn/src/cascade/helpers.rs`) | whether the cascade treats the model as thinking-capable; fallback grouping and Pareto cost proxy | none |
+| Static routing candidate lists (`cascade_router.rs`, `model_router.rs`) | which slugs static routing can pick | none — an unlisted slug is never picked |
+| Tool-format profile (`roko-core/src/tool/format.rs`) | tool format, parallel safety, default tool cap for slug-driven callers (no kimi/glm/deepseek branches, so unknown slugs get a ReAct, no-tools default) | `tool_format`, `max_tools` (not `parallel_safe`) |
+| Context-window fallback (`roko-agent/src/token_estimator.rs`) | pre-dispatch context check when config omits the window | `context_window` wins when set |
+| Three of the four pricing tables (`roko-learn/src/costs_db.rs`, `cost_table.rs`, `cost_projection.rs`) | cascade cost estimates and projections; unknown slug → $0.00 or a Sonnet-rate fallback (~5x a cheap model's real price) | `cost_*` covers task-runner accounting only |
+| Tokenizer selection (`roko-compose/src/token_counter.rs`) | which tokenizer counts tokens | none — family prefixes such as `kimi-` and `glm-` match automatically |
+| Tier heuristic (`roko-learn/src/cascade/helpers.rs`) | cascade tier when `tier` is unset | `tier` |
+
+Concrete example: a future `kimi-k3` slug gets thinking injection and the right tokenizer (family-level `kimi-` checks), but the cascade treats it as non-thinking and family-less, static routing never picks it, and its cost may report as $0.00 or ~5x the real price.
+
+**New model checklist:**
+
+1. Add the `[providers.*]` and `[models.*]` entries from Steps 1-2, and always set `context_window`, `max_tools`, `tool_format`, and the `cost_*` fields explicitly — they are your only lever for most heuristic-driven behavior.
+2. When you have naming freedom, pick a slug under an existing family prefix (`kimi-`, `glm-`, `claude-`, `gpt-`, `gemini-`) so the family-level matchers keep working.
+3. Set `tier` so the cascade does not guess it from the slug.
+4. Run `roko config show` and confirm the profile resolves with the values you set.
+5. After the first real runs, verify that cost reporting is non-zero and plausible, and that cascade routing actually selects the model.
+
+Consolidating these matchers behind a centralized, config-driven classifier is on the provider-audit roadmap (`tmp/provider-audit/30-IMPLEMENTATION-ROADMAP.md`); this section should age out once that lands.
+
 ## Common mistakes
 
 - Adding `[models.*]` without the matching `[providers.*]` entry
@@ -191,6 +217,7 @@ curl -X POST http://127.0.0.1:9090/api/config/reload
 - Forgetting to export the env var named by `api_key_env`
 - Setting capability flags optimistically instead of matching the real API
 - Omitting `tool_format = "openai_json"` for normal OpenAI-compatible tool calling
+- Assuming `[models.*]` config fields are fully authoritative for a brand-new slug family — several subsystems still pattern-match the slug itself (see "Slug heuristics config doesn't cover")
 
 ## When zero-code is not enough
 

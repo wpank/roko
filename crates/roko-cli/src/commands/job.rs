@@ -1,5 +1,4 @@
 //! job command handlers.
-#![allow(unused_imports)]
 
 use crate::*;
 
@@ -84,6 +83,7 @@ pub(crate) async fn cmd_job(cli: &Cli, cmd: JobCmd) -> Result<i32> {
             auto_execute,
             plan_id,
             workdir,
+            ..
         } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             let dir = jobs_dir(&wd);
@@ -284,8 +284,14 @@ pub(crate) async fn cmd_job(cli: &Cli, cmd: JobCmd) -> Result<i32> {
             serve_url,
             workdir,
         } => {
+            let mode = if serve_url.is_some() {
+                roko_core::JobExecutionMode::Serve
+            } else {
+                roko_core::JobExecutionMode::Local
+            };
+
             if let Some(url) = serve_url {
-                // Delegate to roko-serve
+                // Delegate to roko-serve via the authenticated HTTP adapter.
                 let default_wd = resolve_workdir(cli);
                 let wd = workdir.as_deref().unwrap_or(&default_wd);
                 let auth_cfg = load_resolved_config(wd)
@@ -304,11 +310,19 @@ pub(crate) async fn cmd_job(cli: &Cli, cmd: JobCmd) -> Result<i32> {
                 let status = resp.status();
                 let body: serde_json::Value = resp.json().await.unwrap_or_default();
                 if status.is_success() {
-                    println!("Job '{id}' execution started via serve.");
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(&body).unwrap_or_default()
-                    );
+                    if cli.json {
+                        let receipt = serde_json::json!({
+                            "job_id": id,
+                            "prior_status": "open",
+                            "new_status": "executing",
+                            "mode": mode.to_string(),
+                            "run_id": body.get("run_id").and_then(|v| v.as_str()).unwrap_or(""),
+                            "acknowledged": false,
+                        });
+                        println!("{}", serde_json::to_string_pretty(&receipt)?);
+                    } else {
+                        println!("Job '{id}' execution started via serve.");
+                    }
                 } else {
                     anyhow::bail!(
                         "failed to execute job '{id}': {} {}",
@@ -317,19 +331,37 @@ pub(crate) async fn cmd_job(cli: &Cli, cmd: JobCmd) -> Result<i32> {
                     );
                 }
             } else {
-                // Local inline execution — load config and use run_once
+                // Local inline execution via JobExecutionService.
                 let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-                let path = resolve_job_path(&jobs_dir(&wd), &id)?;
-                let data = std::fs::read_to_string(&path)?;
-                let mut job: roko_core::MarketplaceJob = serde_json::from_str(&data)?;
-                println!("Executing job '{id}' locally...");
+                let svc = roko_core::JobExecutionService::new(jobs_dir(&wd));
 
-                // Transition to in_progress
-                job.status = "in_progress".to_string();
-                job.updated_at = chrono::Utc::now().to_rfc3339();
-                std::fs::write(&path, serde_json::to_string_pretty(&job)?)?;
+                // Start: acquires lease, transitions open -> in_progress.
+                let (job, receipt) = match svc.start(&id, mode).await {
+                    Ok(pair) => pair,
+                    Err(roko_core::JobError::LeaseHeld { id: held_id }) => {
+                        if cli.json {
+                            let receipt = serde_json::json!({
+                                "job_id": held_id,
+                                "error": "lease_held",
+                                "message": "job already has an active execution lease",
+                            });
+                            println!("{}", serde_json::to_string_pretty(&receipt)?);
+                        } else {
+                            println!("Job '{id}' already has an active execution lease.");
+                        }
+                        return Ok(EXIT_SUCCESS);
+                    }
+                    Err(e) => bail!("{e}"),
+                };
 
-                // Build prompt based on job type
+                if !cli.json {
+                    println!(
+                        "Executing job '{}' locally (run={})...",
+                        receipt.job_id, receipt.run_id
+                    );
+                }
+
+                // Build prompt based on job type.
                 let prompt = match job.job_type.as_str() {
                     "research" => format!(
                         "Research the following topic and produce a detailed report with citations:\n\n{}",
@@ -349,20 +381,29 @@ pub(crate) async fn cmd_job(cli: &Cli, cmd: JobCmd) -> Result<i32> {
                 let result = run_once(&wd, &config, &prompt, None, None).await;
                 match result {
                     Ok(report) => {
-                        job.status = "completed".to_string();
-                        job.submission = Some(serde_json::json!({
+                        let submission = serde_json::json!({
                             "result_summary": if report.overall_success() { "success" } else { "completed with failures" },
                             "completed_at": chrono::Utc::now().to_rfc3339(),
-                        }));
-                        job.updated_at = chrono::Utc::now().to_rfc3339();
-                        std::fs::write(&path, serde_json::to_string_pretty(&job)?)?;
-                        println!("Job '{id}' completed successfully.");
+                        });
+                        let complete_receipt = svc
+                            .complete(&receipt.job_id, mode, submission)
+                            .await
+                            .map_err(|e| anyhow::anyhow!("{e}"))?;
+                        if cli.json {
+                            println!("{}", serde_json::to_string_pretty(&complete_receipt)?);
+                        } else {
+                            println!("Job '{}' completed successfully.", receipt.job_id);
+                        }
                     }
                     Err(e) => {
-                        job.status = "failed".to_string();
-                        job.updated_at = chrono::Utc::now().to_rfc3339();
-                        std::fs::write(&path, serde_json::to_string_pretty(&job)?)?;
-                        return Err(e.context(format!("job '{id}' failed")));
+                        let fail_receipt = svc
+                            .fail(&receipt.job_id, mode, &e.to_string())
+                            .await
+                            .map_err(|je| anyhow::anyhow!("{je}"))?;
+                        if cli.json {
+                            println!("{}", serde_json::to_string_pretty(&fail_receipt)?);
+                        }
+                        return Err(e.context(format!("job '{}' failed", receipt.job_id)));
                     }
                 }
             }
@@ -370,17 +411,26 @@ pub(crate) async fn cmd_job(cli: &Cli, cmd: JobCmd) -> Result<i32> {
         }
         JobCmd::Cancel { id, workdir } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-            let path = resolve_job_path(&jobs_dir(&wd), &id)?;
-            let data = std::fs::read_to_string(&path)?;
-            let mut job: roko_core::MarketplaceJob = serde_json::from_str(&data)?;
-            let effective_status = job.effective_status();
-            if matches!(effective_status, "completed" | "failed" | "cancelled") {
-                bail!("cannot cancel job '{id}': status '{effective_status}' is terminal");
+            let svc = roko_core::JobExecutionService::new(jobs_dir(&wd));
+
+            let receipt = svc
+                .cancel(&id, roko_core::JobExecutionMode::Local)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&receipt)?);
+            } else {
+                let ack_note = if receipt.acknowledged {
+                    ""
+                } else {
+                    " (executor not acknowledged)"
+                };
+                println!(
+                    "Job '{}' cancelled ({} -> {}){ack_note}.",
+                    receipt.job_id, receipt.prior_status, receipt.new_status
+                );
             }
-            job.status = "cancelled".to_string();
-            job.updated_at = chrono::Utc::now().to_rfc3339();
-            std::fs::write(&path, serde_json::to_string_pretty(&job)?)?;
-            println!("Job '{id}' cancelled.");
             Ok(EXIT_SUCCESS)
         }
     }

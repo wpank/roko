@@ -293,7 +293,7 @@ mod tests {
         // Create .roko dir with test data.
         let roko_dir = dir.path().join(".roko");
         std::fs::create_dir_all(&roko_dir).expect("create .roko dir");
-        std::fs::write(roko_dir.join("signals.jsonl"), "x".repeat(1024 * 1024))
+        std::fs::write(roko_dir.join("engrams.jsonl"), "x".repeat(1024 * 1024))
             .expect("write test data");
 
         let result = disk_usage(State(state)).await;

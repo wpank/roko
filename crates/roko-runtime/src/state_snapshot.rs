@@ -779,6 +779,7 @@ enum TaskAttemptStatusSchema {
     Retrying,
     Cancelling,
     CancellationFailed,
+    SalvagedToGate,
     Passed,
     Failed,
     Exhausted,

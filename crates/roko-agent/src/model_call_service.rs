@@ -15,7 +15,7 @@ use roko_core::config::schema::RokoConfig;
 use roko_core::foundation::{
     CachePolicy, ChatMessage, FeedbackEvent, FeedbackSink, GatewayError, MessageRole,
     ModelCallRequest, ModelCallResponse, ModelCaller, ModelInputBlock, ModelInputMessage,
-    TokenBudget, TokenUsage, validate_model_input_messages,
+    TokenBudget, TokenUsage, validate_model_input_messages, with_event_persist_publish_order,
 };
 use roko_core::{
     Body, Context, EventConsumer, Kind, Result, RokoError, RuntimeEvent, Signal, ToolCallSummary,
@@ -31,7 +31,10 @@ use std::time::Instant;
 use parking_lot::{Mutex, RwLock};
 
 type ModelRouter = dyn Fn(Option<&str>) -> String + Send + Sync;
-type KnowledgeStoreQuery = dyn Fn(&str, usize) -> Result<Vec<serde_json::Value>> + Send + Sync;
+/// Re-export: callers that previously supplied a closure adapter can now
+/// implement `roko_core::KnowledgeQuery` directly or wrap a closure with
+/// `ClosureKnowledgeQuery`.
+use roko_core::foundation::KnowledgeQuery;
 
 /// Records explicit model override outcomes when no routing context is available.
 pub trait ForceBackendOverrideRecorder: Send + Sync {
@@ -82,7 +85,7 @@ pub struct ModelCallService {
     /// Default model to use when request doesn't specify one.
     default_model: String,
     /// Provider/model configuration used by `create_agent_for_model`.
-    config: RokoConfig,
+    config: Arc<RokoConfig>,
     /// Optional pricing table for calculating cost from raw token usage.
     cost_table: CostTable,
     /// Optional event consumers for runtime observability.
@@ -93,14 +96,12 @@ pub struct ModelCallService {
     feedback_sink: Option<Arc<dyn FeedbackSink>>,
     /// Optional durable gateway event writer.
     gateway_event_writer: Option<Arc<GatewayEventWriter>>,
-    /// Optional knowledge store query adapter for knowledge-informed routing.
+    /// Optional knowledge store for knowledge-informed model routing.
     ///
-    /// TODO(converge): Replace this erased adapter with
-    /// `Arc<dyn roko_neuro::NeuroStore + Send + Sync>` once `roko-agent` has a
-    /// normal `roko-neuro` dependency and `NeuroStore` is object-safe. In this
-    /// worktree `NeuroStore: Sized`, and this batch's scope forbids Cargo.toml
-    /// changes, so direct trait-object storage cannot compile here.
-    knowledge_store: Option<Arc<KnowledgeStoreQuery>>,
+    /// Uses the canonical `roko_core::KnowledgeQuery` trait object, which any
+    /// `NeuroStore` backend can implement via the blanket impl in
+    /// `roko-compose`.
+    knowledge_store: Option<Arc<dyn KnowledgeQuery>>,
     /// Optional model router used when requests omit an explicit model.
     model_router: Option<Arc<ModelRouter>>,
     /// Optional cascade router callback for recording forced model observations.
@@ -158,7 +159,7 @@ impl ModelCallService {
     pub fn new(default_model: String) -> Self {
         Self {
             default_model,
-            config: RokoConfig::default(),
+            config: Arc::new(RokoConfig::default()),
             cost_table: CostTable::default(),
             event_consumers: Vec::new(),
             inference_observer: None,
@@ -189,7 +190,7 @@ impl ModelCallService {
     #[must_use]
     pub fn with_config(mut self, config: RokoConfig) -> Self {
         self.fallback_models = configured_fallback_models(&config, &self.default_model);
-        self.config = config;
+        self.config = Arc::new(config);
         self
     }
 
@@ -247,15 +248,12 @@ impl ModelCallService {
         self
     }
 
-    /// Attach a knowledge store query adapter for knowledge-informed model routing.
+    /// Attach a knowledge store for knowledge-informed model routing.
     ///
-    /// The adapter should return serialized neuro `KnowledgeEntry` values.
+    /// Accepts any `KnowledgeQuery` implementation. `NeuroStore` backends
+    /// satisfy this via the blanket impl in `roko-compose`.
     #[must_use]
-    #[allow(clippy::type_complexity)]
-    pub fn with_knowledge_store(
-        mut self,
-        store: Arc<dyn Fn(&str, usize) -> Result<Vec<serde_json::Value>> + Send + Sync>,
-    ) -> Self {
+    pub fn with_knowledge_store(mut self, store: Arc<dyn KnowledgeQuery>) -> Self {
         self.knowledge_store = Some(store);
         self
     }
@@ -322,13 +320,6 @@ impl ModelCallService {
     #[must_use]
     pub fn with_anthropic_api_key(mut self, key: String) -> Self {
         self.set_env("ANTHROPIC_API_KEY", key);
-        self
-    }
-
-    /// Deprecated. Configure OpenAI-compatible providers in `RokoConfig` instead.
-    #[must_use]
-    #[deprecated(note = "configure OpenAI-compatible providers in RokoConfig")]
-    pub fn with_openai_base_url(self, _url: String) -> Self {
         self
     }
 
@@ -468,8 +459,8 @@ impl ModelCallService {
         }
     }
 
-    fn config_for_model(&self, _model: &str) -> RokoConfig {
-        self.config.clone()
+    fn config_for_model(&self, _model: &str) -> Arc<RokoConfig> {
+        Arc::clone(&self.config)
     }
 
     fn build_agent_options(
@@ -500,13 +491,29 @@ impl ModelCallService {
                 .filter(|effort| !effort.trim().is_empty()),
             ..AgentOptions::default()
         };
-        options.mcp_config = self
+        options.mcp_config = req
             .mcp_config
             .clone()
+            .or_else(|| self.mcp_config.clone())
             .or_else(|| self.config_agent_mcp_config());
         options.pre_discovered_local_tools = self.local_tool_runtime.clone();
         if !req.tools.is_empty() {
             options.pre_discovered_mcp_tools = Some(Arc::new(req.tools.clone()));
+        }
+        // Thread per-request generation settings into extra_args so callers
+        // that use build_agent_options directly get the full override chain.
+        if let Some(ref gen_settings) = req.generation_settings {
+            if let Some(temperature) = gen_settings.temperature {
+                options
+                    .extra_args
+                    .push(format!("--temperature={temperature}"));
+            }
+            if let Some(top_p) = gen_settings.top_p {
+                options.extra_args.push(format!("--top-p={top_p}"));
+            }
+            for stop in &gen_settings.stop_sequences {
+                options.extra_args.push(format!("--stop={stop}"));
+            }
         }
         options
     }
@@ -516,54 +523,125 @@ impl ModelCallService {
     }
 
     fn emit(&self, event: RuntimeEvent) {
-        for consumer in &self.event_consumers {
-            consumer.consume(&event);
-        }
+        with_event_persist_publish_order(|| {
+            let cursor = self.emit_with_cursor(&event);
+            if let Some(observer) = &self.inference_observer {
+                observer.on_runtime_event_with_cursor(&event, cursor);
+            }
+        });
     }
 
-    fn inference_started(&self, request_id: &str, model: &str, agent_id: &str, auto_routed: bool) {
-        if let Some(observer) = &self.inference_observer {
-            observer.on_start(&self.run_id, request_id, model, agent_id, auto_routed);
+    fn emit_with_cursor(&self, event: &RuntimeEvent) -> Option<u64> {
+        let mut cursor = None;
+        for consumer in &self.event_consumers {
+            let consumed_cursor = consumer.consume_with_cursor(event);
+            if cursor.is_none() {
+                cursor = consumed_cursor;
+            }
         }
+        cursor
+    }
+
+    fn inference_started(
+        &self,
+        run_id: &str,
+        request_id: &str,
+        model: &str,
+        agent_id: &str,
+        auto_routed: bool,
+    ) {
+        let event = RuntimeEvent::InferenceStarted {
+            run_id: run_id.to_string(),
+            request_id: request_id.to_string(),
+            model: model.to_string(),
+            agent_id: agent_id.to_string(),
+            auto_routed,
+        };
+        with_event_persist_publish_order(|| {
+            let cursor = self.emit_with_cursor(&event);
+            if let Some(observer) = &self.inference_observer {
+                observer.on_start_with_cursor(
+                    run_id,
+                    request_id,
+                    model,
+                    agent_id,
+                    auto_routed,
+                    cursor,
+                );
+            }
+        });
     }
 
     fn inference_completed(
         &self,
+        run_id: &str,
         request_id: &str,
         model: &str,
         agent_id: &str,
         usage: &TokenUsage,
         duration_ms: u64,
     ) {
-        if let Some(observer) = &self.inference_observer {
-            observer.on_complete(
-                &self.run_id,
-                request_id,
-                model,
-                agent_id,
-                usage.input_tokens,
-                usage.output_tokens,
-                usage.cost_usd,
-                duration_ms,
-            );
-        }
+        let event = RuntimeEvent::InferenceCompleted {
+            run_id: run_id.to_string(),
+            request_id: request_id.to_string(),
+            model: model.to_string(),
+            agent_id: agent_id.to_string(),
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cost_usd: usage.cost_usd,
+            duration_ms,
+        };
+        with_event_persist_publish_order(|| {
+            let cursor = self.emit_with_cursor(&event);
+            if let Some(observer) = &self.inference_observer {
+                observer.on_complete_with_cursor(
+                    run_id,
+                    request_id,
+                    model,
+                    agent_id,
+                    usage.input_tokens,
+                    usage.output_tokens,
+                    usage.cost_usd,
+                    duration_ms,
+                    cursor,
+                );
+            }
+        });
     }
 
-    fn inference_failed(&self, request_id: &str, model: &str, agent_id: &str, error: &str) {
-        if let Some(observer) = &self.inference_observer {
-            observer.on_error(&self.run_id, request_id, model, agent_id, error);
-        }
+    fn inference_failed(
+        &self,
+        run_id: &str,
+        request_id: &str,
+        model: &str,
+        agent_id: &str,
+        error: &str,
+    ) {
+        let event = RuntimeEvent::InferenceFailed {
+            run_id: run_id.to_string(),
+            request_id: request_id.to_string(),
+            model: model.to_string(),
+            agent_id: agent_id.to_string(),
+            error: error.to_string(),
+        };
+        with_event_persist_publish_order(|| {
+            let cursor = self.emit_with_cursor(&event);
+            if let Some(observer) = &self.inference_observer {
+                observer.on_error_with_cursor(run_id, request_id, model, agent_id, error, cursor);
+            }
+        });
     }
 
     fn emit_agent_trace_events(
         &self,
+        run_id: &str,
         agent_id: &str,
         traces: &[AgentTracePayload],
         fallback_usage: &TokenUsage,
     ) {
         if traces.is_empty() {
             self.emit(RuntimeEvent::AgentTrace {
-                run_id: self.run_id.clone(),
+                run_id: run_id.to_string(),
                 agent_id: agent_id.to_string(),
                 turn: 1,
                 tool_calls: Vec::new(),
@@ -575,7 +653,7 @@ impl ModelCallService {
 
         for trace in traces {
             self.emit(RuntimeEvent::AgentTrace {
-                run_id: self.run_id.clone(),
+                run_id: run_id.to_string(),
                 agent_id: agent_id.to_string(),
                 turn: trace.turn,
                 tool_calls: trace.tool_calls.clone(),
@@ -594,6 +672,7 @@ impl ModelCallService {
         usage: &TokenUsage,
         latency_ms: u64,
         success: bool,
+        error_class: Option<&str>,
     ) -> Result<()> {
         let Some(sink) = &self.feedback_sink else {
             tracing::debug!("feedback sink not configured for model call service; skipping");
@@ -601,7 +680,7 @@ impl ModelCallService {
         };
 
         sink.record(FeedbackEvent::ModelCall {
-            run_id: req.run_id.clone().or_else(|| Some(self.run_id.clone())),
+            run_id: Some(self.request_run_id(req)?.to_string()),
             request_id: Some(request_id.to_string()),
             prompt_section_ids: req.prompt_section_ids.clone(),
             knowledge_ids: req.knowledge_ids.clone(),
@@ -615,13 +694,38 @@ impl ModelCallService {
             cost_usd: usage.cost_usd,
             latency_ms,
             success,
+            error_class: error_class.map(ToOwned::to_owned),
         })
         .await
     }
 
-    fn next_request_id(&self, cache_key: u64) -> String {
+    fn request_run_id<'a>(&'a self, req: &'a ModelCallRequest) -> Result<&'a str> {
+        if let Some(run_id) = req
+            .run_id
+            .as_deref()
+            .filter(|run_id| !run_id.trim().is_empty())
+        {
+            return canonical_run_id(run_id).then_some(run_id).ok_or_else(|| {
+                RokoError::invalid(
+                    "model call run_id must be 1..=128 ASCII alphanumeric/._:- bytes without '..'",
+                )
+            });
+        }
+        canonical_run_id(&self.run_id)
+            .then_some(self.run_id.as_str())
+            .ok_or_else(|| RokoError::invalid("model call service run_id is invalid"))
+    }
+
+    fn emits_agent_terminal(req: &ModelCallRequest) -> bool {
+        // EffectDriver owns the role-scoped terminal event. Emitting the
+        // provider wrapper's generic terminal too would double-count the same
+        // model usage in run projections.
+        req.caller.as_deref() != Some("effect_driver")
+    }
+
+    fn next_request_id(&self, run_id: &str, cache_key: u64) -> String {
         let seq = self.request_seq.fetch_add(1, Ordering::Relaxed);
-        format!("{}:{seq}:{cache_key:016x}", self.run_id)
+        format!("{run_id}:{seq}:{cache_key:016x}")
     }
 
     /// Look up the context window (in tokens) for `model` from configuration,
@@ -960,7 +1064,7 @@ impl ModelCallService {
             task_hint.unwrap_or("general")
         );
 
-        let entries = match store(&query, 10) {
+        let entries = match store.query_knowledge(&query, 10) {
             Ok(entries) => entries,
             Err(err) => {
                 tracing::debug!(error = %err, "knowledge store query failed for routing");
@@ -1801,7 +1905,7 @@ fn similarity(a: &str, b: &str) -> f64 {
 
 /// Encapsulates a single provider execution attempt with fallback support.
 struct ProviderCallCell {
-    config: RokoConfig,
+    config: Arc<RokoConfig>,
     cost_table: CostTable,
     /// Optional shared rate limiter acquired before every live LLM request.
     rate_limiter: Option<Arc<ProviderRateLimiter>>,
@@ -1816,7 +1920,7 @@ struct ProviderCallCell {
 
 impl ProviderCallCell {
     fn new(
-        config: RokoConfig,
+        config: Arc<RokoConfig>,
         cost_table: CostTable,
         rate_limiter: Option<Arc<ProviderRateLimiter>>,
         provider_outcome_recorder: Option<Arc<dyn ProviderOutcomeRecorder>>,
@@ -2071,10 +2175,21 @@ fn is_retryable_provider_message(message: &str) -> bool {
         || normalized.contains("temporarily unavailable")
 }
 
+fn canonical_run_id(run_id: &str) -> bool {
+    !run_id.is_empty()
+        && run_id.len() <= 128
+        && run_id != "."
+        && !run_id.contains("..")
+        && run_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+}
+
 #[async_trait]
 impl ModelCaller for ModelCallService {
     async fn call(&self, mut req: ModelCallRequest) -> Result<ModelCallResponse> {
         validate_model_input_messages(&req.input_messages).map_err(RokoError::invalid)?;
+        let run_id = self.request_run_id(&req)?.to_string();
         let model = self.resolve_model(&req);
         let has_images = contains_images(&req.input_messages);
         if has_images && !self.model_supports_input_images(&model) {
@@ -2129,7 +2244,7 @@ impl ModelCaller for ModelCallService {
             req.temperature,
             req.max_tokens,
         );
-        let request_id = self.next_request_id(cache_key);
+        let request_id = self.next_request_id(&run_id, cache_key);
         let provider = self.provider_for_model(&model);
 
         match req.cache_policy {
@@ -2154,6 +2269,7 @@ impl ModelCaller for ModelCallService {
                         &cached.usage,
                         latency_ms,
                         true,
+                        None,
                     )
                     .await?;
                     self.emit_call_metrics(
@@ -2163,6 +2279,15 @@ impl ModelCaller for ModelCallService {
                         &cached.usage,
                         latency_ms as f64 / 1000.0,
                     );
+                    if Self::emits_agent_terminal(&req) {
+                        self.emit(RuntimeEvent::AgentCompleted {
+                            run_id: run_id.clone(),
+                            agent_id: format!("model-call:{}", cached.model),
+                            output: cached.content.clone(),
+                            tokens_used: cached.usage.total_tokens,
+                            cost_usd: cached.usage.cost_usd,
+                        });
+                    }
                     return Ok(ModelCallResponse {
                         content: cached.content,
                         model: cached.model,
@@ -2282,12 +2407,27 @@ impl ModelCaller for ModelCallService {
         if let Some(max_tokens) = thinking_cap.thinking_budget {
             set_max_tokens_option(&mut options, max_tokens);
         }
-        // TODO(converge): Thread per-request generation settings through
-        // AgentOptions/provider adapters. The Anthropic and OpenAI-compatible
-        // adapters derive max tokens from ModelProfile::max_output and do not
-        // parse "max_tokens=..." or "temperature=..." extra_args.
-        // TODO(converge): Thread req-level MCP config here in S05 once
-        // ModelCallRequest carries it.
+        // Thread per-request generation settings through AgentOptions.
+        if let Some(ref gen_settings) = req.generation_settings {
+            if let Some(max_tokens) = gen_settings.max_tokens {
+                set_max_tokens_option(&mut options, max_tokens);
+            }
+            if let Some(temperature) = gen_settings.temperature {
+                options
+                    .extra_args
+                    .push(format!("--temperature={temperature}"));
+            }
+            if let Some(top_p) = gen_settings.top_p {
+                options.extra_args.push(format!("--top-p={top_p}"));
+            }
+            for stop in &gen_settings.stop_sequences {
+                options.extra_args.push(format!("--stop={stop}"));
+            }
+        }
+        // Thread per-request MCP config, overriding the service-level default.
+        if let Some(ref mcp) = req.mcp_config {
+            options.mcp_config = Some(mcp.clone());
+        }
 
         let fallback_models = self
             .fallback_models_for_request(&model)
@@ -2300,7 +2440,7 @@ impl ModelCaller for ModelCallService {
             self.rate_limiter.clone(),
             self.provider_outcome_recorder.clone(),
         );
-        self.inference_started(&request_id, &model, &agent_id, auto_routed);
+        self.inference_started(&run_id, &request_id, &model, &agent_id, auto_routed);
         let inference_start = Instant::now();
         let output = match cell
             .execute(
@@ -2317,12 +2457,14 @@ impl ModelCaller for ModelCallService {
                 let latency_ms = start.elapsed().as_millis() as u64;
                 let usage = token_usage(&Usage::zero(), 0.0);
                 let message = error.to_string();
-                self.inference_failed(&request_id, &model, &agent_id, &message);
-                self.emit(RuntimeEvent::AgentFailed {
-                    run_id: self.run_id.clone(),
-                    agent_id,
-                    error: message.clone(),
-                });
+                self.inference_failed(&run_id, &request_id, &model, &agent_id, &message);
+                if Self::emits_agent_terminal(&req) {
+                    self.emit(RuntimeEvent::AgentFailed {
+                        run_id: run_id.clone(),
+                        agent_id,
+                        error: message.clone(),
+                    });
+                }
                 self.write_gateway_event(
                     &req,
                     &request_id,
@@ -2341,6 +2483,7 @@ impl ModelCaller for ModelCallService {
                     &usage,
                     latency_ms,
                     false,
+                    Some(provider_error_kind(&message)),
                 )
                 .await?;
                 let prov = provider.as_deref().unwrap_or("unknown");
@@ -2359,6 +2502,7 @@ impl ModelCaller for ModelCallService {
 
         let usage = token_usage(&output.usage, output.cost_usd);
         self.inference_completed(
+            &run_id,
             &request_id,
             &output.model_used,
             &agent_id,
@@ -2366,14 +2510,16 @@ impl ModelCaller for ModelCallService {
             inference_start.elapsed().as_millis() as u64,
         );
         let role = req.role.as_deref().unwrap_or("default");
-        let convergence_key = format!("{}:{role}", self.run_id);
+        let convergence_key = format!("{run_id}:{role}");
         if let Err(error) = self.convergence.check(&convergence_key, &output.content) {
             let latency_ms = start.elapsed().as_millis() as u64;
-            self.emit(RuntimeEvent::AgentFailed {
-                run_id: self.run_id.clone(),
-                agent_id: format!("model-call:{}", output.model_used),
-                error: error.to_string(),
-            });
+            if Self::emits_agent_terminal(&req) {
+                self.emit(RuntimeEvent::AgentFailed {
+                    run_id: run_id.clone(),
+                    agent_id: format!("model-call:{}", output.model_used),
+                    error: error.to_string(),
+                });
+            }
             self.record_force_backend_override(&req.model, &output.model_used, false);
             let output_provider = self.provider_for_model(&output.model_used);
             self.write_gateway_event(
@@ -2393,6 +2539,7 @@ impl ModelCaller for ModelCallService {
                 &usage,
                 latency_ms,
                 false,
+                Some("convergence_failure"),
             )
             .await?;
             let convergence_err = RokoError::from(error);
@@ -2424,14 +2571,16 @@ impl ModelCaller for ModelCallService {
         let agent_id = format!("model-call:{}", output.model_used);
         // ToolLoopAgent attaches per-turn state as trace metadata; emit it
         // separately from AgentOutput before the completion event.
-        self.emit_agent_trace_events(&agent_id, &output.agent_traces, &usage);
-        self.emit(RuntimeEvent::AgentCompleted {
-            run_id: self.run_id.clone(),
-            agent_id,
-            output: output.content.clone(),
-            tokens_used: usage.total_tokens,
-            cost_usd: usage.cost_usd,
-        });
+        self.emit_agent_trace_events(&run_id, &agent_id, &output.agent_traces, &usage);
+        if Self::emits_agent_terminal(&req) {
+            self.emit(RuntimeEvent::AgentCompleted {
+                run_id,
+                agent_id,
+                output: output.content.clone(),
+                tokens_used: usage.total_tokens,
+                cost_usd: usage.cost_usd,
+            });
+        }
         self.record_force_backend_override(&req.model, &output.model_used, true);
         let output_provider = self.provider_for_model(&output.model_used);
         self.write_gateway_event(
@@ -2451,6 +2600,7 @@ impl ModelCaller for ModelCallService {
             &usage,
             output.latency_ms,
             true,
+            None,
         )
         .await?;
         self.emit_call_metrics(
@@ -2501,6 +2651,16 @@ mod tests {
         }
     }
 
+    struct RecordingEventConsumer {
+        events: Arc<Mutex<Vec<RuntimeEvent>>>,
+    }
+
+    impl EventConsumer for RecordingEventConsumer {
+        fn consume(&self, event: &RuntimeEvent) {
+            self.events.lock().push(event.clone());
+        }
+    }
+
     fn user_request(model: impl Into<String>, content: impl Into<String>) -> ModelCallRequest {
         ModelCallRequest {
             model: model.into(),
@@ -2522,7 +2682,95 @@ mod tests {
             routing_hints: Vec::new(),
             cache_policy: roko_core::foundation::CachePolicy::Default,
             tools: Vec::new(),
+            generation_settings: None,
+            mcp_config: None,
         }
+    }
+
+    #[test]
+    fn request_run_id_owns_observability_identity() {
+        let service = ModelCallService::new("test-model".to_string()).with_run_id("service-run");
+        let mut request = user_request("test-model", "hello");
+
+        assert_eq!(service.request_run_id(&request).unwrap(), "service-run");
+
+        request.run_id = Some("workflow-run".to_string());
+        assert_eq!(service.request_run_id(&request).unwrap(), "workflow-run");
+        assert!(
+            service
+                .next_request_id(service.request_run_id(&request).unwrap(), 0xabc)
+                .starts_with("workflow-run:")
+        );
+
+        request.run_id = Some("  ".to_string());
+        assert_eq!(service.request_run_id(&request).unwrap(), "service-run");
+
+        request.run_id = Some(".".to_string());
+        assert!(service.request_run_id(&request).is_err());
+        request.run_id = Some("../escape".to_string());
+        assert!(service.request_run_id(&request).is_err());
+
+        request.caller = Some("effect_driver".to_string());
+        assert!(!ModelCallService::emits_agent_terminal(&request));
+        request.caller = Some("serve".to_string());
+        assert!(ModelCallService::emits_agent_terminal(&request));
+    }
+
+    #[tokio::test]
+    async fn explicit_invalid_request_run_id_fails_before_dispatch() {
+        let service = ModelCallService::new("test-model".to_string());
+        let mut request = user_request("test-model", "hello");
+        request.run_id = Some("../escape".to_string());
+
+        let error = service
+            .call(request)
+            .await
+            .expect_err("invalid run id must fail closed");
+
+        assert!(error.to_string().contains("run_id"));
+    }
+
+    #[test]
+    fn inference_lifecycle_reaches_durable_consumers_with_request_run_id() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let service = ModelCallService::new("test-model".to_string()).with_event_consumer(
+            Arc::new(RecordingEventConsumer {
+                events: Arc::clone(&events),
+            }),
+        );
+        let usage = TokenUsage {
+            input_tokens: 4,
+            output_tokens: 2,
+            total_tokens: 6,
+            cost_usd: 0.01,
+        };
+
+        service.inference_started("workflow-run", "request-1", "test-model", "agent-1", false);
+        service.inference_completed(
+            "workflow-run",
+            "request-1",
+            "test-model",
+            "agent-1",
+            &usage,
+            12,
+        );
+        service.inference_failed(
+            "workflow-run",
+            "request-2",
+            "test-model",
+            "agent-1",
+            "failed",
+        );
+
+        let events = events.lock();
+        assert_eq!(events.len(), 3);
+        assert!(events.iter().all(|event| event.run_id() == "workflow-run"));
+        assert!(matches!(&events[0], RuntimeEvent::InferenceStarted { .. }));
+        assert!(matches!(
+            &events[1],
+            RuntimeEvent::InferenceCompleted { .. }
+        ));
+        assert!(matches!(&events[2], RuntimeEvent::InferenceFailed { .. }));
     }
 
     #[test]
@@ -2700,6 +2948,8 @@ mod tests {
             routing_hints: Vec::new(),
             cache_policy: roko_core::foundation::CachePolicy::Default,
             tools: Vec::new(),
+            generation_settings: None,
+            mcp_config: None,
         };
         assert_eq!(svc.resolve_model(&req), "claude-sonnet-4-20250514");
     }
@@ -2724,6 +2974,8 @@ mod tests {
             routing_hints: Vec::new(),
             cache_policy: roko_core::foundation::CachePolicy::Default,
             tools: Vec::new(),
+            generation_settings: None,
+            mcp_config: None,
         };
         assert_eq!(svc.resolve_model(&req), "claude-opus-4-20250514");
     }
@@ -2751,6 +3003,8 @@ mod tests {
             routing_hints: Vec::new(),
             cache_policy: roko_core::foundation::CachePolicy::Default,
             tools: Vec::new(),
+            generation_settings: None,
+            mcp_config: None,
         };
 
         assert_eq!(svc.resolve_model(&req), "router-selected-model");
@@ -2806,11 +3060,9 @@ mod tests {
         config.providers.clear();
         config.models.clear();
 
-        #[allow(deprecated)]
         let svc = ModelCallService::new("default".into())
             .with_config(config)
-            .with_anthropic_api_key("sk-test".into())
-            .with_openai_base_url("https://example.invalid/v1".into());
+            .with_anthropic_api_key("sk-test".into());
         let req = ModelCallRequest {
             model: "claude-haiku-4".into(),
             system: None,
@@ -2828,6 +3080,8 @@ mod tests {
             routing_hints: Vec::new(),
             cache_policy: roko_core::foundation::CachePolicy::Default,
             tools: Vec::new(),
+            generation_settings: None,
+            mcp_config: None,
         };
         let model = svc.resolve_model(&req);
         let config = svc.config_for_model(&model);
@@ -2864,6 +3118,8 @@ mod tests {
             routing_hints: Vec::new(),
             cache_policy: roko_core::foundation::CachePolicy::Default,
             tools: Vec::new(),
+            generation_settings: None,
+            mcp_config: None,
         };
 
         assert_eq!(svc.resolve_model(&req), "claude");
@@ -2894,12 +3150,129 @@ mod tests {
         assert_eq!(tools.as_ref(), &vec![tool]);
     }
 
+    /// MCP config precedence: explicit `with_mcp_config` > `AgentConfig.mcp_config` > None.
+    ///
+    /// Uses temporary paths and injected configuration; no process-global env,
+    /// network, or MCP server mutation.
     #[test]
-    #[ignore = "blocked until roko_core::config::AgentConfig exposes mcp_config"]
     fn mcp_config_falls_back_to_roko_config() {
-        // TODO(converge): Enable this once the roko-core AgentConfig schema has
-        // `mcp_config: Option<PathBuf>`. The S05 write scope only allows edits
-        // to this file, so the config-backed fallback cannot be compiled here.
+        use roko_core::config::schema::RokoConfig;
+
+        // ── Row 1: explicit override wins over AgentConfig ──────────────
+        let mut config_with_agent_mcp = RokoConfig::default();
+        config_with_agent_mcp.agent.mcp_config =
+            Some(PathBuf::from("/workspace/.mcp/agent-level.json"));
+
+        let svc = ModelCallService::new("claude".into())
+            .with_config(config_with_agent_mcp.clone())
+            .with_mcp_config("/explicit/override.json");
+
+        let req = user_request("claude", "hello");
+        let options = svc.build_agent_options(&req, None);
+        assert_eq!(
+            options.mcp_config,
+            Some(PathBuf::from("/explicit/override.json")),
+            "explicit with_mcp_config must win over AgentConfig.mcp_config"
+        );
+
+        // ── Row 2: AgentConfig.mcp_config used when no explicit override ─
+        let svc_no_explicit =
+            ModelCallService::new("claude".into()).with_config(config_with_agent_mcp);
+
+        let options = svc_no_explicit.build_agent_options(&req, None);
+        assert_eq!(
+            options.mcp_config,
+            Some(PathBuf::from("/workspace/.mcp/agent-level.json")),
+            "AgentConfig.mcp_config must be used when no explicit override is set"
+        );
+
+        // ── Row 3: no config at all → None ──────────────────────────────
+        let svc_bare = ModelCallService::new("claude".into());
+        let options = svc_bare.build_agent_options(&req, None);
+        assert_eq!(
+            options.mcp_config, None,
+            "no explicit or AgentConfig mcp_config → None"
+        );
+
+        // ── Row 4: relative path is preserved as-is ─────────────────────
+        let mut config_rel = RokoConfig::default();
+        config_rel.agent.mcp_config = Some(PathBuf::from(".mcp/relative.json"));
+
+        let svc_rel = ModelCallService::new("claude".into()).with_config(config_rel);
+        let options = svc_rel.build_agent_options(&req, None);
+        assert_eq!(
+            options.mcp_config,
+            Some(PathBuf::from(".mcp/relative.json")),
+            "relative path from AgentConfig must be threaded without silent resolution"
+        );
+
+        // ── Row 5: non-existent explicit path is threaded, not swallowed ─
+        let svc_missing =
+            ModelCallService::new("claude".into()).with_mcp_config("/does/not/exist/mcp.json");
+        let options = svc_missing.build_agent_options(&req, None);
+        assert_eq!(
+            options.mcp_config,
+            Some(PathBuf::from("/does/not/exist/mcp.json")),
+            "missing explicit path must surface (fail closed), not silently fall through"
+        );
+
+        // ── Row 6: resolved path metadata is redactable ─────────────────
+        let debug_repr = format!("{:?}", options.mcp_config);
+        assert!(
+            debug_repr.contains("/does/not/exist/mcp.json"),
+            "debug output contains canonical path metadata"
+        );
+        // The path itself is all we thread — no file contents, env values,
+        // or credentials are exposed in the AgentOptions.
+        assert!(
+            !debug_repr.contains("sk-") && !debug_repr.contains("ANTHROPIC_API_KEY"),
+            "resolved path metadata must not leak credentials"
+        );
+    }
+
+    /// Per-request `generation_settings` and `mcp_config` are threaded through
+    /// `build_agent_options` into `AgentOptions`.
+    #[test]
+    fn per_request_generation_settings_and_mcp_config_threaded() {
+        use roko_core::foundation::GenerationSettings;
+
+        let svc = ModelCallService::new("claude".into()).with_mcp_config("/service/default.json");
+
+        // Per-request overrides should take precedence.
+        let req = ModelCallRequest {
+            generation_settings: Some(GenerationSettings {
+                max_tokens: Some(4096),
+                temperature: Some(0.7),
+                top_p: Some(0.9),
+                stop_sequences: vec!["DONE".into()],
+            }),
+            mcp_config: Some(PathBuf::from("/per-request/override.json")),
+            ..user_request("claude", "hello")
+        };
+
+        let options = svc.build_agent_options(&req, None);
+
+        // MCP config: per-request wins over service-level.
+        assert_eq!(
+            options.mcp_config,
+            Some(PathBuf::from("/per-request/override.json")),
+            "per-request mcp_config must override service-level default"
+        );
+
+        // Generation settings should be threaded as extra_args.
+        let args_joined = options.extra_args.join(" ");
+        assert!(
+            args_joined.contains("--temperature=0.7"),
+            "temperature not threaded: {args_joined}"
+        );
+        assert!(
+            args_joined.contains("--top-p=0.9"),
+            "top_p not threaded: {args_joined}"
+        );
+        assert!(
+            args_joined.contains("--stop=DONE"),
+            "stop sequence not threaded: {args_joined}"
+        );
     }
 
     #[test]
@@ -2925,6 +3298,8 @@ mod tests {
             routing_hints: Vec::new(),
             cache_policy: roko_core::foundation::CachePolicy::Default,
             tools: Vec::new(),
+            generation_settings: None,
+            mcp_config: None,
         };
 
         let estimate = svc.cost_predict(&req);
@@ -2968,6 +3343,8 @@ mod tests {
             routing_hints: Vec::new(),
             cache_policy: roko_core::foundation::CachePolicy::Default,
             tools: Vec::new(),
+            generation_settings: None,
+            mcp_config: None,
         };
 
         let estimate = svc.cost_predict(&req);
@@ -3421,6 +3798,7 @@ mod tests {
                     tpm: 40_000,
                     ..Default::default()
                 }),
+                require_confirmation: false,
             },
         );
         config.models.insert(
@@ -3435,7 +3813,7 @@ mod tests {
         );
 
         let cell = ProviderCallCell {
-            config,
+            config: Arc::new(config),
             cost_table: CostTable::default(),
             rate_limiter: Some(Arc::new(ProviderRateLimiter::new(60))),
             provider_outcome_recorder: None,
@@ -3483,6 +3861,7 @@ mod tests {
                     tpm: 100_000,
                     ..Default::default()
                 }),
+                require_confirmation: false,
             },
         );
 
@@ -3585,6 +3964,8 @@ mod tests {
             routing_hints: Vec::new(),
             cache_policy: roko_core::foundation::CachePolicy::Default,
             tools: Vec::new(),
+            generation_settings: None,
+            mcp_config: None,
         };
 
         let estimate = svc.cost_predict(&req);

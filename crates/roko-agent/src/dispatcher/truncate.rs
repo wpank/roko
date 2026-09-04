@@ -35,14 +35,30 @@ pub fn truncate_result(result: ToolResult, max_bytes: usize) -> ToolResult {
 }
 
 fn truncate_ok(
-    content: String,
+    content: Vec<roko_core::tool::ToolResultContent>,
     is_structured: bool,
     artifacts: Vec<Artifact>,
     max_bytes: usize,
 ) -> ToolResult {
     let mut remaining = max_bytes;
-    let content = take_text(content, remaining);
-    remaining = remaining.saturating_sub(content.len());
+    let truncated_content: Vec<roko_core::tool::ToolResultContent> = content
+        .into_iter()
+        .map(|block| match block {
+            roko_core::tool::ToolResultContent::Text { text } => {
+                let truncated = take_text(text, remaining);
+                remaining = remaining.saturating_sub(truncated.len());
+                roko_core::tool::ToolResultContent::Text { text: truncated }
+            }
+            roko_core::tool::ToolResultContent::Image { media_type, data } => {
+                let truncated = take_text(data, remaining);
+                remaining = remaining.saturating_sub(truncated.len());
+                roko_core::tool::ToolResultContent::Image {
+                    media_type,
+                    data: truncated,
+                }
+            }
+        })
+        .collect();
     let mut retained = Vec::with_capacity(artifacts.len().min(MAX_RESULT_ARTIFACTS));
     for artifact in artifacts.into_iter().take(MAX_RESULT_ARTIFACTS) {
         if remaining == 0 {
@@ -59,7 +75,7 @@ fn truncate_ok(
         retained.push(Artifact::new(name, mime_type, body));
     }
     ToolResult::Ok {
-        content,
+        content: truncated_content,
         is_structured,
         artifacts: retained,
     }
@@ -234,7 +250,14 @@ mod tests {
             artifact.name.len() <= MAX_ARTIFACT_LABEL_BYTES
                 && artifact.mime_type.len() <= MAX_ARTIFACT_LABEL_BYTES
         }));
-        let total = content.len()
+        let content_bytes: usize = content
+            .iter()
+            .map(|c| match c {
+                roko_core::tool::ToolResultContent::Text { text } => text.len(),
+                roko_core::tool::ToolResultContent::Image { data, .. } => data.len(),
+            })
+            .sum();
+        let total = content_bytes
             + artifacts
                 .iter()
                 .map(|artifact| {
@@ -247,12 +270,10 @@ mod tests {
     #[test]
     fn truncate_preserves_utf8_and_strict_total_cap() {
         let output = truncate_result(ToolResult::text(format!("日本語{}", "x".repeat(200))), 20);
-        let ToolResult::Ok { content, .. } = output else {
-            panic!("expected successful result");
-        };
-        assert!(content.len() <= 20);
-        assert!(content.is_char_boundary(content.len()));
-        assert!(content.contains(TRUNCATION_MARKER));
+        let text = output.text_content();
+        assert!(text.len() <= 20);
+        assert!(text.is_char_boundary(text.len()));
+        assert!(text.contains(TRUNCATION_MARKER));
     }
 
     #[test]

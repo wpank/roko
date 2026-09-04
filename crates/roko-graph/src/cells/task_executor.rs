@@ -5,11 +5,21 @@
 //! reuse its canonical routing, prompt, safety, MCP, and provider machinery.
 //! A registry without that injection fails closed; it never reports synthetic
 //! dry-run output as successful live work.
+//!
+//! ## Streaming dispatch (#274)
+//!
+//! [`StreamingTaskDispatcher`] extends the basic [`TaskDispatcher`] seam with
+//! `dispatch_streaming` (live text/tool/usage events via a channel) and
+//! `reconcile_attempt` (crash/retry idempotence). The host implementation
+//! lives in `roko-cli::graph_task_dispatch`; these Graph-layer types carry
+//! no CLI dependency.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use roko_core::{Body, Kind, ProtocolId, Signal, error::Result};
+use serde::{Deserialize, Serialize};
 
 use crate::cell::{Cell, CellContext, CellVersion};
 
@@ -98,6 +108,207 @@ pub trait TaskDispatcher: Send + Sync {
         input: Vec<Signal>,
         ctx: &CellContext,
     ) -> Result<Vec<Signal>>;
+}
+
+// ─── Streaming dispatch contract (#274) ─────────────────────────────────────
+
+/// Event forwarded from a provider invocation during streaming dispatch.
+///
+/// Text and progress events may coalesce across channel sends. Tool
+/// boundaries, usage, attempt receipts, and terminal outcomes are reliable
+/// and must not be dropped.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[allow(missing_docs)]
+pub enum GraphTaskEvent {
+    /// Incremental assistant text (may coalesce).
+    Text { text: String },
+    /// A tool invocation boundary.
+    ToolCall { id: String, name: String },
+    /// A tool invocation result.
+    ToolOutput { id: String, output: String },
+    /// Token/cost usage update from the provider.
+    Usage {
+        input_tokens: u64,
+        output_tokens: u64,
+        cost_usd: Option<f64>,
+    },
+    /// Task execution progress indicator (may coalesce).
+    Progress { fraction: f64, message: String },
+    /// The attempt has started (before any provider output).
+    AttemptStarted { attempt_id: String },
+    /// The attempt has reached a terminal state.
+    AttemptTerminal {
+        attempt_id: String,
+        outcome: TaskDispatchOutcomeKind,
+    },
+}
+
+/// Terminal classification of a task dispatch attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskDispatchOutcomeKind {
+    /// The provider completed successfully.
+    Succeeded,
+    /// The provider returned an unsuccessful result.
+    Failed,
+    /// The dispatch was cancelled by the guard/supervisor.
+    Cancelled,
+    /// The dispatch exceeded its deadline.
+    TimedOut,
+}
+
+/// Concrete outcome of a single streaming task dispatch.
+#[derive(Debug, Clone)]
+pub struct TaskDispatchOutcome {
+    /// Unique attempt identity for receipt recording.
+    pub attempt_id: String,
+    /// Terminal outcome classification.
+    pub outcome: TaskDispatchOutcomeKind,
+    /// Provider identifier that handled the attempt.
+    pub provider_id: String,
+    /// Model slug the provider actually used.
+    pub model: String,
+    /// Input tokens from actual provider usage. `None` when the provider
+    /// did not report usage.
+    pub input_tokens: Option<u64>,
+    /// Output tokens from actual provider usage.
+    pub output_tokens: Option<u64>,
+    /// Actual cost in USD from the provider. `None` when the provider did
+    /// not report cost; never a configured-model estimate.
+    pub cost_usd: Option<f64>,
+    /// Files changed relative to the lease base, when available.
+    pub changed_files: Vec<String>,
+    /// Wall-clock duration of the attempt.
+    pub wall_duration: Duration,
+    /// The output signals from the provider, if the attempt succeeded.
+    pub output: Vec<Signal>,
+}
+
+/// Result of reconciling a previously started attempt on resume.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttemptReconciliation {
+    /// Terminal evidence exists for a completed attempt. The host should
+    /// reuse this committed result without re-invoking the provider.
+    ReuseCommitted {
+        /// The committed attempt identity.
+        attempt_id: String,
+    },
+    /// No evidence that the previous attempt started. A new attempt ID
+    /// was allocated and the host should proceed with a fresh dispatch.
+    AllocateNew {
+        /// Freshly allocated attempt identity.
+        attempt_id: String,
+    },
+    /// The previous attempt started but cannot be conclusively reconciled.
+    /// The host must not retry the provider call.
+    FailAmbiguous {
+        /// The ambiguous attempt identity.
+        attempt_id: String,
+        /// Diagnostic reason for the ambiguity.
+        reason: String,
+    },
+}
+
+/// Durable identity recorder for provider attempt start/terminal receipts.
+///
+/// The production implementation (#251) supplies durable recording; this
+/// packet uses a no-op fake so the host integration can be tested without
+/// a ledger dependency.
+#[async_trait::async_trait]
+pub trait ProviderAttemptRecorder: Send + Sync {
+    /// Record that an attempt with `attempt_id` is about to start.
+    async fn record_start(&self, attempt_id: &str, spec: &TaskExecutionSpec) -> Result<()>;
+
+    /// Record the terminal outcome of an attempt.
+    async fn record_terminal(&self, attempt_id: &str, outcome: &TaskDispatchOutcome) -> Result<()>;
+
+    /// Check whether a previous attempt has terminal evidence on disk.
+    async fn has_terminal_evidence(&self, attempt_id: &str) -> bool;
+
+    /// Check whether a previous attempt has started-but-not-terminal evidence.
+    async fn has_started_evidence(&self, attempt_id: &str) -> bool;
+}
+
+/// Lease path and identity that the host must validate before dispatch.
+///
+/// The host does not acquire or release the lease; it only validates that
+/// the caller has already acquired it and that the workdir is the lease
+/// path (not a shared checkout).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskLease {
+    /// Absolute path to the acquired worktree lease.
+    pub path: PathBuf,
+    /// Fingerprint of the lease (e.g. content hash at acquisition time).
+    pub fingerprint: String,
+}
+
+/// Extended dispatcher seam for streaming task execution (#274).
+///
+/// Callers that only need synchronous output should continue using
+/// [`TaskDispatcher`]. `StreamingTaskDispatcher` adds live event
+/// forwarding and crash-safe attempt reconciliation.
+#[async_trait::async_trait]
+pub trait StreamingTaskDispatcher: TaskDispatcher {
+    /// Dispatch one task with live streaming events.
+    ///
+    /// Events are sent through `event_tx` as they arrive from the provider.
+    /// The channel uses bounded capacity; text/progress may coalesce but
+    /// tool boundaries, usage, and terminal outcomes are reliable.
+    ///
+    /// `lease` must reference an already-acquired worktree. The dispatcher
+    /// validates the path and fingerprint but does not acquire or release it.
+    ///
+    /// `recorder` receives attempt start/terminal receipts. Use
+    /// [`NoopAttemptRecorder`] when durable recording is not yet available.
+    async fn dispatch_streaming(
+        &self,
+        spec: &TaskExecutionSpec,
+        input: Vec<Signal>,
+        ctx: &CellContext,
+        lease: &TaskLease,
+        event_tx: tokio::sync::mpsc::Sender<GraphTaskEvent>,
+        recorder: &dyn ProviderAttemptRecorder,
+    ) -> Result<TaskDispatchOutcome>;
+
+    /// Reconcile a previously started attempt after a crash or restart.
+    ///
+    /// Returns `ReuseCommitted` when terminal evidence exists (no provider
+    /// call needed), `AllocateNew` when the attempt provably never started,
+    /// and `FailAmbiguous` when the attempt started but cannot be reconciled
+    /// (the caller must not retry).
+    async fn reconcile_attempt(
+        &self,
+        spec: &TaskExecutionSpec,
+        previous_attempt_id: &str,
+        recorder: &dyn ProviderAttemptRecorder,
+    ) -> AttemptReconciliation;
+}
+
+/// No-op attempt recorder for the additive integration packet.
+///
+/// Production recording (#251) replaces this before #256 activation.
+#[derive(Debug, Clone, Copy)]
+pub struct NoopAttemptRecorder;
+
+#[async_trait::async_trait]
+impl ProviderAttemptRecorder for NoopAttemptRecorder {
+    async fn record_start(&self, _attempt_id: &str, _spec: &TaskExecutionSpec) -> Result<()> {
+        Ok(())
+    }
+    async fn record_terminal(
+        &self,
+        _attempt_id: &str,
+        _outcome: &TaskDispatchOutcome,
+    ) -> Result<()> {
+        Ok(())
+    }
+    async fn has_terminal_evidence(&self, _attempt_id: &str) -> bool {
+        false
+    }
+    async fn has_started_evidence(&self, _attempt_id: &str) -> bool {
+        false
+    }
 }
 
 enum TaskExecutionMode {

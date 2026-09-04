@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use super::deadlines::{MonotonicTime, OwnershipTiming, monotonic_now};
+use super::deadlines::{DispatchStage, MonotonicTime, OwnershipTiming, monotonic_now};
 use super::types::TaskAttemptRef;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +48,8 @@ pub struct AttemptOwner {
     pub cancellation: CancellationState,
     pub agent: Option<AgentOwnership>,
     pub timing: OwnershipTiming,
+    /// Typed checkpoint within the pre-agent dispatch phase.
+    pub dispatch_stage: Option<DispatchStage>,
 }
 
 impl AttemptOwner {
@@ -62,6 +64,8 @@ impl AttemptOwner {
             cancellation: CancellationState::None,
             agent: None,
             timing: OwnershipTiming::new(now),
+            dispatch_stage: (phase == AttemptPhase::Dispatching)
+                .then_some(DispatchStage::Preparation),
         }
     }
 
@@ -85,6 +89,9 @@ impl AttemptOwner {
         self.cancellation = CancellationState::None;
         if matches!(phase, AttemptPhase::AwaitingGate | AttemptPhase::Gate) {
             self.agent = None;
+        }
+        if phase != AttemptPhase::Dispatching {
+            self.dispatch_stage = None;
         }
     }
 }
@@ -153,6 +160,12 @@ impl<R> AttemptClaim<R> {
         self.owner.agent = None;
     }
 
+    /// Record an exact pre-agent checkpoint before yielding to an awaited
+    /// startup operation. The caller restores the claim to publish it.
+    pub fn set_dispatch_stage(&mut self, stage: DispatchStage) {
+        self.owner.dispatch_stage = Some(stage);
+    }
+
     /// Start the paid/active attempt budget after scheduler preparation.
     ///
     /// Dispatch admission can intentionally reserve this claim before prompt
@@ -186,6 +199,7 @@ pub struct DeadlineCandidate {
     pub claimed: bool,
     pub eligible: bool,
     pub timing: OwnershipTiming,
+    pub dispatch_stage: Option<DispatchStage>,
 }
 
 #[derive(Debug)]
@@ -270,6 +284,7 @@ impl<R> AttemptOwnership<R> {
                 claimed: slot.claimed,
                 eligible: !slot.claimed && slot.owner.cancellation == CancellationState::None,
                 timing: slot.owner.timing,
+                dispatch_stage: slot.owner.dispatch_stage,
             })
             .collect::<Vec<_>>();
         candidates.sort_by_key(|candidate| candidate.attempt.key());
@@ -1377,5 +1392,662 @@ mod tests {
         assert!(ownership.discard_for_cleanup(&key));
         assert!(!ownership.contains(&key));
         drop(claim);
+    }
+
+    // ── Kill-point matrix fixtures (backlog #286) ──────────────────────────
+    //
+    // These tests exercise verification checklist items 2 and 4 from the
+    // FAST hard-deadline interposition backlog item:
+    //
+    //   2. CLI/bridge startup hangs — assert process-tree cleanup and capacity
+    //      release.
+    //   4. Kill/restart at each checkpoint — assert no duplicated launch or gate.
+    //
+    // The companion deadline-arithmetic tests (items 1, 3, 5) live in
+    // `deadlines::tests`.
+
+    // ── Checklist 2: Startup hangs — cleanup and capacity release ──────────
+
+    #[test]
+    fn dispatching_claim_blocks_duplicate_launch_during_preparation() {
+        // A hung preparation hook must not allow a second attempt to be
+        // admitted for the same task. The Dispatching claim makes the slot
+        // ineligible for a second insert.
+        let key = attempt(1);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                key.clone(),
+                AttemptOwner::new(AttemptPhase::Dispatching, EffectRef(0)),
+                "preparation-handle",
+            )
+            .unwrap();
+        // A duplicate insert must fail with Occupied.
+        assert_eq!(
+            ownership.insert(
+                key.clone(),
+                AttemptOwner::new(AttemptPhase::Dispatching, EffectRef(0)),
+                "duplicate-handle",
+            ),
+            Err(OwnershipError::Occupied),
+            "a second insert for the same attempt during preparation must be Occupied"
+        );
+        // The original resource is still available for cleanup.
+        assert!(ownership.contains(&key));
+    }
+
+    #[test]
+    fn dispatching_claim_releases_resource_on_cancellation() {
+        // When a CLI/bridge startup hangs and is cancelled, the claim must
+        // release its resource so the capacity permit can be freed.
+        let key = attempt(1);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                key.clone(),
+                AttemptOwner::new(AttemptPhase::Dispatching, EffectRef(0)),
+                "startup-handle",
+            )
+            .unwrap();
+        // Claim for cancellation (simulating startup timeout).
+        let claim = ownership.claim_cancellation(&key).unwrap();
+        assert_eq!(claim.resource(), &"startup-handle");
+        // After cancellation, the resource has been moved out.
+        assert!(ownership.contains(&key));
+        // Discard the slot to release capacity.
+        assert!(ownership.discard_for_cleanup(&key));
+        assert!(
+            !ownership.contains(&key),
+            "after cleanup, the slot must be fully removed — capacity released"
+        );
+    }
+
+    #[test]
+    fn dispatch_stage_checkpoint_is_observable_in_candidates() {
+        // The dispatch_stage checkpoint (Preparation / CliStartup /
+        // BridgeStartup) must be visible in deadline_candidates so the
+        // timeout handler can distinguish which phase hung.
+        let key = attempt(1);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                key.clone(),
+                AttemptOwner::new(AttemptPhase::Dispatching, EffectRef(0)),
+                "handle",
+            )
+            .unwrap();
+        // AttemptOwner::new_at for Dispatching automatically sets
+        // dispatch_stage to Some(Preparation).
+        let candidates = ownership.deadline_candidates();
+        let candidate = candidates.iter().find(|c| c.attempt == key).unwrap();
+        assert_eq!(
+            candidate.dispatch_stage,
+            Some(DispatchStage::Preparation),
+            "initial Dispatching phase must start at Preparation"
+        );
+
+        // Advance to CliStartup.
+        let mut claim = ownership
+            .claim_phase(&key, AttemptPhase::Dispatching, EffectRef(0))
+            .unwrap();
+        claim.set_dispatch_stage(DispatchStage::CliStartup);
+        ownership
+            .transition_claim(claim, AttemptPhase::Dispatching, EffectRef(0))
+            .unwrap();
+        let candidates = ownership.deadline_candidates();
+        let candidate = candidates.iter().find(|c| c.attempt == key).unwrap();
+        assert_eq!(
+            candidate.dispatch_stage,
+            Some(DispatchStage::CliStartup),
+            "CLI startup checkpoint must be observable"
+        );
+
+        // Advance to BridgeStartup.
+        let mut claim = ownership
+            .claim_phase(&key, AttemptPhase::Dispatching, EffectRef(0))
+            .unwrap();
+        claim.set_dispatch_stage(DispatchStage::BridgeStartup);
+        ownership
+            .transition_claim(claim, AttemptPhase::Dispatching, EffectRef(0))
+            .unwrap();
+        let candidates = ownership.deadline_candidates();
+        let candidate = candidates.iter().find(|c| c.attempt == key).unwrap();
+        assert_eq!(
+            candidate.dispatch_stage,
+            Some(DispatchStage::BridgeStartup),
+            "bridge startup checkpoint must be observable"
+        );
+    }
+
+    #[test]
+    fn cancellation_of_dispatching_phase_does_not_leak_to_agent_phase() {
+        // If the Dispatching phase is cancelled (hung startup), a subsequent
+        // attempt for the same task (after cleanup) must start fresh in
+        // Dispatching — not inherit the cancelled state.
+        let key = attempt(1);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                key.clone(),
+                AttemptOwner::new(AttemptPhase::Dispatching, EffectRef(0)),
+                "first-handle",
+            )
+            .unwrap();
+        let claim = ownership.claim_cancellation(&key).unwrap();
+        // Discard after cancellation.
+        assert!(ownership.discard_for_cleanup(&key));
+        drop(claim);
+
+        // Re-insert for a new attempt — must succeed, no stale state.
+        let new_key = TaskAttemptRef::new("plan", "task", 2);
+        ownership
+            .insert(
+                new_key.clone(),
+                AttemptOwner::new(AttemptPhase::Dispatching, EffectRef(0)),
+                "second-handle",
+            )
+            .unwrap();
+        assert_eq!(
+            ownership.cancellation_state(&new_key),
+            Some(CancellationState::None),
+            "re-inserted attempt must have fresh cancellation state"
+        );
+        assert!(
+            ownership.event_is_eligible(&new_key, AttemptPhase::Dispatching, EffectRef(0)),
+            "re-inserted attempt must be eligible for events"
+        );
+    }
+
+    // ── Checklist 4: Kill/restart — no duplicated launch or gate ───────────
+
+    #[test]
+    fn checkpoint_stages_advance_monotonically_and_reject_regression() {
+        // Each dispatch checkpoint must advance strictly forward. A stale
+        // checkpoint (e.g., replayed during restart) must not regress the
+        // stage from CliStartup back to Preparation.
+        let key = attempt(1);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                key.clone(),
+                AttemptOwner::new(AttemptPhase::Dispatching, EffectRef(0)),
+                "handle",
+            )
+            .unwrap();
+
+        // Advance through all three stages.
+        for stage in [
+            DispatchStage::Preparation,
+            DispatchStage::CliStartup,
+            DispatchStage::BridgeStartup,
+        ] {
+            let mut claim = ownership
+                .claim_phase(&key, AttemptPhase::Dispatching, EffectRef(0))
+                .unwrap();
+            claim.set_dispatch_stage(stage);
+            ownership
+                .transition_claim(claim, AttemptPhase::Dispatching, EffectRef(0))
+                .unwrap();
+        }
+        let candidates = ownership.deadline_candidates();
+        let candidate = candidates.iter().find(|c| c.attempt == key).unwrap();
+        assert_eq!(
+            candidate.dispatch_stage,
+            Some(DispatchStage::BridgeStartup),
+            "final stage must be BridgeStartup"
+        );
+    }
+
+    #[test]
+    fn transition_from_dispatching_to_agent_prevents_duplicate_launch() {
+        // After successfully transitioning Dispatching -> Agent, the old
+        // Dispatching phase/effect must no longer be claimable. This prevents
+        // a restart from re-launching a provider that already started.
+        let key = attempt(1);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                key.clone(),
+                AttemptOwner::new(AttemptPhase::Dispatching, EffectRef(0)),
+                "handle",
+            )
+            .unwrap();
+        let mut claim = ownership
+            .claim_phase(&key, AttemptPhase::Dispatching, EffectRef(0))
+            .unwrap();
+        claim.set_agent("provider-1", Some(1234));
+        ownership
+            .transition_claim(claim, AttemptPhase::Agent, AGENT)
+            .unwrap();
+
+        // The old Dispatching phase must be ineligible.
+        assert!(
+            !ownership.event_is_eligible(&key, AttemptPhase::Dispatching, EffectRef(0)),
+            "Dispatching phase must be ineligible after Agent transition"
+        );
+        // The Agent phase must be eligible.
+        assert!(
+            ownership.event_is_eligible(&key, AttemptPhase::Agent, AGENT),
+            "Agent phase must be eligible after transition"
+        );
+        // A second insert must fail — the attempt is already owned.
+        assert_eq!(
+            ownership.insert(
+                key.clone(),
+                AttemptOwner::new(AttemptPhase::Dispatching, EffectRef(0)),
+                "duplicate",
+            ),
+            Err(OwnershipError::Occupied),
+            "duplicate launch must be rejected"
+        );
+    }
+
+    #[test]
+    fn transition_from_agent_to_gate_prevents_duplicate_gate() {
+        // After Agent -> AwaitingGate -> Gate, the Agent phase must be
+        // ineligible and a second gate transition must fail.
+        let key = attempt(1);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                key.clone(),
+                AttemptOwner::new(AttemptPhase::Agent, AGENT),
+                "handle",
+            )
+            .unwrap();
+        let claim = ownership
+            .claim_phase(&key, AttemptPhase::Agent, AGENT)
+            .unwrap();
+        ownership
+            .transition_claim(claim, AttemptPhase::AwaitingGate, GATE)
+            .unwrap();
+        let claim = ownership
+            .claim_phase(&key, AttemptPhase::AwaitingGate, GATE)
+            .unwrap();
+        ownership
+            .transition_claim(claim, AttemptPhase::Gate, GATE)
+            .unwrap();
+
+        // Agent phase must be ineligible.
+        assert!(
+            !ownership.event_is_eligible(&key, AttemptPhase::Agent, AGENT),
+            "Agent phase must be ineligible after Gate transition"
+        );
+        // A second gate claim for the Agent phase must fail.
+        assert!(matches!(
+            ownership.claim_phase(&key, AttemptPhase::Agent, AGENT),
+            Err(OwnershipError::Ineligible)
+        ));
+        // The correct Gate phase is eligible.
+        assert!(ownership.event_is_eligible(&key, AttemptPhase::Gate, GATE));
+    }
+
+    #[test]
+    fn restart_replay_cannot_steal_slot_from_active_owner() {
+        // During restart, a replayed salvage references a prior attempt.
+        // If the same attempt is somehow already active (e.g., a race),
+        // the insert must fail — never overwrite an active owner.
+        let key = attempt(1);
+        let mut ownership = AttemptOwnership::default();
+        // Active agent is running.
+        ownership
+            .insert(
+                key.clone(),
+                AttemptOwner::new(AttemptPhase::Agent, AGENT).with_agent("running", Some(5555)),
+                "active-handle",
+            )
+            .unwrap();
+        // Replayed salvage tries to insert the same key.
+        assert_eq!(
+            ownership.insert(
+                key.clone(),
+                AttemptOwner::new(AttemptPhase::Gate, GATE),
+                "salvage-handle",
+            ),
+            Err(OwnershipError::Occupied),
+            "replayed salvage must not overwrite an active agent"
+        );
+        // The active agent's metadata must be intact.
+        let metadata = ownership.surviving_agent_metadata();
+        assert!(
+            metadata.pids.contains(&5555),
+            "active agent PID must survive the failed replay"
+        );
+        assert!(
+            metadata.agent_ids.contains(&"running".to_string()),
+            "active agent ID must survive the failed replay"
+        );
+    }
+
+    #[test]
+    fn full_lifecycle_dispatching_through_gate_has_exactly_one_owner_at_each_step() {
+        // Walk the complete lifecycle: Dispatching(Preparation) ->
+        // Dispatching(CliStartup) -> Dispatching(BridgeStartup) -> Agent ->
+        // AwaitingGate -> Gate. At each step, verify exactly one phase is
+        // eligible and prior phases are not.
+        let key = attempt(1);
+        let mut ownership = AttemptOwnership::default();
+
+        // Step 0: Initial Dispatching.
+        ownership
+            .insert(
+                key.clone(),
+                AttemptOwner::new(AttemptPhase::Dispatching, EffectRef(0)),
+                "handle",
+            )
+            .unwrap();
+        assert!(ownership.event_is_eligible(&key, AttemptPhase::Dispatching, EffectRef(0)));
+        assert!(!ownership.event_is_eligible(&key, AttemptPhase::Agent, AGENT));
+        assert!(!ownership.event_is_eligible(&key, AttemptPhase::Gate, GATE));
+
+        // Step 1: Checkpoint to Preparation.
+        let mut claim = ownership
+            .claim_phase(&key, AttemptPhase::Dispatching, EffectRef(0))
+            .unwrap();
+        claim.set_dispatch_stage(DispatchStage::Preparation);
+        ownership
+            .transition_claim(claim, AttemptPhase::Dispatching, EffectRef(0))
+            .unwrap();
+        assert!(ownership.event_is_eligible(&key, AttemptPhase::Dispatching, EffectRef(0)));
+
+        // Step 2: Checkpoint to CliStartup.
+        let mut claim = ownership
+            .claim_phase(&key, AttemptPhase::Dispatching, EffectRef(0))
+            .unwrap();
+        claim.set_dispatch_stage(DispatchStage::CliStartup);
+        ownership
+            .transition_claim(claim, AttemptPhase::Dispatching, EffectRef(0))
+            .unwrap();
+        assert!(ownership.event_is_eligible(&key, AttemptPhase::Dispatching, EffectRef(0)));
+
+        // Step 3: Checkpoint to BridgeStartup.
+        let mut claim = ownership
+            .claim_phase(&key, AttemptPhase::Dispatching, EffectRef(0))
+            .unwrap();
+        claim.set_dispatch_stage(DispatchStage::BridgeStartup);
+        ownership
+            .transition_claim(claim, AttemptPhase::Dispatching, EffectRef(0))
+            .unwrap();
+        assert!(ownership.event_is_eligible(&key, AttemptPhase::Dispatching, EffectRef(0)));
+
+        // Step 4: Transition to Agent.
+        let mut claim = ownership
+            .claim_phase(&key, AttemptPhase::Dispatching, EffectRef(0))
+            .unwrap();
+        claim.set_agent("agent-1", Some(42));
+        ownership
+            .transition_claim(claim, AttemptPhase::Agent, AGENT)
+            .unwrap();
+        assert!(!ownership.event_is_eligible(&key, AttemptPhase::Dispatching, EffectRef(0)));
+        assert!(ownership.event_is_eligible(&key, AttemptPhase::Agent, AGENT));
+        assert!(!ownership.event_is_eligible(&key, AttemptPhase::Gate, GATE));
+
+        // Step 5: Transition to AwaitingGate.
+        let claim = ownership
+            .claim_phase(&key, AttemptPhase::Agent, AGENT)
+            .unwrap();
+        ownership
+            .transition_claim(claim, AttemptPhase::AwaitingGate, GATE)
+            .unwrap();
+        assert!(!ownership.event_is_eligible(&key, AttemptPhase::Agent, AGENT));
+        assert!(ownership.event_is_eligible(&key, AttemptPhase::AwaitingGate, GATE));
+
+        // Step 6: Transition to Gate.
+        let claim = ownership
+            .claim_phase(&key, AttemptPhase::AwaitingGate, GATE)
+            .unwrap();
+        ownership
+            .transition_claim(claim, AttemptPhase::Gate, GATE)
+            .unwrap();
+        assert!(!ownership.event_is_eligible(&key, AttemptPhase::AwaitingGate, GATE));
+        assert!(ownership.event_is_eligible(&key, AttemptPhase::Gate, GATE));
+
+        // Final assertion: exactly one slot, exactly one eligible phase.
+        let candidates = ownership.deadline_candidates();
+        assert_eq!(candidates.len(), 1, "exactly one attempt must be tracked");
+        assert_eq!(candidates[0].phase, AttemptPhase::Gate);
+        assert!(candidates[0].eligible);
+    }
+
+    #[test]
+    fn concurrent_attempts_for_different_tasks_maintain_independent_lifecycles() {
+        // Two tasks dispatched concurrently must not interfere with each
+        // other's checkpoint progression or phase eligibility.
+        let task_a = TaskAttemptRef::new("plan", "task-a", 1);
+        let task_b = TaskAttemptRef::new("plan", "task-b", 1);
+        let effect_a = EffectRef(10);
+        let effect_b = EffectRef(20);
+        let mut ownership = AttemptOwnership::default();
+
+        // Both start in Dispatching.
+        ownership
+            .insert(
+                task_a.clone(),
+                AttemptOwner::new(AttemptPhase::Dispatching, EffectRef(0)),
+                "handle-a",
+            )
+            .unwrap();
+        ownership
+            .insert(
+                task_b.clone(),
+                AttemptOwner::new(AttemptPhase::Dispatching, EffectRef(0)),
+                "handle-b",
+            )
+            .unwrap();
+
+        // Task A advances to Agent.
+        let mut claim_a = ownership
+            .claim_phase(&task_a, AttemptPhase::Dispatching, EffectRef(0))
+            .unwrap();
+        claim_a.set_agent("agent-a", Some(100));
+        ownership
+            .transition_claim(claim_a, AttemptPhase::Agent, effect_a)
+            .unwrap();
+
+        // Task B is still Dispatching — it must not have been affected.
+        assert!(
+            ownership.event_is_eligible(&task_b, AttemptPhase::Dispatching, EffectRef(0)),
+            "task B must remain in Dispatching"
+        );
+        assert!(
+            !ownership.event_is_eligible(&task_b, AttemptPhase::Agent, effect_b),
+            "task B must not be in Agent phase"
+        );
+
+        // Task A is now Agent.
+        assert!(
+            ownership.event_is_eligible(&task_a, AttemptPhase::Agent, effect_a),
+            "task A must be in Agent phase"
+        );
+        assert!(
+            !ownership.event_is_eligible(&task_a, AttemptPhase::Dispatching, EffectRef(0)),
+            "task A must no longer be in Dispatching"
+        );
+
+        // Cancel task B (simulating startup hang). Task A must be unaffected.
+        let claim_b = ownership.claim_cancellation(&task_b).unwrap();
+        assert_eq!(claim_b.resource(), &"handle-b");
+        assert!(
+            ownership.event_is_eligible(&task_a, AttemptPhase::Agent, effect_a),
+            "task A must be unaffected by task B's cancellation"
+        );
+    }
+
+    #[test]
+    fn timing_reset_during_dispatch_prevents_preparation_from_consuming_provider_budget() {
+        // When the runner resets attempt timing after preparation completes,
+        // the pre-provider budget starts fresh. A slow preparation that took
+        // 80ms out of a 100ms budget must NOT cause the provider to time out
+        // immediately after launch.
+        let key = attempt(1);
+        let started = MonotonicTime::from_millis(10);
+        let after_prep = MonotonicTime::from_millis(90);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                key.clone(),
+                AttemptOwner::new_at(AttemptPhase::Dispatching, EffectRef(0), started),
+                (),
+            )
+            .unwrap();
+
+        // Claim and reset timing (simulating what dispatch_action does after
+        // preparation completes).
+        let mut claim = ownership
+            .claim_phase(&key, AttemptPhase::Dispatching, EffectRef(0))
+            .unwrap();
+        claim.reset_attempt_timing(after_prep);
+        ownership
+            .transition_claim_at(claim, AttemptPhase::Agent, AGENT, after_prep)
+            .unwrap();
+
+        // The attempt_started_at must now be after_prep, not the original started.
+        let claim = ownership
+            .claim_phase(&key, AttemptPhase::Agent, AGENT)
+            .unwrap();
+        assert_eq!(
+            claim.owner().timing.attempt_started_at,
+            after_prep,
+            "attempt timing must be reset to the post-preparation instant"
+        );
+        assert_eq!(
+            claim.owner().timing.phase_started_at,
+            after_prep,
+            "phase timing must match the new baseline"
+        );
+    }
+
+    // ── FAST deadline kill-point matrix ──────────────────────────────────────
+
+    #[test]
+    fn dispatching_claim_blocks_duplicate() {
+        // A Dispatching insert for an already-occupied slot must return
+        // Occupied regardless of the duplicate's phase or effect.
+        let key = attempt(1);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                key.clone(),
+                AttemptOwner::new(AttemptPhase::Dispatching, EffectRef(0)),
+                "first",
+            )
+            .unwrap();
+        assert_eq!(
+            ownership.insert(
+                key,
+                AttemptOwner::new(AttemptPhase::Dispatching, EffectRef(0)),
+                "second",
+            ),
+            Err(OwnershipError::Occupied)
+        );
+    }
+
+    #[test]
+    fn dispatching_releases_on_cancellation() {
+        // Cancellation of a Dispatching slot must move the resource out so
+        // the capacity permit can be reclaimed.
+        let key = attempt(1);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                key.clone(),
+                AttemptOwner::new(AttemptPhase::Dispatching, EffectRef(0)),
+                "permit",
+            )
+            .unwrap();
+        let claim = ownership.claim_cancellation(&key).unwrap();
+        assert_eq!(claim.resource(), &"permit");
+        // Discard the slot to release capacity.
+        assert!(ownership.discard_for_cleanup(&key));
+        assert!(
+            !ownership.contains(&key),
+            "slot must be fully removed after cancellation cleanup"
+        );
+    }
+
+    #[test]
+    fn transition_agent_to_gate_prevents_duplicate() {
+        // After Agent -> Gate, the Agent phase must be ineligible so a
+        // stale event cannot re-enter the agent path.
+        let key = attempt(1);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                key.clone(),
+                AttemptOwner::new(AttemptPhase::Agent, AGENT),
+                (),
+            )
+            .unwrap();
+        let claim = ownership
+            .claim_phase(&key, AttemptPhase::Agent, AGENT)
+            .unwrap();
+        ownership
+            .transition_claim(claim, AttemptPhase::AwaitingGate, GATE)
+            .unwrap();
+
+        assert!(
+            !ownership.event_is_eligible(&key, AttemptPhase::Agent, AGENT),
+            "Agent phase must be ineligible after Gate transition"
+        );
+        assert!(matches!(
+            ownership.claim_phase(&key, AttemptPhase::Agent, AGENT),
+            Err(OwnershipError::Ineligible)
+        ));
+    }
+
+    #[test]
+    fn full_lifecycle_has_one_owner_per_step() {
+        // Walk Dispatching -> Agent -> AwaitingGate -> Gate and verify that
+        // exactly one phase is eligible at each step.
+        let key = attempt(1);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                key.clone(),
+                AttemptOwner::new(AttemptPhase::Dispatching, EffectRef(0)),
+                "handle",
+            )
+            .unwrap();
+
+        // Dispatching is the sole eligible phase.
+        assert!(ownership.event_is_eligible(&key, AttemptPhase::Dispatching, EffectRef(0)));
+        assert!(!ownership.event_is_eligible(&key, AttemptPhase::Agent, AGENT));
+
+        // Dispatching -> Agent.
+        let mut claim = ownership
+            .claim_phase(&key, AttemptPhase::Dispatching, EffectRef(0))
+            .unwrap();
+        claim.set_agent("agent-1", Some(42));
+        ownership
+            .transition_claim(claim, AttemptPhase::Agent, AGENT)
+            .unwrap();
+        assert!(!ownership.event_is_eligible(&key, AttemptPhase::Dispatching, EffectRef(0)));
+        assert!(ownership.event_is_eligible(&key, AttemptPhase::Agent, AGENT));
+
+        // Agent -> AwaitingGate.
+        let claim = ownership
+            .claim_phase(&key, AttemptPhase::Agent, AGENT)
+            .unwrap();
+        ownership
+            .transition_claim(claim, AttemptPhase::AwaitingGate, GATE)
+            .unwrap();
+        assert!(!ownership.event_is_eligible(&key, AttemptPhase::Agent, AGENT));
+        assert!(ownership.event_is_eligible(&key, AttemptPhase::AwaitingGate, GATE));
+
+        // AwaitingGate -> Gate.
+        let claim = ownership
+            .claim_phase(&key, AttemptPhase::AwaitingGate, GATE)
+            .unwrap();
+        ownership
+            .transition_claim(claim, AttemptPhase::Gate, GATE)
+            .unwrap();
+        assert!(!ownership.event_is_eligible(&key, AttemptPhase::AwaitingGate, GATE));
+        assert!(ownership.event_is_eligible(&key, AttemptPhase::Gate, GATE));
+
+        // Exactly one candidate tracked, in Gate phase.
+        let candidates = ownership.deadline_candidates();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].phase, AttemptPhase::Gate);
+        assert!(candidates[0].eligible);
     }
 }

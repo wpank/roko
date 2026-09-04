@@ -1,6 +1,6 @@
 //! Runner v2 — event-driven plan executor with streaming agent output.
 //!
-//! This module replaces the batch-only `orchestrate.rs` plan runner with
+//! This module replaces the batch-only legacy orchestrator plan runner with
 //! a streaming architecture:
 //!
 //! - Agent output is parsed line-by-line from `--output-format stream-json`
@@ -34,12 +34,16 @@ pub mod agent_stream;
 pub mod attempt_ownership;
 pub mod branch_cleanup;
 pub mod conductor_adapter;
+pub mod control_adapter;
 pub mod deadlines;
 pub mod event_loop;
 pub mod extension_loader;
 pub mod extension_registry;
 pub mod gate_dispatch;
+pub mod gate_oracles;
 pub mod github_workflow;
+pub mod graph_tui_bridge;
+pub mod impact_analysis;
 pub mod inline_output;
 pub mod merge;
 pub mod output_sink;
@@ -53,6 +57,7 @@ pub mod queue_manifest;
 pub(crate) mod reflex;
 pub mod resume;
 pub mod screenshot_collector;
+pub mod services_adapter;
 pub mod snapshot_writer;
 pub mod sse_stream;
 pub mod state;
@@ -67,4 +72,5 @@ mod wasm_extension;
 pub use event_loop::{PlanReport, RunReport, run, run_with_tui_commands};
 pub use plan_loader::{Plan, load_plan, load_plan_lenient, load_plans, scaffold_missing_crates};
 pub use sse_stream::SseStreamClient;
+#[allow(deprecated)]
 pub use types::{RunConfig, TuiCommand};

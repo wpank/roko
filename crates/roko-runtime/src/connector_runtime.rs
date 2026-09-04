@@ -31,7 +31,7 @@ pub const MAX_RECONNECT_DELAY_MS: u64 = 300_000;
 /// Hard upper bound for periodic health intervals.
 pub const MAX_HEALTH_INTERVAL_SECS: u64 = 3_600;
 /// Hard upper bound for HTTP request timeouts.
-pub const MAX_HTTP_TIMEOUT_MS: u64 = 120_000;
+pub const MAX_HTTP_TIMEOUT_MS: u64 = roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
 /// Hard upper bound for one JSON request or response body.
 pub const MAX_HTTP_JSON_BYTES: usize = 1_048_576;
 /// Hard upper bound for a relative operation path.

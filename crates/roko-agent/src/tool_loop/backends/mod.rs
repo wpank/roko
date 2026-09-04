@@ -82,11 +82,12 @@ pub fn create_openai_compat_backend(
                 Box::new(SharedHttpPoster { inner: poster }),
             )
         }
-        ProviderKind::ClaudeCli | ProviderKind::CursorAcp | ProviderKind::CursorCli => {
-            Err(AgentCreationError::MissingConfig(
-                "CLI/ACP backends don't use LlmBackend — they own the tool loop".into(),
-            ))
-        }
+        ProviderKind::ClaudeCli
+        | ProviderKind::CodexCli
+        | ProviderKind::CursorAcp
+        | ProviderKind::CursorCli => Err(AgentCreationError::MissingConfig(
+            "CLI/ACP backends don't use LlmBackend — they own the tool loop".into(),
+        )),
         ProviderKind::PerplexityApi => {
             // Perplexity's chat completions API is OpenAI-compatible.
             let api_key = resolve_api_key(provider)?;
@@ -177,7 +178,6 @@ pub fn create_openai_compat_backend_with_limiter(
     match provider.kind {
         ProviderKind::OpenAiCompat
         | ProviderKind::PerplexityApi
-        | ProviderKind::CerebrasApi
         | ProviderKind::Hermes
         | ProviderKind::OpenClaw => {
             let api_key = resolve_api_key(provider)?;
@@ -197,6 +197,35 @@ pub fn create_openai_compat_backend_with_limiter(
                 .with_ttft_timeout_ms(provider.ttft_timeout_ms)
                 .with_poster(Box::new(SharedHttpPoster { inner: poster }))
                 .with_provider_kind(provider.kind)
+                .with_rate_limiter(rate_limiter);
+            Ok(Arc::new(backend))
+        }
+        ProviderKind::CerebrasApi => {
+            // Cerebras needs the same workarounds as the non-limiter path:
+            // temperature 0, no parallel tool calls, and content normalization.
+            let api_key = resolve_api_key(provider)?;
+            let base_url = base_url_for_tool_loop(provider);
+            let mut extra = build_extra_body_params(provider, model);
+            extra
+                .entry("temperature")
+                .or_insert(serde_json::Value::from(0));
+            let backend = OpenAiCompatBackend::new(api_key, model.slug.clone())
+                .with_provider_id(model.provider.clone())
+                .with_base_url(base_url)
+                .with_timeout_ms(provider.timeout_ms.unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS))
+                .with_max_tokens(max_tokens_for_model(model))
+                .with_extra_headers(provider.extra_headers.clone().unwrap_or_default())
+                .with_extra_body_params(extra)
+                .with_skip_session_fields(true)
+                .with_disable_parallel_tool_calls(true)
+                .with_normalize_tool_call_content(true)
+                .with_use_max_completion_tokens(
+                    model.use_max_completion_tokens
+                        || should_use_max_completion_tokens(&model.slug),
+                )
+                .with_ttft_timeout_ms(provider.ttft_timeout_ms)
+                .with_poster(Box::new(SharedHttpPoster { inner: poster }))
+                .with_provider_kind(ProviderKind::CerebrasApi)
                 .with_rate_limiter(rate_limiter);
             Ok(Arc::new(backend))
         }
@@ -244,6 +273,7 @@ pub fn create_tool_loop_backend(
             )
         }
         ProviderKind::ClaudeCli
+        | ProviderKind::CodexCli
         | ProviderKind::CursorAcp
         | ProviderKind::CursorCli
         | ProviderKind::GeminiCli => Err(AgentCreationError::MissingConfig(
@@ -333,6 +363,7 @@ mod tests {
             )])),
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         }
     }
 
@@ -507,6 +538,7 @@ mod tests {
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         let model = ModelProfile {
             provider: "gemini".to_string(),

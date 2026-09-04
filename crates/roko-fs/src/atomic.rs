@@ -9,6 +9,23 @@
 //! Keeping it on the same filesystem makes the final rename atomic on POSIX,
 //! while the unique name prevents concurrent writers from sharing staging
 //! state.
+//!
+//! # Crash-durability contract (backlog #36 verification, 2026-09-03)
+//!
+//! `atomic_write_bytes` guarantees this exact order:
+//!   1. Create parent directory (`create_dir_all`)
+//!   2. Exclusively create a unique sibling staging file (`O_CREAT|O_EXCL` via
+//!      `create_new(true)`, named `<target>.tmp.<pid>.<sequence>`)
+//!   3. `write_all` payload bytes to the staging file
+//!   4. `sync_all` the staging file (data + metadata durable)
+//!   5. `drop` the file handle (close)
+//!   6. `rename` the staging file over the target (atomic on same-FS POSIX)
+//!   7. `sync_all` on the parent directory (Unix only; no-op on other platforms)
+//!
+//! On any error before step 6, only the staging file created by this invocation
+//! is removed; the target and any pre-existing sibling debris are untouched.
+//! `atomic_write_json` delegates to `atomic_write_bytes` after serialization
+//! and maintains no second publication protocol.
 
 use fs2::FileExt;
 use serde::de::DeserializeOwned;

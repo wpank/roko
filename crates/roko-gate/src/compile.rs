@@ -131,6 +131,11 @@ impl Verify for CompileGate {
         for arg in &scoped {
             cmd.arg(arg);
         }
+        if self.build_system == BuildSystem::Cargo
+            && let Some(profile) = payload.cargo_profile.as_deref()
+        {
+            cmd.args(["--profile", profile]);
+        }
         for arg in &self.extra_args {
             cmd.arg(arg);
         }
@@ -283,6 +288,7 @@ mod tests {
             extra_env: vec![],
             label: None,
             target_crates: vec![],
+            cargo_profile: None,
         };
         let signal = roko_core::Signal::builder(roko_core::Kind::Task)
             .body(roko_core::Body::from_json(&payload).unwrap())

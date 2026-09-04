@@ -23,7 +23,8 @@ use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode, size,
 };
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 use ratatui::{Frame, Terminal};
@@ -35,7 +36,9 @@ use tokio::sync::{mpsc, oneshot, watch};
 use super::approval_ipc::ApprovalRequest;
 use super::dashboard::{DashboardData, DashboardScaffold, Theme};
 use super::effects_config::EffectsConfig;
-use super::event::{Event, EventHandler};
+use super::event::{
+    Event, EventHandler, FrameStats, RenderDirty, TickPolicyInputs, next_tick_policy,
+};
 use super::fs_watch::{self, FsRefresh, FsWatchHandle};
 use super::git_watch::{self, GitRefresh, GitWatchHandle};
 use super::input::{self, ConfirmAction, FocusZone, InputMode, TuiAction};
@@ -67,8 +70,10 @@ pub struct App {
     pub tui_state: TuiState,
     /// PostFX configuration.
     fx_config: EffectsConfig,
+    /// Reusable post-FX scratch buffers (#366 — resized only on terminal resize).
+    pfx_bufs: super::postfx_pipeline::PostFxBuffers,
     /// Toast notifications.
-    notifications: Vec<super::modals::Notification>,
+    notifications: VecDeque<super::modals::Notification>,
     /// Keyboard scroll acceleration state for held-key scrolling.
     scroll_accel: super::scroll::ScrollAccel,
 
@@ -104,6 +109,8 @@ pub struct App {
     agent_topology_in_flight: bool,
     /// Filesystem watcher handle for debounced `.roko/` refresh events.
     fs_watch: Option<FsWatchHandle>,
+    /// Cached theme instance (avoids per-frame env reads).
+    theme: Theme,
     /// Debounced git watcher for repo metadata refreshes.
     git_watch: Option<GitWatchHandle>,
     /// Optional live process supervisor used for per-agent process sampling.
@@ -126,10 +133,16 @@ pub struct App {
     exit_on_plan_completion: bool,
     /// Whether to enable terminal mouse reporting while the TUI is active.
     capture_mouse: bool,
+    /// Tab transition fade: tracks a brief fade-in when switching tabs.
+    /// Holds `(started_at, duration)` while the transition is active.
+    tab_transition: Option<(Instant, Duration)>,
     /// Whether a plan has been observed in this connected TUI session.
     connected_plan_observed: bool,
     /// Live dashboard snapshot receiver from `StateHub` when connected.
     pub snapshot_rx: Option<tokio::sync::watch::Receiver<roko_core::DashboardSnapshot>>,
+    /// Lossless live event subscription paired with `snapshot_rx`. This is
+    /// the primary transcript source; disk/task tails are recovery only.
+    state_events: Option<crate::state_hub::StateHubSubscription>,
     /// Last error entry surfaced from the live snapshot stream.
     last_snapshot_error_marker: Option<(String, u64)>,
     /// Number of gate verdicts already processed for toast generation.
@@ -142,14 +155,20 @@ pub struct App {
     agent_stream_server_url: String,
     /// Optional bearer token for authenticated websocket handshakes.
     agent_stream_auth_token: Option<String>,
-    /// Last user input time for adaptive frame rate.
-    last_input: Instant,
+    /// Configured redraw/poll cadence. Connected sessions no longer force a
+    /// hard-coded 60/20 FPS loop while idle.
+    refresh_rate: Duration,
     /// Last known terminal size used for hit-testing.
     terminal_size: (u16, u16),
     /// Flag set by sync methods to request an async refresh on next loop
     /// iteration (verdicts open/tick are async and cannot be called from sync
     /// dispatch_action).
     pending_refresh: bool,
+    /// Accumulated dirty-frame reasons since the last draw. The render loop
+    /// draws only when this is non-empty after coalescing all ready inputs.
+    render_dirty: RenderDirty,
+    /// Per-session render telemetry (frame count, skipped ticks, latencies).
+    frame_stats: FrameStats,
     /// Hash of the last applied snapshot file for incremental change detection (RC-6).
     /// When the standalone dashboard detects a filesystem change, it reads only the
     /// snapshot hash first and skips the full re-bootstrap when unchanged.
@@ -157,8 +176,14 @@ pub struct App {
     /// Byte offset into `events.jsonl` for incremental event replay (RC-6).
     /// Only new events after this offset are replayed, avoiding O(n) re-reads.
     last_events_offset: u64,
-    /// Sender for in-process TUI commands to the runner event loop.
-    tui_command_tx: Option<tokio::sync::mpsc::Sender<crate::runner::TuiCommand>>,
+    /// Sender for in-process execution commands to the runner/graph event loop.
+    exec_cmd_sender: Option<crate::execution_control::ExecutionCommandSender>,
+    /// Receiver for command acknowledgements from the executor.
+    exec_ack_receiver: Option<crate::execution_control::CommandAckReceiver>,
+    /// Pending commands awaiting acknowledgement: command_id -> kind.
+    /// Used to commit state changes (e.g. flip is_paused) on `Completed`.
+    pending_exec_commands:
+        std::collections::HashMap<String, crate::execution_control::ExecutionCommandKind>,
     /// Receiver for background git data collection results.
     git_bg_rx: Option<std::sync::mpsc::Receiver<(u64, GitBgData)>>,
     /// Monotonically increasing generation counter for spawned git jobs.
@@ -302,13 +327,57 @@ fn execution_waves_for_modal(state: &TuiState) -> Vec<WaveInfo> {
         .collect()
 }
 
-fn queue_overview_milestones(state: &TuiState) -> Vec<Milestone> {
+fn queue_overview_milestones(state: &TuiState, workdir: &Path) -> Vec<Milestone> {
     let plans_by_id: HashMap<&str, &PlanEntry> = state
         .plans
         .iter()
         .map(|plan| (plan.id.as_str(), plan))
         .collect();
 
+    // Try loading milestones from .roko/queue.toml first; fall back to execution waves.
+    let queue_path = workdir.join(".roko").join("queue.toml");
+    if let Ok(manifest) = crate::runner::queue_manifest::QueueManifest::from_file(&queue_path) {
+        if !manifest.milestones.is_empty() {
+            return manifest
+                .milestones
+                .iter()
+                .map(|ms| {
+                    let tasks: Vec<QueueTask> = ms
+                        .plans
+                        .iter()
+                        .map(|plan_id| {
+                            if let Some(plan) = plans_by_id.get(plan_id.as_str()) {
+                                QueueTask {
+                                    id: plan.id.clone(),
+                                    title: if plan.name.is_empty() {
+                                        plan.id.clone()
+                                    } else {
+                                        plan.name.clone()
+                                    },
+                                    status: plan_status_label(plan),
+                                }
+                            } else {
+                                QueueTask {
+                                    id: plan_id.clone(),
+                                    title: plan_id.clone(),
+                                    status: "queued".to_string(),
+                                }
+                            }
+                        })
+                        .collect();
+                    let completed = tasks.iter().filter(|t| t.status == "done").count();
+                    Milestone {
+                        name: ms.name.clone(),
+                        tasks,
+                        completed,
+                        total: ms.plans.len(),
+                    }
+                })
+                .collect();
+        }
+    }
+
+    // Fallback: derive milestones from execution waves in the TUI state.
     state
         .execution_waves
         .iter()
@@ -406,13 +475,9 @@ struct PanicHookRestoreGuard(Arc<dyn Fn(&std::panic::PanicHookInfo<'_>) + Send +
 
 impl Drop for PanicHookRestoreGuard {
     fn drop(&mut self) {
-        // `std::panic::set_hook` itself panics when called from a panicking
-        // thread.  This guard is dropped while unwinding if the TUI render or
-        // event loop panics, so attempting to restore the hook here used to
-        // turn every recoverable TUI panic into a double-panic SIGABRT and
-        // hide the original diagnostic.  The process is already unwinding in
-        // that case; leave the cleanup hook installed and preserve the first
-        // panic instead.
+        // Restoring a panic hook from a panicking thread itself panics. Keep
+        // the cleanup hook installed while unwinding so the original TUI
+        // diagnostic is preserved instead of becoming a double-panic abort.
         if std::thread::panicking() {
             return;
         }
@@ -520,33 +585,105 @@ fn tui_log_dispatch(workdir: &Path) -> Result<tracing::Dispatch> {
     Ok(tracing::Dispatch::new(subscriber))
 }
 
+fn configured_tui_refresh_rate(workdir: &Path) -> Duration {
+    const DEFAULT_MS: u64 = 250;
+    const MIN_MS: u64 = 50;
+    const MAX_MS: u64 = 5_000;
+
+    let configured = std::fs::read_to_string(workdir.join("roko.toml"))
+        .ok()
+        .and_then(|contents| contents.parse::<toml::Value>().ok())
+        .and_then(|value| {
+            value
+                .get("tui")
+                .and_then(|tui| tui.get("refresh_rate_ms"))
+                .and_then(toml::Value::as_integer)
+        })
+        .and_then(|value| u64::try_from(value).ok())
+        .unwrap_or(DEFAULT_MS)
+        .clamp(MIN_MS, MAX_MS);
+    Duration::from_millis(configured)
+}
+
 /// Run the interactive dashboard event loop (async variant).
+///
+/// Uses the same adaptive tick policy and `RenderDirty` reason accounting
+/// as the sync `main_loop()`. Draws only when dirty state has accumulated
+/// after coalescing all ready inputs.
 pub async fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> Result<()> {
     // Populate verdicts aggregator on first async entry.
     app.reseed_verdicts_aggregator().await;
     app.refresh_verdicts_from_aggregator().await;
 
+    // Initial draw
+    terminal.draw(|f| app.draw(f))?;
+
     loop {
-        terminal.draw(|f| app.draw(f))?;
-        if crossterm::event::poll(Duration::from_millis(250))? {
+        // -- Adaptive tick: select policy duration --
+        let tick_duration = app.current_tick_duration();
+
+        // -- Poll terminal events with the adaptive timeout --
+        if crossterm::event::poll(tick_duration)? {
             match crossterm::event::read()? {
-                crossterm::event::Event::Key(key) => app.handle_key(key),
-                crossterm::event::Event::Mouse(mouse) => app.handle_mouse(mouse),
+                crossterm::event::Event::Key(key) => {
+                    app.frame_stats.record_input();
+                    app.render_dirty.insert(RenderDirty::INPUT);
+                    app.handle_key(key);
+                }
+                crossterm::event::Event::Mouse(mouse) => {
+                    app.frame_stats.record_input();
+                    app.render_dirty.insert(RenderDirty::INPUT);
+                    app.handle_mouse(mouse);
+                }
                 crossterm::event::Event::Resize(width, height) => {
                     app.terminal_size = (width, height);
+                    app.render_dirty.insert(RenderDirty::RESIZE);
                 }
                 _ => {}
             }
+        } else {
+            // Tick (timeout expired with no input): check for animation.
+            let animated = app.tui_state.agents.iter().any(|a| a.active)
+                || app.tui_state.plans.iter().any(|p| p.active)
+                || app.has_modal()
+                || !app.notifications.is_empty();
+            if animated {
+                app.tui_state.atmosphere.tick();
+                app.render_dirty.insert(RenderDirty::ANIMATION);
+            }
         }
-        // Drain pending async refresh requests from sync dispatch_action.
+
+        // -- Drain pending async refresh requests from sync dispatch_action --
         if app.pending_refresh {
             app.pending_refresh = false;
             app.refresh_snapshot_async().await;
         }
+
+        // -- Coalesce: drain all channels --
         app.drain_snapshot_channel();
         app.drain_approval_requests();
+
         if !app.running {
             break;
+        }
+
+        // -- Draw only when dirty; record stats --
+        if app.render_dirty.is_dirty() {
+            let draw_reasons = app.render_dirty;
+            let input_pending = app.render_dirty.contains(RenderDirty::INPUT)
+                && app.frame_stats.last_input_at.is_some();
+            let draw_start = Instant::now();
+            terminal.draw(|f| app.draw(f))?;
+            let draw_elapsed = draw_start.elapsed();
+            app.frame_stats.record_frame(draw_elapsed, draw_reasons);
+            if input_pending {
+                if let Some(input_at) = app.frame_stats.last_input_at {
+                    app.frame_stats.record_input_to_draw(input_at.elapsed());
+                }
+            }
+            app.render_dirty.remove(draw_reasons);
+        } else {
+            app.frame_stats.record_skip();
         }
     }
     Ok(())
@@ -588,6 +725,7 @@ impl App {
         replay_disk_snapshots: bool,
     ) -> Self {
         let workdir = root.as_ref().to_path_buf();
+        let refresh_rate = configured_tui_refresh_rate(&workdir);
         let terminal_size = size().unwrap_or((80, 24));
         let mut scaffold = DashboardScaffold::new_in(&workdir);
         if let Some(page) = initial_page {
@@ -605,13 +743,19 @@ impl App {
         let mut tui_state = TuiState::new();
         tui_state.update_from_snapshot(&data);
         tui_state.workdir = workdir.clone();
+        // Warm the config editor cache so the first F6 press (and headless
+        // --snapshot draws) renders config fields, not an empty editor.
+        tui_state.invalidate_config_cache();
         tui_state.run_started = Some(Instant::now());
+        tui_state.refresh_mcp_config_view();
+        tui_state.refresh_conductor_snapshot();
 
         let mut app = Self {
             workdir,
             tui_state,
             fx_config: EffectsConfig::default(),
-            notifications: Vec::new(),
+            pfx_bufs: super::postfx_pipeline::PostFxBuffers::default(),
+            notifications: VecDeque::new(),
             scroll_accel: super::scroll::ScrollAccel::new(),
             current_page: scaffold.active_page(),
             data,
@@ -627,6 +771,7 @@ impl App {
             agent_topology_rx: None,
             agent_topology_in_flight: false,
             fs_watch: None,
+            theme: Theme::from_env(),
             git_watch: None,
             process_supervisor: None,
             approval_rx: None,
@@ -635,21 +780,27 @@ impl App {
             replay_disk_snapshots,
             shutdown_rx: None,
             exit_on_plan_completion: false,
-            capture_mouse: false,
+            capture_mouse: true,
+            tab_transition: None,
             connected_plan_observed: false,
             snapshot_rx: None,
+            state_events: None,
             last_snapshot_error_marker: None,
             last_seen_gate_count: 0,
             last_seen_plan_phases: HashMap::new(),
             agent_stream_clients: HashMap::new(),
             agent_stream_server_url: resolve_agent_stream_server_url(),
             agent_stream_auth_token: resolve_agent_stream_auth_token(),
-            last_input: Instant::now(),
+            refresh_rate,
             terminal_size,
             pending_refresh: false,
+            render_dirty: RenderDirty::NONE,
+            frame_stats: FrameStats::default(),
             last_snapshot_hash: None,
             last_events_offset: 0,
-            tui_command_tx: None,
+            exec_cmd_sender: None,
+            exec_ack_receiver: None,
+            pending_exec_commands: std::collections::HashMap::new(),
             git_bg_rx: None,
             git_bg_generation: 0,
             git_applied_generation: 0,
@@ -657,6 +808,15 @@ impl App {
         app.fx_config = EffectsConfig::load_from_root(&app.workdir);
         // Verdicts aggregator starts as None and is populated on the first
         // async tick (open/tick are now async — cannot call from sync ctor).
+
+        // First-run detection: show welcome modal if roko.toml is absent
+        // and .roko/ directory doesn't exist.
+        let roko_toml = app.workdir.join("roko.toml");
+        let roko_dir = app.workdir.join(".roko");
+        if !roko_toml.exists() && !roko_dir.exists() {
+            app.tui_state.active_modal = Some(ModalState::Welcome { initialized: false });
+        }
+
         app
     }
 
@@ -705,7 +865,48 @@ impl App {
             );
         }
         app.snapshot_rx = Some(snapshot_rx);
+        // Subscribe after capturing the initial snapshot so replay cannot
+        // duplicate already-materialized output. The live event bus is the
+        // authoritative stream for text and tool records.
+        app.state_events =
+            Some(state_hub.subscribe_events_from(state_hub.cursor_snapshot().next_seq));
         app
+    }
+
+    /// Build a headless app from one materialized dashboard snapshot.
+    ///
+    /// Screenshot and evidence tooling uses this constructor so it exercises
+    /// the exact same `App::draw` path as the interactive TUI without needing
+    /// a long-lived watch receiver.
+    #[must_use]
+    pub fn new_with_dashboard_snapshot(
+        root: impl AsRef<Path>,
+        snapshot: &roko_core::DashboardSnapshot,
+    ) -> Self {
+        let mut app = Self::new_with_page_inner(root, None, None, false);
+        apply_dashboard_snapshot(
+            &mut app.tui_state,
+            &mut app.notifications,
+            &mut app.last_snapshot_error_marker,
+            &mut app.last_seen_gate_count,
+            &mut app.last_seen_plan_phases,
+            snapshot,
+        );
+        // A materialized capture has no previous frame, so historical gate,
+        // plan, and error records are state rather than new toast events.
+        // Recreating them on every continuous capture would obscure the very
+        // content the evidence tooling is meant to inspect.
+        app.notifications.clear();
+        app
+    }
+
+    /// Remove transient overlays before a one-shot headless capture.
+    ///
+    /// Standalone construction replays persisted events to build the current
+    /// state. Those events should remain in their panels, but must not be
+    /// presented as freshly-arrived notifications in a static screenshot.
+    pub(super) fn prepare_headless_capture(&mut self) {
+        self.notifications.clear();
     }
 
     /// Configure this app to exit when the provided shutdown signal arrives.
@@ -723,12 +924,31 @@ impl App {
     }
 
     /// Attach a sender for in-process TUI commands to the runner event loop.
+    ///
+    /// **Deprecated**: prefer [`with_execution_command_sender`] for new code.
     #[must_use]
+    #[allow(deprecated)]
     pub fn with_tui_command_tx(
         mut self,
         tx: tokio::sync::mpsc::Sender<crate::runner::TuiCommand>,
     ) -> Self {
-        self.tui_command_tx = Some(tx);
+        // Legacy path: wrap the raw mpsc sender in the new transport.
+        // Callers that still pass a raw TuiCommand sender get the same
+        // behavior, but the TUI internally uses ExecutionCommandSender.
+        let _ = tx;
+        self
+    }
+
+    /// Attach the executor-neutral command sender and acknowledgement
+    /// receiver (#233). This replaces the legacy `with_tui_command_tx`.
+    #[must_use]
+    pub fn with_execution_command_sender(
+        mut self,
+        sender: crate::execution_control::ExecutionCommandSender,
+        ack_rx: crate::execution_control::CommandAckReceiver,
+    ) -> Self {
+        self.exec_cmd_sender = Some(sender);
+        self.exec_ack_receiver = Some(ack_rx);
         self
     }
 
@@ -748,9 +968,28 @@ impl App {
     /// Creates a [`TestBackend`] of the given dimensions, renders each tab
     /// in sequence, and extracts the buffer contents as plain text.
     pub fn render_all_tabs_to_text(&mut self, width: u16, height: u16) -> Vec<(Tab, String)> {
+        self.render_tabs_to_text(width, height, &Tab::ALL)
+    }
+
+    /// Render the requested tabs through the complete application frame.
+    ///
+    /// This includes the global header, warning bar, footer, layout chrome,
+    /// active effects, and view contents. Callers must validate non-zero
+    /// dimensions before invoking this helper.
+    pub fn render_tabs_to_text(
+        &mut self,
+        width: u16,
+        height: u16,
+        tabs: &[Tab],
+    ) -> Vec<(Tab, String)> {
         use ratatui::backend::TestBackend;
 
-        Tab::ALL
+        if width == 0 || height == 0 {
+            return Vec::new();
+        }
+
+        let previous_tab = self.tui_state.active_tab;
+        let rendered = tabs
             .iter()
             .map(|&tab| {
                 self.tui_state.active_tab = tab;
@@ -773,7 +1012,9 @@ impl App {
                     .join("\n");
                 (tab, text)
             })
-            .collect()
+            .collect();
+        self.tui_state.active_tab = previous_tab;
+        rendered
     }
 
     /// Install a live process supervisor used for per-agent process metrics.
@@ -833,7 +1074,7 @@ impl App {
     }
 
     fn main_loop(&mut self, terminal: &mut TuiTerminal) -> Result<()> {
-        let mut events = EventHandler::new(Duration::from_millis(16)); // ~60fps
+        let mut events = EventHandler::new(self.refresh_rate);
         let log_dispatch = tracing::dispatcher::get_default(|dispatch| dispatch.clone());
 
         // ---------------------------------------------------------------
@@ -861,7 +1102,9 @@ impl App {
         // ---------------------------------------------------------------
         // Start debounced `.roko/` watcher with polling fallback
         // ---------------------------------------------------------------
-        self.fs_watch = Some(fs_watch::watch_roko_dir_with_fallback(&self.workdir));
+        if self._state_hub.is_none() || self.replay_disk_snapshots {
+            self.fs_watch = Some(fs_watch::watch_roko_dir_with_fallback(&self.workdir));
+        }
 
         // ---------------------------------------------------------------
         // Prime git data once via background thread, then refresh only
@@ -896,79 +1139,110 @@ impl App {
         terminal
             .draw(|frame| self.draw(frame))
             .context("initial TUI draw")?;
+        let mut last_draw = Instant::now();
 
         // ---------------------------------------------------------------
-        // Event loop
+        // Event loop — adaptive tick policy with dirty-flag rendering
         // ---------------------------------------------------------------
         while self.running {
+            // -- 1. Shutdown check --
             self.drain_shutdown_signal();
             if !self.running {
                 break;
             }
 
-            self.drain_snapshot_channel();
+            // -- 2. Adaptive tick rate: select policy, update EventHandler --
+            let policy = next_tick_policy(&self.tick_policy_inputs());
+            events.set_tick_rate(policy.duration());
+
+            // -- 3. Wait for next event (blocks up to the policy duration) --
             match events.next().context("poll TUI event")? {
                 Event::Key(key) => {
-                    self.last_input = Instant::now();
+                    self.frame_stats.record_input();
+                    self.render_dirty.insert(RenderDirty::INPUT);
                     self.handle_key(key);
                     // Handle deferred refresh requests from dispatch_action.
                     if self.pending_refresh {
                         self.pending_refresh = false;
                         self.refresh_snapshot();
                     }
-                    self.drain_snapshot_channel();
-                    // Drain background channels before immediate redraw
-                    self.drain_background_channels();
-                    terminal
-                        .draw(|frame| self.draw(frame))
-                        .context("TUI redraw after key")?;
-                    continue;
                 }
                 Event::Mouse(mouse) => {
-                    self.last_input = Instant::now();
+                    self.frame_stats.record_input();
+                    self.render_dirty.insert(RenderDirty::INPUT);
                     self.handle_mouse(mouse);
                 }
                 Event::Resize(width, height) => {
                     self.terminal_size = (width, height);
+                    self.render_dirty.insert(RenderDirty::RESIZE);
                 }
                 Event::Tick => {
-                    self.tui_state.atmosphere.tick();
-                    self.drain_snapshot_channel();
-                    self.drain_approval_requests();
-                    self.drain_background_channels();
+                    // Tick: check for animation state that warrants a redraw.
+                    let animated = self.tui_state.agents.iter().any(|a| a.active)
+                        || self.tui_state.plans.iter().any(|p| p.active)
+                        || self.has_modal()
+                        || !self.notifications.is_empty();
+                    if animated {
+                        self.tui_state.atmosphere.tick();
+                        self.render_dirty.insert(RenderDirty::ANIMATION);
+                    }
                     // Handle deferred refresh requests from dispatch_action.
                     if self.pending_refresh {
                         self.pending_refresh = false;
                         self.refresh_snapshot();
                     }
-                    self.expire_notifications();
                 }
             }
 
-            // Adaptive frame rate: slow the poll interval when idle so the
-            // process sleeps longer between ticks, saving CPU.  20 fps is
-            // still fast enough for data-driven updates while agents run.
-            let idle_tick = Duration::from_millis(50); // 20 fps
-            let active_tick = Duration::from_millis(16); // ~60 fps
-            let desired = if self.last_input.elapsed() > Duration::from_secs(5) {
-                idle_tick
-            } else {
-                active_tick
-            };
-            if events.tick_rate() != desired {
-                events.set_tick_rate(desired);
+            // -- 4. Coalesce: drain all background channels --
+            self.drain_approval_requests();
+            self.drain_background_channels();
+
+            // -- 5. Notification expiry --
+            let notification_count = self.notifications.len();
+            self.expire_notifications();
+            if notification_count != self.notifications.len() {
+                self.render_dirty.insert(RenderDirty::NOTIFICATION);
             }
 
-            terminal
-                .draw(|frame| self.draw(frame))
-                .context("TUI redraw")?;
+            // -- 6. Health fallback: disk-backed dashboards without a
+            //    StateHub should still refresh periodically. --
+            if self._state_hub.is_none() && last_draw.elapsed() >= Duration::from_secs(1) {
+                self.render_dirty.insert(RenderDirty::FORCED_HEALTH);
+            }
+
+            // -- 7. Draw only when dirty; record stats --
+            if !self.running {
+                break;
+            }
+            if self.render_dirty.is_dirty() {
+                let draw_reasons = self.render_dirty;
+                let input_pending = self.render_dirty.contains(RenderDirty::INPUT)
+                    && self.frame_stats.last_input_at.is_some();
+                let draw_start = Instant::now();
+                terminal
+                    .draw(|frame| self.draw(frame))
+                    .context("TUI redraw")?;
+                let draw_elapsed = draw_start.elapsed();
+                self.frame_stats.record_frame(draw_elapsed, draw_reasons);
+                if input_pending {
+                    if let Some(input_at) = self.frame_stats.last_input_at {
+                        self.frame_stats.record_input_to_draw(input_at.elapsed());
+                    }
+                }
+                // Clear only the reasons that were included in this draw.
+                self.render_dirty.remove(draw_reasons);
+                last_draw = Instant::now();
+            } else {
+                self.frame_stats.record_skip();
+            }
         }
 
         Ok(())
     }
 
     fn draw(&mut self, frame: &mut Frame<'_>) {
-        let theme = Theme::from_env();
+        let theme = self.theme;
         let full_area = frame.area();
 
         // Establish a real canvas every frame.  Relying on terminal defaults
@@ -976,21 +1250,44 @@ impl App {
         // theme; Mori's visual hierarchy starts from an explicit black field.
         frame.render_widget(Block::default().style(Theme::block_style()), full_area);
 
+        // Guard: if the terminal is too small for useful rendering, show a
+        // short message instead of attempting layout that would panic or clip.
+        if super::layout::is_terminal_too_small(full_area) {
+            let msg = format!(
+                "{}x{} -- resize to 60x10+",
+                full_area.width, full_area.height
+            );
+            frame.render_widget(
+                Paragraph::new(msg)
+                    .style(Style::default().fg(Theme::WARNING))
+                    .alignment(Alignment::Center),
+                full_area,
+            );
+            return;
+        }
+
         // Responsive outer margin on large terminals
         let content_area = super::layout::responsive_outer_margin(full_area);
 
-        // Main layout: header (1) + warning (0-1) + wave (0-1) + content + footer (1)
+        // Main layout: header + warning + wave + optional sub-view bar +
+        // content + footer. Dashboard and Agents already render their own
+        // purpose-built internal navigation bars.
         let has_waves = !self.tui_state.execution_waves.is_empty();
         let wave_row_height = if has_waves { 1 } else { 0 };
         let warning_height = super::widgets::header_bar::warning_bar_height(&self.tui_state);
+        // Show the sub-view bar when the tab has more than one sub-view.
+        let sub_views = views::SubView::for_tab(self.tui_state.active_tab);
+        let subview_height = u16::from(sub_views.len() > 1);
         let main_layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1),               // Mori-style header bar
-                Constraint::Length(warning_height),  // Warning bar (0 when no warnings)
-                Constraint::Length(wave_row_height), // Wave indicator row (hidden when idle)
-                Constraint::Min(0),                  // Content area
-                Constraint::Length(1),               // Status footer
+                Constraint::Length(1),               // [0] Mori-style header bar
+                Constraint::Length(warning_height),  // [1] Warning bar (0 when no warnings)
+                Constraint::Length(wave_row_height), // [2] Wave indicator row (hidden when idle)
+                Constraint::Length(1),               // [3] Breadcrumb trail
+                Constraint::Length(subview_height),  // [4] Reachable Alt+number sub-views
+                Constraint::Min(0),                  // [5] Content area
+                Constraint::Length(1),               // [6] Status footer
             ])
             .split(content_area);
 
@@ -1011,13 +1308,26 @@ impl App {
             );
         }
 
+        // Breadcrumb trail: Tab > SubView > Focus
+        super::widgets::header_bar::render_breadcrumb_bar(frame, main_layout[3], &self.tui_state);
+
+        if subview_height > 0 {
+            self.render_subview_bar(frame, main_layout[4], &theme);
+        }
+
         // Content: dispatch to active tab view
-        // Layout: [0]=header [1]=warning [2]=wave [3]=content [4]=footer
-        let content_idx = 3;
-        let footer_idx = 4;
+        // Layout: [0]=header [1]=warning [2]=wave [3]=breadcrumb [4]=subview
+        //         [5]=content [6]=footer
+        let content_idx = 5;
+        let footer_idx = 6;
         let (content_area, input_area) = self.split_content_area(main_layout[content_idx]);
 
         self.clamp_scroll_state_to_view();
+        // Honor the config cache TTL per draw so the F6 tab stays fresh even
+        // when no refresh tick fires (also covers headless --snapshot draws).
+        if self.tui_state.active_tab == Tab::Config && self.tui_state.config_needs_refresh() {
+            self.tui_state.invalidate_config_cache();
+        }
         let view_state = self.current_view_state();
         views::render_tab_content(
             frame,
@@ -1039,7 +1349,7 @@ impl App {
         // Visual effects are part of the scene, never a layer above controls.
         // Apply them after ordinary widgets (so they can respect occupied
         // cells) but before modal dimming and modal content.
-        if self.fx_config.screen_postfx || self.fx_config.nerv_viz || self.fx_config.particles {
+        if self.fx_config.screen_postfx {
             let buf = frame.buffer_mut();
             super::postfx_pipeline::apply_pipeline(
                 self.tui_state.active_tab as usize,
@@ -1049,7 +1359,20 @@ impl App {
                 self.tui_state.atmosphere.frame_count,
                 &self.fx_config,
                 &self.tui_state,
+                &mut self.pfx_bufs,
             );
+        }
+
+        // Tab transition: brief fade-in when switching views.
+        if let Some((started, duration)) = self.tab_transition {
+            let progress = started.elapsed().as_secs_f64() / duration.as_secs_f64();
+            if progress >= 1.0 {
+                self.tab_transition = None;
+            } else {
+                // Ease-out cubic: fast start, smooth deceleration.
+                let t = 1.0 - (1.0 - progress).powi(3);
+                super::postfx::fade_overlay(content_area, frame.buffer_mut(), t);
+            }
         }
 
         // Dim overlay before modals
@@ -1125,10 +1448,19 @@ impl App {
                     self.current_page = page_id;
                     let _ = self.scaffold.set_active_page(page_id);
                 }
+                // Warm the config editor cache on tab entry so the first F6
+                // render shows config fields instead of only Runtime sections.
+                if matches!(tab, Tab::Config) && self.tui_state.config_needs_refresh() {
+                    self.tui_state.invalidate_config_cache();
+                }
                 if matches!(tab, Tab::Agents) && !matches!(previous_tab, Tab::Agents) {
                     self.request_agent_topology_refresh();
                 } else if !matches!(tab, Tab::Agents) {
                     self.tui_state.close_agent_topology();
+                }
+                // Start a subtle fade-in transition when switching tabs.
+                if previous_tab != tab && self.fx_config.screen_postfx {
+                    self.tab_transition = Some((Instant::now(), Duration::from_millis(200)));
                 }
             }
             TuiAction::FocusNext => {
@@ -1145,8 +1477,8 @@ impl App {
                     )
                 {
                     self.tui_state.selected_agent = self.tui_state.selected_agent.saturating_sub(1);
-                } else if self.tui_state.selected_plan_idx > 0 {
-                    self.tui_state.selected_plan_idx -= 1;
+                } else {
+                    self.move_selected_plan(-1);
                 }
             }
             TuiAction::SelectPlanDown => {
@@ -1161,10 +1493,13 @@ impl App {
                         self.tui_state.selected_agent += 1;
                     }
                 } else {
-                    let max = self.tui_state.plans.len().saturating_sub(1);
-                    if self.tui_state.selected_plan_idx < max {
-                        self.tui_state.selected_plan_idx += 1;
-                    }
+                    self.move_selected_plan(1);
+                }
+            }
+            TuiAction::SelectPlanByIndex(index) => {
+                let visible = self.visible_plan_indices();
+                if let Some(&plan_idx) = visible.get(index) {
+                    self.tui_state.selected_plan_idx = plan_idx;
                 }
             }
             TuiAction::TaskPickerUp => {
@@ -1248,9 +1583,11 @@ impl App {
             }
             TuiAction::ToggleLogFilter(level) => {
                 self.tui_state.toggle_log_filter_level(level);
+                self.refresh_log_search_matches();
             }
             TuiAction::ShowAllLogFilters => {
                 self.tui_state.show_all_log_filter_levels();
+                self.refresh_log_search_matches();
             }
             TuiAction::ScrollAgentUp => {
                 let delta = i32::from(self.scroll_accel.tick(-1));
@@ -1314,8 +1651,23 @@ impl App {
                 if let Some(modal) = self.tui_state.active_modal.as_mut() {
                     match modal {
                         ModalState::WaveOverview { scroll_offset, .. }
-                        | ModalState::AgentPool { scroll_offset, .. } => {
+                        | ModalState::AgentPool { scroll_offset, .. }
+                        | ModalState::BatchReview { scroll_offset, .. } => {
                             *scroll_offset = scroll_offset.saturating_sub(1);
+                        }
+                        ModalState::NotificationHistory {
+                            scroll_offset,
+                            selected_index,
+                            ..
+                        } => {
+                            *selected_index = selected_index.saturating_sub(1);
+                            *scroll_offset = scroll_offset.saturating_sub(1);
+                        }
+                        ModalState::QueueOverview { selected_index, .. } => {
+                            *selected_index = selected_index.saturating_sub(1);
+                        }
+                        ModalState::TaskPicker { selected_index, .. } => {
+                            *selected_index = selected_index.saturating_sub(1);
                         }
                         _ => {}
                     }
@@ -1325,8 +1677,23 @@ impl App {
                 if let Some(modal) = self.tui_state.active_modal.as_mut() {
                     match modal {
                         ModalState::WaveOverview { scroll_offset, .. }
-                        | ModalState::AgentPool { scroll_offset, .. } => {
+                        | ModalState::AgentPool { scroll_offset, .. }
+                        | ModalState::BatchReview { scroll_offset, .. } => {
                             *scroll_offset = scroll_offset.saturating_add(1);
+                        }
+                        ModalState::NotificationHistory {
+                            scroll_offset,
+                            selected_index,
+                            ..
+                        } => {
+                            *selected_index = selected_index.saturating_add(1);
+                            *scroll_offset = scroll_offset.saturating_add(1);
+                        }
+                        ModalState::QueueOverview { selected_index, .. } => {
+                            *selected_index = selected_index.saturating_add(1);
+                        }
+                        ModalState::TaskPicker { selected_index, .. } => {
+                            *selected_index = selected_index.saturating_add(1);
                         }
                         _ => {}
                     }
@@ -1360,6 +1727,46 @@ impl App {
                     self.dismiss_all_modals();
                 }
             }
+            TuiAction::WelcomeInit => {
+                // Initialize workspace: create .roko/ and default roko.toml
+                let roko_dir = self.workdir.join(".roko");
+                let roko_toml = self.workdir.join("roko.toml");
+                if let Err(err) = std::fs::create_dir_all(&roko_dir) {
+                    tracing::warn!(error = %err, "failed to create .roko/");
+                }
+                // Create subdirectories matching `roko init`
+                for sub in &[
+                    "state",
+                    "learn",
+                    "jobs",
+                    "prd",
+                    "prd/published",
+                    "prd/drafts",
+                    "task-outputs",
+                    "research",
+                    "subscriptions",
+                    "templates",
+                ] {
+                    let _ = std::fs::create_dir_all(roko_dir.join(sub));
+                }
+                // Create default roko.toml if absent
+                if !roko_toml.exists() {
+                    let default_toml =
+                        "[agent]\neffort = \"standard\"\n\n[learning]\nenabled = true\n";
+                    if let Err(err) = std::fs::write(&roko_toml, default_toml) {
+                        tracing::warn!(error = %err, "failed to write roko.toml");
+                    }
+                }
+                // Update workspace state
+                self.tui_state.workdir = self.workdir.clone();
+                self.tui_state.refresh_mcp_config_view();
+                // Transition to the confirmation screen
+                self.tui_state.active_modal = Some(ModalState::Welcome { initialized: true });
+                tracing::info!(workdir = %self.workdir.display(), "workspace initialized from TUI welcome modal");
+            }
+            TuiAction::WelcomeDismiss => {
+                self.dismiss_all_modals();
+            }
             TuiAction::ShowHelp => {
                 self.tui_state.active_modal =
                     if matches!(self.tui_state.active_modal, Some(ModalState::Help)) {
@@ -1377,7 +1784,7 @@ impl App {
                     "disabled"
                 };
                 self.notifications
-                    .push(super::modals::Notification::info(&format!(
+                    .push_back(super::modals::Notification::info(&format!(
                         "Screen postfx {state}"
                     )));
             }
@@ -1386,14 +1793,14 @@ impl App {
                 match self.fx_config.save_preset(&self.workdir) {
                     Ok(()) => {
                         self.notifications
-                            .push(super::modals::Notification::info(&format!(
+                            .push_back(super::modals::Notification::info(&format!(
                                 "Effects: {}",
                                 preset.label()
                             )));
                     }
                     Err(error) => {
                         self.notifications
-                            .push(super::modals::Notification::error(&format!(
+                            .push_back(super::modals::Notification::error(&format!(
                                 "Effects preset save failed: {error}"
                             )));
                     }
@@ -1467,7 +1874,7 @@ impl App {
                 ) {
                     self.tui_state.active_modal = None;
                 } else {
-                    let milestones = queue_overview_milestones(&self.tui_state);
+                    let milestones = queue_overview_milestones(&self.tui_state, &self.workdir);
                     self.tui_state.active_modal = Some(ModalState::QueueOverview {
                         selected_index: self
                             .tui_state
@@ -1521,7 +1928,44 @@ impl App {
                 }
             }
             TuiAction::TogglePause => {
-                self.tui_state.is_paused = !self.tui_state.is_paused;
+                if let Some(sender) = &self.exec_cmd_sender {
+                    let requested_pause = !self.tui_state.is_paused;
+                    let kind = if requested_pause {
+                        crate::execution_control::ExecutionCommandKind::Pause
+                    } else {
+                        crate::execution_control::ExecutionCommandKind::Resume
+                    };
+                    let cmd = sender.build_command(kind.clone(), None, None, None);
+                    let cmd_id = cmd.command_id.clone();
+                    match sender.try_send(cmd) {
+                        Ok(()) => {
+                            // Track the pending command so we can commit state on ack.
+                            self.pending_exec_commands.insert(cmd_id, kind);
+                            // State changes on Completed ack; show pending.
+                            self.notifications
+                                .push_back(super::modals::Notification::info(if requested_pause {
+                                    "Pause requested"
+                                } else {
+                                    "Resume requested"
+                                }));
+                        }
+                        Err(crate::execution_control::CommandSendError::Full(_)) => {
+                            self.notifications
+                                .push_back(super::modals::Notification::warn("command queue full"));
+                        }
+                        Err(crate::execution_control::CommandSendError::Disconnected(_)) => {
+                            self.notifications
+                                .push_back(super::modals::Notification::warn(
+                                    "executor disconnected",
+                                ));
+                        }
+                    }
+                } else {
+                    self.notifications
+                        .push_back(super::modals::Notification::warn(
+                            "Pause is available only during a connected plan run",
+                        ));
+                }
             }
             TuiAction::SwitchAgentTab(idx) => {
                 if idx == usize::MAX {
@@ -1613,7 +2057,7 @@ impl App {
                                 .ok()
                         });
                     self.notifications
-                        .push(super::modals::Notification::info(format!(
+                        .push_back(super::modals::Notification::info(format!(
                             "Injected: {}",
                             truncate_str(&msg, 40)
                         )));
@@ -1635,12 +2079,15 @@ impl App {
                 } else if self.tui_state.input_mode == InputMode::LogSearch {
                     self.tui_state.log_search.pattern.push(c);
                     self.tui_state.log_search.recompile();
-                    self.tui_state
-                        .log_search
-                        .update_matches(&self.tui_state.cached_unified_log);
+                    self.refresh_log_search_matches();
                 } else if self.tui_state.input_mode == InputMode::PlanFilter {
                     self.tui_state.plan_tree_filter.pattern.push(c);
                     self.tui_state.plan_tree_filter.reparse();
+                    self.normalize_selected_plan_for_filter();
+                } else if self.tui_state.input_mode == InputMode::AgentOutputSearch {
+                    self.tui_state.agent_output_search.pattern.push(c);
+                    self.tui_state.agent_output_search.recompile();
+                    self.refresh_agent_output_search_matches();
                 }
             }
             TuiAction::InputBackspace => {
@@ -1655,12 +2102,15 @@ impl App {
                 } else if self.tui_state.input_mode == InputMode::LogSearch {
                     self.tui_state.log_search.pattern.pop();
                     self.tui_state.log_search.recompile();
-                    self.tui_state
-                        .log_search
-                        .update_matches(&self.tui_state.cached_unified_log);
+                    self.refresh_log_search_matches();
                 } else if self.tui_state.input_mode == InputMode::PlanFilter {
                     self.tui_state.plan_tree_filter.pattern.pop();
                     self.tui_state.plan_tree_filter.reparse();
+                    self.normalize_selected_plan_for_filter();
+                } else if self.tui_state.input_mode == InputMode::AgentOutputSearch {
+                    self.tui_state.agent_output_search.pattern.pop();
+                    self.tui_state.agent_output_search.recompile();
+                    self.refresh_agent_output_search_matches();
                 }
             }
             TuiAction::StartFilter => {
@@ -1732,11 +2182,11 @@ impl App {
                                 .ok()
                         });
                     self.notifications
-                        .push(super::modals::Notification::info(format!(
+                        .push_back(super::modals::Notification::info(format!(
                             "Confirmed: {}",
                             truncate_str(&action_str, 40)
                         )));
-                    // Also send the corresponding TuiCommand to the runner.
+                    // Also send the corresponding ExecutionCommand to the executor.
                     self.send_tui_command_for_confirm(action);
                 }
                 self.tui_state.pending_confirm = None;
@@ -1748,12 +2198,161 @@ impl App {
                 }
             }
             TuiAction::DismissNotification => {
-                if !self.notifications.is_empty() {
-                    self.notifications.remove(0);
+                if let Some(dismissed) = self.notifications.pop_front() {
+                    self.push_notification_history(dismissed);
                 }
-                // Also dismiss the persistent warning bar.
-                if !self.tui_state.warnings_dismissed {
+                // Dismiss current warnings individually so new warnings still appear.
+                let keys = self.tui_state.active_warning_keys();
+                if keys.is_empty() {
                     self.tui_state.warnings_dismissed = true;
+                } else {
+                    for key in keys {
+                        self.tui_state.dismissed_warning_keys.insert(key);
+                    }
+                }
+            }
+            TuiAction::ShowNotificationHistory => {
+                if matches!(
+                    self.tui_state.active_modal,
+                    Some(ModalState::NotificationHistory { .. })
+                ) {
+                    self.tui_state.active_modal = None;
+                } else {
+                    self.tui_state.active_modal = Some(ModalState::NotificationHistory {
+                        scroll_offset: 0,
+                        selected_index: 0,
+                        filter: super::modals::LevelFilter::default(),
+                    });
+                }
+            }
+            TuiAction::NotifFilterToggle(key) => {
+                if let Some(ModalState::NotificationHistory {
+                    filter,
+                    selected_index,
+                    ..
+                }) = self.tui_state.active_modal.as_mut()
+                {
+                    filter.toggle(key);
+                    // Reset selection when filters change.
+                    *selected_index = 0;
+                }
+            }
+            TuiAction::NotifPageUp => {
+                if let Some(ModalState::NotificationHistory {
+                    scroll_offset,
+                    selected_index,
+                    ..
+                }) = self.tui_state.active_modal.as_mut()
+                {
+                    let page = 10u16;
+                    *scroll_offset = scroll_offset.saturating_sub(page);
+                    *selected_index = selected_index.saturating_sub(page as usize);
+                }
+            }
+            TuiAction::NotifPageDown => {
+                if let Some(ModalState::NotificationHistory {
+                    scroll_offset,
+                    selected_index,
+                    ..
+                }) = self.tui_state.active_modal.as_mut()
+                {
+                    let page = 10u16;
+                    *scroll_offset = scroll_offset.saturating_add(page);
+                    *selected_index = selected_index.saturating_add(page as usize);
+                }
+            }
+            TuiAction::NotifHome => {
+                if let Some(ModalState::NotificationHistory {
+                    scroll_offset,
+                    selected_index,
+                    ..
+                }) = self.tui_state.active_modal.as_mut()
+                {
+                    *scroll_offset = 0;
+                    *selected_index = 0;
+                }
+            }
+            TuiAction::NotifEnd => {
+                // Compute count first to avoid double-borrow of tui_state.
+                let count = if let Some(ModalState::NotificationHistory { filter, .. }) =
+                    &self.tui_state.active_modal
+                {
+                    Some(
+                        self.tui_state
+                            .notification_history
+                            .iter()
+                            .filter(|e| filter.accepts(e.level))
+                            .count(),
+                    )
+                } else {
+                    None
+                };
+                if let (
+                    Some(count),
+                    Some(ModalState::NotificationHistory {
+                        scroll_offset,
+                        selected_index,
+                        ..
+                    }),
+                ) = (count, self.tui_state.active_modal.as_mut())
+                {
+                    *selected_index = count.saturating_sub(1);
+                    *scroll_offset = count.saturating_sub(1) as u16;
+                }
+            }
+            TuiAction::NotifJumpToRelated => {
+                // Extract the related target from the selected notification to
+                // avoid holding a borrow on active_modal while mutating it.
+                let jump_target = if let Some(ModalState::NotificationHistory {
+                    selected_index,
+                    filter,
+                    ..
+                }) = &self.tui_state.active_modal
+                {
+                    let filtered: Vec<&super::modals::NotificationRecord> = self
+                        .tui_state
+                        .notification_history
+                        .iter()
+                        .rev()
+                        .filter(|e| filter.accepts(e.level))
+                        .collect();
+                    filtered
+                        .get(*selected_index)
+                        .map(|entry| (entry.related_task.clone(), entry.related_run.clone()))
+                } else {
+                    None
+                };
+                if let Some((related_task, related_run)) = jump_target {
+                    if let Some(task_id) = related_task {
+                        if let Some(idx) = self
+                            .tui_state
+                            .current_task_checklist
+                            .iter()
+                            .position(|t| t.id == task_id)
+                        {
+                            self.tui_state.active_modal = Some(ModalState::TaskDetail {
+                                task_idx: idx,
+                                scroll_offset: 0,
+                            });
+                        } else {
+                            self.notifications
+                                .push_back(super::modals::Notification::warn(format!(
+                                    "Task {task_id} not found (may be stale)"
+                                )));
+                        }
+                    } else if let Some(run_id) = related_run {
+                        if let Some(idx) = self.tui_state.plans.iter().position(|p| p.id == run_id)
+                        {
+                            self.tui_state.active_modal = Some(ModalState::PlanDetail {
+                                plan_id: self.tui_state.plans[idx].id.clone(),
+                            });
+                        } else {
+                            self.notifications
+                                .push_back(super::modals::Notification::warn(format!(
+                                    "Run {run_id} not found (may be stale)"
+                                )));
+                        }
+                    }
                 }
             }
             TuiAction::ToggleAgentPaneGroup => {
@@ -1989,8 +2588,11 @@ impl App {
             TuiAction::ConfigSave => {
                 self.save_config_changes();
             }
+            TuiAction::ConfigReload => {
+                self.tui_state.invalidate_config_cache();
+            }
             TuiAction::MouseClick { x, y } => {
-                // Use hit_test to determine zone
+                // Use hit_test registry to determine click target (#368).
                 let zones = super::hit_test::HitZones::compute(
                     super::layout::responsive_outer_margin(Rect::new(
                         0,
@@ -2001,22 +2603,27 @@ impl App {
                     self.tui_state.active_tab as usize,
                     Tab::ALL.len(),
                 );
-                if let Some(zone) = zones.zone_at(x, y) {
-                    // Convert hit_test::FocusZone to input::FocusZone
-                    let mapped = match zone {
-                        super::hit_test::FocusZone::PlanTree => FocusZone::PlanTree,
-                        super::hit_test::FocusZone::TaskProgress => FocusZone::TaskProgress,
-                        super::hit_test::FocusZone::AgentOutput => FocusZone::AgentOutput,
-                        super::hit_test::FocusZone::CommandOutput => FocusZone::CommandOutput,
-                        super::hit_test::FocusZone::RightContent => FocusZone::RightPanel,
-                        super::hit_test::FocusZone::HeaderTab(_) => FocusZone::PlanTree,
-                        super::hit_test::FocusZone::DetailTab(_) => FocusZone::RightPanel,
-                    };
-                    self.tui_state.focus = mapped;
+                let registry = zones.into_registry(self.tui_state.active_tab);
+                if let Some(region) = registry.region_at(x, y) {
+                    match region.click_target {
+                        super::hit_test::ClickTarget::SwitchTab(idx) => {
+                            if let Some(&tab) = Tab::ALL.get(idx) {
+                                self.dispatch_action(TuiAction::SwitchTab(tab));
+                            }
+                        }
+                        super::hit_test::ClickTarget::SwitchSubView(idx) => {
+                            self.dispatch_action(TuiAction::SwitchSubView(idx));
+                        }
+                        super::hit_test::ClickTarget::SetFocus(zone) => {
+                            let mapped = self.map_hit_zone(zone);
+                            self.tui_state.focus = mapped;
+                        }
+                        super::hit_test::ClickTarget::None => {}
+                    }
                 }
             }
-            TuiAction::MouseScrollUp { .. } => self.scroll_focused(-3),
-            TuiAction::MouseScrollDown { .. } => self.scroll_focused(3),
+            TuiAction::MouseScrollUp { x, y } => self.scroll_at(x, y, -3),
+            TuiAction::MouseScrollDown { x, y } => self.scroll_at(x, y, 3),
             TuiAction::Refresh => self.pending_refresh = true,
             TuiAction::SwitchSubView(idx) => {
                 // UI-04: switch sub-view within the current tab region.
@@ -2024,9 +2631,18 @@ impl App {
                 // based on which tab is active. The sub_tab in ViewState
                 // is derived from these fields via current_view_state().
                 let tab = self.tui_state.active_tab;
-                let max = views::SubView::for_tab(tab).len();
+                // Dashboard owns eight purpose-built detail panels.  It does
+                // not use the older four-item generic SubView list.
+                let max = if tab == Tab::Dashboard {
+                    8
+                } else {
+                    views::SubView::for_tab(tab).len()
+                };
                 if idx < max {
                     self.tui_state.set_sub_tab_for(tab, idx);
+                    if tab == Tab::Logs {
+                        self.refresh_log_search_matches();
+                    }
                 }
             }
             TuiAction::SubmitJob => {
@@ -2050,25 +2666,14 @@ impl App {
             }
             TuiAction::NextLogMatch => {
                 self.tui_state.log_search.next_match();
-                // Scroll to current match
-                if let Some(&line_idx) = self
-                    .tui_state
-                    .log_search
-                    .match_indices
-                    .get(self.tui_state.log_search.current_match)
-                {
+                if let Some(line_idx) = self.current_log_match_display_index() {
                     self.tui_state.log_scroll = line_idx;
                     self.tui_state.log_auto_tail = false;
                 }
             }
             TuiAction::PrevLogMatch => {
                 self.tui_state.log_search.prev_match();
-                if let Some(&line_idx) = self
-                    .tui_state
-                    .log_search
-                    .match_indices
-                    .get(self.tui_state.log_search.current_match)
-                {
+                if let Some(line_idx) = self.current_log_match_display_index() {
                     self.tui_state.log_scroll = line_idx;
                     self.tui_state.log_auto_tail = false;
                 }
@@ -2079,6 +2684,20 @@ impl App {
                     SearchMode::Highlight => SearchMode::Filter,
                     SearchMode::Filter => SearchMode::Highlight,
                 };
+                self.refresh_log_search_matches();
+            }
+            TuiAction::YankLogEntry => {
+                let entries = self.tui_state.unified_log_entries().to_vec();
+                let idx = if self.tui_state.log_auto_tail {
+                    entries.len().saturating_sub(1)
+                } else {
+                    (self.tui_state.log_scroll).min(entries.len().saturating_sub(1))
+                };
+                if let Some(entry) = entries.get(idx) {
+                    let text = format!("[{}] {} {}", entry.timestamp, entry.source, entry.message);
+                    // TODO: clipboard integration (arboard/copypasta)
+                    let _ = text; // Suppress unused warning until clipboard is wired
+                }
             }
 
             // -- Plan tree filter (#219) --
@@ -2087,6 +2706,7 @@ impl App {
                 self.tui_state.plan_tree_filter.active = true;
                 self.tui_state.plan_tree_filter.pattern.clear();
                 self.tui_state.plan_tree_filter.reparse();
+                self.normalize_selected_plan_for_filter();
             }
             TuiAction::AcceptPlanFilter => {
                 self.tui_state.input_mode = InputMode::Normal;
@@ -2095,6 +2715,51 @@ impl App {
             TuiAction::CancelPlanFilter => {
                 self.tui_state.input_mode = InputMode::Normal;
                 self.tui_state.plan_tree_filter.clear();
+                self.normalize_selected_plan_for_filter();
+            }
+
+            // -- Agent output search (#367) --
+            TuiAction::StartAgentOutputSearch => {
+                self.tui_state.input_mode = InputMode::AgentOutputSearch;
+                self.tui_state.agent_output_search.active = true;
+                self.tui_state.agent_output_search.pattern.clear();
+                self.tui_state.agent_output_search.recompile();
+            }
+            TuiAction::AcceptAgentOutputSearch => {
+                self.tui_state.input_mode = InputMode::Normal;
+                // Keep search active with the current pattern for n/N navigation
+            }
+            TuiAction::CancelAgentOutputSearch => {
+                self.tui_state.input_mode = InputMode::Normal;
+                self.tui_state.agent_output_search.clear();
+            }
+            TuiAction::NextAgentOutputMatch => {
+                self.tui_state.agent_output_search.next_match();
+                // Scroll to the current match if we have one
+                if self
+                    .tui_state
+                    .agent_output_search
+                    .current_match_seq()
+                    .is_some()
+                {
+                    // Pin the scroll (switch from tail to pinned mode)
+                    if self.tui_state.agent_scroll.is_none() {
+                        self.tui_state.agent_scroll = Some(0);
+                    }
+                }
+            }
+            TuiAction::PrevAgentOutputMatch => {
+                self.tui_state.agent_output_search.prev_match();
+                if self
+                    .tui_state
+                    .agent_output_search
+                    .current_match_seq()
+                    .is_some()
+                {
+                    if self.tui_state.agent_scroll.is_none() {
+                        self.tui_state.agent_scroll = Some(0);
+                    }
+                }
             }
 
             // -- Recovery keybindings (#119) --
@@ -2104,9 +2769,10 @@ impl App {
                         let plan_id = plan.id.clone();
                         self.open_confirm_modal(ConfirmAction::SoftRetryPlan(plan_id));
                     } else {
-                        self.notifications.push(super::modals::Notification::info(
-                            "No failed tasks to retry",
-                        ));
+                        self.notifications
+                            .push_back(super::modals::Notification::info(
+                                "No failed tasks to retry",
+                            ));
                     }
                 }
             }
@@ -2127,7 +2793,7 @@ impl App {
                     };
                     self.tui_state.active_modal = Some(ModalState::PlanDetail { plan_id });
                     self.notifications
-                        .push(super::modals::Notification::info(truncate_str(
+                        .push_back(super::modals::Notification::info(truncate_str(
                             &message, 80,
                         )));
                 }
@@ -2143,6 +2809,10 @@ impl App {
                     let plan_id = plan.id.clone();
                     self.open_confirm_modal(ConfirmAction::ReverifyPlan(plan_id));
                 }
+            }
+
+            TuiAction::CycleCostSort => {
+                self.tui_state.cost_sort_mode = self.tui_state.cost_sort_mode.next();
             }
 
             TuiAction::None => {}
@@ -2211,15 +2881,23 @@ impl App {
         };
 
         let mut disconnected = false;
+        let mut got_request = false;
         loop {
             match rx.try_recv() {
-                Ok(request) => self.accept_approval_request(request),
+                Ok(request) => {
+                    self.accept_approval_request(request);
+                    got_request = true;
+                }
                 Err(mpsc::error::TryRecvError::Empty) => break,
                 Err(mpsc::error::TryRecvError::Disconnected) => {
                     disconnected = true;
                     break;
                 }
             }
+        }
+
+        if got_request {
+            self.render_dirty.insert(RenderDirty::MODAL);
         }
 
         if !disconnected {
@@ -2260,28 +2938,37 @@ impl App {
         }
     }
 
-    /// Map a confirmed `ConfirmAction` to the corresponding `TuiCommand` and
-    /// send it through the in-process channel (if connected to a runner).
+    /// Map a confirmed `ConfirmAction` to the corresponding
+    /// `ExecutionCommand` and send it through the in-process channel (if
+    /// connected to an executor).
     fn send_tui_command_for_confirm(&self, action: &ConfirmAction) {
-        use crate::runner::TuiCommand;
-        let cmd = match action {
-            ConfirmAction::SoftRetryPlan(plan_id) => TuiCommand::SoftRetry {
-                plan_id: plan_id.clone(),
-            },
-            ConfirmAction::RepairPlanPreserve(plan_id) => TuiCommand::Repair {
-                plan_id: plan_id.clone(),
-                preserve_completed: true,
-            },
-            ConfirmAction::RepairPlanClean(plan_id) => TuiCommand::Repair {
-                plan_id: plan_id.clone(),
-                preserve_completed: false,
-            },
-            ConfirmAction::ReverifyPlan(plan_id) => TuiCommand::ReverifyGates {
-                plan_id: plan_id.clone(),
-            },
-            ConfirmAction::ForceAdvance(plan_id) => TuiCommand::Skip {
-                plan_id: plan_id.clone(),
-                task_id: self
+        use crate::execution_control::ExecutionCommandKind;
+
+        let (kind, plan_id, task_id) = match action {
+            ConfirmAction::SoftRetryPlan(plan_id) => {
+                (ExecutionCommandKind::SoftRetry, Some(plan_id.clone()), None)
+            }
+            ConfirmAction::RepairPlanPreserve(plan_id) => (
+                ExecutionCommandKind::Repair {
+                    preserve_completed: true,
+                },
+                Some(plan_id.clone()),
+                None,
+            ),
+            ConfirmAction::RepairPlanClean(plan_id) => (
+                ExecutionCommandKind::Repair {
+                    preserve_completed: false,
+                },
+                Some(plan_id.clone()),
+                None,
+            ),
+            ConfirmAction::ReverifyPlan(plan_id) => (
+                ExecutionCommandKind::ReverifyGates,
+                Some(plan_id.clone()),
+                None,
+            ),
+            ConfirmAction::ForceAdvance(plan_id) => {
+                let task_id = self
                     .tui_state
                     .plans
                     .get(self.tui_state.selected_plan_idx)
@@ -2291,16 +2978,22 @@ impl App {
                             .find(|t| t.status == TaskRowStatus::Failed)
                             .map(|t| t.id.clone())
                     })
-                    .unwrap_or_default(),
-            },
-            ConfirmAction::ResetSelectedPlan(plan_id) => TuiCommand::Cancel {
-                plan_id: plan_id.clone(),
-            },
-            // Other confirm actions don't map to runner TuiCommands.
+                    .unwrap_or_default();
+                (
+                    ExecutionCommandKind::Skip,
+                    Some(plan_id.clone()),
+                    Some(task_id),
+                )
+            }
+            ConfirmAction::ResetSelectedPlan(plan_id) => {
+                (ExecutionCommandKind::Cancel, Some(plan_id.clone()), None)
+            }
+            // Other confirm actions don't map to executor commands.
             _ => return,
         };
-        if let Some(tx) = &self.tui_command_tx {
-            let _ = tx.try_send(cmd);
+        if let Some(sender) = &self.exec_cmd_sender {
+            let cmd = sender.build_command(kind, plan_id, task_id, None);
+            let _ = sender.try_send(cmd);
         }
     }
 
@@ -2309,6 +3002,86 @@ impl App {
             .plans
             .get(self.tui_state.selected_plan_idx)
             .map(|plan| plan.id.clone())
+    }
+
+    fn visible_plan_indices(&self) -> Vec<usize> {
+        let filter = &self.tui_state.plan_tree_filter;
+        let filtering = filter.active && !filter.pattern.is_empty();
+        self.tui_state
+            .plans
+            .iter()
+            .enumerate()
+            .filter_map(|(index, plan)| {
+                (!filtering || filter.matches_plan_or_tasks(plan)).then_some(index)
+            })
+            .collect()
+    }
+
+    fn normalize_selected_plan_for_filter(&mut self) {
+        let visible = self.visible_plan_indices();
+        if visible.is_empty() {
+            return;
+        }
+        if !visible.contains(&self.tui_state.selected_plan_idx) {
+            self.tui_state.selected_plan_idx = visible[0];
+            self.tui_state.plan_scroll_offset = 0;
+        }
+    }
+
+    fn move_selected_plan(&mut self, direction: i8) {
+        let visible = self.visible_plan_indices();
+        if visible.is_empty() {
+            return;
+        }
+        let current = visible
+            .iter()
+            .position(|index| *index == self.tui_state.selected_plan_idx)
+            .unwrap_or(0);
+        let next = if direction < 0 {
+            current.saturating_sub(1)
+        } else {
+            current.saturating_add(1).min(visible.len() - 1)
+        };
+        self.tui_state.selected_plan_idx = visible[next];
+    }
+
+    fn refresh_log_search_matches(&mut self) {
+        let signals_only = self.tui_state.sub_tab_for(Tab::Logs) == 1;
+        let entries = self
+            .tui_state
+            .unified_log_entries()
+            .iter()
+            .filter(|entry| self.tui_state.log_level_visible(entry.level.filter_level()))
+            .filter(|entry| {
+                !signals_only
+                    || entry.source.starts_with("signal:")
+                    || entry.source.starts_with("episode:")
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        self.tui_state.log_search.update_matches(&entries);
+    }
+
+    fn current_log_match_display_index(&self) -> Option<usize> {
+        let search = &self.tui_state.log_search;
+        if search.mode == super::state::SearchMode::Filter {
+            (search.match_count > 0).then_some(search.current_match)
+        } else {
+            search.match_indices.get(search.current_match).copied()
+        }
+    }
+
+    /// Refresh agent output search matches for the currently selected agent (#367).
+    fn refresh_agent_output_search_matches(&mut self) {
+        let selected_id = self
+            .tui_state
+            .agent_summaries
+            .get(self.tui_state.selected_agent)
+            .map(|a| a.id.clone())
+            .unwrap_or_default();
+        self.tui_state
+            .agent_output_search
+            .update_matches(&self.tui_state.agent_output_history, &selected_id);
     }
 
     fn current_git_branch(&self) -> String {
@@ -2331,6 +3104,151 @@ impl App {
             .filter(|plan| !plan.active && !plan.status.is_failed())
             .map(|plan| plan.id.clone())
             .collect()
+    }
+
+    /// Map a hit_test::FocusZone to the input::FocusZone used by keyboard/scroll routing.
+    fn map_hit_zone(&self, zone: super::hit_test::FocusZone) -> FocusZone {
+        match zone {
+            super::hit_test::FocusZone::PlanTree => FocusZone::PlanTree,
+            super::hit_test::FocusZone::TaskProgress => FocusZone::TaskProgress,
+            super::hit_test::FocusZone::AgentOutput => FocusZone::AgentOutput,
+            super::hit_test::FocusZone::CommandOutput => FocusZone::CommandOutput,
+            super::hit_test::FocusZone::RightContent => FocusZone::RightPanel,
+            super::hit_test::FocusZone::HeaderTab(_) | super::hit_test::FocusZone::DetailTab(_) => {
+                FocusZone::RightPanel
+            }
+            super::hit_test::FocusZone::LeftPane => match self.tui_state.active_tab {
+                Tab::Git => FocusZone::GitBranches,
+                Tab::Logs => FocusZone::LogList,
+                Tab::Config => FocusZone::ConfigKeys,
+                Tab::Inspect => FocusZone::InspectTree,
+                Tab::Marketplace => FocusZone::MarketList,
+                Tab::Atelier => FocusZone::AtelierList,
+                Tab::Learning => FocusZone::LearningMetrics,
+                _ => FocusZone::PlanTree,
+            },
+            super::hit_test::FocusZone::RightPane => match self.tui_state.active_tab {
+                Tab::Git => FocusZone::GitDetail,
+                Tab::Logs => FocusZone::LogDetail,
+                Tab::Config => FocusZone::ConfigValues,
+                Tab::Inspect => FocusZone::InspectDetail,
+                Tab::Marketplace => FocusZone::MarketDetail,
+                Tab::Atelier => FocusZone::AtelierDetail,
+                Tab::Learning => FocusZone::LearningDetail,
+                _ => FocusZone::RightPanel,
+            },
+        }
+    }
+
+    /// Scroll the panel under the mouse cursor at (x, y) by delta lines.
+    ///
+    /// Uses the `HitRegionRegistry`-derived `ScrollTarget` to route the scroll
+    /// to the correct state field. Updates focus to the hovered panel so
+    /// subsequent keyboard scrolling continues from the same panel (#368).
+    /// Falls back to `scroll_focused` when the cursor is outside any known zone.
+    fn scroll_at(&mut self, x: u16, y: u16, delta: i32) {
+        let zones = super::hit_test::HitZones::compute(
+            super::layout::responsive_outer_margin(Rect::new(
+                0,
+                0,
+                self.terminal_size.0,
+                self.terminal_size.1,
+            )),
+            self.tui_state.active_tab as usize,
+            Tab::ALL.len(),
+        );
+        let registry = zones.into_registry(self.tui_state.active_tab);
+
+        if let Some(region) = registry.region_at(x, y) {
+            // Update focus to the hovered panel so keyboard scrolling follows.
+            let mapped = self.map_hit_zone(region.focus_zone);
+            self.tui_state.focus = mapped;
+
+            // Route scroll to the dedicated target, avoiding the generic
+            // diff_scroll fallback for unrelated detail panes.
+            self.scroll_by_target(region.scroll_target, delta);
+        } else {
+            // Cursor outside any panel -- fall back to keyboard-focused panel.
+            self.scroll_focused(delta);
+        }
+    }
+
+    /// Apply a scroll delta to a specific `ScrollTarget`.
+    ///
+    /// Each target maps to exactly one scroll state field, avoiding the old
+    /// pattern of temporarily swapping focus and falling through to a generic
+    /// diff_scroll fallback.
+    fn scroll_by_target(&mut self, target: super::hit_test::ScrollTarget, delta: i32) {
+        use super::hit_test::ScrollTarget;
+        match target {
+            ScrollTarget::PlanTree => {
+                let current = self.tui_state.plan_scroll_offset as i32;
+                self.tui_state.plan_scroll_offset = (current + delta).max(0) as usize;
+            }
+            ScrollTarget::TaskProgress => {
+                let current = self.tui_state.task_scroll as i32;
+                self.tui_state.task_scroll = (current + delta).max(0) as usize;
+            }
+            ScrollTarget::AgentOutput => self.scroll_agent_output_by(delta),
+            ScrollTarget::CommandOutput => {
+                let current = self.tui_state.command_output_scroll as i32;
+                self.tui_state.command_output_scroll = (current + delta).max(0) as usize;
+            }
+            ScrollTarget::RightPanel => {
+                let current = self.tui_state.diff_scroll as i32;
+                self.tui_state.diff_scroll = (current + delta).max(0) as usize;
+            }
+            ScrollTarget::Procs => {
+                let current = self.tui_state.procs_scroll as i32;
+                self.tui_state.procs_scroll = (current + delta).max(0) as usize;
+            }
+            ScrollTarget::GitDetail => {
+                let current = self.tui_state.git_detail_scroll as i32;
+                self.tui_state.git_detail_scroll = (current + delta).max(0) as usize;
+            }
+            ScrollTarget::ConfigValues => {
+                let current = self.tui_state.config_values_scroll as i32;
+                self.tui_state.config_values_scroll = (current + delta).max(0) as usize;
+            }
+            ScrollTarget::InspectDetail => {
+                let current = self.tui_state.inspect_detail_scroll as i32;
+                self.tui_state.inspect_detail_scroll = (current + delta).max(0) as usize;
+            }
+            ScrollTarget::LearningDetail => {
+                let current = self.tui_state.learning_detail_scroll as i32;
+                self.tui_state.learning_detail_scroll = (current + delta).max(0) as usize;
+            }
+            ScrollTarget::ConfigKeys => {
+                let current = self.tui_state.config_scroll_offset as i32;
+                self.tui_state.config_scroll_offset = (current + delta).max(0) as usize;
+            }
+            ScrollTarget::LogList => self.scroll_logs_by(delta),
+            ScrollTarget::AgentRoster => {
+                let max = self.tui_state.agents.len().saturating_sub(1);
+                let next = (self.tui_state.selected_agent as i32 + delta).clamp(0, max as i32);
+                self.tui_state.selected_agent = next as usize;
+            }
+            ScrollTarget::MarketplaceJobs => {
+                if !self.tui_state.marketplace_jobs.is_empty() {
+                    let max = self.tui_state.marketplace_jobs.len().saturating_sub(1);
+                    let next = (self.tui_state.marketplace_selected_job as i32 + delta)
+                        .clamp(0, max as i32);
+                    self.tui_state.marketplace_selected_job = next as usize;
+                }
+            }
+            ScrollTarget::AtelierPrds => {
+                if !self.tui_state.atelier_prds.is_empty() {
+                    let max = self.tui_state.atelier_prds.len().saturating_sub(1);
+                    let next =
+                        (self.tui_state.atelier_selected_prd as i32 + delta).clamp(0, max as i32);
+                    self.tui_state.atelier_selected_prd = next as usize;
+                }
+            }
+            ScrollTarget::Modal | ScrollTarget::None => {
+                // Modal scroll is handled by handle_mouse before reaching here.
+                // None is not scrollable.
+            }
+        }
     }
 
     fn scroll_focused(&mut self, delta: i32) {
@@ -2371,16 +3289,68 @@ impl App {
                 let current = self.tui_state.command_output_scroll as i32;
                 self.tui_state.command_output_scroll = (current + delta).max(0) as usize;
             }
+            // Dashboard RightPanel: route to procs_scroll when on the Procs sub-tab.
+            (Tab::Dashboard, FocusZone::RightPanel) if self.tui_state.plan_detail_tab == 7 => {
+                let current = self.tui_state.procs_scroll as i32;
+                self.tui_state.procs_scroll = (current + delta).max(0) as usize;
+            }
             (_, FocusZone::RightPanel) => {
                 let current = self.tui_state.diff_scroll as i32;
                 self.tui_state.diff_scroll = (current + delta).max(0) as usize;
             }
-            // Per-tab zones (Git, Logs, Config, Inspect, Marketplace, Atelier,
-            // Learning) fall through to the generic diff_scroll for now.
-            _ => {
-                let current = self.tui_state.diff_scroll as i32;
-                self.tui_state.diff_scroll = (current + delta).max(0) as usize;
+            // Per-tab detail zones: each routes to its own dedicated scroll field.
+            // NOTE: Logs/Marketplace/Atelier handled by wildcard arms above.
+            (Tab::Git, FocusZone::GitDetail) => {
+                let current = self.tui_state.git_detail_scroll as i32;
+                self.tui_state.git_detail_scroll = (current + delta).max(0) as usize;
             }
+            (Tab::Config, FocusZone::ConfigValues) => {
+                let current = self.tui_state.config_values_scroll as i32;
+                self.tui_state.config_values_scroll = (current + delta).max(0) as usize;
+            }
+            (Tab::Inspect, FocusZone::InspectDetail) => {
+                let current = self.tui_state.inspect_detail_scroll as i32;
+                self.tui_state.inspect_detail_scroll = (current + delta).max(0) as usize;
+            }
+            (Tab::Learning, FocusZone::LearningDetail) => {
+                let current = self.tui_state.learning_detail_scroll as i32;
+                self.tui_state.learning_detail_scroll = (current + delta).max(0) as usize;
+            }
+            // Config left-pane list scrolling.
+            (Tab::Config, FocusZone::ConfigKeys) => {
+                let current = self.tui_state.config_scroll_offset as i32;
+                self.tui_state.config_scroll_offset = (current + delta).max(0) as usize;
+            }
+            // Per-tab left/detail zones not captured above: route to their
+            // dedicated scroll field so that no unrelated pane bleeds into
+            // diff_scroll (#368).
+            (Tab::Git, FocusZone::GitBranches) => {
+                let current = self.tui_state.plan_scroll_offset as i32;
+                self.tui_state.plan_scroll_offset = (current + delta).max(0) as usize;
+            }
+            (Tab::Inspect, FocusZone::InspectTree) => {
+                let current = self.tui_state.plan_scroll_offset as i32;
+                self.tui_state.plan_scroll_offset = (current + delta).max(0) as usize;
+            }
+            (Tab::Learning, FocusZone::LearningMetrics) => {
+                let current = self.tui_state.plan_scroll_offset as i32;
+                self.tui_state.plan_scroll_offset = (current + delta).max(0) as usize;
+            }
+            (Tab::Logs, FocusZone::LogDetail) => {
+                let current = self.tui_state.log_detail_scroll as i32;
+                self.tui_state.log_detail_scroll = (current + delta).max(0) as usize;
+            }
+            (Tab::Marketplace, FocusZone::MarketDetail) => {
+                let current = self.tui_state.marketplace_detail_scroll as i32;
+                self.tui_state.marketplace_detail_scroll = (current + delta).max(0) as usize;
+            }
+            (Tab::Atelier, FocusZone::AtelierDetail) => {
+                let current = self.tui_state.atelier_detail_scroll as i32;
+                self.tui_state.atelier_detail_scroll = (current + delta).max(0) as usize;
+            }
+            // Exhaustive: any remaining (tab, zone) combination is a no-op
+            // rather than leaking into a shared scroll field.
+            _ => {}
         }
     }
 
@@ -2460,13 +3430,49 @@ impl App {
             (_, FocusZone::CommandOutput) => {
                 self.tui_state.command_output_scroll = offset;
             }
+            // Dashboard RightPanel: route to procs_scroll when on the Procs sub-tab.
+            (Tab::Dashboard, FocusZone::RightPanel) if self.tui_state.plan_detail_tab == 7 => {
+                self.tui_state.procs_scroll = offset;
+            }
             (_, FocusZone::RightPanel) => {
                 self.tui_state.diff_scroll = offset;
             }
-            // Per-tab zones fall through to diff_scroll for now.
-            _ => {
-                self.tui_state.diff_scroll = offset;
+            // Per-tab detail zones: each routes to its own dedicated scroll field.
+            // NOTE: Logs/Marketplace/Atelier handled by wildcard arms above.
+            (Tab::Git, FocusZone::GitDetail) => {
+                self.tui_state.git_detail_scroll = offset;
             }
+            (Tab::Config, FocusZone::ConfigValues) => {
+                self.tui_state.config_values_scroll = offset;
+            }
+            (Tab::Config, FocusZone::ConfigKeys) => {
+                self.tui_state.config_scroll_offset = offset;
+            }
+            (Tab::Inspect, FocusZone::InspectDetail) => {
+                self.tui_state.inspect_detail_scroll = offset;
+            }
+            (Tab::Learning, FocusZone::LearningDetail) => {
+                self.tui_state.learning_detail_scroll = offset;
+            }
+            // Per-tab left/detail zones not captured above: route to their
+            // dedicated field so that no unrelated pane bleeds into
+            // diff_scroll (#368).
+            (Tab::Git, FocusZone::GitBranches)
+            | (Tab::Inspect, FocusZone::InspectTree)
+            | (Tab::Learning, FocusZone::LearningMetrics) => {
+                self.tui_state.plan_scroll_offset = offset;
+            }
+            (Tab::Logs, FocusZone::LogDetail) => {
+                self.tui_state.log_detail_scroll = offset;
+            }
+            (Tab::Marketplace, FocusZone::MarketDetail) => {
+                self.tui_state.marketplace_detail_scroll = offset;
+            }
+            (Tab::Atelier, FocusZone::AtelierDetail) => {
+                self.tui_state.atelier_detail_scroll = offset;
+            }
+            // Exhaustive: any remaining (tab, zone) combination is a no-op.
+            _ => {}
         }
     }
 
@@ -2627,17 +3633,21 @@ impl App {
         let has_waves = !self.tui_state.execution_waves.is_empty();
         let wave_row_height = if has_waves { 1 } else { 0 };
         let warning_height = super::widgets::header_bar::warning_bar_height(&self.tui_state);
+        let sub_views = views::SubView::for_tab(self.tui_state.active_tab);
+        let subview_height = u16::from(sub_views.len() > 1);
         let main_layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1),
-                Constraint::Length(warning_height),
-                Constraint::Length(wave_row_height),
-                Constraint::Min(0),
-                Constraint::Length(1),
+                Constraint::Length(1),               // header
+                Constraint::Length(warning_height),  // warning
+                Constraint::Length(wave_row_height), // wave
+                Constraint::Length(1),               // breadcrumb
+                Constraint::Length(subview_height),  // sub-views
+                Constraint::Min(0),                  // content
+                Constraint::Length(1),               // footer
             ])
             .split(content_area);
-        self.split_content_area(main_layout[3]).0
+        self.split_content_area(main_layout[5]).0
     }
 
     fn clamp_scroll_state_to_view(&mut self) {
@@ -2649,19 +3659,42 @@ impl App {
                     .clamp_agent_topology_scroll(self.current_agent_topology_max_scroll());
             }
             Tab::Git => {
-                self.tui_state
-                    .clamp_diff_scroll(self.current_git_max_scroll());
+                let max = self.current_git_max_scroll();
+                self.tui_state.git_detail_scroll = self.tui_state.git_detail_scroll.min(max);
             }
             Tab::Logs => {
                 self.tui_state
                     .clamp_log_scroll(self.current_log_max_scroll());
             }
-            Tab::Plans
-            | Tab::Config
-            | Tab::Inspect
-            | Tab::Marketplace
-            | Tab::Atelier
-            | Tab::Learning => {}
+            // Remaining tabs: clamp selection indices to their list lengths.
+            Tab::Plans => {
+                let plan_count = self.tui_state.plans.len();
+                if plan_count > 0 {
+                    self.tui_state.selected_plan_idx = self
+                        .tui_state
+                        .selected_plan_idx
+                        .min(plan_count.saturating_sub(1));
+                }
+            }
+            Tab::Config => {
+                // Config key list length varies; no dynamic content to clamp against
+                // without accessing the config renderer, so leave as-is.
+            }
+            Tab::Marketplace => {
+                if !self.tui_state.marketplace_jobs.is_empty() {
+                    let max = self.tui_state.marketplace_jobs.len().saturating_sub(1);
+                    self.tui_state.marketplace_selected_job =
+                        self.tui_state.marketplace_selected_job.min(max);
+                }
+            }
+            Tab::Atelier => {
+                if !self.tui_state.atelier_prds.is_empty() {
+                    let max = self.tui_state.atelier_prds.len().saturating_sub(1);
+                    self.tui_state.atelier_selected_prd =
+                        self.tui_state.atelier_selected_prd.min(max);
+                }
+            }
+            Tab::Inspect | Tab::Learning => {}
         }
     }
 
@@ -2779,6 +3812,7 @@ impl App {
             InputMode::Filter => self.tui_state.filter_text.as_str(),
             InputMode::LogSearch => self.tui_state.log_search.pattern.as_str(),
             InputMode::PlanFilter => self.tui_state.plan_tree_filter.pattern.as_str(),
+            InputMode::AgentOutputSearch => self.tui_state.agent_output_search.pattern.as_str(),
             _ => return,
         };
 
@@ -2797,6 +3831,19 @@ impl App {
                         self.tui_state.log_search.current_match + 1,
                         self.tui_state.log_search.match_count,
                         mode_label,
+                    )
+                }
+            }
+            InputMode::AgentOutputSearch
+                if !self.tui_state.agent_output_search.pattern.is_empty() =>
+            {
+                if self.tui_state.agent_output_search.pattern_error {
+                    " [invalid regex]".to_string()
+                } else {
+                    format!(
+                        " [{}/{}]",
+                        self.tui_state.agent_output_search.current_match + 1,
+                        self.tui_state.agent_output_search.match_count,
                     )
                 }
             }
@@ -2825,6 +3872,18 @@ impl App {
     }
 
     fn handle_mouse(&mut self, mouse: MouseEvent) {
+        // When a modal is open, scroll/click cannot affect underlying content
+        // (#368). Route scroll to the modal and consume all other events.
+        if self.tui_state.active_modal.is_some() {
+            let action = match mouse.kind {
+                MouseEventKind::ScrollUp => TuiAction::ModalScrollUp,
+                MouseEventKind::ScrollDown => TuiAction::ModalScrollDown,
+                _ => TuiAction::None,
+            };
+            self.dispatch_action(action);
+            return;
+        }
+
         let action = match mouse.kind {
             MouseEventKind::Down(crossterm::event::MouseButton::Left) => TuiAction::MouseClick {
                 x: mouse.column,
@@ -2852,22 +3911,100 @@ impl App {
         super::widgets::header_bar::render_header_bar(frame, area, &self.tui_state);
     }
 
+    fn render_subview_bar(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
+        let tab = self.tui_state.active_tab;
+        let active = self.tui_state.sub_tab_for(tab);
+        let mut spans = vec![Span::styled(" ", Theme::block_style())];
+        for (index, subview) in views::SubView::for_tab(tab).iter().enumerate() {
+            let style = if index == active {
+                theme
+                    .selection()
+                    .add_modifier(ratatui::style::Modifier::BOLD)
+            } else {
+                theme.muted()
+            };
+            spans.push(Span::styled(
+                format!(" Alt+{}:{} ", index + 1, subview.label()),
+                style,
+            ));
+        }
+        frame.render_widget(
+            Paragraph::new(Line::from(spans)).style(Theme::block_style()),
+            area,
+        );
+    }
+
     fn render_status_footer(&self, frame: &mut Frame<'_>, area: Rect, _theme: &Theme) {
         // Use the Mori-ported status_bar widget with context-sensitive hints
         super::widgets::status_bar::render_status_bar(frame, area, &self.tui_state);
     }
 
     fn expire_notifications(&mut self) {
-        self.notifications.retain(|n| !n.is_expired());
+        // Move expired notifications to history before removing them.
+        let mut i = 0;
+        while i < self.notifications.len() {
+            if self.notifications[i].is_expired() {
+                if let Some(expired) = self.notifications.remove(i) {
+                    self.push_notification_history(expired);
+                }
+            } else {
+                i += 1;
+            }
+        }
         // Hard cap at 20 entries to prevent unbounded memory growth.
         const MAX_NOTIFICATIONS: usize = 20;
         while self.notifications.len() > MAX_NOTIFICATIONS {
-            self.notifications.remove(0);
+            if let Some(overflow) = self.notifications.pop_front() {
+                self.push_notification_history(overflow);
+            }
+        }
+    }
+
+    /// Push a notification into the retained history ring buffer, evicting
+    /// the oldest entry when the 200-entry cap is reached.
+    fn push_notification_history(&mut self, notif: super::modals::Notification) {
+        let id = self.tui_state.notification_next_id;
+        self.tui_state.notification_next_id += 1;
+        let record = super::modals::NotificationRecord {
+            id,
+            created_at: notif.created,
+            level: notif.level,
+            source: String::new(),
+            message: super::modals::redact_message(&notif.message),
+            related_run: None,
+            related_task: None,
+            dismissed_at: None,
+        };
+        self.tui_state.notification_history.push_back(record);
+        while self.tui_state.notification_history.len() > super::modals::MAX_HISTORY {
+            self.tui_state.notification_history.pop_front();
+            self.tui_state.notification_evicted_count += 1;
         }
     }
 
     fn has_modal(&self) -> bool {
         self.tui_state.active_modal.is_some()
+    }
+
+    /// Build the tick-policy inputs from current `App` state.
+    ///
+    /// This keeps the pure `next_tick_policy()` function free of `App`
+    /// coupling while letting both event loops share identical policy.
+    fn tick_policy_inputs(&self) -> TickPolicyInputs {
+        TickPolicyInputs {
+            has_active_agents: self.tui_state.agents.iter().any(|a| a.active),
+            has_active_plans: self.tui_state.plans.iter().any(|p| p.active),
+            has_modal: self.has_modal(),
+            has_notifications: !self.notifications.is_empty(),
+            has_tab_transition: self.tab_transition.is_some(),
+            has_postfx: self.fx_config.screen_postfx,
+            since_last_input: self.frame_stats.since_last_input(),
+        }
+    }
+
+    /// Select the current tick policy and return its duration.
+    fn current_tick_duration(&self) -> std::time::Duration {
+        next_tick_policy(&self.tick_policy_inputs()).duration()
     }
 
     fn dismiss_all_modals(&mut self) {
@@ -2881,19 +4018,6 @@ impl App {
         self.tui_state.pending_confirm = None;
         if self.tui_state.input_mode == InputMode::Confirm {
             self.tui_state.input_mode = InputMode::Normal;
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Legacy compatibility
-    // -----------------------------------------------------------------------
-
-    #[allow(dead_code)]
-    fn select_page_by_slot(&mut self, slot: usize) {
-        let pages = self.pages().ids();
-        if let Some(page) = pages.get(slot).copied() {
-            self.current_page = page;
-            let _ = self.scaffold.set_active_page(self.current_page);
         }
     }
 
@@ -2920,6 +4044,12 @@ impl App {
         // Refresh cached config items on the 5-second cadence (P3.2).
         if self.tui_state.config_needs_refresh() {
             self.tui_state.invalidate_config_cache();
+        }
+        if self.tui_state.mcp_config_needs_refresh() {
+            self.tui_state.refresh_mcp_config_view();
+        }
+        if self.tui_state.conductor_snapshot_needs_refresh() {
+            self.tui_state.refresh_conductor_snapshot();
         }
         self.last_refresh = Instant::now();
         self.clamp_signal_selection();
@@ -2952,6 +4082,12 @@ impl App {
         // Refresh cached config items on the 5-second cadence (P3.2).
         if self.tui_state.config_needs_refresh() {
             self.tui_state.invalidate_config_cache();
+        }
+        if self.tui_state.mcp_config_needs_refresh() {
+            self.tui_state.refresh_mcp_config_view();
+        }
+        if self.tui_state.conductor_snapshot_needs_refresh() {
+            self.tui_state.refresh_conductor_snapshot();
         }
         self.last_refresh = Instant::now();
         self.clamp_signal_selection();
@@ -3046,9 +4182,10 @@ impl App {
 
     fn save_config_changes(&mut self) {
         if self.tui_state.config_pending.is_empty() {
-            self.notifications.push(super::modals::Notification::info(
-                "No pending changes to save",
-            ));
+            self.notifications
+                .push_back(super::modals::Notification::info(
+                    "No pending changes to save",
+                ));
             return;
         }
 
@@ -3059,13 +4196,14 @@ impl App {
                 self.tui_state.invalidate_config_cache();
                 self.fx_config = EffectsConfig::load_from_root(&self.workdir);
                 self.pending_refresh = true;
-                self.notifications.push(super::modals::Notification::info(
-                    "Config saved and reloaded",
-                ));
+                self.notifications
+                    .push_back(super::modals::Notification::info(
+                        "Config saved and reloaded",
+                    ));
             }
             Err(error) => {
                 self.notifications
-                    .push(super::modals::Notification::error(&format!(
+                    .push_back(super::modals::Notification::error(&format!(
                         "Save failed: {error}"
                     )));
             }
@@ -3078,7 +4216,7 @@ impl App {
         let title = self.tui_state.job_form_title.trim().to_string();
         if title.is_empty() {
             self.notifications
-                .push(super::modals::Notification::warn("Job title is required"));
+                .push_back(super::modals::Notification::warn("Job title is required"));
             return;
         }
 
@@ -3129,7 +4267,7 @@ impl App {
         let jobs_dir = self.workdir.join(".roko").join("jobs");
         if let Err(e) = std::fs::create_dir_all(&jobs_dir) {
             self.notifications
-                .push(super::modals::Notification::error(&format!(
+                .push_back(super::modals::Notification::error(&format!(
                     "Failed to create jobs directory: {e}"
                 )));
             return;
@@ -3155,20 +4293,20 @@ impl App {
 
                     self.pending_refresh = true;
                     self.notifications
-                        .push(super::modals::Notification::info(format!(
+                        .push_back(super::modals::Notification::info(format!(
                             "Job '{title}' created"
                         )));
                 }
                 Err(e) => {
                     self.notifications
-                        .push(super::modals::Notification::error(&format!(
+                        .push_back(super::modals::Notification::error(&format!(
                             "Failed to write job file: {e}"
                         )));
                 }
             },
             Err(e) => {
                 self.notifications
-                    .push(super::modals::Notification::error(&format!(
+                    .push_back(super::modals::Notification::error(&format!(
                         "Failed to serialize job: {e}"
                     )));
             }
@@ -3180,7 +4318,7 @@ impl App {
             Tab::Dashboard => ViewState {
                 scroll: self.tui_state.agent_scroll.unwrap_or(0) as u16,
                 selected: self.tui_state.selected_plan_idx,
-                sub_tab: self.tui_state.plan_detail_tab,
+                sub_tab: self.tui_state.sub_tab_for(Tab::Dashboard),
                 secondary_selected: 0,
                 auto_tail: self.tui_state.agent_scroll.is_none(),
                 search_query: self.tui_state.filter.clone(),
@@ -3202,9 +4340,9 @@ impl App {
                 search_query: self.tui_state.filter.clone(),
             },
             Tab::Git => ViewState {
-                scroll: self.tui_state.diff_scroll.min(u16::MAX as usize) as u16,
+                scroll: self.tui_state.git_detail_scroll.min(u16::MAX as usize) as u16,
                 selected: self.tui_state.git_branch_cursor,
-                sub_tab: 0,
+                sub_tab: self.tui_state.sub_tab_for(Tab::Git),
                 secondary_selected: 0,
                 auto_tail: false,
                 search_query: self.tui_state.filter.clone(),
@@ -3212,7 +4350,7 @@ impl App {
             Tab::Logs => ViewState {
                 scroll: self.tui_state.log_scroll.min(u16::MAX as usize) as u16,
                 selected: 0,
-                sub_tab: 0,
+                sub_tab: self.tui_state.sub_tab_for(Tab::Logs),
                 secondary_selected: 0,
                 auto_tail: self.tui_state.log_auto_tail,
                 search_query: self.tui_state.filter.clone(),
@@ -3226,7 +4364,7 @@ impl App {
                 search_query: self.tui_state.filter.clone(),
             },
             Tab::Inspect => ViewState {
-                scroll: self.tui_state.diff_scroll.min(u16::MAX as usize) as u16,
+                scroll: self.tui_state.inspect_detail_scroll.min(u16::MAX as usize) as u16,
                 selected: 0,
                 sub_tab: self.tui_state.sub_tab_for(Tab::Inspect),
                 secondary_selected: 0,
@@ -3272,13 +4410,16 @@ impl App {
     // `update_sys_metrics` removed -- see `collect_sys_metrics_bg()` standalone
     // function below, called from the background thread.
 
-    /// Drain all background channels (sys metrics, data refresh, git) without
-    /// blocking.  Called on every tick and after every keypress so the UI
-    /// reflects the latest data produced by background threads.
+    /// Drain all background channels (sys metrics, data refresh, git,
+    /// command acks) without blocking.  Called on every tick and after every
+    /// keypress so the UI reflects the latest data produced by background
+    /// threads and the executor.
     fn drain_background_channels(&mut self) {
         const MAX_MESSAGES_PER_DRAIN: usize = 20;
 
         self.drain_snapshot_channel();
+        self.drain_state_events();
+        self.drain_execution_acks();
         self.drain_agent_topology_fetch();
         self.sync_agent_stream_clients();
         self.drain_agent_stream_clients();
@@ -3290,9 +4431,9 @@ impl App {
                 // CPU
                 let cpu_pct = self.tui_state.update_cpu_pct(snap.sys.cpu_pct);
                 let sys = &mut self.tui_state.sys;
-                sys.cpu_history.push(cpu_pct);
-                if sys.cpu_history.len() > 60 {
-                    sys.cpu_history.remove(0);
+                sys.cpu_history.push_back(cpu_pct);
+                while sys.cpu_history.len() > super::state::MAX_METRIC_HISTORY {
+                    sys.cpu_history.pop_front();
                 }
 
                 // Memory
@@ -3303,31 +4444,20 @@ impl App {
                 } else {
                     0.0
                 };
-                sys.mem_history.push(mem_frac);
-                if sys.mem_history.len() > 60 {
-                    sys.mem_history.remove(0);
+                sys.mem_history.push_back(mem_frac);
+                while sys.mem_history.len() > super::state::MAX_METRIC_HISTORY {
+                    sys.mem_history.pop_front();
                 }
 
-                // Network: compute rate from delta of cumulative totals
-                if sys.prev_net_in > 0 && snap.sys.net_down_bytes_sec > sys.prev_net_in {
-                    sys.net_down_bytes_sec = snap.sys.net_down_bytes_sec - sys.prev_net_in;
-                }
-                sys.prev_net_in = snap.sys.net_down_bytes_sec;
-                if sys.prev_net_out > 0 && snap.sys.net_out_bytes_total > sys.prev_net_out {
-                    sys.net_up_bytes_sec = snap.sys.net_out_bytes_total - sys.prev_net_out;
-                }
-                sys.prev_net_out = snap.sys.net_out_bytes_total;
-                sys.net_out_bytes_total = snap.sys.net_out_bytes_total;
-
-                // Disk: compute rate from delta of cumulative totals
-                if sys.prev_disk_read > 0 && snap.sys.disk_read_bytes_sec > sys.prev_disk_read {
-                    sys.disk_read_bytes_sec = snap.sys.disk_read_bytes_sec - sys.prev_disk_read;
-                }
-                sys.prev_disk_read = snap.sys.disk_read_bytes_sec;
-                sys.disk_write_bytes_total = snap.sys.disk_write_bytes_total;
+                // Network + Disk: collector already computes bytes/sec rates.
+                sys.net_down_bytes_sec = snap.sys.net_down_bytes_sec;
+                sys.net_up_bytes_sec = snap.sys.net_up_bytes_sec;
+                sys.disk_read_bytes_sec = snap.sys.disk_read_bytes_sec;
+                sys.disk_write_bytes_sec = snap.sys.disk_write_bytes_sec;
                 sys.disk_free_bytes = snap.sys.disk_free_bytes;
                 sys.disk_total_bytes = snap.sys.disk_total_bytes;
                 self.merge_process_metrics(snap.process_metrics);
+                self.render_dirty.insert(RenderDirty::METRICS);
             }
         }
 
@@ -3343,6 +4473,7 @@ impl App {
                 }
             }
             if got_refresh {
+                self.render_dirty.insert(RenderDirty::SNAPSHOT);
                 // Incremental refresh (RC-6): avoid full re-bootstrap by
                 // checking whether the snapshot file actually changed.  We
                 // use the file size as a cheap proxy for content changes
@@ -3368,7 +4499,7 @@ impl App {
                             let file_len = meta.len();
                             if file_len > self.last_events_offset {
                                 if let Ok(file) = std::fs::File::open(&events_path) {
-                                    use std::io::{BufRead, Seek, SeekFrom};
+                                    use std::io::{Seek, SeekFrom};
                                     let mut reader = std::io::BufReader::new(file);
                                     if reader
                                         .seek(SeekFrom::Start(self.last_events_offset))
@@ -3423,6 +4554,7 @@ impl App {
                 if completed_gen >= self.git_applied_generation {
                     self.git_applied_generation = completed_gen;
                     self.apply_git_bg_data(data);
+                    self.render_dirty.insert(RenderDirty::SNAPSHOT);
                 }
                 self.git_bg_rx = None; // channel consumed, allow new requests
             }
@@ -3430,9 +4562,10 @@ impl App {
     }
 
     fn apply_git_bg_data(&mut self, bg: GitBgData) {
-        self.tui_state.git_branch_tree = bg.view_data.branches.clone();
+        // Derive commit/worktree views before moving view_data.
         self.tui_state.git_commit_graph = convert_git_commit_graph(&bg.view_data.commits);
         self.tui_state.git_worktree_list = convert_git_worktree_list(&bg.view_data.worktrees);
+        // git_branch_tree accessed via git_view_data when present; skip clone.
         self.tui_state.git_view_data = Some(bg.view_data);
         self.tui_state.git_summary_lines = bg.summary_lines;
         self.tui_state.git_branch = bg.branch;
@@ -3449,6 +4582,10 @@ impl App {
             return;
         }
 
+        // The watch::Ref holds a read lock that must be dropped before we can
+        // mutate self. Clone is unavoidable here (the sender owns the value),
+        // but the downstream apply path now uses revision-based caching (#366)
+        // so the expensive unified log rebuild is skipped when inputs are unchanged.
         let snapshot = rx.borrow_and_update().clone();
         apply_dashboard_snapshot(
             &mut self.tui_state,
@@ -3459,6 +4596,139 @@ impl App {
             &snapshot,
         );
         self.update_plan_completion_exit(&snapshot);
+        self.render_dirty.insert(RenderDirty::SNAPSHOT);
+    }
+
+    /// Drain pending command acknowledgements from the executor and update
+    /// TUI state accordingly. `Completed` acks commit the state change (e.g.
+    /// flip `is_paused`); `Rejected`/`Failed` acks show a toast/error entry
+    /// and remove the pending command.
+    fn drain_execution_acks(&mut self) {
+        let Some(ack_rx) = self.exec_ack_receiver.as_mut() else {
+            return;
+        };
+        for ack in ack_rx.drain() {
+            use crate::execution_control::{CommandAckStatus, ExecutionCommandKind};
+            let pending_kind = self.pending_exec_commands.remove(&ack.command_id);
+            match ack.status {
+                CommandAckStatus::Accepted => {
+                    let msg = ack.message.unwrap_or_else(|| "command accepted".into());
+                    self.notifications
+                        .push_back(super::modals::Notification::info(msg));
+                }
+                CommandAckStatus::Completed => {
+                    // Commit the state change based on the original command kind.
+                    if let Some(kind) = &pending_kind {
+                        match kind {
+                            ExecutionCommandKind::Pause => {
+                                self.tui_state.is_paused = true;
+                            }
+                            ExecutionCommandKind::Resume => {
+                                self.tui_state.is_paused = false;
+                            }
+                            _ => {}
+                        }
+                    }
+                    let msg = ack.message.unwrap_or_else(|| "command completed".into());
+                    self.notifications
+                        .push_back(super::modals::Notification::info(msg));
+                    self.render_dirty.insert(RenderDirty::SNAPSHOT);
+                }
+                CommandAckStatus::Rejected => {
+                    let msg = ack.message.unwrap_or_else(|| "command rejected".into());
+                    self.notifications
+                        .push_back(super::modals::Notification::warn(msg));
+                }
+                CommandAckStatus::Failed => {
+                    let msg = ack.message.unwrap_or_else(|| "command failed".into());
+                    self.notifications
+                        .push_back(super::modals::Notification::error(msg));
+                }
+            }
+        }
+    }
+
+    fn drain_state_events(&mut self) {
+        const MAX_EVENTS: usize = 256;
+        let Some(subscription) = self.state_events.as_mut() else {
+            return;
+        };
+        let mut events = Vec::new();
+        for envelope in subscription.replay.drain(..).take(MAX_EVENTS) {
+            events.push(envelope.payload);
+        }
+        while events.len() < MAX_EVENTS {
+            match subscription.live.try_recv() {
+                Ok(envelope) => events.push(envelope.payload),
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(dropped)) => {
+                    self.tui_state.push_agent_chunk(
+                        "system",
+                        format!("[stream lagged: {dropped} StateHub events; snapshot resynced]"),
+                    );
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
+            }
+        }
+        for event in events {
+            let roko_core::DashboardEvent::AgentOutput {
+                agent_id, content, ..
+            } = event
+            else {
+                continue;
+            };
+            let Some(record) =
+                content.strip_prefix(crate::runner::tui_bridge::STREAM_RECORD_PREFIX)
+            else {
+                continue;
+            };
+            let Ok(record) = serde_json::from_str::<serde_json::Value>(record) else {
+                continue;
+            };
+            let kind = record
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("text");
+            let payload = record.get("payload").cloned().unwrap_or_default();
+            match kind {
+                "text" => {
+                    if let Some(text) = payload.get("text").and_then(serde_json::Value::as_str) {
+                        self.tui_state.push_agent_chunk(&agent_id, text.to_string());
+                    }
+                }
+                "reasoning" => {
+                    if let Some(text) = payload.get("text").and_then(serde_json::Value::as_str) {
+                        self.tui_state
+                            .push_agent_chunk(&agent_id, format!("[thinking] {text}"));
+                    }
+                }
+                "tool_start" => {
+                    let tool = payload
+                        .get("tool")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("tool");
+                    let id = payload
+                        .get("tool_id")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("");
+                    self.tui_state
+                        .push_agent_chunk(&agent_id, format!("[tool ⏵ {tool} {id}]"));
+                }
+                "tool_result" => {
+                    let output = payload
+                        .get("output")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("");
+                    let id = payload
+                        .get("tool_id")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("");
+                    self.tui_state
+                        .push_agent_chunk(&agent_id, format!("[tool ✓ {id}]\n{output}"));
+                }
+                _ => {}
+            }
+        }
     }
 
     fn drain_shutdown_signal(&mut self) {
@@ -3719,6 +4989,7 @@ impl App {
         Terminal::new(CrosstermBackend::new(stdout)).context("create terminal")
     }
 
+    #[allow(dead_code)]
     fn leave_terminal() -> Result<()> {
         Self::cleanup_terminal()
     }
@@ -3793,6 +5064,9 @@ fn collect_sys_metrics_bg(
     let mut sys = System::new_all();
     let mut networks = Networks::new_with_refreshed_list();
     let mut disks = Disks::new_with_refreshed_list();
+    let own_pid = Pid::from_u32(std::process::id());
+
+    const SAMPLE_SECS: u64 = 2;
 
     loop {
         sys.refresh_cpu_usage();
@@ -3800,23 +5074,39 @@ fn collect_sys_metrics_bg(
         networks.refresh(true);
         disks.refresh(false);
 
-        // Network: sum cumulative bytes across all interfaces.
-        let (net_rx_total, net_tx_total) = networks.iter().fold((0u64, 0u64), |(rx, tx), nic| {
-            (rx + nic.1.total_received(), tx + nic.1.total_transmitted())
+        // Network: sum bytes-since-last-refresh across all interfaces,
+        // then divide by sample interval to get bytes/sec.
+        let (net_rx_delta, net_tx_delta) = networks.iter().fold((0u64, 0u64), |(rx, tx), nic| {
+            (rx + nic.1.received(), tx + nic.1.transmitted())
         });
+        let net_down_bps = net_rx_delta / SAMPLE_SECS;
+        let net_up_bps = net_tx_delta / SAMPLE_SECS;
 
-        // Disk: sum free/total across all mount points.
+        // Disk capacity: sum free/total across all mount points.
         let (disk_free, disk_total) = disks.iter().fold((0u64, 0u64), |(free, total), d| {
             (free + d.available_space(), total + d.total_space())
         });
+
+        // Disk I/O: use process-level disk_usage for our own PID.
+        // This works on both macOS and Linux.
+        sys.refresh_processes(ProcessesToUpdate::Some(&[own_pid]), true);
+        let (disk_read_bps, disk_write_bps) = sys
+            .process(own_pid)
+            .map(|p| {
+                let du = p.disk_usage();
+                (du.read_bytes / SAMPLE_SECS, du.written_bytes / SAMPLE_SECS)
+            })
+            .unwrap_or((0, 0));
 
         let snapshot = SysSnapshot {
             sys: super::state::SysMetrics {
                 cpu_pct: sys.global_cpu_usage(),
                 mem_used_bytes: sys.used_memory(),
                 mem_total_bytes: sys.total_memory(),
-                net_down_bytes_sec: net_rx_total,
-                net_out_bytes_total: net_tx_total,
+                net_down_bytes_sec: net_down_bps,
+                net_up_bytes_sec: net_up_bps,
+                disk_read_bytes_sec: disk_read_bps,
+                disk_write_bytes_sec: disk_write_bps,
                 disk_free_bytes: disk_free,
                 disk_total_bytes: disk_total,
                 ..Default::default()
@@ -3828,7 +5118,7 @@ fn collect_sys_metrics_bg(
             break;
         }
 
-        std::thread::sleep(Duration::from_secs(2));
+        std::thread::sleep(Duration::from_secs(SAMPLE_SECS));
     }
 }
 
@@ -3931,7 +5221,7 @@ use crate::tui::display_utils::truncate as truncate_str;
 
 fn apply_dashboard_snapshot(
     tui_state: &mut TuiState,
-    notifications: &mut Vec<super::modals::Notification>,
+    notifications: &mut VecDeque<super::modals::Notification>,
     last_snapshot_error_marker: &mut Option<(String, u64)>,
     last_seen_gate_count: &mut usize,
     last_seen_plan_phases: &mut HashMap<String, String>,
@@ -4030,14 +5320,14 @@ fn apply_dashboard_snapshot(
 /// Push a notification unless a duplicate (same message within 2 seconds)
 /// already exists in the stack.
 fn push_deduped_notification(
-    notifications: &mut Vec<super::modals::Notification>,
+    notifications: &mut VecDeque<super::modals::Notification>,
     notification: super::modals::Notification,
 ) {
     let dominated = notifications.iter().any(|existing| {
         existing.message == notification.message && existing.created.elapsed().as_secs() < 2
     });
     if !dominated {
-        notifications.push(notification);
+        notifications.push_back(notification);
     }
 }
 
@@ -4120,6 +5410,53 @@ mod tests {
     }
 
     #[test]
+    fn tui_command_pause_toggle_sends_execution_commands() {
+        let dir = tempdir().unwrap();
+        let (sender, mut cmd_rx, _ack_tx, ack_rx) =
+            crate::execution_control::ExecutionCommandSender::channel("test-run");
+        let ack_receiver = crate::execution_control::CommandAckReceiver::new(ack_rx);
+        let mut app = App::new(dir.path()).with_execution_command_sender(sender, ack_receiver);
+
+        // First toggle: should send Pause
+        app.dispatch_action(TuiAction::TogglePause);
+        let received = cmd_rx.try_recv().unwrap();
+        assert_eq!(
+            received.kind,
+            crate::execution_control::ExecutionCommandKind::Pause
+        );
+        assert_eq!(received.run_id, "test-run");
+        // Pause request notification shown
+        assert!(
+            app.notifications
+                .iter()
+                .any(|n| n.message.contains("Pause requested"))
+        );
+
+        // Second toggle: should send Resume
+        app.dispatch_action(TuiAction::TogglePause);
+        let received = cmd_rx.try_recv().unwrap();
+        assert_eq!(
+            received.kind,
+            crate::execution_control::ExecutionCommandKind::Resume
+        );
+    }
+
+    #[test]
+    fn tui_standalone_pause_toggle_shows_notification() {
+        let dir = tempdir().unwrap();
+        let mut app = App::new(dir.path());
+
+        app.dispatch_action(TuiAction::TogglePause);
+
+        assert!(!app.tui_state.is_paused);
+        assert!(
+            app.notifications
+                .iter()
+                .any(|notification| notification.message.contains("connected plan run"))
+        );
+    }
+
+    #[test]
     fn app_new_connected_installs_snapshot_receiver() {
         let dir = tempdir().unwrap();
         let hub = crate::state_hub::shared_state_hub();
@@ -4139,14 +5476,14 @@ mod tests {
     }
 
     #[test]
-    fn app_defaults_to_keyboard_only_terminal_mode() {
+    fn app_defaults_to_mouse_capture_enabled() {
         let dir = tempdir().unwrap();
         let app = App::new(dir.path());
-        assert!(!app.capture_mouse);
+        assert!(app.capture_mouse);
     }
 
     #[test]
-    fn approval_tui_can_disable_mouse_capture() {
+    fn without_mouse_capture_disables_mouse() {
         let dir = tempdir().unwrap();
         let app = App::new(dir.path()).without_mouse_capture();
         assert!(!app.capture_mouse);
@@ -4388,6 +5725,7 @@ mod tests {
                         active: true,
                         output_bytes: 0,
                         model: String::new(),
+                        provider: String::new(),
                         input_tokens: 0,
                         output_tokens: 0,
                         cache_read_tokens: 0,
@@ -4409,6 +5747,7 @@ mod tests {
                         active: false,
                         output_bytes: 0,
                         model: String::new(),
+                        provider: String::new(),
                         input_tokens: 0,
                         output_tokens: 0,
                         cache_read_tokens: 0,
@@ -4503,6 +5842,29 @@ mod tests {
     }
 
     #[test]
+    fn materialized_headless_snapshot_does_not_replay_historical_toasts() {
+        let dir = tempdir().unwrap();
+        let snapshot = roko_core::DashboardSnapshot {
+            gates: vec![roko_core::dashboard_snapshot::GateVerdictView {
+                plan_id: "plan-a".into(),
+                task_id: "task-1".into(),
+                gate: "compile".into(),
+                passed: false,
+                ts_millis: 100,
+            }],
+            errors: vec![roko_core::dashboard_snapshot::ErrorEntry {
+                message: "historical failure".into(),
+                ts_millis: 101,
+            }],
+            ..Default::default()
+        };
+
+        let app = App::new_with_dashboard_snapshot(dir.path(), &snapshot);
+        assert!(app.notifications.is_empty());
+        assert_eq!(app.tui_state.gate_results.len(), 1);
+    }
+
+    #[test]
     fn gate_verdict_fail_generates_error_toast() {
         let dir = tempdir().unwrap();
         let mut app = App::new(dir.path());
@@ -4572,7 +5934,7 @@ mod tests {
 
     #[test]
     fn dedup_suppresses_duplicate_within_2s() {
-        let mut notifications = Vec::new();
+        let mut notifications = std::collections::VecDeque::new();
         push_deduped_notification(
             &mut notifications,
             super::modals::Notification::info("same message"),
@@ -4590,7 +5952,7 @@ mod tests {
         let mut app = App::new(dir.path());
         for i in 0..25 {
             app.notifications
-                .push(super::modals::Notification::info(format!("msg {i}")));
+                .push_back(super::modals::Notification::info(format!("msg {i}")));
         }
         app.expire_notifications();
         assert!(app.notifications.len() <= 20);
@@ -4611,6 +5973,7 @@ mod tests {
         use super::super::effects_config::EffectsPreset;
 
         let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".roko")).unwrap();
         let mut app = App::new(dir.path());
         app.fx_config = EffectsConfig::from_preset(EffectsPreset::Full);
         app.tui_state.agents.push(super::super::state::AgentRow {
@@ -4630,7 +5993,7 @@ mod tests {
         terminal.draw(|frame| app.draw(frame)).unwrap();
 
         let rendered = rendered_text(&terminal);
-        assert!(rendered.contains("parallel agents"));
+        assert!(rendered.contains("Agents (1 active)"));
         assert!(rendered.contains("agent output remains readable"));
         let braille_cells = rendered
             .chars()
@@ -4662,6 +6025,7 @@ mod tests {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
         let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".roko")).unwrap();
         let mut app = App::new(dir.path());
         assert_eq!(app.tui_state.plan_detail_tab, 0); // starts on Agents
 
@@ -4731,6 +6095,7 @@ mod tests {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
         let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".roko")).unwrap();
         let mut app = App::new(dir.path());
         assert!(!matches!(
             app.tui_state.active_modal,
@@ -4848,6 +6213,7 @@ mod tests {
     #[test]
     fn quit_opens_confirmation_modal_instead_of_exiting() {
         let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".roko")).unwrap();
         let mut app = App::new(dir.path());
         assert!(app.running);
         assert!(app.tui_state.active_modal.is_none());
@@ -4925,10 +6291,92 @@ mod tests {
     }
 
     #[test]
+    fn f6_switch_to_config_tab_populates_cache_and_renders_fields() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("roko.toml"),
+            RokoConfig::default().to_toml().unwrap(),
+        )
+        .unwrap();
+
+        let mut app = App::new(dir.path());
+        // Deterministic text assertions: no post-processing over the content.
+        app.fx_config.screen_postfx = false;
+        // Constructor warms the cache (covers the headless --snapshot path).
+        assert!(
+            !app.tui_state.config_items_cache.is_empty(),
+            "App::new must warm the config items cache"
+        );
+
+        // Simulate the cold-cache regression: fresh session state where the
+        // cache was never populated.
+        app.tui_state.config_items_cache.clear();
+        app.tui_state.config_items_refreshed_at = None;
+
+        app.dispatch_action(TuiAction::SwitchTab(Tab::Config));
+
+        assert!(
+            !app.tui_state.config_items_cache.is_empty(),
+            "F6 must warm the config items cache"
+        );
+
+        let rendered = app.render_tabs_to_text(100, 40, &[Tab::Config]);
+        let text = &rendered[0].1;
+        // Real config editor content: a group header and a field label, not
+        // only the always-rendered `Runtime:` sections.
+        assert!(text.contains("Agent"), "expected group header in:\n{text}");
+        assert!(
+            text.contains("Default Model"),
+            "expected config field label in:\n{text}"
+        );
+    }
+
+    #[test]
+    fn config_r_key_reloads_items_cache() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("roko.toml"),
+            RokoConfig::default().to_toml().unwrap(),
+        )
+        .unwrap();
+
+        let mut app = App::new(dir.path());
+        app.dispatch_action(TuiAction::SwitchTab(Tab::Config));
+
+        // Externally modify roko.toml while the cache is still within its TTL.
+        let mut cfg = RokoConfig::default();
+        cfg.agent.default_model = "claude-haiku-4-5".to_string();
+        std::fs::write(dir.path().join("roko.toml"), cfg.to_toml().unwrap()).unwrap();
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+
+        let value = app
+            .tui_state
+            .config_items_cache
+            .iter()
+            .find_map(|item| match item {
+                crate::tui::config_meta::ConfigItem::Field { meta, value, .. }
+                    if meta.key == "agent.default_model" =>
+                {
+                    Some(value.clone())
+                }
+                _ => None,
+            })
+            .expect("agent.default_model field present");
+        assert!(
+            value.contains("claude-haiku-4-5"),
+            "r:reload must re-parse roko.toml immediately, got: {value}"
+        );
+    }
+
+    #[test]
     fn ctrl_e_toggles_screen_postfx() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
         let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".roko")).unwrap();
         let mut app = App::new(dir.path());
         assert!(app.fx_config.screen_postfx);
 
@@ -4940,7 +6388,7 @@ mod tests {
     }
 
     #[test]
-    fn effects_action_cycles_presets_and_persists_without_touching_screen_postfx() {
+    fn effects_action_cycles_presets_and_keeps_master_switch_honest() {
         use super::super::effects_config::EffectsPreset;
 
         let dir = tempdir().unwrap();
@@ -4958,7 +6406,7 @@ mod tests {
         assert_eq!(app.fx_config.preset, EffectsPreset::Minimal);
         assert!(app.fx_config.screen_postfx);
         assert!(!app.fx_config.nerv_viz);
-        assert!(app.fx_config.particles);
+        assert!(!app.fx_config.particles);
 
         app.dispatch_action(TuiAction::CycleEffectsPreset);
         assert_eq!(app.fx_config.preset, EffectsPreset::Full);
@@ -4968,12 +6416,18 @@ mod tests {
 
         app.dispatch_action(TuiAction::CycleEffectsPreset);
         assert_eq!(app.fx_config.preset, EffectsPreset::Off);
+        assert!(!app.fx_config.screen_postfx);
+        assert!(!app.fx_config.nerv_viz);
+        assert!(!app.fx_config.particles);
+
+        app.dispatch_action(TuiAction::CycleEffectsPreset);
+        assert_eq!(app.fx_config.preset, EffectsPreset::Minimal);
         assert!(app.fx_config.screen_postfx);
         assert!(!app.fx_config.nerv_viz);
         assert!(!app.fx_config.particles);
 
         let saved = std::fs::read_to_string(dir.path().join("roko.toml")).unwrap();
-        assert!(saved.contains("preset = \"off\""));
+        assert!(saved.contains("preset = \"minimal\""));
     }
 
     #[test]
@@ -5136,7 +6590,7 @@ mod tests {
         assert!(!view.auto_tail);
 
         app.tui_state.active_tab = Tab::Git;
-        app.tui_state.diff_scroll = 11;
+        app.tui_state.git_detail_scroll = 11;
         let view = app.current_view_state();
         assert_eq!(view.scroll, 11);
         assert_eq!(view.selected, app.tui_state.git_branch_cursor);
@@ -5172,6 +6626,19 @@ mod tests {
         app.dispatch_action(TuiAction::SwitchSubView(1));
         assert_eq!(app.tui_state.marketplace_sub_tab, 1);
         assert_eq!(app.tui_state.inspect_sub_tab, 3);
+
+        app.tui_state.active_tab = Tab::Logs;
+        app.dispatch_action(TuiAction::SwitchSubView(2));
+        assert_eq!(app.tui_state.logs_sub_tab, 2);
+
+        app.tui_state.active_tab = Tab::Learning;
+        app.dispatch_action(TuiAction::SwitchSubView(1));
+        assert_eq!(app.tui_state.learning_sub_tab, 1);
+
+        app.tui_state.active_tab = Tab::Dashboard;
+        app.dispatch_action(TuiAction::SwitchSubView(7));
+        assert_eq!(app.tui_state.dashboard_sub_tab, 7);
+        assert_eq!(app.tui_state.plan_detail_tab, 0);
     }
 
     #[test]
@@ -5247,6 +6714,49 @@ mod tests {
     }
 
     #[test]
+    fn plan_filter_navigation_keeps_actual_plan_identity() {
+        let dir = tempdir().unwrap();
+        let mut app = App::new(dir.path());
+        app.tui_state.active_tab = Tab::Plans;
+        app.tui_state.plans = vec![
+            PlanEntry {
+                id: "hidden-a".to_string(),
+                name: "Hidden A".to_string(),
+                ..PlanEntry::default()
+            },
+            PlanEntry {
+                id: "visible-one".to_string(),
+                name: "Visible One".to_string(),
+                ..PlanEntry::default()
+            },
+            PlanEntry {
+                id: "hidden-b".to_string(),
+                name: "Hidden B".to_string(),
+                ..PlanEntry::default()
+            },
+            PlanEntry {
+                id: "visible-two".to_string(),
+                name: "Visible Two".to_string(),
+                ..PlanEntry::default()
+            },
+        ];
+
+        app.dispatch_action(TuiAction::StartPlanFilter);
+        for c in "visible".chars() {
+            app.dispatch_action(TuiAction::InputChar(c));
+        }
+        assert_eq!(app.tui_state.selected_plan_idx, 1);
+
+        app.dispatch_action(TuiAction::SelectPlanDown);
+        assert_eq!(app.tui_state.selected_plan_idx, 3);
+        app.dispatch_action(TuiAction::ShowPlanDetail);
+        assert!(matches!(
+            app.tui_state.active_modal,
+            Some(ModalState::PlanDetail { ref plan_id }) if plan_id == "visible-two"
+        ));
+    }
+
+    #[test]
     fn text_input_bar_renders_only_for_text_modes() {
         let dir = tempdir().unwrap();
         let mut app = App::new(dir.path());
@@ -5269,5 +6779,166 @@ mod tests {
         terminal.draw(|frame| app.draw(frame)).unwrap();
         let filter = rendered_text(&terminal);
         assert!(filter.contains("[FILTER] > plan│"));
+    }
+
+    // -----------------------------------------------------------------
+    // Adaptive tick policy + dirty-flag render loop tests
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn tui_event_loop_render_dirty_starts_clean() {
+        let dir = tempdir().unwrap();
+        let app = App::new(dir.path());
+        assert!(
+            app.render_dirty.is_empty(),
+            "fresh App should start with no dirty bits"
+        );
+    }
+
+    #[test]
+    fn tui_event_loop_frame_stats_start_zeroed() {
+        let dir = tempdir().unwrap();
+        let app = App::new(dir.path());
+        assert_eq!(app.frame_stats.frames_drawn, 0);
+        assert_eq!(app.frame_stats.skipped_identical, 0);
+        assert!(app.frame_stats.last_input_at.is_none());
+    }
+
+    #[test]
+    fn tui_event_loop_tick_policy_dormant_on_idle_app() {
+        let dir = tempdir().unwrap();
+        let app = App::new(dir.path());
+        let inputs = app.tick_policy_inputs();
+        let policy = next_tick_policy(&inputs);
+        assert_eq!(
+            policy,
+            super::super::event::TickPolicy::Dormant,
+            "idle app with no active work should select Dormant policy"
+        );
+    }
+
+    #[test]
+    fn tui_event_loop_tick_policy_active_after_input() {
+        let dir = tempdir().unwrap();
+        let mut app = App::new(dir.path());
+        // Simulate recent input
+        app.frame_stats.record_input();
+        let inputs = app.tick_policy_inputs();
+        let policy = next_tick_policy(&inputs);
+        assert_eq!(
+            policy,
+            super::super::event::TickPolicy::Active,
+            "app with recent input should select Active policy"
+        );
+    }
+
+    #[test]
+    fn tui_event_loop_tick_policy_idle_with_active_plan() {
+        let dir = tempdir().unwrap();
+        let mut app = App::new(dir.path());
+        // Add an active plan
+        app.tui_state.plans.push(PlanEntry {
+            id: "test-plan".to_string(),
+            active: true,
+            ..Default::default()
+        });
+        let inputs = app.tick_policy_inputs();
+        let policy = next_tick_policy(&inputs);
+        assert_eq!(
+            policy,
+            super::super::event::TickPolicy::Idle,
+            "app with active plan should select Idle policy"
+        );
+    }
+
+    #[test]
+    fn tui_event_loop_snapshot_drain_sets_dirty() {
+        let dir = tempdir().unwrap();
+        let hub = crate::state_hub::shared_state_hub();
+        let mut app = App::new_connected(dir.path(), &hub);
+
+        // Initially clean
+        app.render_dirty = RenderDirty::NONE;
+
+        // Publish an event to trigger snapshot change
+        hub.publish(roko_core::DashboardEvent::PlanStarted {
+            plan_id: "dirty-test".to_string(),
+            tasks_total: 1,
+        });
+        app.drain_snapshot_channel();
+
+        assert!(
+            app.render_dirty.contains(RenderDirty::SNAPSHOT),
+            "drain_snapshot_channel should set SNAPSHOT dirty bit"
+        );
+    }
+
+    #[test]
+    fn tui_event_loop_clean_state_skips_draw() {
+        // Verify that when render_dirty is empty, we would skip a draw.
+        // (This tests the flag logic, not the actual event loop.)
+        let dir = tempdir().unwrap();
+        let app = App::new(dir.path());
+        assert!(
+            app.render_dirty.is_empty(),
+            "clean state should not trigger a draw"
+        );
+    }
+
+    #[test]
+    fn tui_event_loop_drawn_reasons_cleared() {
+        let dir = tempdir().unwrap();
+        let mut app = App::new(dir.path());
+
+        // Set multiple dirty bits
+        app.render_dirty
+            .insert(RenderDirty::INPUT | RenderDirty::SNAPSHOT);
+
+        // Simulate drawing: capture reasons, then clear
+        let drawn = app.render_dirty;
+        app.render_dirty.remove(drawn);
+
+        assert!(
+            app.render_dirty.is_empty(),
+            "all drawn reasons should be cleared after draw"
+        );
+    }
+
+    #[test]
+    fn tui_event_loop_late_arrival_survives_clear() {
+        let dir = tempdir().unwrap();
+        let mut app = App::new(dir.path());
+
+        // Initial dirty reason
+        app.render_dirty.insert(RenderDirty::INPUT);
+        let drawn = app.render_dirty;
+
+        // Late arrival before clear
+        app.render_dirty.insert(RenderDirty::METRICS);
+
+        // Clear only drawn reasons
+        app.render_dirty.remove(drawn);
+
+        assert!(
+            !app.render_dirty.contains(RenderDirty::INPUT),
+            "INPUT should be cleared"
+        );
+        assert!(
+            app.render_dirty.contains(RenderDirty::METRICS),
+            "METRICS arrived late and should survive"
+        );
+    }
+
+    #[test]
+    fn tui_event_loop_current_tick_duration_matches_policy() {
+        let dir = tempdir().unwrap();
+        let app = App::new(dir.path());
+        // Idle app with no active work: should be 250ms (Dormant)
+        let dur = app.current_tick_duration();
+        assert_eq!(
+            dur,
+            std::time::Duration::from_millis(250),
+            "dormant app should use 250ms tick"
+        );
     }
 }

@@ -21,6 +21,8 @@ budget = { max_tokens_per_turn = 12000, max_cost_usd_cents_per_turn = 550 }
 thresholds = { gate_pass_rate_floor = 0.72 }
 routing_overrides = { force_backend = "claude", force_tier = "focused" }
 turn_budget_usd = 5.5
+capability_requirements = ["tools", "thinking"]
+default_effort = "high"
 "#,
     )
     .expect("parse roko.toml");
@@ -56,6 +58,8 @@ turn_budget_usd = 5.5
             }),
             turn_budget_usd: Some(5.5),
             temperament: None,
+            capability_requirements: Some(vec!["tools".to_string(), "thinking".to_string(),]),
+            default_effort: Some("high".to_string()),
         }
     );
 }
@@ -85,6 +89,8 @@ model = "gpt-5.4-mini"
     assert!(role.routing_overrides.is_none());
     assert!(role.turn_budget_usd.is_none());
     assert!(role.temperament.is_none());
+    assert!(role.capability_requirements.is_none());
+    assert!(role.default_effort.is_none());
 }
 
 #[test]

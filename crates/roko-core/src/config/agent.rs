@@ -92,6 +92,18 @@ pub struct AgentConfig {
     /// auto-discovers by walking up from the working directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_config: Option<PathBuf>,
+
+    /// Default agent ID used by `roko agent chat` when `--agent` is not
+    /// supplied. When `None`, the CLI resolves deterministically: the only
+    /// registered healthy agent is chosen, or an actionable error is returned
+    /// when zero or multiple agents exist.
+    ///
+    /// ```toml
+    /// [agent]
+    /// default_agent_id = "my-agent"
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_agent_id: Option<String>,
 }
 
 /// Agent execution mode controlling lifecycle.
@@ -146,6 +158,7 @@ impl Default for AgentConfig {
             mode: AgentMode::default(),
             extensions: Vec::new(),
             mcp_config: None,
+            default_agent_id: None,
         }
     }
 }
@@ -194,9 +207,29 @@ pub struct AgentThresholds {
 }
 
 /// Per-role routing overrides under `[agent.roles.<role>]`.
+///
+/// These are **config-file** overrides, distinct from the CLI flags:
+///
+/// - `force_backend` here is a **role-scoped** config override. It is
+///   consulted by `resolve_role_model_override` in `config_helpers.rs` and
+///   matches against known provider families (e.g. `"claude"`, `"openai"`).
+/// - The CLI flags `--model` / `--force-model` / `--force-backend` are
+///   **operator overrides** that bypass everything, including these config
+///   overrides, via `DispatchContext.force_backend`.
+///
+/// Priority (highest to lowest):
+/// 1. CLI `--force-backend` / `--model` / `--force-model`
+/// 2. Config `routing_overrides.force_backend` (this field)
+/// 3. Task `model_hint`
+/// 4. Cascade router
+/// 5. Default model
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoutingOverrides {
-    /// Force routing to a specific backend/provider family when possible.
+    /// Force routing to a specific backend/provider family for this role.
+    ///
+    /// This is a **config-file** role override, not the same as the CLI
+    /// `--force-backend` flag. The value is matched against provider
+    /// families (e.g. `"claude"`, `"openai"`), not model slugs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub force_backend: Option<String>,
     /// Force routing to the configured model tier when possible.
@@ -322,6 +355,20 @@ pub struct RoleOverride {
     /// Turn budget override (USD).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_budget_usd: Option<f32>,
+    /// Provider capability requirements for this role (e.g. `["web_search"]`,
+    /// `["text_generation"]`, `["code_execution"]`).
+    ///
+    /// When set, provider selection prefers models whose profile satisfies
+    /// these capabilities.  Unknown capabilities are silently ignored so the
+    /// field stays forward-compatible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_requirements: Option<Vec<String>>,
+    /// Default reasoning effort for this role when no explicit effort override
+    /// is provided by the CLI, task definition, or daimon modulation.
+    ///
+    /// Valid values: `"low"`, `"medium"`, `"high"`, `"max"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_effort: Option<String>,
 }
 
 impl RoleOverride {
@@ -353,6 +400,38 @@ impl RoleOverride {
     pub fn resolved_temperament(&self, default: Temperament) -> Temperament {
         self.temperament.unwrap_or(default)
     }
+
+    /// Check whether a model profile satisfies this role's capability requirements.
+    ///
+    /// Returns `true` when no requirements are configured or when every
+    /// requirement matches a known profile capability flag.  Unknown
+    /// requirement strings are silently ignored (forward-compatible).
+    #[must_use]
+    pub fn capabilities_satisfied_by(&self, profile: &super::schema::ModelProfile) -> bool {
+        let requirements = match self.capability_requirements.as_deref() {
+            Some(reqs) if !reqs.is_empty() => reqs,
+            _ => return true,
+        };
+        for req in requirements {
+            let satisfied = match req.as_str() {
+                "web_search" => profile.supports_web_search || profile.supports_search,
+                "text_generation" => true, // all models support text generation
+                "code_execution" => profile.supports_code_execution,
+                "tools" => profile.supports_tools,
+                "thinking" => profile.supports_thinking,
+                "vision" => profile.supports_vision,
+                "grounding" => profile.supports_grounding,
+                "caching" => profile.supports_caching,
+                "citations" => profile.supports_citations,
+                "mcp_tools" => profile.supports_mcp_tools,
+                _ => true, // unknown capabilities pass (forward-compat)
+            };
+            if !satisfied {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 impl AgentConfig {
@@ -364,6 +443,38 @@ impl AgentConfig {
             .map_or(self.temperament, |override_cfg| {
                 override_cfg.resolved_temperament(self.temperament)
             })
+    }
+
+    /// Resolve the effective reasoning effort for `role_label`.
+    ///
+    /// Precedence: role override `effort` > role override `default_effort` >
+    /// built-in role default > `agent.default_effort`.
+    #[must_use]
+    pub fn effort_for_role(&self, role_label: &str) -> &str {
+        if let Some(override_cfg) = self.roles.get(role_label) {
+            if let Some(effort) = override_cfg
+                .effort
+                .as_deref()
+                .map(str::trim)
+                .filter(|e| !e.is_empty())
+            {
+                return effort;
+            }
+            if let Some(effort) = override_cfg
+                .default_effort
+                .as_deref()
+                .map(str::trim)
+                .filter(|e| !e.is_empty())
+            {
+                return effort;
+            }
+        }
+        // Built-in role defaults for known roles.
+        match role_label {
+            "researcher" | "implementer" | "architect" => "high",
+            "reviewer" | "auditor" | "strategist" | "planner" | "scribe" | "conductor" => "medium",
+            _ => self.default_effort.trim(),
+        }
     }
 }
 

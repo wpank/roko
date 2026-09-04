@@ -31,8 +31,8 @@ use crate::immune_evidence::{
     AGENT_ISOLATION_CONTROL_KIND as AGENT_ISOLATION_CONTROL_KIND_VALUE, get_agent_control,
     persist_agent_control, persist_evidence_signals, validate_boundary_label,
 };
-use crate::streaming::StreamChunk;
 use crate::tool_immune::update_vault;
+use crate::tool_loop::{StreamEvent, StreamEventKind};
 
 /// Relative workspace directory containing the quarantine Store.
 pub const QUARANTINE_STORE_RELATIVE_PATH: &str = ".roko/immune/quarantine";
@@ -704,27 +704,27 @@ impl Agent for ImmuneScreenedAgent {
         &self,
         input: &Signal,
         ctx: &Context,
-        event_tx: mpsc::Sender<StreamChunk>,
+        event_tx: mpsc::Sender<StreamEvent>,
     ) -> AgentResult {
         if let Some(denied) = self.preflight(input).await {
             let _ = event_tx
-                .send(StreamChunk::Error(
-                    "provider stream denied by immune boundary".to_string(),
-                ))
+                .send(StreamEvent::now(StreamEventKind::Done {
+                    finish_reason: "error: provider stream denied by immune boundary".to_string(),
+                }))
                 .await;
             return denied;
         }
 
-        // Buffer provider chunks until the final result has passed screening;
+        // Buffer provider events until the final result has passed screening;
         // otherwise streamed content would escape before containment.
         let (buffer_tx, mut buffer_rx) = mpsc::channel(1);
         let collect = async move {
             let mut chunk_count = 0_usize;
             let mut byte_count = 0_usize;
             let mut exceeded = false;
-            while let Some(chunk) = buffer_rx.recv().await {
+            while let Some(event) = buffer_rx.recv().await {
                 chunk_count = chunk_count.saturating_add(1);
-                byte_count = byte_count.saturating_add(stream_chunk_bytes(&chunk));
+                byte_count = byte_count.saturating_add(stream_event_bytes(&event));
                 exceeded |= chunk_count > MAX_PROVIDER_STREAM_CHUNKS
                     || byte_count > MAX_PROVIDER_STREAM_BYTES;
             }
@@ -736,53 +736,49 @@ impl Agent for ImmuneScreenedAgent {
             let denied =
                 self.denied_result(input, Some(&result), "provider_stream_limit_exceeded", None);
             let _ = event_tx
-                .send(StreamChunk::Error(
-                    "provider stream denied by immune boundary".to_string(),
-                ))
+                .send(StreamEvent::now(StreamEventKind::Done {
+                    finish_reason: "error: provider stream denied by immune boundary".to_string(),
+                }))
                 .await;
             return denied;
         }
         let screened = self.screen_result(input, result).await;
         if screened.success {
-            // Provider chunks are not replayed: only the accepted canonical
+            // Provider events are not replayed: only the accepted canonical
             // final body can cross this boundary, so divergent reasoning,
             // tool-call, or content deltas cannot escape.
             if let Body::Text(text) = &screened.output.body
                 && !text.is_empty()
             {
-                let _ = event_tx.send(StreamChunk::ContentDelta(text.clone())).await;
+                let _ = event_tx
+                    .send(StreamEvent::now(StreamEventKind::TextDelta(text.clone())))
+                    .await;
             }
             if screened.usage.total_tokens() > 0 {
-                let _ = event_tx.send(StreamChunk::Usage(screened.usage)).await;
+                let _ = event_tx
+                    .send(StreamEvent::now(StreamEventKind::Usage(screened.usage)))
+                    .await;
             }
         } else {
             let _ = event_tx
-                .send(StreamChunk::Error(
-                    "provider stream denied by immune boundary".to_string(),
-                ))
+                .send(StreamEvent::now(StreamEventKind::Done {
+                    finish_reason: "error: provider stream denied by immune boundary".to_string(),
+                }))
                 .await;
         }
         screened
     }
 }
 
-fn stream_chunk_bytes(chunk: &StreamChunk) -> usize {
-    match chunk {
-        StreamChunk::ReasoningDelta(text)
-        | StreamChunk::ContentDelta(text)
-        | StreamChunk::Error(text) => text.len(),
-        StreamChunk::ToolCallDelta {
-            id_delta,
-            name_delta,
-            arguments_delta,
-            ..
-        } => {
-            id_delta.as_ref().map_or(0, String::len)
-                + name_delta.as_ref().map_or(0, String::len)
-                + arguments_delta.len()
+fn stream_event_bytes(event: &StreamEvent) -> usize {
+    match &event.kind {
+        StreamEventKind::ReasoningDelta(text) | StreamEventKind::TextDelta(text) => text.len(),
+        StreamEventKind::ToolCallStart { id, name } => id.len() + name.len(),
+        StreamEventKind::ToolCallDelta { id, json_fragment } => id.len() + json_fragment.len(),
+        StreamEventKind::ToolCallEnd { id, name, args } => {
+            id.len() + name.len() + args.to_string().len()
         }
-        StreamChunk::ToolProgress { tool, status } => tool.len() + status.len(),
-        StreamChunk::Usage(_) | StreamChunk::Done(_) => 0,
+        StreamEventKind::Usage(_) | StreamEventKind::Done { .. } => 0,
     }
 }
 
@@ -1352,12 +1348,12 @@ mod tests {
             &self,
             input: &Signal,
             _ctx: &Context,
-            event_tx: mpsc::Sender<StreamChunk>,
+            event_tx: mpsc::Sender<StreamEvent>,
         ) -> AgentResult {
             let _ = event_tx
-                .send(StreamChunk::ContentDelta(
+                .send(StreamEvent::now(StreamEventKind::TextDelta(
                     "suspect streamed content".to_string(),
-                ))
+                )))
                 .await;
             AgentResult::ok(input.derive(Kind::AgentOutput, Body::text(" ")).build())
         }
@@ -1380,7 +1376,9 @@ mod tests {
             chunks.push(chunk);
         }
         assert_eq!(chunks.len(), 1);
-        assert!(matches!(chunks[0], StreamChunk::Error(_)));
+        assert!(
+            matches!(&chunks[0].kind, StreamEventKind::Done { finish_reason } if finish_reason.starts_with("error:"))
+        );
     }
 
     struct DivergentStreamingAgent {
@@ -1409,7 +1407,7 @@ mod tests {
             &self,
             input: &Signal,
             _ctx: &Context,
-            event_tx: mpsc::Sender<StreamChunk>,
+            event_tx: mpsc::Sender<StreamEvent>,
         ) -> AgentResult {
             let count = if self.overflow {
                 MAX_PROVIDER_STREAM_CHUNKS + 1
@@ -1418,9 +1416,9 @@ mod tests {
             };
             for _ in 0..count {
                 let _ = event_tx
-                    .send(StreamChunk::ContentDelta(
+                    .send(StreamEvent::now(StreamEventKind::TextDelta(
                         "divergent streamed content".to_string(),
-                    ))
+                    )))
                     .await;
             }
             AgentResult::ok(
@@ -1447,8 +1445,8 @@ mod tests {
         }
         assert_eq!(chunks.len(), 1);
         assert!(matches!(
-            &chunks[0],
-            StreamChunk::ContentDelta(content) if content == "accepted final output"
+            &chunks[0].kind,
+            StreamEventKind::TextDelta(content) if content == "accepted final output"
         ));
     }
 
@@ -1471,7 +1469,9 @@ mod tests {
             chunks.push(chunk);
         }
         assert_eq!(chunks.len(), 1);
-        assert!(matches!(chunks[0], StreamChunk::Error(_)));
+        assert!(
+            matches!(&chunks[0].kind, StreamEventKind::Done { finish_reason } if finish_reason.starts_with("error:"))
+        );
     }
 
     #[cfg(unix)]

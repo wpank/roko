@@ -287,22 +287,53 @@ pub fn corrigibility_pipeline_graph() -> std::result::Result<Graph, GraphError> 
 }
 
 /// Register the five Verify Cell factories in an existing Graph registry.
+///
+/// Each cell receives a [`CellDescriptor`] with the corrigibility state schema
+/// so edge validation can check type compatibility without constructing Cells.
 pub fn register_corrigibility_cells(registry: &mut CellRegistry) {
-    registry.register(VERIFY_DEFERENCE_CELL_TYPE, |_| {
-        Box::new(VerifyDeferenceCell::standalone())
-    });
-    registry.register(VERIFY_SWITCH_CELL_TYPE, |_| {
-        Box::new(VerifySwitchCell::standalone())
-    });
-    registry.register(VERIFY_TRUTH_CELL_TYPE, |_| {
-        Box::new(VerifyTruthCell::standalone())
-    });
-    registry.register(VERIFY_IMPACT_CELL_TYPE, |_| {
-        Box::new(VerifyImpactCell::standalone())
-    });
-    registry.register(VERIFY_TASK_CELL_TYPE, |_| {
-        Box::new(VerifyTaskCell::standalone())
-    });
+    use crate::registry::CellDescriptor;
+
+    let schema = state_schema();
+    for cell_type in [
+        VERIFY_DEFERENCE_CELL_TYPE,
+        VERIFY_SWITCH_CELL_TYPE,
+        VERIFY_TRUTH_CELL_TYPE,
+        VERIFY_IMPACT_CELL_TYPE,
+        VERIFY_TASK_CELL_TYPE,
+    ] {
+        let desc = CellDescriptor::new(
+            cell_type,
+            (1, 0, 0),
+            Some(schema.clone()),
+            Some(schema.clone()),
+        );
+        match cell_type {
+            t if t == VERIFY_DEFERENCE_CELL_TYPE => {
+                registry.register_with_descriptor(t, desc, |_| {
+                    Box::new(VerifyDeferenceCell::standalone())
+                });
+            }
+            t if t == VERIFY_SWITCH_CELL_TYPE => {
+                registry.register_with_descriptor(t, desc, |_| {
+                    Box::new(VerifySwitchCell::standalone())
+                });
+            }
+            t if t == VERIFY_TRUTH_CELL_TYPE => {
+                registry
+                    .register_with_descriptor(t, desc, |_| Box::new(VerifyTruthCell::standalone()));
+            }
+            t if t == VERIFY_IMPACT_CELL_TYPE => {
+                registry.register_with_descriptor(t, desc, |_| {
+                    Box::new(VerifyImpactCell::standalone())
+                });
+            }
+            t if t == VERIFY_TASK_CELL_TYPE => {
+                registry
+                    .register_with_descriptor(t, desc, |_| Box::new(VerifyTaskCell::standalone()));
+            }
+            _ => unreachable!(),
+        }
+    }
 }
 
 fn traced_registry(trace: DecisionTrace) -> CellRegistry {

@@ -188,6 +188,47 @@ wave hierarchy widget (#125), plan DAG (#117), queue manifest (#116), push-mode 
 
 ## Architectural Gaps
 
+### Impact analysis uses conservative syntax and Cargo graph evidence -- PARTIAL
+
+Focused verification now maps actual diffs to Cargo lib/bin/test/example/bench targets, honors
+required features, widens shared modules, and compiles bounded transitive reverse dependents for
+public/re-export/trait/serde contract edits. The pre-dispatch prompt and plan preflight surface
+likely public-impact scope omissions, with an explicit reviewed acknowledgement that does not
+expand write authority. This is conservative text/Cargo-graph analysis, not a complete semantic
+`roko-index` reference query: macro-generated public APIs, non-Rust schema consumers, and symbol-
+level call-site enumeration can still require a full lane or operator review. Subsystem:
+runner verification and plan impact analysis.
+
+### FAST baseline filtering requires reproducible structured evidence -- INTENTIONAL BOUNDARY
+
+Preflight failures are filtered only when the post-edit gate has the same normalized structured
+failure evidence (excluding duration). When FAST skips preflight, a failing focused Cargo test is
+rerun once in a bounded detached baseline worktree. Environment-dependent, non-Cargo, unstructured,
+or non-reproducible failures are not waived. This prevents a broad gate name or exit code from
+hiding a genuine regression. Subsystem: gate attribution and retry policy.
+
+### Run-scoped observability and evidence queries -- IMPLEMENTED
+
+Runner lifecycle events and canonical workflow events now project into hashed per-run JSONL indexes
+without adding a second durable fsync to the runner hot path. The authenticated/loopback-only API
+provides bounded detail, cursor-paginated/filterable events, task attempts, gates, scrubbed logs,
+metrics, artifact and screenshot inventories, evidence-bundle manifests, and run-filtered SSE.
+Dashboard run listing and shared-run creation no longer replay the global runtime log on request.
+Run/task IDs are grammar-validated and hashed before path selection; malformed, oversized, or
+cross-run records fail safe; symlinks, traversal, arbitrary artifact downloads, and unsafe remote
+unauthenticated access are rejected. OpenAPI and the API reference enumerate the surface.
+
+The indexes are derived best-effort state: runner lifecycle and streamed agent-output records share
+a bounded buffered writer and flush at task/gate/terminal boundaries; runtime records buffer until
+the same boundaries or a selected-run read. Failures do not invalidate the global authoritative
+lifecycle terminal. Pre-index historical global records are deliberately not scanned or repaired
+by HTTP requests or server startup. `roko run-index repair` now provides the explicit bounded
+offline lane: dry-run by default, aggregate byte/record/deadline limits, strict embedded ownership
+validation, symlink and escape refusal, active writer/GC lock exclusion, and temp-file plus atomic
+replacement on `--apply`. Truncated scans replace nothing. The repair intentionally preserves
+unrelated stale hashed files because there is no reversible proof that every older global
+generation is still retained; cache lifecycle policy may retire those independently.
+
 ### event_loop.rs is a ~23.1K-line god object -- OPEN
 
 `crates/roko-cli/src/runner/event_loop.rs` (23,074 lines at this audit). Extraction has begun:
@@ -719,6 +760,14 @@ See `crates/roko-graph/src/` for details.
 
 ## Recently Resolved
 
+### Batch 2026-08-31 (FAST scheduler/lifecycle)
+
+- Backlog 286 closed: FAST uses wake-driven admission with exact preparation ownership; its
+  non-resetting deadline interposes awaited preparation and CLI/bridge startup; confirmed safe
+  timeout diffs pass post-dispatch safety and enter the ordinary gate lifecycle with durable
+  fingerprinted restart recovery; terminal event/snapshot/PID/ledger projections preserve
+  unconfirmed cleanup truth and freeze operator elapsed time.
+
 ### Batch 2026-08-14
 
 - P19 ACP cascade integration completed: real selected-key dispatch, explicit session
@@ -855,7 +904,6 @@ See `crates/roko-graph/src/` for details.
 | 83 | Dream consolidation deadlock (tokio spawn_blocking + nested block_on) | S |
 | 84 | Cascade router task category awareness (stages 2-3 ignore task_category) | M |
 | 85 | Plan generation TOML reliability (~50% first-attempt success rate) | S |
-| 286 | FAST hard-deadline interposition during awaited dispatch preparation/startup | M |
 
 ### P3 — Low / Phase 2+
 
@@ -897,3 +945,146 @@ The executable total is **124/124**. This is not interchangeable with the master
 checklist's **20 unchecked** and **11 partial** raw markers: that wider document retains
 repeated references, procedural/operational controls, documentation and dogfood proofs,
 and product work that is not represented as a ready task manifest.
+
+---
+
+## Audit Cross-Reference (2026-09-01)
+
+Three audit campaigns were completed on 2026-08-31. This section cross-references their
+findings against the existing GAPS.md entries to identify confirmations, potential
+resolutions, and newly surfaced gaps.
+
+**Audit sources:**
+
+| Audit | Path | Scope |
+|---|---|---|
+| CLI audit (30 agents) | `tmp/cli-audit/SUMMARY.md` | 47 commands, ~170 leaf paths, ~378 HTTP routes, 11,948 tests |
+| Engine audit (20 agents) | `tmp/engine-audit/SUMMARY.md` | Engine consolidation, graph parity, dead code, stale references |
+| TUI/UX parity audit (consolidated) | `tmp/tui-parity/00-INDEX.md` | 55 items across P0-P7/PX/MX priorities, 5 root causes |
+
+### 1. Existing gaps CONFIRMED by audits
+
+These GAPS.md entries are independently corroborated by audit evidence.
+
+| GAPS.md entry | Confirming audit(s) | Reference |
+|---|---|---|
+| `event_loop.rs` is a ~23.1K-line god object (OPEN) | CLI audit: 23,673 lines; Engine audit: 23,717 lines; both flag as top maintenance burden | cli-audit/24-runner-v2.md, engine-audit/08-runner-extractable.md |
+| Graph Engine incomplete (PARTIAL) | Engine audit: comprehensive gap analysis of Runner-v2 parity items (gates/replan/worktree/merge/approval/cancellation) | engine-audit/02-graph-engine-gaps.md, engine-audit/IMPLEMENTATION-ROADMAP.md |
+| Cross-crate duplicate type families (PARTIAL, ~14 families) | Engine audit: 7 agent dispatch paths, 11 model resolution functions, 9 config loading functions, 4 doctor implementations, 4 snapshot types, 5 chat paths | engine-audit/05-duplicate-paths.md |
+| `#[allow(dead_code)]` sites (HYGIENE/DEFERRED) | CLI audit: blanket `#![allow(dead_code, unused_imports, unused_variables)]` on roko-cli masks 242 compiler warnings; 67 individual `#[allow(dead_code)]` annotations across 31 files | cli-audit/22-stubs-unimplemented.md, engine-audit/15-dead-code-cli.md |
+| Prompt-experiment coverage across runtimes (PARTIAL) | Engine audit confirms ACP/serve still use ephemeral context injection rather than canonical section replacement | engine-audit/18-init-divergences.md |
+| Immune system screening coverage (PARTIAL) | CLI audit confirms 4 safety hooks (AllowlistGuard, SpendingLimiter, HallucinationDetector, ResultFilter) defined but not in the production chain | cli-audit/28-safety.md |
+| AgentPool runtime integration (Backlog #55) | CLI audit confirms `ToolDispatcher` stored but unused in roko-agent-server; GAPS.md Built-but-Unwired confirms no runtime instantiation in runner | cli-audit/25-agent-server.md |
+| HDC prompt assembly wiring (Backlog #67) | CLI audit: roko-cli enables `roko-neuro/hdc` but does NOT propagate to roko-compose, roko-fs, or roko-serve; the pipeline is severed | cli-audit/19-feature-flags.md |
+| Backlog #20 event loop decomposition | All three audits independently flag the 23K-line god object | cli-audit/24-runner-v2.md, engine-audit/08-runner-extractable.md |
+| Backlog #43 clippy suppression removal | CLI audit identifies the blanket allow as Critical Finding #3 | cli-audit/22-stubs-unimplemented.md |
+| Backlog #61 agent dispatch consolidation | Engine audit identifies 7 distinct agent dispatch paths with divergent safety/enrichment | engine-audit/05-duplicate-paths.md |
+| Backlog #47 ConfigLayer elimination | Engine audit identifies 9 config loading functions from the Config/RokoConfig structural split | engine-audit/05-duplicate-paths.md |
+| Backlog #85 plan generation TOML reliability | UX parity audit confirms this as PX.7 (plan generate crash retry/escalation) | tui-parity/00-INDEX.md |
+| UX/TUI Parity section (14 partial, 2 not started) | UX parity audit provides the detailed 55-item breakdown, root cause analysis, and effort estimates that ground this section | tui-parity/00-INDEX.md |
+
+### 2. Existing gaps POTENTIALLY RESOLVED or requiring re-evaluation
+
+These GAPS.md entries may need status updates based on audit findings.
+
+| GAPS.md entry | Audit finding | Assessment |
+|---|---|---|
+| Deprecated Rate-Oracle Vertical (RESOLVED) | CLI audit confirms 2 phantom TOML sections silently ignored: `[isfr]` (dead rate-oracle) and `[[gate]]` persist with no effect | The oracle code removal is confirmed resolved, but the phantom config sections remain as a minor config-hygiene residual. Not a reopening |
+| Provider outcome feedback (RESOLVED) | CLI audit confirms provider health routing is live; Engine audit confirms shared registry used across runtimes | Resolution stands; confirmed by both audits |
+| Workspace lock coverage (RESOLVED) | CLI audit confirms lock scope; UX audit added lock scope reduction (#226) as done item | Resolution stands and was extended |
+| GitHub workflow integration (RESOLVED) | CLI audit confirms the single `roko github status` subcommand is clean | Resolution stands |
+
+### 3. NEW gaps identified by audits not yet in GAPS.md
+
+These findings from the audits are not currently tracked as named entries in GAPS.md.
+
+#### From CLI audit (`tmp/cli-audit/SUMMARY.md`)
+
+| Finding | Severity | Details | Reference |
+|---|---|---|---|
+| `roko inject` is a complete stub | Critical | Prints `"status": "queued"` but never sends the signal anywhere; misleads users and tools | cli-audit/14-status-replay-inject.md |
+| 6/9 `roko new` scaffold types generate non-compiling code | Critical | Engram-to-Signal rename left stale identifiers in templates; only composer, template, and event-source produce working output | cli-audit/15-index-new-explain-completions.md |
+| `knowledge sync` can corrupt version vectors | Critical | Invalid `--direction` values silently skip both sync phases but still corrupt version vectors; no validation on the direction parameter | cli-audit/06-knowledge.md |
+| 5 marketplace serve stubs return 200/201 instead of 501 | High | `publish`, `fork`, etc. return success status codes with `"stub": true` in the body, misleading clients | cli-audit/09-serve.md |
+| No `deny_unknown_fields` on RokoConfig | High | Typos and ghost config sections (including dead `[isfr]` and `[[gate]]`) go unnoticed | cli-audit/21-config-schema.md |
+| `--json` flag ignored by ~15+ subcommands | Medium | PRD (all 9), knowledge (6), learn tune, agent status silently ignore the flag | cli-audit/08-config.md |
+| `--role` flag hardcoded by research and PRD commands | Medium | Global flag ignored; roles are hardcoded instead | cli-audit/03-prd.md, cli-audit/05-research.md |
+| `config set --global` flag silently ignored | Medium | Bound as `_` in match arm; writes are always local | cli-audit/08-config.md |
+| `roko status` daemon check unreachable | Medium | Constructs `SessionStatus` directly, never checks actual daemon | cli-audit/14-status-replay-inject.md |
+| MCP protocol version mismatch | Medium | Servers advertise `2024-11-05`, client sends `2025-11-25` | cli-audit/26-mcp.md |
+| 37 stale references to deleted `orchestrate.rs` | Medium | Comments, docstrings, templates, and `roko explain` text reference the removed file | cli-audit/23-deprecated-legacy.md |
+| 8 `#[deprecated]` items with zero callers | Low | Safe to remove outright | cli-audit/23-deprecated-legacy.md |
+| Budget enforcement disabled | Low | `max_plan_usd = 0.0` and `max_turn_usd = 0.0` in default config | cli-audit/21-config-schema.md |
+| `chain` feature never enabled on roko-std | Low | 17 chain tool handlers are compiled out in all default builds | cli-audit/19-feature-flags.md |
+| ~50+ undocumented environment variables | Low | **Mostly resolved**: `env_registry.rs` covers 105+ vars, `roko config env list [--json]` wired, shared parsers and alias deprecation helpers added. Remaining: consumer call-site migration to shared parsers, generated `docs/v2/ENVIRONMENT.md`, and CI source-comparison check. | cli-audit/20-environment-variables.md |
+| ~15 undocumented CLI subcommands/verbs | Low | `roko job match`, `roko do`, hidden deprecated commands, knowledge export/import/backfill-hdc, plan pause/resume/cancel/retry/status/queue | cli-audit/00-main-structure.md |
+
+#### From Engine audit (`tmp/engine-audit/SUMMARY.md`)
+
+| Finding | Severity | Details | Reference |
+|---|---|---|---|
+| `roko run` silently delegates to `roko do` | High | 18 instances of silent delegation; prompt intent classified via keyword matching; single-word prompts matched against plan slugs on disk | engine-audit/04-silent-delegation.md, engine-audit/12-do-cmd-routing.md |
+| 2 dead global flags never consumed | Medium | `--no-replan` and `--skip-validate` are parsed but never read by any code path | engine-audit/10-flag-inconsistencies.md |
+| 3 names for model override | Medium | `--model`, `--force-model`, `--force-backend` all exist with different semantics | engine-audit/10-flag-inconsistencies.md |
+| `--engine graph` silently drops 8 flags | Medium | Flags accepted but ignored without warning when using graph engine | engine-audit/10-flag-inconsistencies.md (also cli-audit/02-plan.md) |
+| 6 initialization paths with wildly different subsystem sets | Medium | Runner-v2 initializes ~35 subsystems; direct agent dispatch initializes ~3; others vary widely | engine-audit/18-init-divergences.md |
+| 102 distinct stale references across 16 categories | Medium | 40 to deleted orchestrate.rs, 13 broken scaffold templates, 12 wrong explain entries, 10 signals.jsonl references, 17 deleted golem-core concepts | engine-audit/06-stale-references.md |
+| ~4,500 lines of removable dead code in CLI crate | Medium | Hidden by blanket allow; root cause is orphaned helper modules from deleted orchestrate.rs | engine-audit/15-dead-code-cli.md |
+
+#### From TUI/UX parity audit (`tmp/tui-parity/00-INDEX.md`)
+
+| Finding | Severity | Details | Reference |
+|---|---|---|---|
+| RC-1: Two disconnected data models during plan run | High | DashboardData (file-based, empty during plan run) and DashboardSnapshot (event-driven) never synchronized; causes zero sparklines, empty efficiency, empty cost-by-model | tui-parity/00-INDEX.md (RC-1) |
+| RC-2: Recovery keybindings are facade-only | High | Every recovery action writes a signal but no component reads them; runner has no command channel from TUI | tui-parity/00-INDEX.md (RC-2) |
+| RC-3: Gate output stripped before reaching TUI | High | DashboardEvent::GateResult carries only pass/fail, not the raw cargo/test output; TUI shows nothing during 30-120s gate execution | tui-parity/00-INDEX.md (RC-3) |
+| RC-4: Disk I/O in render path | Medium | 3 render functions read files on every frame (20-60 fps): MCP sub-tab, F7 Inspect, F6 Config | tui-parity/00-INDEX.md (RC-4) |
+| RC-5: Built-but-not-rendered features | Medium | Log search, plan tree filter, critical path ETA, three-panel inspect, and F3 role tabs have state management but render layer never uses them | tui-parity/00-INDEX.md (RC-5) |
+| P2.1-P2.3: Gate execution not visible in TUI | High | GateCompletion.output not forwarded through events; no GateOutputWidget; no live rung-in-progress indicator | tui-parity/00-INDEX.md (P2) |
+| P5.1-P5.5: Plan detail enrichment missing | Medium | depends_on, acceptance/verify, files-modified/diff stats, branch/worktree/commit, per-plan elapsed timer all absent from plan detail views | tui-parity/00-INDEX.md (P5) |
+| MX.1: No Graph-to-TUI event integration | Medium | GraphEventSink + GraphTuiAdapter needed for graph engine TUI visibility | tui-parity/00-INDEX.md (MX.1), engine-audit/19-graph-tui-integration.md |
+| MX.3: Anthropic API streaming not enabled | Medium | `stream: true` not sent on Anthropic API path | tui-parity/00-INDEX.md (MX.3) |
+| Agent sidecar predictions/tasks are in-memory only | Low | No disk persistence for agent sidecar state | cli-audit/25-agent-server.md |
+| Agent sidecar runs unauthenticated by default | Low | No CLI flag to enable authentication | cli-audit/25-agent-server.md |
+
+### 4. Documentation drift identified by audits
+
+The following factual claims in project documentation are contradicted by audit evidence.
+These are tracked separately from code gaps because they affect operator trust and
+onboarding accuracy.
+
+| Claim | Audited reality | Source |
+|---|---|---|
+| ~317 HTTP routes | ~378 endpoints | cli-audit/SUMMARY.md |
+| 13 agent sidecar routes | 14 routes | cli-audit/SUMMARY.md |
+| `roko explain` references `orchestrate.rs` | File deleted; explain text has 12 wrong entries | cli-audit/15-index-new-explain-completions.md |
+| `roko explain` references `roko neuro search` | Actual command is `roko knowledge query` | cli-audit/15-index-new-explain-completions.md |
+| `roko new` generates working code | 6/9 types produce non-compiling output | cli-audit/15-index-new-explain-completions.md |
+
+### 5. Overlap between audits
+
+Several findings appear independently in multiple audits, indicating high-confidence issues:
+
+- **event_loop.rs god object**: all three audits flag this (23K+ lines)
+- **Blanket `#![allow(dead_code)]`**: CLI and Engine audits both identify this as the single most impactful code quality suppression
+- **Stale `orchestrate.rs` references**: CLI audit counts 37, Engine audit counts 40 (scope difference); both cite user-facing `roko explain` text
+- **Agent dispatch path proliferation**: CLI audit notes ToolDispatcher stored-but-unused; Engine audit counts 7 distinct dispatch paths
+- **Scaffold template breakage**: CLI audit identifies 6/9 broken; Engine audit identifies 13 broken templates (wider scope including non-CLI templates)
+- **Graph engine parity**: Engine audit provides the comprehensive gap analysis; CLI audit confirms `--engine graph` silently drops 8 flags; UX parity audit surfaces the lack of Graph-to-TUI event integration
+- **Silent flag handling**: CLI audit finds `--json` ignored by 15+ commands, `--role` hardcoded, `config set --global` discarded; Engine audit finds `--no-replan` and `--skip-validate` dead, 3 model-override names, `--engine graph` drops 8 flags
+
+### 6. Non-plan runtime services migration (#245)
+
+**Status**: Consumer-side adapters landed; builder blocked on #243.
+
+| Item | Status | Subsystem |
+|---|---|---|
+| `runtime_services.rs` in roko-execution with `ExecutionOverrides`, `NonPlanServiceRequest`, validation, and cost/shutdown contracts | Done | roko-execution |
+| `WorkflowServiceAdapter` in run.rs (Lane A) validates against profile matrix then delegates to `ServiceFactory::build` | Done | roko-cli |
+| `ChatSessionServiceAdapter` in chat_session.rs (Lane D1) validates `ChatLight` profile | Done | roko-cli |
+| `AcpSessionServiceAdapter` in runner.rs (Lane D2) validates ACP workflow against profile matrix | Done | roko-acp |
+| Actual `RuntimeServicesBuilder::build()` replacing `ServiceFactory::build` per-call construction | Blocked on #243 | roko-execution |
+| Replace `ChatFeedbackRuntime` per-session construction with builder handle | Blocked on #243 | roko-cli |
+| Replace `SessionManager::provider_health_registry`/`provider_rate_limiter` with builder handle | Blocked on #243 | roko-acp |
+| Conformance tests proving mandatory services active per profile | Partial (unit tests in runtime_services.rs) | roko-execution |
+| Delete duplicate `ServiceFactory::build` calls after full migration | Blocked on #243 | roko-cli, roko-acp |

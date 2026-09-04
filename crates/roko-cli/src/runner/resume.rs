@@ -33,8 +33,8 @@ use thiserror::Error;
 use tracing::info;
 
 use super::persist::{
-    JsonlRecovery, PersistPaths, RUN_STATE_SCHEMA_VERSION, ReplanLedgerSnapshot, RunStateSnapshot,
-    TaskDefFingerprint, load_run_state, load_state_snapshot, recover_jsonl,
+    JsonlRecovery, PersistPaths, RUN_STATE_SCHEMA_VERSION, RunStateSnapshot, TaskDefFingerprint,
+    load_run_state, load_state_snapshot, recover_jsonl,
 };
 use crate::task_parser::TaskDef;
 
@@ -135,6 +135,15 @@ pub enum ResumeError {
     /// Plan present in snapshot but missing from the current run.
     #[error("plan `{plan_id}` is in snapshot but not in the current run")]
     PlanMissing { plan_id: String },
+    /// The authoritative snapshot and all backups are corrupt or unreadable.
+    /// The corrupt file is preserved at `snapshot_path` for diagnosis.
+    #[error("state recovery required: {reason}")]
+    StateRecoveryRequired {
+        /// Path to the corrupt authoritative snapshot (left in place for diagnosis).
+        snapshot_path: std::path::PathBuf,
+        /// Human-readable explanation of the failure.
+        reason: String,
+    },
     /// Filesystem / parser failure surfacing as anyhow.
     #[error(transparent)]
     Other(#[from] anyhow::Error),
@@ -320,6 +329,7 @@ pub(crate) fn snapshot_plan_ids(
 
 #[cfg(test)]
 mod tests {
+    use super::super::persist::ReplanLedgerSnapshot;
     use super::*;
     use crate::task_parser::{TaskDef, VerifyStep};
     use std::collections::HashMap;

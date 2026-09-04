@@ -24,6 +24,7 @@
 //! *independent* pipelines is a concern one level up.
 
 use async_trait::async_trait;
+use futures::stream::{FuturesUnordered, StreamExt};
 use roko_core::{Context, Signal, TestCount, Verdict, Verify};
 use std::fmt;
 use std::time::Instant;
@@ -376,20 +377,29 @@ impl ComposedGatePipeline {
         self.gates.is_empty()
     }
 
-    /// Run gates collecting all verdicts (no short-circuit).
+    /// Run gates at the given indices concurrently, returning verdicts in
+    /// declaration order (matching the input `indices` order).
     async fn run_parallel(
         &self,
         indices: &[usize],
         signal: &Signal,
         ctx: &Context,
     ) -> Vec<Verdict> {
-        let mut verdicts = Vec::with_capacity(indices.len());
-        for &idx in indices {
+        let mut futs = FuturesUnordered::new();
+        for (pos, &idx) in indices.iter().enumerate() {
             if let Some(gate) = self.gates.get(idx) {
-                verdicts.push(gate.verify(signal, ctx).await);
+                futs.push(async move {
+                    let verdict = gate.verify(signal, ctx).await;
+                    (pos, verdict)
+                });
             }
         }
-        verdicts
+        let mut indexed: Vec<(usize, Verdict)> = Vec::with_capacity(futs.len());
+        while let Some((pos, verdict)) = futs.next().await {
+            indexed.push((pos, verdict));
+        }
+        indexed.sort_by_key(|(pos, _)| *pos);
+        indexed.into_iter().map(|(_, v)| v).collect()
     }
 }
 

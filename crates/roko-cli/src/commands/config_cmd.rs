@@ -1,5 +1,4 @@
 //! config_cmd command handlers.
-#![allow(unused_imports)]
 
 use crate::*;
 use indexmap::IndexMap;
@@ -86,16 +85,12 @@ pub(crate) async fn dispatch_config(cli: &Cli, cmd: ConfigCmd) -> Result<()> {
         ConfigCmd::Set {
             key,
             value,
-            global: _,
+            global,
             project,
             workdir,
         } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-            let target = if project {
-                EditTarget::Project
-            } else {
-                EditTarget::Global
-            };
+            let target = edit_target(global, project);
             config_cmd::cmd_set(&wd, target, &key, &value)
         }
         ConfigCmd::SetSecret { name, value } => config_cmd::cmd_set_secret(&name, &value),
@@ -103,7 +98,7 @@ pub(crate) async fn dispatch_config(cli: &Cli, cmd: ConfigCmd) -> Result<()> {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             config_cmd::cmd_check_secrets(&wd)
         }
-        ConfigCmd::Export { workdir, env } => {
+        ConfigCmd::Export { workdir, env, .. } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             cmd_export(&wd, env.as_deref())?;
             Ok(())
@@ -177,6 +172,10 @@ pub(crate) async fn dispatch_config(cli: &Cli, cmd: ConfigCmd) -> Result<()> {
                 cmd_provider_catalog();
                 Ok(())
             }
+            ConfigProviderCmd::Validate { workdir } => {
+                let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+                config_cmd::cmd_validate(&wd).await
+            }
         },
         // ── Models ──────────────────────────────────────────────────
         ConfigCmd::Models { cmd } => match cmd {
@@ -249,6 +248,15 @@ pub(crate) async fn dispatch_config(cli: &Cli, cmd: ConfigCmd) -> Result<()> {
         // ── MCP (intercepted in dispatch_subcommand) ─────────────────
         ConfigCmd::Mcp { .. } => {
             unreachable!("mcp dispatched in dispatch_subcommand")
+        }
+        // ── Environment variables ──────────────────────────────────────
+        ConfigCmd::Env { json } => {
+            roko_core::config::env_registry::print_env_list(json);
+            Ok(())
+        }
+        ConfigCmd::Preset { .. } => {
+            // Preset command is handled by the config preset dispatcher.
+            Ok(())
         }
     }
 }
@@ -761,6 +769,7 @@ pub(crate) async fn cmd_provider_test(
                 },
             ),
             ProviderKind::ClaudeCli
+            | ProviderKind::CodexCli
             | ProviderKind::CursorAcp
             | ProviderKind::CursorCli
             | ProviderKind::Hermes
@@ -796,7 +805,7 @@ pub(crate) async fn cmd_provider_test(
             })?;
             run_anthropic_provider_test(&provider_name, provider, model, json).await?
         }
-        ProviderKind::ClaudeCli => {
+        ProviderKind::ClaudeCli | ProviderKind::CodexCli => {
             run_claude_cli_provider_test(&provider_name, provider, model.as_ref(), json).await?
         }
         ProviderKind::GeminiApi | ProviderKind::GeminiCli => {
@@ -1193,6 +1202,7 @@ pub(crate) fn cmd_model_route(
         previous_model: Some(requested_slug.clone()),
         plan_context_tokens: None,
         tier_thresholds: None,
+        cfactor: None,
     };
 
     let router = CascadeRouter::load_or_new(&cascade_router_path(workdir), model_slugs.clone());
@@ -1858,7 +1868,9 @@ pub(crate) async fn inspect_provider(
     provider: &ProviderConfig,
 ) -> ProviderListRow {
     match provider.kind {
-        ProviderKind::ClaudeCli => inspect_cli_provider(provider_name, provider),
+        ProviderKind::ClaudeCli | ProviderKind::CodexCli => {
+            inspect_cli_provider(provider_name, provider)
+        }
         _ => inspect_http_provider(client, provider_name, provider).await,
     }
 }

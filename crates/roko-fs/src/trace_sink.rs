@@ -20,22 +20,31 @@
 //!
 //! - **Synchronous I/O** — traces are best-effort and never block agent
 //!   execution for long; the [`TraceSink`] trait itself is `fn` (not async).
-//! - **Best-effort writes** — I/O errors are logged to `stderr` and swallowed
-//!   rather than panicking; losing a trace line must not kill an agent run.
+//! - **Best-effort writes** — I/O errors are counted via atomic failure
+//!   counters (T034) and swallowed rather than panicking; losing a trace
+//!   line must not kill an agent run.
 //! - **One file per trace** — the file path is decided at first append
 //!   using the current clock's date; events after midnight still land in
 //!   that initial file (the trace is a single logical unit).
 //! - **Clock injection** — [`JsonlTraceSink::with_clock`] lets tests pin
 //!   the date for rotation assertions.
+//!
+//! # Observability (T034)
+//!
+//! [`TraceSinkHealth`] exposes failure counts and the last error message
+//! via [`JsonlTraceSink::degraded_state`]. Callers (e.g. `roko doctor`)
+//! can inspect this to detect silent data loss.
 
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use parking_lot::Mutex;
 use roko_core::tool::trace::{ToolTrace, ToolTraceEvent, TraceId, TraceSink};
+use serde::{Deserialize, Serialize};
 
 /// Relative path of the default trace directory from a workspace root.
 pub const DEFAULT_TRACE_DIR_REL_PATH: &str = ".roko/traces";
@@ -47,6 +56,50 @@ pub const DEFAULT_TRACE_DIR_REL_PATH: &str = ".roko/traces";
 /// [`JsonlTraceSink::with_clock`] to assert midnight-rotation behavior.
 pub type Clock = Arc<dyn Fn() -> chrono::DateTime<chrono::Utc> + Send + Sync>;
 
+// ─── TraceSinkHealth (T034) ──────────────────────────────────────────────────
+
+/// Health snapshot for a [`JsonlTraceSink`], reporting whether errors
+/// have accumulated during the current session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TraceSinkHealth {
+    /// Number of I/O errors encountered since construction.
+    pub failure_count: u64,
+    /// The most recent error message, if any.
+    pub last_error: Option<String>,
+    /// Whether the sink is currently degraded (failure_count > 0).
+    pub degraded: bool,
+}
+
+/// Shared failure counters for [`JsonlTraceSink`].
+struct FailureState {
+    count: AtomicU64,
+    last_error: Mutex<Option<String>>,
+}
+
+impl FailureState {
+    fn new() -> Self {
+        Self {
+            count: AtomicU64::new(0),
+            last_error: Mutex::new(None),
+        }
+    }
+
+    fn record_error(&self, msg: String) {
+        self.count.fetch_add(1, Ordering::Relaxed);
+        *self.last_error.lock() = Some(msg);
+    }
+
+    fn snapshot(&self) -> TraceSinkHealth {
+        let failure_count = self.count.load(Ordering::Relaxed);
+        let last_error = self.last_error.lock().clone();
+        TraceSinkHealth {
+            failure_count,
+            last_error,
+            degraded: failure_count > 0,
+        }
+    }
+}
+
 /// Persistent, file-per-trace JSONL sink.
 ///
 /// Cheap to clone — all shared state lives behind an [`Arc`]/[`Mutex`],
@@ -56,6 +109,7 @@ pub struct JsonlTraceSink {
     root: PathBuf,
     inner: Arc<Mutex<Inner>>,
     clock: Clock,
+    failures: Arc<FailureState>,
 }
 
 struct Inner {
@@ -97,6 +151,7 @@ impl JsonlTraceSink {
                 writers: HashMap::new(),
             })),
             clock: Arc::new(chrono::Utc::now),
+            failures: Arc::new(FailureState::new()),
         }
     }
 
@@ -109,6 +164,7 @@ impl JsonlTraceSink {
                 writers: HashMap::new(),
             })),
             clock,
+            failures: Arc::new(FailureState::new()),
         }
     }
 
@@ -122,6 +178,15 @@ impl JsonlTraceSink {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.inner.lock().writers.is_empty()
+    }
+
+    /// Return the current health/degradation state of this sink (T034).
+    ///
+    /// A non-zero `failure_count` indicates silent data loss has occurred.
+    /// Callers should surface this in `roko doctor` or dashboard health checks.
+    #[must_use]
+    pub fn degraded_state(&self) -> TraceSinkHealth {
+        self.failures.snapshot()
     }
 
     /// Flush all open trace writers to disk without closing them.
@@ -151,17 +216,16 @@ impl JsonlTraceSink {
                 let now = (self.clock)();
                 let date_dir = self.root.join(now.format("%Y-%m-%d").to_string());
                 if let Err(e) = std::fs::create_dir_all(&date_dir) {
-                    let _ = format!(
-                        "JsonlTraceSink: failed to create {}: {e}",
-                        date_dir.display()
-                    );
+                    self.failures
+                        .record_error(format!("failed to create {}: {e}", date_dir.display()));
                     return None;
                 }
                 let path = date_dir.join(format!("{}.jsonl", trace_id.to_hex()));
                 let file = match OpenOptions::new().create(true).append(true).open(&path) {
                     Ok(f) => f,
                     Err(e) => {
-                        let _ = format!("JsonlTraceSink: failed to open {}: {e}", path.display());
+                        self.failures
+                            .record_error(format!("failed to open {}: {e}", path.display()));
                         return None;
                     }
                 };
@@ -176,9 +240,11 @@ impl JsonlTraceSink {
 
 impl std::fmt::Debug for JsonlTraceSink {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let health = self.failures.snapshot();
         f.debug_struct("JsonlTraceSink")
             .field("root", &self.root)
             .field("open_writers", &self.inner.lock().writers.len())
+            .field("failure_count", &health.failure_count)
             .field("clock", &"<dyn Fn>")
             .finish()
     }
@@ -189,7 +255,8 @@ impl TraceSink for JsonlTraceSink {
         let line = match serde_json::to_string(&event) {
             Ok(s) => s,
             Err(e) => {
-                let _ = format!("JsonlTraceSink: failed to serialize event: {e}");
+                self.failures
+                    .record_error(format!("failed to serialize event: {e}"));
                 return;
             }
         };
@@ -198,17 +265,13 @@ impl TraceSink for JsonlTraceSink {
             return;
         };
         if let Err(e) = writer.writer.write_all(line.as_bytes()) {
-            let _ = format!(
-                "JsonlTraceSink: write failed ({}): {e}",
-                writer.path.display()
-            );
+            self.failures
+                .record_error(format!("write failed ({}): {e}", writer.path.display()));
             return;
         }
         if let Err(e) = writer.writer.write_all(b"\n") {
-            let _ = format!(
-                "JsonlTraceSink: write failed ({}): {e}",
-                writer.path.display()
-            );
+            self.failures
+                .record_error(format!("write failed ({}): {e}", writer.path.display()));
         }
     }
 
@@ -217,29 +280,28 @@ impl TraceSink for JsonlTraceSink {
         let line = match serde_json::to_string(&trace) {
             Ok(s) => s,
             Err(e) => {
-                let _ = format!("JsonlTraceSink: failed to serialize trace: {e}");
+                self.failures
+                    .record_error(format!("failed to serialize trace: {e}"));
                 return;
             }
         };
         let mut inner = self.inner.lock();
         if let Some(writer) = self.ensure_writer(&mut inner, trace_id) {
             if let Err(e) = writer.writer.write_all(line.as_bytes()) {
-                let _ = format!(
-                    "JsonlTraceSink: finish write failed ({}): {e}",
+                self.failures.record_error(format!(
+                    "finish write failed ({}): {e}",
                     writer.path.display()
-                );
+                ));
             }
             if let Err(e) = writer.writer.write_all(b"\n") {
-                let _ = format!(
-                    "JsonlTraceSink: finish write failed ({}): {e}",
+                self.failures.record_error(format!(
+                    "finish write failed ({}): {e}",
                     writer.path.display()
-                );
+                ));
             }
             if let Err(e) = writer.writer.flush() {
-                let _ = format!(
-                    "JsonlTraceSink: flush failed ({}): {e}",
-                    writer.path.display()
-                );
+                self.failures
+                    .record_error(format!("flush failed ({}): {e}", writer.path.display()));
             }
         }
         // Drop the writer to release the file handle.
@@ -267,7 +329,7 @@ mod tests {
     use roko_core::tool::ToolFormat;
     use roko_core::tool::trace::{CancelSource, ToolOutcome};
     use std::fs;
-    use std::sync::atomic::{AtomicI64, Ordering};
+    use std::sync::atomic::{AtomicI64, Ordering as AtomicOrdering};
 
     fn trace_id(byte: u8) -> TraceId {
         TraceId::from_bytes([byte; 16])
@@ -290,6 +352,8 @@ mod tests {
             ended_at_ms: started_at_ms + 10,
             events: Vec::new(),
             outcome: ToolOutcome::success(10, 0.0),
+            enforcement_owner: None,
+            policy_owner: None,
         }
     }
 
@@ -342,7 +406,7 @@ mod tests {
         let clock_secs = Arc::new(AtomicI64::new(1_700_000_000)); // 2023-11-14 UTC
         let clock_secs_inner = Arc::clone(&clock_secs);
         let clock: Clock = Arc::new(move || {
-            let secs = clock_secs_inner.load(Ordering::Relaxed);
+            let secs = clock_secs_inner.load(AtomicOrdering::Relaxed);
             chrono::DateTime::<chrono::Utc>::from_timestamp(secs, 0).unwrap_or_default()
         });
         let sink = JsonlTraceSink::with_clock(tmp.path(), clock);
@@ -353,7 +417,7 @@ mod tests {
         sink.finish(make_trace(id_a, 1));
 
         // Advance the clock 1 day.
-        clock_secs.fetch_add(86_400, Ordering::Relaxed);
+        clock_secs.fetch_add(86_400, AtomicOrdering::Relaxed);
 
         // Second trace on day 2.
         let id_b = trace_id(0x02);
@@ -528,5 +592,44 @@ mod tests {
             !sink.is_empty(),
             "writer bag must not be empty after flush_all"
         );
+    }
+
+    // ── T034 tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn degraded_state_starts_healthy() {
+        let sink = JsonlTraceSink::new("/nonexistent/traces");
+        let health = sink.degraded_state();
+        assert_eq!(health.failure_count, 0);
+        assert!(!health.degraded);
+        assert!(health.last_error.is_none());
+    }
+
+    #[test]
+    fn degraded_state_records_write_failures() {
+        // Use a path that will fail to create directories.
+        let sink =
+            JsonlTraceSink::with_clock("/dev/null/cannot/create/dirs", fixed_clock(1_700_000_000));
+        let id = trace_id(0x01);
+
+        // This should fail (can't create directories under /dev/null).
+        sink.append(id, ToolTraceEvent::StreamCoerced { at_ms: 1 });
+
+        let health = sink.degraded_state();
+        assert!(health.degraded, "should be degraded after failed append");
+        assert!(health.failure_count > 0);
+        assert!(health.last_error.is_some());
+    }
+
+    #[test]
+    fn degraded_state_serializes() {
+        let health = TraceSinkHealth {
+            failure_count: 3,
+            last_error: Some("disk full".to_string()),
+            degraded: true,
+        };
+        let json = serde_json::to_string(&health).expect("serialize");
+        let decoded: TraceSinkHealth = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded, health);
     }
 }

@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 pub use super::agent::*;
 pub use super::budget::*;
 pub use super::chain::*;
+pub use super::execution::{DaimonConfig, DreamScheduleConfig, RepoConfig, StrategySpaceConfig};
 pub use super::gates::*;
 pub use super::graduation::*;
 pub use super::learning::*;
@@ -173,6 +174,15 @@ pub struct RokoConfig {
     /// Disk budget, thresholds, and GC policy for resource-aware execution.
     #[serde(default)]
     pub resources: ResourcesConfig,
+    /// Automatic dream-cycle scheduling for daemon mode.
+    #[serde(default)]
+    pub dreams: DreamScheduleConfig,
+    /// Daimon affect-engine configuration.
+    #[serde(default)]
+    pub daimon: DaimonConfig,
+    /// Per-repository configuration blocks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repos: Vec<RepoConfig>,
 }
 
 /// Composition strategy for allocating prompt token budget across candidate sections.
@@ -443,6 +453,9 @@ impl Default for RokoConfig {
             cold_storage: ColdStorageConfig::default(),
             prompt: PromptConfig::default(),
             resources: ResourcesConfig::default(),
+            dreams: DreamScheduleConfig::default(),
+            daimon: DaimonConfig::default(),
+            repos: Vec::new(),
         }
     }
 }
@@ -513,6 +526,7 @@ fn synthesize_standard_providers_with_env(
                     extra_headers: None,
                     max_concurrent: None,
                     limits: None,
+                    require_confirmation: false,
                 },
             );
         }
@@ -768,6 +782,33 @@ impl RokoConfig {
         if let Some(v) = env_fn("ROKO_CLIPPY") {
             self.gates.clippy_enabled = parse_bool_env(&v);
         }
+        if let Some(v) = env_fn("ROKO_GATE_MODE") {
+            self.gates.mode = match v.trim().to_ascii_lowercase().as_str() {
+                "none" => GateMode::None,
+                "structural" => GateMode::Structural,
+                "focused" => GateMode::Focused,
+                "full" => GateMode::Full,
+                // Invalid breadth must never silently weaken verification.
+                _ => {
+                    tracing::warn!(
+                        env = "ROKO_GATE_MODE",
+                        value = %v,
+                        "unknown gate mode; failing closed to full"
+                    );
+                    GateMode::Full
+                }
+            };
+        }
+        if let Some(v) = env_fn("ROKO_COMPILE_CONCURRENCY") {
+            match v.parse::<usize>() {
+                Ok(value) if value > 0 => self.gates.compile_concurrency = value,
+                _ => tracing::warn!(
+                    env = "ROKO_COMPILE_CONCURRENCY",
+                    value = %v,
+                    "compile concurrency must be a positive integer; using configured value"
+                ),
+            }
+        }
 
         if provider_override.is_some() || model_slug_override.is_some() {
             let default_model = self.agent.default_model.trim();
@@ -812,6 +853,7 @@ impl RokoConfig {
         if matches!(
             provider.kind,
             ProviderKind::ClaudeCli
+                | ProviderKind::CodexCli
                 | ProviderKind::CursorAcp
                 | ProviderKind::CursorCli
                 | ProviderKind::Hermes
@@ -819,6 +861,7 @@ impl RokoConfig {
         ) {
             let default_cmd = match provider.kind {
                 ProviderKind::ClaudeCli => "claude",
+                ProviderKind::CodexCli => "codex",
                 ProviderKind::CursorAcp | ProviderKind::CursorCli => "cursor",
                 ProviderKind::Hermes => "hermes",
                 ProviderKind::OpenClaw => "openclaw",
@@ -1162,16 +1205,29 @@ impl RokoConfig {
         let _ = writeln!(out, "# thresholds = {{ gate_pass_rate_floor = 0.65 }}");
         let _ = writeln!(
             out,
-            "# routing_overrides = {{ force_backend = \"claude\", force_tier = \"focused\" }}"
+            "# routing_overrides = {{ force_backend = \"claude\", force_tier = \"focused\" }}  # config-level role override (matches provider families, not model slugs)"
         );
         let _ = writeln!(out, "# legacy: turn_budget_usd = 5.0\n");
     }
     fn write_example_gates(out: &mut String, c: &Self) {
         let _ = writeln!(out, "# -- Verification gates --");
         let _ = writeln!(out, "[gates]");
+        let _ = writeln!(out, "mode = \"{}\"", c.gates.mode);
         let _ = writeln!(out, "clippy_enabled = {}", c.gates.clippy_enabled);
         let _ = writeln!(out, "skip_tests = {}", c.gates.skip_tests);
-        let _ = writeln!(out, "max_iterations = {}\n", c.gates.max_iterations);
+        let _ = writeln!(out, "max_iterations = {}", c.gates.max_iterations);
+        let _ = writeln!(out, "impact_timeout_ms = {}", c.gates.impact_timeout_ms);
+        let _ = writeln!(
+            out,
+            "impact_max_reverse_dependents = {}",
+            c.gates.impact_max_reverse_dependents
+        );
+        let _ = writeln!(out, "impact_max_targets = {}", c.gates.impact_max_targets);
+        let _ = writeln!(
+            out,
+            "compile_concurrency = {}\n",
+            c.gates.compile_concurrency
+        );
     }
     fn write_example_routing(out: &mut String, c: &Self) {
         let _ = writeln!(out, "# -- Model routing --");
@@ -1221,6 +1277,11 @@ impl RokoConfig {
         let _ = writeln!(out, "max_plan_usd = {:.1}", c.budget.max_plan_usd);
         let _ = writeln!(out, "max_task_usd = {:.1}", c.budget.max_task_usd);
         let _ = writeln!(out, "max_turn_usd = {:.1}", c.budget.max_turn_usd);
+        let _ = writeln!(
+            out,
+            "max_task_retry_usd = {:.1}",
+            c.budget.max_task_retry_usd
+        );
         let _ = writeln!(
             out,
             "prompt_token_budget = {}\n",
@@ -1865,7 +1926,12 @@ const fn default_agent_enabled() -> bool {
 
 // ---- utility functions ---------------------------------------------------
 
-fn parse_bool_env(s: &str) -> bool {
+/// Parse a boolean environment variable value.
+///
+/// Accepts `1/true/yes/on` (case-insensitive) as truthy.
+/// Everything else (including empty string) is falsy.
+/// This is the canonical boolean parser for all env var reads.
+pub fn parse_bool_env(s: &str) -> bool {
     matches!(
         s.trim().to_ascii_lowercase().as_str(),
         "1" | "true" | "yes" | "on"
@@ -2126,7 +2192,7 @@ pub struct ResourcesConfig {
 
     /// Rotate `.roko/` JSONL log files when they exceed this size in MB.
     ///
-    /// Applies to `episodes.jsonl`, `signals.jsonl`, `efficiency.jsonl`,
+    /// Applies to `episodes.jsonl`, `engrams.jsonl`, `efficiency.jsonl`,
     /// and other JSONL files in the `learn/` directory. Default: 100 MB.
     #[serde(default = "ResourcesConfig::default_log_rotation_max_mb")]
     pub log_rotation_max_mb: u64,
@@ -2892,6 +2958,7 @@ max_output = 16384
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         assert_eq!(cfg.resolve_api_key().as_deref(), Some(expected.as_str()));
     }
@@ -2914,6 +2981,7 @@ max_output = 16384
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         assert_eq!(cfg.resolve_api_key(), None);
     }
@@ -2945,6 +3013,7 @@ max_output = 16384
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
         cfg.models.insert(
@@ -3034,6 +3103,7 @@ max_output = 16384
                 extra_headers: Some(headers),
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
         config.resolve_file_secrets();
@@ -3081,6 +3151,7 @@ max_output = 16384
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         assert!(!cfg.is_provider_available_with_env(&p, |_| None));
         cfg.agent.env = Some(vec![("OPENAI_API_KEY".into(), "sk-test".into())]);
@@ -3108,6 +3179,7 @@ max_output = 16384
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
         cfg.models.insert(
@@ -3148,6 +3220,7 @@ max_output = 16384
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         assert!(
             !cfg.is_provider_available(&provider),
@@ -3171,6 +3244,7 @@ max_output = 16384
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         assert!(
             cfg.is_provider_available(&provider),
@@ -3193,6 +3267,7 @@ max_output = 16384
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         assert!(
             !cfg.is_provider_available(&provider),
@@ -3215,6 +3290,7 @@ max_output = 16384
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         assert!(
             !cfg.is_provider_available(&provider),
@@ -3238,6 +3314,7 @@ max_output = 16384
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         assert!(
             cfg.is_provider_available(&provider),
@@ -3260,6 +3337,7 @@ max_output = 16384
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         assert!(
             !cfg.is_provider_available(&provider),
@@ -3282,6 +3360,7 @@ max_output = 16384
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         assert!(
             cfg.is_provider_available(&provider),
@@ -3305,6 +3384,7 @@ max_output = 16384
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         // Whether this passes depends on whether hermes is installed;
         // just verify it doesn't panic.
@@ -3334,6 +3414,7 @@ max_output = 16384
                 extra_headers: Some(headers),
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
 

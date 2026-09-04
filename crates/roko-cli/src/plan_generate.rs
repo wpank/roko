@@ -82,9 +82,9 @@ impl PlanTemplateKind {
     #[must_use]
     pub(crate) const fn max_task_count(self) -> usize {
         match self {
-            Self::Default => 20,
-            Self::Compact => 12,
-            Self::Strict => 8,
+            Self::Default => 8,
+            Self::Compact => 4,
+            Self::Strict => 12,
         }
     }
 }
@@ -101,10 +101,11 @@ pub(crate) fn render_plan_template_guidance(template: PlanTemplateKind) -> Strin
         template.default_model_tier()
     );
     let _ = writeln!(out, "- gate strictness: {}", template.gate_strictness());
-    let _ = writeln!(out, "- max task count: {}", template.max_task_count());
+    let max_tasks = crate::plan_policy::effective_generated_task_limit(template.max_task_count());
+    let _ = writeln!(out, "- max task count: {max_tasks}");
     let _ = writeln!(
         out,
-        "- Keep the plan within this budget unless the PRD explicitly requires more tasks."
+        "- This is a ceiling, not a target. Prefer the fewest cohesive tasks that preserve safe ownership."
     );
     out
 }
@@ -205,9 +206,9 @@ You are a task decomposition engine for software projects. Your job is to take a
 
 ## Core principles
 
-1. **Surgical scope**: Each task touches 1-2 files, changes ≤50 lines. If a change requires more, split it.
+1. **Cohesive scope**: One observable outcome that shares context, files, and verification belongs in one task. Select the correct tier (up to its LOC budget); do not split types, wiring, tests, and docs into separate serial microtasks merely to stay under 50 lines. Split only at a genuine ownership, dependency, security, or independently-verifiable boundary.
 2. **Precise context**: For each task, specify EXACTLY which files and line ranges to read. Not "read the crate" — "read lines 40-80 of src/lib.rs".
-3. **Executable verification**: Every acceptance criterion is a shell command that exits 0 on success, 1 on failure. No subjective criteria.
+3. **Single-owner executable verification**: Give each task exactly one focused command that proves its observable outcome. Combine structural assertions into that command when necessary. Do not repeat equivalent compile/test/clippy commands across tasks; the runner and release lane own broader validation.
 4. **Dependency ordering**: Types before implementations. Implementations before wiring. Wiring before tests.
 5. **Model hints**: NEVER set `model_hint`. The runtime selects the right model based on the task `tier`. Hardcoded model names break across providers.
 
@@ -260,19 +261,9 @@ anti_patterns = [
     "Do NOT create new files. Modify crates/roko-core/src/types.rs only.",
 ]
 
-# EXECUTABLE VERIFICATION
-[[task.verify]]
-phase = "structural"
-command = "grep -q 'pub struct FundingRate' crates/roko-core/src/types.rs"
-fail_msg = "FundingRate struct not found"
-
 [[task.verify]]
 phase = "compile"
 command = "cargo check -p roko-core"
-
-[[task.verify]]
-phase = "test"
-command = "cargo test -p roko-core"
 
 [[task]]
 id = "T2"
@@ -302,15 +293,8 @@ anti_patterns = [
 ]
 
 [[task.verify]]
-phase = "structural"
-command = "grep -q 'FundingRate' crates/roko-cli/src/commands/status.rs"
-fail_msg = "FundingRate not referenced in status command"
-[[task.verify]]
 phase = "compile"
 command = "cargo check -p roko-cli"
-[[task.verify]]
-phase = "test"
-command = "cargo test -p roko-cli"
 ```
 
 ## Role selection
@@ -349,13 +333,14 @@ Always omit the `model_hint` field entirely. The task `tier` field (mechanical/f
 
 ## Before generating tasks, you MUST:
 
-1. Search the codebase to understand what exists:
-   `grep -rn 'TypeName' crates/ --include='*.rs' | grep -v target/ | head -20`
+1. Use the bounded repository map, exact matches, and source excerpts supplied in this prompt.
+   Do not scan session history, other worktrees, unreachable Git objects, home directories, or
+   the web. If one fact is still missing, run at most one repository-rooted exact-symbol query
+   capped at 20 results; otherwise report that the source needs more context.
 
-2. Read the specific files you're generating tasks for — understand the current code.
+2. Read only the specific files needed for the cohesive outcome and record exact line ranges.
 
-3. Check if the feature already exists (partially or fully):
-   `grep -rn 'feature_keyword' crates/ --include='*.rs' | grep -v target/`
+3. Check the supplied exact matches for an existing or partial implementation before planning.
 
 4. For each task, verify the context files actually exist:
    `test -f crates/roko-core/src/types.rs && echo "exists" || echo "MISSING"`
@@ -370,7 +355,7 @@ Detect the project language and use the right commands:
 
 ## Verify steps by role
 
-- **implementer/architect**: MUST have at least 1 structural check + 1 compile check (e.g. `cargo check`)
+- **implementer/architect**: MUST have exactly one focused verify step. Use a target-aware compile for ordinary Rust edits, an exact test for behavioral logic, or one shell command that combines a structural assertion with the selected check.
 - **researcher/strategist**: MUST have only structural checks (e.g. `test -f path/to/output.md`, `grep -q ...`). Do NOT add compile/test verify steps — researcher tasks do not modify code.
 - **scribe/quick-reviewer**: structural checks only (verify docs exist, verify reviewed files haven't changed)
 
@@ -380,7 +365,7 @@ Before finalizing, verify your tasks against:
 - [ ] `meta.plan` matches the PRD slug exactly (e.g. slug "add-funding-rate" → `plan = "add-funding-rate"`)
 - [ ] `meta.max_parallel` is 1 unless tasks are truly independent (shared files = not independent)
 - [ ] Every task has ≤ max_loc lines of change for its tier
-- [ ] Implementer/architect tasks have at least 1 structural + 1 compile verify step
+- [ ] Every task has exactly one focused verify step and no semantic duplicate exists elsewhere in the plan
 - [ ] Researcher/strategist tasks have ONLY structural verify steps (no cargo check, no cargo test)
 - [ ] No task requires reading more than 3 files
 - [ ] Anti-patterns are specific (not generic "be careful")
@@ -399,24 +384,32 @@ Before finalizing, verify your tasks against:
 
 ## Complete Example (end-to-end)
 
-A realistic 3-task plan for "Add health check endpoint to roko-serve":
+The example below uses multiple tasks only to illustrate dependency syntax. For a normal endpoint
+change where one implementer can safely own the response type, route, and exact test, emit one
+integrative task instead. Cohesion and one verification owner override mechanical file-count splits.
+
+A realistic cohesive plan for "Add health check endpoint to roko-serve":
 
 ```toml
 [meta]
 plan = "add-health-check"
-total = 3
+total = 1
 done = 0
 status = "ready"
 max_parallel = 1
 
 [[task]]
 id = "T1"
-title = "Define HealthStatus response type"
-description = "Add a HealthStatus struct with uptime, version, and db_connected fields to the serve types module."
+title = "Implement and prove GET /health"
+description = "Add the response type and handler, register GET /health, and add one exact API integration test as one observable endpoint outcome."
 status = "ready"
-tier = "mechanical"
-max_loc = 15
-files = ["crates/roko-serve/src/types.rs"]
+tier = "integrative"
+max_loc = 150
+files = [
+    "crates/roko-serve/src/routes/health.rs",
+    "crates/roko-serve/src/routes/mod.rs",
+    "crates/roko-serve/tests/api_integration.rs",
+]
 allowed_tools = ["read_file", "write_file", "grep"]
 denied_tools = []
 depends_on = []
@@ -424,79 +417,20 @@ role = "implementer"
 
 [task.context]
 read_files = [
-    { path = "crates/roko-serve/src/types.rs", lines = "1-40", why = "Find existing response types to follow conventions." },
+    { path = "crates/roko-serve/src/routes/providers.rs", lines = "1-80", why = "Follow the existing JSON response and handler conventions." },
+    { path = "crates/roko-serve/src/routes/mod.rs", lines = "270-340", why = "Exact build_router registration seam." },
+    { path = "crates/roko-serve/tests/api_integration.rs", lines = "60-180", why = "Reuse the bounded test_app and GET helper pattern." },
 ]
-symbols = ["AppState — shared state struct to reference for db_connected"]
+symbols = [
+    "build_router — existing route registration function",
+    "test_app — existing integration test fixture",
+]
 anti_patterns = ["Do NOT add new dependencies. Use only std and existing crate types."]
 
 [[task.verify]]
-phase = "structural"
-command = "grep -q 'pub struct HealthStatus' crates/roko-serve/src/types.rs"
-fail_msg = "HealthStatus struct not found"
-
-[[task.verify]]
-phase = "compile"
-command = "cargo check -p roko-serve"
-
-[[task]]
-id = "T2"
-title = "Implement GET /health handler"
-description = "Add an async handler that returns HealthStatus as JSON, wired to the router."
-status = "ready"
-tier = "focused"
-max_loc = 35
-files = ["crates/roko-serve/src/routes/health.rs", "crates/roko-serve/src/routes/mod.rs"]
-allowed_tools = ["read_file", "write_file", "grep"]
-denied_tools = []
-depends_on = ["T1"]
-role = "implementer"
-
-[task.context]
-read_files = [
-    { path = "crates/roko-serve/src/routes/mod.rs", lines = "1-30", why = "Understand router setup to add new route." },
-    { path = "crates/roko-serve/src/types.rs", lines = "1-40", why = "Import HealthStatus type." },
-]
-symbols = ["router() — function where routes are registered"]
-anti_patterns = ["Do NOT modify types.rs. Only add the handler and route registration."]
-
-[[task.verify]]
-phase = "structural"
-command = "grep -q 'health' crates/roko-serve/src/routes/mod.rs"
-fail_msg = "Health route not registered"
-
-[[task.verify]]
-phase = "compile"
-command = "cargo check -p roko-serve"
-
-[[task.verify]]
 phase = "test"
-command = "cargo test -p roko-serve"
-
-[[task]]
-id = "T3"
-title = "Add integration test for /health endpoint"
-description = "Write a test that starts the server and verifies GET /health returns 200 with valid JSON."
-status = "ready"
-tier = "focused"
-max_loc = 40
-files = ["crates/roko-serve/tests/health_check.rs"]
-allowed_tools = ["read_file", "write_file", "grep"]
-denied_tools = []
-depends_on = ["T2"]
-role = "implementer"
-
-[task.context]
-read_files = [
-    { path = "crates/roko-serve/tests/", lines = "1-50", why = "Follow existing test patterns." },
-    { path = "crates/roko-serve/src/routes/health.rs", lines = "1-40", why = "Know what the handler returns." },
-]
-symbols = ["TestClient — test helper if one exists"]
-anti_patterns = ["Do NOT modify production code. Only add the test file."]
-
-[[task.verify]]
-phase = "test"
-command = "cargo test -p roko-serve --test health_check"
-fail_msg = "Integration test failed or not found"
+command = "cargo test -p roko-serve --test api_integration health_endpoint"
+fail_msg = "The exact health endpoint integration test failed or was not found"
 ```
 "#;
 
@@ -564,7 +498,7 @@ mod template_tests {
         assert_eq!(template.label(), "default");
         assert_eq!(template.default_model_tier(), "focused");
         assert_eq!(template.gate_strictness(), "standard");
-        assert_eq!(template.max_task_count(), 20);
+        assert_eq!(template.max_task_count(), 8);
     }
 
     #[test]
@@ -573,7 +507,7 @@ mod template_tests {
         assert_eq!(template.label(), "strict");
         assert_eq!(template.default_model_tier(), "integrative");
         assert_eq!(template.gate_strictness(), "strict");
-        assert_eq!(template.max_task_count(), 8);
+        assert_eq!(template.max_task_count(), 12);
     }
 
     #[test]
@@ -582,14 +516,14 @@ mod template_tests {
         assert!(guidance.contains("name: compact"));
         assert!(guidance.contains("default model tier: mechanical"));
         assert!(guidance.contains("gate strictness: standard"));
-        assert!(guidance.contains("max task count: 12"));
+        assert!(guidance.contains("max task count: 4"));
     }
 }
 
 /// Build a prompt for regenerating an existing plan in place (§11).
 ///
 /// Strips the existing tasks to just `id`/`title`/`depends_on` and asks the
-/// agent to fill in `tier`, `model_hint`, `read_files`, `verify`, `context`,
+/// agent to fill in `tier`, `read_files`, `verify`, `context`,
 /// and `max_loc`.
 #[must_use]
 pub fn build_regeneration_prompt(workdir: &Path, existing_tasks_toml: &str) -> String {
@@ -606,7 +540,7 @@ pub fn build_regeneration_prompt(workdir: &Path, existing_tasks_toml: &str) -> S
          - `max_loc` (estimated lines of change)\n\
          - `allowed_tools`, `denied_tools`, and `mcp_servers` (per-task tool/MCP constraints)\n\
          - `[task.context]` with read_files, symbols, anti_patterns\n\
-         - `[[task.verify]]` with at least compile + test checks\n\
+         - exactly one focused `[[task.verify]]` command per task\n\
          Do NOT set `model_hint` — the runtime selects models automatically from the task tier.\n\n\
          ## Existing tasks.toml:\n\n```toml\n{existing_tasks_toml}\n```"
     );
@@ -899,7 +833,8 @@ pub fn build_backlog_generation_prompt(workdir: &Path, spec: &BacklogSpec, slug:
 pub fn build_backlog_task_prompt(spec: &BacklogSpec, slug: &str) -> String {
     let mut prompt = format!(
         "Read the backlog spec below and generate an implementation plan. \
-         Search the codebase first to understand what exists. \
+         Use the supplied bounded backlog/file context first; if one fact is absent, run at most \
+         one repository-rooted exact-symbol query capped at 20 matches. \
          Write the plan to plans/{slug}/tasks.toml (create the directory). \
          Create plan.md and tasks.toml files with tier, context (read_files with line ranges), \
          mcp_servers (per-task MCP server names), and verify steps (executable shell commands). \
@@ -1045,8 +980,9 @@ mod tests {
             "prompt",
         );
         assert!(prompt.contains("Add a logging system"));
-        assert!(prompt.contains("Surgical scope"));
-        assert!(prompt.contains("/test"));
+        assert!(prompt.contains("## Source type: prompt"));
+        assert!(prompt.contains("## Source content:"));
+        assert!(prompt.contains("## Workspace: /test"));
     }
 
     #[test]

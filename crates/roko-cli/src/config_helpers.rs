@@ -1,4 +1,4 @@
-//! Configuration and path helpers extracted from `orchestrate.rs`.
+//! Configuration and path helpers (originally extracted from the legacy orchestrator).
 //!
 //! This module contains:
 //! - `.roko/` layout path constructors

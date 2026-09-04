@@ -77,11 +77,15 @@ impl ControlCommand {
 }
 
 // ---------------------------------------------------------------------------
-// TuiCommand — in-process channel commands from the TUI to the runner
+// TuiCommand — DEPRECATED: use `execution_control::ExecutionCommand` (#233)
 // ---------------------------------------------------------------------------
 
-/// Commands sent from the interactive TUI to the runner event loop via an
-/// in-process channel (as opposed to [`ControlCommand`] which uses file IPC).
+/// **Deprecated**: use [`crate::execution_control::ExecutionCommand`] instead.
+///
+/// This enum is retained only for backward-compatible type signatures.
+/// All production callers have migrated to `ExecutionCommand`; this enum
+/// will be removed in a future cleanup pass.
+#[deprecated(note = "use execution_control::ExecutionCommand instead (#233)")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TuiCommand {
     /// Pause the runner: finish the current agent turn, then stop dispatching.
@@ -176,12 +180,19 @@ pub enum RunnerFailureKind {
     Permanent,
     Resource,
     Structural,
+    /// The request exceeded the model's context window. Retryable with a
+    /// reduced context budget (the runner shrinks `plan_context_tokens` by 25%
+    /// before re-dispatching).
+    ContextOverflow,
     Unknown,
 }
 
 impl RunnerFailureKind {
     pub const fn is_retryable(self) -> bool {
-        matches!(self, Self::Transient | Self::Structural | Self::Unknown)
+        matches!(
+            self,
+            Self::Transient | Self::Structural | Self::ContextOverflow | Self::Unknown
+        )
     }
 
     pub const fn retry_cooldown_secs(self) -> u64 {
@@ -190,6 +201,7 @@ impl RunnerFailureKind {
             Self::Permanent => 0,
             Self::Resource => 0,
             Self::Structural => 5,
+            Self::ContextOverflow => 1,
             Self::Unknown => 1,
         }
     }
@@ -220,6 +232,17 @@ impl RunnerFailureKind {
             || lower.contains("flaky")
         {
             return Self::Transient;
+        }
+        if lower.contains("context overflow")
+            || lower.contains("context_overflow")
+            || lower.contains("context window")
+            || lower.contains("context length exceeded")
+            || lower.contains("maximum context length")
+            || lower.contains("token limit")
+            || lower.contains("prompt is too long")
+            || lower.contains("request too large")
+        {
+            return Self::ContextOverflow;
         }
         if lower.contains("verify script")
             || lower.contains("acceptance contract")
@@ -432,6 +455,7 @@ impl EventCategory {
                     Self::Run
                 }
             }
+            RunnerEvent::TimeoutSalvagedToGate { .. } => Self::Task,
             RunnerEvent::AgentDispatchStarted { .. }
             | RunnerEvent::AgentDispatchCompleted { .. }
             | RunnerEvent::AgentCompleted { .. } => Self::AgentLifecycle,
@@ -617,6 +641,9 @@ pub enum TaskAttemptStatus {
     Retrying,
     Cancelling,
     CancellationFailed,
+    /// Agent timed out after producing a diff; runner-owned safety/gates now
+    /// own the exact attempt and no provider retry is allowed.
+    SalvagedToGate,
     Passed,
     Failed,
     Exhausted,
@@ -649,6 +676,7 @@ impl TaskAttemptStatus {
                 Self::DispatchingAgent
                     | Self::AgentRunning
                     | Self::AgentCompleted
+                    | Self::SalvagedToGate
                     | Self::Gating
                     | Self::Passed
                     | Self::Failed
@@ -658,13 +686,18 @@ impl TaskAttemptStatus {
                 next,
                 Self::AgentRunning
                     | Self::AgentCompleted
+                    | Self::SalvagedToGate
                     | Self::Gating
                     | Self::Failed
                     | Self::Cancelling
             ),
             Self::AgentRunning => matches!(
                 next,
-                Self::AgentCompleted | Self::Gating | Self::Failed | Self::Cancelling
+                Self::AgentCompleted
+                    | Self::SalvagedToGate
+                    | Self::Gating
+                    | Self::Failed
+                    | Self::Cancelling
             ),
             Self::AgentCompleted => matches!(
                 next,
@@ -685,8 +718,9 @@ impl TaskAttemptStatus {
             Self::CancellationFailed => matches!(next, Self::Cancelling),
             Self::Cancelling => matches!(
                 next,
-                Self::Cancelled | Self::TimedOut | Self::CancellationFailed
+                Self::Cancelled | Self::TimedOut | Self::SalvagedToGate | Self::CancellationFailed
             ),
+            Self::SalvagedToGate => matches!(next, Self::Gating | Self::Failed | Self::Cancelling),
             Self::Failed => matches!(next, Self::Retrying | Self::Exhausted | Self::Cancelling),
             Self::Passed
             | Self::Exhausted
@@ -734,6 +768,28 @@ pub struct TimeoutEvent {
     pub limit_ms: u64,
     pub monotonic_elapsed_ms: u64,
     pub observed_at_ms: u64,
+}
+
+/// Latest exact-attempt provider and usage projection captured before timeout
+/// settlement clears live process state.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct TimeoutAgentSnapshot {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub model: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub provider: String,
+    #[serde(default)]
+    pub tokens_in: u64,
+    #[serde(default)]
+    pub tokens_out: u64,
+    #[serde(default)]
+    pub cache_read_tokens: u64,
+    #[serde(default)]
+    pub cache_write_tokens: u64,
+    #[serde(default)]
+    pub reasoning_tokens: u64,
+    #[serde(default)]
+    pub cost_usd: f64,
 }
 
 /// Result of an agent dispatch lifecycle step.
@@ -1054,6 +1110,9 @@ pub struct TaskRunSummary {
 pub struct TaskPhaseDurations {
     /// Time spent setting up the dispatch (model routing, prompt assembly).
     pub dispatch_ms: u64,
+    /// Time spent starting the selected CLI or provider bridge runtime.
+    #[serde(default)]
+    pub startup_ms: u64,
     /// Time spent in the agent (LLM calls + tool execution).
     pub agent_ms: u64,
     /// Time spent running gate checks.
@@ -1066,6 +1125,7 @@ impl TaskPhaseDurations {
     /// Total wall-clock time across all phases.
     pub fn total_ms(&self) -> u64 {
         self.dispatch_ms
+            .saturating_add(self.startup_ms)
             .saturating_add(self.agent_ms)
             .saturating_add(self.gate_ms)
             .saturating_add(self.cleanup_ms)
@@ -1104,6 +1164,12 @@ pub struct TaskLifecycle {
     pub latest_failure_kind: Option<RunnerFailureKind>,
 }
 
+/// The well-known task ID used for synthetic plan-verification operations.
+///
+/// Plan-verify entries live in `RunnerLifecycleProjection::plan_verification`,
+/// not in the executable `tasks` map, so they never inflate `total_tasks`.
+pub const PLAN_VERIFY_TASK_ID: &str = "plan-verify";
+
 /// Materialized lifecycle projection updated from typed runner events.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunnerLifecycleProjection {
@@ -1116,6 +1182,11 @@ pub struct RunnerLifecycleProjection {
     pub plans: std::collections::HashMap<String, PlanLifecycleStatus>,
     #[serde(default)]
     pub tasks: std::collections::HashMap<String, TaskLifecycle>,
+    /// Synthetic plan-verification lifecycle entries, keyed by `plan_id:plan-verify`.
+    ///
+    /// Separated from `tasks` so they never count against `total_tasks`.
+    #[serde(default)]
+    pub plan_verification: std::collections::HashMap<String, TaskLifecycle>,
     #[serde(default)]
     pub task_attempts: std::collections::HashMap<String, TaskAttemptLifecycle>,
     #[serde(default)]
@@ -1136,6 +1207,7 @@ impl RunnerLifecycleProjection {
             resumed: false,
             plans: std::collections::HashMap::new(),
             tasks: std::collections::HashMap::new(),
+            plan_verification: std::collections::HashMap::new(),
             task_attempts: std::collections::HashMap::new(),
             last_resume_marker: None,
             global_timeout: None,
@@ -1192,6 +1264,16 @@ pub enum RunnerEvent {
         total_agent_calls: usize,
         total_cost_usd: f64,
         duration_ms: u64,
+        /// True when terminalization could not prove every owned effect was
+        /// absent before the settlement budget expired.
+        #[serde(default)]
+        cleanup_degraded: bool,
+        /// Agent identities whose exact runtime ownership remains durable.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        surviving_agent_ids: Vec<String>,
+        /// Process IDs retained for startup orphan cleanup.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        surviving_agent_pids: Vec<u32>,
         plans: Vec<PlanRunSummary>,
     },
     #[serde(rename = "plan.started")]
@@ -1279,6 +1361,23 @@ pub enum RunnerEvent {
         duration_ms: u64,
         #[serde(default)]
         phase_durations: TaskPhaseDurations,
+        #[serde(default)]
+        agent_snapshot: TimeoutAgentSnapshot,
+    },
+    /// A timed-out provider was fully stopped, an owned diff was found, and
+    /// the exact attempt was durably transferred to ordinary gate ownership.
+    #[serde(rename = "timeout.salvaged_to_gate")]
+    TimeoutSalvagedToGate {
+        timestamp: String,
+        timestamp_ms: u64,
+        run_id: String,
+        timeout: TimeoutEvent,
+        phase_durations: TaskPhaseDurations,
+        agent_snapshot: TimeoutAgentSnapshot,
+        /// Combined immutable-base plus tracked/untracked content identity,
+        /// revalidated inside the ordinary gate producer before it starts.
+        input_fingerprint: String,
+        changed_paths: usize,
     },
     #[serde(rename = "agent.dispatch.started")]
     AgentDispatchStarted {
@@ -1488,6 +1587,38 @@ pub enum RunnerEvent {
 }
 
 impl RunnerEvent {
+    /// Run identifier shared by every durable runner lifecycle event.
+    pub fn run_id(&self) -> &str {
+        match self {
+            Self::ResumeMarker { run_id, .. }
+            | Self::RunStarted { run_id, .. }
+            | Self::RunCompleted { run_id, .. }
+            | Self::PlanStarted { run_id, .. }
+            | Self::PlanCompleted { run_id, .. }
+            | Self::TaskAttemptStarted { run_id, .. }
+            | Self::TaskAttemptCompleted { run_id, .. }
+            | Self::TaskAttemptCancellationRequested { run_id, .. }
+            | Self::TaskAttemptCancellationFailed { run_id, .. }
+            | Self::TimeoutRecorded { run_id, .. }
+            | Self::TimeoutSalvagedToGate { run_id, .. }
+            | Self::AgentDispatchStarted { run_id, .. }
+            | Self::AgentDispatchCompleted { run_id, .. }
+            | Self::AgentCompleted { run_id, .. }
+            | Self::GateDispatchStarted { run_id, .. }
+            | Self::GateCompleted { run_id, .. }
+            | Self::PromptAssembled { run_id, .. }
+            | Self::MergeBackendCompleted { run_id, .. }
+            | Self::RetryDecision { run_id, .. }
+            | Self::BudgetExceeded { run_id, .. }
+            | Self::RunPaused { run_id, .. }
+            | Self::RunResumed { run_id, .. }
+            | Self::BatchPause { run_id, .. }
+            | Self::BatchResume { run_id, .. }
+            | Self::PlanCancelled { run_id, .. }
+            | Self::ConductorIntervention { run_id, .. } => run_id,
+        }
+    }
+
     /// Whether durable persistence of this event proves scheduler progress.
     pub const fn is_scheduler_milestone(&self) -> bool {
         matches!(
@@ -1497,6 +1628,7 @@ impl RunnerEvent {
                 | Self::PlanCompleted { .. }
                 | Self::TaskAttemptStarted { .. }
                 | Self::TaskAttemptCompleted { .. }
+                | Self::TimeoutSalvagedToGate { .. }
                 | Self::GateDispatchStarted { .. }
                 | Self::GateCompleted { .. }
                 | Self::MergeBackendCompleted { .. }
@@ -1559,6 +1691,9 @@ impl RunnerEvent {
             total_agent_calls: totals.total_agent_calls,
             total_cost_usd: totals.total_cost_usd,
             duration_ms: totals.duration_ms,
+            cleanup_degraded: false,
+            surviving_agent_ids: Vec::new(),
+            surviving_agent_pids: Vec::new(),
             plans,
         }
     }
@@ -1704,6 +1839,28 @@ impl RunnerEvent {
             timeout,
             duration_ms: 0,
             phase_durations: TaskPhaseDurations::default(),
+            agent_snapshot: TimeoutAgentSnapshot::default(),
+        }
+    }
+
+    pub fn timeout_salvaged_to_gate(
+        run_id: &str,
+        timeout: TimeoutEvent,
+        phase_durations: TaskPhaseDurations,
+        agent_snapshot: TimeoutAgentSnapshot,
+        input_fingerprint: String,
+        changed_paths: usize,
+    ) -> Self {
+        let stamp = EventStamp::now();
+        Self::TimeoutSalvagedToGate {
+            timestamp: stamp.timestamp,
+            timestamp_ms: stamp.timestamp_ms,
+            run_id: run_id.to_string(),
+            timeout,
+            phase_durations,
+            agent_snapshot,
+            input_fingerprint,
+            changed_paths,
         }
     }
 
@@ -1932,6 +2089,7 @@ impl RunnerEvent {
             Self::TaskAttemptCancellationRequested { .. } => "task.attempt.cancellation_requested",
             Self::TaskAttemptCancellationFailed { .. } => "task.attempt.cancellation_failed",
             Self::TimeoutRecorded { .. } => "timeout.recorded",
+            Self::TimeoutSalvagedToGate { .. } => "timeout.salvaged_to_gate",
             Self::AgentDispatchStarted { .. } => "agent.dispatch.started",
             Self::AgentDispatchCompleted { .. } => "agent.dispatch.completed",
             Self::AgentCompleted { .. } => "agent.completed",
@@ -1962,6 +2120,7 @@ impl RunnerEvent {
             | Self::TaskAttemptCancellationRequested { timestamp_ms, .. }
             | Self::TaskAttemptCancellationFailed { timestamp_ms, .. }
             | Self::TimeoutRecorded { timestamp_ms, .. }
+            | Self::TimeoutSalvagedToGate { timestamp_ms, .. }
             | Self::AgentDispatchStarted { timestamp_ms, .. }
             | Self::AgentDispatchCompleted { timestamp_ms, .. }
             | Self::AgentCompleted { timestamp_ms, .. }
@@ -1997,6 +2156,10 @@ impl RunnerEvent {
             | Self::PromptAssembled { attempt, .. }
             | Self::MergeBackendCompleted { attempt, .. }
             | Self::RetryDecision { attempt, .. } => Some(&attempt.plan_id),
+            Self::TimeoutSalvagedToGate { timeout, .. } => timeout
+                .attempt
+                .as_ref()
+                .map(|attempt| attempt.plan_id.as_str()),
             Self::TimeoutRecorded { timeout, .. } => timeout
                 .attempt
                 .as_ref()
@@ -2029,6 +2192,10 @@ impl RunnerEvent {
             | Self::PromptAssembled { attempt, .. }
             | Self::MergeBackendCompleted { attempt, .. }
             | Self::RetryDecision { attempt, .. } => Some(&attempt.task_id),
+            Self::TimeoutSalvagedToGate { timeout, .. } => timeout
+                .attempt
+                .as_ref()
+                .map(|attempt| attempt.task_id.as_str()),
             Self::TimeoutRecorded { timeout, .. } => timeout
                 .attempt
                 .as_ref()
@@ -2066,6 +2233,14 @@ impl RunnerEvent {
             Self::TimeoutRecorded { timeout, .. } => {
                 format!("timeout recorded: {:?}", timeout.kind)
             }
+            Self::TimeoutSalvagedToGate {
+                timeout,
+                changed_paths,
+                ..
+            } => format!(
+                "timeout salvaged to gate: {:?}, changed_paths={changed_paths}",
+                timeout.kind
+            ),
             Self::AgentDispatchStarted {
                 agent_id,
                 requested_model,
@@ -2213,7 +2388,16 @@ pub struct RunConfig {
     pub plan_dir: PathBuf,
     /// Default model to use when task has no model_hint.
     pub model: String,
-    /// Hard CLI model override. Beats task model hints when present.
+    /// Hard CLI model override. Beats task model hints and the cascade
+    /// router when present.
+    ///
+    /// Set from:
+    /// - the global `--model` / `--force-model` flag, **or**
+    /// - the `plan run`-level `--force-backend` flag (which wins when both
+    ///   are specified).
+    ///
+    /// The event loop copies this into `DispatchContext.force_backend`,
+    /// which the model router reads as the highest-priority override.
     pub cli_model_override: Option<String>,
     /// Per-task timeout in seconds.
     pub timeout_secs: u64,
@@ -2250,6 +2434,16 @@ pub struct RunConfig {
     pub max_plan_usd: f64,
     /// Maximum USD spend per single agent turn (0 = unlimited). From `[budget]`.
     pub max_turn_usd: f64,
+    /// Maximum cumulative USD spend across all retry attempts for a single
+    /// task (0 = unlimited). From `[budget].max_task_retry_usd`. When the
+    /// sum of all previous attempts for a task exceeds this value, the retry
+    /// is suppressed and the task is marked failed.
+    pub max_task_retry_usd: f64,
+    /// Maximum USD spend per calendar day across all plan runs (0 = unlimited).
+    /// From `[budget].max_daily_usd`. Checked against the costs log before
+    /// each dispatch. When the day's total exceeds this ceiling, new
+    /// dispatches are blocked (or warned when `budget_override` is active).
+    pub max_daily_usd: f64,
     /// When `true`, allows execution to continue past `BudgetAction::Block` with
     /// a warning. Derived from `--budget-override` / `--no-budget` CLI flags.
     /// Default: `false`.
@@ -2309,8 +2503,9 @@ pub struct RunConfig {
     /// Populated when running under `roko serve`.
     pub metrics: Option<std::sync::Arc<roko_core::obs::metrics::MetricRegistry>>,
     /// Safety layer for pre- and post-dispatch checks around CLI dispatch.
-    /// When `None`, safety checks are skipped (tests, bare smoke runs).
-    pub safety_layer: Option<SafetyLayer>,
+    /// Always present — `SafetyLayer::with_defaults()` provides a hardened
+    /// fail-closed baseline. Safety checks are never skipped.
+    pub safety_layer: SafetyLayer,
     /// Filesystem-backed observability sinks (traces + tool metrics).
     /// When `None`, the runner constructs sinks from `workdir` at startup.
     /// Set explicitly to share sinks across runs or inject test doubles.
@@ -2333,8 +2528,12 @@ pub struct RunConfig {
     pub structured_log: super::structured_log::StructuredLogger,
     /// When true, capture event-driven screenshots during execution.
     /// Screenshots are saved to `.roko/screenshots/run-<timestamp>/`.
-    #[allow(dead_code)]
     pub screenshots: bool,
+    /// Maximum seconds between periodic all-tab captures.
+    pub screenshot_interval_secs: u64,
+    /// Exact output directory override for this run. Relative paths are
+    /// resolved against [`Self::workdir`].
+    pub screenshot_dir: Option<PathBuf>,
 }
 
 impl RunConfig {
@@ -2478,6 +2677,8 @@ impl RunConfig {
                 .unwrap_or_else(|| PathBuf::from("claude")),
             max_plan_usd: f64::from(roko_config.budget.max_plan_usd),
             max_turn_usd: f64::from(roko_config.budget.max_turn_usd),
+            max_task_retry_usd: f64::from(roko_config.budget.max_task_retry_usd),
+            max_daily_usd: f64::from(roko_config.budget.max_daily_usd),
             budget_override: false,
             budget_ceiling_override: None,
             no_budget: false,
@@ -2501,13 +2702,15 @@ impl RunConfig {
             projection: None,
             http_event_sink: None,
             metrics: Some(metrics),
-            safety_layer: Some(safety_layer),
+            safety_layer,
             obs_sinks: None,
             conductor: Some(Arc::new(conductor)),
             conductor_ring: Some(conductor_ring),
             github_ops: None,
             structured_log: super::structured_log::StructuredLogger::noop(),
             screenshots: false,
+            screenshot_interval_secs: 60,
+            screenshot_dir: None,
         }
     }
 }
@@ -2537,6 +2740,8 @@ impl Default for RunConfig {
             claude_program: PathBuf::from("claude"),
             max_plan_usd: 0.0,
             max_turn_usd: 0.0,
+            max_task_retry_usd: 0.0,
+            max_daily_usd: 0.0,
             budget_override: false,
             budget_ceiling_override: None,
             no_budget: false,
@@ -2555,13 +2760,15 @@ impl Default for RunConfig {
             batch_size: None,
             warm_cache: true,
             metrics: None,
-            safety_layer: None,
+            safety_layer: SafetyLayer::with_defaults(),
             obs_sinks: None,
             conductor: None,
             conductor_ring: None,
             github_ops: None,
             structured_log: super::structured_log::StructuredLogger::noop(),
             screenshots: false,
+            screenshot_interval_secs: 60,
+            screenshot_dir: None,
         }
     }
 }
@@ -2585,6 +2792,7 @@ impl std::fmt::Debug for RunConfig {
             .field("max_gate_rung", &self.max_gate_rung)
             .field("max_plan_usd", &self.max_plan_usd)
             .field("max_turn_usd", &self.max_turn_usd)
+            .field("max_task_retry_usd", &self.max_task_retry_usd)
             .field("budget_override", &self.budget_override)
             .field("budget_ceiling_override", &self.budget_ceiling_override)
             .field("no_budget", &self.no_budget)
@@ -2611,6 +2819,9 @@ impl std::fmt::Debug for RunConfig {
             )
             .field("output_sink", &self.output_sink)
             .field("warm_cache", &self.warm_cache)
+            .field("screenshots", &self.screenshots)
+            .field("screenshot_interval_secs", &self.screenshot_interval_secs)
+            .field("screenshot_dir", &self.screenshot_dir)
             .field("conductor", &self.conductor.as_ref().map(|_| ".."))
             .field(
                 "conductor_ring",
@@ -2748,6 +2959,7 @@ mod tests {
             output_tokens: 1,
             cache_read_tokens: 0,
             cache_write_tokens: 0,
+            reasoning_tokens: 0,
         };
         assert_eq!(
             EventCategory::from_agent_event(&token),
@@ -3014,6 +3226,21 @@ mod tests {
         assert_eq!(
             event_loop::health_check_timeout(&config),
             defaults.health_check()
+        );
+    }
+
+    // ─── #60: RunConfig.safety_layer non-optionality regression ─────
+
+    #[test]
+    fn run_config_default_has_active_safety_layer() {
+        let config = RunConfig::default();
+        // Compile-time proof: safety_layer is SafetyLayer, not Option<SafetyLayer>.
+        let _safety: &SafetyLayer = &config.safety_layer;
+        // The default layer should have Restrict sandbox level (not permissive).
+        assert_eq!(
+            config.safety_layer.sandbox_level,
+            roko_agent::safety::SandboxLevel::Restrict,
+            "default RunConfig must have a restrictive sandbox level"
         );
     }
 }

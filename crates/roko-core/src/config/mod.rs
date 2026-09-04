@@ -15,6 +15,8 @@ pub mod budget;
 pub mod cache;
 pub mod chain;
 pub mod compat;
+pub mod env_registry;
+pub mod execution;
 pub mod gates;
 pub mod graduation;
 pub mod hot_reload;
@@ -60,19 +62,19 @@ pub use schema::{
     AgentBudget, AgentConfig, AgentDefinition, AgentMode, AgentThresholds, ApiKeyEntry,
     BudgetConfig, CURRENT_SCHEMA_VERSION, ChainConfig, ColdStorageConfig, CompileFailRepeatConfig,
     ConductorConfig, ContextWindowPressureConfig, CoreRunnerConfig, CostOverrunConfig,
-    DataLlmConfig, DeployConfig, DomainProfile, EnforcementMode, GateProfileConfig, GateRungConfig,
-    GatesConfig, GeminiConfig, GhostTurnConfig, GithubWebhookConfig, GraduationConfig,
-    GraduationPolicy, IterationLoopConfig, JwksProvider, LearningConfig, ModelProfile,
-    PerplexityConfig, PipelineBandConfig, PipelineConfig, PipelineReviewerMode, PrdConfig,
-    ProjectConfig, ProviderConfig, ProviderRouting, RelayConfig, ResourcesConfig, ReviewLoopConfig,
-    RewardWeights, RokoConfig, RoleOverride, RoutingAlgorithm, RoutingConfig, RoutingOverrides,
-    RoutingRewardWeightsConfig, SafetySetting, SchedulerConfig, SchedulerCronConfig,
-    ServeAuthConfig, ServeConfig, ServeDeployConfig, ServeDeployWebhookConfig, ServerConfig,
-    SpecDriftConfig, StateHubConfig, StuckPatternConfig, SubscriptionConfig,
-    SubscriptionFilterConfig, SubscriptionTrigger, TestFailureBudgetConfig, TimeOverrunConfig,
-    ToolProfileConfig, ToolsConfig, TracingConfig, TuiConfig, ValidationConfig, WatcherConfig,
-    WatcherPathConfig, WatcherThresholds, WebhooksConfig, WorktreeCountConfig, builtin_profiles,
-    resolve_profile,
+    DaimonConfig, DataLlmConfig, DeployConfig, DomainProfile, DreamScheduleConfig, EnforcementMode,
+    GateMode, GateProfileConfig, GateRungConfig, GatesConfig, GeminiConfig, GhostTurnConfig,
+    GithubWebhookConfig, GraduationConfig, GraduationPolicy, IterationLoopConfig, JwksProvider,
+    LearningConfig, ModelProfile, PerplexityConfig, PipelineBandConfig, PipelineConfig,
+    PipelineReviewerMode, PrdConfig, ProjectConfig, ProviderConfig, ProviderRouting, RelayConfig,
+    RepoConfig, ResourcesConfig, ReviewLoopConfig, RewardWeights, RokoConfig, RoleOverride,
+    RoutingAlgorithm, RoutingConfig, RoutingOverrides, RoutingRewardWeightsConfig, SafetySetting,
+    SchedulerConfig, SchedulerCronConfig, ServeAuthConfig, ServeConfig, ServeDeployConfig,
+    ServeDeployWebhookConfig, ServerConfig, SpecDriftConfig, StateHubConfig, StrategySpaceConfig,
+    StuckPatternConfig, SubscriptionConfig, SubscriptionFilterConfig, SubscriptionTrigger,
+    TestFailureBudgetConfig, TimeOverrunConfig, ToolProfileConfig, ToolsConfig, TracingConfig,
+    TuiConfig, ValidationConfig, WatcherConfig, WatcherPathConfig, WatcherThresholds,
+    WebhooksConfig, WorktreeCountConfig, builtin_profiles, resolve_profile,
 };
 pub use serve::GitHubConfig;
 
@@ -148,37 +150,22 @@ pub enum LoadConfigError {
         /// Migration failure details.
         message: String,
     },
-}
-
-/// Load the workspace configuration from `workdir/roko.toml`.
-///
-/// **Deprecated**: Use [`loader::load_config_validated`] instead.
-/// This function now delegates to the unified loader with default options.
-#[deprecated(note = "use roko_core::config::loader::load_config_validated() instead")]
-pub fn load_config(workdir: &Path) -> Result<ValidatedConfig, LoadConfigError> {
-    tracing::debug!(workdir = %workdir.display(), "deprecated load_config -> unified loader");
-    loader::load_config_validated_with_options(workdir, &loader::LoadOptions::default())
-}
-
-/// Load the workspace configuration with strict safety validation.
-///
-/// **Deprecated**: Use [`loader::load_config_with_options`] with
-/// [`loader::LoadOptions::strict()`] instead.
-/// This function now delegates to the unified loader with strict options.
-#[deprecated(
-    note = "use roko_core::config::loader::load_config_with_options(workdir, &LoadOptions::strict()) instead"
-)]
-pub fn load_config_strict(workdir: &Path) -> Result<ValidatedConfig, LoadConfigError> {
-    tracing::debug!(workdir = %workdir.display(), "deprecated load_config_strict -> unified loader");
-    loader::load_config_validated_with_options(
-        workdir,
-        &loader::LoadOptions {
-            merge_global: true,
-            apply_env_overrides: true,
-            apply_hierarchical_env: true,
-            strict_validation: true,
-        },
-    )
+    /// Reading the global config file (`~/.roko/config.toml`) failed.
+    #[error("read global config {path}: {source}")]
+    GlobalConfigRead {
+        /// Global config file path.
+        path: std::path::PathBuf,
+        /// Underlying I/O error.
+        source: std::io::Error,
+    },
+    /// Parsing the global config file (`~/.roko/config.toml`) failed.
+    #[error("parse global config {path}: {detail}")]
+    GlobalConfigParse {
+        /// Global config file path.
+        path: std::path::PathBuf,
+        /// Parse error detail.
+        detail: String,
+    },
 }
 
 /// Trust level for workspace config loading.
@@ -256,7 +243,6 @@ fn load_config_impl(
 }
 
 #[cfg(test)]
-#[allow(deprecated)] // Tests exercise the deprecated load_config/load_config_strict API
 mod load_config_tests {
     use super::*;
 
@@ -279,8 +265,14 @@ mod load_config_tests {
         let toml_text = "[runner]\ndangerously_skip_permissions = true\n";
         std::fs::write(dir.path().join("roko.toml"), toml_text).expect("write roko.toml");
 
-        let err =
-            load_config_strict(dir.path()).expect_err("must reject dangerous shared override");
+        let strict_options = loader::LoadOptions {
+            merge_global: true,
+            apply_env_overrides: true,
+            apply_hierarchical_env: true,
+            strict_validation: true,
+        };
+        let err = loader::load_config_validated_with_options(dir.path(), &strict_options)
+            .expect_err("must reject dangerous shared override");
         assert!(
             matches!(err, LoadConfigError::Validation { .. }),
             "got {err:?}"
@@ -375,6 +367,7 @@ mod load_config_tests {
                 extra_headers: None,
                 max_concurrent: Some(8),
                 limits: None,
+                require_confirmation: false,
             },
         );
         config.models.insert(
@@ -404,8 +397,11 @@ mod load_config_tests {
             .expect("find workspace root");
         let roko_toml = project_root.join("roko.toml");
         if roko_toml.exists() {
-            let validated = load_config(project_root)
-                .expect("project roko.toml must load through unified loader");
+            let validated = loader::load_config_validated_with_options(
+                project_root,
+                &loader::LoadOptions::default(),
+            )
+            .expect("project roko.toml must load through unified loader");
             let config = validated.config();
             assert!(
                 !config.providers.is_empty(),

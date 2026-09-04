@@ -17,7 +17,6 @@ use roko_core::agent::ProviderKind;
 #[cfg(test)]
 use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
 use roko_core::config::schema::{ModelProfile, ProviderConfig};
-use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
 use roko_core::tool::aliases::{canonical_names, claude_of_canonical};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -56,20 +55,7 @@ impl ProviderAdapter for ClaudeCliAdapter {
             .working_dir
             .clone()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-        let timeout_ms = options
-            .timeout_ms
-            .or(provider.timeout_ms)
-            .unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS);
-
-        // Detect Codex CLI executable — use ExecAgent with codex-appropriate
-        // invocation flags instead of ClaudeCliAgent's Claude-specific protocol.
-        let exe_name = std::path::Path::new(command)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(command);
-        if exe_name.contains("codex") {
-            return Self::create_codex_agent(command, &current_dir, model, options, timeout_ms);
-        }
+        let timeout_ms = options.effective_timeout_ms(provider.timeout_ms);
 
         let mut agent = ClaudeCliAgent::new(command, current_dir, model.slug.clone())
             .with_timeout_ms(timeout_ms)
@@ -122,67 +108,51 @@ impl ProviderAdapter for ClaudeCliAdapter {
     }
 
     fn classify_error(&self, status: u16, body: &Value) -> ProviderError {
-        // For a CLI subprocess, the body typically carries stderr text.
-        // Inspect it first; fall back to the HTTP status code for callers
-        // that pass one through.
-        let stderr = body
-            .as_str()
-            .or_else(|| body.pointer("/error").and_then(Value::as_str))
-            .or_else(|| body.pointer("/message").and_then(Value::as_str))
-            .unwrap_or("");
-        let lower = stderr.to_ascii_lowercase();
-
-        if lower.contains("rate limit") {
-            return ProviderError::RateLimit {
-                retry_after_ms: None,
-            };
-        }
-        if lower.contains("unauthorized") || lower.contains("permission denied") {
-            return ProviderError::AuthFailure;
-        }
-        if lower.contains("timed out") || lower.contains("timeout") {
-            return ProviderError::Timeout;
-        }
-        if lower.contains("context window") || lower.contains("context length") {
-            return ProviderError::ContextOverflow;
-        }
-        if lower.contains("model not found") || lower.contains("unknown model") {
-            return ProviderError::ModelNotFound;
-        }
-
-        // Fallback: honour the status code when stderr had nothing useful.
-        match status {
-            429 => ProviderError::RateLimit {
-                retry_after_ms: None,
-            },
-            401 | 403 => ProviderError::AuthFailure,
-            404 => ProviderError::ModelNotFound,
-            408 => ProviderError::Timeout,
-            500..=599 => ProviderError::ServerError(status),
-            _ => {
-                if stderr.is_empty() {
-                    ProviderError::Other(format!("CLI exit status {status}"))
-                } else {
-                    ProviderError::Other(stderr.to_string())
-                }
-            }
-        }
+        super::error_classify::classify_cli_error(status, body, "CLI")
     }
 }
 
-impl ClaudeCliAdapter {
-    /// Create an `ExecAgent` configured for Codex CLI's `exec --json` protocol.
-    ///
-    /// Codex CLI uses `codex exec --json -` with the prompt on stdin, unlike
-    /// Claude CLI which uses `--print --output-format stream-json`. This
-    /// builder mirrors the invocation from `dispatch_v2::build_codex_invocation`.
-    fn create_codex_agent(
-        command: &str,
-        current_dir: &std::path::Path,
+/// Adapter for the `codex` CLI subprocess protocol (`codex exec --json`).
+///
+/// Previously, Codex CLI piggy-backed on [`ClaudeCliAdapter`] with
+/// executable-name sniffing. This adapter gives `CodexCli` its own
+/// first-class dispatch path so routing and capability logic can
+/// distinguish the two protocols at the type level.
+pub struct CodexCliAdapter;
+
+impl ProviderAdapter for CodexCliAdapter {
+    fn kind(&self) -> ProviderKind {
+        ProviderKind::CodexCli
+    }
+
+    fn create_agent(
+        &self,
+        provider: &ProviderConfig,
         model: &ModelProfile,
         options: &AgentOptions,
-        timeout_ms: u64,
     ) -> Result<Box<dyn Agent>, AgentCreationError> {
+        if provider.kind != self.kind() {
+            return Err(AgentCreationError::InvalidKind(provider.kind));
+        }
+
+        let command = provider
+            .command
+            .as_deref()
+            .map(str::trim)
+            .filter(|command| !command.is_empty())
+            .unwrap_or("codex");
+
+        // Verify the binary exists on PATH before attempting to spawn.
+        if !crate::provider::pre_flight::binary_on_path(command) {
+            return Err(AgentCreationError::BinaryNotFound(command.to_string()));
+        }
+
+        let current_dir = options
+            .working_dir
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        let timeout_ms = options.effective_timeout_ms(provider.timeout_ms);
+
         let mut args = vec![
             "exec".to_string(),
             "--json".to_string(),
@@ -212,7 +182,7 @@ impl ClaudeCliAdapter {
 
         let mut agent = ExecAgent::new(command, args, safety)
             .with_timeout_ms(timeout_ms)
-            .with_current_dir(current_dir)
+            .with_current_dir(&current_dir)
             .with_extract_codex_jsonl(true);
 
         // Codex lacks --system-prompt; fold it into stdin prefix.
@@ -236,6 +206,12 @@ impl ClaudeCliAdapter {
         );
 
         Ok(Box::new(agent))
+    }
+
+    fn classify_error(&self, status: u16, body: &Value) -> ProviderError {
+        // Codex CLI errors look similar to Claude CLI errors (stderr text).
+        // Reuse the same classification logic.
+        ClaudeCliAdapter.classify_error(status, body)
     }
 }
 
@@ -352,8 +328,11 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"adapter-ok"}}}}'
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         let options = AgentOptions {
+            safety_layer: None,
+            temperament: None,
             command: None,
             timeout_ms: Some(5_000),
             system_prompt: Some("system guidance".to_string()),
@@ -387,6 +366,7 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"adapter-ok"}}}}'
             pre_discovered_local_tools: None,
             local_tool_mcp_servers: None,
             rate_limiter: None,
+            gemini_safety_settings: Vec::new(),
         };
         let model = claude_model();
 
@@ -474,6 +454,7 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"worktree-ok"}}}}
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         let options = AgentOptions {
             timeout_ms: Some(10_000),
@@ -529,6 +510,7 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"late"}}'
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         let options = AgentOptions {
             timeout_ms: Some(100),

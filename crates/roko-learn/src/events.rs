@@ -5,9 +5,18 @@
 
 use crate::anomaly::Anomaly;
 use crate::provider_health::ErrorClass;
+use roko_agent::Usage;
 use roko_agent::chat_types::FinishReason;
-use roko_agent::{StreamChunk, Usage};
 use tokio::sync::broadcast;
+
+/// A chunk from a streaming response, used for learning feedback.
+#[derive(Clone, Debug)]
+pub struct StreamChunk {
+    /// Delta text content in this chunk.
+    pub delta: String,
+    /// Whether this is the final chunk.
+    pub is_final: bool,
+}
 
 /// Canonical event payload emitted by the learning/runtime feedback pipeline.
 #[allow(missing_docs)]
@@ -18,6 +27,11 @@ pub enum AgentEvent {
         model: String,
         provider: String,
         timestamp_ms: i64,
+        /// `true` when the operator forced a specific model via `--model`,
+        /// `--force-model`, or `--force-backend`. Override dispatches are
+        /// excluded from LinUCB bandit updates to prevent user overrides
+        /// from corrupting learned routing weights (UX34 / P4-9).
+        is_model_override: bool,
     },
     ToolCallExecuted {
         tool_name: String,

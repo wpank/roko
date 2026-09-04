@@ -44,6 +44,8 @@
 pub mod agent;
 /// Short-lived content-addressed response cache for identical backend requests.
 pub mod cache;
+/// Explicit capability state enum replacing boolean flags (T008).
+pub mod capability_state;
 pub mod chat_types;
 pub mod claude_agent;
 pub mod claude_cli_agent;
@@ -78,10 +80,13 @@ pub mod ollama;
 pub mod openai_agent;
 pub mod openai_compat_backend;
 pub mod openclaw;
+pub mod parity_matrix;
 pub mod perplexity;
 pub mod pool;
 pub mod process;
 pub mod provider;
+/// Provider-change tracking and attempt-scoped attribution (T009).
+pub mod provider_change;
 pub mod rate_limit;
 pub mod retry;
 pub mod runtime_events;
@@ -95,20 +100,6 @@ mod tool_immune;
 pub mod tool_loop;
 pub mod translate;
 pub mod usage;
-
-/// Deprecated compatibility shim for the former flat `ollama_agent` module.
-#[deprecated(note = "use crate::ollama::agent::OllamaAgent or crate::OllamaAgent instead")]
-pub mod ollama_agent {
-    pub use crate::ollama::agent::OllamaAgent;
-}
-
-/// Deprecated compatibility shim for the former flat `ollama_backend` module.
-#[deprecated(
-    note = "use crate::ollama::agent::OllamaLlmBackend or crate::OllamaLlmBackend instead"
-)]
-pub mod ollama_backend {
-    pub use crate::ollama::agent::OllamaLlmBackend;
-}
 
 pub use agent::{Agent, AgentResult};
 pub use chat_types::{ChatRequest, RequestOptions, ResponseFormat, ToolChoice};
@@ -155,6 +146,10 @@ pub use openclaw::{
     OpenClawAcpAgent, OpenClawAcpConfig, OpenClawConfig, OpenClawGatewayService,
     OpenClawInferAgent, OpenClawInferConfig, TransportHint, probe_openclaw_infer,
 };
+pub use parity_matrix::{
+    Capability as ParityCapability, CapabilityState, ProviderCapabilityMatrix,
+    ProviderCapabilityRow, provider_label,
+};
 pub use perplexity::{
     Annotation, PerplexityChatAgent, PerplexityDeepResearchAgent, PerplexityEmbedAgent,
     PerplexityMetadata, PerplexitySearchClient, SearchOptions, SearchResult,
@@ -183,10 +178,7 @@ pub use session::{
     AgentInvocationSession, InvocationState, ResumeValidationError, ReuseScope, WarmReusePolicy,
     WarmReuseRequest, fingerprint_text, validate_resume_request,
 };
-pub use streaming::{
-    ClaudeCliParser, OpenAiSseParser, StreamAccumulator, StreamChunk, StreamJsonParser,
-    UnifiedStreamEvent,
-};
+pub use streaming::{ClaudeCliParser, OpenAiSseParser, StreamJsonParser, UnifiedStreamEvent};
 pub use task_runner::{
     AgentEvent, Anomaly, AnomalyDetector, BudgetAction, BudgetGuardrail, ConductorAction,
     ConductorBandit, CostTable, EventBus, ModelPricing, TaskResult, TaskRunner, TaskRunnerError,

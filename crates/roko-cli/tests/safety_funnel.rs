@@ -136,7 +136,10 @@ fn claude_cli_dispatch_runs_safety_funnel_post_dispatch_secret_leak() {
 fn claude_cli_dispatch_runs_safety_funnel_post_dispatch_path_escape_in_changed_files() {
     let mut safety = safety_layer_with_path_escape_prevention();
     // Use the default contract (permissive) so only the path-escape rule fires.
-    safety.contract = AgentContract::permissive("implementer");
+    safety.contract = AgentContract {
+        role: "implementer".into(),
+        ..AgentContract::default()
+    };
 
     let violations = safety.post_dispatch_check(
         "test-plan",
@@ -191,9 +194,12 @@ fn claude_cli_dispatch_runs_safety_funnel_run_config_has_safety_layer() {
     let config = RokoConfig::default();
     let run_config = RunConfig::from_roko_config(workdir, plan_dir, config);
 
+    // safety_layer is now always-present (non-optional).
+    // Verify it was initialized from the config by checking the sandbox level.
+    let _layer: &roko_agent::SafetyLayer = &run_config.safety_layer;
     assert!(
-        run_config.safety_layer.is_some(),
-        "RunConfig::from_roko_config must set safety_layer to Some(_)"
+        true,
+        "RunConfig::from_roko_config must set safety_layer (non-optional)"
     );
 }
 

@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "fixture_id": "cancel_resume_budget",
+  "graph_fingerprint": "COMPUTE_AT_LOAD",
+  "request_fingerprints": [
+    "req-A"
+  ],
+  "prompt_fingerprints": [
+    "prompt-A"
+  ],
+  "tasks": [
+    {
+      "task_id": "A",
+      "dependencies": [],
+      "status": "completed",
+      "attempts": 1,
+      "provider": "fixture-provider",
+      "model": "fixture-model",
+      "role": "implementer",
+      "effort": "mechanical",
+      "workspace_fingerprint": "ws-fixture-0001",
+      "input_tokens": 1000,
+      "output_tokens": 600,
+      "cost_micro_usd": 380
+    },
+    {
+      "task_id": "B",
+      "dependencies": ["A"],
+      "status": "cancelled",
+      "attempts": 1,
+      "provider": "fixture-provider",
+      "model": "fixture-model",
+      "role": "implementer",
+      "effort": "focused",
+      "workspace_fingerprint": "ws-fixture-0002",
+      "input_tokens": 500,
+      "output_tokens": 0,
+      "cost_micro_usd": 120
+    },
+    {
+      "task_id": "C",
+      "dependencies": ["B"],
+      "status": "skipped",
+      "attempts": 0,
+      "provider": "",
+      "model": "",
+      "role": "implementer",
+      "effort": "focused",
+      "workspace_fingerprint": "",
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_micro_usd": 0
+    }
+  ],
+  "events": [
+    {
+      "sequence": 0,
+      "event_type": "plan.started",
+      "source": "runner",
+      "payload": {}
+    },
+    {
+      "sequence": 1,
+      "event_type": "task.dispatched",
+      "source": "runner",
+      "payload": { "task_id": "A" }
+    },
+    {
+      "sequence": 2,
+      "event_type": "task.completed",
+      "source": "runner",
+      "payload": { "task_id": "A" }
+    },
+    {
+      "sequence": 3,
+      "event_type": "task.dispatched",
+      "source": "runner",
+      "payload": { "task_id": "B" }
+    },
+    {
+      "sequence": 4,
+      "event_type": "task.cancelled",
+      "source": "runner",
+      "payload": { "task_id": "B" }
+    },
+    {
+      "sequence": 5,
+      "event_type": "plan.resumed",
+      "source": "runner",
+      "payload": { "checkpoint_task_ids": ["A"] }
+    },
+    {
+      "sequence": 6,
+      "event_type": "task.skipped",
+      "source": "runner",
+      "payload": { "task_id": "C", "reason": "budget_exceeded" }
+    },
+    {
+      "sequence": 7,
+      "event_type": "plan.failed",
+      "source": "runner",
+      "payload": { "reason": "budget exceeded at task C" }
+    }
+  ],
+  "receipts": [],
+  "final": {
+    "plan_status": "failed",
+    "completed_task_ids": ["A"],
+    "skipped_task_ids": ["C"],
+    "failed_task_ids": ["B"],
+    "total_input_tokens": 1500,
+    "total_output_tokens": 600,
+    "total_cost_micro_usd": 500,
+    "merge_state": "not_attempted",
+    "publication_state": "not_attempted",
+    "terminal_event_id": "evt-7"
+  }
+}

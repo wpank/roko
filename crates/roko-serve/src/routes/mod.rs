@@ -9,6 +9,10 @@ mod aggregator;
 pub(crate) mod arenas;
 pub(crate) mod auth;
 mod bench;
+#[cfg(feature = "alloy-backend")]
+mod chain;
+#[cfg(not(feature = "alloy-backend"))]
+#[path = "chain_disabled.rs"]
 mod chain;
 pub(crate) mod config;
 mod connectors;
@@ -579,7 +583,7 @@ fn workflow_sse_from_adapter(
     )
 }
 
-fn bind_is_loopback(bind: &str) -> bool {
+pub(crate) fn bind_is_loopback(bind: &str) -> bool {
     let host = bind
         .strip_prefix('[')
         .and_then(|value| value.strip_suffix(']'))
@@ -802,13 +806,15 @@ mod tests {
             .header("X-Api-Key", plaintext)
             .body(Body::empty())
             .expect("build marketplace read");
+        // Browse is a stub (501) but auth must still pass -- a read-scoped key
+        // must not be rejected by the auth middleware.
         assert_eq!(
             app.clone()
                 .oneshot(read)
                 .await
                 .expect("read response")
                 .status(),
-            StatusCode::OK
+            StatusCode::NOT_IMPLEMENTED
         );
 
         for uri in ["/api/marketplace/publish", "/api/marketplace/fork"] {

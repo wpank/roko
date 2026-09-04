@@ -1,5 +1,4 @@
 //! plan command handlers.
-#![allow(unused_imports)]
 
 use std::io::IsTerminal as _;
 
@@ -326,7 +325,12 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 });
                 println!("{}", serde_json::to_string_pretty(&payload)?);
             } else if !cli.quiet {
-                println!("created plan '{}' at {}", plan_id, plan_dir.display());
+                eprintln!("Created plan '{plan_id}' at {}", plan_dir.display());
+                crate::commands::util::print_next_step_hint(&format!(
+                    "Next: edit {tasks} and run with `roko plan run {}`",
+                    plan_dir.display(),
+                    tasks = tasks_path.display()
+                ));
             }
             Ok(EXIT_SUCCESS)
         }
@@ -446,13 +450,19 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             skip_preflight,
             force_backend,
             screenshots,
+            screenshot_interval,
+            screenshot_dir,
             batch_size,
         } => {
             let t_total = std::time::Instant::now();
             let t_setup = std::time::Instant::now();
 
-            // Merge local --model/--force-backend with the global --model.
-            // Local flag takes priority over the global flag.
+            // Merge the subcommand-level `--force-backend` with the global
+            // `--model` (aka `--force-model`). The subcommand flag wins when
+            // both are present so that `roko plan run --force-backend X`
+            // always takes effect even if a global `--model Y` was set.
+            // Both ultimately populate `RunConfig.cli_model_override`, which
+            // the event loop maps to `DispatchContext.force_backend`.
             let effective_model_override = force_backend.as_ref().or(cli.model.as_ref()).cloned();
 
             // Auto-enable inline TUI when stdout is an interactive terminal,
@@ -492,15 +502,18 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
 
             // ── Mandatory validation: reject malformed plans before execution ──
             // Runs in both normal and `--dry-run` mode.
-            if let Some(exit_code) = validate_before_run(&resolved_plans_dir, &wd) {
-                return Ok(exit_code);
-            }
+            // Skipped when the user passes --skip-validate (e.g. freshly-generated plans).
+            if !cli.skip_validate {
+                if let Some(exit_code) = validate_before_run(&resolved_plans_dir, &wd) {
+                    return Ok(exit_code);
+                }
 
-            // Cross-plan Graph semantics belong to the exact set selected by
-            // `plan_loader` (one root plan, or the root's immediate plans),
-            // not to the generic validator's recursive file discovery. Run
-            // this preflight before both dry-run and workspace-lock mutation.
-            validate_graph_selected_plans_before_run(engine, &resolved_plans_dir)?;
+                // Cross-plan Graph semantics belong to the exact set selected by
+                // `plan_loader` (one root plan, or the root's immediate plans),
+                // not to the generic validator's recursive file discovery. Run
+                // this preflight before both dry-run and workspace-lock mutation.
+                validate_graph_selected_plans_before_run(engine, &resolved_plans_dir)?;
+            }
 
             // ── Dry-run mode: parse plans + show summary without executing ──
             if dry_run {
@@ -515,6 +528,20 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
 
             // ── Graph Engine path (explicit opt-in) ──
             if matches!(engine, PlanEngine::Graph) {
+                // Warn about flags that are parsed at the top level but cannot
+                // be forwarded to the Graph Engine. Without these warnings the
+                // user would have no indication the flags were silently dropped.
+                warn_graph_unsupported_flags(
+                    cli.resume.as_deref(),
+                    cli.effort.as_ref(),
+                    log_file.as_deref(),
+                    skip_preflight,
+                    force,
+                    screenshots,
+                    batch_size,
+                    cli.quiet,
+                );
+
                 return cmd_plan_run_engine(
                     &resolved_plans_dir,
                     &wd,
@@ -526,6 +553,9 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     max_tasks,
                     budget_override,
                     no_budget,
+                    effective_model_override.clone(),
+                    dangerously_skip_permissions,
+                    log_file.as_deref(),
                 )
                 .await;
             }
@@ -674,6 +704,16 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     if roko_cli::runner::preflight::print_preflight_results(&preflight_checks) {
                         return Ok(EXIT_FAILURE);
                     }
+
+                    // ── Async provider connectivity checks ───────────────
+                    let connectivity_checks =
+                        roko_cli::runner::preflight::check_provider_connectivity(
+                            &early_roko_config,
+                        )
+                        .await;
+                    if roko_cli::runner::preflight::print_preflight_results(&connectivity_checks) {
+                        return Ok(EXIT_FAILURE);
+                    }
                 }
 
                 let max_concurrent_tasks = if max_tasks > 0 {
@@ -766,7 +806,12 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     );
                 }
 
-                let roko_config = early_roko_config;
+                let mut roko_config = early_roko_config;
+
+                // Wire CLI --no-replan: override config so gate failures are terminal.
+                if cli.no_replan {
+                    roko_config.learning.replan_on_gate_failure = false;
+                }
 
                 // Initialize Phase 0 subsystems.
                 let router_path = layout.cascade_router_path();
@@ -901,6 +946,8 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                         ceiling
                     },
                     max_turn_usd: f64::from(roko_config.budget.max_turn_usd),
+                    max_task_retry_usd: f64::from(roko_config.budget.max_task_retry_usd),
+                    max_daily_usd: f64::from(roko_config.budget.max_daily_usd),
                     budget_override: {
                         let (_, bypass) = resolve_budget_ceiling(
                             budget_override,
@@ -917,7 +964,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     no_budget,
                     clippy_enabled: roko_config.gates.clippy_enabled,
                     skip_tests: roko_config.gates.skip_tests,
-                    safety_layer: Some(roko_agent::SafetyLayer::from_config(&roko_config)),
+                    safety_layer: roko_agent::SafetyLayer::from_config(&roko_config),
                     roko_config: Some(std::sync::Arc::new(roko_config.clone())),
                     extension_chain: Some(extension_chain),
                     cascade_router: Some(cascade_router),
@@ -975,6 +1022,8 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                         None => roko_cli::runner::structured_log::StructuredLogger::noop(),
                     },
                     screenshots,
+                    screenshot_interval_secs: screenshot_interval,
+                    screenshot_dir,
                 };
 
                 if run_config.dangerously_skip_permissions {
@@ -985,8 +1034,11 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
 
                 // Optionally spawn the approval TUI.
                 let mut approval_tui_handle = None;
-                let mut tui_cmd_rx: Option<
-                    tokio::sync::mpsc::Receiver<roko_cli::runner::TuiCommand>,
+                let mut exec_cmd_rx: Option<
+                    tokio::sync::mpsc::Receiver<roko_cli::execution_control::ExecutionCommand>,
+                > = None;
+                let mut exec_ack_tx: Option<
+                    tokio::sync::mpsc::Sender<roko_cli::execution_control::CommandAck>,
                 > = None;
                 if approval {
                     if !std::io::stdout().is_terminal() {
@@ -1008,9 +1060,12 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
 
                     let state_hub_for_tui = state_hub.clone();
                     let workdir_for_tui = wd.clone();
-                    // Create in-process TUI→runner command channel.
-                    let (tui_cmd_tx, tui_cmd_rx_slot) = tokio::sync::mpsc::channel(32);
-                    tui_cmd_rx = Some(tui_cmd_rx_slot);
+                    // Create in-process TUI→runner execution command channel (#233).
+                    let (cmd_sender, cmd_rx, ack_tx, ack_rx) =
+                        roko_cli::execution_control::ExecutionCommandSender::channel("plan-run");
+                    let ack_receiver = roko_cli::execution_control::CommandAckReceiver::new(ack_rx);
+                    exec_cmd_rx = Some(cmd_rx);
+                    exec_ack_tx = Some(ack_tx);
                     let handle = std::thread::Builder::new()
                         .name("roko-plan-approval-tui".to_string())
                         .spawn(move || {
@@ -1020,7 +1075,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                                 &state_hub_for_tui,
                             )
                             .without_mouse_capture()
-                            .with_tui_command_tx(tui_cmd_tx);
+                            .with_execution_command_sender(cmd_sender, ack_receiver);
                             app.run()
                         })
                         .context("spawn approval TUI thread")?;
@@ -1071,7 +1126,8 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     &run_config,
                     &state_hub,
                     cancel,
-                    tui_cmd_rx,
+                    exec_cmd_rx,
+                    exec_ack_tx,
                 )
                 .await;
                 if let Err(error) = &v2_result {
@@ -1360,8 +1416,9 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     let task_prompt = format!(
                         "Read the notes below and generate an implementation plan directory \
                          under .roko/plans/{slug}/. \
-                         Search the codebase first to understand what exists. \
-                         Create plan.md and tasks.toml files with tier, model_hint, context \
+                         Use the supplied bounded context; allow at most one repository-rooted \
+                         exact-symbol query capped at 20 matches when a fact is missing. \
+                         Create plan.md and tasks.toml files with tier and context \
                          (read_files with line ranges), mcp_servers (per-task MCP server names), \
                          and verify steps (executable shell commands). \
                          Use the cheapest model tier for each task.\n\n{combined}"
@@ -1461,8 +1518,9 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
 
             let task_prompt = format!(
                 "Read the source below and generate implementation plan directories under .roko/plans/. \
-                 Search the codebase first to understand what exists. \
-                 Create plan.md and tasks.toml files with tier, model_hint, context (read_files with line ranges), \
+                 Use the supplied bounded context; allow at most one repository-rooted exact-symbol query \
+                 capped at 20 matches when a fact is missing. \
+                 Create plan.md and tasks.toml files with tier and context (read_files with line ranges), \
                  mcp_servers (per-task MCP server names), and verify steps (executable shell commands). \
                  Use the cheapest model tier for each task.\n\n{source_text}{context_block}"
             );
@@ -1495,6 +1553,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
 
             // Validate all tasks.toml files written by the agent under .roko/plans/.
             // Check all files and collect all errors before reporting.
+            let mut final_exit_code = exit_code;
             if exit_code == EXIT_SUCCESS {
                 let plans_output_dir = workdir.join(".roko").join("plans");
                 if plans_output_dir.is_dir() {
@@ -1506,12 +1565,37 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                         if !tasks_path.is_file() {
                             continue;
                         }
-                        if let Err(err) = roko_cli::task_parser::TasksFile::parse(&tasks_path) {
-                            eprintln!(
-                                "warning: invalid tasks.toml at {}: {err:#}",
-                                tasks_path.display()
-                            );
-                            validation_failed = true;
+                        match roko_cli::task_parser::TasksFile::parse(&tasks_path) {
+                            Ok(tasks) => {
+                                let policy = roko_cli::plan_policy::PlanExecutionPolicy::generated_for_environment(
+                                    roko_cli::plan_policy::DEFAULT_GENERATED_TASK_LIMIT,
+                                );
+                                let issues = roko_cli::plan_policy::validate_plan_context(
+                                    &tasks,
+                                    &workdir,
+                                    &entry.path(),
+                                    policy,
+                                );
+                                if !issues.is_empty() {
+                                    eprintln!(
+                                        "warning: generated plan at {} violates its execution contract:\n{}",
+                                        tasks_path.display(),
+                                        issues
+                                            .iter()
+                                            .map(|issue| format!("  - {issue}"))
+                                            .collect::<Vec<_>>()
+                                            .join("\n")
+                                    );
+                                    validation_failed = true;
+                                }
+                            }
+                            Err(err) => {
+                                eprintln!(
+                                    "warning: invalid tasks.toml at {}: {err:#}",
+                                    tasks_path.display()
+                                );
+                                validation_failed = true;
+                            }
                         }
                     }
                     if validation_failed {
@@ -1519,11 +1603,12 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                             "plan generate: one or more generated tasks.toml files failed \
                              TOML validation (see warnings above)"
                         );
+                        final_exit_code = 1;
                     }
                 }
             }
 
-            Ok(exit_code)
+            Ok(final_exit_code)
         }
         PlanCmd::Regenerate { plan_dir, dry_run } => {
             use roko_cli::agent_config::load_gateway_env;
@@ -1563,9 +1648,10 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 );
                 let task_prompt = format!(
                     "Regenerate the plan at {} from the source PRD above. \
-                     Rewrite tasks.toml in place with full modern metadata: tier, model_hint, \
+                     Rewrite tasks.toml in place with full modern metadata: tier, \
                      max_loc, files, allowed_tools, denied_tools, mcp_servers, depends_on, \
-                     [task.context], and [[task.verify]]. Preserve the status of any task that \
+                     [task.context], and exactly one focused [[task.verify]] per task. Never set \
+                     model_hint. Preserve the status of any task that \
                      is already marked done in the existing file. Do not create new plan \
                      directories.\n\n## Existing tasks.toml\n\n```toml\n{existing}\n```\
                      {pre_validation_context}",
@@ -1587,9 +1673,10 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 roko_cli::plan_generate::build_generation_prompt(&workdir, &source_content, "prd");
             let task_prompt = format!(
                 "Regenerate the plan at {} from the source PRD above. \
-                 Rewrite tasks.toml in place with full modern metadata: tier, model_hint, \
+                 Rewrite tasks.toml in place with full modern metadata: tier, \
                  max_loc, files, allowed_tools, denied_tools, mcp_servers, depends_on, \
-                 [task.context], and [[task.verify]]. Preserve the status of any task that \
+                 [task.context], and exactly one focused [[task.verify]] per task. Never set \
+                 model_hint. Preserve the status of any task that \
                  is already marked done in the existing file. Do not create new plan \
                  directories.\n\n## Existing tasks.toml\n\n```toml\n{existing}\n```\
                  {pre_validation_context}",
@@ -1646,6 +1733,23 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
 
             let merged =
                 preserve_completed_task_status(existing_tasks.as_ref(), regenerated, &plan_dir);
+            let policy = roko_cli::plan_policy::PlanExecutionPolicy::generated_for_environment(
+                roko_cli::plan_policy::DEFAULT_GENERATED_TASK_LIMIT,
+            );
+            let policy_issues =
+                roko_cli::plan_policy::validate_plan_context(&merged, &workdir, &plan_dir, policy);
+            if !policy_issues.is_empty() {
+                std::fs::write(&tasks_path, &existing)
+                    .with_context(|| format!("restore {}", tasks_path.display()))?;
+                anyhow::bail!(
+                    "regenerated tasks.toml violates the bounded execution contract:\n{}",
+                    policy_issues
+                        .iter()
+                        .map(|issue| format!("  - {issue}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                );
+            }
             let rendered =
                 toml::to_string_pretty(&merged).context("serialize regenerated tasks.toml")?;
             if let Err(err) = std::fs::write(&tasks_path, rendered) {
@@ -2606,6 +2710,72 @@ fn validate_graph_execution_options(engine: PlanEngine, approval: bool) -> Resul
     Ok(())
 }
 
+/// Emit explicit warnings for CLI flags that are silently ignored by the
+/// Graph Engine. Called just before entering the graph execution path so
+/// operators are never surprised by dropped configuration.
+///
+/// Flags that ARE forwarded to the graph engine (and thus do NOT warn):
+///   `--model` / `--force-backend`, `--dangerously-skip-permissions`,
+///   `--resume-plan`, `--fresh`, `--force-resume`, `--max-retries`,
+///   `--max-tasks`, `--budget-override`, `--no-budget`, `--no-tui`
+///
+/// `--approval` / `--tui` is rejected as an error by
+/// `validate_graph_execution_options` above, not warned here.
+#[allow(clippy::fn_params_excessive_bools)]
+fn warn_graph_unsupported_flags(
+    resume_session: Option<&str>,
+    effort: Option<&Effort>,
+    log_file: Option<&std::path::Path>,
+    skip_preflight: bool,
+    force: bool,
+    screenshots: bool,
+    batch_size: Option<usize>,
+    quiet: bool,
+) {
+    if quiet {
+        return;
+    }
+
+    if let Some(session) = resume_session {
+        eprintln!(
+            "warning: --resume '{session}' is not supported with --engine graph and will be ignored"
+        );
+    }
+    if effort.is_some() {
+        eprintln!(
+            "warning: --effort is not supported with --engine graph and will be ignored \
+             (the graph engine uses the configured default_effort)"
+        );
+    }
+    if let Some(path) = log_file {
+        eprintln!(
+            "warning: --log-file '{}' is not supported with --engine graph and will be ignored \
+             (structured JSONL logging requires runner-v2 events)",
+            path.display()
+        );
+    }
+    if skip_preflight {
+        eprintln!(
+            "warning: --skip-preflight is not supported with --engine graph and will be ignored \
+             (the graph engine runs its own provider preflight)"
+        );
+    }
+    if force {
+        eprintln!(
+            "warning: --force is not supported with --engine graph and will be ignored \
+             (the graph engine does not perform a disk-space pre-check)"
+        );
+    }
+    if screenshots {
+        eprintln!(
+            "warning: --screenshots is not supported with --engine graph and will be ignored"
+        );
+    }
+    if batch_size.is_some() {
+        eprintln!("warning: --batch-size is not supported with --engine graph and will be ignored");
+    }
+}
+
 fn graph_plan_topological_order(
     dependencies: &std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
 ) -> Result<Vec<String>> {
@@ -2697,6 +2867,9 @@ async fn cmd_plan_run_engine(
     max_tasks: usize,
     budget_override: Option<f64>,
     no_budget: bool,
+    cli_model_override: Option<String>,
+    dangerously_skip_permissions: bool,
+    _log_file: Option<&std::path::Path>,
 ) -> Result<i32> {
     use std::sync::Arc;
 
@@ -2719,6 +2892,16 @@ async fn cmd_plan_run_engine(
         .into_config();
     roko_core::config::loader::normalize_and_validate_dispatch_models(&mut roko_config)
         .context("validate model configuration before Graph dispatch")?;
+
+    // Wire CLI --no-replan: override config so gate failures are terminal.
+    if cli.no_replan {
+        roko_config.learning.replan_on_gate_failure = false;
+    }
+
+    // Merge CLI flag with config (same logic as runner-v2).
+    let dangerously_skip_permissions =
+        dangerously_skip_permissions || roko_config.runner.dangerously_skip_permissions;
+
     let (plan_budget_ceiling, budget_override_active) = resolve_budget_ceiling(
         budget_override,
         no_budget,
@@ -2763,6 +2946,12 @@ async fn cmd_plan_run_engine(
         shared_factory = shared_factory.with_local_tool_runtime(plugin_catalog.local_runtime());
     }
     let shared_factory = Arc::new(shared_factory);
+    if dangerously_skip_permissions {
+        tracing::warn!(
+            "running Graph Engine with --dangerously-skip-permissions: agents will execute tools without approval"
+        );
+    }
+
     let graph_task_dispatcher = Arc::new(
         roko_cli::graph_task_dispatch::GraphTaskDispatcher::new(
             Arc::clone(&shared_factory),
@@ -2773,13 +2962,20 @@ async fn cmd_plan_run_engine(
             plan_budget_ceiling,
             f64::from(roko_config.budget.max_turn_usd),
             budget_override_active,
-        ),
+        )
+        .with_cli_model_override(cli_model_override)
+        .with_dangerously_skip_permissions(dangerously_skip_permissions),
     );
     let task_dispatcher: Arc<dyn TaskDispatcher> = graph_task_dispatcher.clone();
-    let graph_telemetry: Arc<dyn roko_core::TelemetryEventSink> =
-        Arc::new(roko_cli::runner::event_loop::StateHubTelemetrySink::new(
-            roko_cli::state_hub::shared_state_hub().sender(),
-        ));
+    let state_hub_sender = roko_cli::state_hub::shared_state_hub().sender();
+    let graph_telemetry: Arc<dyn roko_core::TelemetryEventSink> = Arc::new(
+        roko_cli::runner::event_loop::StateHubTelemetrySink::new(state_hub_sender.clone()),
+    );
+
+    // Wire graph engine execution into the TUI dashboard event stream.
+    let graph_tui_bridge = roko_cli::runner::graph_tui_bridge::GraphTuiBridge::new(
+        roko_cli::runner::tui_bridge::TuiBridge::new(state_hub_sender),
+    );
 
     let total_tasks: usize = plans.iter().map(|p| p.tasks.tasks.len()).sum();
     let plan_count = plans.len();
@@ -2812,6 +3008,14 @@ async fn cmd_plan_run_engine(
                 plan.id,
                 if unsatisfied.len() == 1 { "" } else { "s" },
                 unsatisfied.join(", "),
+            );
+            graph_tui_bridge.log_event(
+                "graph.plan_blocked",
+                &format!(
+                    "plan '{}' blocked: prerequisites {}",
+                    plan.id,
+                    unsatisfied.join(", ")
+                ),
             );
             plan_outcomes.insert(plan.id.clone(), false);
             all_succeeded = false;
@@ -2861,6 +3065,10 @@ async fn cmd_plan_run_engine(
         let graph = match plan_to_graph(&plan.id, &plan_dir_str, &tasks, max_parallel) {
             Ok(g) => g,
             Err(e) => {
+                graph_tui_bridge.error(&format!(
+                    "failed to convert plan '{}' to graph: {e}",
+                    plan.id
+                ));
                 eprintln!(
                     "  error: failed to convert plan '{}' to graph: {e}",
                     plan.id
@@ -2900,6 +3108,12 @@ async fn cmd_plan_run_engine(
         // Validate before running.
         let issues = engine.validate();
         if !issues.is_empty() {
+            graph_tui_bridge.error(&format!(
+                "plan '{}' has {} validation error{}",
+                plan.id,
+                issues.len(),
+                if issues.len() == 1 { "" } else { "s" },
+            ));
             eprintln!("  validation errors for plan '{}':", plan.id);
             for issue in &issues {
                 eprintln!("    - {issue}");
@@ -2920,6 +3134,23 @@ async fn cmd_plan_run_engine(
             );
         }
 
+        // ── Graph TUI bridge: emit PlanStarted + per-node TaskStarted ──
+        let plan_task_count = tasks.len();
+        graph_tui_bridge.plan_started(&plan.id, plan_task_count);
+        graph_tui_bridge.log_event(
+            "graph.plan_executing",
+            &format!(
+                "plan '{}': {} task{}, engine=graph",
+                plan.id,
+                plan_task_count,
+                if plan_task_count == 1 { "" } else { "s" },
+            ),
+        );
+        // Pre-populate the TUI plan tree with all nodes.
+        for (task_id, info) in &tasks {
+            graph_tui_bridge.node_started(&plan.id, task_id, &info.title);
+        }
+
         match engine.execute(&ctx).await {
             Ok(output) => {
                 let output_count = output
@@ -2930,6 +3161,15 @@ async fn cmd_plan_run_engine(
                 total_output_count += output_count;
                 let budget = graph_task_dispatcher.plan_budget_snapshot(&plan.id);
                 let execution_succeeded = output.success && !budget.dispatch_blocked;
+
+                // ── Graph TUI bridge: emit per-node completions + PlanCompleted ──
+                roko_cli::runner::graph_tui_bridge::emit_plan_lifecycle(
+                    &graph_tui_bridge,
+                    &plan.id,
+                    plan_task_count,
+                    &output,
+                    execution_succeeded,
+                );
 
                 if !cli.quiet && !cli.json {
                     let status = if execution_succeeded {
@@ -2966,6 +3206,10 @@ async fn cmd_plan_run_engine(
                 checkpoint.finish(execution_succeeded)?;
             }
             Err(e) => {
+                // ── Graph TUI bridge: emit error + PlanCompleted(false) ──
+                graph_tui_bridge.error(&format!("plan '{}' execution failed: {e}", plan.id));
+                graph_tui_bridge.plan_completed(&plan.id, false);
+
                 eprintln!("  error: plan '{}' execution failed: {e}", plan.id);
                 plan_outcomes.insert(plan.id.clone(), false);
                 all_succeeded = false;
@@ -3351,5 +3595,36 @@ depends_on_plan = ["missing-foundation"]
         assert!(error.to_string().contains("no Graph work was dispatched"));
         assert!(validate_graph_execution_options(PlanEngine::Graph, false).is_ok());
         assert!(validate_graph_execution_options(PlanEngine::RunnerV2, true).is_ok());
+    }
+
+    /// Smoke-test: `warn_graph_unsupported_flags` must not panic regardless
+    /// of the flag combination. The actual warning output goes to stderr and
+    /// is validated manually or via integration tests.
+    #[test]
+    fn warn_graph_unsupported_flags_does_not_panic() {
+        // All flags off (quiet = true suppresses output).
+        warn_graph_unsupported_flags(None, None, None, false, false, false, None, true);
+        // All flags on (quiet = true still suppresses).
+        warn_graph_unsupported_flags(
+            Some("session-id"),
+            Some(&Effort::High),
+            Some(std::path::Path::new("/tmp/log.jsonl")),
+            true,
+            true,
+            true,
+            Some(5),
+            true,
+        );
+        // All flags on, quiet = false (will write to stderr but must not panic).
+        warn_graph_unsupported_flags(
+            Some("session-id"),
+            Some(&Effort::High),
+            Some(std::path::Path::new("/tmp/log.jsonl")),
+            true,
+            true,
+            true,
+            Some(5),
+            false,
+        );
     }
 }

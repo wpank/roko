@@ -73,9 +73,9 @@ control plane, per-agent sidecar, and interactive TUI:
 | Adaptive gate thresholds | **Wired** | EMA per rung in `.roko/learn/gate-thresholds.json`; flush cadence is configurable under `[learning]` |
 | Live knowledge tier progression | **Wired** | Successful gate-backed runner ingestion records confirmation/context evidence and evaluates Transient→Working progression |
 | Interactive TUI (ratatui) | **Wired** | `crates/roko-cli/src/tui/`, F1–F10 tabs, `roko dashboard` |
-| HTTP control plane (~317 routes) | **Wired** | `crates/roko-serve/src/routes/`, `roko serve` on :6677 |
+| HTTP control plane (~376 canonical routes; ~421 total incl. aliases) | **Wired** | `crates/roko-serve/src/routes/`, `roko serve` on :6677 |
 | Extension runtime status | **Wired** | Serve and plan execution share per-workspace chains; collection/detail routes expose metadata plus live circuit health |
-| Per-agent sidecar (13 routes) | **Wired** | `crates/roko-agent-server/`, real LLM dispatch (T9) + integration tests (T19) |
+| Per-agent sidecar (14 routes) | **Wired** | `crates/roko-agent-server/`, real LLM dispatch (T9) + integration tests (T19) |
 | Code-intelligence MCP | **Wired** | `crates/roko-mcp-code/` |
 | `roko chat` CLI | **Wired** | `crates/roko-cli/src/chat.rs` |
 | Gate rung oracles (4-6) | **Wired** | `runner/gate_dispatch.rs` `build_rung_execution_inputs` |
@@ -182,6 +182,7 @@ pre-commit checks in the Building section.
 |---|---|
 | `roko init` | Create `.roko/` directory and `roko.toml` |
 | `roko run "<prompt>"` | Single prompt through `WorkflowEngine` (compose -> provider -> gate -> persist) |
+| `roko do "<prompt>"` | Execute a task via agent dispatch (used internally by `roko run`) |
 | `roko status` | Query signals, report counts and episodes |
 | `roko doctor` | Diagnose workspace bootstrap state |
 | `roko doctor disk` | Report free space, stale targets, worktrees, and oversized JSONL logs |
@@ -193,6 +194,10 @@ pre-commit checks in the Building section.
 | `roko plan list/show/create` | Manage plans |
 | `roko plan run <dir> --engine runner-v2` | Execute plans through the live runner-v2 loop |
 | `roko plan generate/regenerate` | Generate or regenerate plans from prompts/PRDs |
+| `roko plan pause/resume/cancel` | Pause, resume, or cancel a running plan |
+| `roko plan retry <dir>` | Retry failed tasks in a plan |
+| `roko plan status <dir>` | Show execution status for a plan |
+| `roko plan queue` | List queued plans awaiting execution |
 | `roko plan validate <dir>` | Lint tasks.toml without executing |
 | `roko prd idea "<text>"` | Capture a work item idea |
 | `roko prd list/status` | List PRDs, coverage report |
@@ -228,6 +233,8 @@ pre-commit checks in the Building section.
 | `roko knowledge sync <peer>` | Mesh knowledge sync |
 | `roko knowledge dream run/report/schedule` | Dream consolidation cycle |
 | `roko knowledge dream journal/archive` | Dream journal and archive entries |
+| `roko knowledge export/import` | Export or import knowledge entries |
+| `roko knowledge backfill-hdc` | Backfill HDC fingerprints for existing entries |
 | `roko knowledge custody list/show/verify` | Custody audit chain |
 | `roko knowledge archive` | Cold storage archival |
 
@@ -235,12 +242,14 @@ pre-commit checks in the Building section.
 | Command | What it does |
 |---|---|
 | `roko learn all/router/experiments/efficiency/episodes` | Inspect learning state |
-| `roko learn tune gates/routing/budget` | Tune adaptive thresholds |
+| `roko learn inspect gates/routing/budget` | Read-only subsystem inspection (thresholds, routing, budget) |
+| `roko learn tune gates/routing/budget` | (deprecated) Alias for `learn inspect` |
 
 ### Jobs
 | Command | What it does |
 |---|---|
 | `roko job list/create/show/execute/cancel` | Manage marketplace jobs |
+| `roko job match` | Find matching jobs for an agent's capabilities |
 
 ### Configuration
 | Command | What it does |
@@ -255,11 +264,12 @@ pre-commit checks in the Building section.
 | `roko config experiments` | Model A/B experiments |
 | `roko config plugins list/install/remove/audit` | Plugin management |
 | `roko config secrets set/get/list/rotate` | Profile-aware secrets |
+| `roko config preset gates/routing/budget/model` | Apply validated config presets (with --dry-run, --yes) |
 
 ### Server & deployment
 | Command | What it does |
 |---|---|
-| `roko serve` | Start HTTP control plane (~317 routes on :6677) |
+| `roko serve` | Start HTTP control plane (~376 canonical routes on :6677) |
 | `roko daemon start/stop/status/logs/install` | Daemon lifecycle |
 | `roko deploy railway/fly/docker` | Cloud deployment |
 | `roko worker` | Run as deployed worker |
@@ -280,9 +290,9 @@ pre-commit checks in the Building section.
 | Crate | Path | What | Status |
 |---|---|---|---|
 | roko-core | `crates/roko-core/` | Signal + 12 traits, types, config, tools, errors | Kernel, stable |
-| roko-agent | `crates/roko-agent/` | 11 LLM provider kinds (AnthropicApi, ClaudeCli, OpenAiCompat, CursorAcp, CursorCli, PerplexityApi, GeminiApi, GeminiCli, CerebrasApi, Hermes, OpenClaw), pools, MCP, tool loop, safety | Dispatch wired, MCP passed |
+| roko-agent | `crates/roko-agent/` | 12 LLM provider kinds (AnthropicApi, ClaudeCli, CodexCli, OpenAiCompat, CursorAcp, CursorCli, PerplexityApi, GeminiApi, GeminiCli, CerebrasApi, Hermes, OpenClaw), pools, MCP, tool loop, safety | Dispatch wired, MCP passed |
 | roko-agent-server | `crates/roko-agent-server/` | Per-agent HTTP sidecar: `/message` (real LLM dispatch), `/stream` WS, `/predictions`, `/research`, `/tasks` | Wired |
-| roko-serve | `crates/roko-serve/` | HTTP control plane: ~317 REST routes + SSE + WebSocket on :6677 | Wired |
+| roko-serve | `crates/roko-serve/` | HTTP control plane: ~376 canonical REST routes (~421 incl. aliases) + SSE + WebSocket on :6677 | Wired |
 | roko-gate | `crates/roko-gate/` | 19 gates, 7-rung pipeline, adaptive thresholds | Wired, called per-task |
 | roko-compose | `crates/roko-compose/` | Prompt assembly, 11 role templates, enrichment | Wired via RoleSystemPromptSpec |
 | roko-conductor | `crates/roko-conductor/` | 12 watchers, circuit breaker, diagnosis | Used by executor internals |
@@ -377,7 +387,7 @@ Priority order for reaching full self-hosting:
 6. **Learning & feedback core** → Efficiency, cascade persistence, configurable adaptive thresholds, playbooks, live knowledge tier progression, and crash/restart-durable runner prompt experiments are wired. ACP/serve experiment injection still needs canonical-section/receipt parity.
 7. ~~**Interactive TUI**~~ → Done. ratatui wired; F1–F10 tabs, T1–T19 parity batches merged via PR #13.
 8. ~~**Per-agent sidecar**~~ → Done. `roko-agent-server` real-dispatch path (T9) + integration tests (T19).
-9. ~~**HTTP control plane**~~ → Done. `roko-serve` exposes ~317 routes for dashboards / external callers.
+9. ~~**HTTP control plane**~~ → Done. `roko-serve` exposes ~376 canonical routes (~421 incl. aliases; generated 2026-09-03 via `python3 tools/http_route_inventory.py`, method+path counting, feature-gated/alias-duplicated routes included in the static scan) for dashboards / external callers.
 10. ~~**Automatic plan generation**~~ → Done. `prd.auto_plan` config triggers `prd plan` on publish via `spawn_prd_publish_subscriber`.
 11. ~~**Feedback loop**~~ → Done. `learning_config.replan_on_gate_failure` triggers `build_gate_failure_plan_revision`.
 12. ~~**Follow-up catalog**~~ → Done. Most items verified/closed; see `tmp/ux-followup/00-INDEX.md`.

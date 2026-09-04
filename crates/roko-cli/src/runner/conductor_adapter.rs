@@ -505,7 +505,7 @@ mod tests {
         TaskAttemptRef, TaskPhaseDurations,
     };
     use super::*;
-    use roko_core::{Context, React};
+    use roko_core::Context;
 
     fn test_attempt() -> TaskAttemptRef {
         TaskAttemptRef {

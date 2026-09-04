@@ -2077,7 +2077,7 @@ mod tests {
         )
         .expect("write episodes");
 
-        let signals_path = workdir.join(".roko/signals.jsonl");
+        let signals_path = workdir.join(".roko/engrams.jsonl");
         std::fs::create_dir_all(signals_path.parent().expect("signals parent"))
             .expect("signals dir");
         let signals: Vec<_> = (0..12)
@@ -2176,7 +2176,7 @@ mod tests {
 
         let episode_store = Arc::new(EpisodeStore::new(workdir.join(".roko/episodes.jsonl")));
         std::fs::write(episode_store.path(), "").expect("write empty episodes");
-        let signals_path = workdir.join(".roko/signals.jsonl");
+        let signals_path = workdir.join(".roko/engrams.jsonl");
         std::fs::write(&signals_path, "").expect("write empty signals");
 
         let assembler = ContextAssembler::new(knowledge_store, episode_store).with_affect_state(
@@ -2329,7 +2329,7 @@ mod tests {
             depends_on: vec![],
             max_loc: None,
         };
-        let signals_path = workdir.join(".roko/signals.jsonl");
+        let signals_path = workdir.join(".roko/engrams.jsonl");
         std::fs::create_dir_all(signals_path.parent().expect("signals parent"))
             .expect("signals dir");
         std::fs::write(&signals_path, "").expect("write empty signals");
@@ -2567,7 +2567,7 @@ mod tests {
 
         let episode_store = Arc::new(EpisodeStore::new(workdir.join(".roko/episodes.jsonl")));
         std::fs::write(episode_store.path(), "").expect("write empty episodes");
-        let signals_path = workdir.join(".roko/signals.jsonl");
+        let signals_path = workdir.join(".roko/engrams.jsonl");
         std::fs::create_dir_all(signals_path.parent().expect("signals parent"))
             .expect("signals dir");
         std::fs::write(&signals_path, "").expect("write empty signals");
@@ -2690,7 +2690,7 @@ mod tests {
 
         let episode_store = Arc::new(EpisodeStore::new(workdir.join(".roko/episodes.jsonl")));
         std::fs::write(episode_store.path(), "").expect("write empty episodes");
-        let signals_path = workdir.join(".roko/signals.jsonl");
+        let signals_path = workdir.join(".roko/engrams.jsonl");
         std::fs::create_dir_all(signals_path.parent().expect("signals parent"))
             .expect("signals dir");
         std::fs::write(&signals_path, "").expect("write empty signals");

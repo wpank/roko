@@ -451,7 +451,7 @@ pub struct LearningUpdate {
     /// Whether adaptive gate thresholds should be flushed to disk at this cadence point.
     ///
     /// Retained for backward compatibility with callers that handle the
-    /// flush themselves (orchestrate.rs legacy path).
+    /// flush themselves (legacy path, now handled by runner-v2).
     pub gate_thresholds_flush_due: bool,
     /// Whether adaptive gate thresholds were incrementally flushed to disk
     /// by `LearningRuntime` during this `record_completed_run` call.
@@ -2302,8 +2302,8 @@ impl LearningRuntime {
     /// Record a gate threshold EMA update in the WAL.
     ///
     /// Gate thresholds live in `roko-gate` which must not depend on
-    /// `roko-learn`. This public method lets `orchestrate.rs` (or the
-    /// runner event loop) write a gate threshold WAL entry after
+    /// `roko-learn`. This public method lets the runner-v2 event loop
+    /// write a gate threshold WAL entry after
     /// updating the in-memory threshold state.
     pub fn wal_append_gate_threshold(&self, rung: u32, passed: bool) {
         self.wal_append(WalEntry::GateThresholdUpdate {
@@ -2919,6 +2919,7 @@ impl LearningRuntime {
             previous_model: None,
             plan_context_tokens: None,
             tier_thresholds: None,
+            cfactor: None,
         };
         if episode
             .extra
@@ -5020,6 +5021,7 @@ mod tests {
             previous_model: None,
             plan_context_tokens: None,
             tier_thresholds: None,
+            cfactor: None,
         };
         for _ in 0..60 {
             router.record_observation(&ctx, "claude-sonnet-4-20250514", 0.9, true);
@@ -5213,6 +5215,7 @@ mod tests {
             previous_model: None,
             plan_context_tokens: None,
             tier_thresholds: None,
+            cfactor: None,
         };
         assert_eq!(
             runtime.cascade_router().route(&before_ctx).primary.slug,
@@ -5461,6 +5464,7 @@ mod tests {
             previous_model: None,
             plan_context_tokens: None,
             tier_thresholds: None,
+            cfactor: None,
         };
         let selected = runtime
             .cascade_router()
@@ -5504,6 +5508,7 @@ mod tests {
             previous_model: None,
             plan_context_tokens: None,
             tier_thresholds: None,
+            cfactor: None,
         };
 
         let recorded = runtime.record_conductor_intervention(

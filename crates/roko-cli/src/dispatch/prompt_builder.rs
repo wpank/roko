@@ -82,6 +82,8 @@ pub struct PromptContext {
     pub acceptance_criteria: Vec<String>,
     /// `task.verify` shell commands.
     pub verify_commands: Vec<String>,
+    /// Declared-scope impact warning included before implementation.
+    pub impact_context: String,
     /// Optional structured gate feedback for retry prompts.
     pub gate_feedback: Option<GateFeedback>,
     /// Attempt number (0 = first, > 0 = retry).
@@ -99,7 +101,7 @@ pub struct PromptContext {
     /// Each entry is `(task_id, files)`.
     pub dependency_outputs: Vec<(String, Vec<String>)>,
     /// Workspace context: git branch, modified files, crate names/descriptions.
-    /// Ported from the legacy `workspace_context()` in orchestrate.rs; includes
+    /// Ported from the legacy `workspace_context()` helper; includes
     /// git state (best-effort, bounded) and crate scan from `crates/*/Cargo.toml`.
     pub workspace_context: String,
     /// C-Factor collective-intelligence policy text.
@@ -111,11 +113,30 @@ impl PromptContext {
     /// Construct a `PromptContext` from runner inputs.
     #[must_use]
     pub fn from_task(task: &TaskDef, ctx: &DispatchContext) -> Self {
-        let workspace_map = generate_workspace_map(&ctx.workdir);
-        let tasks_toml = load_tasks_toml(&ctx.workdir, &ctx.plan_id);
+        let execution_policy = crate::plan_policy::PlanExecutionPolicy::for_environment();
+        let bounded_context_only = execution_policy.bounded_context_only;
+        let workspace_map = if bounded_context_only {
+            String::new()
+        } else {
+            generate_workspace_map(&ctx.workdir)
+        };
+        let tasks_toml = if bounded_context_only {
+            String::new()
+        } else {
+            load_tasks_toml(&ctx.workdir, &ctx.plan_id)
+        };
         let prd_excerpt = load_prd_excerpt(&ctx.workdir, &ctx.plan_id);
-        let workspace_context = generate_workspace_context(&ctx.workdir);
-        let cfactor_context = generate_cfactor_context(&ctx.workdir);
+        let workspace_context = if bounded_context_only {
+            String::new()
+        } else {
+            generate_workspace_context(&ctx.workdir)
+        };
+        let cfactor_context = if bounded_context_only {
+            String::new()
+        } else {
+            generate_cfactor_context(&ctx.workdir)
+        };
+        let impact_context = declared_impact_context(task, bounded_context_only);
         tracing::debug!(
             plan_id = %ctx.plan_id,
             workspace_map_bytes = workspace_map.len(),
@@ -136,6 +157,7 @@ impl PromptContext {
                 .iter()
                 .map(|step| step.command.clone())
                 .collect(),
+            impact_context,
             gate_feedback: ctx.gate_feedback.clone(),
             attempt: ctx.attempt,
             prompt_experiment: ctx.prompt_experiment.clone(),
@@ -146,6 +168,54 @@ impl PromptContext {
             workspace_context,
             cfactor_context,
         }
+    }
+}
+
+fn declared_impact_context(task: &TaskDef, bounded_context_only: bool) -> String {
+    let description = format!(
+        "{} {}",
+        task.title,
+        task.description.as_deref().unwrap_or_default()
+    )
+    .to_ascii_lowercase();
+    let high_impact_terms = [
+        "public",
+        "signature",
+        "struct field",
+        "enum",
+        "trait",
+        "serialize",
+        "serde",
+        "schema",
+        "re-export",
+        "reexport",
+        "api contract",
+    ];
+    let high_impact = !task
+        .context
+        .as_ref()
+        .map_or(true, |context| context.symbols.is_empty())
+        || high_impact_terms
+            .iter()
+            .any(|term| description.contains(term))
+        || task.files.iter().any(|file| file.ends_with("Cargo.toml"));
+    if !high_impact {
+        return "Impact policy: keep the edit private/local when possible; report any newly discovered consumer outside the planned file list.".into();
+    }
+    let files = task
+        .files
+        .iter()
+        .map(|file| format!("`{file}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if bounded_context_only {
+        format!(
+            "Impact policy: this task may change a public, trait, re-export, or serialized contract. Exact declared symbols and source snippets are supplied below. Do not broad-search in FAST mode. The authorized planned scope is: {files}. If the supplied consumers are insufficient, stop and surface the omission for plan repair. The runner's post-diff impact analyzer remains the safety net."
+        )
+    } else {
+        format!(
+            "Impact policy: this task may change a public, trait, re-export, or serialized contract. Start with the supplied exact symbols and snippets. If they reveal an unresolved consumer, perform at most one repository-scoped exact-symbol search capped at 20 matches. Never search home/session history, other worktrees, unreachable Git objects, or the web. The authorized planned scope is: {files}. Surface omissions for plan repair; the runner will analyze the final diff."
+        )
     }
 }
 
@@ -273,13 +343,14 @@ fn load_tasks_toml(workdir: &Path, plan_id: &str) -> String {
 ///
 /// Searches:
 /// 1. `{workdir}/.roko/prd/published/{plan_id}.md`
-/// 2. `{workdir}/.roko/prd/draft/{plan_id}.md`
+/// 2. `{workdir}/.roko/prd/drafts/{plan_id}.md`
 ///
 /// Returns an empty string when neither exists.
 fn load_prd_excerpt(workdir: &Path, plan_id: &str) -> String {
     let prd_base = workdir.join(".roko").join("prd");
     let candidates = [
         prd_base.join("published").join(format!("{plan_id}.md")),
+        prd_base.join("drafts").join(format!("{plan_id}.md")),
         prd_base.join("draft").join(format!("{plan_id}.md")),
     ];
     for path in &candidates {
@@ -300,9 +371,10 @@ fn load_prd_excerpt(workdir: &Path, plan_id: &str) -> String {
     String::new()
 }
 
-// ─── Workspace context (ported from legacy orchestrate.rs) ─────────────
+// ─── Workspace context (ported from legacy orchestrator) ───────────────
 
 const WORKSPACE_CONTEXT_LIMIT: usize = 4_000;
+#[allow(dead_code)]
 const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
 const GIT_STATUS_LINE_LIMIT: usize = 40;
 
@@ -393,7 +465,7 @@ fn git_command(workdir: &Path, args: &[&str]) -> Option<String> {
 
 /// Scan `crates/*/Cargo.toml` for package names and descriptions.
 ///
-/// Ported from legacy `workspace_context()` in orchestrate.rs.
+/// Ported from the legacy `workspace_context()` helper.
 fn scan_crate_descriptions(workdir: &Path) -> Vec<(String, String)> {
     let crates_dir = workdir.join("crates");
     let entries = match std::fs::read_dir(&crates_dir) {
@@ -430,7 +502,7 @@ fn scan_crate_descriptions(workdir: &Path) -> Vec<(String, String)> {
     crates
 }
 
-// ─── C-Factor context (ported from legacy orchestrate.rs) ──────────────
+// ─── C-Factor context (ported from legacy orchestrator) ────────────────
 
 /// Load C-Factor history and generate policy context for the system prompt.
 ///
@@ -439,7 +511,7 @@ fn scan_crate_descriptions(workdir: &Path) -> Vec<(String, String)> {
 /// Returns an empty string when no history exists or the episode count
 /// is below the minimum threshold.
 fn generate_cfactor_context(workdir: &Path) -> String {
-    use roko_core::{Body, CFactorPolicy, CFactorSource, Context, React};
+    use roko_core::{CFactorPolicy, CFactorSource, Context, React};
     use roko_learn::cfactor::CFactor;
     use std::sync::Arc;
 
@@ -809,6 +881,7 @@ fn apply_prompt_experiment_assignments(
 struct PromptSection {
     name: String,
     body: String,
+    #[allow(dead_code)]
     drop_priority: u32,
     knowledge_ids: Vec<String>,
     playbook_ids: Vec<String>,
@@ -908,8 +981,21 @@ fn parse_role_label(role: &str) -> AgentRole {
 /// workspace context, and C-factor context into a single markdown block. This
 /// block is passed to [`TaskContext::with_context`] so the canonical 9-layer
 /// builder includes it in the "Relevant Context" section.
-fn build_runner_context(task: &TaskDef, ctx: &PromptContext) -> String {
+fn build_runner_context(
+    task: &TaskDef,
+    ctx: &PromptContext,
+) -> Result<String, RunnerDispatchError> {
     let mut parts: Vec<String> = Vec::new();
+
+    let declared_context = crate::plan_policy::render_declared_context(
+        task,
+        &ctx.workdir,
+        crate::plan_policy::PlanExecutionPolicy::for_environment(),
+    )
+    .map_err(|reason| RunnerDispatchError::PreValidationFailed { reason })?;
+    if !declared_context.is_empty() {
+        parts.push(declared_context);
+    }
 
     if !ctx.files_in_scope.is_empty() {
         let list = ctx
@@ -939,6 +1025,10 @@ fn build_runner_context(task: &TaskDef, ctx: &PromptContext) -> String {
             .collect::<Vec<_>>()
             .join("\n");
         parts.push(format!("# Verify\nAfter editing, run:\n{list}"));
+    }
+
+    if !ctx.impact_context.is_empty() {
+        parts.push(format!("# Change impact\n{}", ctx.impact_context));
     }
 
     if let Some(allowlist) = task.allowed_tools.as_ref().filter(|l| !l.is_empty()) {
@@ -994,7 +1084,7 @@ fn build_runner_context(task: &TaskDef, ctx: &PromptContext) -> String {
         parts.push(ctx.cfactor_context.clone());
     }
 
-    parts.join("\n\n")
+    Ok(parts.join("\n\n"))
 }
 
 /// The file name for the persisted attention bidders store under `.roko/learn/`.
@@ -1304,7 +1394,7 @@ impl PromptAssembler {
         // Rich runner context (files, acceptance, verify, allowed tools,
         // gate feedback, dep outputs, PRD, workspace map, etc.) injected
         // into the canonical "Relevant Context" section.
-        let runner_context = build_runner_context(task, ctx);
+        let runner_context = build_runner_context(task, ctx)?;
 
         // Build TaskContext with runner-specific context block.
         let task_context = {
@@ -1341,9 +1431,13 @@ impl PromptAssembler {
         // score result used by selection.
         let section_effectiveness = self.resolve_section_effectiveness(&ctx.workdir);
         let group_context = load_group_context(&ctx.workdir, &ctx.role, task, ctx);
-        let spec = RoleSystemPromptSpec::new(role, task_context, tools_csv)
+        let has_mcp = task.mcp_servers.as_ref().is_some_and(|s| !s.is_empty());
+        let mut spec = RoleSystemPromptSpec::new(role, task_context, tools_csv)
             .with_cache_markers()
             .with_pheromones(&group_context);
+        if has_mcp {
+            spec = spec.with_mcp_tools();
+        }
         let composer = PromptComposer::new()
             .with_strategy(self.composition_strategy)
             .with_vcg_warmup_observations(self.vcg_warmup_observations)
@@ -1485,6 +1579,7 @@ impl PromptAssembler {
                 || !context.symbols.is_empty()
                 || !context.anti_patterns.is_empty()
                 || !context.prior_failures.is_empty()
+                || context.impact_acknowledgement.is_some()
             {
                 user_prompt.push_str("\n## Task Context\n");
                 for file in &context.read_files {
@@ -1513,6 +1608,11 @@ impl PromptAssembler {
                 for failure in &context.prior_failures {
                     user_prompt.push_str("- Prior failure: ");
                     user_prompt.push_str(failure);
+                    user_prompt.push('\n');
+                }
+                if let Some(reason) = context.impact_acknowledgement.as_deref() {
+                    user_prompt.push_str("- Reviewed impact-scope acknowledgement: ");
+                    user_prompt.push_str(reason);
                     user_prompt.push('\n');
                 }
             }
@@ -2977,6 +3077,7 @@ mod tests {
             files_in_scope: vec!["src/lib.rs".into()],
             acceptance_criteria: vec!["compiles".into()],
             verify_commands: vec!["cargo test".into()],
+            impact_context: "Impact policy: inspect consumers.".into(),
             gate_feedback: None,
             attempt: 0,
             prompt_experiment: None,
@@ -2987,7 +3088,7 @@ mod tests {
             workspace_context: String::new(),
             cfactor_context: String::new(),
         };
-        let ctx_str = build_runner_context(&t, &pctx);
+        let ctx_str = build_runner_context(&t, &pctx).expect("runner context");
         assert!(ctx_str.contains("# Files in scope"));
         assert!(ctx_str.contains("# Acceptance criteria"));
         assert!(ctx_str.contains("# Verify"));

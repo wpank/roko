@@ -19,73 +19,180 @@ pub fn render_task_detail_modal(
     scroll_offset: usize,
     theme: &Theme,
 ) {
-    let popup = centered_rect(78, 72, area);
+    let popup = centered_rect(82, 78, area);
     frame.render_widget(Clear, popup);
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(format!(" Task Detail: {} ", task.id))
+        .title(format!(" {} ", task.id))
         .title_alignment(Alignment::Center)
         .border_style(theme.accent());
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(7), Constraint::Min(0)])
-        .split(inner);
+    let sep_width = inner.width.saturating_sub(2) as usize;
+    let mut lines: Vec<Line<'_>> = Vec::with_capacity(64);
 
-    let status_style = match task.status {
-        TaskRowStatus::Done => theme.success(),
-        TaskRowStatus::Active => theme.info(),
-        TaskRowStatus::Failed => theme.danger(),
-        TaskRowStatus::Blocked => theme.warning(),
-        TaskRowStatus::Pending => theme.muted(),
+    // ── Header: title + separator ────────────────────────────────────
+    lines.push(Line::from(Span::styled(
+        task.title.clone(),
+        theme.section_header(),
+    )));
+    lines.push(Line::from(Span::styled(
+        "\u{2550}".repeat(sep_width),
+        theme.accent(),
+    )));
+    lines.push(Line::from(""));
+
+    // ── Status section ─────────────────────────────────────────────────
+    push_section_header(&mut lines, "Status", sep_width, theme);
+
+    let (badge, status_style) = match task.status {
+        TaskRowStatus::Done => ("\u{2713} done", theme.success()),
+        TaskRowStatus::Active => ("\u{25b6} running", theme.info()),
+        TaskRowStatus::Failed => ("\u{2717} failed", theme.danger()),
+        TaskRowStatus::Blocked => ("\u{25a0} blocked", theme.warning()),
+        TaskRowStatus::Pending => ("\u{25cb} pending", theme.muted()),
     };
-    let assigned = if assigned_agents.is_empty() {
-        "unassigned".to_string()
+    push_label_value(
+        &mut lines,
+        "Status",
+        badge,
+        theme.label(),
+        status_style.add_modifier(Modifier::BOLD),
+        theme,
+    );
+    push_label_value(
+        &mut lines,
+        "Elapsed",
+        &format_elapsed(task.elapsed_secs),
+        theme.label(),
+        theme.value(),
+        theme,
+    );
+    lines.push(Line::from(""));
+
+    // ── Agent Info section ──────────────────────────────────────────────
+    push_section_header(&mut lines, "Agent Info", sep_width, theme);
+
+    let agent_str = if assigned_agents.is_empty() {
+        "\u{2014}".to_string()
     } else {
         assigned_agents.join(", ")
     };
-
-    let header = vec![
-        Line::from(vec![
-            Span::styled("Name:    ", theme.muted()),
-            Span::styled(&task.title, theme.text().add_modifier(Modifier::BOLD)),
-        ]),
-        Line::from(vec![
-            Span::styled("Task ID: ", theme.muted()),
-            Span::styled(&task.id, theme.text()),
-        ]),
-        Line::from(vec![
-            Span::styled("Status:  ", theme.muted()),
-            Span::styled(task_status_label(task.status), status_style),
-        ]),
-        Line::from(vec![
-            Span::styled("Elapsed: ", theme.muted()),
-            Span::styled(format_elapsed(task.elapsed_secs), theme.text()),
-        ]),
-        Line::from(vec![
-            Span::styled("Agents:  ", theme.muted()),
-            Span::styled(assigned, theme.text()),
-        ]),
-    ];
-    frame.render_widget(
-        Paragraph::new(header).wrap(Wrap { trim: false }),
-        sections[0],
+    let agent_style = if assigned_agents.is_empty() {
+        theme.muted()
+    } else {
+        theme.value()
+    };
+    push_label_value(
+        &mut lines,
+        "Agent",
+        &agent_str,
+        theme.label(),
+        agent_style,
+        theme,
     );
+    push_label_value(
+        &mut lines,
+        "Model",
+        "\u{2014}",
+        theme.label(),
+        theme.muted(),
+        theme,
+    );
+    push_label_value(
+        &mut lines,
+        "Attempt",
+        "\u{2014}",
+        theme.label(),
+        theme.muted(),
+        theme,
+    );
+    lines.push(Line::from(""));
 
-    let mut lines = vec![
-        Line::from(Span::styled(
-            "Verify Results",
-            theme.accent().add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-    ];
+    // ── Acceptance Criteria ──────────────────────────────────────────
+    push_section_header(&mut lines, "Acceptance Criteria", sep_width, theme);
+    // Placeholder: no criteria data on TaskRow
+    lines.push(Line::from(vec![
+        Span::styled("  1. ", theme.metadata()),
+        Span::styled("\u{2014}", theme.muted()),
+    ]));
+    lines.push(Line::from(""));
+
+    // ── Verify Command (code block) ─────────────────────────────────
+    push_section_header(&mut lines, "Verify Command", sep_width, theme);
+    push_code_block(&mut lines, "\u{2014}", sep_width, theme);
+    lines.push(Line::from(""));
+
+    // ── Files ────────────────────────────────────────────────────────
+    push_section_header(&mut lines, "Files", sep_width, theme);
+    lines.push(Line::from(Span::styled("  \u{2014}", theme.muted())));
+    lines.push(Line::from(""));
+
+    // ── Dependencies ─────────────────────────────────────────────────
+    push_section_header(&mut lines, "Dependencies", sep_width, theme);
+    lines.push(Line::from(Span::styled("  \u{2014}", theme.muted())));
+    lines.push(Line::from(""));
+
+    // ── Routing Context ──────────────────────────────────────────────
+    push_section_header(&mut lines, "Routing Context", sep_width, theme);
+    push_label_value(
+        &mut lines,
+        "  Category",
+        "\u{2014}",
+        theme.label(),
+        theme.muted(),
+        theme,
+    );
+    push_label_value(
+        &mut lines,
+        "  Reasoning",
+        "\u{2014}",
+        theme.label(),
+        theme.muted(),
+        theme,
+    );
+    push_label_value(
+        &mut lines,
+        "  Speed",
+        "\u{2014}",
+        theme.label(),
+        theme.muted(),
+        theme,
+    );
+    push_label_value(
+        &mut lines,
+        "  Quality",
+        "\u{2014}",
+        theme.label(),
+        theme.muted(),
+        theme,
+    );
+    push_label_value(
+        &mut lines,
+        "  Context",
+        "\u{2014}",
+        theme.label(),
+        theme.muted(),
+        theme,
+    );
+    push_label_value(
+        &mut lines,
+        "  Band",
+        "\u{2014}",
+        theme.label(),
+        theme.muted(),
+        theme,
+    );
+    lines.push(Line::from(""));
+
+    // ── Gate Results ─────────────────────────────────────────────────
+    push_section_header(&mut lines, "Gate Results", sep_width, theme);
 
     if gate_results.is_empty() {
         lines.push(Line::from(Span::styled(
-            "No gate results for this task.",
+            "  No gate results recorded.",
             theme.muted(),
         )));
     } else {
@@ -95,7 +202,7 @@ pub fn render_task_detail_modal(
             } else {
                 theme.danger()
             };
-            let verdict = if gate.passed { "PASS" } else { "FAIL" };
+            let icon = if gate.passed { "\u{2713}" } else { "\u{2717}" };
             let duration = if gate.duration_ms > 0 {
                 format!("{}ms", gate.duration_ms)
             } else {
@@ -103,7 +210,7 @@ pub fn render_task_detail_modal(
             };
 
             lines.push(Line::from(vec![
-                Span::styled(format!("{verdict:<4} "), verdict_style),
+                Span::styled(format!("  {icon} "), verdict_style),
                 Span::styled(
                     format!("{:<18}", gate.gate_name),
                     theme.text().add_modifier(Modifier::BOLD),
@@ -113,22 +220,86 @@ pub fn render_task_detail_modal(
 
             if !gate.excerpt.is_empty() {
                 lines.push(Line::from(vec![
-                    Span::styled("      ", theme.muted()),
-                    Span::styled(gate.excerpt.as_str(), theme.muted()),
+                    Span::styled("    ", theme.muted()),
+                    Span::styled(gate.excerpt.clone(), theme.muted()),
                 ]));
             }
-
-            lines.push(Line::from(""));
         }
     }
+    lines.push(Line::from(""));
+
+    // ── Footer ───────────────────────────────────────────────────────
+    lines.push(Line::from(Span::styled(
+        "\u{2500}".repeat(sep_width),
+        theme.metadata(),
+    )));
+    lines.push(Line::from(vec![
+        Span::styled("[Esc]", theme.accent()),
+        Span::styled(" close  ", theme.muted()),
+        Span::styled("[j/k]", theme.accent()),
+        Span::styled(" scroll", theme.muted()),
+    ]));
 
     let scroll = scroll_offset.min(u16::MAX as usize) as u16;
     frame.render_widget(
         Paragraph::new(lines)
             .wrap(Wrap { trim: false })
             .scroll((scroll, 0)),
-        sections[1],
+        inner,
     );
+}
+
+/// Push a bold section header with a thin separator line below it.
+fn push_section_header(lines: &mut Vec<Line<'_>>, title: &str, width: usize, theme: &Theme) {
+    lines.push(Line::from(Span::styled(
+        title.to_string(),
+        theme.section_header(),
+    )));
+    lines.push(Line::from(Span::styled(
+        "\u{2500}".repeat(width),
+        theme.metadata(),
+    )));
+}
+
+/// Push a `Label: Value` line with distinct styles for each part.
+fn push_label_value(
+    lines: &mut Vec<Line<'_>>,
+    label: &str,
+    value: &str,
+    label_style: ratatui::style::Style,
+    value_style: ratatui::style::Style,
+    _theme: &Theme,
+) {
+    lines.push(Line::from(vec![
+        Span::styled(format!("  {label:<12}"), label_style),
+        Span::styled(value.to_string(), value_style),
+    ]));
+}
+
+/// Push a code block with box-drawing border around the content.
+fn push_code_block(lines: &mut Vec<Line<'_>>, content: &str, width: usize, theme: &Theme) {
+    let inner_w = width.saturating_sub(4);
+    let padded = format!("{content:<inner_w$}");
+
+    // Top border: ┌─ ... ─┐
+    let top_fill = inner_w.saturating_sub(0);
+    lines.push(Line::from(Span::styled(
+        format!("  \u{250c}{}\u{2510}", "\u{2500}".repeat(top_fill)),
+        theme.metadata(),
+    )));
+
+    // Content line: │ text │
+    lines.push(Line::from(vec![
+        Span::styled("  \u{2502}", theme.metadata()),
+        Span::styled(padded, theme.code_block()),
+        Span::styled("\u{2502}", theme.metadata()),
+    ]));
+
+    // Bottom border: └─ ... ─┘
+    lines.push(Line::from(Span::styled(
+        format!("  \u{2514}{}\u{2518}", "\u{2500}".repeat(top_fill)),
+        theme.metadata(),
+    )));
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
@@ -149,16 +320,6 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(vertical[1])[1]
-}
-
-fn task_status_label(status: TaskRowStatus) -> &'static str {
-    match status {
-        TaskRowStatus::Pending => "pending",
-        TaskRowStatus::Active => "active",
-        TaskRowStatus::Done => "done",
-        TaskRowStatus::Failed => "failed",
-        TaskRowStatus::Blocked => "blocked",
-    }
 }
 
 fn format_elapsed(elapsed_secs: f64) -> String {

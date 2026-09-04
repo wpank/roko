@@ -13,13 +13,11 @@ use std::collections::HashMap;
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Bar, BarChart, BarGroup, Block, Borders, Cell, Paragraph, Row, Table, Wrap,
-};
+use ratatui::widgets::{Bar, BarChart, BarGroup, Block, Cell, Paragraph, Row, Table, Wrap};
 
-use super::ViewState;
+use super::{SubView, ViewState};
 use crate::tui::dashboard::Theme;
 use crate::tui::state::TuiState;
 use crate::tui::tabs::Tab;
@@ -37,14 +35,23 @@ pub(crate) fn render(
     view_state: &ViewState,
     theme: &Theme,
 ) {
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+    render_sub_tab_bar(frame, rows[0], view_state, theme);
+
     match view_state.active_sub_view(Tab::Learning) {
-        super::SubView::LearningRouter => render_router(frame, area, tui_state, theme),
-        super::SubView::LearningHistory => render_history(frame, area, tui_state, theme),
-        super::SubView::LearningEfficiency => {
-            render_efficiency(frame, area, tui_state, theme);
-        }
-        _ => render_router(frame, area, tui_state, theme),
+        SubView::LearningRouter => render_router(frame, rows[1], tui_state, theme),
+        SubView::LearningHistory => render_history(frame, rows[1], tui_state, theme),
+        SubView::LearningEfficiency => render_efficiency(frame, rows[1], tui_state, theme),
+        _ => render_router(frame, rows[1], tui_state, theme),
     }
+}
+
+fn render_sub_tab_bar(frame: &mut Frame<'_>, area: Rect, view_state: &ViewState, theme: &Theme) {
+    let label = SubView::bar_label(Tab::Learning, view_state.sub_tab);
+    let bar = Paragraph::new(Line::from(Span::styled(label, theme.muted())))
+        .alignment(Alignment::Center)
+        .style(Style::default().bg(Theme::BG_RAISED));
+    frame.render_widget(bar, area);
 }
 
 // ---------------------------------------------------------------------------
@@ -55,27 +62,45 @@ fn render_router(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme:
     let router = &tui_state.cascade_router;
 
     if router.model_slugs.is_empty() {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(" Cascade Route ")
-            .border_style(Style::default().fg(theme.muted));
-        let msg = Paragraph::new("No cascade router data. Run tasks to populate.")
-            .alignment(Alignment::Center)
-            .block(block);
-        frame.render_widget(msg, area);
+        let block = Block::bordered()
+            .title(Span::styled(" Cascade Route ", theme.section_header()))
+            .border_style(theme.muted());
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        crate::tui::empty_state::render_empty_state(
+            frame,
+            inner,
+            crate::tui::tabs::Tab::Learning,
+            &tui_state.atmosphere,
+        );
         return;
     }
 
     let chunks = Layout::vertical([
         Constraint::Length(5), // stage indicator
+        Constraint::Length(1), // separator
         Constraint::Min(6),    // model stats table
+        Constraint::Length(1), // separator
         Constraint::Length(6), // bar chart
     ])
     .split(area);
 
     render_stage_indicator(frame, chunks[0], tui_state, theme);
-    render_model_table(frame, chunks[1], tui_state, theme);
-    render_selection_bars(frame, chunks[2], tui_state, theme);
+    render_separator(frame, chunks[1], theme);
+    render_model_table(frame, chunks[2], tui_state, theme);
+    render_separator(frame, chunks[3], theme);
+    render_selection_bars(frame, chunks[4], tui_state, theme);
+}
+
+fn render_separator(frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
+    let width = area.width as usize;
+    let line = "\u{2500}".repeat(width);
+    let p = Paragraph::new(Line::from(Span::styled(
+        line,
+        Style::default().fg(Theme::SEPARATOR),
+    )));
+    frame.render_widget(p, area);
+    let _ = theme;
 }
 
 fn render_stage_indicator(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme: &Theme) {
@@ -83,29 +108,20 @@ fn render_stage_indicator(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiStat
     let total_trials: u64 = router.confidence_stats.values().map(|s| s.trials).sum();
 
     let (stage_label, stage_color, next_threshold) = if total_trials < 10 {
-        ("Static", Color::Yellow, 10u64)
+        ("Static", Theme::STAGE_STATIC, 10u64)
     } else if total_trials < 30 {
-        ("Confidence", Color::Cyan, 30)
+        ("Confidence", Theme::STAGE_CONFIDENCE, 30)
     } else {
-        ("UCB (LinUCB)", Color::Green, u64::MAX)
+        ("UCB (LinUCB)", Theme::STAGE_UCB, u64::MAX)
     };
 
-    let progress_line = if next_threshold == u64::MAX {
-        format!("  Observations: {total_trials} (fully adaptive)")
-    } else {
-        format!(
-            "  Observations: {total_trials} / {next_threshold} (next stage at {next_threshold})"
-        )
-    };
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Cascade Stage ")
-        .border_style(Style::default().fg(theme.muted));
+    let block = Block::bordered()
+        .title(Span::styled(" Cascade Stage ", theme.section_header()))
+        .border_style(theme.muted());
 
     let text = vec![
         Line::from(vec![
-            Span::raw("  Stage: "),
+            Span::styled("  Stage: ", theme.label()),
             Span::styled(
                 stage_label,
                 Style::default()
@@ -113,8 +129,21 @@ fn render_stage_indicator(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiStat
                     .add_modifier(Modifier::BOLD),
             ),
         ]),
-        Line::from(progress_line),
-        Line::from(format!("  Models: {}", router.model_slugs.len())),
+        Line::from(vec![
+            Span::styled("  Observations: ", theme.label()),
+            Span::styled(
+                if next_threshold == u64::MAX {
+                    format!("{total_trials} (fully adaptive)")
+                } else {
+                    format!("{total_trials} / {next_threshold} (next stage at {next_threshold})")
+                },
+                theme.value(),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  Models: ", theme.label()),
+            Span::styled(router.model_slugs.len().to_string(), theme.value()),
+        ]),
     ];
 
     let paragraph = Paragraph::new(text).block(block);
@@ -125,13 +154,17 @@ fn render_model_table(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, t
     let router = &tui_state.cascade_router;
 
     let header = Row::new(vec![
-        Cell::from("Model").style(Style::default().add_modifier(Modifier::BOLD)),
-        Cell::from("Trials").style(Style::default().add_modifier(Modifier::BOLD)),
-        Cell::from("Successes").style(Style::default().add_modifier(Modifier::BOLD)),
-        Cell::from("Pass Rate").style(Style::default().add_modifier(Modifier::BOLD)),
-        Cell::from("Sparkline").style(Style::default().add_modifier(Modifier::BOLD)),
+        Cell::from(Span::styled("Model", theme.label())),
+        Cell::from(Line::from(Span::styled("Trials", theme.label())).alignment(Alignment::Right)),
+        Cell::from(
+            Line::from(Span::styled("Successes", theme.label())).alignment(Alignment::Right),
+        ),
+        Cell::from(
+            Line::from(Span::styled("Pass Rate", theme.label())).alignment(Alignment::Right),
+        ),
+        Cell::from(Span::styled("Sparkline", theme.label())),
     ])
-    .style(Style::default().fg(theme.accent));
+    .style(Style::default().add_modifier(Modifier::BOLD));
 
     let mut rows = Vec::new();
     for slug in &router.model_slugs {
@@ -148,18 +181,27 @@ fn render_model_table(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, t
         let rate_color = if trials == 0 {
             theme.muted
         } else if successes * 100 >= trials * 80 {
-            Color::Green
+            Theme::RATE_GOOD
         } else if successes * 100 >= trials * 50 {
-            Color::Yellow
+            Theme::RATE_MID
         } else {
-            Color::Red
+            Theme::RATE_BAD
         };
 
         rows.push(Row::new(vec![
-            Cell::from(slug.as_str()),
-            Cell::from(trials.to_string()),
-            Cell::from(successes.to_string()),
-            Cell::from(pass_rate).style(Style::default().fg(rate_color)),
+            Cell::from(Span::styled(slug.as_str(), theme.value())),
+            Cell::from(
+                Line::from(Span::styled(trials.to_string(), theme.value()))
+                    .alignment(Alignment::Right),
+            ),
+            Cell::from(
+                Line::from(Span::styled(successes.to_string(), theme.value()))
+                    .alignment(Alignment::Right),
+            ),
+            Cell::from(
+                Line::from(Span::styled(pass_rate, Style::default().fg(rate_color)))
+                    .alignment(Alignment::Right),
+            ),
             Cell::from(spark),
         ]));
     }
@@ -176,10 +218,9 @@ fn render_model_table(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, t
     )
     .header(header)
     .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" Per-Model Stats ")
-            .border_style(Style::default().fg(theme.muted)),
+        Block::bordered()
+            .title(Span::styled(" Per-Model Stats ", theme.section_header()))
+            .border_style(theme.muted()),
     );
 
     frame.render_widget(table, area);
@@ -232,18 +273,11 @@ fn model_sparkline(
         .collect()
 }
 
-use crate::tui::display_utils::{display_model, event_model_slug, shorten_model};
+use crate::tui::display_utils::{display_model, event_model_slug};
 
 fn render_selection_bars(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme: &Theme) {
     let router = &tui_state.cascade_router;
-    let colors = [
-        Color::Blue,
-        Color::Cyan,
-        Color::Green,
-        Color::Yellow,
-        Color::Magenta,
-        Color::Red,
-    ];
+    let colors = Theme::SERIES_COLORS;
 
     let bars: Vec<Bar> = router
         .model_slugs
@@ -270,10 +304,12 @@ fn render_selection_bars(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState
 
     let bar_chart = BarChart::default()
         .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Selection Frequency ")
-                .border_style(Style::default().fg(theme.muted)),
+            Block::bordered()
+                .title(Span::styled(
+                    " Selection Frequency ",
+                    theme.section_header(),
+                ))
+                .border_style(theme.muted()),
         )
         .data(BarGroup::default().bars(&bars))
         .bar_width(
@@ -301,23 +337,65 @@ fn render_history(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme
     lines.push(Line::from(""));
 
     if total_trials == 0 {
-        lines.push(Line::from(
-            "  No observations yet. Run tasks to see transitions.",
-        ));
+        lines.push(Line::from(Span::styled(
+            "  No observations yet.",
+            theme.muted(),
+        )));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  The router progresses through three stages as it gathers data:",
+            theme.muted(),
+        )));
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("    1. ", theme.text()),
+            Span::styled(
+                "Static",
+                Style::default()
+                    .fg(Theme::STAGE_STATIC)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("       (0-9 obs)   Fixed model order", theme.muted()),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("    2. ", theme.text()),
+            Span::styled(
+                "Confidence",
+                Style::default()
+                    .fg(Theme::STAGE_CONFIDENCE)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("   (10-29 obs)  Weighted by pass rate", theme.muted()),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("    3. ", theme.text()),
+            Span::styled(
+                "UCB",
+                Style::default()
+                    .fg(Theme::STAGE_UCB)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "          (30+ obs)   Fully adaptive routing",
+                theme.muted(),
+            ),
+        ]));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  Run tasks to start learning: roko plan run plans/ --engine runner-v2",
+            theme.muted(),
+        )));
     } else {
         lines.push(Line::from(vec![
-            Span::raw("  Current observations: "),
-            Span::styled(
-                total_trials.to_string(),
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
+            Span::styled("  Current observations: ", theme.label()),
+            Span::styled(total_trials.to_string(), theme.value()),
         ]));
         lines.push(Line::from(""));
 
         let stages = [
-            ("Static", 0u64, 10u64, Color::Yellow),
-            ("Confidence", 10, 30, Color::Cyan),
-            ("UCB (LinUCB)", 30, u64::MAX, Color::Green),
+            ("Static", 0u64, 10u64, Theme::STAGE_STATIC),
+            ("Confidence", 10, 30, Theme::STAGE_CONFIDENCE),
+            ("UCB (LinUCB)", 30, u64::MAX, Theme::STAGE_UCB),
         ];
 
         for (label, from, to, color) in &stages {
@@ -338,21 +416,25 @@ fn render_history(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme
             } else if total_trials >= *from {
                 Style::default().fg(*color)
             } else {
-                Style::default().fg(theme.muted)
+                theme.muted()
             };
 
             lines.push(Line::from(vec![
                 Span::raw(format!("  {marker}")),
                 Span::styled(format!("{label:<16}"), style),
-                Span::styled(
-                    format!("  ({range_str} obs)"),
-                    Style::default().fg(theme.muted),
-                ),
+                Span::styled(format!("  ({range_str} obs)"), theme.muted()),
             ]));
         }
 
-        lines.push(Line::from(""));
-        lines.push(Line::from("  Stage Progression:"));
+        let sep_width = area.width.saturating_sub(6) as usize;
+        lines.push(Line::from(Span::styled(
+            format!("  {}", "\u{2500}".repeat(sep_width)),
+            Style::default().fg(Theme::SEPARATOR),
+        )));
+        lines.push(Line::from(Span::styled(
+            "  Stage Progression:",
+            theme.section_header(),
+        )));
         lines.push(Line::from(""));
 
         let bar_width = area.width.saturating_sub(8) as usize;
@@ -378,35 +460,40 @@ fn render_history(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme
             Span::raw("  "),
             Span::styled(
                 "\u{2588}".repeat(static_w),
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(Theme::STAGE_STATIC),
             ),
             Span::styled(
                 "\u{2588}".repeat(confidence_w),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(Theme::STAGE_CONFIDENCE),
             ),
-            Span::styled("\u{2588}".repeat(ucb_w), Style::default().fg(Color::Green)),
+            Span::styled(
+                "\u{2588}".repeat(ucb_w),
+                Style::default().fg(Theme::STAGE_UCB),
+            ),
         ]));
 
         lines.push(Line::from(vec![
             Span::raw("  "),
-            Span::styled("\u{25a0}", Style::default().fg(Color::Yellow)),
+            Span::styled("\u{25a0}", Style::default().fg(Theme::STAGE_STATIC)),
             Span::raw(" Static  "),
-            Span::styled("\u{25a0}", Style::default().fg(Color::Cyan)),
+            Span::styled("\u{25a0}", Style::default().fg(Theme::STAGE_CONFIDENCE)),
             Span::raw(" Confidence  "),
-            Span::styled("\u{25a0}", Style::default().fg(Color::Green)),
+            Span::styled("\u{25a0}", Style::default().fg(Theme::STAGE_UCB)),
             Span::raw(" UCB"),
         ]));
     }
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Stage Transition History ")
-        .border_style(Style::default().fg(theme.muted));
+    let block = Block::bordered()
+        .title(Span::styled(
+            " Stage Transition History ",
+            theme.section_header(),
+        ))
+        .border_style(theme.muted());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
-    let paragraph = Paragraph::new(lines)
-        .block(block)
-        .wrap(Wrap { trim: false });
-    frame.render_widget(paragraph, area);
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, inner);
 }
 
 // ---------------------------------------------------------------------------
@@ -417,14 +504,38 @@ fn render_efficiency(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, th
     let events = &tui_state.efficiency_events;
 
     if events.is_empty() {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(" Model Efficiency ")
-            .border_style(Style::default().fg(theme.muted));
-        let msg = Paragraph::new("No efficiency events recorded yet.")
-            .alignment(Alignment::Center)
-            .block(block);
-        frame.render_widget(msg, area);
+        let block = Block::bordered()
+            .title(Span::styled(" Model Efficiency ", theme.section_header()))
+            .border_style(theme.muted());
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        let lines = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "No efficiency events recorded yet.",
+                theme.muted(),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Efficiency events track per-turn cost, latency, and gate pass rate.",
+                theme.muted(),
+            )),
+            Line::from(Span::styled(
+                "Data appears after agent task turns complete.",
+                theme.muted(),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Source: .roko/learn/efficiency.jsonl",
+                theme.muted(),
+            )),
+        ];
+        frame.render_widget(
+            Paragraph::new(lines)
+                .alignment(Alignment::Center)
+                .wrap(Wrap { trim: false }),
+            inner,
+        );
         return;
     }
 
@@ -442,20 +553,23 @@ fn render_efficiency(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, th
 
     let chunks = Layout::vertical([
         Constraint::Min(6),    // stats table
+        Constraint::Length(1), // separator
         Constraint::Length(8), // cost bar chart
     ])
     .split(area);
 
-    // ── Stats table ──
+    // -- Stats table --
     let header = Row::new(vec![
-        Cell::from("Model").style(Style::default().add_modifier(Modifier::BOLD)),
-        Cell::from("Events").style(Style::default().add_modifier(Modifier::BOLD)),
-        Cell::from("Passed").style(Style::default().add_modifier(Modifier::BOLD)),
-        Cell::from("Pass %").style(Style::default().add_modifier(Modifier::BOLD)),
-        Cell::from("Avg Cost").style(Style::default().add_modifier(Modifier::BOLD)),
-        Cell::from("Avg Latency").style(Style::default().add_modifier(Modifier::BOLD)),
+        Cell::from(Span::styled("Model", theme.label())),
+        Cell::from(Line::from(Span::styled("Events", theme.label())).alignment(Alignment::Right)),
+        Cell::from(Line::from(Span::styled("Passed", theme.label())).alignment(Alignment::Right)),
+        Cell::from(Line::from(Span::styled("Pass %", theme.label())).alignment(Alignment::Right)),
+        Cell::from(Line::from(Span::styled("Avg Cost", theme.label())).alignment(Alignment::Right)),
+        Cell::from(
+            Line::from(Span::styled("Avg Latency", theme.label())).alignment(Alignment::Right),
+        ),
     ])
-    .style(Style::default().fg(theme.accent));
+    .style(Style::default().add_modifier(Modifier::BOLD));
 
     let mut sorted_models: Vec<_> = model_stats.iter().collect();
     sorted_models.sort_by(|a, b| b.1.count.cmp(&a.1.count));
@@ -482,20 +596,38 @@ fn render_efficiency(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, th
             let rate_color = if stats.count == 0 {
                 theme.muted
             } else if stats.passed * 100 >= stats.count * 80 {
-                Color::Green
+                Theme::RATE_GOOD
             } else if stats.passed * 100 >= stats.count * 50 {
-                Color::Yellow
+                Theme::RATE_MID
             } else {
-                Color::Red
+                Theme::RATE_BAD
             };
 
             Row::new(vec![
-                Cell::from(display_model(Some(model.as_str()))),
-                Cell::from(stats.count.to_string()),
-                Cell::from(stats.passed.to_string()),
-                Cell::from(pass_pct).style(Style::default().fg(rate_color)),
-                Cell::from(avg_cost),
-                Cell::from(avg_latency),
+                Cell::from(Span::styled(
+                    display_model(Some(model.as_str())),
+                    theme.value(),
+                )),
+                Cell::from(
+                    Line::from(Span::styled(stats.count.to_string(), theme.value()))
+                        .alignment(Alignment::Right),
+                ),
+                Cell::from(
+                    Line::from(Span::styled(stats.passed.to_string(), theme.value()))
+                        .alignment(Alignment::Right),
+                ),
+                Cell::from(
+                    Line::from(Span::styled(pass_pct, Style::default().fg(rate_color)))
+                        .alignment(Alignment::Right),
+                ),
+                Cell::from(
+                    Line::from(Span::styled(avg_cost, theme.metadata()))
+                        .alignment(Alignment::Right),
+                ),
+                Cell::from(
+                    Line::from(Span::styled(avg_latency, theme.metadata()))
+                        .alignment(Alignment::Right),
+                ),
             ])
         })
         .collect();
@@ -513,23 +645,19 @@ fn render_efficiency(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, th
     )
     .header(header)
     .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" Model Efficiency Stats ")
-            .border_style(Style::default().fg(theme.muted)),
+        Block::bordered()
+            .title(Span::styled(
+                " Model Efficiency Stats ",
+                theme.section_header(),
+            ))
+            .border_style(theme.muted()),
     );
 
     frame.render_widget(table, chunks[0]);
+    render_separator(frame, chunks[1], theme);
 
-    // ── Cost bar chart ──
-    let colors = [
-        Color::Blue,
-        Color::Cyan,
-        Color::Green,
-        Color::Yellow,
-        Color::Magenta,
-        Color::Red,
-    ];
+    // -- Cost bar chart --
+    let colors = Theme::SERIES_COLORS;
     let bars: Vec<Bar> = sorted_models
         .iter()
         .enumerate()
@@ -553,14 +681,16 @@ fn render_efficiency(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, th
     if !bars.is_empty() {
         let bar_chart = BarChart::default()
             .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Avg Cost (\u{00d7}10\u{207b}\u{2074} $) ")
-                    .border_style(Style::default().fg(theme.muted)),
+                Block::bordered()
+                    .title(Span::styled(
+                        " Avg Cost (\u{00d7}10\u{207b}\u{2074} $) ",
+                        theme.section_header(),
+                    ))
+                    .border_style(theme.muted()),
             )
             .data(BarGroup::default().bars(&bars))
             .bar_width(
-                chunks[1]
+                chunks[2]
                     .width
                     .saturating_sub(4)
                     .checked_div(bars.len().max(1) as u16)
@@ -570,7 +700,7 @@ fn render_efficiency(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, th
             )
             .bar_gap(1);
 
-        frame.render_widget(bar_chart, chunks[1]);
+        frame.render_widget(bar_chart, chunks[2]);
     }
 }
 
@@ -580,4 +710,138 @@ struct ModelEffStats {
     passed: usize,
     total_cost: f64,
     total_latency_ms: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::dashboard::{CascadeRouterModelStats, DashboardData};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    fn rendered_text(terminal: &Terminal<TestBackend>) -> String {
+        let buffer = terminal.backend().buffer();
+        let width = buffer.area.width as usize;
+        buffer
+            .content
+            .chunks(width)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn render_view(tui_state: &TuiState, sub_tab: usize, width: u16, height: u16) -> String {
+        let data = DashboardData::default();
+        let view_state = ViewState {
+            sub_tab,
+            ..ViewState::default()
+        };
+        let theme = Theme::dark();
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render(frame, area, &data, tui_state, &view_state, &theme);
+            })
+            .unwrap();
+        rendered_text(&terminal)
+    }
+
+    fn efficiency_event(
+        model: &str,
+        task_id: &str,
+    ) -> roko_learn::efficiency::AgentEfficiencyEvent {
+        let mut event = roko_learn::efficiency::AgentEfficiencyEvent::default_event();
+        event.model = model.to_string();
+        event.plan_id = "plan-1".to_string();
+        event.task_id = task_id.to_string();
+        event.gate_passed = Some(true);
+        event.cost_usd = 0.05;
+        event.wall_time_ms = 4_000;
+        event
+    }
+
+    #[test]
+    fn router_empty_state_renders_placeholder() {
+        let state = TuiState::new();
+        let text = render_view(&state, 0, 100, 20);
+        assert!(text.contains("No learning data"), "missing:\n{text}");
+    }
+
+    #[test]
+    fn router_renders_non_claude_model_rows() {
+        let mut state = TuiState::new();
+        state.cascade_router.model_slugs = vec!["gpt-5.6-sol".to_string(), "glm-5.1".to_string()];
+        state.cascade_router.confidence_stats.insert(
+            "gpt-5.6-sol".to_string(),
+            CascadeRouterModelStats {
+                trials: 12,
+                successes: 9,
+            },
+        );
+        state.cascade_router.confidence_stats.insert(
+            "glm-5.1".to_string(),
+            CascadeRouterModelStats {
+                trials: 4,
+                successes: 1,
+            },
+        );
+
+        let text = render_view(&state, 0, 120, 30);
+        assert!(
+            text.contains("Cascade Stage"),
+            "stage block missing:\n{text}"
+        );
+        assert!(text.contains("gpt-5.6-sol"), "codex row missing:\n{text}");
+        assert!(text.contains("glm-5.1"), "glm row missing:\n{text}");
+        assert!(text.contains("75.0%"), "pass rate missing:\n{text}");
+    }
+
+    #[test]
+    fn history_sub_view_renders_without_panic() {
+        let mut state = TuiState::new();
+        state.cascade_router.confidence_stats.insert(
+            "glm-5.1".to_string(),
+            CascadeRouterModelStats {
+                trials: 15,
+                successes: 10,
+            },
+        );
+        let text = render_view(&state, 1, 100, 24);
+        assert!(
+            text.contains("Stage Transition History"),
+            "history missing:\n{text}"
+        );
+    }
+
+    #[test]
+    fn efficiency_sub_view_renders_model_rows() {
+        let mut state = TuiState::new();
+        state
+            .efficiency_events
+            .push(efficiency_event("gpt-5.6-sol", "t1"));
+        state
+            .efficiency_events
+            .push(efficiency_event("glm-5.1", "t2"));
+
+        let text = render_view(&state, 2, 120, 30);
+        assert!(
+            text.contains("Model Efficiency Stats"),
+            "stats block missing:\n{text}"
+        );
+        // Models are grouped by exact slug (shortened for display).
+        assert!(text.contains("5.6-sol"), "codex model missing:\n{text}");
+        assert!(text.contains("glm-5.1"), "glm model missing:\n{text}");
+    }
+
+    #[test]
+    fn efficiency_sub_view_empty_renders_placeholder() {
+        let state = TuiState::new();
+        let text = render_view(&state, 2, 100, 20);
+        assert!(
+            text.contains("No efficiency events recorded yet"),
+            "placeholder missing:\n{text}"
+        );
+    }
 }

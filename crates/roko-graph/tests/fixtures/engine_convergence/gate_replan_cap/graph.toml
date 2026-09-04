@@ -1,0 +1,51 @@
+# Gate failure with replan and cap exhaustion.
+# T1 succeeds, gate fails, replan produces T1-fix, second gate fails, cap hit.
+
+[graph]
+name = "gate-replan-cap"
+description = "Gate failure -> structural replan -> cap exhaustion"
+version = "1.0.0"
+
+[graph.policy]
+mode = "one_shot"
+failure_strategy = "fail_fast"
+max_concurrent_nodes = 1
+
+[graph.labels]
+source = "fixture"
+fixture_id = "gate_replan_cap"
+plan_id = "gate-replan-cap"
+
+[[nodes]]
+id = "T1"
+cell_type = "task-executor"
+execution_class = "activity"
+[nodes.config]
+plan_id = "gate-replan-cap"
+plan_dir = "fixtures/engine_convergence/gate_replan_cap"
+title = "Initial implementation"
+role = "implementer"
+tier = "focused"
+timeout_secs = 300
+max_retries = 2
+sequence = 0
+files = ["src/feature.rs"]
+
+[[nodes]]
+id = "T1-fix"
+cell_type = "task-executor"
+execution_class = "activity"
+[nodes.config]
+plan_id = "gate-replan-cap"
+plan_dir = "fixtures/engine_convergence/gate_replan_cap"
+title = "Structural replan fix"
+role = "implementer"
+tier = "mechanical"
+timeout_secs = 300
+max_retries = 2
+sequence = 1
+files = ["src/feature.rs"]
+
+[[edges]]
+from = "T1"
+to = "T1-fix"

@@ -1,16 +1,15 @@
-//! `CursorCliAgent` — persistent subprocess agent using Cursor's ACP JSON-RPC protocol.
+//! `CursorCliAgent` — per-call subprocess agent using Cursor's ACP JSON-RPC protocol.
 //!
-//! Unlike `ClaudeCliAgent` which spawns a fresh process per turn, the Cursor agent
-//! subprocess stays alive across turns. The lifecycle is:
+//! Each `run()` call spawns a fresh subprocess so concurrent invocations never share
+//! channels or interleave output. The per-call lifecycle is:
 //!
 //! 1. Spawn `agent --force --approve-mcps --workspace <dir> --output-format json acp`
 //! 2. Send `initialize` JSON-RPC request
 //! 3. Send `session/new` to create a session
-//! 4. Send `session/prompt` to start each turn
+//! 4. Send `session/prompt` for the turn
 //! 5. Read `session/update` notifications for streaming output
 //! 6. Receive `session/prompt` response with `stopReason` when turn completes
-//!
-//! The process is kept alive and reused. Cleanup happens on drop or explicit kill.
+//! 7. Kill the subprocess
 
 use crate::agent::{Agent, AgentResult};
 use crate::process::{
@@ -25,7 +24,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -248,6 +246,7 @@ impl CursorConnection {
         event_tx: mpsc::UnboundedSender<CursorEvent>,
         turn_done_tx: mpsc::UnboundedSender<()>,
         resource_limits: Option<&ResourceLimits>,
+        env: &[(String, String)],
     ) -> Result<Self, String> {
         let mut cmd = confined_command(command, resource_limits)
             .map_err(|error| format!("process confinement unavailable: {error}"))?;
@@ -267,6 +266,9 @@ impl CursorConnection {
         // Limit cargo parallelism for multi-agent scenarios.
         cmd.env("CARGO_INCREMENTAL", "0");
         cmd.env("CARGO_BUILD_JOBS", "2");
+
+        // Forward caller-supplied environment variables.
+        cmd.envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
 
         set_process_group(&mut cmd);
         cmd.kill_on_drop(true);
@@ -559,8 +561,8 @@ impl CursorConnection {
 /// Cursor ACP subprocess agent.
 ///
 /// Spawns `agent --force --approve-mcps --workspace <dir> --output-format json acp`
-/// and communicates via JSON-RPC 2.0 over stdio. The process is persistent — it
-/// stays alive across turns and is reused for subsequent prompts.
+/// and communicates via JSON-RPC 2.0 over stdio. Each `run()` call spawns a fresh
+/// subprocess with its own channels so concurrent calls never interleave output.
 pub struct CursorCliAgent {
     command: String,
     working_dir: PathBuf,
@@ -570,23 +572,16 @@ pub struct CursorCliAgent {
     resource_limits: Option<ResourceLimits>,
     /// Standard ACP MCP server objects injected into `session/new`.
     mcp_servers: Vec<Value>,
-    /// Lazy-initialized connection (spawned on first `run()`).
-    connection: Arc<Mutex<Option<CursorConnection>>>,
-    /// Channel to receive parsed events from the reader task.
-    event_rx: Arc<Mutex<Option<mpsc::UnboundedReceiver<CursorEvent>>>>,
-    /// Channel to know when a turn completes.
-    turn_done_rx: Arc<Mutex<Option<mpsc::UnboundedReceiver<()>>>>,
-    /// Senders kept here so they can be passed to the connection on init.
-    event_tx: mpsc::UnboundedSender<CursorEvent>,
-    turn_done_tx: mpsc::UnboundedSender<()>,
+    /// Optional system prompt forwarded to the ACP session.
+    system_prompt: Option<String>,
+    /// Environment variables forwarded to the spawned subprocess.
+    env: Vec<(String, String)>,
 }
 
 impl CursorCliAgent {
     /// Create a new Cursor CLI agent.
     #[must_use]
     pub fn new(command: impl Into<String>, working_dir: impl Into<PathBuf>) -> Self {
-        let (event_tx, event_rx) = mpsc::unbounded_channel();
-        let (turn_done_tx, turn_done_rx) = mpsc::unbounded_channel();
         Self {
             command: command.into(),
             working_dir: working_dir.into(),
@@ -595,11 +590,8 @@ impl CursorCliAgent {
             name: "cursor-cli".to_string(),
             resource_limits: None,
             mcp_servers: Vec::new(),
-            connection: Arc::new(Mutex::new(None)),
-            event_rx: Arc::new(Mutex::new(Some(event_rx))),
-            turn_done_rx: Arc::new(Mutex::new(Some(turn_done_rx))),
-            event_tx,
-            turn_done_tx,
+            system_prompt: None,
+            env: Vec::new(),
         }
     }
 
@@ -624,7 +616,7 @@ impl CursorCliAgent {
         self
     }
 
-    /// Apply OS resource limits to the persistent Cursor subprocess.
+    /// Apply OS resource limits to the Cursor subprocess.
     #[must_use]
     pub fn with_resource_limits(mut self, limits: ResourceLimits) -> Self {
         self.resource_limits = Some(limits);
@@ -638,13 +630,32 @@ impl CursorCliAgent {
         self
     }
 
-    /// Ensure the connection is initialized (spawn + initialize + create session).
-    async fn ensure_connected(&self) -> Result<(), String> {
-        let mut conn_guard = self.connection.lock().await;
-        if conn_guard.is_some() {
-            return Ok(());
-        }
+    /// Set an optional system prompt forwarded to the ACP session.
+    #[must_use]
+    pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
+        self.system_prompt = Some(prompt.into());
+        self
+    }
 
+    /// Add an environment variable forwarded to the spawned subprocess.
+    #[must_use]
+    pub fn with_env_var(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.env.push((key.into(), value.into()));
+        self
+    }
+
+    /// Spawn a fresh subprocess, initialize it, and create a session.
+    /// Returns the connection and its event/turn-done receivers.
+    async fn spawn_connection(
+        &self,
+    ) -> Result<
+        (
+            CursorConnection,
+            mpsc::UnboundedReceiver<CursorEvent>,
+            mpsc::UnboundedReceiver<()>,
+        ),
+        String,
+    > {
         // Acquire startup lock to serialize spawns.
         let _lock = cursor_startup_lock().lock().await;
         tracing::info!(
@@ -653,13 +664,17 @@ impl CursorCliAgent {
             self.working_dir.display()
         );
 
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let (turn_done_tx, turn_done_rx) = mpsc::unbounded_channel();
+
         let mut conn = CursorConnection::spawn(
             &self.command,
             &self.working_dir,
             self.model.as_deref(),
-            self.event_tx.clone(),
-            self.turn_done_tx.clone(),
+            event_tx,
+            turn_done_tx,
             self.resource_limits.as_ref(),
+            &self.env,
         )
         .await?;
 
@@ -667,8 +682,7 @@ impl CursorCliAgent {
         conn.create_session(&self.working_dir.to_string_lossy(), &self.mcp_servers)
             .await?;
 
-        *conn_guard = Some(conn);
-        Ok(())
+        Ok((conn, event_rx, turn_done_rx))
     }
 }
 
@@ -676,44 +690,42 @@ impl CursorCliAgent {
 impl Agent for CursorCliAgent {
     async fn run(&self, input: &Signal, _ctx: &Context) -> AgentResult {
         let start = Instant::now();
-        let prompt_text = input.body.as_text().unwrap_or("").to_string();
+        let raw_prompt = input.body.as_text().unwrap_or("").to_string();
+        // Prepend system prompt if set, separated by a clear delimiter.
+        let prompt_text = match &self.system_prompt {
+            Some(sp) => {
+                format!("[SYSTEM INSTRUCTIONS]\n{sp}\n[END SYSTEM INSTRUCTIONS]\n\n{raw_prompt}")
+            }
+            None => raw_prompt,
+        };
 
-        // Ensure connection is alive.
-        if let Err(e) = self.ensure_connected().await {
-            return AgentResult::fail(
-                Signal::builder(Kind::AgentOutput)
-                    .body(Body::text(format!("cursor-cli spawn failed: {e}")))
-                    .build(),
-            );
-        }
-
-        // Send the prompt.
-        {
-            let mut conn_guard = self.connection.lock().await;
-            let conn = conn_guard.as_mut().unwrap();
-            if let Err(e) = conn.prompt(&prompt_text).await {
+        // Spawn a fresh subprocess for this call so concurrent run() invocations
+        // never share channels or interleave output.
+        let (mut conn, mut event_rx, mut turn_done_rx) = match self.spawn_connection().await {
+            Ok(triple) => triple,
+            Err(e) => {
                 return AgentResult::fail(
                     Signal::builder(Kind::AgentOutput)
-                        .body(Body::text(format!("cursor-cli prompt failed: {e}")))
+                        .body(Body::text(format!("cursor-cli spawn failed: {e}")))
                         .build(),
                 );
             }
+        };
+
+        // Send the prompt.
+        if let Err(e) = conn.prompt(&prompt_text).await {
+            conn.kill().await;
+            return AgentResult::fail(
+                Signal::builder(Kind::AgentOutput)
+                    .body(Body::text(format!("cursor-cli prompt failed: {e}")))
+                    .build(),
+            );
         }
 
         // Collect events until turn completes or timeout.
         let mut output_text = String::new();
         let mut tool_calls = Vec::new();
         let timeout_dur = Duration::from_millis(self.timeout_ms);
-
-        // Take the receivers (we hold them for the duration of the turn).
-        let mut event_rx = self.event_rx.lock().await.take().unwrap_or_else(|| {
-            let (_tx, rx) = mpsc::unbounded_channel();
-            rx
-        });
-        let mut turn_done_rx = self.turn_done_rx.lock().await.take().unwrap_or_else(|| {
-            let (_tx, rx) = mpsc::unbounded_channel();
-            rx
-        });
 
         let result = timeout(timeout_dur, async {
             loop {
@@ -751,18 +763,12 @@ impl Agent for CursorCliAgent {
         })
         .await;
 
-        // Put receivers back.
-        *self.event_rx.lock().await = Some(event_rx);
-        *self.turn_done_rx.lock().await = Some(turn_done_rx);
-
         let elapsed = start.elapsed();
 
+        // Always kill the per-call subprocess when done.
+        conn.kill().await;
+
         if result.is_err() {
-            // Timeout — kill the process.
-            let mut conn_guard = self.connection.lock().await;
-            if let Some(mut conn) = conn_guard.take() {
-                conn.kill().await;
-            }
             let msg = format!(
                 "cursor-cli timed out after {} ms (collected {} bytes)",
                 self.timeout_ms,
@@ -793,19 +799,6 @@ impl Agent for CursorCliAgent {
 
     fn backend_id(&self) -> &'static str {
         "cursor_cli"
-    }
-}
-
-impl Drop for CursorCliAgent {
-    fn drop(&mut self) {
-        // Best-effort kill on drop — spawn a task since drop is sync.
-        let conn = self.connection.clone();
-        tokio::spawn(async move {
-            let mut guard = conn.lock().await;
-            if let Some(mut c) = guard.take() {
-                c.kill().await;
-            }
-        });
     }
 }
 

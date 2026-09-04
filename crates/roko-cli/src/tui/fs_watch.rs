@@ -19,6 +19,10 @@ use notify_debouncer_full::{
 const DEBOUNCE_WINDOW: Duration = Duration::from_millis(200);
 const FALLBACK_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const CHANNEL_BOUND: usize = 4;
+const RECURSIVE_WATCH_DIRS: &[&str] = &["state", "plans", "gates"];
+const SHALLOW_WATCH_DIRS: &[&str] = &["learn"];
+const EXCLUDED_TREE_NAMES: &[&str] =
+    &["worktrees", "reflex-replays", "target", "cache", "archives"];
 
 type NotifyDebouncer = Debouncer<notify::RecommendedWatcher, FileIdMap>;
 
@@ -100,13 +104,40 @@ pub fn watch_roko_dir(workdir: &Path) -> Result<FsWatchHandle> {
         notify::Config::default(),
     )
     .context("failed to create debounced filesystem watcher")?;
+    // Root-level lifecycle files are enough for connected/disk snapshots.
+    // Explicitly avoid recursively subscribing to attempt worktrees and build
+    // outputs, which can contain tens of thousands of high-churn files.
     debouncer
         .watcher()
-        .watch(&roko_dir, RecursiveMode::Recursive)
+        .watch(&roko_dir, RecursiveMode::NonRecursive)
         .with_context(|| format!("failed to watch {}", roko_dir.display()))?;
     debouncer
         .cache()
-        .add_root(&roko_dir, RecursiveMode::Recursive);
+        .add_root(&roko_dir, RecursiveMode::NonRecursive);
+    for child in RECURSIVE_WATCH_DIRS {
+        let path = roko_dir.join(child);
+        if !path.is_dir() {
+            continue;
+        }
+        debouncer
+            .watcher()
+            .watch(&path, RecursiveMode::Recursive)
+            .with_context(|| format!("failed to watch {}", path.display()))?;
+        debouncer.cache().add_root(&path, RecursiveMode::Recursive);
+    }
+    for child in SHALLOW_WATCH_DIRS {
+        let path = roko_dir.join(child);
+        if !path.is_dir() {
+            continue;
+        }
+        debouncer
+            .watcher()
+            .watch(&path, RecursiveMode::NonRecursive)
+            .with_context(|| format!("failed to watch {}", path.display()))?;
+        debouncer
+            .cache()
+            .add_root(&path, RecursiveMode::NonRecursive);
+    }
 
     Ok(FsWatchHandle {
         rx,
@@ -231,6 +262,13 @@ fn hash_path(path: &Path, hasher: &mut DefaultHasher) {
         .collect();
     children.sort();
     for child in children {
+        if child
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| EXCLUDED_TREE_NAMES.contains(&name))
+        {
+            continue;
+        }
         hash_path(&child, hasher);
     }
 }

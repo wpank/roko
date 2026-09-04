@@ -33,4 +33,8 @@ pub use immune::{
     immune_pipeline_graph, register_immune_cells,
 };
 pub use stubs::PassthroughCell;
-pub use task_executor::{TaskDispatcher, TaskExecutionSpec, TaskExecutorCell};
+pub use task_executor::{
+    AttemptReconciliation, GraphTaskEvent, NoopAttemptRecorder, ProviderAttemptRecorder,
+    StreamingTaskDispatcher, TaskDispatchOutcome, TaskDispatchOutcomeKind, TaskDispatcher,
+    TaskExecutionSpec, TaskExecutorCell, TaskLease,
+};

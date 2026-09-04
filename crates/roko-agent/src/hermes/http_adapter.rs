@@ -24,8 +24,7 @@ use crate::harness::{
 };
 use crate::http::ReqwestPoster;
 use crate::openai_compat_backend::OpenAiCompatLlmBackend;
-use crate::streaming::StreamChunk;
-use crate::tool_loop::LlmBackend;
+use crate::tool_loop::{LlmBackend, StreamEvent, TurnConfig, collect_stream_to_response};
 use crate::translate::{BackendResponse, RenderedTools, SessionState};
 use crate::usage::Usage;
 use roko_core::{Body, Context, Kind, Provenance, Signal};
@@ -52,12 +51,16 @@ pub struct HermesHttpAgent {
     config: HermesConfig,
     /// Human-readable name (e.g., `"hermes-http"`).
     agent_name: String,
+    /// Optional system prompt injected as a system message.
+    system_prompt: Option<String>,
     /// Shared HTTP client for post-turn run lookups (token accounting level 2).
     http: reqwest::Client,
     /// Pre-computed capabilities (constant for the lifetime of the adapter).
     capabilities: HarnessCapabilities,
     /// State directory for probe cache, PID files, etc.
     state_dir: PathBuf,
+    /// Safety layer for output scrubbing (secret leak prevention).
+    safety: crate::safety::SafetyLayer,
 }
 
 impl HermesHttpAgent {
@@ -111,7 +114,16 @@ impl HermesHttpAgent {
             capabilities,
             config,
             agent_name: "hermes-http".to_string(),
+            system_prompt: None,
+            safety: crate::safety::SafetyLayer::with_defaults(),
         }
+    }
+
+    /// Set an optional system prompt included in every request.
+    #[must_use]
+    pub fn with_system_prompt(mut self, prompt: String) -> Self {
+        self.system_prompt = Some(prompt);
+        self
     }
 
     /// Attach a lifecycle service for the Hermes gateway daemon.
@@ -190,6 +202,22 @@ impl HermesHttpAgent {
             .build()
     }
 
+    /// Build the messages array, optionally prepending a system message.
+    fn build_messages(&self, prompt_text: &str) -> Vec<Value> {
+        let mut messages = Vec::new();
+        if let Some(sp) = &self.system_prompt {
+            messages.push(serde_json::json!({
+                "role": "system",
+                "content": sp,
+            }));
+        }
+        messages.push(serde_json::json!({
+            "role": "user",
+            "content": prompt_text,
+        }));
+        messages
+    }
+
     /// Build a failure output signal with standard tags.
     fn build_error_output(&self, input: &Signal, error_msg: &str) -> Signal {
         input
@@ -205,7 +233,7 @@ impl HermesHttpAgent {
     /// Level 1: Parse `usage` from the Chat Completions response JSON.
     ///
     /// The `OpenAiCompatLlmBackend` already does this via `parse_sse_line()`
-    /// producing `StreamChunk::Usage(Usage)`. This method extracts usage
+    /// producing `StreamEvent::Usage(Usage)`. This method extracts usage
     /// from a non-streaming JSON response.
     fn extract_usage_from_response(response: &BackendResponse) -> Option<Usage> {
         match response {
@@ -330,10 +358,7 @@ impl Agent for HermesHttpAgent {
             }
         };
 
-        let messages = vec![serde_json::json!({
-            "role": "user",
-            "content": prompt_text,
-        })];
+        let messages = self.build_messages(&prompt_text);
 
         let tools = RenderedTools::JsonArray(serde_json::json!([]));
         let session = SessionState::default();
@@ -341,7 +366,7 @@ impl Agent for HermesHttpAgent {
         match self.backend.send_turn(&messages, &tools, &session).await {
             Ok(response) => {
                 let wall_ms = started.elapsed().as_millis() as u64;
-                let content = Self::extract_content(&response);
+                let content = self.safety.scrub_text(&Self::extract_content(&response));
                 let prompt_chars = prompt_text.len();
                 let content_chars = content.len();
 
@@ -383,7 +408,7 @@ impl Agent for HermesHttpAgent {
         &self,
         input: &Signal,
         _ctx: &Context,
-        event_tx: mpsc::Sender<StreamChunk>,
+        event_tx: mpsc::Sender<StreamEvent>,
     ) -> AgentResult {
         let started = Instant::now();
 
@@ -394,24 +419,31 @@ impl Agent for HermesHttpAgent {
             }
         };
 
-        let messages = vec![serde_json::json!({
-            "role": "user",
-            "content": prompt_text,
-        })];
+        let messages = self.build_messages(&prompt_text);
 
         let tools = RenderedTools::JsonArray(serde_json::json!([]));
         let session = SessionState::default();
+        let config = TurnConfig::default();
 
-        // Attempt the streaming turn.
-        let result = self
+        // Attempt the streaming turn via `stream_turn`, then collect.
+        let stream = match self
             .backend
-            .send_turn_streaming(&messages, &tools, &session, event_tx.clone())
-            .await;
+            .stream_turn(&messages, &tools, &session, &config)
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                let output =
+                    self.build_error_output(input, &format!("hermes streaming error: {e}"));
+                return AgentResult::fail(output);
+            }
+        };
 
+        let result = collect_stream_to_response(stream, started).await;
         match result {
             Ok(response) => {
                 let wall_ms = started.elapsed().as_millis() as u64;
-                let content = Self::extract_content(&response);
+                let content = self.safety.scrub_text(&Self::extract_content(&response));
                 let prompt_chars = prompt_text.len();
                 let content_chars = content.len();
 
@@ -478,6 +510,7 @@ impl HarnessAdapter for HermesHttpAgent {
 mod tests {
     use super::*;
     use crate::streaming::parse_sse_line;
+    use crate::tool_loop::StreamEventKind;
 
     #[test]
     fn basic_sse_fixture_parses_correctly() {
@@ -486,10 +519,10 @@ mod tests {
         let mut saw_done = false;
 
         for line in fixture.lines() {
-            if let Some(chunk) = parse_sse_line(line) {
-                match chunk {
-                    StreamChunk::ContentDelta(delta) => content.push_str(&delta),
-                    StreamChunk::Done(_) => saw_done = true,
+            if let Some(event) = parse_sse_line(line) {
+                match &event.kind {
+                    StreamEventKind::TextDelta(delta) => content.push_str(delta),
+                    StreamEventKind::Done { .. } => saw_done = true,
                     _ => {}
                 }
             }
@@ -515,16 +548,16 @@ mod tests {
                     // Non-standard event -- check inspector.
                     if data != "[DONE]" {
                         if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
-                            if let Some(chunk) = inspector.inspect(&event_name, &json) {
-                                tool_events.push(chunk);
+                            if let Some(event) = inspector.inspect(&event_name, &json) {
+                                tool_events.push(event);
                             }
                         }
                     }
                 } else {
                     // Standard data line.
-                    if let Some(chunk) = parse_sse_line(line) {
-                        if let StreamChunk::ContentDelta(delta) = chunk {
-                            content.push_str(&delta);
+                    if let Some(event) = parse_sse_line(line) {
+                        if let StreamEventKind::TextDelta(delta) = &event.kind {
+                            content.push_str(delta);
                         }
                     }
                 }
@@ -534,20 +567,20 @@ mod tests {
         assert_eq!(content, "Let me check the files.");
         assert_eq!(tool_events.len(), 2);
 
-        match &tool_events[0] {
-            StreamChunk::ToolProgress { tool, status } => {
-                assert_eq!(tool, "terminal");
-                assert_eq!(status, "start");
+        match &tool_events[0].kind {
+            StreamEventKind::TextDelta(text) => {
+                assert!(text.contains("terminal"));
+                assert!(text.contains("start"));
             }
-            other => panic!("expected ToolProgress, got {other:?}"),
+            other => panic!("expected TextDelta, got {other:?}"),
         }
 
-        match &tool_events[1] {
-            StreamChunk::ToolProgress { tool, status } => {
-                assert_eq!(tool, "terminal");
-                assert_eq!(status, "done");
+        match &tool_events[1].kind {
+            StreamEventKind::TextDelta(text) => {
+                assert!(text.contains("terminal"));
+                assert!(text.contains("done"));
             }
-            other => panic!("expected ToolProgress, got {other:?}"),
+            other => panic!("expected TextDelta, got {other:?}"),
         }
     }
 
@@ -626,10 +659,10 @@ mod tests {
         let mut content = String::new();
 
         for line in fixture.lines() {
-            if let Some(chunk) = parse_sse_line(line) {
-                match chunk {
-                    StreamChunk::ContentDelta(delta) => content.push_str(&delta),
-                    StreamChunk::Done(_) => saw_done = true,
+            if let Some(event) = parse_sse_line(line) {
+                match &event.kind {
+                    StreamEventKind::TextDelta(delta) => content.push_str(delta),
+                    StreamEventKind::Done { .. } => saw_done = true,
                     _ => {}
                 }
             }

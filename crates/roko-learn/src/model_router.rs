@@ -166,6 +166,12 @@ pub struct RoutingContext {
     /// determine how aggressively to shift tiers based on prediction error
     /// (`1.0 - affect_confidence`).
     pub tier_thresholds: Option<roko_daimon::TierThresholds>,
+    /// Latest c-factor snapshot, if available.
+    ///
+    /// Loaded from `.roko/learn/c-factor.jsonl` at dispatch time so the cascade
+    /// router can bias model selection toward collective performance without a
+    /// separate parameter.
+    pub cfactor: Option<crate::cfactor::CFactor>,
 }
 
 impl RoutingContext {
@@ -685,6 +691,11 @@ pub struct LinUCBRouter {
     persist_path: Option<PathBuf>,
     /// Static fallback table: tier -> model slug.
     static_table: HashMap<ModelTier, String>,
+    /// Optional embedded health tracker for automatic health-aware routing.
+    health_tracker: Option<ProviderHealthTracker>,
+    /// Maps model slug to provider name (e.g. `"claude-sonnet-4-5"` -> `"anthropic"`).
+    /// Used with the embedded `health_tracker`.
+    provider_of: Option<Box<dyn Fn(&str) -> String + Send + Sync>>,
 }
 
 /// Interior mutable state protected by the read-write lock.
@@ -717,6 +728,8 @@ impl LinUCBRouter {
             }),
             persist_path: None,
             static_table,
+            health_tracker: None,
+            provider_of: None,
         }
     }
 
@@ -732,6 +745,27 @@ impl LinUCBRouter {
     pub fn with_static_table(mut self, table: HashMap<ModelTier, String>) -> Self {
         self.static_table = table;
         self
+    }
+
+    /// Embed a [`ProviderHealthTracker`] so that [`select_model`](Self::select_model)
+    /// automatically down-weights unhealthy providers.
+    ///
+    /// `provider_of` maps a model slug to its provider name (e.g.
+    /// `"claude-sonnet-4-5"` -> `"anthropic"`).
+    #[must_use]
+    pub fn with_health_tracker<F>(mut self, tracker: ProviderHealthTracker, provider_of: F) -> Self
+    where
+        F: Fn(&str) -> String + Send + Sync + 'static,
+    {
+        self.health_tracker = Some(tracker);
+        self.provider_of = Some(Box::new(provider_of));
+        self
+    }
+
+    /// Return a reference to the embedded health tracker, if any.
+    #[must_use]
+    pub fn health_tracker(&self) -> Option<&ProviderHealthTracker> {
+        self.health_tracker.as_ref()
     }
 
     /// Current exploration parameter alpha, decaying exponentially.
@@ -758,7 +792,16 @@ impl LinUCBRouter {
     ///
     /// If `total_observations < COLD_START_THRESHOLD`, returns the static
     /// fallback model for the context's complexity band tier.
+    ///
+    /// When an embedded [`ProviderHealthTracker`] is present (via
+    /// [`with_health_tracker`](Self::with_health_tracker)), unhealthy
+    /// providers are automatically excluded from selection.
     pub fn select_model(&self, ctx: &RoutingContext) -> ModelSpec {
+        // Delegate to health-aware selection when a tracker is embedded.
+        if let (Some(health), Some(provider_of)) = (&self.health_tracker, &self.provider_of) {
+            return self.select_model_with_health(ctx, health, |slug| provider_of(slug));
+        }
+
         let state = self.state.read();
 
         // Cold start: use static routing.
@@ -1225,6 +1268,8 @@ impl LinUCBRouter {
             }),
             persist_path: Some(path.to_path_buf()),
             static_table: default_static_table(&model_slugs),
+            health_tracker: None,
+            provider_of: None,
         })
     }
 
@@ -1596,6 +1641,7 @@ mod tests {
             previous_model: None,
             plan_context_tokens: None,
             tier_thresholds: None,
+            cfactor: None,
         }
     }
 

@@ -1,18 +1,25 @@
 //! Per-model cost statistics table widget.
 //!
-//! Columns: Model | Provider | Tasks | Pass% | Avg Duration | Total Cost | $/Task
+//! Columns: Model | Provider | Tasks | Pass% | Avg Duration | Total Cost | $/Task | Distribution
 //! Pass rates are color-coded: green >80%, amber 50-80%, red <50%.
+//!
+//! Features:
+//!   - Sortable columns (cycle with `s` key via `CostSortMode`)
+//!   - Per-provider subtotal rows
+//!   - Gradient braille distribution bars
+//!   - Per-model cost sparkline in distribution column
 
 use std::collections::BTreeMap;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
-use ratatui::text::Span;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
+use super::braille;
 use crate::tui::dashboard::Theme;
-use crate::tui::state::TuiState;
+use crate::tui::state::{CostSortMode, TuiState};
 
 /// Aggregated per-model cost entry.
 #[derive(Debug, Clone, Default)]
@@ -22,6 +29,8 @@ struct ModelCostEntry {
     passed: u64,
     total_duration_ms: u64,
     total_cost_usd: f64,
+    /// Per-event cost timeline for sparkline rendering.
+    cost_timeline: Vec<f64>,
 }
 
 impl ModelCostEntry {
@@ -50,6 +59,15 @@ impl ModelCostEntry {
     }
 }
 
+/// Per-provider subtotal for grouping.
+#[derive(Debug, Clone, Default)]
+struct ProviderSubtotal {
+    tasks: u64,
+    passed: u64,
+    total_cost_usd: f64,
+    total_duration_ms: u64,
+}
+
 /// Render the "Cost by Model" table.
 pub fn render_cost_by_model_table(
     frame: &mut Frame<'_>,
@@ -57,22 +75,15 @@ pub fn render_cost_by_model_table(
     tui_state: &TuiState,
     theme: &Theme,
 ) {
-    let focused = false; // standalone widget, not focus-tracked
-    let border_style = if focused {
-        Theme::focused_border_style()
-    } else {
-        theme.accent()
-    };
-
+    let sort_label = tui_state.cost_sort_mode.label();
     let block = Block::default()
         .borders(Borders::ALL)
         .title(Span::styled(
-            " Cost by Model ",
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD),
+            format!(" Cost by Model [s:sort by {sort_label}] "),
+            theme.section_header(),
         ))
-        .border_style(border_style);
+        .border_style(Theme::unfocused_border_style())
+        .style(Theme::block_style());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -107,6 +118,7 @@ pub fn render_cost_by_model_table(
         };
         entry.total_duration_ms += dur;
         entry.total_cost_usd += event.cost_usd;
+        entry.cost_timeline.push(event.cost_usd);
     }
 
     // When efficiency events are empty (live/connected mode), fall back to
@@ -127,7 +139,7 @@ pub fn render_cost_by_model_table(
             entry.tasks += 1;
             // No per-agent cost breakdown available; distribute the global
             // cost proportionally by token share later. For now count tokens
-            // as a duration proxy (1 token ≈ 1ms for display purposes).
+            // as a duration proxy (1 token ~ 1ms for display purposes).
             entry.total_duration_ms += total_tokens;
         }
         // Distribute global cost proportionally across models by token count.
@@ -157,75 +169,281 @@ pub fn render_cost_by_model_table(
     }
 
     if models.is_empty() {
-        let empty = Paragraph::new(Span::styled("  no efficiency data", theme.muted()));
+        let empty = Paragraph::new(Span::styled(
+            "  No cost data yet \u{2014} breakdowns appear after agent turns",
+            theme.muted(),
+        ));
         frame.render_widget(empty, inner);
         return;
     }
 
-    // Build table rows.
+    // Filter inactive models (0 tasks AND 0 cost).
+    let mut inactive_count = 0usize;
+    let active_models: BTreeMap<String, ModelCostEntry> = models
+        .into_iter()
+        .filter(|(_, entry)| {
+            if entry.tasks == 0 && entry.total_cost_usd < 0.001 {
+                inactive_count += 1;
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
+    let models = active_models;
+
+    // Sort models according to the active sort mode.
+    let mut sorted: Vec<(String, ModelCostEntry)> = models.into_iter().collect();
+    match tui_state.cost_sort_mode {
+        CostSortMode::Name => sorted.sort_by(|a, b| a.0.cmp(&b.0)),
+        CostSortMode::Cost => {
+            sorted.sort_by(|a, b| {
+                b.1.total_cost_usd
+                    .partial_cmp(&a.1.total_cost_usd)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        }
+        CostSortMode::Tasks => sorted.sort_by(|a, b| b.1.tasks.cmp(&a.1.tasks)),
+        CostSortMode::PassRate => {
+            sorted.sort_by(|a, b| {
+                b.1.pass_pct()
+                    .partial_cmp(&a.1.pass_pct())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        }
+    }
+
+    // Build provider subtotals.
+    let mut provider_totals: BTreeMap<String, ProviderSubtotal> = BTreeMap::new();
+    for (_, entry) in &sorted {
+        let prov = if entry.provider.is_empty() {
+            "(unknown)".to_string()
+        } else {
+            entry.provider.clone()
+        };
+        let pt = provider_totals.entry(prov).or_default();
+        pt.tasks += entry.tasks;
+        pt.passed += entry.passed;
+        pt.total_cost_usd += entry.total_cost_usd;
+        pt.total_duration_ms += entry.total_duration_ms;
+    }
+
+    // Compute max cost for relative bar sizing and most-expensive model highlighting.
+    let max_cost = sorted
+        .iter()
+        .map(|(_, e)| e.total_cost_usd)
+        .fold(0.01_f64, f64::max);
+    let most_expensive_model: Option<String> = if sorted.len() > 1 {
+        sorted
+            .iter()
+            .max_by(|a, b| {
+                a.1.total_cost_usd
+                    .partial_cmp(&b.1.total_cost_usd)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .filter(|(_, e)| e.total_cost_usd >= 0.001)
+            .map(|(name, _)| name.clone())
+    } else {
+        None
+    };
+
+    // Column sort indicator with directional arrow.
+    let sort_indicator = |col: &str, mode: CostSortMode| -> Span<'static> {
+        let active = tui_state.cost_sort_mode == mode;
+        let label = if active {
+            // Name sorts ascending (A-Z), others sort descending (highest first).
+            let arrow = if mode == CostSortMode::Name {
+                "\u{25b2}"
+            } else {
+                "\u{25bc}"
+            };
+            format!("{col} {arrow}")
+        } else {
+            col.to_string()
+        };
+        Span::styled(
+            label,
+            if active {
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                theme.label()
+            },
+        )
+    };
+
+    // Build table rows with inline cost distribution bars.
     let header = Row::new(vec![
-        Cell::from(Span::styled("Model", Style::default().fg(theme.muted))),
-        Cell::from(Span::styled("Provider", Style::default().fg(theme.muted))),
-        Cell::from(Span::styled("Tasks", Style::default().fg(theme.muted))),
-        Cell::from(Span::styled("Pass%", Style::default().fg(theme.muted))),
-        Cell::from(Span::styled("Avg Dur", Style::default().fg(theme.muted))),
-        Cell::from(Span::styled("Cost", Style::default().fg(theme.muted))),
-        Cell::from(Span::styled("$/Task", Style::default().fg(theme.muted))),
+        Cell::from(sort_indicator("Model", CostSortMode::Name)),
+        Cell::from(Span::styled("Provider", theme.label())),
+        Cell::from(sort_indicator("Tasks", CostSortMode::Tasks)),
+        Cell::from(sort_indicator("Pass%", CostSortMode::PassRate)),
+        Cell::from(Span::styled("Avg Dur", theme.label())),
+        Cell::from(sort_indicator("Cost", CostSortMode::Cost)),
+        Cell::from(Span::styled("$/Task", theme.label())),
+        Cell::from(Span::styled("Distribution", theme.label())),
     ])
     .height(1);
 
-    let rows: Vec<Row<'_>> = models
-        .iter()
-        .map(|(model, entry)| {
-            let pass_pct = entry.pass_pct();
-            let pass_style = if pass_pct > 80.0 {
-                theme.success()
-            } else if pass_pct >= 50.0 {
-                theme.warning()
-            } else if entry.tasks > 0 {
-                theme.danger()
-            } else {
-                theme.muted()
-            };
+    let bar_col_width = 12usize;
 
-            let model_display = truncate_model(model, 24);
-            let provider_display = truncate_model(&entry.provider, 12);
+    // Group rows by provider, inserting subtotal rows after each provider group.
+    let mut all_rows: Vec<Row<'_>> = Vec::new();
+    let mut current_provider: Option<String> = None;
+    let multi_provider = provider_totals.len() > 1;
 
-            Row::new(vec![
-                Cell::from(Span::styled(
-                    model_display,
-                    Style::default().fg(theme.foreground),
-                )),
-                Cell::from(Span::styled(
-                    provider_display,
-                    Style::default().fg(theme.muted),
-                )),
-                Cell::from(Span::styled(
-                    format!("{:>5}", entry.tasks),
-                    Style::default().fg(theme.foreground),
-                )),
-                Cell::from(Span::styled(format!("{pass_pct:>5.1}%"), pass_style)),
-                Cell::from(Span::styled(
-                    format_duration(entry.avg_duration_ms()),
-                    Style::default().fg(theme.foreground),
-                )),
-                Cell::from(Span::styled(
-                    format_cost(entry.total_cost_usd),
-                    cost_style(entry.total_cost_usd, theme),
-                )),
-                Cell::from(Span::styled(
-                    format_cost(entry.cost_per_task()),
-                    Style::default().fg(theme.muted),
-                )),
-            ])
-        })
-        .collect();
+    for (model, entry) in &sorted {
+        let this_provider = if entry.provider.is_empty() {
+            "(unknown)".to_string()
+        } else {
+            entry.provider.clone()
+        };
+
+        // Insert provider subtotal row when provider changes (only if >1 providers).
+        if multi_provider {
+            if let Some(ref prev) = current_provider {
+                if *prev != this_provider {
+                    if let Some(pt) = provider_totals.get(prev) {
+                        all_rows.push(provider_subtotal_row(prev, pt, bar_col_width, theme));
+                    }
+                }
+            }
+            current_provider = Some(this_provider.clone());
+        }
+
+        let pass_pct = entry.pass_pct();
+        let pass_style = if pass_pct > 80.0 {
+            theme.success()
+        } else if pass_pct >= 50.0 {
+            theme.warning()
+        } else if entry.tasks > 0 {
+            theme.danger()
+        } else {
+            theme.muted()
+        };
+
+        let is_most_expensive = most_expensive_model.as_deref() == Some(model.as_str());
+        let model_display = truncate_model(model, 24);
+        let provider_display = truncate_model(&entry.provider, 12);
+
+        // Gradient braille sparkline for cost distribution.
+        let cost_frac = (entry.total_cost_usd / max_cost).clamp(0.0, 1.0);
+        let bar_data: Vec<f64> = if entry.cost_timeline.len() >= 2 {
+            // Show cost-over-time sparkline
+            entry.cost_timeline.clone()
+        } else {
+            // Fall back to a proportional bar
+            vec![cost_frac]
+        };
+        let distribution_cell = if bar_data.len() >= 2 {
+            // Cost-over-time sparkline using gradient
+            let spans = braille::braille_spans_gradient(
+                &bar_data,
+                0.0, // auto-scale
+                bar_col_width,
+                Theme::ROSE_DIM,
+                Theme::ROSE,
+            );
+            Cell::from(Line::from(spans))
+        } else {
+            // Single-value proportional bar
+            let filled = (cost_frac * bar_col_width as f64).round() as usize;
+            let empty = bar_col_width.saturating_sub(filled);
+            let bar_str = format!("{}{}", "\u{2588}".repeat(filled), "\u{2500}".repeat(empty),);
+            Cell::from(Span::styled(bar_str, cost_gradient_style(cost_frac, theme)))
+        };
+
+        // Model name: bold if most expensive.
+        let model_style = if is_most_expensive {
+            Style::default()
+                .fg(theme.foreground)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.foreground)
+        };
+
+        // Cost value: gradient color, bold if most expensive.
+        let mut row_cost_style = cost_gradient_style(cost_frac, theme);
+        if is_most_expensive {
+            row_cost_style = row_cost_style.add_modifier(Modifier::BOLD);
+        }
+
+        all_rows.push(Row::new(vec![
+            Cell::from(Span::styled(model_display, model_style)),
+            Cell::from(Span::styled(
+                provider_display,
+                Style::default().fg(theme.muted),
+            )),
+            Cell::from(Span::styled(format!("{:>5}", entry.tasks), theme.value())),
+            Cell::from(Span::styled(format!("{pass_pct:>5.1}%"), pass_style)),
+            Cell::from(Span::styled(
+                format_duration(entry.avg_duration_ms()),
+                theme.value(),
+            )),
+            Cell::from(Span::styled(
+                format_cost(entry.total_cost_usd),
+                row_cost_style,
+            )),
+            Cell::from(Span::styled(
+                format_cost(entry.cost_per_task()),
+                theme.value(),
+            )),
+            distribution_cell,
+        ]));
+    }
+
+    // Final provider subtotal (if multi-provider).
+    if multi_provider {
+        if let Some(ref prev) = current_provider {
+            if let Some(pt) = provider_totals.get(prev) {
+                all_rows.push(provider_subtotal_row(prev, pt, bar_col_width, theme));
+            }
+        }
+    }
+
+    // Separator line above TOTAL row.
+    let sep_line = "\u{2500}".repeat(6);
+    all_rows.push(
+        Row::new(vec![
+            Cell::from(Span::styled(
+                sep_line.clone(),
+                Style::default().fg(Theme::TEXT_PHANTOM),
+            )),
+            Cell::from(Span::styled("", Style::default())),
+            Cell::from(Span::styled(
+                sep_line.clone(),
+                Style::default().fg(Theme::TEXT_PHANTOM),
+            )),
+            Cell::from(Span::styled(
+                sep_line.clone(),
+                Style::default().fg(Theme::TEXT_PHANTOM),
+            )),
+            Cell::from(Span::styled(
+                sep_line.clone(),
+                Style::default().fg(Theme::TEXT_PHANTOM),
+            )),
+            Cell::from(Span::styled(
+                sep_line.clone(),
+                Style::default().fg(Theme::TEXT_PHANTOM),
+            )),
+            Cell::from(Span::styled(
+                sep_line.clone(),
+                Style::default().fg(Theme::TEXT_PHANTOM),
+            )),
+            Cell::from(Span::styled(
+                sep_line,
+                Style::default().fg(Theme::TEXT_PHANTOM),
+            )),
+        ])
+        .height(1),
+    );
 
     // Add a totals row.
-    let total_tasks: u64 = models.values().map(|e| e.tasks).sum();
-    let total_passed: u64 = models.values().map(|e| e.passed).sum();
-    let total_cost: f64 = models.values().map(|e| e.total_cost_usd).sum();
-    let total_dur: u64 = models.values().map(|e| e.total_duration_ms).sum();
+    let total_tasks: u64 = sorted.iter().map(|(_, e)| e.tasks).sum();
+    let total_passed: u64 = sorted.iter().map(|(_, e)| e.passed).sum();
+    let total_cost: f64 = sorted.iter().map(|(_, e)| e.total_cost_usd).sum();
+    let total_dur: u64 = sorted.iter().map(|(_, e)| e.total_duration_ms).sum();
     let overall_pass_pct = if total_tasks > 0 {
         total_passed as f64 / total_tasks as f64 * 100.0
     } else {
@@ -251,7 +469,6 @@ pub fn render_cost_by_model_table(
         theme.muted()
     };
 
-    let mut all_rows = rows;
     all_rows.push(
         Row::new(vec![
             Cell::from(Span::styled(
@@ -261,31 +478,39 @@ pub fn render_cost_by_model_table(
                     .add_modifier(Modifier::BOLD),
             )),
             Cell::from(Span::styled("", Style::default())),
-            Cell::from(Span::styled(
-                format!("{total_tasks:>5}"),
-                Style::default()
-                    .fg(theme.foreground)
-                    .add_modifier(Modifier::BOLD),
-            )),
+            Cell::from(Span::styled(format!("{total_tasks:>5}"), theme.value())),
             Cell::from(Span::styled(
                 format!("{overall_pass_pct:>5.1}%"),
                 total_pass_style,
             )),
             Cell::from(Span::styled(
                 format_duration(overall_avg_dur),
-                Style::default().fg(theme.foreground),
+                theme.value(),
             )),
             Cell::from(Span::styled(
                 format_cost(total_cost),
-                cost_style(total_cost, theme).add_modifier(Modifier::BOLD),
+                theme.value().fg(theme.accent),
             )),
+            Cell::from(Span::styled(format_cost(overall_cpt), theme.value())),
             Cell::from(Span::styled(
-                format_cost(overall_cpt),
-                Style::default().fg(theme.muted),
+                "\u{2588}".repeat(bar_col_width),
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
             )),
         ])
         .style(Style::default().add_modifier(Modifier::BOLD)),
     );
+
+    // Inactive models footer.
+    if inactive_count > 0 {
+        all_rows.push(Row::new(vec![Cell::from(Span::styled(
+            format!("({inactive_count} inactive models hidden)"),
+            Style::default()
+                .fg(Theme::TEXT_GHOST)
+                .add_modifier(Modifier::DIM),
+        ))]));
+    }
 
     let widths = [
         ratatui::layout::Constraint::Min(16),
@@ -295,6 +520,7 @@ pub fn render_cost_by_model_table(
         ratatui::layout::Constraint::Length(8),
         ratatui::layout::Constraint::Length(9),
         ratatui::layout::Constraint::Length(9),
+        ratatui::layout::Constraint::Length(bar_col_width as u16),
     ];
 
     let table = Table::new(all_rows, widths)
@@ -302,6 +528,78 @@ pub fn render_cost_by_model_table(
         .row_highlight_style(theme.selection());
 
     frame.render_widget(table, inner);
+}
+
+// ---------------------------------------------------------------------------
+// Provider subtotal row
+// ---------------------------------------------------------------------------
+
+fn provider_subtotal_row<'a>(
+    provider: &str,
+    pt: &ProviderSubtotal,
+    bar_col_width: usize,
+    theme: &Theme,
+) -> Row<'a> {
+    let pass_pct = if pt.tasks > 0 {
+        pt.passed as f64 / pt.tasks as f64 * 100.0
+    } else {
+        0.0
+    };
+    let avg_dur = if pt.tasks > 0 {
+        pt.total_duration_ms as f64 / pt.tasks as f64
+    } else {
+        0.0
+    };
+    let cpt = if pt.tasks > 0 {
+        pt.total_cost_usd / pt.tasks as f64
+    } else {
+        0.0
+    };
+    let pass_style = if pass_pct > 80.0 {
+        theme.success()
+    } else if pass_pct >= 50.0 {
+        theme.warning()
+    } else if pt.tasks > 0 {
+        theme.danger()
+    } else {
+        theme.muted()
+    };
+
+    let label = format!("\u{2514} {}", truncate_model(provider, 20));
+
+    Row::new(vec![
+        Cell::from(Span::styled(
+            label,
+            Style::default()
+                .fg(Theme::BONE_DIM)
+                .add_modifier(Modifier::DIM),
+        )),
+        Cell::from(Span::styled("", Style::default())),
+        Cell::from(Span::styled(
+            format!("{:>5}", pt.tasks),
+            Style::default().fg(Theme::BONE_DIM),
+        )),
+        Cell::from(Span::styled(
+            format!("{pass_pct:>5.1}%"),
+            pass_style.add_modifier(Modifier::DIM),
+        )),
+        Cell::from(Span::styled(
+            format_duration(avg_dur),
+            Style::default().fg(Theme::BONE_DIM),
+        )),
+        Cell::from(Span::styled(
+            format_cost(pt.total_cost_usd),
+            Style::default().fg(Theme::BONE_DIM),
+        )),
+        Cell::from(Span::styled(
+            format_cost(cpt),
+            Style::default().fg(Theme::TEXT_GHOST),
+        )),
+        Cell::from(Span::styled(
+            "\u{2500}".repeat(bar_col_width),
+            Style::default().fg(Theme::TEXT_GHOST),
+        )),
+    ])
 }
 
 // ---------------------------------------------------------------------------
@@ -342,14 +640,12 @@ fn format_cost(usd: f64) -> String {
     }
 }
 
-fn cost_style(usd: f64, theme: &Theme) -> Style {
-    if usd >= 5.0 {
-        theme.danger()
-    } else if usd >= 1.0 {
-        theme.warning()
-    } else {
-        Style::default().fg(theme.foreground)
-    }
+/// Gradient cost style: green (low fraction) -> red (high fraction).
+/// `frac` is the cost fraction relative to the max cost (0.0..1.0).
+fn cost_gradient_style(frac: f64, _theme: &Theme) -> Style {
+    // Interpolate SAGE (green) -> WARNING (amber) -> EMBER (red).
+    let color = Theme::progress_gradient(1.0 - frac);
+    Style::default().fg(color)
 }
 
 // ---------------------------------------------------------------------------
@@ -411,6 +707,36 @@ mod tests {
     }
 
     #[test]
+    fn cost_by_model_sorted_by_cost() {
+        let backend = TestBackend::new(100, 15);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = Theme::dark();
+        let mut state = TuiState::new();
+        state.cost_sort_mode = CostSortMode::Cost;
+
+        let mut event = roko_learn::efficiency::AgentEfficiencyEvent::default_event();
+        event.model = "cheap-model".into();
+        event.backend = "provider-a".into();
+        event.cost_usd = 0.01;
+        event.is_final_turn = true;
+        state.efficiency_events.push(event);
+
+        let mut event2 = roko_learn::efficiency::AgentEfficiencyEvent::default_event();
+        event2.model = "expensive-model".into();
+        event2.backend = "provider-b".into();
+        event2.cost_usd = 1.50;
+        event2.is_final_turn = true;
+        state.efficiency_events.push(event2);
+
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_cost_by_model_table(frame, area, &state, &theme);
+            })
+            .unwrap();
+    }
+
+    #[test]
     fn truncate_model_works() {
         assert_eq!(truncate_model("short", 10), "short");
         assert_eq!(truncate_model("a-very-long-model-name-here", 14).len(), 14);
@@ -423,5 +749,15 @@ mod tests {
         assert!(format_duration(120_000.0).contains("m"));
         assert!(format_cost(0.0).contains('-'));
         assert!(format_cost(0.05).contains('$'));
+    }
+
+    #[test]
+    fn sort_mode_cycles() {
+        let mode = CostSortMode::default();
+        assert_eq!(mode, CostSortMode::Name);
+        assert_eq!(mode.next(), CostSortMode::Cost);
+        assert_eq!(mode.next().next(), CostSortMode::Tasks);
+        assert_eq!(mode.next().next().next(), CostSortMode::PassRate);
+        assert_eq!(mode.next().next().next().next(), CostSortMode::Name);
     }
 }

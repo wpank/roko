@@ -11,6 +11,8 @@ members = [
     "crates/roko-std",
     # Concrete Gate impls (ShellGate, CompileGate, ...)
     "crates/roko-gate",
+    # Unified evaluation framework: EvidenceCollector, Criterion, Profile traits.
+    "crates/roko-eval",
     # Filesystem-backed Substrate (.roko/signals.jsonl)
     "crates/roko-fs",
     # Composer impls (PromptComposer, SectionScorer)
@@ -82,6 +84,11 @@ members = [
 
     # Graph execution engine — DAG-based cell orchestration with fan-out/fan-in.
     "crates/roko-graph",
+
+    # Profile-driven runtime service builder — shared layer-3 facade that
+    # gives every execution surface (CLI, serve, ACP) explicit safety,
+    # budget, routing, and feedback guarantees.
+    "crates/roko-execution",
 ]
 default-members = [
     # Ordinary root builds target the main CLI plus the MCP servers we ship.
@@ -121,6 +128,7 @@ tokio-util = { version = "0.7", features = ["rt"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
+toml_edit = "0.22"
 indexmap = { version = "2", features = ["serde"] }
 notify = "6"
 
@@ -280,3 +288,16 @@ split-debuginfo = "unpacked"
 
 [profile.dev.package."*"]
 opt-level = 2
+
+# Opt-in profile for latency-sensitive local checks. It deliberately favors
+# compiler throughput and small artifacts over debugger fidelity; release and
+# ordinary `dev` behavior remain unchanged until benchmark evidence justifies
+# making this the default.
+[profile.dev-fast]
+inherits = "dev"
+debug = 0
+opt-level = 0
+split-debuginfo = "off"
+
+[profile.dev-fast.package."*"]
+opt-level = 0

@@ -681,6 +681,11 @@ pub struct TaskContext {
     /// Context from prior failed attempts.
     #[serde(default)]
     pub prior_failures: Vec<String>,
+    /// Reviewed reason for intentionally staging/limiting a detected
+    /// cross-crate impact. This acknowledges a diagnostic; it never disables
+    /// runtime impact analysis or expands the writable scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub impact_acknowledgement: Option<String>,
 }
 
 /// A file to read as context, with optional line range.
@@ -2018,6 +2023,7 @@ depends_on = []
                     symbols: vec![],
                     anti_patterns: vec![],
                     prior_failures: vec![],
+                    impact_acknowledgement: None,
                 }),
                 verify: vec![VerifyStep {
                     phase: "compile".into(),

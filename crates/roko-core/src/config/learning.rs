@@ -53,7 +53,7 @@ pub struct LearningConfig {
     /// Inject file difficulty profiles into agent context.
     #[serde(default = "default_true")]
     pub knowledge_file_intel: bool,
-    /// Inject grimoire warnings into agent context.
+    /// Inject knowledge store warnings into agent context.
     #[serde(default = "default_true")]
     pub knowledge_warnings: bool,
     /// Enable cross-task wave context propagation.
@@ -102,12 +102,13 @@ pub struct LearningConfig {
     /// Defaults to 0.7.
     #[serde(default = "default_lookahead_threshold")]
     pub lookahead_threshold: f64,
-    /// Dampening factor for force_backend override learning (UX34).
+    /// Dampening factor for manual model override learning (UX34).
     ///
-    /// When a user manually overrides the model via `force_backend`, the
-    /// outcome reward is multiplied by this factor before being fed into
-    /// the cascade router's multi-objective bandit. This prevents a single
-    /// override from dominating the learned policy. Range: 0.0--1.0.
+    /// When a user manually overrides the model via `--model` /
+    /// `--force-model` / `--force-backend`, the outcome reward is
+    /// multiplied by this factor before being fed into the cascade
+    /// router's multi-objective bandit. This prevents a single override
+    /// from dominating the learned policy. Range: 0.0--1.0.
     /// Defaults to 0.5 when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub override_learning_dampening: Option<f64>,

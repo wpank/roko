@@ -44,6 +44,9 @@ pub struct ModelCallFeedback {
     pub success: bool,
     /// Provider transport outcome. When omitted, uses [`Self::success`].
     pub provider_success: Option<bool>,
+    /// Classified error kind (e.g. `"rate_limit"`, `"timeout"`).
+    /// `None` on success.
+    pub error_class: Option<String>,
 }
 
 impl ModelCallFeedback {
@@ -142,6 +145,7 @@ impl ModelCallFeedbackRecorder {
                 cost_usd: feedback.cost_usd,
                 latency_ms: feedback.latency_ms,
                 success: feedback.success,
+                error_class: feedback.error_class.clone(),
             })
             .await?;
         feedback_service.flush_async().await?;
@@ -266,6 +270,7 @@ mod tests {
                 latency_ms: 789,
                 success: true,
                 provider_success: None,
+                error_class: None,
             })
             .await
             .expect("record feedback");

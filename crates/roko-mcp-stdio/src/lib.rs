@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::{BufRead, Write};
 
+/// MCP protocol version used by all Roko MCP servers and clients.
+pub const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
+
 /// A JSON-RPC 2.0 request.
 #[derive(Debug, Clone, Deserialize)]
 pub struct JsonRpcRequest {

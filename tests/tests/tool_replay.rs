@@ -54,8 +54,9 @@ fn replay_from_entries(entries: &[ReplayEntry], dispatcher: &MockToolDispatcher)
         let result = dispatcher.dispatch(call);
         match result {
             ToolResult::Ok { content, .. } => {
+                let text: String = content.iter().filter_map(|c| c.as_text()).collect();
                 assert_eq!(
-                    content, entry.expected_output,
+                    text, entry.expected_output,
                     "replay entry {i} (`{}`): output mismatch",
                     entry.tool_name
                 );

@@ -253,14 +253,14 @@ mod tests {
             agents_md: "# AGENTS.md\nConventions here.".into(),
             plan: PlanSlice {
                 num: "042".into(),
-                base: "golem-mortality".into(),
-                title: "Mortality model".into(),
-                content: "## Plan\nImplement mortality.".into(),
+                base: "agent-lifecycle".into(),
+                title: "Agent lifecycle model".into(),
+                content: "## Plan\nImplement agent lifecycle.".into(),
             },
-            filtered_workspace_map: "crates/golem-core/src/lib.rs".into(),
-            prd2_extract: "## PRD2\nMortality formula.".into(),
+            filtered_workspace_map: "crates/roko-core/src/lib.rs".into(),
+            prd2_extract: "## PRD2\nLifecycle formula.".into(),
             brief: "Brief content.".into(),
-            files_changed: vec!["crates/golem-core/src/mortality.rs".into()],
+            files_changed: vec!["crates/roko-core/src/lifecycle.rs".into()],
             prior_findings: Some("Fix error handling in compute_rate.".into()),
         }
     }

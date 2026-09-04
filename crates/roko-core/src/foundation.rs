@@ -228,6 +228,25 @@ pub enum ObjectType {
     Config,
 }
 
+// -- KnowledgeQuery --
+
+/// Object-safe, read-only knowledge query contract.
+///
+/// This narrow trait allows crates that do not depend on `roko-neuro` (which
+/// defines the full `NeuroStore: Sized` trait) to query knowledge entries
+/// through a trait object. Entries are returned as `serde_json::Value` so the
+/// contract stays independent of `roko-neuro` types.
+///
+/// Implementors: `roko-neuro::NeuroStore` backends via the blanket impl in
+/// `roko-compose` or a closure adapter in `roko-agent`.
+pub trait KnowledgeQuery: Send + Sync {
+    /// Query a topic for relevant knowledge entries.
+    ///
+    /// Returns up to `limit` entries serialized as JSON values. Implementations
+    /// should return `Ok(vec![])` when no entries match rather than erroring.
+    fn query_knowledge(&self, topic: &str, limit: usize) -> Result<Vec<serde_json::Value>>;
+}
+
 // -- ModelCaller --
 
 /// Request to call an LLM model.
@@ -286,6 +305,41 @@ pub struct ModelCallRequest {
     /// Empty means no tools are sent.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolDef>,
+    /// Per-request generation settings that override service defaults.
+    ///
+    /// When `Some`, these settings are threaded through to the provider
+    /// adapter, overriding model-profile defaults for max tokens,
+    /// temperature, top-p, and stop sequences.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation_settings: Option<GenerationSettings>,
+    /// Per-request MCP configuration path.
+    ///
+    /// When `Some`, overrides the service-level `mcp_config` for this
+    /// single request, allowing callers to specify alternative tool
+    /// sources per call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_config: Option<PathBuf>,
+}
+
+/// Per-request generation settings that override service/model-profile
+/// defaults.
+///
+/// All fields are optional: `None` means "use the service default".
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct GenerationSettings {
+    /// Maximum tokens to generate (overrides `ModelCallRequest::max_tokens`
+    /// and `ModelProfile::max_output` when set).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    /// Sampling temperature (0.0-2.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    /// Nucleus sampling threshold (0.0-1.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f32>,
+    /// Stop sequences that terminate generation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stop_sequences: Vec<String>,
 }
 
 /// Caller-surface constants for `ModelCallRequest::caller`.
@@ -342,8 +396,22 @@ pub enum GatewayError {
 
 impl From<GatewayError> for RokoError {
     fn from(error: GatewayError) -> Self {
-        // TODO(converge): Map to RokoError::Other once that variant exists in roko-core.
-        RokoError::invalid(error.to_string())
+        match &error {
+            GatewayError::ProviderError(_) => {
+                RokoError::gateway("provider", true, error.to_string())
+            }
+            GatewayError::BudgetExceeded { .. } => {
+                RokoError::gateway("budget", false, error.to_string())
+            }
+            GatewayError::RateLimited { .. } => {
+                RokoError::gateway("rate_limit", true, error.to_string())
+            }
+            GatewayError::CacheError(_) => RokoError::gateway("cache", true, error.to_string()),
+            GatewayError::Cancelled => RokoError::gateway("cancelled", false, error.to_string()),
+            GatewayError::ConvergenceDetected { .. } => {
+                RokoError::gateway("convergence", false, error.to_string())
+            }
+        }
     }
 }
 
@@ -525,6 +593,10 @@ pub enum FeedbackEvent {
         cost_usd: f64,
         latency_ms: u64,
         success: bool,
+        /// Classified error kind (e.g. `"rate_limit"`, `"timeout"`,
+        /// `"auth_failure"`). `None` on success.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error_class: Option<String>,
     },
     /// Feedback from a gate execution.
     GateResult {
@@ -664,6 +736,32 @@ pub trait GateRunner: Send + Sync {
 pub trait EventConsumer: Send + Sync {
     /// Called for each event emitted by the workflow engine.
     fn consume(&self, event: &RuntimeEvent);
+
+    /// Consume an event and return its exact durable per-run byte cursor when
+    /// the consumer owns that persistence boundary.
+    ///
+    /// Non-durable consumers keep the default behavior. Workflow publishers
+    /// carry the first returned cursor on the live bus envelope so reconnecting
+    /// clients can suppress replay/live overlap without persisting twice.
+    fn consume_with_cursor(&self, event: &RuntimeEvent) -> Option<u64> {
+        self.consume(event);
+        None
+    }
+}
+
+static EVENT_PERSIST_PUBLISH_ORDER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Serialize the durable append and matching live publication across all
+/// in-process RuntimeEvent producers.
+///
+/// The durable per-run cursor is monotonic only when publication observes the
+/// same order. Keeping this boundary dependency-neutral lets model, workflow,
+/// effect, and HTTP-ingest producers share one ordering primitive.
+pub fn with_event_persist_publish_order<T>(operation: impl FnOnce() -> T) -> T {
+    let _order = EVENT_PERSIST_PUBLISH_ORDER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    operation()
 }
 
 // -- EffectExecutor --
@@ -834,6 +932,39 @@ impl AffectPolicy for NoOpAffectPolicy {
 mod tests {
     use super::*;
     use futures_util::StreamExt;
+
+    #[test]
+    fn persist_publish_boundary_prevents_cursor_overtaking() {
+        let steps = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (a_entered_tx, a_entered_rx) = std::sync::mpsc::channel();
+        let (b_attempted_tx, b_attempted_rx) = std::sync::mpsc::channel();
+        let a_steps = std::sync::Arc::clone(&steps);
+        let a = std::thread::spawn(move || {
+            with_event_persist_publish_order(|| {
+                a_steps.lock().unwrap().push("a:persist");
+                a_entered_tx.send(()).unwrap();
+                b_attempted_rx.recv().unwrap();
+                a_steps.lock().unwrap().push("a:publish");
+            });
+        });
+
+        a_entered_rx.recv().unwrap();
+        let b_steps = std::sync::Arc::clone(&steps);
+        let b = std::thread::spawn(move || {
+            b_attempted_tx.send(()).unwrap();
+            with_event_persist_publish_order(|| {
+                b_steps.lock().unwrap().push("b:persist");
+                b_steps.lock().unwrap().push("b:publish");
+            });
+        });
+
+        a.join().unwrap();
+        b.join().unwrap();
+        assert_eq!(
+            *steps.lock().unwrap(),
+            ["a:persist", "a:publish", "b:persist", "b:publish"]
+        );
+    }
 
     fn tiny_png() -> ModelInputImage {
         ModelInputImage::new("image/png", "iVBORw0KGgo=")

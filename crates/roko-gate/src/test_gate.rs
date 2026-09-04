@@ -163,6 +163,11 @@ impl Verify for TestGate {
         for arg in self.build_system.scoped_test_args(&payload.target_crates) {
             cmd.arg(arg);
         }
+        if self.build_system == BuildSystem::Cargo
+            && let Some(profile) = payload.cargo_profile.as_deref()
+        {
+            cmd.args(["--profile", profile]);
+        }
         for arg in self.selector.extra_args(self.build_system) {
             cmd.arg(arg);
         }

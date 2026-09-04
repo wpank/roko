@@ -1271,6 +1271,28 @@ pub fn format_dashboard_event(
             let icon = if *success { "+" } else { "x" };
             (format!("[{plan_id}]"), icon, format!("Plan {outcome}"))
         }
+        DashboardEvent::RunCompleted {
+            outcome,
+            duration_ms,
+            cleanup_degraded,
+            ..
+        } => {
+            let icon = if outcome == "succeeded" || outcome == "completed" {
+                "+"
+            } else {
+                "x"
+            };
+            let cleanup = if *cleanup_degraded {
+                "; cleanup degraded"
+            } else {
+                ""
+            };
+            (
+                "[run]".to_string(),
+                icon,
+                format!("Run {outcome} in {duration_ms}ms{cleanup}"),
+            )
+        }
         DashboardEvent::TaskStarted {
             plan_id,
             task_id,
@@ -1455,7 +1477,9 @@ pub fn format_dashboard_event(
         | DashboardEvent::GateRungStarted { .. }
         | DashboardEvent::GateOutputLine { .. }
         | DashboardEvent::AffectUpdated { .. }
-        | DashboardEvent::AgentTopologyUpdated { .. } => return None,
+        | DashboardEvent::AgentTopologyUpdated { .. }
+        | DashboardEvent::CriticalPathEtaUpdated { .. }
+        | DashboardEvent::CostAnomaly { .. } => return None,
     };
 
     let line = if pfx.is_empty() {

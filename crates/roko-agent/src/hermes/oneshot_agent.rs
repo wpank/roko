@@ -55,6 +55,8 @@ pub struct HermesOneShotConfig {
     pub timeout: Duration,
     /// Optional OS-enforced limits for the one-shot subprocess.
     pub resource_limits: Option<ResourceLimits>,
+    /// Optional system prompt prepended to every prompt.
+    pub system_prompt: Option<String>,
 }
 
 impl Default for HermesOneShotConfig {
@@ -71,6 +73,7 @@ impl Default for HermesOneShotConfig {
             model_override: None,
             timeout: Duration::from_secs(120),
             resource_limits: None,
+            system_prompt: None,
         }
     }
 }
@@ -168,6 +171,8 @@ pub struct HermesOneShotAgent {
     config: HermesOneShotConfig,
     capabilities: HarnessCapabilities,
     name: String,
+    /// Safety layer for output scrubbing (secret leak prevention).
+    safety: crate::safety::SafetyLayer,
 }
 
 impl HermesOneShotAgent {
@@ -189,6 +194,7 @@ impl HermesOneShotAgent {
             config,
             capabilities,
             name: "hermes-oneshot".to_string(),
+            safety: crate::safety::SafetyLayer::with_defaults(),
         }
     }
 
@@ -261,7 +267,7 @@ impl Agent for HermesOneShotAgent {
     async fn run(&self, input: &Signal, _ctx: &Context) -> AgentResult {
         let started = Instant::now();
 
-        let prompt = match input.body.as_text() {
+        let raw_prompt = match input.body.as_text() {
             Ok(s) => s.to_string(),
             Err(e) => {
                 let output = input
@@ -275,6 +281,12 @@ impl Agent for HermesOneShotAgent {
                     .build();
                 return AgentResult::fail(output);
             }
+        };
+        let prompt = match &self.config.system_prompt {
+            Some(sp) => {
+                format!("[SYSTEM INSTRUCTIONS]\n{sp}\n[END SYSTEM INSTRUCTIONS]\n\n{raw_prompt}")
+            }
+            None => raw_prompt,
         };
 
         let argv = self.build_argv(&prompt);
@@ -306,7 +318,13 @@ impl Agent for HermesOneShotAgent {
         };
 
         let wall_ms = started.elapsed().as_millis() as u64;
-        harness_events_to_agent_result(&events, input, &self.name, wall_ms)
+        let mut result = harness_events_to_agent_result(&events, input, &self.name, wall_ms);
+        // Scrub secrets from the output before returning.
+        if let Ok(text) = result.output.body.as_text() {
+            let scrubbed = self.safety.scrub_text(text);
+            result.output.body = roko_core::Body::text(scrubbed);
+        }
+        result
     }
 
     fn name(&self) -> &str {

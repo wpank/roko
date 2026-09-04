@@ -24,6 +24,8 @@ use roko_learn::provider_health::{HealthState, ProviderStatus};
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/c-factor/trend", get(router_state::cfactor_trend))
+        .route("/learn/model-scorecard", get(model_scorecard))
+        .route("/learning/model-scorecard", get(model_scorecard))
         .route("/learning/efficiency", get(efficiency))
         .route("/learn/efficiency", get(efficiency))
         .route("/learning/costs", get(costs))
@@ -152,6 +154,110 @@ async fn executor_state(State(state): State<Arc<AppState>>) -> Result<Json<Value
     Ok(Json(
         projections.project("executor_state", &ProjectionQuery::default())?,
     ))
+}
+
+/// `GET /api/learn/model-scorecard` — join cascade stats + latency + efficiency by model slug.
+async fn model_scorecard(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<ModelScorecardResponse>, ApiError> {
+    let projections = RuntimeProjectionSet::load(&state).await?;
+    let efficiency_events = projections.efficiency_events();
+
+    // Aggregate efficiency events by model slug.
+    let mut efficiency_by_model: HashMap<String, ModelEfficiencyAgg> = HashMap::new();
+    for event in efficiency_events {
+        let slug = if event.model_used.is_empty() {
+            &event.model
+        } else {
+            &event.model_used
+        };
+        let agg = efficiency_by_model.entry(slug.clone()).or_default();
+        agg.total_cost_usd += event.cost_usd;
+        agg.total_tokens += event.total_tokens();
+        agg.total_duration_ms += event.wall_time_ms.max(event.duration_ms);
+        agg.task_count += 1;
+        if event.gate_passed == Some(true) {
+            agg.successes += 1;
+        }
+    }
+
+    // Collect latency stats by model slug.
+    let latency_stats = state.latency_registry.all_stats();
+    let mut latency_by_model: HashMap<String, &roko_learn::latency::LatencyStats> = HashMap::new();
+    for stats in &latency_stats {
+        latency_by_model
+            .entry(stats.model_slug.clone())
+            .or_insert(stats);
+    }
+
+    // Collect cascade observation stats.
+    let cascade_stats = state
+        .cascade_router
+        .read()
+        .await
+        .as_ref()
+        .map(|router| router.observation_snapshot())
+        .unwrap_or_default();
+
+    // Union all model slugs.
+    let mut all_slugs: Vec<String> = efficiency_by_model
+        .keys()
+        .chain(latency_by_model.keys())
+        .chain(cascade_stats.keys())
+        .cloned()
+        .collect();
+    all_slugs.sort();
+    all_slugs.dedup();
+
+    let models: Vec<ModelScorecardRow> = all_slugs
+        .into_iter()
+        .map(|slug| {
+            let eff = efficiency_by_model.get(&slug);
+            let lat = latency_by_model.get(&slug);
+            let cascade = cascade_stats.get(&slug);
+
+            ModelScorecardRow {
+                model_slug: slug,
+                task_count: eff.map_or(0, |e| e.task_count),
+                success_rate: eff.map(|e| {
+                    if e.task_count == 0 {
+                        0.0
+                    } else {
+                        e.successes as f64 / e.task_count as f64
+                    }
+                }),
+                total_cost_usd: eff.map_or(0.0, |e| e.total_cost_usd),
+                avg_cost_usd: eff.map(|e| {
+                    if e.task_count == 0 {
+                        0.0
+                    } else {
+                        e.total_cost_usd / e.task_count as f64
+                    }
+                }),
+                total_tokens: eff.map_or(0, |e| e.total_tokens),
+                avg_latency_ms: lat.and_then(|l| l.mean_latency_ms()),
+                p50_ms: lat.map(|l| l.p50_ms()),
+                p95_ms: lat.map(|l| l.p95_ms()),
+                p99_ms: lat.map(|l| l.p99_ms()),
+                ttft_ema_ms: lat.map(|l| l.ttft_ema_ms),
+                tokens_per_second_ema: lat.map(|l| l.tokens_per_second_ema),
+                cascade_trials: cascade.map(|c| c.trials),
+                cascade_successes: cascade.map(|c| c.successes),
+                cascade_avg_cost_usd: cascade.and_then(|c| {
+                    if c.trials == 0 {
+                        None
+                    } else {
+                        Some(c.avg_cost_usd)
+                    }
+                }),
+            }
+        })
+        .collect();
+
+    Ok(Json(ModelScorecardResponse {
+        model_count: models.len(),
+        models,
+    }))
 }
 
 // ── helpers ──────────────────────────────────────────────────────────
@@ -472,6 +578,56 @@ struct RungThresholdSummary {
     consecutive_passes: u32,
     suggested_max_retries: u32,
     should_skip_rung: bool,
+}
+
+/// Structured API response for `GET /api/learn/model-scorecard`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+struct ModelScorecardResponse {
+    model_count: usize,
+    models: Vec<ModelScorecardRow>,
+}
+
+/// One row per model in the scorecard response.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+struct ModelScorecardRow {
+    model_slug: String,
+    task_count: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    success_rate: Option<f64>,
+    total_cost_usd: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    avg_cost_usd: Option<f64>,
+    total_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    avg_latency_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    p50_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    p95_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    p99_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ttft_ema_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tokens_per_second_ema: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cascade_trials: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cascade_successes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cascade_avg_cost_usd: Option<f64>,
+}
+
+/// Internal aggregate for efficiency events grouped by model.
+#[derive(Debug, Clone, Default)]
+struct ModelEfficiencyAgg {
+    total_cost_usd: f64,
+    total_tokens: u64,
+    total_duration_ms: u64,
+    task_count: u64,
+    successes: u64,
 }
 
 #[cfg(test)]

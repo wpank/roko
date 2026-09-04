@@ -1,8 +1,8 @@
 //! `IntegrationGate` — Rung 5 of the 6-rung verification ladder (§10.11).
 //!
 //! Runs the highest-fidelity check: an end-to-end scenario that
-//! exercises the real runtime. For golem-shaped projects this is a
-//! golem lifecycle (spawn golem, fire heartbeat, call subsystem,
+//! exercises the real runtime. For agent-shaped projects this is an
+//! agent lifecycle (spawn agent, fire heartbeat, call subsystem,
 //! observe outcome); for everything else it is a shell script or a
 //! caller-supplied closure. Because the scenario is expensive
 //! (~120 s) this rung runs last and only when Rungs 0-4 are green.
@@ -22,7 +22,7 @@
 //!   disk via `bash`; exit code 0 is the source of truth.
 //! - [`IntegrationScenario::Custom`] — run a caller-supplied
 //!   [`IntegrationScenarioFn`] that spawns whatever long-lived
-//!   dependencies it needs (Anvil, golem, mirage, ...) and returns
+//!   dependencies it needs (Anvil, agent, mirage, ...) and returns
 //!   its own [`Verdict`].
 //!
 //! # Invariants
@@ -43,6 +43,7 @@
 
 use crate::payload::{BuildSystem, GatePayload};
 use async_trait::async_trait;
+use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
 use roko_core::{Context, Signal, TestCount, Verdict, Verify};
 use std::future::Future;
 use std::path::PathBuf;
@@ -66,7 +67,7 @@ const MAX_DETAIL_BYTES: usize = 32 * 1024;
 const DEFAULT_WARMUP_MS: u64 = 2_000;
 
 /// Default scenario timeout, in milliseconds (120 s).
-const DEFAULT_TIMEOUT_MS: u64 = 120_000;
+const DEFAULT_TIMEOUT_MS: u64 = DEFAULT_REQUEST_TIMEOUT_MS;
 
 // ─── IntegrationScenario / IntegrationScenarioFn ───────────────────────
 
@@ -325,6 +326,13 @@ async fn run_build_test(
         .unwrap_or(&[]);
     for arg in build.scoped_test_args(target_crates) {
         cmd.arg(arg);
+    }
+    if build == BuildSystem::Cargo
+        && let Some(profile) = payload
+            .as_ref()
+            .and_then(|payload| payload.cargo_profile.as_deref())
+    {
+        cmd.args(["--profile", profile]);
     }
     // Append `-- <pattern>` (or build-system equivalent).
     match build {

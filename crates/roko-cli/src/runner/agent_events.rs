@@ -19,6 +19,14 @@ use super::types::{AgentEvent, StderrSeverity};
 /// trimmed to keep the tail (most recent output), which is what replan
 /// context and diagnostics need.
 const MAX_AGENT_OUTPUT: usize = 32_768;
+/// Tool transcripts projected into the live dashboard are bounded separately
+/// from the runner's durable evidence so a single compiler dump cannot flood
+/// the watch snapshot or make rendering unresponsive.
+const MAX_TUI_TOOL_OUTPUT: usize = 8_192;
+/// Internal framing used when a provider exposes reasoning but the legacy
+/// runtime event enum only has `MessageDelta`. It is removed before normal
+/// transcript/state accumulation and emitted as a semantic StateHub record.
+pub(crate) const REASONING_DELTA_PREFIX: &str = "\u{001f}roko.reasoning.v1 ";
 
 /// Process a single agent event, updating state and publishing to TUI.
 ///
@@ -50,19 +58,33 @@ pub(crate) fn handle_agent_event(
 
         AgentEvent::SystemInit { session_id, model } => {
             state.agent_active = true;
-            state.agent_model = model.clone();
+            // Defensive: some providers (e.g. codex) emit init events that
+            // carry no model. Never let an empty model overwrite the slug
+            // recorded by `AgentEvent::Started` — an empty model gets
+            // episodes dropped downstream and blanks the TUI.
+            if !model.is_empty() {
+                state.agent_model = model.clone();
+            }
             state.session_id = Some(session_id.clone());
             debug!(model = %model, session_id = %session_id, "agent initialized");
         }
 
         AgentEvent::MessageDelta { text } => {
+            if let Some(reasoning) = text.strip_prefix(REASONING_DELTA_PREFIX) {
+                let agent_id = agent_id_for_state(state);
+                let attempt = state.iteration_for(plan_id, task_id);
+                tui.agent_reasoning_delta(&agent_id, plan_id, task_id, attempt, reasoning);
+                sink.agent_text_delta(plan_id, task_id, reasoning);
+                return;
+            }
             state.agent_output.push_str(text);
             if state.agent_output.len() > MAX_AGENT_OUTPUT {
                 let trim_point = state.agent_output.len() - MAX_AGENT_OUTPUT / 2;
                 let boundary = state.agent_output.ceil_char_boundary(trim_point);
+                let omitted_lines = state.agent_output[..boundary].lines().count();
                 state.agent_output = format!(
-                    "[...truncated {}B...]\n{}",
-                    boundary,
+                    "[output truncated: {} lines omitted]\n{}",
+                    omitted_lines,
                     &state.agent_output[boundary..],
                 );
                 debug!(
@@ -72,7 +94,7 @@ pub(crate) fn handle_agent_event(
             }
             let agent_id = agent_id_for_state(state);
             let attempt = state.iteration_for(plan_id, task_id);
-            tui.agent_output(&agent_id, plan_id, task_id, attempt, text);
+            tui.agent_text_delta(&agent_id, plan_id, task_id, attempt, text);
 
             sink.agent_text_delta(plan_id, task_id, text);
         }
@@ -81,19 +103,38 @@ pub(crate) fn handle_agent_event(
             let marker = format!("\n[tool: {name}]\n");
             state.agent_output.push_str(&marker);
 
+            let agent_id = agent_id_for_state(state);
+            let attempt = state.iteration_for(plan_id, task_id);
+            tui.tool_call(&agent_id, plan_id, task_id, attempt, id, name);
             sink.tool_call(plan_id, task_id, id, name);
         }
 
         AgentEvent::ToolOutput { id, output } => {
             // Truncate tool output in the accumulated buffer.
             let limit = roko_core::defaults::DEFAULT_TOOL_OUTPUT_TRUNCATE_AT;
-            let truncated = if output.len() > limit {
-                &output[..limit]
-            } else {
-                output.as_str()
-            };
+            let (truncated, state_was_truncated) = bounded_utf8(output, limit);
             state.agent_output.push_str(truncated);
+            if state_was_truncated {
+                let omitted_lines = output[truncated.len()..].lines().count();
+                state.agent_output.push_str(&format!(
+                    "\n[output truncated: {omitted_lines} lines omitted]\n"
+                ));
+            }
             state.agent_output.push('\n');
+
+            let (visible, visible_was_truncated) = bounded_utf8(output, MAX_TUI_TOOL_OUTPUT);
+            let mut dashboard_output = visible.to_string();
+            if visible_was_truncated {
+                let omitted_lines = output[visible.len()..].lines().count();
+                dashboard_output.push_str(&format!(
+                    "\n[output truncated: {omitted_lines} lines omitted]\n"
+                ));
+            } else if !dashboard_output.ends_with('\n') {
+                dashboard_output.push('\n');
+            }
+            let agent_id = agent_id_for_state(state);
+            let attempt = state.iteration_for(plan_id, task_id);
+            tui.tool_output(&agent_id, plan_id, task_id, attempt, id, &dashboard_output);
 
             sink.tool_output(plan_id, task_id, id, output);
         }
@@ -103,11 +144,13 @@ pub(crate) fn handle_agent_event(
             output_tokens,
             cache_read_tokens,
             cache_write_tokens,
+            reasoning_tokens,
         } => {
             state.tokens_in += input_tokens;
             state.tokens_out += output_tokens;
             state.cache_read_tokens += cache_read_tokens;
             state.cache_write_tokens += cache_write_tokens;
+            state.reasoning_tokens += reasoning_tokens;
             // Token counts are accumulated here; authoritative cost comes from
             // TurnCompleted.total_cost_usd which overwrites state.cost_usd.
 
@@ -203,6 +246,17 @@ pub(crate) fn handle_agent_event(
             debug!(exit_code = ?exit_code, task = %state.current_task, "agent process exited");
         }
     }
+}
+
+fn bounded_utf8(input: &str, max_bytes: usize) -> (&str, bool) {
+    if input.len() <= max_bytes {
+        return (input, false);
+    }
+    let mut boundary = max_bytes.min(input.len());
+    while boundary > 0 && !input.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    (&input[..boundary], true)
 }
 
 /// Derive an agent identifier from the current state.
@@ -378,6 +432,7 @@ fn quick_fixable_by_text(finding: &str) -> bool {
 /// This typed variant is used in tests and by code that has access to a
 /// full [`ReviewVerdict`] (not just the string evidence in
 /// [`ParsedReviewVerdict`]).
+#[allow(dead_code)]
 pub(crate) fn issue_category_is_quick_fixable(cat: &IssueCategory) -> bool {
     matches!(
         cat,
@@ -418,6 +473,15 @@ mod tests {
         let (hub, tui) = noop_bridge();
         let mut state = make_state("plan-alpha", "T42");
         let sink = NoopSink;
+        tui.agent_spawned(
+            "plan-alpha/T42",
+            "plan-alpha",
+            "T42",
+            1,
+            "implementer",
+            "test-model",
+            "test-provider",
+        );
 
         handle_agent_event(
             &AgentEvent::MessageDelta {
@@ -429,16 +493,100 @@ mod tests {
         );
 
         let snap = hub.snapshot().borrow().clone();
-        // The agent output is stored in the snapshot keyed by agent_id derived
-        // from plan_id + "/" + task_id.
+        // The agent output is stored in the snapshot under the structured
+        // current task supplied by AgentSpawned.
         let agent_key = "plan-alpha/T42";
+        assert!(snap.agents.contains_key(agent_key));
+        // Stream records carry a semantic prefix; verify the payload
+        // round-trips through the StateHub snapshot.
+        let last_line = snap
+            .task_outputs
+            .get("T42")
+            .and_then(|lines| lines.back())
+            .expect("task_outputs should contain T42");
         assert!(
-            snap.agents.contains_key(agent_key) || state.agent_output.contains("hello world"),
-            "output must be attributed to plan-alpha/T42 or buffered in state"
+            last_line.starts_with(crate::runner::tui_bridge::STREAM_RECORD_PREFIX),
+            "task output must be a stream record"
         );
+        let json_str = last_line
+            .strip_prefix(crate::runner::tui_bridge::STREAM_RECORD_PREFIX)
+            .unwrap();
+        let record: serde_json::Value = serde_json::from_str(json_str).unwrap();
+        assert_eq!(record["kind"], "text");
+        assert_eq!(record["payload"]["text"], "hello world");
         assert!(
             state.agent_output.contains("hello world"),
             "agent_output in RunState must accumulate the delta"
+        );
+    }
+
+    #[test]
+    fn tool_activity_is_projected_to_connected_dashboard_with_a_bound() {
+        let (hub, tui) = noop_bridge();
+        let mut state = make_state("plan-alpha", "T42");
+        let sink = NoopSink;
+        tui.agent_spawned(
+            "plan-alpha/T42",
+            "plan-alpha",
+            "T42",
+            1,
+            "implementer",
+            "test-model",
+            "test-provider",
+        );
+
+        handle_agent_event(
+            &AgentEvent::ToolCall {
+                id: "tool-1".to_string(),
+                name: "cargo check".to_string(),
+            },
+            &mut state,
+            &tui,
+            &sink,
+        );
+        handle_agent_event(
+            &AgentEvent::ToolOutput {
+                id: "tool-1".to_string(),
+                output: "x".repeat(MAX_TUI_TOOL_OUTPUT + 100),
+            },
+            &mut state,
+            &tui,
+            &sink,
+        );
+
+        let snap = hub.snapshot().borrow().clone();
+        let lines = snap.task_outputs.get("T42").expect("task output ring");
+        // Stream records carry the semantic prefix; parse and check payloads.
+        let has_tool_start = lines.iter().any(|line| {
+            line.strip_prefix(crate::runner::tui_bridge::STREAM_RECORD_PREFIX)
+                .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
+                .map_or(false, |v| {
+                    v["kind"] == "tool_start" && v["payload"]["tool"] == "cargo check"
+                })
+        });
+        assert!(
+            has_tool_start,
+            "tool_start record with name 'cargo check' must be projected"
+        );
+        let has_truncated = lines.iter().any(|line| {
+            line.strip_prefix(crate::runner::tui_bridge::STREAM_RECORD_PREFIX)
+                .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
+                .map_or(false, |v| {
+                    v["payload"]["output"]
+                        .as_str()
+                        .map_or(false, |s| s.contains("output truncated:"))
+                })
+        });
+        assert!(
+            has_truncated,
+            "tool_result record must contain truncation marker"
+        );
+        // Stream record envelope adds JSON framing (~150B per record × 2 records).
+        assert!(
+            snap.agents["plan-alpha/T42"].output_bytes <= MAX_TUI_TOOL_OUTPUT + 512,
+            "output_bytes {} must stay bounded (max {})",
+            snap.agents["plan-alpha/T42"].output_bytes,
+            MAX_TUI_TOOL_OUTPUT + 512
         );
     }
 
@@ -458,6 +606,58 @@ mod tests {
         assert_eq!(id2, "plan/with/slashes/T1");
     }
 
+    // Codex regression: a `SystemInit` with an empty model must not wipe the
+    // model slug recorded by `Started` (empty models get episodes dropped and
+    // blank the TUI). A non-empty init model still wins.
+    #[test]
+    fn system_init_with_empty_model_preserves_started_model() {
+        let (_hub, tui) = noop_bridge();
+        let mut state = make_state("plan", "T1");
+        let sink = NoopSink;
+
+        handle_agent_event(
+            &AgentEvent::Started {
+                agent_id: "plan/T1".to_string(),
+                provider: "codex-cli".to_string(),
+                model: "gpt-5.6-sol".to_string(),
+                pid: Some(42),
+            },
+            &mut state,
+            &tui,
+            &sink,
+        );
+        assert_eq!(state.agent_model, "gpt-5.6-sol");
+
+        handle_agent_event(
+            &AgentEvent::SystemInit {
+                session_id: "thread-1".to_string(),
+                model: String::new(),
+            },
+            &mut state,
+            &tui,
+            &sink,
+        );
+        assert_eq!(
+            state.agent_model, "gpt-5.6-sol",
+            "empty SystemInit model must not overwrite the Started model"
+        );
+        assert_eq!(state.session_id.as_deref(), Some("thread-1"));
+
+        handle_agent_event(
+            &AgentEvent::SystemInit {
+                session_id: "thread-1".to_string(),
+                model: "gpt-5.6-sol-mini".to_string(),
+            },
+            &mut state,
+            &tui,
+            &sink,
+        );
+        assert_eq!(
+            state.agent_model, "gpt-5.6-sol-mini",
+            "a non-empty SystemInit model still updates state"
+        );
+    }
+
     // T2 / SH04-T05: token usage accumulates in state without double-counting.
     #[test]
     fn token_usage_accumulates_in_state_without_double_count() {
@@ -471,6 +671,7 @@ mod tests {
                 output_tokens: 50,
                 cache_read_tokens: 10,
                 cache_write_tokens: 5,
+                reasoning_tokens: 0,
             },
             &mut state,
             &tui,
@@ -491,6 +692,7 @@ mod tests {
                 output_tokens: 10,
                 cache_read_tokens: 2,
                 cache_write_tokens: 1,
+                reasoning_tokens: 0,
             },
             &mut state,
             &tui,

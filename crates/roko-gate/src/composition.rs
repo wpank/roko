@@ -10,8 +10,10 @@
 //! | [`FallbackGate`] | Try primary; on failure try fallback | first passing verdict |
 
 use async_trait::async_trait;
+use futures::stream::{FuturesUnordered, StreamExt};
 use roko_core::{Context, Signal, Verdict, Verify};
 use std::fmt;
+use std::num::NonZeroUsize;
 
 // ─── ParallelGate ────────────────────────────────────────────────────────────
 
@@ -19,9 +21,17 @@ use std::fmt;
 ///
 /// If any gate fails, the aggregate fails. Use when inner gates are independent
 /// and can safely run simultaneously (e.g., CompileGate + LintGate).
+///
+/// Inner gates are dispatched concurrently via [`tokio::task::JoinSet`] with an
+/// optional concurrency cap. Results are always returned in **declaration
+/// order** regardless of completion order. Dropping the `ParallelGate` future
+/// cancels all in-flight inner gates through standard `JoinSet` drop semantics.
 pub struct ParallelGate {
     gates: Vec<Box<dyn Verify>>,
     name: String,
+    /// Maximum number of inner gates that may execute simultaneously.
+    /// `None` means all gates run at once (`inner.len()`).
+    max_concurrency: Option<NonZeroUsize>,
 }
 
 impl ParallelGate {
@@ -31,6 +41,7 @@ impl ParallelGate {
         Self {
             gates: Vec::new(),
             name: name.into(),
+            max_concurrency: None,
         }
     }
 
@@ -46,6 +57,22 @@ impl ParallelGate {
         self
     }
 
+    /// Set the maximum number of gates that may execute concurrently.
+    ///
+    /// `None` (the default) resolves to `inner.len().max(1)` -- all gates
+    /// execute at once. `Some(cap)` resolves to `min(cap, inner.len().max(1))`.
+    #[must_use]
+    pub fn with_max_concurrency(mut self, cap: NonZeroUsize) -> Self {
+        self.max_concurrency = Some(cap);
+        self
+    }
+
+    /// The configured concurrency cap, or `None` for unbounded.
+    #[must_use]
+    pub fn max_concurrency(&self) -> Option<NonZeroUsize> {
+        self.max_concurrency
+    }
+
     /// Number of inner gates.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -57,6 +84,15 @@ impl ParallelGate {
     pub fn is_empty(&self) -> bool {
         self.gates.is_empty()
     }
+
+    /// Effective concurrency for the current gate set: `min(cap, len.max(1))`.
+    fn effective_concurrency(&self) -> usize {
+        let n = self.gates.len().max(1);
+        match self.max_concurrency {
+            None => n,
+            Some(cap) => cap.get().min(n),
+        }
+    }
 }
 
 impl fmt::Debug for ParallelGate {
@@ -64,6 +100,7 @@ impl fmt::Debug for ParallelGate {
         f.debug_struct("ParallelGate")
             .field("name", &self.name)
             .field("gates", &self.gates.len())
+            .field("max_concurrency", &self.max_concurrency)
             .finish()
     }
 }
@@ -92,13 +129,33 @@ impl Verify for ParallelGate {
                 .with_duration(elapsed_ms(started));
         }
 
-        // Run all gates (sequentially here; true tokio::join_all would require
-        // Pin<Box<dyn Future>> which is complex with the trait object. The key
-        // semantic difference is that all gates run regardless of failures.)
-        let mut verdicts = Vec::with_capacity(self.gates.len());
-        for gate in &self.gates {
-            verdicts.push(gate.verify(signal, ctx).await);
+        // Run all inner gates concurrently using FuturesUnordered, bounded
+        // by a semaphore when max_concurrency is set. Each future carries
+        // its declaration-order index so results are reassembled in the
+        // original push order regardless of completion order.
+        //
+        // Dropping this future (cancellation) drops the FuturesUnordered,
+        // which drops all incomplete inner futures -- no work leaks.
+        let concurrency = self.effective_concurrency();
+        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(concurrency));
+
+        let mut futs = FuturesUnordered::new();
+        for (idx, gate) in self.gates.iter().enumerate() {
+            let sem = semaphore.clone();
+            futs.push(async move {
+                let _permit = sem.acquire().await;
+                let verdict = gate.verify(signal, ctx).await;
+                (idx, verdict)
+            });
         }
+
+        // Collect results as they complete, then sort by index.
+        let mut indexed: Vec<(usize, Verdict)> = Vec::with_capacity(self.gates.len());
+        while let Some((idx, verdict)) = futs.next().await {
+            indexed.push((idx, verdict));
+        }
+        indexed.sort_by_key(|(idx, _)| *idx);
+        let verdicts: Vec<Verdict> = indexed.into_iter().map(|(_, v)| v).collect();
 
         // Aggregate: min score, fail if any failed.
         let min_score = verdicts
@@ -530,6 +587,204 @@ mod tests {
         let v = gate.verify(&signal(), &ctx()).await;
         assert!(v.passed);
         assert!(gate.is_empty());
+    }
+
+    #[tokio::test]
+    async fn parallel_max_concurrency_builder() {
+        let gate = ParallelGate::new("cap")
+            .with_max_concurrency(NonZeroUsize::new(2).unwrap())
+            .with_gate(Box::new(MockGate::new("a", true)))
+            .with_gate(Box::new(MockGate::new("b", true)))
+            .with_gate(Box::new(MockGate::new("c", true)));
+        assert_eq!(gate.max_concurrency().unwrap().get(), 2);
+        let v = gate.verify(&signal(), &ctx()).await;
+        assert!(v.passed);
+    }
+
+    #[tokio::test]
+    async fn parallel_max_concurrency_caps_at_gate_count() {
+        // Cap of 10 with only 2 gates -> effective concurrency is 2.
+        let gate = ParallelGate::new("cap")
+            .with_max_concurrency(NonZeroUsize::new(10).unwrap())
+            .with_gate(Box::new(MockGate::new("a", true)))
+            .with_gate(Box::new(MockGate::new("b", true)));
+        assert_eq!(gate.effective_concurrency(), 2);
+        let v = gate.verify(&signal(), &ctx()).await;
+        assert!(v.passed);
+    }
+
+    #[tokio::test]
+    async fn parallel_default_unbounded_concurrency() {
+        let gate = ParallelGate::new("unb");
+        assert!(gate.max_concurrency().is_none());
+    }
+
+    /// A gate that records the instant it started executing and waits on a
+    /// barrier. This proves that multiple gates were executing concurrently.
+    struct BarrierGate {
+        gate_name: String,
+        pass: bool,
+        started: Arc<std::sync::Mutex<Vec<std::time::Instant>>>,
+        barrier: Arc<tokio::sync::Barrier>,
+    }
+
+    impl roko_core::Cell for BarrierGate {
+        fn cell_id(&self) -> &str {
+            "barrier-gate-test"
+        }
+        fn cell_name(&self) -> &str {
+            "BarrierGate"
+        }
+        fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+            vec![roko_core::ProtocolId::Verify]
+        }
+    }
+
+    #[async_trait]
+    impl Verify for BarrierGate {
+        async fn verify(&self, _signal: &Signal, _ctx: &Context) -> Verdict {
+            // Record that we started.
+            if let Ok(mut started) = self.started.lock() {
+                started.push(std::time::Instant::now());
+            }
+            // Wait for all peers to arrive -- proves concurrent execution.
+            self.barrier.wait().await;
+            if self.pass {
+                Verdict::pass(&self.gate_name).with_score(0.9)
+            } else {
+                Verdict::fail(&self.gate_name, "barrier fail").with_score(0.2)
+            }
+        }
+        fn name(&self) -> &str {
+            &self.gate_name
+        }
+    }
+
+    #[tokio::test]
+    async fn parallel_proves_concurrent_start() {
+        // Use a Barrier(3) -- all 3 gates must reach the barrier before any
+        // can proceed. If execution were serial, this would deadlock.
+        let barrier = Arc::new(tokio::sync::Barrier::new(3));
+        let started = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let gate = ParallelGate::new("overlap")
+            .with_gate(Box::new(BarrierGate {
+                gate_name: "a".into(),
+                pass: true,
+                started: started.clone(),
+                barrier: barrier.clone(),
+            }))
+            .with_gate(Box::new(BarrierGate {
+                gate_name: "b".into(),
+                pass: true,
+                started: started.clone(),
+                barrier: barrier.clone(),
+            }))
+            .with_gate(Box::new(BarrierGate {
+                gate_name: "c".into(),
+                pass: true,
+                started: started.clone(),
+                barrier: barrier.clone(),
+            }));
+
+        let v = gate.verify(&signal(), &ctx()).await;
+        assert!(v.passed, "all gates should pass");
+        let starts = started.lock().unwrap();
+        assert_eq!(starts.len(), 3, "all three gates must have started");
+    }
+
+    #[tokio::test]
+    async fn parallel_declaration_order_preserved() {
+        // Three gates with different sleep durations -- the one pushed first
+        // should appear first in the detail output regardless of when it
+        // completed.
+        struct SlowGate {
+            gate_name: String,
+            delay: std::time::Duration,
+        }
+
+        impl roko_core::Cell for SlowGate {
+            fn cell_id(&self) -> &str {
+                "slow-gate-test"
+            }
+            fn cell_name(&self) -> &str {
+                "SlowGate"
+            }
+            fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+                vec![roko_core::ProtocolId::Verify]
+            }
+        }
+
+        #[async_trait]
+        impl Verify for SlowGate {
+            async fn verify(&self, _signal: &Signal, _ctx: &Context) -> Verdict {
+                tokio::time::sleep(self.delay).await;
+                Verdict::pass(&self.gate_name).with_score(1.0)
+            }
+            fn name(&self) -> &str {
+                &self.gate_name
+            }
+        }
+
+        let gate = ParallelGate::new("order")
+            .with_gate(Box::new(SlowGate {
+                gate_name: "first".into(),
+                delay: std::time::Duration::from_millis(30),
+            }))
+            .with_gate(Box::new(SlowGate {
+                gate_name: "second".into(),
+                delay: std::time::Duration::from_millis(10),
+            }))
+            .with_gate(Box::new(SlowGate {
+                gate_name: "third".into(),
+                delay: std::time::Duration::from_millis(20),
+            }));
+
+        let v = gate.verify(&signal(), &ctx()).await;
+        assert!(v.passed);
+        let detail = v.detail.as_deref().unwrap_or("");
+        let pos_first = detail.find("first").expect("first in detail");
+        let pos_second = detail.find("second").expect("second in detail");
+        let pos_third = detail.find("third").expect("third in detail");
+        assert!(
+            pos_first < pos_second && pos_second < pos_third,
+            "verdicts must be in declaration order: first < second < third\n{detail}"
+        );
+    }
+
+    #[tokio::test]
+    async fn parallel_failure_aggregation_all_run() {
+        // When one gate fails, the others must still run and their results
+        // must still appear in the aggregate.
+        let barrier = Arc::new(tokio::sync::Barrier::new(3));
+        let started = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let gate = ParallelGate::new("fail-agg")
+            .with_gate(Box::new(BarrierGate {
+                gate_name: "ok1".into(),
+                pass: true,
+                started: started.clone(),
+                barrier: barrier.clone(),
+            }))
+            .with_gate(Box::new(BarrierGate {
+                gate_name: "bad".into(),
+                pass: false,
+                started: started.clone(),
+                barrier: barrier.clone(),
+            }))
+            .with_gate(Box::new(BarrierGate {
+                gate_name: "ok2".into(),
+                pass: true,
+                started: started.clone(),
+                barrier: barrier.clone(),
+            }));
+
+        let v = gate.verify(&signal(), &ctx()).await;
+        assert!(!v.passed);
+        assert!(v.reason.contains("bad"));
+        // All three must have run.
+        let starts = started.lock().unwrap();
+        assert_eq!(starts.len(), 3);
     }
 
     // ─── VotingGate tests ────────────────────────────────────────────

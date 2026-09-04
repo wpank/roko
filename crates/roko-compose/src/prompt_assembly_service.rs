@@ -8,7 +8,7 @@ use roko_core::foundation::{PromptAssembler, PromptSpec};
 use roko_core::{AgentRole, Result};
 use roko_learn::episode_logger::{Episode, EpisodeLogger};
 use roko_learn::playbook::{PlaybookStore, QueryContext};
-use roko_neuro::{KnowledgeEntry, KnowledgeKind, KnowledgeTier, NeuroStore};
+use roko_neuro::{KnowledgeEntry, KnowledgeKind, KnowledgeTier};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -28,21 +28,30 @@ const SOURCE_SCAN_MAX_FILES: usize = 500;
 
 type ModelContextWindowResolver = dyn Fn(AgentRole) -> usize + Send + Sync;
 
-// TODO(converge): roko_neuro::NeuroStore currently has a `Sized` supertrait,
-// so it cannot be stored directly as `dyn NeuroStore`. Keep this object-safe
-// adapter local until roko-neuro exposes an object-safe query trait.
-trait PromptKnowledgeStore {
+/// Local adapter that bridges `roko_core::KnowledgeQuery` (returns
+/// `serde_json::Value`) to the typed `KnowledgeEntry` interface needed by
+/// prompt assembly.
+trait PromptKnowledgeStore: Send + Sync {
     fn query(&self, topic: &str, limit: usize) -> Vec<KnowledgeEntry>;
 }
 
+/// Blanket impl: any `KnowledgeQuery` can serve as a `PromptKnowledgeStore`
+/// by deserializing the JSON values back into `KnowledgeEntry`.
 impl<T> PromptKnowledgeStore for T
 where
-    T: NeuroStore + Send + Sync,
+    T: roko_core::KnowledgeQuery,
 {
     fn query(&self, topic: &str, limit: usize) -> Vec<KnowledgeEntry> {
-        NeuroStore::query(self, topic, limit).unwrap_or_default()
+        self.query_knowledge(topic, limit)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|v| serde_json::from_value(v).ok())
+            .collect()
     }
 }
+
+// Note: The blanket impl `NeuroStore -> KnowledgeQuery` lives in roko-neuro
+// (next to the NeuroStore trait definition) to satisfy the orphan rule.
 
 /// Service that assembles system prompts via the 9-layer `SystemPromptBuilder`.
 ///
@@ -118,7 +127,7 @@ impl PromptAssemblyService {
     #[must_use]
     pub fn with_knowledge_store<T>(mut self, store: Arc<T>) -> Self
     where
-        T: NeuroStore + Send + Sync + 'static,
+        T: roko_core::KnowledgeQuery + 'static,
     {
         self.knowledge_store = Some(store);
         self
@@ -368,12 +377,31 @@ impl PromptAssembler for PromptAssemblyService {
         self.record_prompt_section_id("role_identity");
         // SystemPromptBuilder's current API is no-arg; this is equivalent to with_cache_markers(true).
 
-        if self.should_include("conventions")
-            && let Some(conventions) =
-                conventions_for_spec(&spec, self.default_conventions.as_deref())
-        {
-            builder = builder.with_conventions(conventions);
-            self.record_prompt_section_id("conventions");
+        // Source discovery is synchronous and can traverse hundreds of files.
+        // Do it once per assembly on the blocking pool, then reuse the result
+        // for both conventions and the workspace map.
+        let workdir_prompt_context =
+            if self.should_include("conventions") || self.should_include("context") {
+                if let Some(workdir) = spec.workdir.clone() {
+                    tokio::task::spawn_blocking(move || collect_workdir_prompt_context(&workdir))
+                        .await
+                        .ok()
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+        if self.should_include("conventions") {
+            let conventions = workdir_prompt_context
+                .as_ref()
+                .and_then(|context| context.conventions.clone())
+                .or_else(|| self.default_conventions.clone());
+            if let Some(conventions) = conventions {
+                builder = builder.with_conventions(conventions);
+                self.record_prompt_section_id("conventions");
+            }
         }
 
         let mut context_blocks = Vec::new();
@@ -430,7 +458,9 @@ impl PromptAssembler for PromptAssemblyService {
         }
 
         if self.should_include("context")
-            && let Some(workspace_map) = workspace_map_for_spec(&spec)
+            && let Some(workspace_map) = workdir_prompt_context
+                .as_ref()
+                .and_then(|context| context.workspace_map.clone())
         {
             context_blocks.push(workspace_map);
             self.record_prompt_section_id("context_layer");
@@ -559,17 +589,33 @@ fn resolve_role(role: Option<&str>) -> AgentRole {
         .unwrap_or(AgentRole::Implementer)
 }
 
-fn conventions_for_spec(spec: &PromptSpec, default_conventions: Option<&str>) -> Option<String> {
-    spec.workdir
-        .as_deref()
-        .and_then(detect_workdir_conventions)
-        .or_else(|| default_conventions.map(ToOwned::to_owned))
+#[derive(Debug)]
+struct WorkdirPromptContext {
+    conventions: Option<String>,
+    workspace_map: Option<String>,
 }
 
-fn workspace_map_for_spec(spec: &PromptSpec) -> Option<String> {
-    let workdir = spec.workdir.as_deref()?;
-    let (_, file_listing) = collect_source_context(workdir);
-    workspace_map_from_file_listing(&file_listing)
+fn collect_workdir_prompt_context(workdir: &Path) -> WorkdirPromptContext {
+    let cargo_toml = read_to_string_if_exists(&workdir.join("Cargo.toml")).unwrap_or_default();
+    let (source_samples, file_listing) = collect_source_context(workdir);
+    let conventions =
+        if cargo_toml.is_empty() && source_samples.is_empty() && file_listing.is_empty() {
+            None
+        } else {
+            let source_refs = source_samples
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            let file_refs = file_listing.iter().map(String::as_str).collect::<Vec<_>>();
+            let fragment =
+                detect_conventions(&cargo_toml, &source_refs, &file_refs).to_prompt_fragment();
+            (!fragment.trim().is_empty()).then_some(fragment)
+        };
+    let workspace_map = workspace_map_from_file_listing(&file_listing);
+    WorkdirPromptContext {
+        conventions,
+        workspace_map,
+    }
 }
 
 fn domain_context_for_spec(
@@ -704,25 +750,6 @@ fn format_episode_context(episodes: &[Episode]) -> String {
         .join("\n");
 
     format!("## Recent Execution History (last 5 runs)\n{lines}")
-}
-
-fn detect_workdir_conventions(workdir: &Path) -> Option<String> {
-    let cargo_toml = read_to_string_if_exists(&workdir.join("Cargo.toml")).unwrap_or_default();
-    let (source_samples, file_listing) = collect_source_context(workdir);
-
-    if cargo_toml.is_empty() && source_samples.is_empty() && file_listing.is_empty() {
-        return None;
-    }
-
-    let source_refs = source_samples
-        .iter()
-        .map(String::as_str)
-        .collect::<Vec<_>>();
-    let file_refs = file_listing.iter().map(String::as_str).collect::<Vec<_>>();
-    let conventions = detect_conventions(&cargo_toml, &source_refs, &file_refs);
-    let fragment = conventions.to_prompt_fragment();
-
-    (!fragment.trim().is_empty()).then_some(fragment)
 }
 
 fn collect_source_context(workdir: &Path) -> (Vec<String>, Vec<String>) {
@@ -897,13 +924,14 @@ mod tests {
         assert_eq!(resolve_role(Some("unknown")), AgentRole::Implementer);
     }
 
-    #[test]
-    fn uses_default_conventions_without_workdir() {
-        let spec = PromptSpec::default();
-        assert_eq!(
-            conventions_for_spec(&spec, Some("Use workspace conventions")),
-            Some("Use workspace conventions".to_string())
-        );
+    #[tokio::test]
+    async fn uses_default_conventions_without_workdir() {
+        let prompt = PromptAssemblyService::new()
+            .with_conventions("Use workspace conventions".to_string())
+            .assemble(PromptSpec::default())
+            .await
+            .unwrap();
+        assert!(prompt.contains("Use workspace conventions"));
     }
 
     #[tokio::test]
@@ -1021,6 +1049,7 @@ mod tests {
                 cost_usd: 0.01,
                 latency_ms: 1500,
                 success: true,
+                error_class: None,
             })
             .await
             .unwrap();

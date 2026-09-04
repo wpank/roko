@@ -13,7 +13,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Table, Wrap};
 
@@ -51,12 +51,21 @@ pub(crate) fn render(
     view_state: &ViewState,
     theme: &Theme,
 ) {
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+    render_sub_tab_bar(frame, rows[0], view_state, theme);
+
+    let content = rows[1];
     let jobs = &tui_state.marketplace_jobs;
 
     if jobs.is_empty() {
         match view_state.active_sub_view(Tab::Marketplace) {
-            SubView::CreateJob => render_create_job(frame, area, tui_state, theme),
-            _ => render_empty(frame, area, theme),
+            SubView::CreateJob => render_create_job(frame, content, tui_state, theme),
+            _ => crate::tui::empty_state::render_empty_state(
+                frame,
+                content,
+                Tab::Marketplace,
+                &tui_state.atmosphere,
+            ),
         }
         return;
     }
@@ -65,56 +74,30 @@ pub(crate) fn render(
     match view_state.active_sub_view(Tab::Marketplace) {
         SubView::JobDetail => {
             if let Some(job) = jobs.get(selected) {
-                render_job_detail(frame, area, job, tui_state, theme);
+                render_job_detail(frame, content, job, tui_state, theme);
             }
         }
-        SubView::CreateJob => render_create_job(frame, area, tui_state, theme),
+        SubView::CreateJob => render_create_job(frame, content, tui_state, theme),
         _ => {
-            let panels =
-                Layout::horizontal([Constraint::Percentage(35), Constraint::Percentage(65)])
-                    .split(area);
-            render_job_list(frame, panels[0], jobs, selected, theme);
+            let (sidebar, detail) =
+                crate::tui::layout::responsive_panel_split(content, 35, 100, content.height / 3);
+            render_job_list(frame, sidebar, jobs, selected, theme);
             if let Some(job) = jobs.get(selected) {
-                render_job_detail(frame, panels[1], job, tui_state, theme);
+                render_job_detail(frame, detail, job, tui_state, theme);
             }
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Empty state
-// ---------------------------------------------------------------------------
-
-fn render_empty(frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
-    let block = Block::bordered()
-        .title(Span::styled(
-            " Marketplace ",
-            theme.accent().add_modifier(Modifier::BOLD),
-        ))
-        .border_style(theme.accent());
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let lines = vec![
-        Line::from(""),
-        Line::from(Span::styled("No jobs posted.", theme.muted())),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Jobs appear when agents or operators post work items to .roko/jobs/.",
-            theme.muted(),
-        )),
-        Line::from(Span::styled(
-            "Press 'n' to create a new job manually.",
-            theme.muted(),
-        )),
-    ];
-    frame.render_widget(
-        Paragraph::new(lines)
-            .alignment(Alignment::Center)
-            .wrap(Wrap { trim: false }),
-        inner,
-    );
+fn render_sub_tab_bar(frame: &mut Frame<'_>, area: Rect, view_state: &ViewState, theme: &Theme) {
+    let label = SubView::bar_label(Tab::Marketplace, view_state.sub_tab);
+    let bar = Paragraph::new(Line::from(Span::styled(label, theme.muted())))
+        .alignment(Alignment::Center)
+        .style(Style::default().bg(Theme::BG_RAISED));
+    frame.render_widget(bar, area);
 }
+
+// Empty state is now handled by `crate::tui::empty_state::render_empty_state`.
 
 // ---------------------------------------------------------------------------
 // Left panel: job list
@@ -142,10 +125,15 @@ fn render_job_list(
         .count();
 
     let block = Block::bordered()
-        .title(Span::styled(
-            format!(" Jobs ({}) {pending}P {active}A {done}D ", jobs.len()),
-            theme.accent().add_modifier(Modifier::BOLD),
-        ))
+        .title(Line::from(vec![
+            Span::styled(format!(" Jobs ({}) ", jobs.len()), theme.section_header()),
+            Span::styled(format!(" {pending}P "), theme.badge_pending()),
+            Span::raw(" "),
+            Span::styled(format!(" {active}A "), theme.badge_running()),
+            Span::raw(" "),
+            Span::styled(format!(" {done}D "), theme.badge_complete()),
+            Span::raw(" "),
+        ]))
         .border_style(theme.accent());
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -178,7 +166,7 @@ fn render_job_list(
                 "submitted" => ("\u{25d1}", theme.info()),         // half circle
                 "done" | "completed" | "evaluated" => ("\u{2713}", theme.success()), // check
                 "failed" | "cancelled" => ("\u{2717}", theme.danger()), // cross
-                _ => ("\u{00b7}", theme.muted()),                  // dot
+                _ => ("\u{25cb}", theme.muted()),                  // open circle
             };
 
             // Job type color tag (research=rose, coding_task=bone/dim, other=muted).
@@ -225,7 +213,7 @@ fn render_job_detail(
     let block = Block::bordered()
         .title(Span::styled(
             format!(" {} ", truncate(&job.title, 40)),
-            theme.accent().add_modifier(Modifier::BOLD),
+            theme.section_header(),
         ))
         .border_style(theme.accent());
     let inner = block.inner(area);
@@ -247,13 +235,13 @@ fn render_job_detail(
     .split(inner);
 
     let status = effective_status(job);
-    let status_style = match status {
-        "open" | "pending" => theme.muted(),
-        "assigned" | "submitted" => theme.info(),
-        "in_progress" | "active" | "running" => theme.warning(),
-        "done" | "completed" | "evaluated" => theme.success(),
-        "failed" | "cancelled" => theme.danger(),
-        _ => theme.text(),
+    let status_badge_style = match status {
+        "open" | "pending" => theme.badge_pending(),
+        "assigned" | "submitted" => theme.badge_running(),
+        "in_progress" | "active" | "running" => theme.badge_running(),
+        "done" | "completed" | "evaluated" => theme.badge_complete(),
+        "failed" | "cancelled" => theme.badge_failed(),
+        _ => theme.muted(),
     };
     let priority_style = match job.priority.as_str() {
         "critical" | "p0" => theme.danger(),
@@ -279,22 +267,22 @@ fn render_job_detail(
 
     let meta_rows = vec![
         Row::new([
-            Cell::from(Span::styled("id:", theme.muted())),
-            Cell::from(Span::styled(&job.id, theme.text())),
+            Cell::from(Span::styled("id:", theme.label())),
+            Cell::from(Span::styled(&job.id, theme.metadata())),
         ]),
         Row::new([
-            Cell::from(Span::styled("status:", theme.muted())),
+            Cell::from(Span::styled("status:", theme.label())),
             Cell::from(Line::from(vec![
-                Span::styled(status, status_style),
-                Span::styled(format!("  \u{2192} {transition_hint}"), theme.muted()),
+                Span::styled(format!(" {status} "), status_badge_style),
+                Span::styled(format!("  \u{2192} {transition_hint}"), theme.metadata()),
             ])),
         ]),
         Row::new([
-            Cell::from(Span::styled("type:", theme.muted())),
-            Cell::from(Span::styled(&job.job_type, theme.text())),
+            Cell::from(Span::styled("type:", theme.label())),
+            Cell::from(Span::styled(&job.job_type, theme.value())),
         ]),
         Row::new([
-            Cell::from(Span::styled("priority:", theme.muted())),
+            Cell::from(Span::styled("priority:", theme.label())),
             Cell::from(Span::styled(
                 if job.priority.is_empty() {
                     "\u{2014}"
@@ -305,41 +293,41 @@ fn render_job_detail(
             )),
         ]),
         Row::new([
-            Cell::from(Span::styled("posted by:", theme.muted())),
+            Cell::from(Span::styled("posted by:", theme.label())),
             Cell::from(if job.posted_by.is_empty() {
-                Span::styled("\u{2014}", theme.muted())
+                Span::styled("\u{2014}", theme.metadata())
             } else {
-                Span::styled(&job.posted_by, theme.text())
+                Span::styled(&job.posted_by, theme.value())
             }),
         ]),
         Row::new([
-            Cell::from(Span::styled("assigned:", theme.muted())),
+            Cell::from(Span::styled("assigned:", theme.label())),
             Cell::from(if job.assigned_to.is_empty() {
-                Span::styled("(unassigned)", theme.muted())
+                Span::styled("(unassigned)", theme.metadata())
             } else {
                 Span::styled(&job.assigned_to, theme.info())
             }),
         ]),
         Row::new([
-            Cell::from(Span::styled("created:", theme.muted())),
+            Cell::from(Span::styled("created:", theme.label())),
             Cell::from(Span::styled(
                 if job.created_at.is_empty() {
                     "\u{2014}"
                 } else {
                     &job.created_at
                 },
-                theme.muted(),
+                theme.metadata(),
             )),
         ]),
         Row::new([
-            Cell::from(Span::styled("tags:", theme.muted())),
+            Cell::from(Span::styled("tags:", theme.label())),
             Cell::from(Span::styled(
                 if job.tags.is_empty() {
                     "(none)".to_string()
                 } else {
                     job.tags.join(", ")
                 },
-                theme.muted(),
+                theme.metadata(),
             )),
         ]),
     ];
@@ -352,8 +340,8 @@ fn render_job_detail(
     // Description with proper word-wrap using ratatui's Wrap widget.
     let desc_block = Block::default()
         .borders(Borders::TOP)
-        .title(Span::styled(" Description ", theme.muted()))
-        .border_style(theme.muted());
+        .title(Span::styled(" Description ", theme.section_header()))
+        .border_style(Style::default().fg(Theme::SEPARATOR));
     let desc_inner = desc_block.inner(sections[1]);
     frame.render_widget(desc_block, sections[1]);
 
@@ -374,8 +362,8 @@ fn render_job_detail(
         if let Some(progress) = tui_state.job_progress.get(&job.id) {
             let prog_block = Block::default()
                 .borders(Borders::TOP)
-                .title(Span::styled(" Progress ", theme.muted()))
-                .border_style(theme.muted());
+                .title(Span::styled(" Progress ", theme.section_header()))
+                .border_style(Style::default().fg(Theme::SEPARATOR));
             let prog_inner = prog_block.inner(sections[2]);
             frame.render_widget(prog_block, sections[2]);
 
@@ -385,7 +373,7 @@ fn render_job_detail(
             let bar_line = Line::from(vec![
                 Span::styled(" [", theme.muted()),
                 Span::styled("\u{2588}".repeat(filled), theme.success()),
-                Span::styled("\u{2591}".repeat(empty), theme.muted()),
+                Span::styled("\u{2500}".repeat(empty), theme.muted()),
                 Span::styled(format!("] {}%", progress.percent), theme.muted()),
             ]);
             let agent_hint = if progress.agent_id.is_empty() {
@@ -414,10 +402,7 @@ fn render_job_detail(
     if tui_state.job_assign_editing {
         // Show the assign-agent inline prompt
         let assign_block = Block::bordered()
-            .title(Span::styled(
-                " Assign to agent: ",
-                theme.accent().add_modifier(Modifier::BOLD),
-            ))
+            .title(Span::styled(" Assign to agent: ", theme.section_header()))
             .border_style(theme.warning());
         let assign_inner = assign_block.inner(sections[hints_section]);
         frame.render_widget(assign_block, sections[hints_section]);
@@ -426,12 +411,12 @@ fn render_job_detail(
             assign_inner,
         );
     } else {
-        // Show keybinding hints
+        // Show keybinding hints (active keys only; planned keys dimmed)
         let hint_line = Line::from(vec![
-            Span::styled(" s", theme.accent()),
-            Span::styled(":status  ", theme.muted()),
-            Span::styled("a", theme.accent()),
-            Span::styled(":assign  ", theme.muted()),
+            Span::styled(" j/k", theme.accent()),
+            Span::styled(":navigate  ", theme.muted()),
+            Span::styled("Enter", theme.accent()),
+            Span::styled(":detail  ", theme.muted()),
             Span::styled("n", theme.accent()),
             Span::styled(":new  ", theme.muted()),
             Span::styled("r", theme.accent()),
@@ -446,10 +431,7 @@ fn render_job_detail(
 
 fn render_create_job(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme: &Theme) {
     let block = Block::bordered()
-        .title(Span::styled(
-            " New Job ",
-            theme.accent().add_modifier(Modifier::BOLD),
-        ))
+        .title(Span::styled(" New Job ", theme.section_header()))
         .border_style(theme.accent());
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -509,9 +491,9 @@ fn render_create_job(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, th
             .title(Span::styled(
                 format!(" {label} "),
                 if is_focused {
-                    theme.accent().add_modifier(Modifier::BOLD)
+                    theme.section_header()
                 } else {
-                    theme.muted()
+                    theme.label()
                 },
             ))
             .border_style(border_style);
@@ -526,9 +508,9 @@ fn render_create_job(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, th
             value.to_string()
         };
         let text_style = if value.is_empty() && !is_editing {
-            theme.muted()
+            theme.metadata()
         } else {
-            theme.text()
+            theme.value()
         };
 
         frame.render_widget(
@@ -570,32 +552,37 @@ fn render_create_job(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, th
             sections[5],
         );
     } else {
+        let sep_w = sections[5].width as usize;
         let help_lines = vec![
-            Line::from(Span::styled("Create a job from the CLI:", theme.muted())),
+            Line::from(Span::styled(
+                "─".repeat(sep_w),
+                Style::default().fg(Theme::SEPARATOR),
+            )),
+            Line::from(Span::styled("Create a job from the CLI:", theme.label())),
             Line::from(Span::styled(
                 "  roko serve                               # start the server",
-                theme.muted(),
+                theme.code_block(),
             )),
             Line::from(Span::styled(
                 "  curl -X POST http://localhost:6677/api/jobs \\",
-                theme.muted(),
+                theme.code_block(),
             )),
             Line::from(Span::styled(
                 "    -H \"Content-Type: application/json\" \\",
-                theme.muted(),
+                theme.code_block(),
             )),
             Line::from(Span::styled(
                 "    -d '{\"title\":\"...\", \"job_type\":\"research\"}'",
-                theme.muted(),
+                theme.code_block(),
             )),
             Line::from(""),
             Line::from(Span::styled(
                 "Or use the roko-serve API directly.",
-                theme.muted(),
+                theme.metadata(),
             )),
             Line::from(Span::styled(
                 "Jobs appear here when created via the API.",
-                theme.muted(),
+                theme.metadata(),
             )),
         ];
         frame.render_widget(

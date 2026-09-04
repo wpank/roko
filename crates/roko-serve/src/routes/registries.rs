@@ -78,7 +78,7 @@ impl RegistryRuntime {
     pub(crate) fn open(
         workdir: &FsPath,
         config: &roko_core::config::schema::RokoConfig,
-        chain: Option<Arc<roko_chain::alloy_impl::AlloyChainClient>>,
+        chain: Option<Arc<dyn roko_chain::ChainClient>>,
     ) -> Self {
         let state_path = workdir
             .join(".roko")
@@ -89,8 +89,6 @@ impl RegistryRuntime {
             Err(error) => (LocalRegistryState::default(), Some(error)),
         };
 
-        let chain: Option<Arc<dyn roko_chain::ChainClient>> =
-            chain.map(|client| client as Arc<dyn roko_chain::ChainClient>);
         let contracts = configured_contracts(&config.chain);
         let (indexer, indexer_config, indexer_error) = match (chain.clone(), contracts.is_empty()) {
             (Some(chain), false) => {

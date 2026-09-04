@@ -219,6 +219,7 @@ fn write_blank_braille(cell: &mut Cell, bits: u8, fg: Color, bg: Color) {
 }
 
 /// Draw pulsing connector traces across empty regions.
+#[allow(dead_code)]
 fn guide_lines(area: Rect, buf: &mut Buffer, elapsed: f64, intensity: f64, seed: u64) {
     if area.width < 8 || area.height < 4 {
         return;
@@ -233,10 +234,8 @@ fn guide_lines(area: Rect, buf: &mut Buffer, elapsed: f64, intensity: f64, seed:
     let pulse = (elapsed * (1.1 + intensity)).sin() * 0.5 + 0.5;
 
     for idx in 0..line_count {
-        // Hash mixing deliberately operates modulo 2^64.  Ordinary
-        // multiplication panics in debug builds as soon as `idx == 2`, which
-        // made the TUI crash whenever guide lines were enabled for an active
-        // agent.
+        // Seed mixing is intentionally modulo 2^64. Plain multiplication
+        // panics in debug builds once an active view renders enough guides.
         let line_seed = seed ^ (idx as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
         let from_y = area.top()
             + (unit_from_hash(line_seed ^ 0x11) * area.height.saturating_sub(1) as f64).round()
@@ -706,6 +705,89 @@ pub fn bloom(area: Rect, buf: &mut Buffer, threshold: u8, radius: u16, intensity
     }
 }
 
+/// Bloom variant that uses pre-allocated buffers instead of per-frame allocation.
+///
+/// #366: The caller provides three `f64` planes (pre-zeroed) of length
+/// `area.width * area.height`. This avoids three `Vec::new` allocations
+/// per frame when bloom is enabled.
+pub fn bloom_with_buffers(
+    area: Rect,
+    buf: &mut Buffer,
+    threshold: u8,
+    radius: u16,
+    intensity: f64,
+    bloom_r: &mut [f64],
+    bloom_g: &mut [f64],
+    bloom_b: &mut [f64],
+) {
+    if area.width == 0 || area.height == 0 || intensity <= 0.0 {
+        return;
+    }
+
+    let w = area.width as usize;
+    let h = area.height as usize;
+    let needed = w * h;
+    if bloom_r.len() < needed || bloom_g.len() < needed || bloom_b.len() < needed {
+        // Fallback to allocating variant if buffers are undersized.
+        bloom(area, buf, threshold, radius, intensity);
+        return;
+    }
+
+    // Collect bloom source contributions.
+    for dy in 0..h {
+        for dx in 0..w {
+            let x = area.x + dx as u16;
+            let y = area.y + dy as u16;
+            if let Some(cell) = buf.cell((x, y)) {
+                if let Some((r, g, b)) = cell_fg_rgb(cell) {
+                    if luminance(r, g, b) > threshold {
+                        let r_start = (dy as i32 - radius as i32).max(0) as usize;
+                        let r_end = ((dy as i32 + radius as i32 + 1) as usize).min(h);
+                        let c_start = (dx as i32 - radius as i32).max(0) as usize;
+                        let c_end = ((dx as i32 + radius as i32 + 1) as usize).min(w);
+
+                        let kernel_area = ((r_end - r_start) * (c_end - c_start)).max(1) as f64;
+                        let contrib = intensity / kernel_area;
+
+                        for ny in r_start..r_end {
+                            for nx in c_start..c_end {
+                                let idx = ny * w + nx;
+                                bloom_r[idx] += r as f64 * contrib;
+                                bloom_g[idx] += g as f64 * contrib;
+                                bloom_b[idx] += b as f64 * contrib;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Apply bloom via screen blend.
+    for dy in 0..h {
+        for dx in 0..w {
+            let idx = dy * w + dx;
+            let br = bloom_r[idx];
+            let bg = bloom_g[idx];
+            let bb = bloom_b[idx];
+            if br <= 0.0 && bg <= 0.0 && bb <= 0.0 {
+                continue;
+            }
+
+            let x = area.x + dx as u16;
+            let y = area.y + dy as u16;
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                if let Some((cr, cg, cb)) = cell_fg_rgb(cell) {
+                    let nr = screen_blend(cr, br.min(255.0) as u8);
+                    let ng = screen_blend(cg, bg.min(255.0) as u8);
+                    let nb = screen_blend(cb, bb.min(255.0) as u8);
+                    cell.set_fg(Color::Rgb(nr, ng, nb));
+                }
+            }
+        }
+    }
+}
+
 /// Radial vignette: darken cells near the edges of the area.
 ///
 /// `intensity` controls how dark the corners become (0.0..1.0).
@@ -967,6 +1049,115 @@ pub fn drop_shadow(buf: &mut Buffer, area: Rect) {
     }
 }
 
+/// CRT-style scanline dimming. Every `spacing`-th row gets darkened by
+/// `darken_amount`. This is a cheap single-pass atmospheric effect that
+/// adds subtle texture to the display.
+pub fn scanlines(area: Rect, buf: &mut Buffer, spacing: u16, darken_amount: f64) {
+    if area.width == 0 || area.height == 0 || spacing == 0 {
+        return;
+    }
+    let darken = darken_amount.clamp(0.0, 0.2); // safety cap
+    if darken <= 0.0 {
+        return;
+    }
+    let fg_factor = 1.0 - darken * 0.5; // less effect on fg to preserve readability
+    let bg_factor = 1.0 - darken;
+
+    let mut y = area.top();
+    while y < area.bottom() {
+        for x in area.left()..area.right() {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                if let Some((r, g, b)) = cell_fg_rgb(cell) {
+                    cell.set_fg(Color::Rgb(
+                        scale(r, fg_factor),
+                        scale(g, fg_factor),
+                        scale(b, fg_factor),
+                    ));
+                }
+                if let Some((r, g, b)) = cell_bg_rgb(cell) {
+                    cell.set_bg(Color::Rgb(
+                        scale(r, bg_factor),
+                        scale(g, bg_factor),
+                        scale(b, bg_factor),
+                    ));
+                }
+            }
+        }
+        y += spacing;
+    }
+}
+
+/// Sparse noise floor -- random dim characters shimmer in blank cells.
+/// Creates a subtle "aliveness" texture in negative space.
+pub fn noise_floor(area: Rect, buf: &mut Buffer, density: f64, frame_seed: u64) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let density = density.clamp(0.0, 0.05); // never more than 5%
+    if density <= 0.0 {
+        return;
+    }
+
+    const NOISE_CHARS: &[char] = &['\u{2591}', '\u{00b7}', '\u{2219}', '\u{2027}'];
+
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            let hash = splitmix64(frame_seed ^ ((x as u64) << 16) ^ ((y as u64) << 32));
+            if unit_from_hash(hash) > density {
+                continue;
+            }
+
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                if !is_blank(cell) {
+                    continue;
+                }
+
+                let ch = NOISE_CHARS[(hash >> 8) as usize % NOISE_CHARS.len()];
+                let brightness = 18 + (hash >> 16) as u8 % 16;
+                // Warm rose-tinted noise
+                let fg = Color::Rgb(
+                    brightness.saturating_add(8),
+                    brightness / 2,
+                    brightness.saturating_add(3),
+                );
+                cell.set_char(ch);
+                cell.set_fg(fg);
+            }
+        }
+    }
+}
+
+/// Subtle fade overlay used for tab transitions.
+///
+/// Dims the entire area toward black by `(1 - opacity)`. At opacity 1.0 the
+/// content is fully visible; at 0.0 it is fully black.
+pub fn fade_overlay(area: Rect, buf: &mut Buffer, opacity: f64) {
+    let factor = opacity.clamp(0.0, 1.0);
+    if (factor - 1.0).abs() < f64::EPSILON {
+        return; // fully visible, nothing to do
+    }
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                if let Some((r, g, b)) = cell_fg_rgb(cell) {
+                    cell.set_fg(Color::Rgb(
+                        scale(r, factor),
+                        scale(g, factor),
+                        scale(b, factor),
+                    ));
+                }
+                if let Some((r, g, b)) = cell_bg_rgb(cell) {
+                    cell.set_bg(Color::Rgb(
+                        scale(r, factor),
+                        scale(g, factor),
+                        scale(b, factor),
+                    ));
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1053,5 +1244,58 @@ mod tests {
         guide_lines(area, &mut buf, 1.0, 1.0, 7);
 
         assert!(buf.content.iter().any(|cell| !is_blank(cell)));
+    }
+
+    #[test]
+    fn scanlines_dims_every_nth_row() {
+        let area = Rect::new(0, 0, 10, 6);
+        let mut buf = Buffer::empty(area);
+        // Set a known fg color on row 0 (which is a scanline row with spacing=3)
+        buf[(0, 0)].set_fg(Color::Rgb(100, 100, 100));
+        buf[(0, 1)].set_fg(Color::Rgb(100, 100, 100));
+
+        scanlines(area, &mut buf, 3, 0.04);
+
+        // Row 0 should be slightly dimmed, row 1 untouched
+        let fg0 = buf[(0, 0)].fg;
+        let fg1 = buf[(0, 1)].fg;
+        assert_ne!(
+            fg0, fg1,
+            "scanline row should be dimmer than non-scanline row"
+        );
+    }
+
+    #[test]
+    fn noise_floor_only_writes_blank_cells() {
+        let area = Rect::new(0, 0, 20, 10);
+        let mut buf = Buffer::empty(area);
+        buf[(5, 5)].set_char('X');
+
+        noise_floor(area, &mut buf, 1.0, 42); // max density for test coverage
+
+        assert_eq!(buf[(5, 5)].symbol(), "X");
+    }
+
+    #[test]
+    fn fade_overlay_fully_visible_is_noop() {
+        let area = Rect::new(0, 0, 4, 2);
+        let mut buf = Buffer::empty(area);
+        buf[(0, 0)].set_fg(Color::Rgb(200, 150, 100));
+        let before = buf[(0, 0)].fg;
+
+        fade_overlay(area, &mut buf, 1.0);
+
+        assert_eq!(buf[(0, 0)].fg, before);
+    }
+
+    #[test]
+    fn fade_overlay_zero_opacity_blacks_out() {
+        let area = Rect::new(0, 0, 4, 2);
+        let mut buf = Buffer::empty(area);
+        buf[(0, 0)].set_fg(Color::Rgb(200, 150, 100));
+
+        fade_overlay(area, &mut buf, 0.0);
+
+        assert_eq!(buf[(0, 0)].fg, Color::Rgb(0, 0, 0));
     }
 }

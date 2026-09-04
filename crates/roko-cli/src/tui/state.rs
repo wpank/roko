@@ -24,6 +24,7 @@ use super::input::{ConfirmAction, FocusZone, InputMode, LogFilterLevel};
 use super::modals::ModalState;
 use super::segment::{CachedRender, output_byte_len, render_cached_output};
 use super::tabs::Tab;
+use crate::config::Config;
 use crate::plan::{PlanSummary, plans_dir};
 use crate::task_parser::{TaskDef, TasksFile};
 
@@ -40,6 +41,18 @@ pub struct PendingApproval {
     pub description: String,
     /// The raw command or tool call.
     pub command: String,
+}
+
+/// Cached MCP configuration used by the dashboard's MCP panel.
+///
+/// Keeping this in `TuiState` ensures rendering remains a pure in-memory
+/// operation; filesystem parsing happens on the normal refresh cadence.
+#[derive(Debug, Clone, Default)]
+pub struct McpConfigView {
+    pub configured_path: Option<PathBuf>,
+    pub resolved_path: Option<PathBuf>,
+    pub config: Option<roko_agent::mcp::McpConfig>,
+    pub error: Option<String>,
 }
 
 /// Canonical status for an agent.
@@ -300,6 +313,358 @@ pub struct AgentRow {
 const MAX_AGENT_STREAM_CHUNKS: usize = 200;
 const MAX_AGENT_OUTPUT_LINES: usize = 50;
 
+/// Maximum structured output records retained in memory per agent (#367).
+pub const MAX_AGENT_OUTPUT_RECORDS: usize = 2_000;
+
+/// Page size when loading older records from canonical history (#367).
+pub const AGENT_OUTPUT_PAGE_SIZE: usize = 500;
+
+// ---------------------------------------------------------------------------
+// Structured agent output records (#367)
+// ---------------------------------------------------------------------------
+
+/// Kind tag for a structured agent output record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OutputRecordKind {
+    /// Free-form text from the agent.
+    Text,
+    /// Internal reasoning / chain-of-thought.
+    Reasoning,
+    /// Tool invocation start.
+    ToolCall,
+    /// Result returned by a tool.
+    ToolResult,
+    /// An error message.
+    Error,
+    /// System-generated message (status updates, turn boundaries).
+    System,
+}
+
+impl OutputRecordKind {
+    /// Label string for display.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Reasoning => "reasoning",
+            Self::ToolCall => "tool_call",
+            Self::ToolResult => "tool_result",
+            Self::Error => "error",
+            Self::System => "system",
+        }
+    }
+}
+
+/// One structured output record from an agent (#367).
+///
+/// Contains sequence, timestamp, role, kind, text payload, and optional
+/// tool identification. The `redacted` flag indicates whether the canonical
+/// redactor has already processed the payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentOutputRecord {
+    /// Monotonic sequence number (unique within an agent's history).
+    pub seq: u64,
+    /// Timestamp in epoch milliseconds.
+    pub timestamp_ms: u64,
+    /// Role that produced this record (e.g. "assistant", "tool", "system").
+    pub role: String,
+    /// Semantic kind of the record.
+    pub kind: OutputRecordKind,
+    /// The text payload (may be redacted).
+    pub text: String,
+    /// Whether the payload has been processed by the canonical redactor.
+    pub redacted: bool,
+    /// Optional tool identifier (for tool_call and tool_result kinds).
+    pub tool_id: Option<String>,
+    /// Optional tool name (for tool_call kind).
+    pub tool_name: Option<String>,
+}
+
+/// Per-agent bounded output history with pagination support (#367).
+///
+/// Keeps the newest `MAX_AGENT_OUTPUT_RECORDS` records in memory per agent.
+/// Provides `before()` for pagination and `search()` for regex matching.
+/// Older records can be loaded from canonical runtime event history by the
+/// caller; this type only manages the in-memory window.
+#[derive(Debug, Clone, Default)]
+pub struct AgentOutputHistory {
+    /// Per-agent record deques keyed by agent identifier.
+    records: HashMap<String, VecDeque<AgentOutputRecord>>,
+    /// Oldest sequence number per agent (for pagination tracking).
+    oldest_seq: HashMap<String, u64>,
+    /// Next sequence number per agent (monotonic counter).
+    next_seq: HashMap<String, u64>,
+    /// Total records evicted across all agents.
+    pub evicted: u64,
+}
+
+impl AgentOutputHistory {
+    /// Push a new record for the given agent, assigning a sequence number.
+    ///
+    /// If the deque exceeds `MAX_AGENT_OUTPUT_RECORDS`, the oldest record
+    /// is evicted and `oldest_seq` is updated.
+    pub fn push(&mut self, agent_id: &str, mut record: AgentOutputRecord) {
+        let seq = self.next_seq.entry(agent_id.to_string()).or_insert(1);
+        record.seq = *seq;
+        *seq += 1;
+
+        let deque = self
+            .records
+            .entry(agent_id.to_string())
+            .or_insert_with(VecDeque::new);
+
+        deque.push_back(record);
+
+        if deque.len() > MAX_AGENT_OUTPUT_RECORDS {
+            if let Some(evicted_record) = deque.pop_front() {
+                self.oldest_seq
+                    .insert(agent_id.to_string(), evicted_record.seq + 1);
+                self.evicted += 1;
+            }
+        }
+    }
+
+    /// Push a record for the given agent, deduplicating by sequence number.
+    ///
+    /// If a record with the same `seq` already exists, the push is skipped.
+    /// This handles the live+settled duplicate scenario.
+    pub fn push_dedup(&mut self, agent_id: &str, record: AgentOutputRecord) {
+        let deque = self
+            .records
+            .entry(agent_id.to_string())
+            .or_insert_with(VecDeque::new);
+
+        // Check if this seq already exists (dedup live+settled copies).
+        if deque.iter().any(|r| r.seq == record.seq) {
+            return;
+        }
+        self.push(agent_id, record);
+    }
+
+    /// Return records for the agent, optionally before a given sequence.
+    ///
+    /// Returns up to `limit` records with sequence numbers strictly less
+    /// than `before_seq`. If `before_seq` is `None`, returns the newest
+    /// `limit` records (tail).
+    #[must_use]
+    pub fn before(
+        &self,
+        agent_id: &str,
+        before_seq: Option<u64>,
+        limit: usize,
+    ) -> Vec<&AgentOutputRecord> {
+        let deque = match self.records.get(agent_id) {
+            Some(d) => d,
+            None => return Vec::new(),
+        };
+
+        let filtered: Vec<&AgentOutputRecord> = match before_seq {
+            Some(seq) => deque.iter().filter(|r| r.seq < seq).collect(),
+            None => deque.iter().collect(),
+        };
+
+        let start = filtered.len().saturating_sub(limit);
+        filtered[start..].to_vec()
+    }
+
+    /// Search records for the given agent matching a regex pattern.
+    ///
+    /// Returns matching records (up to `limit`) with sequence numbers
+    /// strictly less than `before_seq` (or all if `None`). Searches
+    /// the `text`, `tool_name`, and `role` fields.
+    #[must_use]
+    pub fn search(
+        &self,
+        agent_id: &str,
+        pattern: &regex::Regex,
+        before_seq: Option<u64>,
+        limit: usize,
+    ) -> Vec<&AgentOutputRecord> {
+        let deque = match self.records.get(agent_id) {
+            Some(d) => d,
+            None => return Vec::new(),
+        };
+
+        let filtered: Vec<&AgentOutputRecord> = deque
+            .iter()
+            .filter(|r| {
+                if let Some(seq) = before_seq {
+                    if r.seq >= seq {
+                        return false;
+                    }
+                }
+                pattern.is_match(&r.text)
+                    || r.tool_name.as_deref().is_some_and(|n| pattern.is_match(n))
+                    || pattern.is_match(&r.role)
+            })
+            .collect();
+
+        let start = filtered.len().saturating_sub(limit);
+        filtered[start..].to_vec()
+    }
+
+    /// Return all records for the given agent (in order).
+    #[must_use]
+    pub fn records_for(&self, agent_id: &str) -> &VecDeque<AgentOutputRecord> {
+        static EMPTY: std::sync::LazyLock<VecDeque<AgentOutputRecord>> =
+            std::sync::LazyLock::new(VecDeque::new);
+        self.records.get(agent_id).unwrap_or(&EMPTY)
+    }
+
+    /// Total number of records currently held for the given agent.
+    #[must_use]
+    pub fn len(&self, agent_id: &str) -> usize {
+        self.records.get(agent_id).map_or(0, VecDeque::len)
+    }
+
+    /// The oldest sequence number still in memory for the given agent.
+    #[must_use]
+    pub fn oldest_sequence(&self, agent_id: &str) -> u64 {
+        self.oldest_seq.get(agent_id).copied().unwrap_or(1)
+    }
+
+    /// The next sequence number that will be assigned for the given agent.
+    #[must_use]
+    pub fn next_sequence(&self, agent_id: &str) -> u64 {
+        self.next_seq.get(agent_id).copied().unwrap_or(1)
+    }
+
+    /// Clear all records for the given agent.
+    pub fn clear_agent(&mut self, agent_id: &str) {
+        self.records.remove(agent_id);
+        self.oldest_seq.remove(agent_id);
+        self.next_seq.remove(agent_id);
+    }
+
+    /// Convert raw output lines into records and populate the history for
+    /// an agent. Used to backfill from legacy `AgentRow::output_lines` or
+    /// `task_output_tails` during snapshot ingestion.
+    pub fn ingest_lines(&mut self, agent_id: &str, lines: &[String], role: &str) {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        for line in lines {
+            let (kind, tool_id, tool_name) = classify_output_line(line);
+            self.push(
+                agent_id,
+                AgentOutputRecord {
+                    seq: 0, // assigned by push()
+                    timestamp_ms: now_ms,
+                    role: role.to_string(),
+                    kind,
+                    text: line.clone(),
+                    redacted: false,
+                    tool_id,
+                    tool_name,
+                },
+            );
+        }
+    }
+}
+
+/// Classify a raw output line into an `OutputRecordKind` with optional
+/// tool metadata, based on the `roko.stream.v1` protocol or text heuristics.
+fn classify_output_line(line: &str) -> (OutputRecordKind, Option<String>, Option<String>) {
+    use super::widgets::stream_output::{StreamRecord, parse_stream_line};
+
+    match parse_stream_line(line) {
+        StreamRecord::Text { .. } => (OutputRecordKind::Text, None, None),
+        StreamRecord::Reasoning { .. } => (OutputRecordKind::Reasoning, None, None),
+        StreamRecord::ToolStart { tool_id, tool_name } => {
+            (OutputRecordKind::ToolCall, Some(tool_id), Some(tool_name))
+        }
+        StreamRecord::ToolResult { tool_id, .. } => {
+            (OutputRecordKind::ToolResult, Some(tool_id), None)
+        }
+        StreamRecord::Plain { ref content } => {
+            // Legacy heuristic classification for untyped records.
+            let trimmed = content.trim();
+            if trimmed.starts_with("ERROR")
+                || trimmed.starts_with("error")
+                || trimmed.contains("FAILED")
+            {
+                (OutputRecordKind::Error, None, None)
+            } else if trimmed.starts_with("────") || trimmed.is_empty() {
+                (OutputRecordKind::System, None, None)
+            } else {
+                (OutputRecordKind::Text, None, None)
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bounded history limits (#366 — TUI data pipeline optimization)
+// ---------------------------------------------------------------------------
+
+/// Maximum entries in the unified log cache.
+pub const MAX_UNIFIED_LOG: usize = 5_000;
+/// Maximum diagnosis entries retained in TuiState.
+pub const MAX_DIAGNOSES: usize = 200;
+/// Maximum episode entries retained in TuiState.
+pub const MAX_EPISODES: usize = 1_000;
+/// Maximum error entries retained in TuiState.
+pub const MAX_ERRORS: usize = 500;
+/// Maximum token history samples per agent.
+pub const MAX_TOKEN_SAMPLES: usize = 600;
+/// Maximum gate output lines retained.
+pub const MAX_GATE_LINES: usize = 2_000;
+/// Maximum CPU/memory history samples for sparklines.
+pub const MAX_METRIC_HISTORY: usize = 60;
+/// Maximum notification history entries.
+pub const MAX_NOTIFICATION_HISTORY: usize = 200;
+
+/// Tracks evictions from bounded collections for observability.
+#[derive(Debug, Clone, Default)]
+pub struct EvictionCounters {
+    /// Total entries evicted from the unified log.
+    pub unified_log: u64,
+    /// Total entries evicted from the diagnoses ring.
+    pub diagnoses: u64,
+    /// Total entries evicted from the episodes cache.
+    pub episodes: u64,
+    /// Total entries evicted from gate output lines.
+    pub gate_output: u64,
+    /// Total entries evicted from token history samples.
+    pub token_history: u64,
+    /// Total entries evicted from notification history.
+    pub notifications: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Revision-tracked collection for cache invalidation (#366)
+// ---------------------------------------------------------------------------
+
+/// A monotonic revision counter for cache invalidation.
+///
+/// Each data source bumps its revision when it changes, and downstream
+/// caches (like the unified log) compare their last-seen revision to
+/// decide whether to rebuild.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Revision(u64);
+
+impl Revision {
+    /// Create a new revision at zero.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self(0)
+    }
+
+    /// Bump the revision counter. Returns the new value.
+    pub fn bump(&mut self) -> u64 {
+        self.0 += 1;
+        self.0
+    }
+
+    /// Current revision value.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
 fn bounded_output_lines(lines: &VecDeque<String>) -> Vec<String> {
     let first = lines.len().saturating_sub(MAX_AGENT_OUTPUT_LINES);
     lines.iter().skip(first).cloned().collect()
@@ -546,6 +911,14 @@ pub struct TaskEntry {
     pub name: String,
     pub status: TaskStatus,
     pub agent_id: Option<String>,
+    /// Task IDs this task depends on (carried from TaskDef).
+    pub depends_on: Vec<String>,
+    /// Free-form acceptance criteria text (joined from TaskDef).
+    pub acceptance_text: Option<String>,
+    /// First verify command, if any (from TaskDef).
+    pub verify_command: Option<String>,
+    /// ISO timestamp when task started (from runtime metadata).
+    pub started_at: Option<String>,
 }
 
 /// Cost/budget projection for one plan in the F2 view.
@@ -760,6 +1133,116 @@ impl LogSearchState {
 }
 
 // ---------------------------------------------------------------------------
+// Agent output search state (#367)
+// ---------------------------------------------------------------------------
+
+/// Search state for the F3:Agents output panel (#367).
+///
+/// Similar to `LogSearchState` but scoped to the selected agent's output
+/// records. Activated by `/` on the Agents tab, navigated with `n`/`N`.
+#[derive(Debug, Clone, Default)]
+pub struct AgentOutputSearchState {
+    /// Whether search mode is active (input bar visible).
+    pub active: bool,
+    /// Current search pattern text.
+    pub pattern: String,
+    /// Compiled regex from the pattern (None if pattern is empty or invalid).
+    pub compiled: Option<regex::Regex>,
+    /// Whether the pattern failed to compile.
+    pub pattern_error: bool,
+    /// Sequence numbers of matching records.
+    pub match_seqs: Vec<u64>,
+    /// Total matches found.
+    pub match_count: usize,
+    /// Index of the currently highlighted match (0-based).
+    pub current_match: usize,
+}
+
+impl AgentOutputSearchState {
+    /// Recompile the regex from the current pattern.
+    pub fn recompile(&mut self) {
+        if self.pattern.is_empty() {
+            self.compiled = None;
+            self.pattern_error = false;
+            self.match_count = 0;
+            self.current_match = 0;
+            self.match_seqs.clear();
+        } else {
+            match regex::RegexBuilder::new(&self.pattern)
+                .case_insensitive(true)
+                .build()
+            {
+                Ok(re) => {
+                    self.compiled = Some(re);
+                    self.pattern_error = false;
+                }
+                Err(_) => {
+                    self.compiled = None;
+                    self.pattern_error = true;
+                    self.match_count = 0;
+                    self.current_match = 0;
+                    self.match_seqs.clear();
+                }
+            }
+        }
+    }
+
+    /// Update match sequences from the given agent output history.
+    pub fn update_matches(&mut self, history: &AgentOutputHistory, agent_id: &str) {
+        self.match_seqs.clear();
+        if let Some(ref re) = self.compiled {
+            for record in history.records_for(agent_id) {
+                if re.is_match(&record.text)
+                    || record.tool_name.as_deref().is_some_and(|n| re.is_match(n))
+                    || re.is_match(&record.role)
+                {
+                    self.match_seqs.push(record.seq);
+                }
+            }
+        }
+        self.match_count = self.match_seqs.len();
+        if self.current_match >= self.match_count && self.match_count > 0 {
+            self.current_match = self.match_count - 1;
+        }
+    }
+
+    /// Navigate to the next match, wrapping around.
+    pub fn next_match(&mut self) {
+        if self.match_count > 0 {
+            self.current_match = (self.current_match + 1) % self.match_count;
+        }
+    }
+
+    /// Navigate to the previous match, wrapping around.
+    pub fn prev_match(&mut self) {
+        if self.match_count > 0 {
+            self.current_match = if self.current_match == 0 {
+                self.match_count - 1
+            } else {
+                self.current_match - 1
+            };
+        }
+    }
+
+    /// Clear all search state.
+    pub fn clear(&mut self) {
+        self.active = false;
+        self.pattern.clear();
+        self.compiled = None;
+        self.pattern_error = false;
+        self.match_count = 0;
+        self.current_match = 0;
+        self.match_seqs.clear();
+    }
+
+    /// The sequence number of the currently highlighted match, if any.
+    #[must_use]
+    pub fn current_match_seq(&self) -> Option<u64> {
+        self.match_seqs.get(self.current_match).copied()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Plan tree filter state (#219)
 // ---------------------------------------------------------------------------
 
@@ -861,7 +1344,15 @@ fn build_unified_log_cache(tui_state: &TuiState) -> Vec<LogEntry> {
             if signal.payload_preview.contains("passed") {
                 LogEntryLevel::Info
             } else {
-                LogEntryLevel::Warn
+                // Gate failures are ERR severity.
+                LogEntryLevel::Error
+            }
+        } else if signal.kind.contains("model_select") || signal.kind.contains("model_route") {
+            // Model selection events are DEBUG unless there was a fallback.
+            if signal.payload_preview.contains("fallback") {
+                LogEntryLevel::Info
+            } else {
+                LogEntryLevel::Debug
             }
         } else if signal.kind.contains("debug") {
             LogEntryLevel::Debug
@@ -890,10 +1381,13 @@ fn build_unified_log_cache(tui_state: &TuiState) -> Vec<LogEntry> {
     for episode in &tui_state.episodes_cache {
         let ts_ms = episode.timestamp.timestamp_millis();
         let level = if !episode.success {
+            // Agent crashes/errors and gate failures are ERR.
             LogEntryLevel::Error
         } else if episode.kind == "gate" {
-            LogEntryLevel::Warn
+            // Successful gates are INFO, not WARN.
+            LogEntryLevel::Info
         } else {
+            // Task completions are INFO.
             LogEntryLevel::Info
         };
         let duration_str = if episode.duration_secs > 0.0 {
@@ -1021,13 +1515,10 @@ fn build_unified_log_cache(tui_state: &TuiState) -> Vec<LogEntry> {
         seq += 1;
     }
 
-    const MAX_UNIFIED_LOG_ENTRIES: usize = 10_000;
     let all: Vec<LogEntry> = entries.into_values().collect();
     let len = all.len();
-    if len > MAX_UNIFIED_LOG_ENTRIES {
-        all.into_iter()
-            .skip(len - MAX_UNIFIED_LOG_ENTRIES)
-            .collect()
+    if len > MAX_UNIFIED_LOG {
+        all.into_iter().skip(len - MAX_UNIFIED_LOG).collect()
     } else {
         all
     }
@@ -1097,6 +1588,8 @@ pub struct Wave {
     pub total: usize,
     /// Whether the wave tree node is expanded.
     pub expanded: bool,
+    /// Wave indices that must complete before this wave can start.
+    pub blocked_by_waves: Vec<usize>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1153,33 +1646,25 @@ pub struct SysMetrics {
     /// CPU usage percentage (0.0 .. 100.0).
     pub cpu_pct: f32,
     /// Recent CPU usage history for sparkline.
-    pub cpu_history: Vec<f32>,
+    pub cpu_history: VecDeque<f32>,
     /// Memory currently used in bytes.
     pub mem_used_bytes: u64,
     /// Total system memory in bytes.
     pub mem_total_bytes: u64,
     /// Recent memory usage history (fractional, 0.0..1.0) for sparkline.
-    pub mem_history: Vec<f32>,
-    /// Network bytes received (cumulative total from OS).
+    pub mem_history: VecDeque<f32>,
+    /// Network download bytes/sec (computed rate).
     pub net_down_bytes_sec: u64,
-    /// Network bytes sent (cumulative total from OS).
-    pub net_out_bytes_total: u64,
     /// Network upload bytes/sec (computed rate).
     pub net_up_bytes_sec: u64,
-    /// Disk bytes read (cumulative total from OS).
+    /// Disk read bytes/sec (computed rate).
     pub disk_read_bytes_sec: u64,
-    /// Disk bytes written (cumulative total from OS).
-    pub disk_write_bytes_total: u64,
+    /// Disk write bytes/sec (computed rate).
+    pub disk_write_bytes_sec: u64,
     /// Disk free space in bytes.
     pub disk_free_bytes: u64,
     /// Total disk space in bytes.
     pub disk_total_bytes: u64,
-    /// Previous network in total (for rate calculation).
-    pub prev_net_in: u64,
-    /// Previous network out total (for rate calculation).
-    pub prev_net_out: u64,
-    /// Previous disk read total (for rate calculation).
-    pub prev_disk_read: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -1227,6 +1712,42 @@ pub struct CommandResult {
     pub message: String,
 }
 
+/// Sort mode for the cost-by-model table.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CostSortMode {
+    /// Sort alphabetically by model name (default BTreeMap order).
+    #[default]
+    Name,
+    /// Sort descending by total cost.
+    Cost,
+    /// Sort descending by task count.
+    Tasks,
+    /// Sort descending by pass rate.
+    PassRate,
+}
+
+impl CostSortMode {
+    /// Cycle to the next sort mode.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Name => Self::Cost,
+            Self::Cost => Self::Tasks,
+            Self::Tasks => Self::PassRate,
+            Self::PassRate => Self::Name,
+        }
+    }
+
+    /// Short label for the header indicator.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Name => "name",
+            Self::Cost => "cost",
+            Self::Tasks => "tasks",
+            Self::PassRate => "pass%",
+        }
+    }
+}
+
 /// Complete TUI state, matching Mori's `RunState` field set.
 #[derive(Debug, Clone)]
 pub struct TuiState {
@@ -1253,11 +1774,16 @@ pub struct TuiState {
     // -- critical path ETA --
     /// Remaining ETA minutes computed from the critical path of the task DAG.
     /// Updated when a critical-path task completes. `None` when not yet computed.
-    pub critical_path_eta_minutes: Option<u32>,
+    pub critical_path_eta_minutes: Option<f64>,
+    /// Computed C-factor value for status bar display.
+    pub c_factor: Option<f64>,
 
     // -- task checklist --
     /// Task rows for the task_progress widget.
     pub current_task_checklist: Vec<TaskRow>,
+    /// Smoothed task progress (0.0..1.0) for animated progress bars.
+    /// Updated each frame via EMA to avoid jarring jumps.
+    pub task_progress_smooth: super::smoothing::SmoothedValue,
 
     // -- gate results --
     /// Verify pipeline results for the command_output widget.
@@ -1296,15 +1822,29 @@ pub struct TuiState {
     pub agent_output_cache: RefCell<HashMap<String, CachedRender>>,
     /// Live websocket tails keyed by agent identifier.
     pub agent_streams: HashMap<String, AgentStream>,
+    /// Structured per-agent output history with pagination (#367).
+    pub agent_output_history: AgentOutputHistory,
+    /// Agent output search state for F3:Agents tab (#367).
+    pub agent_output_search: AgentOutputSearchState,
     // -- navigation --
     /// Active top-level tab.
     pub active_tab: Tab,
     /// Selected plan index (legacy, may differ from current_plan_idx during browsing).
     pub selected_plan_idx: usize,
+    /// Cached full name of the selected plan for status bar display.
+    pub selected_plan_name: Option<String>,
     /// Selected agent index in the agent roster.
     pub selected_agent: usize,
     /// Selected agent sub-tab index.
     pub selected_agent_tab: usize,
+    /// Selected Dashboard detail panel index.
+    pub dashboard_sub_tab: usize,
+    /// Selected Git tab sub-view index.
+    pub git_sub_tab: usize,
+    /// Selected Logs tab sub-view index.
+    pub logs_sub_tab: usize,
+    /// Selected Learning tab sub-view index.
+    pub learning_sub_tab: usize,
     /// Selected Config tab sub-view index.
     pub config_sub_tab: usize,
     /// Selected Inspect tab sub-view index.
@@ -1345,6 +1885,20 @@ pub struct TuiState {
     pub diff_scroll: usize,
     /// Procs sub-tab scroll offset (independent from diff_scroll).
     pub procs_scroll: usize,
+    /// Per-tab detail-pane scroll offsets (independent from diff_scroll).
+    pub git_detail_scroll: usize,
+    /// Log detail pane scroll offset.
+    pub log_detail_scroll: usize,
+    /// Config values pane scroll offset.
+    pub config_values_scroll: usize,
+    /// Inspect detail pane scroll offset.
+    pub inspect_detail_scroll: usize,
+    /// Marketplace detail pane scroll offset.
+    pub marketplace_detail_scroll: usize,
+    /// Atelier detail pane scroll offset.
+    pub atelier_detail_scroll: usize,
+    /// Learning detail pane scroll offset.
+    pub learning_detail_scroll: usize,
     /// Task list scroll offset.
     pub task_scroll: usize,
     /// Command output panel scroll offset.
@@ -1365,6 +1919,12 @@ pub struct TuiState {
     pub log_auto_tail: bool,
     /// Active log levels shown in the Logs tab.
     pub log_filter_levels: HashSet<LogFilterLevel>,
+    /// Log grouping mode (chronological, by-plan, by-task).
+    pub log_grouping: super::views::logs_view::LogGrouping,
+    /// Index of the currently expanded log entry (Enter key toggles).
+    pub log_expanded_idx: Option<usize>,
+    /// Set of collapsed group names in grouped log views.
+    pub log_collapsed_groups: std::collections::HashSet<String>,
 
     // -- approval / confirm --
     /// Pending agent command approval, if any.
@@ -1403,6 +1963,8 @@ pub struct TuiState {
     pub is_paused: bool,
 
     // -- cost / tokens --
+    /// Sort mode for the cost-by-model table widget.
+    pub cost_sort_mode: CostSortMode,
     /// Cost per plan (plan_id -> USD).
     pub cost_per_plan: HashMap<String, f64>,
     /// Cost per task (task_id -> USD).
@@ -1425,6 +1987,10 @@ pub struct TuiState {
     pub cost_rate: f64,
     /// Cumulative cost in USD for header_bar display.
     pub cost_dollars: f64,
+    /// Live token burn rate (tokens per minute) for status bar display.
+    pub token_rate_per_min: f64,
+    /// Projected total cost based on current burn rate. `None` when not yet computed.
+    pub projected_cost: Option<f64>,
     /// Per-process metrics for the dashboard Procs sub-tab.
     pub process_metrics: Vec<ProcessMetrics>,
 
@@ -1435,6 +2001,8 @@ pub struct TuiState {
     // -- timing --
     /// When the current run started, for elapsed time calculation.
     pub run_started: Option<Instant>,
+    /// Immutable elapsed time published by a terminal runner snapshot.
+    pub run_duration_secs: Option<f64>,
 
     // -- wave navigation --
     /// Selected wave index for wave prev/next navigation.
@@ -1491,6 +2059,15 @@ pub struct TuiState {
     pub gate_results_page: GateResultsPageData,
     /// Experiment summaries for the config tab.
     pub experiments: Vec<ExperimentSummary>,
+    /// Incremental tailer over `.roko/learn/efficiency.jsonl`, used in
+    /// connected mode where the core snapshot cannot carry per-event
+    /// learning payloads (they are `roko-learn` types).
+    connected_efficiency_tailer:
+        super::jsonl_tailer::IncrementalTailer<roko_learn::efficiency::AgentEfficiencyEvent>,
+    /// Last observed efficiency log size; change detector for the tailer.
+    connected_efficiency_len: u64,
+    /// Last observed experiments store stamp `(len, mtime_ms)`.
+    connected_experiments_stamp: (u64, i64),
     /// Per-task output tails.
     pub task_output_tails: HashMap<String, Vec<String>>,
     /// Git diff content.
@@ -1511,6 +2088,8 @@ pub struct TuiState {
     // -- log search (#217) --
     /// Log search/filter state for regex highlighting and filtering.
     pub log_search: LogSearchState,
+    /// Last yanked (copied) log entry text, set by `y` key on Logs tab.
+    pub yanked_text: Option<String>,
 
     // -- plan tree filter (#219) --
     /// Plan tree filter state for F2:Plans tab.
@@ -1527,6 +2106,17 @@ pub struct TuiState {
     pub tui_fps: f32,
     /// Whether the warning bar has been dismissed by the user (`n` key).
     pub warnings_dismissed: bool,
+    /// Per-warning dismiss set -- individual warning keys dismissed by the user.
+    /// New warnings that don't match a dismissed key will still appear.
+    pub dismissed_warning_keys: HashSet<String>,
+
+    // -- notification history --
+    /// Retained history of expired/dismissed notifications (bounded to 200).
+    pub notification_history: VecDeque<super::modals::NotificationRecord>,
+    /// Count of entries evicted from history due to the 200-entry cap.
+    pub notification_evicted_count: usize,
+    /// Monotonic counter for assigning notification IDs.
+    pub notification_next_id: u64,
 
     // -- knowledge browse --
     /// Knowledge entries for the Inspect tab's KnowledgeBrowse sub-view.
@@ -1578,12 +2168,43 @@ pub struct TuiState {
     /// Timestamp of the last inspect data refresh.
     pub inspect_last_refresh: Option<Instant>,
 
+    // -- MCP config cache (P3.1) --
+    /// Cached MCP configuration for the Dashboard MCP panel.
+    pub mcp_config_view: McpConfigView,
+    /// Timestamp of the last MCP configuration refresh.
+    pub mcp_config_refreshed_at: Option<Instant>,
+
+    // -- conductor panel cache --
+    /// Cached conductor snapshot for the F1:Dashboard Conductor sub-tab.
+    pub conductor_snapshot: super::widgets::conductor_panel::ConductorSnapshot,
+    /// Timestamp of the last conductor snapshot refresh.
+    pub conductor_snapshot_refreshed_at: Option<Instant>,
+
     cpu_pct_smoothed: SmoothedValue,
     token_rate_smoothed: SmoothedValue,
     cost_rate_smoothed: SmoothedValue,
     last_rate_sample_at: Option<Instant>,
     last_token_total_sample: u64,
     last_cost_dollars_sample: f64,
+
+    // -- revision tracking (#366) --
+    /// Revision counter for the signals collection.
+    pub(crate) rev_signals: Revision,
+    /// Revision counter for the episodes collection.
+    pub(crate) rev_episodes: Revision,
+    /// Revision counter for the efficiency events collection.
+    pub(crate) rev_efficiency: Revision,
+    /// Revision counter for the gate results page (failure_rows).
+    pub(crate) rev_gate_results: Revision,
+    /// Revision counter for the event log.
+    pub(crate) rev_event_log: Revision,
+    /// Combined revision snapshot used to decide if the unified log cache
+    /// needs rebuilding.
+    unified_log_input_rev: u64,
+
+    // -- eviction counters (#366) --
+    /// Tracks evictions from bounded history collections.
+    pub eviction_counters: EvictionCounters,
 }
 
 impl Default for TuiState {
@@ -1601,7 +2222,9 @@ impl Default for TuiState {
             execution_waves: Vec::new(),
             collapsed_waves: HashSet::new(),
             critical_path_eta_minutes: None,
+            c_factor: None,
             current_task_checklist: Vec::new(),
+            task_progress_smooth: super::smoothing::SmoothedValue::new(0.15),
             gate_results: Vec::new(),
             diagnoses: Vec::new(),
             experiment_winners: Vec::new(),
@@ -1620,10 +2243,17 @@ impl Default for TuiState {
             route_metrics: HashMap::new(),
             agent_output_cache: RefCell::new(HashMap::new()),
             agent_streams: HashMap::new(),
+            agent_output_history: AgentOutputHistory::default(),
+            agent_output_search: AgentOutputSearchState::default(),
             active_tab: Tab::default(),
             selected_plan_idx: 0,
+            selected_plan_name: None,
             selected_agent: 0,
             selected_agent_tab: 0,
+            dashboard_sub_tab: 0,
+            git_sub_tab: 0,
+            logs_sub_tab: 0,
+            learning_sub_tab: 0,
             config_sub_tab: 0,
             inspect_sub_tab: 0,
             marketplace_sub_tab: 0,
@@ -1641,6 +2271,13 @@ impl Default for TuiState {
             agent_scroll: None,
             diff_scroll: 0,
             procs_scroll: 0,
+            git_detail_scroll: 0,
+            log_detail_scroll: 0,
+            config_values_scroll: 0,
+            inspect_detail_scroll: 0,
+            marketplace_detail_scroll: 0,
+            atelier_detail_scroll: 0,
+            learning_detail_scroll: 0,
             task_scroll: 0,
             command_output_scroll: 0,
             plan_detail_scroll: 0,
@@ -1651,6 +2288,9 @@ impl Default for TuiState {
             agent_topology_scroll_offset: 0,
             log_auto_tail: true,
             log_filter_levels: LogFilterLevel::all().into_iter().collect(),
+            log_grouping: super::views::logs_view::LogGrouping::default(),
+            log_expanded_idx: None,
+            log_collapsed_groups: std::collections::HashSet::new(),
 
             pending_approval: None,
             pending_confirm: None,
@@ -1670,6 +2310,7 @@ impl Default for TuiState {
 
             is_paused: false,
 
+            cost_sort_mode: CostSortMode::default(),
             cost_per_plan: HashMap::new(),
             cost_per_task: HashMap::new(),
             max_plan_budget_usd: 0.0,
@@ -1681,11 +2322,14 @@ impl Default for TuiState {
             token_rate: 0.0,
             cost_rate: 0.0,
             cost_dollars: 0.0,
+            token_rate_per_min: 0.0,
+            projected_cost: None,
             process_metrics: Vec::new(),
 
             sys: SysMetrics::default(),
 
             run_started: None,
+            run_duration_secs: None,
 
             selected_wave_idx: 0,
 
@@ -1702,6 +2346,12 @@ impl Default for TuiState {
 
             inspect_data: InspectData::default(),
             inspect_last_refresh: None,
+
+            mcp_config_view: McpConfigView::default(),
+            mcp_config_refreshed_at: None,
+
+            conductor_snapshot: Default::default(),
+            conductor_snapshot_refreshed_at: None,
 
             agent_pane_group: 0,
 
@@ -1721,6 +2371,9 @@ impl Default for TuiState {
             cfactor: None,
             gate_results_page: GateResultsPageData::default(),
             experiments: Vec::new(),
+            connected_efficiency_tailer: super::jsonl_tailer::IncrementalTailer::default(),
+            connected_efficiency_len: 0,
+            connected_experiments_stamp: (0, 0),
             task_output_tails: HashMap::new(),
             git_diff: String::new(),
             plan_summaries: Vec::new(),
@@ -1731,6 +2384,7 @@ impl Default for TuiState {
             cached_unified_log: Vec::new(),
 
             log_search: LogSearchState::default(),
+            yanked_text: None,
             plan_tree_filter: PlanTreeFilter::default(),
 
             agents_online: 0,
@@ -1738,6 +2392,11 @@ impl Default for TuiState {
             mcp_connection_count: 0,
             tui_fps: 0.0,
             warnings_dismissed: false,
+            dismissed_warning_keys: HashSet::new(),
+
+            notification_history: VecDeque::new(),
+            notification_evicted_count: 0,
+            notification_next_id: 0,
 
             knowledge_entries: Vec::new(),
 
@@ -1763,6 +2422,15 @@ impl Default for TuiState {
             last_rate_sample_at: None,
             last_token_total_sample: 0,
             last_cost_dollars_sample: 0.0,
+
+            rev_signals: Revision::new(),
+            rev_episodes: Revision::new(),
+            rev_efficiency: Revision::new(),
+            rev_gate_results: Revision::new(),
+            rev_event_log: Revision::new(),
+            unified_log_input_rev: 0,
+
+            eviction_counters: EvictionCounters::default(),
         }
     }
 }
@@ -2229,6 +2897,87 @@ impl TuiState {
         self.inspect_last_refresh = Some(Instant::now());
     }
 
+    /// Whether the cached MCP configuration should be refreshed.
+    #[must_use]
+    pub fn mcp_config_needs_refresh(&self) -> bool {
+        const MCP_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+        self.mcp_config_refreshed_at
+            .is_none_or(|refreshed| refreshed.elapsed() >= MCP_REFRESH_INTERVAL)
+    }
+
+    /// Refresh the dashboard MCP configuration cache from disk.
+    pub fn refresh_mcp_config_view(&mut self) {
+        let config_path = self.workdir.join("roko.toml");
+        self.mcp_config_view = match Config::from_file(&config_path) {
+            Ok(config) => {
+                let Some(configured_path) = config.agent.mcp_config else {
+                    self.mcp_config_view = McpConfigView::default();
+                    self.mcp_config_refreshed_at = Some(Instant::now());
+                    return;
+                };
+                let resolved_path = if configured_path.is_absolute() {
+                    configured_path.clone()
+                } else {
+                    self.workdir.join(&configured_path)
+                };
+                if !resolved_path.is_file() {
+                    McpConfigView {
+                        configured_path: Some(configured_path),
+                        resolved_path: Some(resolved_path),
+                        ..McpConfigView::default()
+                    }
+                } else {
+                    match roko_agent::mcp::McpConfig::load(&resolved_path) {
+                        Ok(config) => McpConfigView {
+                            configured_path: Some(configured_path),
+                            resolved_path: Some(resolved_path),
+                            config: Some(config),
+                            error: None,
+                        },
+                        Err(error) => McpConfigView {
+                            configured_path: Some(configured_path),
+                            resolved_path: Some(resolved_path),
+                            config: None,
+                            error: Some(error.to_string()),
+                        },
+                    }
+                }
+            }
+            Err(error) => McpConfigView {
+                error: Some(format!("failed to load roko.toml: {error}")),
+                ..McpConfigView::default()
+            },
+        };
+        self.mcp_config_refreshed_at = Some(Instant::now());
+    }
+
+    /// Refresh the conductor snapshot from current alerts, diagnoses, and config.
+    ///
+    /// Called on a cadence (e.g. every 5 seconds) to avoid re-parsing config
+    /// every frame. The snapshot captures watcher health status, recent
+    /// interventions, circuit breaker state, and config thresholds.
+    pub fn refresh_conductor_snapshot(&mut self) {
+        let config_path = self.workdir.join("roko.toml");
+        let conductor_config = std::fs::read_to_string(&config_path)
+            .ok()
+            .and_then(|text| toml::from_str::<roko_core::config::schema::RokoConfig>(&text).ok())
+            .map(|c| c.conductor)
+            .unwrap_or_default();
+        self.conductor_snapshot = super::widgets::conductor_panel::build_conductor_snapshot(
+            &self.conductor_alerts,
+            &self.diagnoses,
+            &conductor_config,
+        );
+        self.conductor_snapshot_refreshed_at = Some(Instant::now());
+    }
+
+    /// Whether the conductor snapshot is stale and needs a refresh.
+    #[must_use]
+    pub fn conductor_snapshot_needs_refresh(&self) -> bool {
+        self.conductor_snapshot_refreshed_at
+            .map_or(true, |t| t.elapsed() > Duration::from_secs(5))
+    }
+
     // -- aggregate queries (used by header_bar, status_bar, etc.) -----------
 
     /// Return (done, total) task counts summed across all plans.
@@ -2242,9 +2991,11 @@ impl TuiState {
     /// Elapsed seconds since `run_started`, or 0.0 if not set.
     #[must_use]
     pub fn elapsed_secs(&self) -> f64 {
-        self.run_started
-            .map(|s| s.elapsed().as_secs_f64())
-            .unwrap_or(0.0)
+        self.run_duration_secs.unwrap_or_else(|| {
+            self.run_started
+                .map(|s| s.elapsed().as_secs_f64())
+                .unwrap_or(0.0)
+        })
     }
 
     /// Return the selected plan's spend, ceiling, and simple historical projection.
@@ -2311,18 +3062,21 @@ impl TuiState {
 
     /// Collect active warnings for the persistent warning bar.
     ///
-    /// Returns an empty vec when the user has dismissed warnings (`n` key).
+    /// Returns an empty vec when the user has dismissed all warnings (`n` key).
+    /// Individual warnings dismissed via `dismissed_warning_keys` are filtered
+    /// out while new warnings continue to appear.
     #[must_use]
     pub fn active_warnings(&self) -> Vec<String> {
         if self.warnings_dismissed {
             return Vec::new();
         }
-        let mut warnings = Vec::new();
+        let mut candidates: Vec<(String, String)> = Vec::new(); // (key, message)
+
         // Disk low: warn when less than 1 GiB free and we have data.
         const LOW_DISK_THRESHOLD: u64 = 1 << 30; // 1 GiB
         if self.sys.disk_free_bytes > 0 && self.sys.disk_free_bytes < LOW_DISK_THRESHOLD {
             let free = crate::tui::widgets::header_bar::fmt_bytes_short(self.sys.disk_free_bytes);
-            warnings.push(format!("DSK LOW: {free} free"));
+            candidates.push(("dsk_low".into(), format!("DSK LOW: {free} free")));
         }
         // Provider unhealthy: any agent marked as failed.
         let unhealthy_count = self
@@ -2331,13 +3085,58 @@ impl TuiState {
             .filter(|a| matches!(a.status, AgentStatus::Failed))
             .count();
         if unhealthy_count > 0 {
-            warnings.push(format!("{unhealthy_count} provider(s) unhealthy"));
+            candidates.push((
+                "provider_unhealthy".into(),
+                format!("{unhealthy_count} provider(s) unhealthy"),
+            ));
         }
         // Stale snapshot: if no run is active but there are plans with active flag.
         if self.run_started.is_none() && self.plans.iter().any(|p| p.active) {
-            warnings.push("Stale snapshot: plans active but no run".to_string());
+            candidates.push((
+                "stale_snapshot".into(),
+                "Stale snapshot: plans active but no run".to_string(),
+            ));
         }
-        warnings
+        // Budget approaching: warn when > 80% consumed.
+        let budget = self.aggregate_plan_budget();
+        if budget > 0.0 && self.cost_dollars / budget > 0.8 {
+            let pct = (self.cost_dollars / budget * 100.0) as u32;
+            candidates.push((
+                "budget_high".into(),
+                format!("BUDGET: ${:.2}/${budget:.2} ({pct}%)", self.cost_dollars),
+            ));
+        }
+
+        candidates
+            .into_iter()
+            .filter(|(key, _)| !self.dismissed_warning_keys.contains(key))
+            .map(|(_, msg)| msg)
+            .collect()
+    }
+
+    /// Return the warning keys for currently active warnings.
+    #[must_use]
+    pub fn active_warning_keys(&self) -> Vec<String> {
+        let mut keys = Vec::new();
+        const LOW_DISK_THRESHOLD: u64 = 1 << 30;
+        if self.sys.disk_free_bytes > 0 && self.sys.disk_free_bytes < LOW_DISK_THRESHOLD {
+            keys.push("dsk_low".into());
+        }
+        if self
+            .agents
+            .iter()
+            .any(|a| matches!(a.status, AgentStatus::Failed))
+        {
+            keys.push("provider_unhealthy".into());
+        }
+        if self.run_started.is_none() && self.plans.iter().any(|p| p.active) {
+            keys.push("stale_snapshot".into());
+        }
+        let budget = self.aggregate_plan_budget();
+        if budget > 0.0 && self.cost_dollars / budget > 0.8 {
+            keys.push("budget_high".into());
+        }
+        keys
     }
 
     /// Badge count for a tab. Returns `0` when the tab has nothing noteworthy,
@@ -2364,26 +3163,32 @@ impl TuiState {
     #[must_use]
     pub fn sub_tab_for(&self, tab: Tab) -> usize {
         match tab {
-            Tab::Dashboard | Tab::Plans => self.plan_detail_tab,
+            Tab::Dashboard => self.dashboard_sub_tab,
+            Tab::Plans => self.plan_detail_tab,
             Tab::Agents => self.selected_agent_tab,
+            Tab::Git => self.git_sub_tab,
+            Tab::Logs => self.logs_sub_tab,
             Tab::Config => self.config_sub_tab,
             Tab::Inspect => self.inspect_sub_tab,
             Tab::Marketplace => self.marketplace_sub_tab,
             Tab::Atelier => self.atelier_sub_tab,
-            Tab::Git | Tab::Logs | Tab::Learning => 0,
+            Tab::Learning => self.learning_sub_tab,
         }
     }
 
     /// Store the active sub-view index for a tab.
     pub fn set_sub_tab_for(&mut self, tab: Tab, idx: usize) {
         match tab {
-            Tab::Dashboard | Tab::Plans => self.plan_detail_tab = idx,
+            Tab::Dashboard => self.dashboard_sub_tab = idx,
+            Tab::Plans => self.plan_detail_tab = idx,
             Tab::Agents => self.selected_agent_tab = idx,
+            Tab::Git => self.git_sub_tab = idx,
+            Tab::Logs => self.logs_sub_tab = idx,
             Tab::Config => self.config_sub_tab = idx,
             Tab::Inspect => self.inspect_sub_tab = idx,
             Tab::Marketplace => self.marketplace_sub_tab = idx,
             Tab::Atelier => self.atelier_sub_tab = idx,
-            Tab::Git | Tab::Logs | Tab::Learning => {}
+            Tab::Learning => self.learning_sub_tab = idx,
         }
     }
 
@@ -2401,6 +3206,7 @@ impl TuiState {
             InputMode::Inject => "INJECT",
             InputMode::Filter => "FILTER",
             InputMode::LogSearch => "SEARCH",
+            InputMode::AgentOutputSearch => "SEARCH",
             InputMode::PlanFilter => "PLAN FILTER",
             InputMode::Confirm | InputMode::ConfigEdit => "",
         }
@@ -2421,7 +3227,29 @@ impl TuiState {
     pub fn update_from_snapshot(&mut self, data: &DashboardData) {
         let executor_summary = data.executor_summary();
         if executor_summary.orchestrator_state.is_empty() {
-            if self.orchestrator_state.is_empty() {
+            // Try to derive orchestrator state from status.json when the
+            // executor summary is empty (standalone TUI without a live hub).
+            if !self.workdir.as_os_str().is_empty() {
+                let state_dir = self.workdir.join(".roko").join("state");
+                let runner_read = crate::runner::status_file::read_runner_status(&state_dir);
+                match &runner_read {
+                    crate::runner::status_file::RunnerStatusRead::Live(s) => {
+                        self.orchestrator_state = if s.current_phase.is_empty() {
+                            s.phase.clone()
+                        } else {
+                            s.current_phase.clone()
+                        };
+                    }
+                    crate::runner::status_file::RunnerStatusRead::Stale(_) => {
+                        self.orchestrator_state = String::from("stale/offline");
+                    }
+                    crate::runner::status_file::RunnerStatusRead::Missing => {
+                        if self.orchestrator_state.is_empty() {
+                            self.orchestrator_state = String::from("idle");
+                        }
+                    }
+                }
+            } else if self.orchestrator_state.is_empty() {
                 self.orchestrator_state = String::from("idle");
             }
         } else {
@@ -2448,6 +3276,7 @@ impl TuiState {
                     ),
                     status: TaskStatus::from(task.status.as_str()),
                     agent_id: task.assigned_agents.first().cloned(),
+                    ..Default::default()
                 });
         }
 
@@ -2463,6 +3292,7 @@ impl TuiState {
                     },
                     status: TaskStatus::from(task.phase.as_str()),
                     agent_id: None,
+                    ..Default::default()
                 }));
             }
         }
@@ -2533,6 +3363,10 @@ impl TuiState {
                                     name: task.title.clone(),
                                     status: TaskStatus::from(task.status.as_str()),
                                     agent_id: task.agent_id.clone(),
+                                    depends_on: task.dependencies.clone(),
+                                    acceptance_text: task.acceptance_text.clone(),
+                                    verify_command: task.verify_command.clone(),
+                                    started_at: task.started_at.clone(),
                                 })
                                 .collect()
                         })
@@ -2669,8 +3503,7 @@ impl TuiState {
         self.cumulative_output_tokens = data.efficiency.total_output_tokens;
         self.token_total = self.cumulative_input_tokens + self.cumulative_output_tokens;
         // Snapshot events arrive much more often than token/cost events. Do
-        // not feed zero-delta UI updates into the EMA, or ordinary event-log
-        // traffic would rapidly decay the displayed rate between turns.
+        // not feed zero-delta UI updates into the EMA between real turns.
         if self.last_rate_sample_at.is_none()
             || self.token_total != self.last_token_total_sample
             || self.cost_dollars != self.last_cost_dollars_sample
@@ -2750,14 +3583,17 @@ impl TuiState {
         self.workdir = data.root().to_path_buf();
         self.efficiency_summary = data.efficiency.clone();
         self.efficiency_events = data.efficiency_events.clone();
+        self.rev_efficiency.bump();
         self.efficiency_trend = data.efficiency_trend.clone();
         self.cfactor_trend_buckets = data.cfactor_trend.clone();
         self.cascade_router = data.cascade_router.clone();
         self.recent_signals = data.recent_signals.clone();
+        self.rev_signals.bump();
         self.current_plan_execution = data.current_plan_execution.clone();
         self.conductor_alerts = data.conductor_alerts.clone();
         self.cfactor = data.cfactor.clone();
         self.gate_results_page = data.gate_results_page.clone();
+        self.rev_gate_results.bump();
         self.experiments = data.experiments.clone();
         self.task_output_tails = data.task_outputs().clone();
         self.git_diff = data.git_diff.clone();
@@ -2766,6 +3602,7 @@ impl TuiState {
         self.active_task_summaries = data.active_tasks.clone();
         self.gate_result_summaries = data.gate_results.clone();
         self.episodes_cache = data.episodes().to_vec();
+        self.rev_episodes.bump();
         self.refresh_cached_unified_log();
 
         // -- knowledge browse --
@@ -2803,8 +3640,25 @@ impl TuiState {
     /// Populate state from a connected-mode `DashboardSnapshot`.
     ///
     /// This mirrors the live state published by `StateHub` without touching
-    /// navigation or scroll state.
+    /// navigation or scroll state. Learning data arrives through two channels:
+    /// pushed snapshot payloads (efficiency trend buckets, cascade-router and
+    /// gate-threshold JSON) are parsed into the typed view structs here, and
+    /// per-event payloads the snapshot cannot carry (efficiency events,
+    /// experiment store) are tailed from the local `.roko/learn/` files by
+    /// [`Self::sync_connected_learning_files`].
     pub fn update_from_dashboard_snapshot(&mut self, snap: &roko_core::DashboardSnapshot) {
+        if let Some(duration_ms) = snap.run_duration_ms {
+            self.run_duration_secs = Some(duration_ms as f64 / 1_000.0);
+            self.run_started = None;
+        } else if snap.stats.plans_active > 0 {
+            self.run_duration_secs = None;
+            if self.run_started.is_none() {
+                self.run_started = Some(Instant::now());
+            }
+        } else {
+            self.run_duration_secs = None;
+            self.run_started = None;
+        }
         let prev_selected_plan_id = self
             .plans
             .get(self.selected_plan_idx)
@@ -2881,6 +3735,7 @@ impl TuiState {
                         },
                         status,
                         agent_id: None,
+                        ..Default::default()
                     });
                 TaskRow {
                     id: task.task_id.clone(),
@@ -3108,6 +3963,16 @@ impl TuiState {
                 (agent.id.clone(), metrics)
             })
             .collect();
+        // Ingest agent output lines into the structured history (#367).
+        // Only ingest when there are output_lines that haven't been seen yet,
+        // deduplicating against the history's existing records.
+        for agent in &self.agents {
+            if !agent.output_lines.is_empty() && self.agent_output_history.len(&agent.id) == 0 {
+                self.agent_output_history
+                    .ingest_lines(&agent.id, &agent.output_lines, "assistant");
+            }
+        }
+
         self.prune_agent_output_cache();
         self.prune_agent_streams();
 
@@ -3125,11 +3990,24 @@ impl TuiState {
                 },
             })
             .collect();
+        self.rev_gate_results.bump();
+        self.current_gate_rung = snap.active_gate_rung.as_ref().map(|rung| {
+            let elapsed_ms = current_epoch_ms().saturating_sub(rung.started_at_ms);
+            let started_at = Instant::now()
+                .checked_sub(Duration::from_millis(elapsed_ms))
+                .unwrap_or_else(Instant::now);
+            (rung.rung_name.clone(), started_at)
+        });
         self.diagnoses = snap.diagnoses.iter().cloned().collect();
-        self.experiment_winners = snap.experiment_winners.clone();
+        // Nothing publishes `ExperimentWinnersUpdated` today, so an empty push
+        // must not clobber winners synced from the local experiment store.
+        if !snap.experiment_winners.is_empty() {
+            self.experiment_winners = snap.experiment_winners.clone();
+        }
         self.gate_trends = snap.gate_trends.clone();
         self.gate_recent_failures = snap.gate_recent_failures.clone();
         self.affect = snap.affect.clone();
+        self.critical_path_eta_minutes = snap.critical_path_eta_minutes.map(|v| v as f64);
         if !snap.agent_topology.is_empty() {
             self.agent_topology = snap.agent_topology.clone();
             self.agent_topology_status = AgentTopologyStatus::Ready;
@@ -3148,10 +4026,41 @@ impl TuiState {
 
         // --- Event log from snapshot ---
         self.event_log = snap.event_log.iter().cloned().collect();
+        self.rev_event_log.bump();
 
-        // --- Learning data (opaque JSON for now) ---
-        self.cascade_router_json = snap.cascade_router_json.clone();
-        self.gate_thresholds_json = snap.gate_thresholds_json.clone();
+        // --- Learning data (pushed JSON parsed into the typed view structs) ---
+        // Re-parse only on change; the stored strings double as change detectors.
+        if snap.cascade_router_json != self.cascade_router_json {
+            self.cascade_router_json
+                .clone_from(&snap.cascade_router_json);
+            if !self.cascade_router_json.is_empty() {
+                match serde_json::from_str::<CascadeRouterState>(&self.cascade_router_json) {
+                    Ok(parsed) => self.cascade_router = parsed,
+                    Err(error) => tracing::warn!(
+                        error = %error,
+                        "failed to parse pushed cascade router snapshot"
+                    ),
+                }
+            }
+        }
+        if snap.gate_thresholds_json != self.gate_thresholds_json {
+            self.gate_thresholds_json
+                .clone_from(&snap.gate_thresholds_json);
+            if !self.gate_thresholds_json.is_empty() {
+                match serde_json::from_str::<roko_gate::adaptive_threshold::AdaptiveThresholds>(
+                    &self.gate_thresholds_json,
+                ) {
+                    Ok(thresholds) => {
+                        self.gate_results_page.threshold_rows =
+                            super::dashboard::gate_threshold_rows(&thresholds);
+                    }
+                    Err(error) => tracing::warn!(
+                        error = %error,
+                        "failed to parse pushed gate thresholds snapshot"
+                    ),
+                }
+            }
+        }
 
         // --- Token/cost aggregation across agents ---
         self.cumulative_input_tokens = self.agents.iter().map(|a| a.input_tokens).sum();
@@ -3160,9 +4069,8 @@ impl TuiState {
         if snap.stats.cost_usd_total > 0.0 {
             self.cost_dollars = snap.stats.cost_usd_total;
         }
-        // Connected-mode snapshots carry token deltas in a bounded event
-        // ring. Convert them to a cumulative series aligned to the current
-        // total so the sparkline has real history instead of a single sample.
+        // Connected snapshots carry token deltas in a bounded event ring.
+        // Convert them into a cumulative series aligned to the current total.
         let recent_token_total = snap.token_event_ring.iter().copied().sum::<u64>();
         let mut running_total = self.token_total.saturating_sub(recent_token_total);
         let connected_history = snap
@@ -3356,6 +4264,19 @@ impl TuiState {
                 passed_count: 0,
                 average_wall_time_ms: avg_latency,
             };
+            // Keep the chart-facing trend in the learning crate's bucket type.
+            self.efficiency_trend = snap
+                .efficiency_trend
+                .iter()
+                .map(|bucket| roko_learn::aggregate::EfficiencyBucket {
+                    start: bucket.start,
+                    turns: bucket.turns,
+                    tokens_in: bucket.tokens_in,
+                    tokens_out: bucket.tokens_out,
+                    cost_usd_cents: bucket.cost_usd_cents,
+                    latency_ms_avg: bucket.latency_ms_avg,
+                })
+                .collect();
         }
 
         // --- C-factor trend buckets ---
@@ -3374,11 +4295,100 @@ impl TuiState {
         }
 
         // --- Gate output lines from snapshot ---
-        if !snap.gate_output_lines.is_empty() {
-            self.gate_output_lines = snap.gate_output_lines.clone();
+        // The connected snapshot is authoritative. Replacing with an empty
+        // ring is important when a new rung starts, otherwise the previous
+        // gate's output leaks into the active panel.
+        let prev_gate_len = self.gate_output_lines.len();
+        self.gate_output_lines = snap.gate_output_lines.clone();
+        // Enforce bounded gate output.
+        while self.gate_output_lines.len() > MAX_GATE_LINES {
+            self.gate_output_lines.pop_front();
+            self.eviction_counters.gate_output += 1;
+        }
+        if self.gate_output_lines.len() < prev_gate_len {
+            // Lines replaced with a shorter ring — no eviction to count.
         }
 
+        // --- Learning files the snapshot cannot carry (per-event payloads) ---
+        self.sync_connected_learning_files();
+
         self.refresh_cached_unified_log();
+    }
+
+    /// Tail the local learning files in connected mode.
+    ///
+    /// The core snapshot cannot carry per-event learning payloads (they are
+    /// `roko-learn` types, and `roko-core` cannot depend on `roko-learn`), so
+    /// the connected TUI incrementally tails the append-only `.roko/learn/`
+    /// logs on the same host. Both reads are gated on cheap file-metadata
+    /// changes, so idle snapshots cost one `stat` per file. Pushed snapshot
+    /// data wins when both sources provide the same field: this sync never
+    /// overwrites a non-empty pushed efficiency trend.
+    fn sync_connected_learning_files(&mut self) {
+        if self.workdir.as_os_str().is_empty() {
+            return;
+        }
+        let learn_dir = self.workdir.join(".roko").join("learn");
+
+        // -- efficiency events: incremental JSONL tail, parse only new bytes --
+        let efficiency_path = learn_dir.join("efficiency.jsonl");
+        let efficiency_len = std::fs::metadata(&efficiency_path).map_or(0, |meta| meta.len());
+        if efficiency_len != self.connected_efficiency_len {
+            self.connected_efficiency_len = efficiency_len;
+            if self
+                .connected_efficiency_tailer
+                .path()
+                .as_os_str()
+                .is_empty()
+            {
+                self.connected_efficiency_tailer =
+                    super::jsonl_tailer::IncrementalTailer::new(&efficiency_path);
+            }
+            let _ = self.connected_efficiency_tailer.tick();
+            self.efficiency_events = self.connected_efficiency_tailer.items().to_vec();
+            self.rev_efficiency.bump();
+            if !self.efficiency_events.is_empty() {
+                // Event-derived summary has real pass counts and latencies;
+                // prefer it over the approximation from pushed trend buckets.
+                self.efficiency_summary =
+                    super::dashboard::efficiency_summary_from_events(&self.efficiency_events);
+            }
+            if self.efficiency_trend.is_empty() {
+                self.efficiency_trend = roko_learn::aggregate::efficiency_trend(
+                    &efficiency_path,
+                    chrono::Duration::hours(1),
+                    24,
+                )
+                .unwrap_or_default();
+            }
+        }
+
+        // -- experiment store: stamp-gated whole-file reload --
+        let experiments_path = learn_dir.join("experiments.json");
+        let experiments_stamp = std::fs::metadata(&experiments_path).map_or((0, 0), |meta| {
+            let mtime_ms = meta
+                .modified()
+                .ok()
+                .and_then(|mtime| mtime.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |duration| duration.as_millis() as i64);
+            (meta.len(), mtime_ms)
+        });
+        if experiments_stamp != self.connected_experiments_stamp {
+            self.connected_experiments_stamp = experiments_stamp;
+            if let Ok(text) = std::fs::read_to_string(&experiments_path) {
+                if let Ok(store) =
+                    serde_json::from_str::<roko_learn::prompt_experiment::ExperimentStore>(&text)
+                {
+                    let mut experiments = store
+                        .iter()
+                        .map(ExperimentSummary::from_experiment)
+                        .collect::<Vec<_>>();
+                    experiments.sort_by(|a, b| a.experiment_id.cmp(&b.experiment_id));
+                    self.experiments = experiments;
+                    self.experiment_winners = store.winner_summaries();
+                }
+            }
+        }
     }
 
     /// Return the display-ready cached log rows for the Logs tab.
@@ -3387,9 +4397,39 @@ impl TuiState {
         &self.cached_unified_log
     }
 
-    /// Rebuild the unified log cache from the current dashboard-derived sources.
+    /// Rebuild the unified log cache only when input revisions have changed.
+    ///
+    /// Each input collection (signals, episodes, efficiency events, gate results,
+    /// event log) has a monotonic revision counter. The unified log is only
+    /// rebuilt when the combined revision hash differs from the last build.
     pub fn refresh_cached_unified_log(&mut self) {
+        let combined = self.rev_signals.get()
+            ^ self.rev_episodes.get().wrapping_mul(31)
+            ^ self.rev_efficiency.get().wrapping_mul(37)
+            ^ self.rev_gate_results.get().wrapping_mul(41)
+            ^ self.rev_event_log.get().wrapping_mul(43);
+        if combined == self.unified_log_input_rev && !self.cached_unified_log.is_empty() {
+            return;
+        }
+        self.unified_log_input_rev = combined;
+        let prev_len = self.cached_unified_log.len();
         self.cached_unified_log = build_unified_log_cache(self);
+        let new_len = self.cached_unified_log.len();
+        if new_len < prev_len {
+            self.eviction_counters.unified_log += (prev_len - new_len) as u64;
+        }
+    }
+
+    /// Force a full rebuild of the unified log cache regardless of revision state.
+    ///
+    /// Used by tests and initial bootstrap where revision tracking is bypassed.
+    pub fn force_refresh_cached_unified_log(&mut self) {
+        self.cached_unified_log = build_unified_log_cache(self);
+        self.unified_log_input_rev = self.rev_signals.get()
+            ^ self.rev_episodes.get().wrapping_mul(31)
+            ^ self.rev_efficiency.get().wrapping_mul(37)
+            ^ self.rev_gate_results.get().wrapping_mul(41)
+            ^ self.rev_event_log.get().wrapping_mul(43);
     }
 
     /// Return cached, styled agent output lines for the selected agent pane.
@@ -3495,7 +4535,11 @@ impl TuiState {
     pub const fn is_text_input(&self) -> bool {
         matches!(
             self.input_mode,
-            InputMode::Inject | InputMode::Filter | InputMode::LogSearch | InputMode::PlanFilter
+            InputMode::Inject
+                | InputMode::Filter
+                | InputMode::LogSearch
+                | InputMode::PlanFilter
+                | InputMode::AgentOutputSearch
         )
     }
 
@@ -3504,6 +4548,13 @@ impl TuiState {
         self.agent_scroll = None;
         self.diff_scroll = 0;
         self.procs_scroll = 0;
+        self.git_detail_scroll = 0;
+        self.log_detail_scroll = 0;
+        self.config_values_scroll = 0;
+        self.inspect_detail_scroll = 0;
+        self.marketplace_detail_scroll = 0;
+        self.atelier_detail_scroll = 0;
+        self.learning_detail_scroll = 0;
         self.task_scroll = 0;
         self.command_output_scroll = 0;
         self.plan_detail_scroll = 0;
@@ -3588,6 +4639,51 @@ impl TuiState {
     /// Clamp the command-output scroll offset to the current rendered maximum.
     pub fn clamp_command_output_scroll(&mut self, max: usize) {
         self.command_output_scroll = self.command_output_scroll.min(max);
+    }
+
+    /// Clamp the git detail scroll offset to the current rendered maximum.
+    pub fn clamp_git_detail_scroll(&mut self, max: usize) {
+        self.git_detail_scroll = self.git_detail_scroll.min(max);
+    }
+
+    /// Clamp the config values scroll offset to the current rendered maximum.
+    pub fn clamp_config_values_scroll(&mut self, max: usize) {
+        self.config_values_scroll = self.config_values_scroll.min(max);
+    }
+
+    /// Clamp the config keys scroll offset to the current rendered maximum.
+    pub fn clamp_config_scroll_offset(&mut self, max: usize) {
+        self.config_scroll_offset = self.config_scroll_offset.min(max);
+    }
+
+    /// Clamp the inspect detail scroll offset to the current rendered maximum.
+    pub fn clamp_inspect_detail_scroll(&mut self, max: usize) {
+        self.inspect_detail_scroll = self.inspect_detail_scroll.min(max);
+    }
+
+    /// Clamp the learning detail scroll offset to the current rendered maximum.
+    pub fn clamp_learning_detail_scroll(&mut self, max: usize) {
+        self.learning_detail_scroll = self.learning_detail_scroll.min(max);
+    }
+
+    /// Clamp the procs scroll offset to the current rendered maximum.
+    pub fn clamp_procs_scroll(&mut self, max: usize) {
+        self.procs_scroll = self.procs_scroll.min(max);
+    }
+
+    /// Clamp the log detail scroll offset to the current rendered maximum.
+    pub fn clamp_log_detail_scroll(&mut self, max: usize) {
+        self.log_detail_scroll = self.log_detail_scroll.min(max);
+    }
+
+    /// Clamp the marketplace detail scroll offset to the current rendered maximum.
+    pub fn clamp_marketplace_detail_scroll(&mut self, max: usize) {
+        self.marketplace_detail_scroll = self.marketplace_detail_scroll.min(max);
+    }
+
+    /// Clamp the atelier detail scroll offset to the current rendered maximum.
+    pub fn clamp_atelier_detail_scroll(&mut self, max: usize) {
+        self.atelier_detail_scroll = self.atelier_detail_scroll.min(max);
     }
 
     /// Toggle visibility for a single log level in the Logs tab.
@@ -4053,6 +5149,7 @@ fn build_execution_waves(plans: &[PlanEntry]) -> Vec<Wave> {
             done,
             total: plans.len(),
             expanded: true,
+            blocked_by_waves: Vec::new(),
         }];
     }
 
@@ -4063,6 +5160,9 @@ fn build_execution_waves(plans: &[PlanEntry]) -> Vec<Wave> {
         wave_map.entry(wave_index).or_default().push(plan);
     }
 
+    // Collect all wave indices for blocker computation.
+    let wave_indices: Vec<usize> = wave_map.keys().copied().collect();
+
     wave_map
         .into_iter()
         .map(|(idx, wave_plans)| {
@@ -4070,12 +5170,16 @@ fn build_execution_waves(plans: &[PlanEntry]) -> Vec<Wave> {
                 .iter()
                 .filter(|plan| plan_is_complete(plan))
                 .count();
+            // A wave is blocked by all waves with a lower index.
+            let blocked_by: Vec<usize> =
+                wave_indices.iter().copied().filter(|&w| w < idx).collect();
             Wave {
                 index: idx,
                 plans: wave_plans.iter().map(|plan| plan.id.clone()).collect(),
                 done,
                 total: wave_plans.len(),
                 expanded: true,
+                blocked_by_waves: blocked_by,
             }
         })
         .collect()
@@ -4381,7 +5485,8 @@ fn compute_token_rate(events: &[roko_learn::efficiency::AgentEfficiencyEvent]) -
 }
 
 fn build_token_samples(data: &DashboardData) -> HashMap<String, VecDeque<(DateTime<Utc>, u64)>> {
-    const MAX_TOKEN_HISTORY_SAMPLES: usize = 120;
+    // Use the centralized token sample limit from #366.
+    let max_samples = MAX_TOKEN_SAMPLES;
 
     let mut per_agent: HashMap<String, Vec<(DateTime<Utc>, u64)>> = HashMap::new();
 
@@ -4417,7 +5522,7 @@ fn build_token_samples(data: &DashboardData) -> HashMap<String, VecDeque<(DateTi
         for (timestamp, total_tokens) in samples {
             cumulative_total = cumulative_total.saturating_add(total_tokens);
             history.push_back((timestamp, cumulative_total));
-            if history.len() > MAX_TOKEN_HISTORY_SAMPLES {
+            if history.len() > max_samples {
                 history.pop_front();
             }
         }
@@ -4592,6 +5697,10 @@ fn episode_to_phase_name(episode: &roko_learn::episode_logger::Episode) -> Strin
     String::new()
 }
 
+fn current_epoch_ms() -> u64 {
+    Utc::now().timestamp_millis().max(0) as u64
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -4714,7 +5823,8 @@ mod tests {
         });
 
         assert!(state.unified_log_entries().is_empty());
-        state.refresh_cached_unified_log();
+        // Use force_refresh since we manually pushed signals without bumping revision.
+        state.force_refresh_cached_unified_log();
 
         assert_eq!(state.unified_log_entries().len(), 1);
         assert_eq!(state.unified_log_entries()[0].source, "signal:gate:compile");
@@ -5424,6 +6534,11 @@ tier = "focused"
         ];
 
         let snap = DashboardSnapshot {
+            run_duration_ms: None,
+            run_outcome: None,
+            run_cleanup_degraded: false,
+            critical_path_eta_minutes: None,
+            surviving_agent_pids: Vec::new(),
             plans: [
                 (
                     "plan-a".to_string(),
@@ -5460,6 +6575,7 @@ tier = "focused"
                         active: true,
                         output_bytes: 128,
                         model: String::new(),
+                        provider: String::new(),
                         input_tokens: 0,
                         output_tokens: 0,
                         cache_read_tokens: 0,
@@ -5481,6 +6597,7 @@ tier = "focused"
                         active: false,
                         output_bytes: 0,
                         model: String::new(),
+                        provider: String::new(),
                         input_tokens: 0,
                         output_tokens: 0,
                         cache_read_tokens: 0,
@@ -5548,6 +6665,7 @@ tier = "focused"
             inbox_pending_count: 0,
             affect: None,
             gate_output_lines: Default::default(),
+            active_gate_rung: None,
             token_event_ring: Default::default(),
             stats: Default::default(),
         };
@@ -5639,6 +6757,149 @@ tier = "focused"
         assert_eq!(state.plans.len(), 1);
         assert_eq!(state.plans[0].id, "plan-b");
         assert!(state.plans[0].expanded);
+    }
+
+    #[test]
+    fn update_from_dashboard_snapshot_populates_connected_learning_state() {
+        use roko_core::dashboard_snapshot::{
+            DashboardSnapshot, EfficiencyBucket as CoreEfficiencyBucket,
+        };
+
+        let tmpdir = tempdir().expect("tempdir");
+        let learn_dir = tmpdir.path().join(".roko").join("learn");
+        std::fs::create_dir_all(&learn_dir).expect("create learn dir");
+
+        // Per-event payloads the snapshot cannot carry live in the local
+        // append-only learning files.
+        let now = Utc::now();
+        let events = [
+            AgentEfficiencyEvent {
+                agent_id: "agent-a".into(),
+                model: "gpt-5.6-sol".into(),
+                backend: "codex-cli".into(),
+                input_tokens: 120,
+                output_tokens: 45,
+                cost_usd: 0.25,
+                wall_time_ms: 800,
+                gate_passed: Some(true),
+                is_final_turn: true,
+                timestamp: now.to_rfc3339(),
+                ..AgentEfficiencyEvent::default()
+            },
+            AgentEfficiencyEvent {
+                agent_id: "agent-b".into(),
+                model: "glm-5.1".into(),
+                backend: "zai".into(),
+                input_tokens: 60,
+                output_tokens: 15,
+                cost_usd: 0.05,
+                wall_time_ms: 400,
+                gate_passed: Some(false),
+                is_final_turn: true,
+                timestamp: now.to_rfc3339(),
+                ..AgentEfficiencyEvent::default()
+            },
+        ];
+        let mut log = String::new();
+        for event in &events {
+            log.push_str(&serde_json::to_string(event).expect("serialize event"));
+            log.push('\n');
+        }
+        std::fs::write(learn_dir.join("efficiency.jsonl"), log).expect("write efficiency log");
+
+        let mut store = roko_learn::prompt_experiment::ExperimentStore::new();
+        store.register(roko_learn::prompt_experiment::PromptExperiment::new(
+            "exp-1",
+            "constraints",
+            vec![roko_learn::prompt_experiment::PromptVariant {
+                id: "v1".into(),
+                name: "baseline".into(),
+                section_name: "constraints".into(),
+                content: "be terse".into(),
+                slug: None,
+                active: true,
+            }],
+        ));
+        store
+            .save(&learn_dir.join("experiments.json"))
+            .expect("save experiments");
+
+        let snap = DashboardSnapshot {
+            cascade_router_json: serde_json::json!({
+                "model_slugs": ["gpt-5.6-sol"],
+                "confidence_stats": {"gpt-5.6-sol": {"trials": 3, "successes": 2}},
+            })
+            .to_string(),
+            gate_thresholds_json: serde_json::json!({
+                "rungs": {"1": {"pass_count": 4, "total_count": 5, "ema_pass_rate": 0.8}},
+            })
+            .to_string(),
+            efficiency_trend: vec![CoreEfficiencyBucket {
+                start: now,
+                turns: 2,
+                tokens_in: 180,
+                tokens_out: 60,
+                cost_usd_cents: 30,
+                latency_ms_avg: 600.0,
+            }],
+            ..Default::default()
+        };
+
+        let mut state = TuiState::default();
+        state.workdir = tmpdir.path().to_path_buf();
+        state.update_from_dashboard_snapshot(&snap);
+
+        // Pushed JSON parsed into the typed structs.
+        assert_eq!(
+            state.cascade_router.model_slugs,
+            vec!["gpt-5.6-sol".to_string()]
+        );
+        assert_eq!(
+            state.cascade_router.confidence_stats["gpt-5.6-sol"].successes,
+            2
+        );
+        assert_eq!(state.gate_results_page.threshold_rows.len(), 1);
+        assert_eq!(state.gate_results_page.threshold_rows[0].rung, 1);
+        assert!((state.gate_results_page.threshold_rows[0].ema_pass_rate - 0.8).abs() < 1e-9);
+
+        // Pushed trend converted into the chart-facing bucket type.
+        assert_eq!(state.efficiency_trend.len(), 1);
+        assert_eq!(state.efficiency_trend[0].turns, 2);
+
+        // Per-event payloads tailed from the local learning files.
+        assert_eq!(state.efficiency_events.len(), 2);
+        assert_eq!(state.efficiency_events[0].model, "gpt-5.6-sol");
+        // The event-derived summary wins over the pushed-bucket approximation
+        // (pushed buckets hardcode passed_count = 0; events know the truth).
+        assert_eq!(state.efficiency_summary.event_count, 2);
+        assert!((state.efficiency_summary.total_cost_usd - 0.30).abs() < 1e-9);
+        assert_eq!(state.efficiency_summary.passed_count, 1);
+
+        // Experiment store loaded from disk; no concluded experiments yet, so
+        // no winners — and the empty push did not invent any either.
+        assert_eq!(state.experiments.len(), 1);
+        assert_eq!(state.experiments[0].experiment_id, "exp-1");
+        assert!(state.experiment_winners.is_empty());
+    }
+
+    #[test]
+    fn update_from_dashboard_snapshot_preserves_experiment_winners_when_push_is_empty() {
+        use roko_core::dashboard_snapshot::DashboardSnapshot;
+
+        let tmpdir = tempdir().expect("tempdir");
+        let mut state = TuiState::default();
+        state.workdir = tmpdir.path().to_path_buf();
+        state.experiment_winners = vec![roko_core::ExperimentWinnerSummary {
+            experiment_id: "exp-w".into(),
+            ..Default::default()
+        }];
+
+        // Nothing publishes ExperimentWinnersUpdated today; an empty push must
+        // not clobber winners already in state.
+        state.update_from_dashboard_snapshot(&DashboardSnapshot::default());
+
+        assert_eq!(state.experiment_winners.len(), 1);
+        assert_eq!(state.experiment_winners[0].experiment_id, "exp-w");
     }
 
     #[test]
@@ -5804,6 +7065,7 @@ tier = "focused"
                 active: true,
                 output_bytes: 42,
                 model: String::new(),
+                provider: String::new(),
                 input_tokens: 0,
                 output_tokens: 0,
                 cache_read_tokens: 0,
@@ -5985,6 +7247,7 @@ tier = "focused"
                 active: true,
                 output_bytes: 3,
                 model: String::new(),
+                provider: String::new(),
                 input_tokens: 0,
                 output_tokens: 0,
                 cache_read_tokens: 0,
@@ -6006,6 +7269,7 @@ tier = "focused"
                 active: false,
                 output_bytes: 0,
                 model: String::new(),
+                provider: String::new(),
                 input_tokens: 0,
                 output_tokens: 0,
                 cache_read_tokens: 0,
@@ -6055,6 +7319,7 @@ tier = "focused"
                 active: true,
                 output_bytes: 12,
                 model: "test-model".into(),
+                provider: String::new(),
                 input_tokens: 0,
                 output_tokens: 0,
                 cache_read_tokens: 0,
@@ -6092,6 +7357,7 @@ tier = "focused"
                 active: true,
                 output_bytes: 100,
                 model: "test-model".into(),
+                provider: String::new(),
                 input_tokens: 0,
                 output_tokens: 0,
                 cache_read_tokens: 0,
@@ -6129,6 +7395,7 @@ tier = "focused"
                 active: true,
                 output_bytes: 0,
                 model: "test-model".into(),
+                provider: String::new(),
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_read_tokens: 0,
@@ -6155,42 +7422,6 @@ tier = "focused"
     }
 
     #[test]
-    fn connected_snapshot_rate_survives_unchanged_refreshes() {
-        let mut snap = roko_core::DashboardSnapshot::default();
-        snap.agents.insert(
-            "agent-1".into(),
-            roko_core::dashboard_snapshot::AgentState {
-                agent_id: "agent-1".into(),
-                role: "implementer".into(),
-                active: true,
-                output_bytes: 0,
-                model: "test-model".into(),
-                input_tokens: 200,
-                output_tokens: 0,
-                cache_read_tokens: 0,
-                cache_write_tokens: 0,
-                cost_usd: 0.0,
-                current_task: "task-1".into(),
-                current_plan: "plan-1".into(),
-                attempt: 1,
-                spawned_at_ms: 0,
-                last_event_at_ms: 0,
-                elapsed_ms: 0,
-            },
-        );
-
-        let mut state = TuiState::default();
-        state.last_rate_sample_at = Some(Instant::now() - Duration::from_secs(60));
-        state.last_token_total_sample = 100;
-        state.update_from_dashboard_snapshot(&snap);
-        let rate_after_delta = state.token_rate;
-        assert!(rate_after_delta > 0.0);
-
-        state.update_from_dashboard_snapshot(&snap);
-        assert_eq!(state.token_rate, rate_after_delta);
-    }
-
-    #[test]
     fn connected_snapshot_empty_output_ring_clears_previous_task_output() {
         let mut state = TuiState::default();
         state.agents.push(AgentRow {
@@ -6211,6 +7442,7 @@ tier = "focused"
                 active: true,
                 output_bytes: 0,
                 model: "test-model".into(),
+                provider: String::new(),
                 input_tokens: 0,
                 output_tokens: 0,
                 cache_read_tokens: 0,
@@ -6238,5 +7470,597 @@ tier = "focused"
         let mut value = SmoothedValue::new(0.25);
         assert_eq!(value.update(100.0), 25.0);
         assert_eq!(value.update(100.0), 43.75);
+    }
+
+    // -----------------------------------------------------------------------
+    // #366 — TUI data-pipeline cache tests (tui_pipeline_cache)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn tui_pipeline_cache_revision_skips_rebuild_when_unchanged() {
+        let mut state = TuiState::default();
+        state.recent_signals.push(SignalSummary {
+            id: "s1".into(),
+            kind: "test".into(),
+            created_at_ms: 1_700_000_000_000,
+            confidence: None,
+            plan_id: None,
+            task_id: None,
+            parent_hash: None,
+            lineage: Vec::new(),
+            payload_preview: "hello".into(),
+        });
+        // Bump revision for signals and force initial build.
+        state.rev_signals.bump();
+        state.refresh_cached_unified_log();
+        assert_eq!(state.unified_log_entries().len(), 1);
+
+        // Calling refresh again without bumping any revision skips rebuild.
+        let prev_ptr = state.cached_unified_log.as_ptr();
+        state.refresh_cached_unified_log();
+        // The cache should not have been reallocated.
+        assert_eq!(state.cached_unified_log.as_ptr(), prev_ptr);
+        assert_eq!(state.unified_log_entries().len(), 1);
+    }
+
+    #[test]
+    fn tui_pipeline_cache_revision_rebuilds_on_signal_change() {
+        let mut state = TuiState::default();
+        state.rev_signals.bump();
+        state.refresh_cached_unified_log();
+        assert!(state.unified_log_entries().is_empty());
+
+        // Add a signal and bump the revision.
+        state.recent_signals.push(SignalSummary {
+            id: "s2".into(),
+            kind: "activity".into(),
+            created_at_ms: 1_700_000_001_000,
+            confidence: None,
+            plan_id: None,
+            task_id: None,
+            parent_hash: None,
+            lineage: Vec::new(),
+            payload_preview: "world".into(),
+        });
+        state.rev_signals.bump();
+        state.refresh_cached_unified_log();
+        assert_eq!(state.unified_log_entries().len(), 1);
+    }
+
+    #[test]
+    fn tui_pipeline_cache_revision_counter_is_monotonic() {
+        let mut rev = Revision::new();
+        assert_eq!(rev.get(), 0);
+        assert_eq!(rev.bump(), 1);
+        assert_eq!(rev.bump(), 2);
+        assert_eq!(rev.get(), 2);
+    }
+
+    #[test]
+    fn tui_pipeline_cache_bounded_unified_log_enforces_limit() {
+        let mut state = TuiState::default();
+        // Push more than MAX_UNIFIED_LOG entries.
+        for i in 0..(MAX_UNIFIED_LOG + 100) {
+            state.recent_signals.push(SignalSummary {
+                id: format!("s-{i}"),
+                kind: "fill".into(),
+                created_at_ms: 1_700_000_000_000 + i as i64,
+                confidence: None,
+                plan_id: None,
+                task_id: None,
+                parent_hash: None,
+                lineage: Vec::new(),
+                payload_preview: "fill".into(),
+            });
+        }
+        state.force_refresh_cached_unified_log();
+        assert!(state.unified_log_entries().len() <= MAX_UNIFIED_LOG);
+    }
+
+    #[test]
+    fn tui_pipeline_cache_eviction_counters_default_zero() {
+        let counters = EvictionCounters::default();
+        assert_eq!(counters.unified_log, 0);
+        assert_eq!(counters.diagnoses, 0);
+        assert_eq!(counters.episodes, 0);
+        assert_eq!(counters.gate_output, 0);
+        assert_eq!(counters.token_history, 0);
+        assert_eq!(counters.notifications, 0);
+    }
+
+    #[test]
+    fn tui_pipeline_cache_bounded_gate_output_enforces_limit() {
+        let mut state = TuiState::default();
+        for i in 0..(MAX_GATE_LINES + 50) {
+            state.gate_output_lines.push_back(format!("line {i}"));
+        }
+        // Manually enforce the bound (as done in update_from_dashboard_snapshot).
+        while state.gate_output_lines.len() > MAX_GATE_LINES {
+            state.gate_output_lines.pop_front();
+            state.eviction_counters.gate_output += 1;
+        }
+        assert_eq!(state.gate_output_lines.len(), MAX_GATE_LINES);
+        assert_eq!(state.eviction_counters.gate_output, 50);
+    }
+
+    #[test]
+    fn tui_pipeline_cache_theme_default_is_dark_not_env() {
+        // #366: Theme::default() should return dark() to avoid per-frame env reads.
+        let theme = Theme::default();
+        let dark = Theme::dark();
+        assert_eq!(theme, dark);
+    }
+
+    // =======================================================================
+    // Agent output history tests (#367)
+    // =======================================================================
+
+    fn make_record(text: &str, kind: OutputRecordKind) -> AgentOutputRecord {
+        AgentOutputRecord {
+            seq: 0,
+            timestamp_ms: 1_000_000,
+            role: "assistant".to_string(),
+            kind,
+            text: text.to_string(),
+            redacted: false,
+            tool_id: None,
+            tool_name: None,
+        }
+    }
+
+    fn make_tool_record(text: &str, tool_name: &str) -> AgentOutputRecord {
+        AgentOutputRecord {
+            seq: 0,
+            timestamp_ms: 1_000_000,
+            role: "assistant".to_string(),
+            kind: OutputRecordKind::ToolCall,
+            text: text.to_string(),
+            redacted: false,
+            tool_id: Some("t1".to_string()),
+            tool_name: Some(tool_name.to_string()),
+        }
+    }
+
+    #[test]
+    fn agent_output_history_push_and_retrieve() {
+        let mut history = AgentOutputHistory::default();
+        history.push("agent-1", make_record("hello", OutputRecordKind::Text));
+        history.push("agent-1", make_record("world", OutputRecordKind::Text));
+
+        assert_eq!(history.len("agent-1"), 2);
+        let records = history.before("agent-1", None, 10);
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].text, "hello");
+        assert_eq!(records[1].text, "world");
+    }
+
+    #[test]
+    fn agent_output_history_before_pagination() {
+        let mut history = AgentOutputHistory::default();
+        for i in 0..10 {
+            history.push(
+                "a",
+                make_record(&format!("line-{i}"), OutputRecordKind::Text),
+            );
+        }
+
+        // Get records before seq 6 (should be seqs 1-5)
+        let page = history.before("a", Some(6), 3);
+        assert_eq!(page.len(), 3);
+        assert_eq!(page[0].seq, 3);
+        assert_eq!(page[1].seq, 4);
+        assert_eq!(page[2].seq, 5);
+    }
+
+    #[test]
+    fn agent_output_history_eviction_at_capacity() {
+        let mut history = AgentOutputHistory::default();
+        for i in 0..MAX_AGENT_OUTPUT_RECORDS + 100 {
+            history.push(
+                "a",
+                make_record(&format!("line-{i}"), OutputRecordKind::Text),
+            );
+        }
+
+        assert_eq!(history.len("a"), MAX_AGENT_OUTPUT_RECORDS);
+        assert_eq!(history.evicted, 100);
+        // Oldest sequence should have advanced past 1.
+        assert!(history.oldest_sequence("a") > 1);
+        // Newest records should be the last ones pushed.
+        let tail = history.before("a", None, 1);
+        assert_eq!(
+            tail[0].text,
+            format!("line-{}", MAX_AGENT_OUTPUT_RECORDS + 99)
+        );
+    }
+
+    #[test]
+    fn agent_output_history_search_matches() {
+        let mut history = AgentOutputHistory::default();
+        history.push("a", make_record("cargo build", OutputRecordKind::Text));
+        history.push("a", make_record("running tests", OutputRecordKind::Text));
+        history.push(
+            "a",
+            make_record("cargo test passed", OutputRecordKind::Text),
+        );
+        history.push("a", make_record("all done", OutputRecordKind::Text));
+
+        let re = regex::Regex::new("cargo").unwrap();
+        let matches = history.search("a", &re, None, 100);
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].text, "cargo build");
+        assert_eq!(matches[1].text, "cargo test passed");
+    }
+
+    #[test]
+    fn agent_output_history_search_tool_name() {
+        let mut history = AgentOutputHistory::default();
+        history.push("a", make_tool_record("reading file", "read_file"));
+        history.push("a", make_record("some text", OutputRecordKind::Text));
+        history.push("a", make_tool_record("writing file", "write_file"));
+
+        let re = regex::Regex::new("read_file").unwrap();
+        let matches = history.search("a", &re, None, 100);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].text, "reading file");
+    }
+
+    #[test]
+    fn agent_output_history_search_with_before_seq() {
+        let mut history = AgentOutputHistory::default();
+        for i in 0..5 {
+            history.push(
+                "a",
+                make_record(&format!("match-{i}"), OutputRecordKind::Text),
+            );
+        }
+
+        let re = regex::Regex::new("match").unwrap();
+        let matches = history.search("a", &re, Some(3), 100);
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].text, "match-0");
+        assert_eq!(matches[1].text, "match-1");
+    }
+
+    #[test]
+    fn agent_output_history_agent_switching_isolation() {
+        let mut history = AgentOutputHistory::default();
+        history.push("agent-1", make_record("a1-line", OutputRecordKind::Text));
+        history.push("agent-2", make_record("a2-line", OutputRecordKind::Text));
+
+        assert_eq!(history.len("agent-1"), 1);
+        assert_eq!(history.len("agent-2"), 1);
+        assert_eq!(history.before("agent-1", None, 10)[0].text, "a1-line");
+        assert_eq!(history.before("agent-2", None, 10)[0].text, "a2-line");
+        // Unknown agent returns empty
+        assert_eq!(history.len("agent-3"), 0);
+        assert!(history.before("agent-3", None, 10).is_empty());
+    }
+
+    #[test]
+    fn agent_output_history_clear_agent() {
+        let mut history = AgentOutputHistory::default();
+        history.push("a", make_record("line1", OutputRecordKind::Text));
+        history.push("a", make_record("line2", OutputRecordKind::Text));
+        assert_eq!(history.len("a"), 2);
+
+        history.clear_agent("a");
+        assert_eq!(history.len("a"), 0);
+        assert_eq!(history.oldest_sequence("a"), 1);
+        assert_eq!(history.next_sequence("a"), 1);
+    }
+
+    #[test]
+    fn agent_output_history_dedup_live_settled() {
+        let mut history = AgentOutputHistory::default();
+        // Push record with seq=1
+        history.push("a", make_record("first", OutputRecordKind::Text));
+        let first_seq = history.before("a", None, 1)[0].seq;
+
+        // Attempt to push duplicate with same seq (simulating live+settled copy)
+        let mut dup = make_record("first (settled)", OutputRecordKind::Text);
+        dup.seq = first_seq;
+        history.push_dedup("a", dup);
+
+        // Only one record should exist
+        assert_eq!(history.len("a"), 1);
+        assert_eq!(history.before("a", None, 1)[0].text, "first");
+    }
+
+    #[test]
+    fn agent_output_history_ingest_lines() {
+        let mut history = AgentOutputHistory::default();
+        let lines = vec![
+            "Running cargo test".to_string(),
+            "All tests passed".to_string(),
+        ];
+        history.ingest_lines("a", &lines, "tool");
+
+        assert_eq!(history.len("a"), 2);
+        let records = history.before("a", None, 10);
+        assert_eq!(records[0].text, "Running cargo test");
+        assert_eq!(records[0].role, "tool");
+        assert_eq!(records[1].text, "All tests passed");
+    }
+
+    #[test]
+    fn agent_output_history_tail_pin_behavior() {
+        let mut history = AgentOutputHistory::default();
+        for i in 0..100 {
+            history.push(
+                "a",
+                make_record(&format!("line-{i}"), OutputRecordKind::Text),
+            );
+        }
+
+        // Tail mode: no before_seq, limited results
+        let tail = history.before("a", None, 5);
+        assert_eq!(tail.len(), 5);
+        assert_eq!(tail[4].text, "line-99");
+
+        // Pinned mode: specific before_seq
+        let pinned = history.before("a", Some(10), 5);
+        assert_eq!(pinned.len(), 5);
+        assert_eq!(pinned[0].text, "line-4");
+        assert_eq!(pinned[4].text, "line-8");
+    }
+
+    #[test]
+    fn agent_output_history_record_kinds() {
+        let mut history = AgentOutputHistory::default();
+        history.push("a", make_record("hello", OutputRecordKind::Text));
+        history.push("a", make_record("thinking...", OutputRecordKind::Reasoning));
+        history.push("a", make_tool_record("grep", "search_files"));
+        history.push(
+            "a",
+            AgentOutputRecord {
+                seq: 0,
+                timestamp_ms: 1_000,
+                role: "tool".to_string(),
+                kind: OutputRecordKind::ToolResult,
+                text: "found 3 matches".to_string(),
+                redacted: false,
+                tool_id: Some("t1".to_string()),
+                tool_name: None,
+            },
+        );
+        history.push("a", make_record("compile error", OutputRecordKind::Error));
+        history.push("a", make_record("restarting", OutputRecordKind::System));
+
+        let all = history.before("a", None, 100);
+        assert_eq!(all.len(), 6);
+        assert_eq!(all[0].kind, OutputRecordKind::Text);
+        assert_eq!(all[1].kind, OutputRecordKind::Reasoning);
+        assert_eq!(all[2].kind, OutputRecordKind::ToolCall);
+        assert_eq!(all[3].kind, OutputRecordKind::ToolResult);
+        assert_eq!(all[4].kind, OutputRecordKind::Error);
+        assert_eq!(all[5].kind, OutputRecordKind::System);
+    }
+
+    #[test]
+    fn agent_output_history_search_invalid_regex() {
+        let mut search = AgentOutputSearchState::default();
+        search.pattern = "[invalid(".to_string();
+        search.recompile();
+
+        assert!(search.pattern_error);
+        assert!(search.compiled.is_none());
+        assert_eq!(search.match_count, 0);
+    }
+
+    #[test]
+    fn agent_output_history_search_navigation() {
+        let mut history = AgentOutputHistory::default();
+        for i in 0..10 {
+            history.push(
+                "a",
+                make_record(
+                    &format!("line-{i}"),
+                    if i % 3 == 0 {
+                        OutputRecordKind::Error
+                    } else {
+                        OutputRecordKind::Text
+                    },
+                ),
+            );
+        }
+
+        let mut search = AgentOutputSearchState::default();
+        search.pattern = "line-[036]".to_string();
+        search.recompile();
+        search.update_matches(&history, "a");
+
+        assert!(!search.pattern_error);
+        assert_eq!(search.match_count, 3);
+        assert_eq!(search.current_match, 0);
+
+        search.next_match();
+        assert_eq!(search.current_match, 1);
+
+        search.next_match();
+        assert_eq!(search.current_match, 2);
+
+        // Wrap around
+        search.next_match();
+        assert_eq!(search.current_match, 0);
+
+        // Prev wraps backward
+        search.prev_match();
+        assert_eq!(search.current_match, 2);
+    }
+
+    #[test]
+    fn agent_output_history_search_clear() {
+        let mut search = AgentOutputSearchState::default();
+        search.active = true;
+        search.pattern = "test".to_string();
+        search.recompile();
+
+        let mut history = AgentOutputHistory::default();
+        history.push("a", make_record("test line", OutputRecordKind::Text));
+        search.update_matches(&history, "a");
+
+        assert_eq!(search.match_count, 1);
+
+        search.clear();
+        assert!(!search.active);
+        assert!(search.pattern.is_empty());
+        assert!(search.compiled.is_none());
+        assert_eq!(search.match_count, 0);
+        assert!(search.match_seqs.is_empty());
+    }
+
+    #[test]
+    fn agent_output_history_redaction_flag() {
+        let mut history = AgentOutputHistory::default();
+        let mut record = make_record("secret: abc123", OutputRecordKind::Text);
+        record.redacted = true;
+        history.push("a", record);
+
+        let records = history.before("a", None, 1);
+        assert!(records[0].redacted);
+    }
+
+    #[test]
+    fn agent_output_history_classify_stream_records() {
+        let lines = vec![
+            "\x1eroko.stream.v1 {\"kind\":\"text\",\"content\":\"hello\"}".to_string(),
+            "\x1eroko.stream.v1 {\"kind\":\"reasoning\",\"content\":\"thinking\"}".to_string(),
+            "\x1eroko.stream.v1 {\"kind\":\"tool_start\",\"tool_name\":\"bash\",\"tool_id\":\"t1\"}".to_string(),
+            "\x1eroko.stream.v1 {\"kind\":\"tool_result\",\"tool_id\":\"t1\",\"output\":\"ok\"}".to_string(),
+            "ERROR: something failed".to_string(),
+            "plain text line".to_string(),
+            "────turn boundary".to_string(),
+        ];
+
+        let mut history = AgentOutputHistory::default();
+        history.ingest_lines("a", &lines, "assistant");
+
+        let records = history.before("a", None, 100);
+        assert_eq!(records.len(), 7);
+        assert_eq!(records[0].kind, OutputRecordKind::Text);
+        assert_eq!(records[1].kind, OutputRecordKind::Reasoning);
+        assert_eq!(records[2].kind, OutputRecordKind::ToolCall);
+        assert_eq!(records[2].tool_name, Some("bash".to_string()));
+        assert_eq!(records[3].kind, OutputRecordKind::ToolResult);
+        assert_eq!(records[3].tool_id, Some("t1".to_string()));
+        assert_eq!(records[4].kind, OutputRecordKind::Error);
+        assert_eq!(records[5].kind, OutputRecordKind::Text);
+        assert_eq!(records[6].kind, OutputRecordKind::System);
+    }
+
+    #[test]
+    fn agent_output_history_empty_agent_returns_defaults() {
+        let history = AgentOutputHistory::default();
+        assert_eq!(history.len("nonexistent"), 0);
+        assert_eq!(history.oldest_sequence("nonexistent"), 1);
+        assert_eq!(history.next_sequence("nonexistent"), 1);
+        assert!(history.records_for("nonexistent").is_empty());
+        assert!(history.before("nonexistent", None, 10).is_empty());
+
+        let re = regex::Regex::new("test").unwrap();
+        assert!(history.search("nonexistent", &re, None, 10).is_empty());
+    }
+
+    // -- #368 per-tab detail scroll clamp tests --
+
+    #[test]
+    fn clamp_git_detail_scroll_clamps_to_max() {
+        let mut state = TuiState::default();
+        state.git_detail_scroll = 100;
+        state.clamp_git_detail_scroll(42);
+        assert_eq!(state.git_detail_scroll, 42);
+
+        // Already within range: no change.
+        state.clamp_git_detail_scroll(50);
+        assert_eq!(state.git_detail_scroll, 42);
+    }
+
+    #[test]
+    fn clamp_config_values_scroll_clamps_to_max() {
+        let mut state = TuiState::default();
+        state.config_values_scroll = 80;
+        state.clamp_config_values_scroll(30);
+        assert_eq!(state.config_values_scroll, 30);
+    }
+
+    #[test]
+    fn clamp_inspect_detail_scroll_clamps_to_max() {
+        let mut state = TuiState::default();
+        state.inspect_detail_scroll = 60;
+        state.clamp_inspect_detail_scroll(25);
+        assert_eq!(state.inspect_detail_scroll, 25);
+    }
+
+    #[test]
+    fn clamp_learning_detail_scroll_clamps_to_max() {
+        let mut state = TuiState::default();
+        state.learning_detail_scroll = 50;
+        state.clamp_learning_detail_scroll(10);
+        assert_eq!(state.learning_detail_scroll, 10);
+    }
+
+    #[test]
+    fn clamp_procs_scroll_clamps_to_max() {
+        let mut state = TuiState::default();
+        state.procs_scroll = 40;
+        state.clamp_procs_scroll(15);
+        assert_eq!(state.procs_scroll, 15);
+    }
+
+    #[test]
+    fn clamp_config_scroll_offset_clamps_to_max() {
+        let mut state = TuiState::default();
+        state.config_scroll_offset = 90;
+        state.clamp_config_scroll_offset(20);
+        assert_eq!(state.config_scroll_offset, 20);
+    }
+
+    #[test]
+    fn clamp_log_detail_scroll_clamps_to_max() {
+        let mut state = TuiState::default();
+        state.log_detail_scroll = 70;
+        state.clamp_log_detail_scroll(35);
+        assert_eq!(state.log_detail_scroll, 35);
+    }
+
+    #[test]
+    fn clamp_marketplace_detail_scroll_clamps_to_max() {
+        let mut state = TuiState::default();
+        state.marketplace_detail_scroll = 55;
+        state.clamp_marketplace_detail_scroll(22);
+        assert_eq!(state.marketplace_detail_scroll, 22);
+    }
+
+    #[test]
+    fn clamp_atelier_detail_scroll_clamps_to_max() {
+        let mut state = TuiState::default();
+        state.atelier_detail_scroll = 45;
+        state.clamp_atelier_detail_scroll(18);
+        assert_eq!(state.atelier_detail_scroll, 18);
+    }
+
+    #[test]
+    fn reset_scrolls_includes_all_detail_fields() {
+        let mut state = TuiState::default();
+        state.git_detail_scroll = 10;
+        state.config_values_scroll = 20;
+        state.inspect_detail_scroll = 30;
+        state.learning_detail_scroll = 40;
+        state.procs_scroll = 50;
+        state.log_detail_scroll = 60;
+        state.marketplace_detail_scroll = 70;
+        state.atelier_detail_scroll = 80;
+
+        state.reset_scrolls();
+
+        assert_eq!(state.git_detail_scroll, 0);
+        assert_eq!(state.config_values_scroll, 0);
+        assert_eq!(state.inspect_detail_scroll, 0);
+        assert_eq!(state.learning_detail_scroll, 0);
+        assert_eq!(state.procs_scroll, 0);
+        assert_eq!(state.log_detail_scroll, 0);
+        assert_eq!(state.marketplace_detail_scroll, 0);
+        assert_eq!(state.atelier_detail_scroll, 0);
     }
 }

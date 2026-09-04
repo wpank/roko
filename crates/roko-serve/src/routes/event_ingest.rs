@@ -8,7 +8,7 @@ use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, StatusCode, header::AUTHORIZATION};
 use axum::routing::post;
 use roko_core::RuntimeEvent;
-use roko_core::foundation::EventConsumer;
+use roko_core::foundation::{EventConsumer, with_event_persist_publish_order};
 
 use crate::error::ApiError;
 use crate::extract::ApiJson;
@@ -87,8 +87,18 @@ fn ensure_ingest_allowed(
 }
 
 fn consume_runtime_event(state: &AppState, event: &RuntimeEvent) {
-    state.sse_adapter.consume(event);
-    state.runtime_event_logger.consume(event);
+    // Persist (including the derived run index) before publishing live. A
+    // run-scoped SSE subscriber can then use the index byte length as a stable
+    // reconnect cursor and suppress subscribe/read race duplicates.
+    with_event_persist_publish_order(|| {
+        let cursor = if state.sse_adapter.subscriber_count() > 0 {
+            state.runtime_event_logger.consume_with_run_cursor(event)
+        } else {
+            state.runtime_event_logger.consume(event);
+            None
+        };
+        state.sse_adapter.consume_with_cursor(event, cursor);
+    });
 }
 
 fn ip_matches(allowed: &str, remote_ip: IpAddr) -> bool {

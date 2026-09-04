@@ -104,6 +104,8 @@ pub mod gate_pipeline;
 pub mod gate_service;
 pub mod generated;
 pub mod generated_test_gate;
+/// Graph-compatible Cell wrapper for the production gate pipeline (#250).
+pub mod graph_cell;
 /// Multi-gate joint anomaly detection via Hotelling's T-squared (GATE-08).
 pub mod hotelling;
 pub mod integration_gate;
@@ -112,6 +114,12 @@ pub mod payload;
 /// PELT (Pruned Exact Linear Time) offline change point detection (P1-13).
 pub mod pelt;
 pub mod process_reward;
+/// Production gate request types shared between Runner-v2 and Graph (#250).
+pub mod production_request;
+/// Production gate service trait and implementation (#250/#275).
+pub mod production_service;
+/// Production gate verdict types shared between Runner-v2 and Graph (#250).
+pub mod production_verdict;
 pub mod property_test_gate;
 pub mod ratchet;
 /// Shared gate metadata, status conversion, and alias/rung resolution.
@@ -135,7 +143,7 @@ pub use acceptance_contract::{
     ReviewVerdictEvidence, ReviewVerdictRequirement, StructuredAgentOutputRequirement,
     StructuredOutputEvidence,
 };
-pub use adaptive_threshold::{AdaptiveThresholds, RungStats};
+pub use adaptive_threshold::{AdaptiveThresholds, RungStats, TOTAL_RUNGS};
 pub use artifact_store::ArtifactStore;
 pub use clippy_gate::ClippyGate;
 pub use code_exec::{
@@ -156,7 +164,10 @@ pub use error_patterns::{
     FailurePatternRecord, error_key, extract_error_digest, records_from_classification,
     records_from_parsed_review_verdict,
 };
-pub use eval_generator::{EvalGenerator, EvalStrategy, EvalTemplate, Evaluation};
+pub use eval_generator::{
+    EvalGenerationError, EvalGenerationRequest, EvalGenerator, EvalStrategy, EvalTemplate,
+    Evaluation,
+};
 pub use fact_check::{FactCheckGate, SearchHit, SearchOracle};
 pub use feedback::{FeedbackItem, GateFeedback, Severity, feedback_for_agent};
 pub use forensic::{
@@ -189,3 +200,15 @@ pub use spc::{
 };
 pub use test_gate::{TestGate, parse_test_counts};
 pub use verdict_publisher::VerdictPublisher;
+
+// ─── Production pipeline types (#250 / #275) ────────────────────────────────
+pub use graph_cell::{GatePipelineCell, GatePipelineCellInput, GraphEventProgressSink};
+pub use production_request::{GateTaskContextSpec, ProductionGateRequest, VerifyStepSpec};
+pub use production_service::{
+    GatePipelineProgress, NoopProgressSink, ProductionGateRunner, ProductionGateService,
+    ProgressSink,
+};
+pub use production_verdict::{
+    EvidenceRef, PipelineOutcome, ProductionGateRungVerdict, ProductionGateVerdictV1, RungState,
+    VERDICT_SCHEMA_VERSION,
+};

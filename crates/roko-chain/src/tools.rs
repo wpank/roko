@@ -13,6 +13,7 @@
 //!   `remove_liquidity`, `get_pool_info`, `get_position` -- protocol-specific
 //!   ABI calls (Uniswap, ERC-20).
 
+use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
 use roko_core::tool::{
     ToolCategory, ToolConcurrency, ToolDef, ToolPermission, ToolSchema, ToolSource,
 };
@@ -133,7 +134,7 @@ fn transfer_tool_def() -> ToolDef {
         })),
         category: ToolCategory::Network,
         permission: ToolPermission::networked(),
-        timeout_ms: 120_000,
+        timeout_ms: DEFAULT_REQUEST_TIMEOUT_MS,
         concurrency: ToolConcurrency::Serial,
         idempotent: false,
         source: ToolSource::Builtin,
@@ -255,7 +256,7 @@ fn approve_tool_def() -> ToolDef {
         })),
         category: ToolCategory::Network,
         permission: ToolPermission::networked(),
-        timeout_ms: 120_000,
+        timeout_ms: DEFAULT_REQUEST_TIMEOUT_MS,
         concurrency: ToolConcurrency::Serial,
         idempotent: false,
         source: ToolSource::Builtin,
@@ -307,7 +308,7 @@ fn swap_tool_def() -> ToolDef {
         })),
         category: ToolCategory::Network,
         permission: ToolPermission::networked(),
-        timeout_ms: 120_000,
+        timeout_ms: DEFAULT_REQUEST_TIMEOUT_MS,
         concurrency: ToolConcurrency::Serial,
         idempotent: false,
         source: ToolSource::Builtin,
@@ -359,7 +360,7 @@ fn add_liquidity_tool_def() -> ToolDef {
         })),
         category: ToolCategory::Network,
         permission: ToolPermission::networked(),
-        timeout_ms: 120_000,
+        timeout_ms: DEFAULT_REQUEST_TIMEOUT_MS,
         concurrency: ToolConcurrency::Serial,
         idempotent: false,
         source: ToolSource::Builtin,
@@ -407,7 +408,7 @@ fn remove_liquidity_tool_def() -> ToolDef {
         })),
         category: ToolCategory::Network,
         permission: ToolPermission::networked(),
-        timeout_ms: 120_000,
+        timeout_ms: DEFAULT_REQUEST_TIMEOUT_MS,
         concurrency: ToolConcurrency::Serial,
         idempotent: false,
         source: ToolSource::Builtin,

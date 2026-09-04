@@ -8,6 +8,53 @@ use super::agent::default_true;
 
 // ---- [gates] -------------------------------------------------------------
 
+/// Verification breadth selected for a runner gate.
+///
+/// `Full` preserves the historical release-safe behavior. `Focused` uses the
+/// changed Cargo targets and bounded reverse-dependency analysis. The two
+/// lighter modes are explicit operator choices and are never inferred when
+/// impact analysis is incomplete.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GateMode {
+    /// Do not execute canonical or task-authored verification.
+    None,
+    /// Execute structural task verification only.
+    Structural,
+    /// Execute impact-selected compile/test verification.
+    Focused,
+    /// Execute the configured canonical pipeline and authored verification.
+    #[default]
+    Full,
+}
+
+impl std::fmt::Display for GateMode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::None => "none",
+            Self::Structural => "structural",
+            Self::Focused => "focused",
+            Self::Full => "full",
+        })
+    }
+}
+
+const fn default_impact_timeout_ms() -> u64 {
+    5_000
+}
+
+const fn default_impact_max_reverse_dependents() -> usize {
+    4
+}
+
+const fn default_impact_max_targets() -> usize {
+    8
+}
+
+const fn default_compile_concurrency() -> usize {
+    1
+}
+
 /// A single custom gate rung definition.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GateRungConfig {
@@ -39,6 +86,9 @@ impl GateRungConfig {
 /// Verify (verification) settings.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GatesConfig {
+    /// Explicit verification breadth. Defaults to the historical full lane.
+    #[serde(default)]
+    pub mode: GateMode,
     /// Enable clippy / lint gate.
     #[serde(default = "default_true")]
     pub clippy_enabled: bool,
@@ -56,6 +106,18 @@ pub struct GatesConfig {
     /// and always hand failures directly to the agent.
     #[serde(default = "default_true")]
     pub cargo_fix_enabled: bool,
+    /// Maximum time allowed for changed-target and Cargo metadata analysis.
+    #[serde(default = "default_impact_timeout_ms")]
+    pub impact_timeout_ms: u64,
+    /// Maximum reverse-dependent packages selected by a focused gate.
+    #[serde(default = "default_impact_max_reverse_dependents")]
+    pub impact_max_reverse_dependents: usize,
+    /// Maximum exact Cargo targets selected by a focused gate.
+    #[serde(default = "default_impact_max_targets")]
+    pub impact_max_targets: usize,
+    /// Per-repository Cargo command ownership limit.
+    #[serde(default = "default_compile_concurrency")]
+    pub compile_concurrency: usize,
     /// Per-domain gate overrides. Keys are domain labels (e.g. "research", "docs"),
     /// values are shell commands to run as gates (e.g. `["shell:true"]`).
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -63,6 +125,9 @@ pub struct GatesConfig {
     /// Custom gate rungs. When non-empty, these replace the built-in defaults.
     #[serde(default, rename = "rungs", alias = "custom_rungs")]
     pub custom_rungs: Vec<GateRungConfig>,
+    /// Optional ceiling rung index. Rungs above this index are skipped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_rung: Option<u8>,
 }
 
 const fn default_max_iterations() -> u32 {
@@ -72,12 +137,18 @@ const fn default_max_iterations() -> u32 {
 impl Default for GatesConfig {
     fn default() -> Self {
         Self {
+            mode: GateMode::Full,
             clippy_enabled: default_true(),
             skip_tests: false,
             max_iterations: default_max_iterations(),
             cargo_fix_enabled: true,
+            impact_timeout_ms: default_impact_timeout_ms(),
+            impact_max_reverse_dependents: default_impact_max_reverse_dependents(),
+            impact_max_targets: default_impact_max_targets(),
+            compile_concurrency: default_compile_concurrency(),
             domain_gates: HashMap::new(),
             custom_rungs: Vec::new(),
+            max_rung: None,
         }
     }
 }

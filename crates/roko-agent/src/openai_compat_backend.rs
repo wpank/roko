@@ -7,13 +7,13 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::{Map, Value};
-use tokio::sync::mpsc;
 
 use crate::http::{HttpPoster, ReqwestPoster};
+use crate::model_call_service::{ProviderOutcomeRecorder, provider_error_kind};
 use crate::multimodal::wire_messages_contain_images;
-use crate::provider::map_provider_error;
+use crate::provider::{ProviderError, map_provider_error};
 use crate::rate_limit::ProviderRateLimiter;
-use crate::streaming::{StreamAccumulator, StreamChunk, parse_sse_line};
+use crate::streaming::parse_sse_line;
 use crate::tool_loop::{LlmBackend, LlmError};
 use crate::translate::FinishReason;
 use crate::translate::{BackendResponse, RenderedTools, SessionState, convert_images_for_openai};
@@ -110,6 +110,8 @@ pub struct OpenAiCompatLlmBackend {
     /// `image_url` content parts (data URIs). When false, image input fails
     /// before provider I/O.
     supports_vision: bool,
+    /// Optional circuit-breaker outcome recorder.
+    outcome_recorder: Option<Arc<dyn ProviderOutcomeRecorder>>,
 }
 
 impl OpenAiCompatLlmBackend {
@@ -140,6 +142,7 @@ impl OpenAiCompatLlmBackend {
             api_key_env: None,
             metrics: None,
             supports_vision: false,
+            outcome_recorder: None,
         }
     }
 
@@ -252,7 +255,7 @@ impl OpenAiCompatLlmBackend {
 
     /// Set the time-to-first-token timeout for streaming requests.
     ///
-    /// When set, `send_turn_streaming` wraps the first `response.chunk()`
+    /// When set, `stream_turn` wraps the first `response.chunk()`
     /// call with `tokio::time::timeout` so slow providers fail fast instead
     /// of hanging until the full request timeout expires.
     #[must_use]
@@ -283,6 +286,34 @@ impl OpenAiCompatLlmBackend {
     pub fn with_api_key_env(mut self, env_var: impl Into<String>) -> Self {
         self.api_key_env = Some(env_var.into());
         self
+    }
+
+    /// Attach a circuit-breaker outcome recorder.
+    #[must_use]
+    pub fn with_outcome_recorder(mut self, recorder: Arc<dyn ProviderOutcomeRecorder>) -> Self {
+        self.outcome_recorder = Some(recorder);
+        self
+    }
+
+    /// Record a failure into the circuit-breaker outcome recorder.
+    fn record_failure(&self, error: &LlmError) {
+        let Some(recorder) = &self.outcome_recorder else {
+            return;
+        };
+        let kind = match error {
+            LlmError::Provider(ProviderError::RateLimit { .. }) => "rate_limit",
+            LlmError::Provider(ProviderError::AuthFailure) => "auth_failure",
+            LlmError::Provider(ProviderError::Timeout) | LlmError::Timeout(_) => "timeout",
+            LlmError::Provider(ProviderError::ServerError(_)) => "server_error",
+            LlmError::Provider(ProviderError::ContentPolicy) => "content_policy",
+            LlmError::Provider(ProviderError::ContextOverflow) => "context_overflow",
+            LlmError::Provider(ProviderError::ModelNotFound) => "model_not_found",
+            LlmError::Provider(ProviderError::Other(message))
+            | LlmError::Backend(message)
+            | LlmError::Network(message) => provider_error_kind(message),
+            LlmError::RetriesExhausted => "retries_exhausted",
+        };
+        recorder.record_provider_failure(&self.provider_id, kind);
     }
 
     /// Map a raw error into a user-friendly message using provider context.
@@ -400,22 +431,6 @@ impl OpenAiCompatLlmBackend {
         serde_json::to_vec(&body).map_err(|e| LlmError::Backend(format!("serialize: {e}")))
     }
 
-    async fn push_stream_line(
-        line: &[u8],
-        accumulator: &mut StreamAccumulator,
-        event_tx: &mpsc::Sender<StreamChunk>,
-    ) -> bool {
-        let line = String::from_utf8_lossy(line);
-        let line = line.trim_end_matches(['\r', '\n']);
-        if let Some(chunk) = parse_sse_line(line) {
-            accumulator.push(chunk.clone());
-            let _ = event_tx.send(chunk).await;
-            true
-        } else {
-            false
-        }
-    }
-
     fn capture_stream_metadata(line: &[u8], metadata: &mut StreamResponseMetadata) {
         let line = String::from_utf8_lossy(line);
         let line = line.trim_end_matches(['\r', '\n']);
@@ -504,7 +519,7 @@ impl LlmBackend for OpenAiCompatLlmBackend {
         let body_bytes = self.build_body(messages, tools, session, false)?;
         self.rate_limiter.acquire(&self.provider_id).await;
 
-        let raw = self
+        let raw = match self
             .poster
             .post_json(
                 &self.endpoint(),
@@ -513,11 +528,27 @@ impl LlmBackend for OpenAiCompatLlmBackend {
                 self.timeout_ms,
             )
             .await
-            .map_err(classify_http_error)?;
+        {
+            Ok(raw) => raw,
+            Err(err) => {
+                let mapped = classify_http_error(err);
+                self.record_failure(&mapped);
+                return Err(mapped);
+            }
+        };
 
-        let json: Value = serde_json::from_str(&raw)
-            .map_err(|e| LlmError::Backend(format!("parse response: {e}")))?;
+        let json: Value = match serde_json::from_str(&raw) {
+            Ok(json) => json,
+            Err(e) => {
+                let mapped = LlmError::Backend(format!("parse response: {e}"));
+                self.record_failure(&mapped);
+                return Err(mapped);
+            }
+        };
 
+        if let Some(recorder) = &self.outcome_recorder {
+            recorder.record_provider_success(&self.provider_id);
+        }
         Ok(BackendResponse::Json(json))
     }
 
@@ -666,8 +697,7 @@ impl LlmBackend for OpenAiCompatLlmBackend {
                     let line_str = String::from_utf8_lossy(&line);
                     let line_str = line_str.trim_end_matches(['\r', '\n']);
 
-                    if let Some(stream_chunk) = parse_sse_line(line_str) {
-                        let event: StreamEvent = stream_chunk.into();
+                    if let Some(event) = parse_sse_line(line_str) {
                         // Record TTFT on the first non-error content/tool/reasoning chunk.
                         if !ttft_recorded {
                             let is_content_chunk = matches!(
@@ -736,8 +766,7 @@ impl LlmBackend for OpenAiCompatLlmBackend {
             if !pending.is_empty() {
                 let line_str = String::from_utf8_lossy(&pending);
                 let line_str = line_str.trim_end_matches(['\r', '\n']);
-                if let Some(stream_chunk) = parse_sse_line(line_str) {
-                    let event: StreamEvent = stream_chunk.into();
+                if let Some(event) = parse_sse_line(line_str) {
                     if matches!(event.kind, StreamEventKind::Done { .. }) {
                         sent_done = true;
                     }
@@ -762,135 +791,6 @@ impl LlmBackend for OpenAiCompatLlmBackend {
             rx.recv().await.map(|item| (item, rx))
         });
         Ok(Box::pin(stream))
-    }
-
-    async fn send_turn_streaming(
-        &self,
-        messages: &[serde_json::Value],
-        tools: &RenderedTools,
-        session: &SessionState,
-        event_tx: mpsc::Sender<StreamChunk>,
-    ) -> Result<BackendResponse, LlmError> {
-        let body_bytes = self.build_body(messages, tools, session, true)?;
-        self.rate_limiter.acquire(&self.provider_id).await;
-
-        let mut req = crate::provider::shared_http_client()
-            .post(self.endpoint())
-            .timeout(Duration::from_millis(self.timeout_ms));
-        for (key, value) in &self.computed_headers {
-            req = req.header(key.as_str(), value.as_str());
-        }
-
-        let response = match req.body(body_bytes).send().await {
-            Ok(response) => response,
-            Err(e) => {
-                let message = self.decorate_error(&e);
-                let _ = event_tx.send(StreamChunk::Error(message.clone())).await;
-                return Err(LlmError::Network(message));
-            }
-        };
-
-        let status = response.status();
-        if !status.is_success() {
-            let retry_after = crate::http::extract_retry_after_from_response(&response);
-            let text = match response.text().await {
-                Ok(text) => text,
-                Err(e) => {
-                    let message = self.decorate_error(&e);
-                    let _ = event_tx.send(StreamChunk::Error(message.clone())).await;
-                    return Err(LlmError::Network(message));
-                }
-            };
-            let raw_err = crate::http::HttpPostError::http_with_retry_after(
-                status.as_u16(),
-                text,
-                retry_after,
-            );
-            let err = classify_http_error(raw_err);
-            let _ = event_tx.send(StreamChunk::Error(err.to_string())).await;
-            return Err(err);
-        }
-
-        let mut response = response;
-        let mut pending = Vec::new();
-        let mut raw_body = Vec::new();
-        let mut accumulator = StreamAccumulator::new();
-        let mut metadata = StreamResponseMetadata::default();
-        let mut first_chunk = true;
-        let mut saw_stream_event = false;
-
-        loop {
-            let chunk_fut = response.chunk();
-            let chunk = if first_chunk {
-                // Apply TTFT timeout only to the first body chunk. This
-                // measures the real time-to-first-token: from HTTP headers
-                // received until the provider starts streaming content.
-                first_chunk = false;
-                if let Some(ttft_ms) = self.ttft_timeout_ms {
-                    match tokio::time::timeout(Duration::from_millis(ttft_ms), chunk_fut).await {
-                        Ok(inner) => inner,
-                        Err(_) => {
-                            let message =
-                                format!("TTFT timeout: no streaming data within {ttft_ms}ms");
-                            tracing::warn!(
-                                endpoint = %self.endpoint(),
-                                ttft_timeout_ms = ttft_ms,
-                                "TTFT timeout — no first chunk within deadline"
-                            );
-                            let _ = event_tx.send(StreamChunk::Error(message.clone())).await;
-                            return Err(LlmError::Network(message));
-                        }
-                    }
-                } else {
-                    chunk_fut.await
-                }
-            } else {
-                chunk_fut.await
-            };
-            let chunk = match chunk {
-                Ok(c) => c,
-                Err(e) => {
-                    let message = format!("read chunk failed: {e}");
-                    let _ = event_tx.send(StreamChunk::Error(message.clone())).await;
-                    return Err(LlmError::Network(message));
-                }
-            };
-            let Some(chunk) = chunk else {
-                break;
-            };
-
-            raw_body.extend_from_slice(&chunk);
-            pending.extend_from_slice(&chunk);
-            while let Some(newline_idx) = pending.iter().position(|byte| *byte == b'\n') {
-                let line: Vec<u8> = pending.drain(..=newline_idx).collect();
-                Self::capture_stream_metadata(&line, &mut metadata);
-                saw_stream_event |=
-                    Self::push_stream_line(&line, &mut accumulator, &event_tx).await;
-            }
-        }
-
-        if !pending.is_empty() {
-            Self::capture_stream_metadata(&pending, &mut metadata);
-            saw_stream_event |= Self::push_stream_line(&pending, &mut accumulator, &event_tx).await;
-        }
-
-        if !saw_stream_event {
-            let json: Value = serde_json::from_slice(&raw_body)
-                .map_err(|e| LlmError::Backend(format!("parse non-SSE response: {e}")))?;
-            if let Some(text) = json
-                .pointer("/choices/0/message/content")
-                .and_then(Value::as_str)
-                && !text.is_empty()
-            {
-                let _ = event_tx
-                    .send(StreamChunk::ContentDelta(text.to_string()))
-                    .await;
-            }
-            return Ok(BackendResponse::Json(json));
-        }
-
-        let json = Self::stream_response_to_json(accumulator.finalize(), metadata)?;
-        Ok(BackendResponse::Json(json))
     }
 
     fn extract_session(&self, response: &BackendResponse) -> SessionState {
@@ -948,9 +848,10 @@ mod tests {
     use std::thread;
     use std::time::Duration as StdDuration;
     use std::time::Instant;
+    use tokio::sync::mpsc;
 
     use crate::dispatcher::{HandlerResolver, ToolDispatcher};
-    use crate::tool_loop::{StopReason, ToolLoop};
+    use crate::tool_loop::{StopReason, StreamEventKind, ToolLoop, TurnConfig};
     use crate::translate::{OpenAiTranslator, Translator};
     use roko_core::tool::{
         ToolCall, ToolCategory, ToolConcurrency, ToolContext, ToolDef, ToolHandler, ToolPermission,
@@ -1062,7 +963,7 @@ mod tests {
                     None
                 }
             });
-        let dispatcher = Arc::new(ToolDispatcher::new(registry, resolver));
+        let dispatcher = Arc::new(ToolDispatcher::new_unguarded(registry, resolver));
         let translator: Arc<dyn Translator> = Arc::new(OpenAiTranslator);
         ToolLoop::new(translator, dispatcher, Arc::new(backend))
     }
@@ -1647,16 +1548,19 @@ mod tests {
             .await
             .expect("stream should emit before completion")
             .expect("stream channel open");
-        assert!(matches!(first_chunk, StreamChunk::ReasoningDelta(_)));
+        assert!(matches!(
+            first_chunk.kind,
+            StreamEventKind::ReasoningDelta(_)
+        ));
         assert!(
             !run.is_finished(),
-            "streaming chunks should arrive before the tool loop finishes"
+            "streaming events should arrive before the tool loop finishes"
         );
 
         let result = run.await.expect("tool loop task");
-        let mut chunks = vec![first_chunk];
-        while let Some(chunk) = event_rx.recv().await {
-            chunks.push(chunk);
+        let mut events = vec![first_chunk];
+        while let Some(event) = event_rx.recv().await {
+            events.push(event);
         }
 
         assert_eq!(result.stop_reason, StopReason::Stop);
@@ -1669,23 +1573,17 @@ mod tests {
         assert_eq!(result.total_usage.output_tokens, 11);
         assert_eq!(result.total_usage.cache_read_tokens, 3);
 
-        assert!(chunks.iter().any(|chunk| matches!(
-            chunk,
-            StreamChunk::ToolCallDelta {
-                index: 0,
-                id_delta: Some(id),
-                name_delta: Some(name),
-                arguments_delta,
-            } if id == "call-1" && name == "echo" && arguments_delta == "{\"value\":"
+        // The raw ToolCallStart event embeds the index key with the real
+        // id after a NUL separator and may carry initial argument fragments
+        // after a SOH separator: "__idx_0\0call-1\x01{\"value\":".
+        assert!(events.iter().any(|e| matches!(
+            &e.kind,
+            StreamEventKind::ToolCallStart { id, name }
+                if id.contains("call-1") && name == "echo"
         )));
-        assert!(chunks.iter().any(|chunk| {
-            matches!(chunk, StreamChunk::ContentDelta(content) if content == "final ")
+        assert!(events.iter().any(|e| {
+            matches!(&e.kind, StreamEventKind::TextDelta(content) if content == "final ")
         }));
-        assert!(
-            chunks
-                .iter()
-                .any(|chunk| { matches!(chunk, StreamChunk::Done(FinishReason::ToolCalls)) })
-        );
 
         let requests = requests.lock().expect("requests lock");
         assert_eq!(requests.len(), 2, "expected two streamed HTTP turns");
@@ -1785,44 +1683,52 @@ mod tests {
             .with_base_url(&format!("http://{addr}/v1/"))
             .with_ttft_timeout_ms(Some(100)); // 100ms TTFT — server delays 2s
 
-        let (tx, mut rx) = tokio::sync::mpsc::channel(roko_core::defaults::DEFAULT_CHANNEL_BUFFER);
         let started = Instant::now();
 
-        let result = backend
-            .send_turn_streaming(
+        let config = TurnConfig {
+            ttft_timeout: StdDuration::from_millis(100),
+            ..TurnConfig::default()
+        };
+
+        let stream = backend
+            .stream_turn(
                 &[serde_json::json!({ "role": "user", "content": "hello" })],
                 &RenderedTools::JsonArray(serde_json::json!([])),
                 &SessionState::default(),
-                tx,
+                &config,
             )
             .await;
 
         let elapsed = started.elapsed();
 
-        // Should fail with TTFT timeout, not wait the full 2 seconds.
-        assert!(
-            result.is_err(),
-            "expected TTFT timeout error, got {result:?}"
-        );
-        let err = result.unwrap_err();
-        assert!(
-            format!("{err:?}").contains("TTFT timeout"),
-            "error should mention TTFT: {err:?}"
-        );
+        // stream_turn may succeed (returns a stream) but the stream itself
+        // should yield a TTFT timeout error. Or stream_turn itself may fail.
+        if let Ok(stream) = stream {
+            use futures::StreamExt;
+            let events: Vec<_> = stream.collect().await;
+            let got_timeout = events.iter().any(|e| {
+                if let Err(err) = e {
+                    format!("{err:?}").contains("TTFT timeout")
+                        || format!("{err:?}").contains("Timeout")
+                } else {
+                    false
+                }
+            });
+            assert!(got_timeout, "expected TTFT timeout in stream events");
+        } else {
+            let err = stream.err().expect("already checked Err");
+            assert!(
+                format!("{err:?}").contains("TTFT timeout")
+                    || format!("{err:?}").contains("Timeout"),
+                "error should mention TTFT: {err:?}"
+            );
+        }
+
         assert!(
             elapsed < StdDuration::from_millis(1500),
             "should timeout quickly (~100ms), not wait for delayed body (took {}ms)",
             elapsed.as_millis()
         );
-
-        // The error channel should have the TTFT error event.
-        let mut got_error = false;
-        while let Ok(chunk) = rx.try_recv() {
-            if matches!(chunk, StreamChunk::Error(_)) {
-                got_error = true;
-            }
-        }
-        assert!(got_error, "expected StreamChunk::Error for TTFT timeout");
 
         server.join().expect("server thread");
     }

@@ -28,14 +28,13 @@ use roko_core::{Body, Context, Kind, Signal};
 use tokio::sync::mpsc;
 
 use crate::agent::{Agent, AgentResult, derived_output};
-use crate::chat_types::FinishReason;
 use crate::harness::acp_client::{
     AcpEvent, AcpNotification, AcpPromptPayload, AcpStdioClient, NewSessionOpts,
 };
 use crate::harness::capability::*;
 use crate::harness::{HarnessAdapter, HarnessCapabilities, ProbeError, TransportFlavor};
 use crate::process::ResourceLimits;
-use crate::streaming::StreamChunk;
+use crate::tool_loop::{StreamEvent, StreamEventKind};
 use crate::usage::Usage;
 
 // ---------------------------------------------------------------------------
@@ -59,6 +58,8 @@ pub struct OpenClawAcpConfig {
     pub auto_approve_permissions: bool,
     /// Optional OS-enforced limits for the ACP subprocess.
     pub resource_limits: Option<ResourceLimits>,
+    /// Optional system prompt prepended to every prompt.
+    pub system_prompt: Option<String>,
 }
 
 impl Default for OpenClawAcpConfig {
@@ -71,6 +72,7 @@ impl Default for OpenClawAcpConfig {
             timeout: Duration::from_secs(120),
             auto_approve_permissions: true,
             resource_limits: None,
+            system_prompt: None,
         }
     }
 }
@@ -89,6 +91,8 @@ pub struct OpenClawAcpAgent {
     config: OpenClawAcpConfig,
     capabilities: HarnessCapabilities,
     name: String,
+    /// Safety layer for output scrubbing (secret leak prevention).
+    safety: crate::safety::SafetyLayer,
 }
 
 impl OpenClawAcpAgent {
@@ -123,6 +127,7 @@ impl OpenClawAcpAgent {
             config,
             capabilities,
             name: "openclaw-acp".to_string(),
+            safety: crate::safety::SafetyLayer::with_defaults(),
         }
     }
 
@@ -145,6 +150,7 @@ impl OpenClawAcpAgent {
             config,
             capabilities,
             name: "openclaw-acp".to_string(),
+            safety: crate::safety::SafetyLayer::with_defaults(),
         }
     }
 
@@ -173,7 +179,7 @@ impl OpenClawAcpAgent {
     async fn run_acp_lifecycle(
         &self,
         prompt: &str,
-        mut stream_tx: Option<&mpsc::Sender<StreamChunk>>,
+        mut stream_tx: Option<&mpsc::Sender<StreamEvent>>,
     ) -> (String, Usage, bool) {
         let start = Instant::now();
         let mut client = self.client.lock().await;
@@ -256,7 +262,7 @@ impl OpenClawAcpAgent {
                             AcpEvent::Output { text } => {
                                 output_text.push_str(&text);
                                 if let Some(tx) = stream_tx.as_mut() {
-                                    let _ = tx.send(StreamChunk::ContentDelta(text)).await;
+                                    let _ = tx.send(StreamEvent::now(StreamEventKind::TextDelta(text))).await;
                                 }
                             }
                             AcpEvent::ToolCall { id, name, arguments } => {
@@ -264,10 +270,9 @@ impl OpenClawAcpAgent {
                                     "[openclaw-acp] tool_call: id={id}, name={name}, args={arguments}"
                                 );
                                 if let Some(tx) = stream_tx.as_mut() {
-                                    let _ = tx.send(StreamChunk::ToolProgress {
-                                        tool: name,
-                                        status: "started".to_string(),
-                                    }).await;
+                                    let _ = tx.send(StreamEvent::now(StreamEventKind::TextDelta(
+                                        format!("[{name}] started"),
+                                    ))).await;
                                 }
                             }
                             AcpEvent::ToolCallUpdate { id, progress } => {
@@ -293,11 +298,11 @@ impl OpenClawAcpAgent {
                                 output_tokens = out;
                                 got_usage = true;
                                 if let Some(tx) = stream_tx.as_mut() {
-                                    let _ = tx.send(StreamChunk::Usage(Usage {
+                                    let _ = tx.send(StreamEvent::now(StreamEventKind::Usage(Usage {
                                         input_tokens: u32::try_from(inp).unwrap_or(u32::MAX),
                                         output_tokens: u32::try_from(out).unwrap_or(u32::MAX),
                                         ..Usage::zero()
-                                    })).await;
+                                    }))).await;
                                 }
                             }
                             AcpEvent::StopReason(reason) => {
@@ -310,7 +315,7 @@ impl OpenClawAcpAgent {
                     // Turn completed.
                     tracing::debug!("[openclaw-acp] turn done (prompt_id={prompt_id})");
                     if let Some(tx) = stream_tx.as_mut() {
-                        let _ = tx.send(StreamChunk::Done(FinishReason::Stop)).await;
+                        let _ = tx.send(StreamEvent::now(StreamEventKind::Done { finish_reason: "stop".to_string() })).await;
                     }
                     break;
                 }
@@ -359,13 +364,19 @@ impl OpenClawAcpAgent {
 #[async_trait]
 impl Agent for OpenClawAcpAgent {
     async fn run(&self, input: &Signal, _ctx: &Context) -> AgentResult {
-        let prompt = Self::extract_prompt(input);
+        let raw_prompt = Self::extract_prompt(input);
+        let prompt = match &self.config.system_prompt {
+            Some(sp) => {
+                format!("[SYSTEM INSTRUCTIONS]\n{sp}\n[END SYSTEM INSTRUCTIONS]\n\n{raw_prompt}")
+            }
+            None => raw_prompt,
+        };
         let (output_text, usage, success) = self.run_acp_lifecycle(&prompt, None).await;
 
         let display_text = if success && output_text.is_empty() {
             "(no output from openclaw acp)".to_string()
         } else {
-            output_text
+            self.safety.scrub_text(&output_text)
         };
 
         let output_signal =
@@ -396,15 +407,21 @@ impl Agent for OpenClawAcpAgent {
         &self,
         input: &Signal,
         _ctx: &Context,
-        event_tx: mpsc::Sender<StreamChunk>,
+        event_tx: mpsc::Sender<StreamEvent>,
     ) -> AgentResult {
-        let prompt = Self::extract_prompt(input);
+        let raw_prompt = Self::extract_prompt(input);
+        let prompt = match &self.config.system_prompt {
+            Some(sp) => {
+                format!("[SYSTEM INSTRUCTIONS]\n{sp}\n[END SYSTEM INSTRUCTIONS]\n\n{raw_prompt}")
+            }
+            None => raw_prompt,
+        };
         let (output_text, usage, success) = self.run_acp_lifecycle(&prompt, Some(&event_tx)).await;
 
         let display_text = if success && output_text.is_empty() {
             "(no output from openclaw acp)".to_string()
         } else {
-            output_text
+            self.safety.scrub_text(&output_text)
         };
 
         let output_signal =
@@ -578,6 +595,7 @@ mod tests {
             timeout: Duration::from_secs(60),
             auto_approve_permissions: false,
             resource_limits: None,
+            system_prompt: None,
         };
         assert_eq!(config.binary, "/usr/local/bin/openclaw");
         assert_eq!(config.cwd, PathBuf::from("/tmp/workspace"));

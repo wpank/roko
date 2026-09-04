@@ -1,0 +1,164 @@
+{
+  "schema_version": 1,
+  "description": "Gate parity fixtures for Runner-v2 / Graph convergence testing (#275).",
+  "cases": [
+    {
+      "id": "compile_pass",
+      "description": "All rungs pass — the compile gate returns success.",
+      "rungs": [
+        {
+          "rung": "compile",
+          "rung_index": 0,
+          "state": "passed",
+          "gate_name": "compile:cargo",
+          "diagnostic": "Compiling roko-core v0.1.0",
+          "duration_ms": 100,
+          "failure_classification": null,
+          "test_counts": null,
+          "evidence_fingerprint": "abc123def456"
+        }
+      ],
+      "expected": {
+        "passed": true,
+        "failure_class": null,
+        "mostly_passing": false,
+        "selected_rungs": ["compile"],
+        "outcome": "passed"
+      }
+    },
+    {
+      "id": "compile_fail",
+      "description": "Compile gate fails with a permanent error.",
+      "rungs": [
+        {
+          "rung": "compile",
+          "rung_index": 0,
+          "state": "failed",
+          "gate_name": "compile:cargo",
+          "diagnostic": "error[E0433]: failed to resolve: use of undeclared crate `foo`",
+          "duration_ms": 200,
+          "failure_classification": {
+            "kind": "CompileError",
+            "recommended_action": "Retry"
+          },
+          "test_counts": null,
+          "evidence_fingerprint": "deadbeef0001"
+        }
+      ],
+      "expected": {
+        "passed": false,
+        "failure_class": "structural",
+        "mostly_passing": false,
+        "selected_rungs": ["compile"],
+        "outcome": "failed"
+      }
+    },
+    {
+      "id": "test_fail_preexisting",
+      "description": "Test rung fails but the failure is pre-existing — filtered to pass.",
+      "rungs": [
+        {
+          "rung": "compile",
+          "rung_index": 0,
+          "state": "passed",
+          "gate_name": "compile:cargo",
+          "diagnostic": "ok",
+          "duration_ms": 50,
+          "failure_classification": null,
+          "test_counts": null,
+          "evidence_fingerprint": "aaa111"
+        },
+        {
+          "rung": "test",
+          "rung_index": 2,
+          "state": "failed",
+          "gate_name": "test:cargo",
+          "diagnostic": "test legacy_compat ... FAILED",
+          "duration_ms": 300,
+          "failure_classification": null,
+          "test_counts": {"passed": 48, "failed": 1, "ignored": 3},
+          "evidence_fingerprint": "bbb222",
+          "preexisting": true
+        }
+      ],
+      "expected": {
+        "passed": true,
+        "failure_class": null,
+        "mostly_passing": true,
+        "selected_rungs": ["compile", "test"],
+        "outcome": "passed"
+      }
+    },
+    {
+      "id": "mostly_passing",
+      "description": "Test rung reports many passes and few failures — mostly passing.",
+      "rungs": [
+        {
+          "rung": "compile",
+          "rung_index": 0,
+          "state": "passed",
+          "gate_name": "compile:cargo",
+          "diagnostic": "ok",
+          "duration_ms": 50,
+          "failure_classification": null,
+          "test_counts": null,
+          "evidence_fingerprint": "ccc333"
+        },
+        {
+          "rung": "test",
+          "rung_index": 2,
+          "state": "failed",
+          "gate_name": "test:cargo",
+          "diagnostic": "test new_feature ... FAILED",
+          "duration_ms": 500,
+          "failure_classification": null,
+          "test_counts": {"passed": 100, "failed": 2, "ignored": 0},
+          "evidence_fingerprint": "ddd444"
+        }
+      ],
+      "expected": {
+        "passed": false,
+        "failure_class": "permanent",
+        "mostly_passing": true,
+        "selected_rungs": ["compile", "test"],
+        "outcome": "failed"
+      }
+    },
+    {
+      "id": "timeout",
+      "description": "Pipeline timed out before completing.",
+      "rungs": [],
+      "expected": {
+        "passed": false,
+        "failure_class": "transient",
+        "mostly_passing": false,
+        "selected_rungs": [],
+        "outcome": "timed_out"
+      }
+    },
+    {
+      "id": "cancelled",
+      "description": "Pipeline was cancelled cooperatively.",
+      "rungs": [
+        {
+          "rung": "compile",
+          "rung_index": 0,
+          "state": "passed",
+          "gate_name": "compile:cargo",
+          "diagnostic": "ok",
+          "duration_ms": 50,
+          "failure_classification": null,
+          "test_counts": null,
+          "evidence_fingerprint": "eee555"
+        }
+      ],
+      "expected": {
+        "passed": false,
+        "failure_class": null,
+        "mostly_passing": false,
+        "selected_rungs": ["compile"],
+        "outcome": "cancelled"
+      }
+    }
+  ]
+}

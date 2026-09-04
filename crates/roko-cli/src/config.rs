@@ -136,12 +136,74 @@ impl Config {
     pub fn default_toml_template(cloud: bool) -> Result<String> {
         crate::init::render_init_template(cloud)
     }
+
+    /// Build a CLI `Config` from a validated core `RokoConfig`.
+    ///
+    /// This is the primary conversion path used by `load_resolved_config()`.
+    /// The core loader is the single source of truth for providers, models,
+    /// agent defaults, and env overrides. CLI-only compatibility fields
+    /// (`gates`, `executor`, `runtime`, `prompt`) retain their existing
+    /// defaults because those sections are parsed by the legacy `ConfigLayer`
+    /// path; once those are migrated to core schema, this function will map
+    /// them directly.
+    pub fn from_roko_config(core: &RokoConfig) -> Result<Self> {
+        let core_agent = &core.agent;
+        let agent = AgentConfig {
+            model: Some(core_agent.default_model.clone()),
+            effort: core_agent.default_effort.clone(),
+            bare_mode: core_agent.bare_mode,
+            command: core_agent
+                .command
+                .clone()
+                .unwrap_or_else(AgentConfig::default_command),
+            args: core_agent.args.clone().unwrap_or_default(),
+            timeout_ms: core_agent
+                .timeout_ms
+                .unwrap_or(AgentConfig::default_timeout()),
+            env: core_agent.env.clone().unwrap_or_default(),
+            fallback_model: core_agent.fallback_model.clone(),
+            clean_output: AgentConfig::default_clean(),
+            mcp_config: None,
+            tier_models: core_agent.tier_models.clone(),
+            escalation: EscalationConfig::default(),
+        };
+
+        let dreams: DreamsConfig = core.dreams.clone().into();
+        dreams.validate().context("validate [dreams]")?;
+
+        let daimon = DaimonConfig::from_core(&core.daimon)?;
+
+        Ok(Self {
+            agent,
+            auto_plan: core.prd.auto_plan,
+            dreams,
+            daimon,
+            tools: ToolsConfig::default(),
+            prompt: PromptConfig::default(),
+            repos: core.repos.clone(),
+            gates: Vec::new(),
+            executor: ExecutorConfig::default(),
+            runner: RunnerConfig {
+                plan_timeout_secs: core.runner.plan_timeout_secs,
+            },
+            runtime: RuntimeControlConfig::default(),
+            budget: BudgetConfig::default(),
+            providers: core.providers.clone(),
+            models: core.models.clone(),
+            learning: LearningLayer::from_core_learning(&core.learning),
+            serve: core.serve.clone(),
+            log_format: None,
+            bind: None,
+            data_dir: None,
+        })
+    }
 }
 
 /// Agent backend — the external CLI invoked via `ExecAgent`.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AgentConfig {
     /// Program name, e.g. `"cat"`, `"ollama"`, `"claude"`.
+    #[serde(default = "AgentConfig::default_command")]
     pub command: String,
     /// Extra args passed to the program.
     #[serde(default)]
@@ -302,12 +364,55 @@ impl Default for DreamsConfig {
     }
 }
 
+impl From<roko_core::config::execution::DreamScheduleConfig> for DreamsConfig {
+    fn from(core: roko_core::config::execution::DreamScheduleConfig) -> Self {
+        Self {
+            auto_dream: core.auto_dream,
+            idle_threshold_mins: core.idle_threshold_mins,
+            min_episodes_for_dream: core.min_episodes_for_dream,
+            scheduled_cron: core.scheduled_cron,
+            episode_count_trigger: core.episode_count_trigger,
+            quality_gain: core.quality_gain,
+            quality_penalty: core.quality_penalty,
+        }
+    }
+}
+
 /// Daimon affect-engine configuration.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct DaimonConfig {
     /// Domain-specific strategy-space registration for somatic markers.
     #[serde(default)]
     pub strategy_space: StrategySpaceDefinition,
+}
+
+impl DaimonConfig {
+    /// Convert from core schema `DaimonConfig` to this CLI adapter type.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `strategy_space.dimensions` does not contain
+    /// exactly 8 entries.
+    pub fn from_core(core: &roko_core::config::execution::DaimonConfig) -> Result<Self> {
+        let dims: [String; 8] =
+            core.strategy_space
+                .dimensions
+                .clone()
+                .try_into()
+                .map_err(|values: Vec<String>| {
+                    anyhow!(
+                        "daimon.strategy_space.dimensions must contain exactly 8 entries, got {}",
+                        values.len()
+                    )
+                })?;
+        let def = StrategySpaceDefinition {
+            domain: core.strategy_space.domain.clone(),
+            dimensions: dims,
+        };
+        Ok(Self {
+            strategy_space: def.validate()?,
+        })
+    }
 }
 
 impl Default for DaimonConfig {
@@ -319,6 +424,10 @@ impl Default for DaimonConfig {
 }
 
 impl AgentConfig {
+    fn default_command() -> String {
+        "cat".to_string()
+    }
+
     const fn default_timeout() -> u64 {
         DEFAULT_REQUEST_TIMEOUT_MS
     }
@@ -339,7 +448,7 @@ impl AgentConfig {
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            command: "cat".into(),
+            command: Self::default_command(),
             args: Vec::new(),
             model: None,
             effort: Self::default_effort(),
@@ -790,23 +899,9 @@ impl StrategySpaceLayer {
 
 /// Per-repository configuration inside `roko.toml`.
 ///
-/// Repo-specific subscriptions are additive: they sit alongside the global
-/// subscription set and can narrow behavior for one checkout.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct RepoConfig {
-    /// Human-readable repo name.
-    pub name: String,
-    /// Filesystem path to the repo root.
-    pub path: PathBuf,
-    /// Branch name tracked for this repo.
-    pub branch: String,
-    /// Template names active for this repo.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub templates: Vec<String>,
-    /// Repo-specific subscriptions to load in addition to the global set.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub subscriptions: Vec<SubscriptionConfig>,
-}
+/// Re-exported from `roko_core::config::execution::RepoConfig` for source
+/// compatibility. The schema-only definition now lives in the core crate.
+pub use roko_core::config::execution::RepoConfig;
 
 /// Loaded runtime data for a configured repository.
 #[derive(Clone, Debug)]
@@ -1107,6 +1202,20 @@ pub struct LearningLayer {
 }
 
 impl LearningLayer {
+    /// Construct from the core `LearningConfig` (all fields are populated).
+    #[must_use]
+    pub fn from_core_learning(core: &roko_core::config::LearningConfig) -> Self {
+        Self {
+            replan_on_gate_failure: Some(core.replan_on_gate_failure),
+            replan_max_per_plan: Some(core.replan_max_per_plan),
+            replan_gate_attempts: Some(core.replan_gate_attempts),
+            auto_playbook_refresh: Some(core.auto_playbook_refresh),
+            use_lookahead_router: Some(core.use_lookahead_router),
+            lookahead_threshold: Some(core.lookahead_threshold),
+            gate_threshold_flush_interval: Some(core.gate_threshold_flush_interval),
+        }
+    }
+
     pub fn merge(self, overlay: Self) -> Self {
         Self {
             replan_on_gate_failure: overlay
@@ -1508,6 +1617,7 @@ impl ProviderLayer {
             extra_headers: self.extra_headers,
             max_concurrent: self.max_concurrent,
             limits: self.limits,
+            require_confirmation: false,
         })
     }
 }
@@ -2326,6 +2436,7 @@ pub(crate) fn apply_layer_value(layer: &mut ConfigLayer, key: &str, value: &str)
     Ok(())
 }
 
+#[allow(dead_code)]
 fn parse_string_list(value: &str, json_context: &'static str) -> Result<Vec<String>> {
     if value.trim_start().starts_with('[') {
         serde_json::from_str(value).context(json_context)
@@ -2341,6 +2452,7 @@ where
     serde_json::from_value(serde_json::Value::String(value.to_string())).context(context)
 }
 
+#[allow(dead_code)]
 fn provider_layer_mut<'a>(layer: &'a mut ConfigLayer, name: &str) -> &'a mut ProviderLayer {
     layer
         .providers
@@ -2349,6 +2461,7 @@ fn provider_layer_mut<'a>(layer: &'a mut ConfigLayer, name: &str) -> &'a mut Pro
         .or_default()
 }
 
+#[allow(dead_code)]
 fn model_layer_mut<'a>(layer: &'a mut ConfigLayer, name: &str) -> &'a mut ModelProfileLayer {
     layer
         .models
@@ -2357,6 +2470,7 @@ fn model_layer_mut<'a>(layer: &'a mut ConfigLayer, name: &str) -> &'a mut ModelP
         .or_default()
 }
 
+#[allow(dead_code)]
 fn model_routing_layer_mut<'a>(
     layer: &'a mut ConfigLayer,
     name: &str,
@@ -2366,6 +2480,7 @@ fn model_routing_layer_mut<'a>(
         .get_or_insert_with(ProviderRoutingLayer::default)
 }
 
+#[allow(dead_code)]
 fn serve_auth_layer_mut(layer: &mut ConfigLayer) -> &mut ServeAuthLayer {
     layer
         .serve
@@ -2374,6 +2489,7 @@ fn serve_auth_layer_mut(layer: &mut ConfigLayer) -> &mut ServeAuthLayer {
         .get_or_insert_with(ServeAuthLayer::default)
 }
 
+#[allow(dead_code)]
 fn serve_deploy_layer_mut(layer: &mut ConfigLayer) -> &mut ServeDeployLayer {
     layer
         .serve
@@ -2382,10 +2498,12 @@ fn serve_deploy_layer_mut(layer: &mut ConfigLayer) -> &mut ServeDeployLayer {
         .get_or_insert_with(ServeDeployLayer::default)
 }
 
+#[allow(dead_code)]
 fn collect_env_override_layer() -> Result<(ConfigLayer, Vec<String>)> {
     collect_env_override_layer_from(std::env::vars())
 }
 
+#[allow(dead_code)]
 fn collect_env_override_layer_from<I>(vars: I) -> Result<(ConfigLayer, Vec<String>)>
 where
     I: IntoIterator<Item = (String, String)>,
@@ -2405,6 +2523,7 @@ where
     Ok((layer, paths))
 }
 
+#[allow(dead_code)]
 fn env_override_path(key: &str) -> Option<String> {
     let suffix = key.strip_prefix("ROKO__")?;
     if suffix.is_empty() {
@@ -2413,6 +2532,7 @@ fn env_override_path(key: &str) -> Option<String> {
     Some(suffix.to_ascii_lowercase().replace("__", "."))
 }
 
+#[allow(dead_code)]
 fn apply_env_source_overrides(sources: &mut ConfigSources, paths: &[String]) {
     for path in paths {
         match path.as_str() {
@@ -2936,10 +3056,13 @@ pub fn global_config_path() -> Option<PathBuf> {
 /// Any provider/model in the global file that is *not* already in `config`
 /// gets inserted. This lets project `roko.toml` files override specific
 /// entries while inheriting the rest from `~/.roko/config.toml`.
-pub fn merge_global_providers(config: &mut roko_core::config::schema::RokoConfig) {
-    if let Err(e) = roko_core::config::loader::merge_global_into(config) {
-        tracing::warn!(error = %e, "global config merge failed during provider merge");
-    }
+///
+/// Returns an error if the global config file exists but cannot be read or
+/// parsed. Callers should treat this as fatal before constructing providers.
+pub fn merge_global_providers(
+    config: &mut roko_core::config::schema::RokoConfig,
+) -> Result<(), roko_core::config::LoadConfigError> {
+    roko_core::config::loader::merge_global_into(config)
 }
 
 /// Walk up from `start` looking for `roko.toml`. Returns the first hit.
@@ -2972,6 +3095,10 @@ pub struct ResolvedConfig {
 }
 
 /// Per-field provenance for [`ResolvedConfig`].
+///
+/// This is a compatibility facade that downstream rendering uses. It is
+/// now populated from the core loader's provenance records rather than
+/// from the legacy `ConfigLayer` inspection.
 #[derive(Clone, Debug)]
 pub struct ConfigSources {
     /// Where `auto_plan` came from.
@@ -3024,85 +3151,111 @@ pub struct ConfigSources {
     pub runner_plan_timeout_secs: Source,
 }
 
+impl ConfigSources {
+    /// Build provenance from the core loader's provenance records.
+    ///
+    /// Translates `ConfigSource` from the core provenance system into the
+    /// CLI `Source` enum by checking which keys have non-default provenance
+    /// entries.
+    pub fn from_core_provenance(validated: &roko_core::config::ValidatedConfig) -> Self {
+        use roko_core::config::ConfigSource as CS;
+
+        let lookup = |key: &str| -> Source {
+            // Check merge_context field provenance first (most specific).
+            if let Some(fp) = validated
+                .merge_context
+                .field_provenance
+                .iter()
+                .find(|fp| fp.key == key)
+            {
+                return match &fp.value_source {
+                    CS::Env => Source::Env,
+                    CS::File | CS::LocalOverride => Source::Project,
+                    CS::CliOverride | CS::ApiOverride => Source::Env,
+                    CS::Migration | CS::Evolved | CS::Composed | CS::Default => Source::Default,
+                };
+            }
+            // Fall back to provenance entries.
+            for entry in &validated.provenance {
+                if entry.key == key {
+                    return match &entry.source {
+                        CS::Env => Source::Env,
+                        CS::File | CS::LocalOverride => Source::Project,
+                        CS::CliOverride | CS::ApiOverride => Source::Env,
+                        CS::Migration | CS::Evolved | CS::Composed | CS::Default => Source::Default,
+                    };
+                }
+            }
+            Source::Default
+        };
+
+        Self {
+            auto_plan: lookup("prd.auto_plan"),
+            agent_command: lookup("agent.command"),
+            agent_args: lookup("agent.args"),
+            agent_model: lookup("agent.default_model"),
+            agent_effort: lookup("agent.default_effort"),
+            agent_bare_mode: lookup("agent.bare_mode"),
+            agent_fallback_model: lookup("agent.fallback_model"),
+            agent_timeout_ms: lookup("agent.timeout_ms"),
+            tools_prefer_mcp: lookup("tools.prefer_mcp"),
+            tools_global_denied: lookup("tools.global_denied"),
+            tools_mcp_timeout_secs: lookup("tools.mcp_timeout_secs"),
+            prompt_token_budget: lookup("prompt.token_budget"),
+            prompt_role: lookup("prompt.role"),
+            providers: lookup("providers"),
+            models: lookup("models"),
+            dreams_auto_dream: lookup("dreams.auto_dream"),
+            dreams_idle_threshold_mins: lookup("dreams.idle_threshold_mins"),
+            dreams_min_episodes_for_dream: lookup("dreams.min_episodes_for_dream"),
+            dreams_scheduled_cron: lookup("dreams.scheduled_cron"),
+            dreams_episode_count_trigger: lookup("dreams.episode_count_trigger"),
+            dreams_quality_gain: lookup("dreams.quality_gain"),
+            dreams_quality_penalty: lookup("dreams.quality_penalty"),
+            gates: lookup("gates"),
+            runner_plan_timeout_secs: lookup("runner.plan_timeout_secs"),
+        }
+    }
+}
+
 /// Top-level TOML keys recognised by either the core `RokoConfig` schema or the
 /// legacy CLI-only `ConfigLayer` schema.
 ///
 /// Any key present in a `roko.toml` that is not in this set is silently dropped
 /// by serde; [`warn_dropped_toml_keys`] emits a diagnostic warning for such keys
 /// so users are informed rather than left wondering why their setting has no effect.
-const KNOWN_CONFIG_KEYS: &[&str] = &[
-    // Core RokoConfig top-level keys
-    "config_version",
-    "schema_version",
-    "project",
-    "prd",
-    "agent",
-    "providers",
-    "models",
-    "gates",
-    "graduation",
-    "routing",
-    "pipeline",
-    "budget",
-    "statehub",
-    "conductor",
-    "watcher",
-    "learning",
-    "tui",
-    "timeouts",
-    "serve",
-    "scheduler",
-    "webhooks",
-    "github",
-    "subscriptions",
-    "server",
-    "deploy",
-    "perplexity",
-    "gemini",
-    "tools",
-    "chain",
-    "relay",
-    "feed_agents",
-    "runner",
-    "agents",
-    "validation",
-    "cold_storage",
-    "resources",
-    "isfr",
-    "profiles",
-    // CLI-only ConfigLayer keys (not in core schema)
-    "auto_plan",
-    "dreams",
-    "daimon",
-    "prompt",
-    "gate", // legacy [[gate]] array syntax (ConfigLayer renames from "gates")
-    "executor",
-    "runtime",
-    "repos", // legacy per-repo blocks
-];
+/// CLI-only top-level keys that the legacy `ConfigLayer` accepts but the core
+/// `RokoConfig` schema does not.  The core validator handles all
+/// `RokoConfig`-level keys; these are the residual CLI-specific additions.
+const CLI_ONLY_CONFIG_KEYS: &[&str] = &["auto_plan", "executor", "runtime"];
 
-/// Emit a warning for each top-level TOML key in `text` that is not in
-/// [`KNOWN_CONFIG_KEYS`].  This surfaces keys that serde silently drops instead
-/// of hiding them from the user entirely.
+/// Emit a warning for each TOML key in `text` that is not recognized by the
+/// core `RokoConfig` schema or the CLI-only `ConfigLayer` additions.
+///
+/// Delegates to the core [`roko_core::config::loader::validate_known_config_paths`]
+/// for full nested validation. CLI-only keys are additionally accepted at the
+/// top level.
 ///
 /// Non-fatal: unrecognised keys do not prevent config loading.
+#[allow(dead_code)]
 pub fn warn_dropped_toml_keys(text: &str, source_label: &str) {
     let value: toml::Value = match toml::from_str(text) {
         Ok(v) => v,
         Err(_) => return, // parse errors are reported elsewhere
     };
-    let table = match value.as_table() {
-        Some(t) => t,
-        None => return,
-    };
-    for key in table.keys() {
-        if !KNOWN_CONFIG_KEYS.contains(&key.as_str()) {
-            tracing::warn!(
-                %source_label,
-                %key,
-                "roko config: unknown key will be ignored; check for typos or schema change"
-            );
+    let diagnostics = roko_core::config::loader::validate_known_config_paths(&value);
+    for diag in &diagnostics {
+        // Skip diagnostics for keys that the CLI config layer accepts.
+        let top_key = diag.key.split('.').next().unwrap_or(&diag.key);
+        if CLI_ONLY_CONFIG_KEYS.contains(&top_key) {
+            continue;
         }
+        tracing::warn!(
+            %source_label,
+            key = %diag.key,
+            "roko config: {}",
+            diag.message
+        );
     }
 }
 
@@ -3128,6 +3281,7 @@ pub fn warn_dropped_toml_keys(text: &str, source_label: &str) {
 /// - `agent.env` -- from `core.agent.env` (if set)
 /// - `agent.fallback_model` -- from `core.agent.fallback_model` (if set)
 /// - `agent.tier_models` -- from `core.agent.tier_models` (if non-empty)
+#[allow(dead_code)]
 fn apply_core_authoritative_overrides(
     config: &mut Config,
     core: &roko_core::config::schema::RokoConfig,
@@ -3172,40 +3326,22 @@ fn apply_core_authoritative_overrides(
 
 /// Load config using the unified core loader and return a [`ResolvedConfig`].
 ///
-/// This is the primary config loading entry point for CLI code. It delegates to
-/// `roko_core::config::loader::load_config_validated_with_options()` for the
-/// authoritative config (providers, models, agent defaults, env overrides),
-/// then builds the CLI-specific compatibility fields (`ConfigSources`,
-/// `ConfigPaths`, `RepoRegistry`) that downstream code still requires.
+/// This is the primary config loading entry point for CLI code. It delegates
+/// entirely to `roko_core::config::loader::load_config_validated_with_options()`
+/// which handles: ancestor walk, `ROKO_CONFIG` env, global merge, named env
+/// overrides (`ROKO_MODEL` etc.), hierarchical `ROKO__*` overrides,
+/// interpolation, and file secret resolution.
+///
+/// The validated core `RokoConfig` is then converted to the CLI `Config` via
+/// [`Config::from_roko_config()`], and provenance is derived from the core
+/// loader's provenance records rather than the legacy `ConfigLayer` system.
 ///
 /// Precedence (highest first): hierarchical `ROKO__*` env vars -> named
 /// `ROKO_*` env vars -> `ROKO_CONFIG` env var -> project `roko.toml` ->
 /// global `~/.roko/config.toml` -> defaults.
-///
-/// ## Compatibility notes
-///
-/// The following CLI-only fields are still parsed from the legacy `ConfigLayer`
-/// system because they have no equivalent in `RokoConfig`:
-/// - `auto_plan` (CLI-specific flag, not in core schema)
-/// - `repos` (per-repository blocks, CLI-only)
-/// - Legacy `[[gate]]` array syntax (core uses `[gates]` section)
-/// - `dreams` / `daimon` / `runner.plan_timeout_secs` (CLI-specific config shapes)
-///
-/// These fields do NOT override core provider/model/env behavior.
-/// After the legacy layer produces a `Config`, [`apply_core_authoritative_overrides`]
-/// overlays providers/models/agent fields from the core validated config.
 pub fn load_resolved_config(workdir: &Path) -> Result<ResolvedConfig> {
     let paths = resolve_paths(workdir);
-    let (env_layer, env_paths) = collect_env_override_layer()?;
 
-    // Load the authoritative config from the core unified loader.
-    // This handles: ancestor walk, ROKO_CONFIG env, global merge, named env
-    // overrides (ROKO_MODEL etc.), hierarchical ROKO__* overrides,
-    // interpolation, and file secret resolution.
-    //
-    // The result is consumed: diagnostics are surfaced as warnings, and
-    // providers/models/agent fields are overlaid onto the CLI Config via
-    // apply_core_authoritative_overrides below.
     let core_validated = roko_core::config::loader::load_config_validated_with_options(
         workdir,
         &roko_core::config::loader::LoadOptions::default(),
@@ -3221,60 +3357,8 @@ pub fn load_resolved_config(workdir: &Path) -> Result<ResolvedConfig> {
         );
     }
 
-    // Build CLI config from the legacy layer system for compatibility fields
-    // (auto_plan, repos, [[gate]], dreams, daimon, runner.plan_timeout_secs).
-    // After resolution, apply_core_authoritative_overrides overlays
-    // providers/models/agent fields from core_validated so the core unified
-    // loader is the single source of truth for those values.
-    if let Some(env_path) = &paths.env_override {
-        // Warn on unknown keys in the env-override file before parsing it.
-        if let Ok(text) = std::fs::read_to_string(env_path) {
-            warn_dropped_toml_keys(&text, &env_path.display().to_string());
-        }
-        let layer = ConfigLayer::from_file(env_path)?.merge(env_layer);
-        let sources = sources_from_layer(&layer, Source::Env, Source::Default);
-        let mut config = layer.resolve()?;
-        apply_core_authoritative_overrides(&mut config, core_validated.config());
-        let repo_registry = RepoRegistry::load(&config, workdir)?;
-        return Ok(ResolvedConfig {
-            config,
-            repo_registry,
-            sources,
-            paths,
-        });
-    }
-
-    let global_layer = match paths.global.as_deref() {
-        Some(global_path) => match std::fs::read_to_string(global_path) {
-            Ok(text) => {
-                warn_dropped_toml_keys(&text, &global_path.display().to_string());
-                ConfigLayer::parse_toml(&text)
-                    .with_context(|| format!("parse config {}", global_path.display()))?
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => ConfigLayer::default(),
-            Err(e) => {
-                return Err(
-                    anyhow::Error::new(e).context(format!("read config {}", global_path.display()))
-                );
-            }
-        },
-        None => ConfigLayer::default(),
-    };
-    let project_layer = match &paths.project {
-        Some(p) => {
-            if let Ok(text) = std::fs::read_to_string(p) {
-                warn_dropped_toml_keys(&text, &p.display().to_string());
-            }
-            ConfigLayer::from_file(p)?
-        }
-        None => ConfigLayer::default(),
-    };
-
-    let mut sources = compute_sources(&global_layer, &project_layer);
-    apply_env_source_overrides(&mut sources, &env_paths);
-    let merged = global_layer.merge(project_layer).merge(env_layer);
-    let mut config = merged.resolve()?;
-    apply_core_authoritative_overrides(&mut config, core_validated.config());
+    let config = Config::from_roko_config(core_validated.config())?;
+    let sources = ConfigSources::from_core_provenance(&core_validated);
     let repo_registry = RepoRegistry::load(&config, workdir)?;
 
     Ok(ResolvedConfig {
@@ -3285,16 +3369,8 @@ pub fn load_resolved_config(workdir: &Path) -> Result<ResolvedConfig> {
     })
 }
 
-/// **Deprecated**: Use [`load_resolved_config`] instead.
-///
-/// This function now delegates to `load_resolved_config` and exists only to
-/// avoid breaking any remaining test-only references during migration.
-#[deprecated(note = "use load_resolved_config() instead")]
-pub fn load_layered(workdir: &Path) -> Result<ResolvedConfig> {
-    load_resolved_config(workdir)
-}
-
 /// Compute per-field provenance from global + project layers.
+#[allow(dead_code)]
 fn compute_sources(global: &ConfigLayer, project: &ConfigLayer) -> ConfigSources {
     let g_auto_plan = global.auto_plan.is_some();
     let p_auto_plan = project.auto_plan.is_some();
@@ -3405,6 +3481,7 @@ fn compute_sources(global: &ConfigLayer, project: &ConfigLayer) -> ConfigSources
 }
 
 /// Tag every field in a single-layer config as `present` or `fallback`.
+#[allow(dead_code)]
 fn sources_from_layer(layer: &ConfigLayer, present: Source, fallback: Source) -> ConfigSources {
     let agent = layer.agent.as_ref();
     let tools = layer.tools.as_ref();
@@ -3534,11 +3611,23 @@ pub fn command_on_path(cmd: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// Derive the set of known top-level TOML keys from serializing a default
+    /// `RokoConfig`.  This stays in sync automatically as fields are added.
+    fn known_config_keys() -> std::collections::HashSet<String> {
+        let default_toml = toml::to_string(&RokoConfig::default()).expect("serialize default");
+        let value: toml::Value = toml::from_str(&default_toml).expect("parse default");
+        value
+            .as_table()
+            .expect("default is a table")
+            .keys()
+            .cloned()
+            .collect()
+    }
+
     #[test]
     fn parses_minimal_config() {
         let toml = r#"
 [agent]
-command = "cat"
 "#;
         let cfg = Config::parse_toml(toml).unwrap();
         assert_eq!(cfg.agent.command, "cat");
@@ -4553,7 +4642,7 @@ program = "echo"
             .as_table()
             .expect("init template is a TOML table")
             .keys()
-            .filter(|key| !KNOWN_CONFIG_KEYS.contains(&key.as_str()))
+            .filter(|key| !known_config_keys().contains(key.as_str()))
             .collect::<Vec<_>>();
         assert!(
             unknown_keys.is_empty(),
@@ -4683,7 +4772,7 @@ model = "opus-4"
         let table = value.as_table().unwrap();
         let unknown_known: Vec<&String> = table
             .keys()
-            .filter(|k| !KNOWN_CONFIG_KEYS.contains(&k.as_str()))
+            .filter(|k| !known_config_keys().contains(k.as_str()))
             .collect();
         assert!(
             unknown_known.is_empty(),
@@ -4695,7 +4784,7 @@ model = "opus-4"
         let table = value.as_table().unwrap();
         let unknown: Vec<&String> = table
             .keys()
-            .filter(|k| !KNOWN_CONFIG_KEYS.contains(&k.as_str()))
+            .filter(|k| !known_config_keys().contains(k.as_str()))
             .collect();
         assert_eq!(
             unknown.len(),

@@ -54,7 +54,7 @@ use roko_learn::skill_library::Skill;
 /// let prompt = SystemPromptBuilder::new("You are an implementer...")
 ///     .with_conventions("Use snake_case, thiserror for errors")
 ///     .with_domain("DeFi protocol context: ...")
-///     .with_task("Implement the rate limiter in crates/golem-core")
+///     .with_task("Implement the rate limiter in crates/roko-core")
 ///     .with_tools("MCP tools available: Read, Write, Bash")
 ///     .with_anti_patterns(vec!["Never call unwrap in library crates"])
 ///     .build();
@@ -96,6 +96,8 @@ pub struct SystemPromptBuilder {
     budget_profile: Option<PromptBudget>,
     /// Learned section-effectiveness data scoped to one role.
     section_effectiveness: Option<SectionEffectivenessConfig>,
+    /// Optional model slug hint for model-specific prompt formatting.
+    model_hint: Option<String>,
 }
 
 #[derive(Clone)]
@@ -152,6 +154,7 @@ impl SystemPromptBuilder {
             token_budget: None,
             budget_profile: None,
             section_effectiveness: None,
+            model_hint: None,
         }
     }
 
@@ -353,6 +356,44 @@ impl SystemPromptBuilder {
         self
     }
 
+    /// Set an optional model slug hint for model-specific prompt formatting.
+    ///
+    /// When set, [`build`](Self::build) appends a short structured-output
+    /// preference stanza derived from [`adapt_for_model`](Self::adapt_for_model).
+    #[must_use]
+    pub fn with_model_hint(mut self, hint: impl Into<String>) -> Self {
+        self.model_hint = Some(hint.into());
+        self
+    }
+
+    /// Derive a model-specific structured-output preference from the hint slug.
+    ///
+    /// Returns `None` when no hint is set or the slug is unrecognised.
+    #[must_use]
+    pub fn adapt_for_model(hint: &str) -> Option<&'static str> {
+        let lower = hint.to_ascii_lowercase();
+        if lower.contains("claude")
+            || lower.contains("anthropic")
+            || lower.contains("haiku")
+            || lower.contains("sonnet")
+            || lower.contains("opus")
+        {
+            Some("Prefer XML tags for structured output (e.g. <result>...</result>).")
+        } else if lower.contains("gpt")
+            || lower.contains("openai")
+            || lower.contains("o1")
+            || lower.contains("o3")
+            || lower.contains("o4")
+            || lower.contains("gemini")
+            || lower.contains("gemma")
+            || lower.contains("deepseek")
+        {
+            Some("Prefer JSON for structured output.")
+        } else {
+            None
+        }
+    }
+
     /// Build the final system prompt as a single string.
     ///
     /// Sections are emitted in cache-layer order, with markers between
@@ -491,6 +532,19 @@ impl SystemPromptBuilder {
             && let Some(section) = self.apply_budget_profile(
                 PromptSection::new("conventions", conv)
                     .with_priority(self.effective_priority("conventions", SectionPriority::High))
+                    .with_cache_layer(CacheLayer::Role)
+                    .with_placement(Placement::Start),
+            )
+        {
+            sections.push(section);
+        }
+
+        // Layer 2b: Model-specific output format preference
+        if let Some(ref hint) = self.model_hint
+            && let Some(guidance) = Self::adapt_for_model(hint)
+            && let Some(section) = self.apply_budget_profile(
+                PromptSection::new("model_format", guidance)
+                    .with_priority(self.effective_priority("model_format", SectionPriority::Normal))
                     .with_cache_layer(CacheLayer::Role)
                     .with_placement(Placement::Start),
             )
@@ -1451,7 +1505,7 @@ mod tests {
             .with_conventions("Use snake_case. Use thiserror.")
             .with_domain("DeFi protocol: Uniswap v4 hooks")
             .with_context("Knowledge about execution flow.")
-            .with_task("Implement rate limiter in crates/golem-core")
+            .with_task("Implement rate limiter in crates/roko-core")
             .with_tools("MCP tools: Read, Write, Bash")
             .with_anti_patterns(vec![
                 "Never call unwrap in library crates".to_string(),

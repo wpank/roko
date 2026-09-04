@@ -228,6 +228,7 @@ impl Projection {
 
     /// Normalize a runner event without publishing it. Replay uses this same
     /// path so durable and live timeout terminals cannot drift by consumer.
+    #[allow(dead_code)]
     pub(super) fn normalize_runner_event(&self, event: RunnerEvent) -> ProjectionEvent {
         self.from_runner(event)
     }
@@ -284,6 +285,7 @@ impl Projection {
             | RunnerEvent::TaskAttemptCancellationRequested { run_id, .. }
             | RunnerEvent::TaskAttemptCancellationFailed { run_id, .. }
             | RunnerEvent::TimeoutRecorded { run_id, .. }
+            | RunnerEvent::TimeoutSalvagedToGate { run_id, .. }
             | RunnerEvent::AgentDispatchStarted { run_id, .. }
             | RunnerEvent::AgentDispatchCompleted { run_id, .. }
             | RunnerEvent::AgentCompleted { run_id, .. }
@@ -314,6 +316,9 @@ impl Projection {
             | RunnerEvent::MergeBackendCompleted { attempt, .. }
             | RunnerEvent::RetryDecision { attempt, .. } => Some(attempt.attempt),
             RunnerEvent::TimeoutRecorded { timeout, .. } => {
+                timeout.attempt.as_ref().map(|attempt| attempt.attempt)
+            }
+            RunnerEvent::TimeoutSalvagedToGate { timeout, .. } => {
                 timeout.attempt.as_ref().map(|attempt| attempt.attempt)
             }
             _ => None,
@@ -410,6 +415,7 @@ impl Projection {
                 output_tokens,
                 cache_read_tokens,
                 cache_write_tokens,
+                ..
             } => serde_json::json!({
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,

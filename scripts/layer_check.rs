@@ -504,6 +504,7 @@ pub fn run_layer_check() -> Result<i32> {
     }
 }
 
+#[allow(dead_code)]
 fn main() -> Result<std::process::ExitCode> {
     let code = u8::try_from(run_layer_check()?).context("layer check exit code out of range")?;
     Ok(std::process::ExitCode::from(code))

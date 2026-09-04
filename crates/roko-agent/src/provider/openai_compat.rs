@@ -38,7 +38,7 @@ use roko_core::agent::ProviderKind;
 #[cfg(test)]
 use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
 use roko_core::config::schema::{ModelProfile, ProviderConfig};
-use roko_core::defaults::{DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_REQUEST_TIMEOUT_MS};
+use roko_core::defaults::DEFAULT_MAX_OUTPUT_TOKENS;
 use roko_core::tool::aliases::canonical_of_claude;
 use roko_core::tool::{ToolDef, ToolRegistry, ToolSource, VecToolRegistry};
 use roko_std::{DynamicToolRegistry as LocalToolRegistry, StaticToolRegistry};
@@ -151,30 +151,6 @@ impl ContentBlock {
 #[allow(dead_code)]
 pub(crate) struct ImageUrlBlock {
     url: String,
-}
-
-#[allow(dead_code)]
-fn validate_vision_input(
-    messages: &[ChatMessage],
-    model: &ModelProfile,
-) -> Result<(), AgentCreationError> {
-    if !model.supports_vision {
-        return Ok(());
-    }
-
-    for msg in messages {
-        if let Some(content_blocks) = msg.content_blocks() {
-            for block in content_blocks {
-                if block.is_image_url() && !block.is_base64() {
-                    return Err(AgentCreationError::MissingConfig(
-                        "Kimi requires base64-encoded images, not URLs".into(),
-                    ));
-                }
-            }
-        }
-    }
-
-    Ok(())
 }
 
 fn inject_kimi_params(body: &mut Map<String, Value>, model: &ModelProfile) {
@@ -516,10 +492,7 @@ impl ProviderAdapter for OpenAiCompatAdapter {
     ) -> Result<Box<dyn Agent>, AgentCreationError> {
         let api_key = resolve_api_key(provider)?;
 
-        let timeout = options
-            .timeout_ms
-            .or(provider.timeout_ms)
-            .unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS);
+        let timeout = options.effective_timeout_ms(provider.timeout_ms);
         let max_tokens = max_tokens_for_model(model);
         let extra_headers = provider.extra_headers.clone().unwrap_or_default();
         let extra_body_params = build_extra_body_params(provider, model);
@@ -582,43 +555,39 @@ impl ProviderAdapter for OpenAiCompatAdapter {
         Ok(Box::new(agent))
     }
 
+    fn supports_local_tool_runtime(&self) -> bool {
+        true
+    }
+
     fn classify_error(&self, status: u16, body: &Value) -> ProviderError {
+        // Z.AI-specific numeric error codes take priority.
         if let Some(code) = body.pointer("/error/code").and_then(Value::as_str) {
-            return match code {
-                "1302" => ProviderError::RateLimit {
-                    retry_after_ms: Some(5_000),
-                },
-                "1303" | "1304" | "1305" => ProviderError::RateLimit {
-                    retry_after_ms: Some(60_000),
-                },
-                "1301" => ProviderError::ContentPolicy,
-                "1000" | "1001" | "1002" | "1003" | "1004" => ProviderError::AuthFailure,
-                "1211" => ProviderError::ModelNotFound,
-                "1261" => ProviderError::ContextOverflow,
-                _ => ProviderError::Other(format!("Z.AI error {code}")),
-            };
+            match code {
+                "1302" => {
+                    return ProviderError::RateLimit {
+                        retry_after_ms: Some(5_000),
+                    };
+                }
+                "1303" | "1304" | "1305" => {
+                    return ProviderError::RateLimit {
+                        retry_after_ms: Some(60_000),
+                    };
+                }
+                "1301" => return ProviderError::ContentPolicy,
+                "1000" | "1001" | "1002" | "1003" | "1004" => return ProviderError::AuthFailure,
+                "1211" => return ProviderError::ModelNotFound,
+                "1261" => return ProviderError::ContextOverflow,
+                // Non-Z.AI codes (e.g. OpenAI "context_length_exceeded") fall
+                // through to the generic classifier below.
+                _ => {}
+            }
         }
 
-        match status {
-            429 => ProviderError::RateLimit {
-                retry_after_ms: body
-                    .pointer("/retry_after")
-                    .and_then(|v| v.as_u64())
-                    .map(|seconds| seconds * 1000),
-            },
-            401 | 403 => ProviderError::AuthFailure,
-            404 => ProviderError::ModelNotFound,
-            408 => ProviderError::Timeout,
-            // 529 (API overload) — treat as rate-limit for retry purposes.
-            529 => ProviderError::RateLimit {
-                retry_after_ms: body
-                    .pointer("/retry_after")
-                    .and_then(|v| v.as_u64())
-                    .map(|seconds| seconds * 1000),
-            },
-            500..=599 => ProviderError::ServerError(status),
-            _ => ProviderError::Other(format!("HTTP {}", status)),
-        }
+        super::error_classify::classify_http_status(
+            status,
+            body,
+            super::error_classify::RetryAfterSource::BodyRetryAfterCompat,
+        )
     }
 }
 
@@ -630,7 +599,7 @@ mod tests {
     use crate::mcp::{
         McpClient, McpRequest, McpResponse, McpRuntime, McpRuntimeTransport, Transport,
     };
-    use crate::provider::LocalToolRuntime;
+    use crate::provider::{LocalToolRuntime, with_safety_layer};
     use roko_core::tool::{ToolCategory, ToolPermission};
     use roko_core::{Body, Context, Kind, Signal};
     use std::collections::HashMap;
@@ -899,6 +868,7 @@ mod tests {
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         let model = ModelProfile {
             provider: "zai".to_string(),
@@ -1004,6 +974,7 @@ mod tests {
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         let model = ModelProfile {
             provider: "moonshot".to_string(),
@@ -1103,6 +1074,7 @@ mod tests {
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         let model = ModelProfile {
             provider: "openai".to_string(),
@@ -1225,6 +1197,7 @@ mod tests {
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         let model = ModelProfile {
             provider: "zai".to_string(),
@@ -1382,6 +1355,7 @@ done
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         let model = ModelProfile {
             provider: "zai".to_string(),
@@ -1409,9 +1383,11 @@ done
             ..Default::default()
         };
 
-        let agent = OpenAiCompatAdapter
-            .create_agent(&provider, &model, &options)
-            .expect("create agent");
+        let agent = with_safety_layer(Some(crate::safety::SafetyLayer::permissive()), || {
+            OpenAiCompatAdapter
+                .create_agent(&provider, &model, &options)
+                .expect("create agent")
+        });
 
         let result = agent.run(&prompt("hello"), &Context::now()).await;
         assert!(result.success);
@@ -1777,6 +1753,7 @@ done
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         let model = ModelProfile {
             provider: "openrouter".to_string(),
@@ -1865,73 +1842,6 @@ done
     }
 
     #[test]
-    fn kimi_vision_base64_only() {
-        let model = ModelProfile {
-            provider: "moonshot".to_string(),
-            slug: "kimi-k2.5".to_string(),
-            context_window: 256_000,
-            max_output: Some(65_535),
-            supports_tools: true,
-            supports_thinking: true,
-            supports_vision: true,
-            supports_web_search: false,
-            supports_mcp_tools: false,
-            supports_partial: true,
-            supports_grounding: false,
-            supports_code_execution: false,
-            supports_caching: false,
-            provider_routing: None,
-            tool_format: "openai_json".to_string(),
-            cost_input_per_m: None,
-            cost_output_per_m: None,
-            cost_input_per_m_high: None,
-            cost_output_per_m_high: None,
-            cost_cache_read_per_m: None,
-            cost_cache_write_per_m: None,
-            thinking_level: None,
-            max_tools: Some(128),
-            tokenizer_ratio: None,
-            ..Default::default()
-        };
-
-        let base64_message = ChatMessage {
-            content: vec![ContentBlock::ImageUrl {
-                image_url: ImageUrlBlock {
-                    url: "data:image/png;base64,iVBORw0KGgo=".to_string(),
-                },
-            }],
-        };
-        assert!(validate_vision_input(&[base64_message], &model).is_ok());
-
-        let url_message = ChatMessage {
-            content: vec![ContentBlock::ImageUrl {
-                image_url: ImageUrlBlock {
-                    url: "https://example.com/image.png".to_string(),
-                },
-            }],
-        };
-        let err = validate_vision_input(&[url_message], &model).expect_err("expected error");
-        assert!(matches!(
-            err,
-            AgentCreationError::MissingConfig(message)
-                if message == "Kimi requires base64-encoded images, not URLs"
-        ));
-
-        let non_vision_model = ModelProfile {
-            supports_vision: false,
-            ..model
-        };
-        let accepted_for_other_provider = ChatMessage {
-            content: vec![ContentBlock::ImageUrl {
-                image_url: ImageUrlBlock {
-                    url: "https://example.com/image.png".to_string(),
-                },
-            }],
-        };
-        assert!(validate_vision_input(&[accepted_for_other_provider], &non_vision_model).is_ok());
-    }
-
-    #[test]
     fn classify_error_maps_retry_after_and_auth() {
         let adapter = OpenAiCompatAdapter;
         let rate_limit = adapter.classify_error(429, &serde_json::json!({ "retry_after": 7 }));
@@ -1960,6 +1870,48 @@ done
 
         assert!(matches!(
             adapter.classify_error(400, &serde_json::json!({ "error": { "code": "1261" } })),
+            ProviderError::ContextOverflow
+        ));
+    }
+
+    #[test]
+    fn classify_error_400_context_overflow() {
+        let adapter = OpenAiCompatAdapter;
+
+        // OpenAI-style context_length_exceeded
+        assert!(matches!(
+            adapter.classify_error(
+                400,
+                &serde_json::json!({
+                    "error": {
+                        "message": "This model's maximum context length is 128000 tokens. However, your messages resulted in 130000 tokens. Please reduce the length of the messages.",
+                        "type": "invalid_request_error",
+                        "code": "context_length_exceeded"
+                    }
+                })
+            ),
+            ProviderError::ContextOverflow
+        ));
+
+        // Generic context + token message
+        assert!(matches!(
+            adapter.classify_error(
+                400,
+                &serde_json::json!({
+                    "error": { "message": "context token limit exceeded" }
+                })
+            ),
+            ProviderError::ContextOverflow
+        ));
+
+        // Non-context 400 should not be ContextOverflow
+        assert!(!matches!(
+            adapter.classify_error(
+                400,
+                &serde_json::json!({
+                    "error": { "message": "invalid request format" }
+                })
+            ),
             ProviderError::ContextOverflow
         ));
     }

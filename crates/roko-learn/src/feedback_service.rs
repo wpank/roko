@@ -4,6 +4,7 @@
 //! existing learning infrastructure as append-only efficiency JSONL events.
 
 use crate::cascade_router::CascadeRouter;
+use crate::efficiency::FEEDBACK_EVENT_SCHEMA;
 use crate::episode_logger::{Episode, EpisodeGateVerdict, EpisodeLogger, Usage};
 use crate::model_call_feedback::observe_model_call_on_router;
 use crate::section_effect::SectionEffectivenessRegistry;
@@ -164,6 +165,10 @@ impl FeedbackService {
         }
 
         std::fs::create_dir_all(&self.data_dir)?;
+        // This file is shared with the AgentEfficiencyEvent writers
+        // (event_subscriber etc.). Feedback rows carry an explicit `schema`
+        // discriminator so readers can classify them instead of silently
+        // skipping foreign rows (audit #23).
         let efficiency_path = self.data_dir.join("efficiency.jsonl");
 
         let mut records = String::new();
@@ -186,8 +191,10 @@ impl FeedbackService {
                     cost_usd,
                     latency_ms,
                     success,
+                    error_class,
                 } => serde_json::json!({
                     "kind": "model_call",
+                    "schema": FEEDBACK_EVENT_SCHEMA,
                     "run_id": run_id,
                     "request_id": request_id,
                     "prompt_section_ids": prompt_section_ids,
@@ -202,6 +209,7 @@ impl FeedbackService {
                     "cost_usd": cost_usd,
                     "latency_ms": latency_ms,
                     "success": success,
+                    "error_class": error_class,
                     "ts": ts,
                 }),
                 FeedbackEvent::GateResult {
@@ -211,6 +219,7 @@ impl FeedbackService {
                     duration_ms,
                 } => serde_json::json!({
                     "kind": "gate_result",
+                    "schema": FEEDBACK_EVENT_SCHEMA,
                     "run_id": run_id,
                     "gate_name": gate_name,
                     "passed": passed,
@@ -228,6 +237,7 @@ impl FeedbackService {
                     duration_ms,
                 } => serde_json::json!({
                     "kind": event_type,
+                    "schema": FEEDBACK_EVENT_SCHEMA,
                     "event_type": event_type,
                     "run_id": run_id,
                     "model": model,
@@ -844,6 +854,7 @@ mod tests {
             cost_usd: 0.01,
             latency_ms: 2000,
             success: true,
+            error_class: None,
         })
         .await
         .unwrap();
@@ -873,6 +884,53 @@ mod tests {
 
         let content = std::fs::read_to_string(dir.path().join("efficiency.jsonl")).unwrap();
         assert!(content.contains("gate_result"));
+    }
+
+    #[tokio::test]
+    async fn flush_writes_schema_discriminator() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = FeedbackService::new(dir.path().to_path_buf());
+
+        svc.record(FeedbackEvent::GateResult {
+            run_id: "r1".into(),
+            gate_name: "compile".into(),
+            passed: true,
+            duration_ms: 100,
+        })
+        .await
+        .unwrap();
+        svc.record(FeedbackEvent::ModelCall {
+            run_id: Some("r1".into()),
+            request_id: None,
+            prompt_section_ids: Vec::new(),
+            knowledge_ids: Vec::new(),
+            model: Some("sonnet".into()),
+            provider: None,
+            token_usage: None,
+            cost: None,
+            role: "implementer".into(),
+            input_tokens: 100,
+            output_tokens: 50,
+            cost_usd: 0.01,
+            latency_ms: 200,
+            success: true,
+            error_class: None,
+        })
+        .await
+        .unwrap();
+
+        svc.flush().unwrap();
+
+        let content = std::fs::read_to_string(dir.path().join("efficiency.jsonl")).unwrap();
+        for line in content.lines().filter(|line| !line.trim().is_empty()) {
+            let value: serde_json::Value = serde_json::from_str(line).unwrap();
+            assert_eq!(
+                value["schema"], FEEDBACK_EVENT_SCHEMA,
+                "every feedback row carries the schema discriminator: {line}"
+            );
+        }
+        assert!(content.contains("gate_result"));
+        assert!(content.contains("model_call"));
     }
 
     #[tokio::test]
@@ -1002,6 +1060,7 @@ mod tests {
             cost_usd: 0.01,
             latency_ms: 2000,
             success: true,
+            error_class: None,
         })
         .await
         .unwrap();
@@ -1036,6 +1095,7 @@ mod tests {
             cost_usd: 0.01,
             latency_ms: 2000,
             success: true,
+            error_class: None,
         })
         .await
         .unwrap();
@@ -1065,6 +1125,7 @@ mod tests {
             cost_usd: 0.01,
             latency_ms: 2000,
             success: true,
+            error_class: None,
         })
         .await
         .unwrap();

@@ -26,7 +26,7 @@ use std::time::Instant;
 use crate::agent_config::command_from_config;
 use crate::agent_exec::{
     AgentCrashClass, AgentExecEpisode, AgentExecOpts, classify_agent_crash,
-    persist_capture_episode, run_agent_capture_logged, run_agent_capture_silent, run_agent_logged,
+    persist_capture_episode, run_agent_capture_silent, run_agent_logged,
 };
 use crate::task_parser::TasksFile;
 use crate::workspace_paths::{
@@ -465,7 +465,7 @@ pub fn ensure_dirs(workdir: &Path) -> Result<()> {
 /// Parsed PRD frontmatter.
 #[derive(Debug, Default)]
 pub struct PrdMeta {
-    /// Stable PRD identifier (e.g. `prd-golem-memory`).
+    /// Stable PRD identifier (e.g. `prd-agent-memory`).
     pub id: String,
     /// Human-readable PRD title.
     pub title: String,
@@ -1341,7 +1341,7 @@ async fn generate_plan_from_prd_with_outcome(
             "prd plan: agent returned"
         );
         // ── Crash classification and retry for non-zero exit codes ──────
-        let (exit_code, output) = if exit_code != 0 {
+        let (_exit_code, output) = if exit_code != 0 {
             let crash_class = classify_agent_crash(&output);
             let _ = persist_capture_episode(
                 workdir_ref,
@@ -1474,13 +1474,33 @@ async fn generate_plan_from_prd_with_outcome(
                     );
                 }
 
-                validate_and_fix_generated_plan(
+                let validated = validate_and_fix_generated_plan(
                     toml_content,
                     slug,
                     &resolved.config.models,
                     resolved.config.agent.model.as_deref(),
                 )
-                .map_err(|e| format!("{e:#}"))
+                .map_err(|e| format!("{e:#}"))?;
+                let parsed = TasksFile::parse_str(&validated).map_err(|error| {
+                    format!("generated plan failed runtime parsing after repair: {error:#}")
+                })?;
+                let policy = crate::plan_policy::PlanExecutionPolicy::generated_for_environment(
+                    template_kind.max_task_count(),
+                );
+                let policy_issues = crate::plan_policy::validate_plan_budgets(&parsed, policy);
+                if policy_issues.is_empty() {
+                    Ok(validated)
+                } else {
+                    Err(format!(
+                        "generated plan violates the `{}` structural budget:\n{}",
+                        template_kind.label(),
+                        policy_issues
+                            .iter()
+                            .map(|issue| format!("  - {issue}"))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    ))
+                }
             };
 
         // First attempt uses the output we already have.
@@ -1688,7 +1708,7 @@ async fn generate_plan_from_prd_with_outcome(
         } else {
             // All attempts (initial + retries) failed to produce valid TOML.
             let final_err = validated_toml.unwrap_err();
-            let preview: String = output.chars().take(500).collect();
+            let _preview: String = output.chars().take(500).collect();
             let has_toml_like = output.contains("[meta]") || output.contains("[[task]]");
             let toml_hint = if has_toml_like {
                 "\nhint: The model output TOML without proper fencing. \
@@ -1767,11 +1787,14 @@ async fn generate_plan_from_prd_with_outcome(
         }
 
         let (task_count, estimated_complexity) = generated_plan_stats(&generated_changed)?;
-        if task_count > template_kind.max_task_count() {
+        let max_tasks = crate::plan_policy::effective_generated_task_limit(
+            template_kind.max_task_count(),
+        );
+        if task_count > max_tasks {
             eprintln!(
                 "⚠️  Generated {task_count} tasks, which exceeds the `{}` template budget of {}",
                 template_kind.label(),
-                template_kind.max_task_count()
+                max_tasks
             );
         }
 
@@ -2406,6 +2429,7 @@ fn strsim_distance(a: &str, b: &str) -> usize {
 }
 
 /// Check whether a model identifier is present in the config model table.
+#[allow(dead_code)]
 fn model_in_config(
     model: &str,
     models: &IndexMap<String, roko_core::config::schema::ModelProfile>,
@@ -2427,8 +2451,8 @@ fn model_in_config(
 fn validate_and_fix_generated_plan(
     toml_str: &str,
     slug: &str,
-    models: &IndexMap<String, roko_core::config::schema::ModelProfile>,
-    default_model: Option<&str>,
+    _models: &IndexMap<String, roko_core::config::schema::ModelProfile>,
+    _default_model: Option<&str>,
 ) -> Result<String> {
     // 0. Deterministic repair before parsing
     let repaired = crate::task_parser::repair_toml(toml_str);
@@ -2670,39 +2694,24 @@ fn validate_and_fix_generated_plan(
                             .unwrap_or_default();
 
                         if role == "implementer" && !files.is_empty() {
-                            let mut auto_verify = Vec::new();
-
                             // Infer crate name from file paths for compile check
                             let crate_name = infer_crate_from_paths(&files);
                             let compile_cmd = match &crate_name {
                                 Some(c) => format!("cargo check -p {c}"),
                                 None => "cargo check --workspace".to_string(),
                             };
-                            auto_verify.push(make_verify_entry(
+                            let auto_verify = vec![make_verify_entry(
                                 "compile",
                                 &compile_cmd,
                                 &format!(
                                     "{} must compile",
                                     crate_name.as_deref().unwrap_or("workspace"),
                                 ),
-                            ));
-
-                            // Add structural grep for expected symbols from title
-                            if let Some(title) = task.get("title").and_then(toml::Value::as_str) {
-                                let structural_cmd = build_structural_verify_cmd(title, &files);
-                                if let Some(cmd) = structural_cmd {
-                                    auto_verify.push(make_verify_entry(
-                                        "structural",
-                                        &cmd,
-                                        "Expected symbols must exist in source",
-                                    ));
-                                }
-                            }
+                            )];
 
                             task.insert("verify".to_string(), toml::Value::Array(auto_verify));
                             eprintln!(
-                                "info: {task_id_label}: auto-added verify entries \
-                                 (compile + structural)"
+                                "info: {task_id_label}: auto-added one focused compile verify"
                             );
                         }
                     }
@@ -2785,37 +2794,6 @@ fn make_verify_entry(phase: &str, command: &str, fail_msg: &str) -> toml::Value 
         toml::Value::String(fail_msg.to_string()),
     );
     toml::Value::Table(table)
-}
-
-/// Build a structural verify command that greps for expected symbols.
-/// Extracts likely function/struct names from the task title and greps
-/// the first file in the list for them.
-fn build_structural_verify_cmd(title: &str, files: &[String]) -> Option<String> {
-    let target_file = files.first()?;
-    // Extract words that look like identifiers (snake_case or CamelCase)
-    let candidates: Vec<&str> = title
-        .split_whitespace()
-        .filter(|w| {
-            w.len() >= 4
-                && w.chars().all(|c| c.is_alphanumeric() || c == '_')
-                && w.chars().next().is_some_and(|c| c.is_alphabetic())
-                // Skip common non-symbol words
-                && !matches!(
-                    w.to_lowercase().as_str(),
-                    "with" | "from" | "into" | "that" | "this" | "pass" | "when"
-                        | "does" | "make" | "have" | "task" | "file" | "test"
-                        | "only" | "also" | "each" | "them" | "should" | "implement"
-                        | "create" | "update" | "remove" | "validate" | "generate"
-                )
-        })
-        .take(2)
-        .collect();
-    if candidates.is_empty() {
-        return None;
-    }
-    // Build a grep -q 'sym1\|sym2' file command
-    let pattern = candidates.join("\\|");
-    Some(format!("grep -q '{pattern}' {target_file}"))
 }
 
 /// Slugify a title.

@@ -1466,12 +1466,13 @@ async fn run_daemon_http_server(
     shutdown: CancellationToken,
 ) -> Result<()> {
     let roko_config = state.load_roko_config().as_ref().clone();
+    let addr = daemon_http_addr(&roko_config, port)?;
+    state.configure_listener_security(&roko_config.server.bind, roko_config.serve.auth.enabled);
     let router = roko_serve::routes::build_router(
         Arc::clone(&state),
         &roko_config.server.cors_origins,
         roko_config.serve.auth.clone(),
     );
-    let addr = format!("0.0.0.0:{port}");
     let listener = TcpListener::bind(&addr)
         .await
         .with_context(|| format!("bind to {addr}"))?;
@@ -1489,6 +1490,16 @@ async fn run_daemon_http_server(
 
     info!("server stopped");
     Ok(())
+}
+
+fn daemon_http_addr(config: &roko_core::config::RokoConfig, port: u16) -> Result<String> {
+    // The daemon must bind to the same address used to initialize AppState's
+    // immutable listener-security facts. Hard-coding a public bind here would
+    // make a default loopback/no-auth configuration publicly reachable while
+    // private run-observability routes still believed they were loopback-only.
+    let addr = format!("{}:{port}", config.server.bind);
+    roko_serve::validate_bind_safety(&addr, &config.serve)?;
+    Ok(addr)
 }
 
 async fn graceful_shutdown_daemon(
@@ -1833,6 +1844,26 @@ mod tests {
             runtime_dir: PathBuf::from("/tmp/roko-test"),
             session_id: "test-session".into(),
         }
+    }
+
+    #[test]
+    fn daemon_http_uses_configured_loopback_bind() {
+        let config = roko_core::config::RokoConfig::default();
+        assert_eq!(
+            daemon_http_addr(&config, 6677).expect("default daemon bind"),
+            "127.0.0.1:6677"
+        );
+    }
+
+    #[test]
+    fn daemon_http_rejects_unacknowledged_public_bind_without_auth() {
+        let mut config = roko_core::config::RokoConfig::default();
+        config.server.bind = "0.0.0.0".to_string();
+        config.serve.auth.enabled = false;
+        config.serve.acknowledge_public_risk = false;
+
+        let error = daemon_http_addr(&config, 6677).expect_err("unsafe public daemon bind");
+        assert!(error.to_string().contains("Public bind requires"));
     }
 
     #[test]

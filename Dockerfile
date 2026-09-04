@@ -20,7 +20,7 @@ COPY demo/demo-app/ ./
 RUN npm run build
 
 # ---- Rust binaries --------------------------------------------------------
-FROM rust:1.91-slim-bookworm AS builder
+FROM rust:1.96.1-slim-bookworm AS builder
 WORKDIR /app
 
 RUN apt-get update \
@@ -35,7 +35,7 @@ RUN apt-get update \
 COPY . .
 COPY --from=frontend /app/demo/demo-app/dist ./demo/demo-app/dist
 
-RUN cargo build --release -p roko-cli --bin roko \
+RUN cargo build --release -p roko-cli --bin roko --features alloy-backend,acp \
     && cargo build --release -p mirage-rs --bin mirage-rs --features "binary,roko" \
     && cargo build --release -p agent-relay --bin agent-relay \
     && strip target/release/roko target/release/mirage-rs target/release/agent-relay \

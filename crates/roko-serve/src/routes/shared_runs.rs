@@ -1,6 +1,6 @@
 //! Shareable run transcript routes.
 //!
-//! `GET /api/runs/{id}` — JSON transcript.
+//! `GET /api/shared/{token}` — JSON transcript.
 //! `GET /runs/{id}` — Self-contained HTML page.
 
 use std::sync::{Arc, OnceLock};
@@ -115,7 +115,10 @@ enum TranscriptLookup {
     Found(LoadedTranscript),
 }
 
-/// `GET /api/runs/{id}` — JSON transcript.
+/// Legacy JSON transcript handler retained for internal compatibility.
+///
+/// Public shares resolve through `/api/shared/{token}`. The authenticated
+/// `/api/runs/{id}` path is owned by the run-observability API.
 pub async fn get_run_json(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     match load_transcript(&state, &id) {
         TranscriptLookup::Found(loaded) => Json(json!(loaded.transcript)).into_response(),
@@ -179,23 +182,39 @@ pub async fn create_share(
         .and_then(|loaded| loaded.metadata.expires_at);
     let transcript = match loaded {
         Some(loaded) => loaded.transcript,
-        None => match transcript_from_runtime_events(&state, &id, &token) {
-            Some(transcript) => transcript,
-            None => {
-                let Some(Json(request)) = payload else {
-                    return StatusCode::NOT_FOUND.into_response();
-                };
-                match run_shared_workflow(&state, &token, request, Arc::clone(&workspace_config))
+        None => {
+            let index_state = Arc::clone(&state);
+            let index_run_id = id.clone();
+            let index_token = token.clone();
+            let indexed = tokio::task::spawn_blocking(move || {
+                transcript_from_runtime_events(&index_state, &index_run_id, &index_token)
+            })
+            .await
+            .ok()
+            .flatten();
+            match indexed {
+                Some(transcript) => transcript,
+                None => {
+                    let Some(Json(request)) = payload else {
+                        return StatusCode::NOT_FOUND.into_response();
+                    };
+                    match run_shared_workflow(
+                        &state,
+                        &token,
+                        request,
+                        Arc::clone(&workspace_config),
+                    )
                     .await
-                {
-                    Ok(transcript) => transcript,
-                    Err(e) => {
-                        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e})))
-                            .into_response();
+                    {
+                        Ok(transcript) => transcript,
+                        Err(e) => {
+                            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e})))
+                                .into_response();
+                        }
                     }
                 }
             }
-        },
+        }
     };
     let public = requested_public || existing_public;
     let expires_at = if no_expire {
@@ -323,8 +342,14 @@ fn transcript_from_runtime_events(
     run_id: &str,
     token: &str,
 ) -> Option<RunTranscript> {
-    // Resolve via the shared JsonlLogger so reader and writer use the same path.
-    let path = state.runtime_event_logger.path().to_path_buf();
+    // Resolve the bounded per-run index. Never replay the global compatibility
+    // log from a request path; old unindexed runs require an offline repair.
+    let _ = state.runtime_event_logger.flush_run(run_id);
+    let path = state.runtime_event_logger.run_path(run_id).ok()?;
+    const MAX_SHARE_EVENT_BYTES: u64 = 8 * 1024 * 1024;
+    if std::fs::metadata(&path).ok()?.len() > MAX_SHARE_EVENT_BYTES {
+        return None;
+    }
     let data = match std::fs::read_to_string(&path) {
         Ok(data) => data,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -874,12 +899,10 @@ pub fn auth_routes() -> axum::Router<Arc<AppState>> {
 /// Routes that are **intentionally public**. Wire these outside the auth layer.
 ///
 /// Endpoints:
-/// * `GET /api/runs/{id}` — JSON transcript.
 /// * `GET /api/shared/{token}` — retrieve a transcript by its opaque token.
 /// * `GET /runs/{id}` — self-contained HTML page.
 pub fn public_routes() -> axum::Router<Arc<AppState>> {
     axum::Router::new()
-        .route("/api/runs/{id}", axum::routing::get(get_run_json))
         .route("/api/shared/{token}", axum::routing::get(get_shared_run))
         .route("/runs/{id}", axum::routing::get(get_run_html))
 }
@@ -1163,7 +1186,7 @@ mod tests {
         );
     }
 
-    /// When runtime-events.jsonl is absent, `transcript_from_runtime_events`
+    /// When the per-run index is absent, `transcript_from_runtime_events`
     /// must return None — not panic or emit fake data.
     #[test]
     fn runtime_events_missing_file_returns_none() {
@@ -1171,8 +1194,12 @@ mod tests {
         let state = make_state_in_dir(&dir);
 
         assert!(
-            !state.runtime_event_logger.path().exists(),
-            "log file must be absent before test"
+            !state
+                .runtime_event_logger
+                .run_path("run-1")
+                .unwrap()
+                .exists(),
+            "run index must be absent before test"
         );
 
         let result = transcript_from_runtime_events(&state, "run-1", "token-1");
@@ -1185,7 +1212,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let state = make_state_in_dir(&dir);
 
-        let log_path = state.runtime_event_logger.path().to_path_buf();
+        let log_path = state.runtime_event_logger.run_path("run-1").unwrap();
         std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
 
         let envelope = RuntimeEventEnvelope::new(
@@ -1211,10 +1238,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let state = make_state_in_dir(&dir);
 
-        let log_path = state.runtime_event_logger.path().to_path_buf();
-        std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
-
         let run_id = "run-abc";
+        let log_path = state.runtime_event_logger.run_path(run_id).unwrap();
+        std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
         let mut seq = 0u64;
         let mut lines = Vec::new();
 

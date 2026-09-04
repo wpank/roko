@@ -144,6 +144,96 @@ pub struct HdcQuery {
     pub max_results: usize,
 }
 
+/// Typed query contract for the CLI search boundary.
+///
+/// Callers build an `IndexQuery` to describe what they want. The library
+/// translates it into the appropriate `SearchStrategy` internally, applying
+/// kind and file filters **before** truncation for every strategy.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexQuery {
+    /// Which search strategy to use: `keyword`, `structural`, or `hybrid`.
+    /// `hdc` is library-only and rejected at this boundary.
+    pub strategy: String,
+    /// Positional query text (symbol name/pattern, never a file path).
+    pub query: String,
+    /// Optional symbol-kind filter (applied before limit for all strategies).
+    pub kind: Option<SymbolKind>,
+    /// Optional glob filter on file paths (independent of query text).
+    pub file_pattern: Option<String>,
+    /// Maximum number of results. Must be > 0.
+    pub limit: usize,
+}
+
+impl IndexQuery {
+    /// Validate and execute this query against a `WorkspaceIndex`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the strategy is `hdc` or the limit is zero.
+    pub fn execute(&self, index: &WorkspaceIndex) -> Result<Vec<SearchResult>> {
+        if self.strategy == "hdc" {
+            bail!("HDC search is not a stable CLI strategy");
+        }
+        if self.limit == 0 {
+            bail!("--limit must be greater than zero");
+        }
+
+        let strategy = match self.strategy.as_str() {
+            "keyword" => SearchStrategy::Keyword(KeywordQuery {
+                text: self.query.clone(),
+                scope: SearchScope::Both,
+                case_sensitive: false,
+                whole_word: false,
+            }),
+            "structural" => SearchStrategy::Structural(StructuralQuery {
+                kind: self.kind.clone(),
+                visibility: None,
+                file_pattern: self.file_pattern.clone(),
+                has_callers: None,
+                min_pagerank: None,
+            }),
+            "hybrid" => SearchStrategy::Hybrid {
+                keyword: Some(KeywordQuery {
+                    text: self.query.clone(),
+                    scope: SearchScope::Both,
+                    case_sensitive: false,
+                    whole_word: false,
+                }),
+                structural: if self.kind.is_some() || self.file_pattern.is_some() {
+                    Some(StructuralQuery {
+                        kind: self.kind.clone(),
+                        file_pattern: self.file_pattern.clone(),
+                        ..Default::default()
+                    })
+                } else {
+                    None
+                },
+                hdc: None,
+            },
+            other => {
+                bail!("unknown search strategy: {other} (expected keyword, structural, or hybrid)")
+            }
+        };
+
+        // For keyword and hybrid strategies, apply kind/file filters as a
+        // post-filter BEFORE truncation, so that these filters genuinely
+        // reduce the result set rather than being ignored.
+        let mut results = index.search(strategy, self.limit.saturating_mul(10).max(200));
+
+        if self.strategy != "structural" {
+            if let Some(ref kind) = self.kind {
+                results.retain(|r| r.symbol.id.kind == *kind);
+            }
+            if let Some(ref pat) = self.file_pattern {
+                results.retain(|r| matches_file_pattern(&r.symbol.id.file_path, pat));
+            }
+        }
+
+        results.truncate(self.limit);
+        Ok(results)
+    }
+}
+
 /// Dense-embedding search query.
 ///
 /// The current in-memory implementation does not compute dense embeddings yet;
@@ -1013,6 +1103,30 @@ impl WorkspaceIndex {
         &self.root
     }
 
+    /// All indexed symbols, in no particular order.
+    pub fn all_symbols(&self) -> Vec<SymbolInfo> {
+        self.symbols_by_id.values().cloned().collect()
+    }
+
+    /// All indexed edges as (from, to, kind) triples.
+    pub fn all_edges(&self) -> Vec<(SymbolId, SymbolId, EdgeKind)> {
+        self.graph
+            .all_edges()
+            .into_iter()
+            .map(|e| (e.from_id, e.to_id, e.kind))
+            .collect()
+    }
+
+    /// All indexed source files with their paths and content.
+    pub fn all_source_files(&self) -> Vec<&SourceFile> {
+        self.files_by_path.values().collect()
+    }
+
+    /// All computed PageRank scores as (symbol_id, score) pairs.
+    pub fn all_pagerank_scores(&self) -> &HashMap<SymbolId, f64> {
+        &self.pagerank_scores
+    }
+
     fn from_source_files_with_root(root: PathBuf, files: Vec<SourceFile>) -> Self {
         let graph = build_graph(&files);
         let pagerank_scores = pagerank(&graph, 30, 0.85);
@@ -1468,8 +1582,12 @@ fn matches_file_pattern(path: &str, pattern: &str) -> bool {
         return true;
     }
 
-    let normalized = pattern.replace("**", "*");
-    let parts = normalized
+    // Normalize both path and pattern to forward slashes before matching.
+    let norm_path = path.replace('\\', "/");
+    let norm_pattern = pattern.replace('\\', "/");
+
+    let collapsed = norm_pattern.replace("**", "*");
+    let parts = collapsed
         .split('*')
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>();
@@ -1479,7 +1597,7 @@ fn matches_file_pattern(path: &str, pattern: &str) -> bool {
 
     let mut cursor = 0usize;
     for part in parts {
-        let Some(found) = path[cursor..].find(part) else {
+        let Some(found) = norm_path[cursor..].find(part) else {
             return false;
         };
         cursor += found + part.len();
@@ -1494,11 +1612,11 @@ fn sort_symbol_lists(map: &mut HashMap<String, Vec<SymbolInfo>>) {
 }
 
 fn compare_search_results(left: &SearchResult, right: &SearchResult) -> std::cmp::Ordering {
+    // Frozen contract: score desc -> canonical path asc -> line asc.
     right
         .score
         .total_cmp(&left.score)
         .then_with(|| left.symbol.id.file_path.cmp(&right.symbol.id.file_path))
-        .then_with(|| left.symbol.id.symbol_name.cmp(&right.symbol.id.symbol_name))
         .then_with(|| left.symbol.line.cmp(&right.symbol.line))
 }
 
@@ -1912,5 +2030,295 @@ mod tests {
         );
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].symbol.id.symbol_name, "alpha");
+    }
+
+    // ── Query contract tests ─────────────────────────────────────────
+
+    mod query_contract {
+        use super::*;
+
+        fn test_index() -> WorkspaceIndex {
+            WorkspaceIndex::from_source_files(vec![
+                file(
+                    "src/alpha.rs",
+                    "rust",
+                    "fn alpha_func() {}\nstruct AlphaStruct {}\n",
+                    vec![
+                        symbol("alpha_func", SymbolKind::Function, 1),
+                        symbol("AlphaStruct", SymbolKind::Struct, 2),
+                    ],
+                    vec![],
+                ),
+                file(
+                    "src/beta.rs",
+                    "rust",
+                    "fn beta_func() {}\nenum BetaEnum {}\n",
+                    vec![
+                        symbol("beta_func", SymbolKind::Function, 1),
+                        symbol("BetaEnum", SymbolKind::Enum, 2),
+                    ],
+                    vec![],
+                ),
+                file(
+                    "tests/gamma.rs",
+                    "rust",
+                    "fn gamma_func() {}\nfn gamma_helper() {}\n",
+                    vec![
+                        symbol("gamma_func", SymbolKind::Function, 1),
+                        symbol("gamma_helper", SymbolKind::Function, 2),
+                    ],
+                    vec![],
+                ),
+            ])
+        }
+
+        #[test]
+        fn keyword_kind_filter_applied_before_limit() {
+            let index = test_index();
+            let query = IndexQuery {
+                strategy: "keyword".to_string(),
+                query: "func".to_string(),
+                kind: Some(SymbolKind::Function),
+                file_pattern: None,
+                limit: 10,
+            };
+            let results = query.execute(&index).unwrap();
+            // All results must be functions.
+            assert!(!results.is_empty());
+            for r in &results {
+                assert_eq!(r.symbol.id.kind, SymbolKind::Function);
+            }
+        }
+
+        #[test]
+        fn keyword_file_pattern_filter() {
+            let index = test_index();
+            let query = IndexQuery {
+                strategy: "keyword".to_string(),
+                query: "func".to_string(),
+                kind: None,
+                file_pattern: Some("src/*".to_string()),
+                limit: 10,
+            };
+            let results = query.execute(&index).unwrap();
+            assert!(!results.is_empty());
+            for r in &results {
+                assert!(
+                    r.symbol.id.file_path.starts_with("src/"),
+                    "expected src/ path, got {}",
+                    r.symbol.id.file_path,
+                );
+            }
+        }
+
+        #[test]
+        fn structural_query_independent_of_file_pattern() {
+            let index = test_index();
+            // Structural search with kind filter and file pattern — both
+            // must apply independently of the positional query text.
+            let query = IndexQuery {
+                strategy: "structural".to_string(),
+                query: "".to_string(),
+                kind: Some(SymbolKind::Function),
+                file_pattern: Some("src/*".to_string()),
+                limit: 10,
+            };
+            let results = query.execute(&index).unwrap();
+            for r in &results {
+                assert_eq!(r.symbol.id.kind, SymbolKind::Function);
+                assert!(
+                    r.symbol.id.file_path.starts_with("src/"),
+                    "expected src/ path, got {}",
+                    r.symbol.id.file_path,
+                );
+            }
+        }
+
+        #[test]
+        fn hdc_strategy_rejected() {
+            let index = test_index();
+            let query = IndexQuery {
+                strategy: "hdc".to_string(),
+                query: "anything".to_string(),
+                kind: None,
+                file_pattern: None,
+                limit: 10,
+            };
+            let err = query.execute(&index).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("HDC search is not a stable CLI strategy"),
+                "unexpected error: {err}",
+            );
+        }
+
+        #[test]
+        fn zero_limit_rejected() {
+            let index = test_index();
+            let query = IndexQuery {
+                strategy: "keyword".to_string(),
+                query: "alpha".to_string(),
+                kind: None,
+                file_pattern: None,
+                limit: 0,
+            };
+            let err = query.execute(&index).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("--limit must be greater than zero"),
+                "unexpected error: {err}",
+            );
+        }
+
+        #[test]
+        fn deterministic_sort_order() {
+            let index = test_index();
+            let query = IndexQuery {
+                strategy: "keyword".to_string(),
+                query: "func".to_string(),
+                kind: Some(SymbolKind::Function),
+                file_pattern: None,
+                limit: 10,
+            };
+            let run_a = query.execute(&index).unwrap();
+            let run_b = query.execute(&index).unwrap();
+            assert_eq!(run_a.len(), run_b.len());
+            for (a, b) in run_a.iter().zip(run_b.iter()) {
+                assert_eq!(a.symbol.id, b.symbol.id);
+                assert_eq!(a.symbol.line, b.symbol.line);
+                assert!(
+                    (a.score - b.score).abs() < f64::EPSILON,
+                    "scores differ: {} vs {}",
+                    a.score,
+                    b.score,
+                );
+            }
+        }
+
+        #[test]
+        fn sort_contract_score_desc_path_asc_line_asc() {
+            // Verify the frozen sort contract: score desc, path asc, line asc.
+            let index = test_index();
+            let query = IndexQuery {
+                strategy: "keyword".to_string(),
+                query: "gamma".to_string(),
+                kind: Some(SymbolKind::Function),
+                file_pattern: None,
+                limit: 10,
+            };
+            let results = query.execute(&index).unwrap();
+            assert!(results.len() >= 2, "expected at least 2 results");
+            for pair in results.windows(2) {
+                let ordering = pair[1]
+                    .score
+                    .total_cmp(&pair[0].score)
+                    .then_with(|| {
+                        pair[0]
+                            .symbol
+                            .id
+                            .file_path
+                            .cmp(&pair[1].symbol.id.file_path)
+                    })
+                    .then_with(|| pair[0].symbol.line.cmp(&pair[1].symbol.line));
+                assert!(
+                    ordering != std::cmp::Ordering::Greater,
+                    "sort violation: {:?} should not come before {:?}",
+                    pair[0].symbol.id,
+                    pair[1].symbol.id,
+                );
+            }
+        }
+
+        #[test]
+        fn hybrid_with_kind_and_file_pattern() {
+            let index = test_index();
+            let query = IndexQuery {
+                strategy: "hybrid".to_string(),
+                query: "func".to_string(),
+                kind: Some(SymbolKind::Function),
+                file_pattern: Some("src/*".to_string()),
+                limit: 10,
+            };
+            let results = query.execute(&index).unwrap();
+            for r in &results {
+                assert_eq!(r.symbol.id.kind, SymbolKind::Function);
+                assert!(
+                    r.symbol.id.file_path.starts_with("src/"),
+                    "expected src/ path, got {}",
+                    r.symbol.id.file_path,
+                );
+            }
+        }
+
+        #[test]
+        fn limit_truncates_after_filters() {
+            let index = test_index();
+            let query = IndexQuery {
+                strategy: "keyword".to_string(),
+                query: "func".to_string(),
+                kind: Some(SymbolKind::Function),
+                file_pattern: None,
+                limit: 1,
+            };
+            let results = query.execute(&index).unwrap();
+            assert_eq!(results.len(), 1);
+        }
+
+        #[test]
+        fn unknown_strategy_rejected() {
+            let index = test_index();
+            let query = IndexQuery {
+                strategy: "magic".to_string(),
+                query: "x".to_string(),
+                kind: None,
+                file_pattern: None,
+                limit: 5,
+            };
+            let err = query.execute(&index).unwrap_err();
+            assert!(
+                err.to_string().contains("unknown search strategy"),
+                "unexpected error: {err}",
+            );
+        }
+
+        #[test]
+        fn path_normalization_in_file_pattern() {
+            // Backslash paths should match forward-slash patterns.
+            assert!(matches_file_pattern("src\\alpha.rs", "src/*"));
+            assert!(matches_file_pattern("src/alpha.rs", "src\\*"));
+        }
+
+        #[test]
+        fn duplicate_names_across_files() {
+            // Two symbols with the same name in different files should both appear.
+            let index = WorkspaceIndex::from_source_files(vec![
+                file(
+                    "a.rs",
+                    "rust",
+                    "fn dup() {}\n",
+                    vec![symbol("dup", SymbolKind::Function, 1)],
+                    vec![],
+                ),
+                file(
+                    "b.rs",
+                    "rust",
+                    "fn dup() {}\n",
+                    vec![symbol("dup", SymbolKind::Function, 1)],
+                    vec![],
+                ),
+            ]);
+            let query = IndexQuery {
+                strategy: "keyword".to_string(),
+                query: "dup".to_string(),
+                kind: None,
+                file_pattern: None,
+                limit: 10,
+            };
+            let results = query.execute(&index).unwrap();
+            assert_eq!(results.len(), 2);
+            // Deterministic order: a.rs before b.rs (same score -> path asc).
+            assert_eq!(results[0].symbol.id.file_path, "a.rs");
+            assert_eq!(results[1].symbol.id.file_path, "b.rs");
+        }
     }
 }

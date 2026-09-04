@@ -1,5 +1,4 @@
 //! prd command handlers.
-#![allow(unused_imports)]
 
 use crate::*;
 use serde::{Deserialize, Serialize};
@@ -299,8 +298,11 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
     let gw = load_gateway_env(&workdir);
     let model = cli.model.clone().or_else(|| model_from_config(&workdir));
     let model_ref = model.as_deref();
-    let effort = cli.effort.map(|effort| effort.to_string());
-    let effort_ref = effort.as_deref();
+    let cli_effort = cli.effort.map(|effort| effort.to_string());
+    let cli_effort_ref = cli_effort.as_deref();
+    // #181: load config for per-role effort defaults; CLI --effort still wins.
+    let prd_role_config: roko_core::config::schema::RokoConfig =
+        roko_core::config::loader::load_config_unified(&workdir).unwrap_or_default();
     let resume_session = cli.resume.as_deref();
     let agent_command = command_from_config(&workdir).unwrap_or_else(|| "claude".to_string());
     let _workspace_lock = matches!(
@@ -381,6 +383,12 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
                             .and_then(|s| roko_core::config::schema::RokoConfig::from_toml(&s).ok())
                             .unwrap_or_default();
                     crate::commands::util::preflight_provider_for_model(&prd_config, &model_key)?;
+                    // #162: warn if model lacks capabilities required by the scribe role
+                    crate::commands::util::warn_capability_mismatch(
+                        &prd_config,
+                        &model_key,
+                        "scribe",
+                    );
                 }
                 // Write scaffold first so agent can read and fill it
                 let frontmatter = roko_cli::prd::new_draft_frontmatter(&slug, &title);
@@ -467,11 +475,13 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
                 eprintln!("  Generating PRD draft: {slug}");
                 let t_phase = Instant::now();
                 let started = Instant::now();
+                let scribe_effort = cli_effort_ref
+                    .unwrap_or_else(|| prd_role_config.agent.effort_for_role("scribe"));
                 let (exit_code, output) = run_agent_capture_silent(AgentExecOpts {
                     prompt: &task_prompt,
                     workdir: &workdir,
                     model: Some(model_key.as_str()),
-                    effort: effort_ref,
+                    effort: Some(scribe_effort),
                     system_prompt: Some(&system),
                     resume_session,
                     env_vars: &gw.vars,
@@ -689,11 +699,13 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
                 );
                 let mtime_before = std::fs::metadata(&draft).and_then(|m| m.modified()).ok();
                 let started = Instant::now();
+                let edit_effort = cli_effort_ref
+                    .unwrap_or_else(|| prd_role_config.agent.effort_for_role("scribe"));
                 let (exit_code, output) = run_agent_capture_silent(AgentExecOpts {
                     prompt: &task_prompt,
                     workdir: &workdir,
                     model: model_ref,
-                    effort: effort_ref,
+                    effort: Some(edit_effort),
                     system_prompt: Some(&system),
                     resume_session,
                     env_vars: &gw.vars,
@@ -782,6 +794,12 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
                         .and_then(|s| roko_core::config::schema::RokoConfig::from_toml(&s).ok())
                         .unwrap_or_default();
                 crate::commands::util::preflight_provider_for_model(&plan_config, &model_key)?;
+                // #162: warn if model lacks capabilities required by the strategist role
+                crate::commands::util::warn_capability_mismatch(
+                    &plan_config,
+                    &model_key,
+                    "strategist",
+                );
             }
             let init_ms = t_phase.elapsed().as_millis();
             let t_phase = Instant::now();
@@ -827,11 +845,13 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
             );
             let system = roko_cli::prd::prd_agent_prompt(&workdir, "Consolidate all PRDs");
             let started = Instant::now();
+            let consolidate_effort = cli_effort_ref
+                .unwrap_or_else(|| prd_role_config.agent.effort_for_role("strategist"));
             let (exit_code, output) = run_agent_capture_silent(AgentExecOpts {
                 prompt: &task_prompt,
                 workdir: &workdir,
                 model: model_ref,
-                effort: effort_ref,
+                effort: Some(consolidate_effort),
                 system_prompt: Some(&system),
                 resume_session,
                 env_vars: &gw.vars,
@@ -858,28 +878,6 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
             Ok(exit_code)
         }
     }
-}
-
-#[allow(dead_code)]
-fn resolve_effective_model_key(
-    workdir: &Path,
-    cli_model: Option<String>,
-    role: Option<&str>,
-    context: &str,
-) -> Result<String> {
-    let config = roko_core::config::loader::load_config_unified(workdir)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let selection = roko_cli::model_selection::resolve_effective_model(
-        cli_model,
-        None,
-        role.map(str::to_string),
-        None,
-        &config,
-        None,
-    )
-    .map_err(|err| anyhow::anyhow!("resolve model selection for {context}: {err}"))?;
-    selection.print_stderr();
-    Ok(selection.effective_model_key)
 }
 
 /// Find a PRD by slug in either published or drafts.

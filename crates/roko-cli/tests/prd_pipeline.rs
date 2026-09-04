@@ -77,8 +77,8 @@ fn prd_draft_scaffold_creates_markdown() {
 
 #[test]
 fn prd_slugify_normalizes_title() {
-    let slug = roko_cli::prd::slugify("Wire SystemPromptBuilder into orchestrate.rs");
-    assert_eq!(slug, "wire-systempromptbuilder-into-orchestrate-rs");
+    let slug = roko_cli::prd::slugify("Wire SystemPromptBuilder into event_loop.rs");
+    assert_eq!(slug, "wire-systempromptbuilder-into-event-loop-rs");
 
     let slug2 = roko_cli::prd::slugify("  Multiple   Spaces  ");
     assert_eq!(slug2, "multiple-spaces");

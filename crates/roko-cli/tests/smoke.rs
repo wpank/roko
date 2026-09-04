@@ -283,8 +283,11 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"mcp-ok"}}}}'
         extra_headers: None,
         max_concurrent: None,
         limits: None,
+        require_confirmation: false,
     };
     let options = AgentOptions {
+        safety_layer: None,
+        temperament: None,
         command: None,
         timeout_ms: Some(5_000),
         system_prompt: Some("system guidance".to_string()),
@@ -307,6 +310,7 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"mcp-ok"}}}}'
         pre_discovered_local_tools: None,
         local_tool_mcp_servers: None,
         rate_limiter: None,
+        gemini_safety_settings: Vec::new(),
     };
 
     let agent = ClaudeCliAdapter

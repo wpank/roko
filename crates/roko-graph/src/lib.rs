@@ -46,24 +46,31 @@ pub mod budget;
 pub mod cell;
 pub mod cells;
 pub mod condition;
+pub mod control;
 pub mod convert;
+pub mod delivery;
 pub mod engine;
 pub mod error;
+pub mod events;
 pub mod fingerprint;
 pub mod hot;
 pub mod loader;
+pub mod plan_mutation;
+pub mod profile;
 pub mod registry;
 pub mod replay;
 pub mod topo;
 pub mod types;
+pub mod workspace;
 
 // Re-export primary types at crate root for convenience.
 pub use cell::{Cell, CellContext, CellVersion};
 pub use engine::{
-    FlowHandle, FlowStatus, GraphEngine, GraphOutput, GraphSnapshot, MergeEnqueuer, MergeRequest,
-    NodeResult, NodeStatus, SerializableNodeStatus, SerializableSignal, default_registry,
+    FlowHandle, FlowStatus, GRAPH_SNAPSHOT_SCHEMA_VERSION, GraphEngine, GraphOutput, GraphSnapshot,
+    GraphSnapshotV2, MergeEnqueuer, MergeRequest, NodeResult, NodeStatus, SerializableNodeStatus,
+    SerializableSignal, ValidatedGraph, default_registry, reconcile_running_status,
 };
-pub use registry::{CellFactory, CellRegistry};
+pub use registry::{CellDescriptor, CellFactory, CellRegistry};
 pub use types::{
     Edge, EdgeCondition, EdgeValidationError, ExecutionClass, FailureStrategy, Graph, GraphConfig,
     GraphError, GraphMetadata, GraphMode, GraphNodeIdx, GraphPolicy, Node, NodeId, NodeOutput,
@@ -85,3 +92,40 @@ pub use hot::{
 };
 pub use replay::{ActivityRecorder, ActivityReplayer, RecordEntry};
 pub use roko_core::{LensConfig, LensRegistration, LensRegistry};
+pub use workspace::{
+    ExecutionWorkspaceProvider, WorkspaceAttemptId, WorkspaceError, WorkspaceLease,
+    WorkspaceLeaseState, WorkspaceReconcileResult, WorkspaceReleasePolicy,
+};
+
+// Re-export graph execution event contract (#246).
+pub use events::{
+    BudgetAmounts, CommonFields, DispatchFields, EventSeqCounter, GRAPH_EVENT_SCHEMA_VERSION,
+    GraphEventDelivery, GraphEventDisposition, GraphEventError, GraphEventSink,
+    GraphExecutionEvent, NodeFields, TerminalStats, WaveFields,
+};
+
+// Re-export approval, control, and cancellation ports (#255).
+pub use control::{
+    ApprovalRequestV1, ApprovalResolution, CONTROL_EXTENSION_NAME, CONTROL_EXTENSION_VERSION,
+    ControlCommandKind, ControlEffect, ControlReceiptV1, ControlSnapshot, ExecutionControlService,
+    FinalizationIntent, ReceiptStatus, build_approval_request,
+};
+
+// Re-export graph-layer replan mutation adapter (#252).
+pub use plan_mutation::{
+    build_merge_with_rewiring, build_split_with_rewiring, completed_tasks_preserved,
+    downstream_tasks, pending_siblings, upstream_tasks,
+};
+
+// Re-export completion delivery lifecycle (#254).
+pub use delivery::{
+    CompletionDeliveryReceiptV1, CompletionDeliveryRequest, CompletionDeliveryService,
+    CompletionDeliveryState, DELIVERY_EXTENSION_KEY, DeliveryError, DeliveryReceiptStore,
+    DeliveryTransitionError, MergeSlot, MergeSlotBlocked, ReleasePolicy, delivery_extension_value,
+};
+
+// Re-export authored graph production profile (#267).
+pub use profile::{
+    AuthoredGraphProfile, AuthoredGraphProfileBuilder, CapabilityDenial, CellCapabilityDenial,
+    DenialReason, ProfileValidationError, RuntimeProfileKind, validate_cell_capabilities,
+};

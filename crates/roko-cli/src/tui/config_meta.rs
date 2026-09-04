@@ -820,12 +820,12 @@ mod tests {
     #[test]
     fn truncate_preserves_unicode_boundaries() {
         let input = "── Agent ─────────────────────────────────────────────────────────────────────────────────";
-        assert_eq!(truncate(input, 12), "── Agent ...");
+        assert_eq!(truncate(input, 12), "── Agent ──\u{2026}");
     }
 
     #[test]
     fn truncate_handles_tiny_widths() {
-        assert_eq!(truncate("abcdef", 3), "...");
-        assert_eq!(truncate("abcdef", 2), "..");
+        assert_eq!(truncate("abcdef", 3), "ab\u{2026}");
+        assert_eq!(truncate("abcdef", 2), "a\u{2026}");
     }
 }

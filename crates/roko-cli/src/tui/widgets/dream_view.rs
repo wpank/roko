@@ -8,7 +8,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::tui::Theme;
 
@@ -267,7 +267,7 @@ fn render_replay_candidates(frame: &mut Frame<'_>, area: Rect, snap: &DreamSnaps
         .map(|c| {
             let bar_len = ((c.utility * 10.0).round() as usize).min(10);
             let bar: String = "\u{2588}".repeat(bar_len);
-            let empty: String = "\u{2591}".repeat(10 - bar_len);
+            let empty: String = "\u{2500}".repeat(10 - bar_len);
             Line::from(vec![
                 Span::styled(
                     format!("{bar}{empty}"),
@@ -287,7 +287,7 @@ fn render_replay_candidates(frame: &mut Frame<'_>, area: Rect, snap: &DreamSnaps
         })
         .collect();
 
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+    frame.render_widget(Paragraph::new(lines)), inner);
 }
 
 // ---------------------------------------------------------------------------
@@ -338,7 +338,7 @@ fn render_hypotheses(frame: &mut Frame<'_>, area: Rect, snap: &DreamSnapshot) {
         })
         .collect();
 
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+    frame.render_widget(Paragraph::new(lines)), inner);
 }
 
 // ---------------------------------------------------------------------------

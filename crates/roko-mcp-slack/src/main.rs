@@ -8,7 +8,7 @@
 
 use reqwest::blocking::Client;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
-use roko_mcp_stdio::{JsonRpcError, JsonRpcRequest, serve_stdio};
+use roko_mcp_stdio::{JsonRpcError, JsonRpcRequest, MCP_PROTOCOL_VERSION, serve_stdio};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -213,7 +213,12 @@ struct SlackUsersListResponse {
 struct SlackClient {
     client: Client,
     token: String,
+    /// Base URL for Slack API requests (default: `https://slack.com/api`).
+    /// Overridable for tests via [`SlackClient::with_base_url`].
+    base_url: String,
 }
+
+const SLACK_API_BASE: &str = "https://slack.com/api";
 
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -236,7 +241,7 @@ fn handle_request(request: JsonRpcRequest) -> Result<Value, JsonRpcError> {
 
 fn handle_initialize() -> Value {
     serde_json::json!({
-        "protocolVersion": "2024-11-05",
+        "protocolVersion": MCP_PROTOCOL_VERSION,
         "capabilities": {
             "tools": {}
         },
@@ -648,7 +653,22 @@ impl SlackClient {
         Ok(Self {
             client: Client::new(),
             token,
+            base_url: SLACK_API_BASE.to_string(),
         })
+    }
+
+    /// Build a client with a custom base URL (for tests).
+    #[cfg(test)]
+    fn with_base_url(token: &str, base_url: &str) -> Self {
+        Self {
+            client: Client::new(),
+            token: token.to_string(),
+            base_url: base_url.trim_end_matches('/').to_string(),
+        }
+    }
+
+    fn api_url(&self, method: &str) -> String {
+        format!("{}/{}", self.base_url, method)
     }
 
     fn auth_headers(&self) -> Result<HeaderMap, JsonRpcError> {
@@ -666,7 +686,7 @@ impl SlackClient {
 
         let response = self
             .client
-            .post("https://slack.com/api/conversations.open")
+            .post(self.api_url("conversations.open"))
             .headers(headers)
             .form(&[("users", user_id)])
             .send()
@@ -711,7 +731,7 @@ impl SlackClient {
 
         let response = self
             .client
-            .post("https://slack.com/api/chat.postMessage")
+            .post(self.api_url("chat.postMessage"))
             .headers(headers)
             .json(&body)
             .send()
@@ -741,7 +761,7 @@ impl SlackClient {
 
         let response = self
             .client
-            .post("https://slack.com/api/reactions.add")
+            .post(self.api_url("reactions.add"))
             .headers(headers)
             .form(&[("channel", channel), ("timestamp", ts), ("name", emoji)])
             .send()
@@ -766,7 +786,7 @@ impl SlackClient {
 
         let mut request = self
             .client
-            .get("https://slack.com/api/conversations.list")
+            .get(self.api_url("conversations.list"))
             .headers(headers);
         if let Some(limit) = limit {
             request = request.query(&[("limit", limit)]);
@@ -814,7 +834,7 @@ impl SlackClient {
 
         let response = self
             .client
-            .get("https://slack.com/api/users.lookupByEmail")
+            .get(self.api_url("users.lookupByEmail"))
             .headers(headers)
             .query(&[("email", email)])
             .send()
@@ -846,7 +866,7 @@ impl SlackClient {
         loop {
             let mut request = self
                 .client
-                .get("https://slack.com/api/users.list")
+                .get(self.api_url("users.list"))
                 .headers(headers.clone())
                 .query(&[("limit", "200")]);
             if let Some(cursor) = cursor.as_deref() {
@@ -924,7 +944,7 @@ impl SlackClient {
 
         let mut request = self
             .client
-            .get("https://slack.com/api/conversations.history")
+            .get(self.api_url("conversations.history"))
             .headers(headers)
             .query(&[("channel", channel)]);
 
@@ -978,7 +998,7 @@ impl SlackClient {
 
         let response = self
             .client
-            .post("https://slack.com/api/chat.update")
+            .post(self.api_url("chat.update"))
             .headers(headers)
             .json(&body)
             .send()
@@ -1008,7 +1028,7 @@ impl SlackClient {
         loop {
             let mut request = self
                 .client
-                .get("https://slack.com/api/conversations.replies")
+                .get(self.api_url("conversations.replies"))
                 .headers(headers.clone())
                 .query(&[("channel", channel), ("ts", thread_ts), ("limit", "1000")]);
             if let Some(cursor) = cursor.as_deref() {
@@ -1110,5 +1130,819 @@ mod tests {
         let err = dispatch_tool_call("slack.unknown", serde_json::json!({}))
             .expect_err("unknown tool should fail");
         assert!(err.message.contains("unknown tool"));
+    }
+
+    #[test]
+    fn initialize_returns_protocol_version() {
+        let result = handle_initialize();
+        assert_eq!(result["protocolVersion"], MCP_PROTOCOL_VERSION);
+        assert!(result["capabilities"]["tools"].is_object());
+        assert_eq!(result["serverInfo"]["name"], "roko-mcp-slack");
+    }
+
+    // ── HTTP mock tests (#356) ─────────────────────────────────────────
+    //
+    // These tests use wiremock to verify exact request/response contracts
+    // for each Slack API endpoint. No live tokens or network access.
+
+    mod http_mock {
+        use super::super::*;
+        use wiremock::matchers::{header, method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        /// Start a wiremock server and return a `SlackClient` pointed at it.
+        async fn mock_client(server: &MockServer) -> SlackClient {
+            SlackClient::with_base_url("xoxb-test-token", &server.uri())
+        }
+
+        // ── post_message ───────────────────────────────────────────────
+
+        #[tokio::test]
+        async fn post_message_success() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/chat.postMessage"))
+                .and(header("authorization", "Bearer xoxb-test-token"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": true,
+                    "channel": "C123",
+                    "ts": "1234.5678",
+                    "message": {"text": "hello"}
+                })))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let resp = client
+                .post_message("C123", "hello", None)
+                .expect("post_message");
+            assert_eq!(resp.channel.as_deref(), Some("C123"));
+            assert_eq!(resp.ts.as_deref(), Some("1234.5678"));
+        }
+
+        #[tokio::test]
+        async fn post_message_with_thread_ts() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/chat.postMessage"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": true, "channel": "C123", "ts": "1234.9999"
+                })))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let resp = client
+                .post_message("C123", "threaded", Some("1234.0000"))
+                .expect("post_message threaded");
+            assert_eq!(resp.ts.as_deref(), Some("1234.9999"));
+        }
+
+        #[tokio::test]
+        async fn post_message_slack_error() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/chat.postMessage"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": false, "error": "channel_not_found"
+                })))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client
+                .post_message("C999", "hello", None)
+                .expect_err("should fail");
+            assert!(err.message.contains("channel_not_found"));
+        }
+
+        // ── add_reaction ───────────────────────────────────────────────
+
+        #[tokio::test]
+        async fn add_reaction_success() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/reactions.add"))
+                .and(header("authorization", "Bearer xoxb-test-token"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": true
+                })))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            client
+                .add_reaction("C123", "1234.5678", "thumbsup")
+                .expect("add_reaction");
+        }
+
+        #[tokio::test]
+        async fn add_reaction_slack_error() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/reactions.add"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": false, "error": "already_reacted"
+                })))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client
+                .add_reaction("C123", "1234.5678", "thumbsup")
+                .expect_err("should fail");
+            assert!(err.message.contains("already_reacted"));
+        }
+
+        // ── list_channels ──────────────────────────────────────────────
+
+        #[tokio::test]
+        async fn list_channels_success() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/conversations.list"))
+                .and(header("authorization", "Bearer xoxb-test-token"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": true,
+                    "channels": [
+                        {"id": "C1", "name": "general", "topic": {"value": "General"}, "purpose": {"value": "Default"}, "num_members": 42}
+                    ],
+                    "response_metadata": {"next_cursor": ""}
+                })))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let resp = client.list_channels(Some(10)).expect("list_channels");
+            assert_eq!(resp.channels.len(), 1);
+            assert_eq!(resp.channels[0].id, "C1");
+            assert_eq!(resp.channels[0].name, "general");
+        }
+
+        #[tokio::test]
+        async fn list_channels_slack_error() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/conversations.list"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": false, "error": "missing_scope"
+                })))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client.list_channels(None).expect_err("should fail");
+            assert!(err.message.contains("missing_scope"));
+        }
+
+        // ── lookup_user by email ───────────────────────────────────────
+
+        #[tokio::test]
+        async fn lookup_user_by_email_success() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/users.lookupByEmail"))
+                .and(query_param("email", "alice@example.com"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": true,
+                    "user": {
+                        "id": "U123",
+                        "name": "alice",
+                        "real_name": "Alice Smith",
+                        "profile": {"email": "alice@example.com", "real_name": "Alice Smith"}
+                    }
+                })))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let result = client
+                .lookup_user("alice@example.com")
+                .expect("lookup_user");
+            assert_eq!(result.id, "U123");
+            assert_eq!(result.matched_by, "email");
+        }
+
+        #[tokio::test]
+        async fn lookup_user_by_email_not_found() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/users.lookupByEmail"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": false, "error": "users_not_found"
+                })))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client
+                .lookup_user("nobody@example.com")
+                .expect_err("should fail");
+            assert!(err.message.contains("users_not_found"));
+        }
+
+        // ── lookup_user by name (paginated) ────────────────────────────
+
+        #[tokio::test]
+        async fn lookup_user_by_name_paginated() {
+            let server = MockServer::start().await;
+
+            // First page: no match, has cursor.
+            Mock::given(method("GET"))
+                .and(path("/users.list"))
+                .and(query_param("limit", "200"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": true,
+                    "members": [
+                        {"id": "U001", "name": "bob", "profile": {}},
+                    ],
+                    "response_metadata": {"next_cursor": "page2"}
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            // Second page: match found, no cursor.
+            Mock::given(method("GET"))
+                .and(path("/users.list"))
+                .and(query_param("cursor", "page2"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": true,
+                    "members": [
+                        {"id": "U002", "name": "alice", "real_name": "Alice", "profile": {"display_name": "alice"}}
+                    ],
+                    "response_metadata": {"next_cursor": ""}
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let result = client.lookup_user("alice").expect("lookup alice");
+            assert_eq!(result.id, "U002");
+            assert_eq!(result.matched_by, "name");
+        }
+
+        #[tokio::test]
+        async fn lookup_user_by_name_not_found() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/users.list"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": true,
+                    "members": [],
+                    "response_metadata": {"next_cursor": ""}
+                })))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client.lookup_user("ghost").expect_err("should fail");
+            assert!(err.message.contains("no Slack user found"));
+        }
+
+        // ── open_dm_channel ────────────────────────────────────────────
+
+        #[tokio::test]
+        async fn open_dm_channel_success() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/conversations.open"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": true,
+                    "channel": {"id": "D123"}
+                })))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let channel_id = client.open_dm_channel("U456").expect("open_dm");
+            assert_eq!(channel_id, "D123");
+        }
+
+        #[tokio::test]
+        async fn open_dm_channel_slack_error() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/conversations.open"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": false, "error": "user_not_found"
+                })))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client.open_dm_channel("UBAD").expect_err("should fail");
+            assert!(err.message.contains("user_not_found"));
+        }
+
+        // ── get_channel_history ────────────────────────────────────────
+
+        #[tokio::test]
+        async fn get_channel_history_success() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/conversations.history"))
+                .and(query_param("channel", "C123"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": true,
+                    "messages": [
+                        {"ts": "1.0", "text": "hello"},
+                        {"ts": "2.0", "text": "world"}
+                    ]
+                })))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let msgs = client
+                .get_channel_history("C123", Some(10), None, None)
+                .expect("history");
+            assert_eq!(msgs.len(), 2);
+            assert_eq!(msgs[0]["text"], "hello");
+        }
+
+        #[tokio::test]
+        async fn get_channel_history_with_time_range() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/conversations.history"))
+                .and(query_param("channel", "C123"))
+                .and(query_param("oldest", "1000.0"))
+                .and(query_param("latest", "2000.0"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": true, "messages": []
+                })))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let msgs = client
+                .get_channel_history("C123", None, Some("1000.0"), Some("2000.0"))
+                .expect("history with range");
+            assert!(msgs.is_empty());
+        }
+
+        #[tokio::test]
+        async fn get_channel_history_slack_error() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/conversations.history"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": false, "error": "channel_not_found"
+                })))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client
+                .get_channel_history("CBAD", None, None, None)
+                .expect_err("should fail");
+            assert!(err.message.contains("channel_not_found"));
+        }
+
+        // ── update_message ─────────────────────────────────────────────
+
+        #[tokio::test]
+        async fn update_message_success() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/chat.update"))
+                .and(header("authorization", "Bearer xoxb-test-token"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": true
+                })))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            client
+                .update_message("C123", "1234.5678", "updated text")
+                .expect("update_message");
+        }
+
+        #[tokio::test]
+        async fn update_message_slack_error() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/chat.update"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": false, "error": "message_not_found"
+                })))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client
+                .update_message("C123", "0000.0000", "nope")
+                .expect_err("should fail");
+            assert!(err.message.contains("message_not_found"));
+        }
+
+        // ── get_thread (paginated + dedup) ─────────────────────────────
+
+        #[tokio::test]
+        async fn get_thread_single_page() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/conversations.replies"))
+                .and(query_param("channel", "C123"))
+                .and(query_param("ts", "1000.0"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": true,
+                    "messages": [
+                        {"ts": "1000.0", "text": "parent"},
+                        {"ts": "1001.0", "text": "reply"}
+                    ],
+                    "response_metadata": {"next_cursor": ""}
+                })))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let msgs = client.get_thread("C123", "1000.0").expect("get_thread");
+            assert_eq!(msgs.len(), 2);
+        }
+
+        #[tokio::test]
+        async fn get_thread_deduplicates_across_pages() {
+            let server = MockServer::start().await;
+
+            // Page 1: parent and first reply.
+            Mock::given(method("GET"))
+                .and(path("/conversations.replies"))
+                .and(query_param("ts", "1000.0"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": true,
+                    "messages": [
+                        {"ts": "1000.0", "text": "parent"},
+                        {"ts": "1001.0", "text": "reply1"}
+                    ],
+                    "response_metadata": {"next_cursor": "page2"}
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            // Page 2: duplicate parent + new reply.
+            Mock::given(method("GET"))
+                .and(path("/conversations.replies"))
+                .and(query_param("cursor", "page2"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": true,
+                    "messages": [
+                        {"ts": "1000.0", "text": "parent"},
+                        {"ts": "1002.0", "text": "reply2"}
+                    ],
+                    "response_metadata": {"next_cursor": ""}
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let msgs = client.get_thread("C123", "1000.0").expect("get_thread");
+            // Should deduplicate the parent message (ts=1000.0).
+            assert_eq!(
+                msgs.len(),
+                3,
+                "expected 3 unique messages, got {}",
+                msgs.len()
+            );
+            let tss: Vec<&str> = msgs.iter().filter_map(|m| m["ts"].as_str()).collect();
+            assert_eq!(tss, vec!["1000.0", "1001.0", "1002.0"]);
+        }
+
+        #[tokio::test]
+        async fn get_thread_slack_error() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/conversations.replies"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": false, "error": "thread_not_found"
+                })))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client.get_thread("C123", "0.0").expect_err("should fail");
+            assert!(err.message.contains("thread_not_found"));
+        }
+
+        // ── HTTP error (non-200) ───────────────────────────────────────
+
+        #[tokio::test]
+        async fn http_500_returns_error() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/chat.postMessage"))
+                .respond_with(ResponseTemplate::new(500).set_body_string("Internal Server Error"))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client
+                .post_message("C123", "hello", None)
+                .expect_err("should fail on 500");
+            assert!(err.message.contains("invalid slack response"));
+        }
+
+        // ── Auth header presence ───────────────────────────────────────
+
+        #[tokio::test]
+        async fn auth_header_is_present_on_all_requests() {
+            let server = MockServer::start().await;
+            Mock::given(header("authorization", "Bearer xoxb-test-token"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": true, "channels": [], "response_metadata": {"next_cursor": ""}
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let _ = client.list_channels(None);
+            // wiremock will assert the expectation when dropped.
+        }
+
+        // ── Malformed JSON responses (#356) ──────────────────────────────
+
+        #[tokio::test]
+        async fn post_message_malformed_json() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/chat.postMessage"))
+                .respond_with(ResponseTemplate::new(200).set_body_string("{not valid json!!!"))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client
+                .post_message("C123", "hello", None)
+                .expect_err("should fail on malformed JSON");
+            assert!(err.message.contains("invalid slack response"));
+        }
+
+        #[tokio::test]
+        async fn list_channels_malformed_json() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/conversations.list"))
+                .respond_with(ResponseTemplate::new(200).set_body_string("<<garbage>>"))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client
+                .list_channels(None)
+                .expect_err("should fail on malformed JSON");
+            assert!(err.message.contains("invalid slack response"));
+        }
+
+        #[tokio::test]
+        async fn get_thread_malformed_json() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/conversations.replies"))
+                .respond_with(ResponseTemplate::new(200).set_body_string("not json"))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client
+                .get_thread("C123", "1000.0")
+                .expect_err("should fail");
+            assert!(err.message.contains("invalid slack response"));
+        }
+
+        #[tokio::test]
+        async fn add_reaction_malformed_json() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/reactions.add"))
+                .respond_with(ResponseTemplate::new(200).set_body_string("{{}}"))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client
+                .add_reaction("C123", "1234.5678", "thumbsup")
+                .expect_err("should fail on malformed JSON");
+            assert!(err.message.contains("invalid slack response"));
+        }
+
+        #[tokio::test]
+        async fn update_message_malformed_json() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/chat.update"))
+                .respond_with(ResponseTemplate::new(200).set_body_string("[invalid"))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client
+                .update_message("C123", "1.0", "new text")
+                .expect_err("should fail on malformed JSON");
+            assert!(err.message.contains("invalid slack response"));
+        }
+
+        #[tokio::test]
+        async fn lookup_user_email_malformed_json() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/users.lookupByEmail"))
+                .respond_with(ResponseTemplate::new(200).set_body_string("broken"))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client
+                .lookup_user("alice@example.com")
+                .expect_err("should fail on malformed JSON");
+            assert!(err.message.contains("invalid slack response"));
+        }
+
+        #[tokio::test]
+        async fn lookup_user_list_malformed_json() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/users.list"))
+                .respond_with(ResponseTemplate::new(200).set_body_string("nope"))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client
+                .lookup_user("bob")
+                .expect_err("should fail on malformed JSON");
+            assert!(err.message.contains("invalid slack response"));
+        }
+
+        #[tokio::test]
+        async fn open_dm_channel_malformed_json() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/conversations.open"))
+                .respond_with(ResponseTemplate::new(200).set_body_string("{{"))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client
+                .open_dm_channel("U999")
+                .expect_err("should fail on malformed JSON");
+            assert!(err.message.contains("invalid slack response"));
+        }
+
+        #[tokio::test]
+        async fn get_channel_history_malformed_json() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/conversations.history"))
+                .respond_with(ResponseTemplate::new(200).set_body_string("bad"))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client
+                .get_channel_history("C123", None, None, None)
+                .expect_err("should fail on malformed JSON");
+            assert!(err.message.contains("invalid slack response"));
+        }
+
+        // ── Missing required fields in responses (#356) ──────────────────
+
+        #[tokio::test]
+        async fn post_message_missing_channel_and_ts() {
+            let server = MockServer::start().await;
+            // ok:true but no channel or ts fields -- should fail when extracting.
+            Mock::given(method("POST"))
+                .and(path("/chat.postMessage"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": true
+                })))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let resp = client
+                .post_message("C123", "hello", None)
+                .expect("ok response");
+            // The method returns the struct but channel/ts are None.
+            assert!(resp.channel.is_none());
+            assert!(resp.ts.is_none());
+        }
+
+        #[tokio::test]
+        async fn open_dm_missing_channel_in_response() {
+            let server = MockServer::start().await;
+            // ok:true but missing the channel field entirely.
+            Mock::given(method("POST"))
+                .and(path("/conversations.open"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": true
+                })))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client
+                .open_dm_channel("U123")
+                .expect_err("should fail with missing channel");
+            assert!(err.message.contains("missing channel"));
+        }
+
+        #[tokio::test]
+        async fn lookup_user_email_missing_user_field() {
+            let server = MockServer::start().await;
+            // ok:true but missing the user field.
+            Mock::given(method("GET"))
+                .and(path("/users.lookupByEmail"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": true
+                })))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client
+                .lookup_user("alice@example.com")
+                .expect_err("should fail with missing user");
+            assert!(err.message.contains("missing user"));
+        }
+
+        // ── ok:false with missing error field ────────────────────────────
+
+        #[tokio::test]
+        async fn post_message_ok_false_without_error_field() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/chat.postMessage"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": false
+                })))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client
+                .post_message("C123", "hello", None)
+                .expect_err("should fail");
+            // Falls back to "unknown" when error field is missing.
+            assert!(err.message.contains("unknown"));
+        }
+
+        #[tokio::test]
+        async fn list_channels_ok_false_without_error_field() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/conversations.list"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": false
+                })))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client.list_channels(None).expect_err("should fail");
+            assert!(err.message.contains("unknown"));
+        }
+
+        // ── HTTP 429 (rate limit) ────────────────────────────────────────
+
+        #[tokio::test]
+        async fn post_message_http_429_returns_error() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/chat.postMessage"))
+                .respond_with(ResponseTemplate::new(429).set_body_string("Too Many Requests"))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client
+                .post_message("C123", "hello", None)
+                .expect_err("should fail on 429");
+            assert!(err.message.contains("invalid slack response"));
+        }
+
+        // ── Empty body ───────────────────────────────────────────────────
+
+        #[tokio::test]
+        async fn post_message_empty_body() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/chat.postMessage"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(""))
+                .mount(&server)
+                .await;
+
+            let client = mock_client(&server).await;
+            let err = client
+                .post_message("C123", "hello", None)
+                .expect_err("should fail on empty body");
+            assert!(err.message.contains("invalid slack response"));
+        }
     }
 }

@@ -38,7 +38,7 @@ use crate::PromptSection;
 pub struct PlanSlice {
     /// Plan number (e.g. "042").
     pub num: String,
-    /// Plan base name (e.g. "golem-mortality").
+    /// Plan base name (e.g. "agent-lifecycle").
     pub base: String,
     /// Plan title for display.
     pub title: String,

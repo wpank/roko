@@ -621,6 +621,7 @@ impl ChatAgentSession {
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             });
 
         let model_key = self.model_call_model_key();
@@ -663,6 +664,8 @@ impl ChatAgentSession {
             routing_hints: Vec::new(),
             cache_policy: CachePolicy::Bypass,
             tools: Vec::new(),
+            generation_settings: None,
+            mcp_config: None,
         }
     }
 
@@ -1235,6 +1238,7 @@ async fn send_turn_streaming_with_program(
                 output_tokens: result.output_tokens,
                 cache_read_tokens: 0,
                 cache_write_tokens: 0,
+                reasoning_tokens: 0,
             })
             .await;
         let _ = tx
@@ -1816,7 +1820,7 @@ fn is_skipped_dir_name(name: &str) -> bool {
     SKIP_DIR_NAMES.contains(&name)
 }
 
-/// Discover MCP config file using the same resolution order as orchestrate.rs.
+/// Discover MCP config file using the standard resolution order.
 ///
 /// Priority:
 /// 1. Explicit path in `config.agent.mcp_config`
@@ -1886,6 +1890,61 @@ where
     }
 
     String::from_utf8_lossy(&bytes).into_owned()
+}
+
+// ---------------------------------------------------------------------------
+// #245: Non-plan service migration adapter (Lane D1)
+// ---------------------------------------------------------------------------
+
+/// Thin adapter that validates a chat session request against the
+/// [`roko_execution::profiles::ProfileMatrix`] before the session is
+/// constructed.
+///
+/// When #243 lands, this adapter will be replaced by a direct call to
+/// `RuntimeServicesBuilder::build()`. Until then it serves as the
+/// consumer-side contract: callers translate their CLI/ACP params into
+/// `ExecutionOverrides` and validate against the `ChatLight` profile.
+///
+/// **Spec constraint (Lane D1):** this adapter does not edit
+/// `commands/plan.rs`, `runner/event_loop.rs`, or any plan-path type.
+pub struct ChatSessionServiceAdapter;
+
+impl ChatSessionServiceAdapter {
+    /// Validate that the chat session satisfies the `ChatLight` profile
+    /// and return a handle for cost settlement correlation.
+    ///
+    /// The caller must still construct `ChatAgentSession` and
+    /// `ChatFeedbackRuntime` as before — this adapter only validates
+    /// the profile matrix and provides the correlation handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the profile matrix validation fails.
+    pub fn validate(
+        workdir: &Path,
+        model: Option<String>,
+        provider: Option<String>,
+    ) -> anyhow::Result<roko_execution::NonPlanServiceHandle> {
+        use roko_execution::profiles::RuntimeProfile;
+
+        let exec_overrides = roko_execution::overrides_for_chat(model, provider);
+        let request = roko_execution::NonPlanServiceRequest::new(
+            RuntimeProfile::ChatLight,
+            workdir.to_path_buf(),
+            exec_overrides,
+        );
+        let handle = roko_execution::validate_service_request(&request)
+            .map_err(|e| anyhow::anyhow!("chat session service validation: {e}"))?;
+
+        tracing::debug!(
+            instance_id = %handle.instance_id(),
+            profile = %handle.profile(),
+            required = ?handle.required_bundles(),
+            "validated chat session service request"
+        );
+
+        Ok(handle)
+    }
 }
 
 #[cfg(test)]

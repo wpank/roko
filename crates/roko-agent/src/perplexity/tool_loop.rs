@@ -427,7 +427,7 @@ mod tests {
                 .iter()
                 .map(|(call, result)| {
                     let content = match result {
-                        ToolResult::Ok { content, .. } => content.clone(),
+                        ToolResult::Ok { .. } => result.text_content(),
                         ToolResult::Err(err) => format!("error: {err}"),
                     };
                     json!({

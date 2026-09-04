@@ -218,7 +218,7 @@ def run_one(instance: dict, roko_bin: str, model_cmd: str,
         print(f"    roko run error rc={res.returncode}:\n{res.stderr}", flush=True)
         return None
 
-    output_text = find_latest_agent_output(workdir / ".roko" / "signals.jsonl")
+    output_text = find_latest_agent_output(workdir / ".roko" / "engrams.jsonl")
     if not output_text:
         print("    no AgentOutput signal found", flush=True)
         return None

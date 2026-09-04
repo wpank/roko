@@ -1,4 +1,4 @@
-//! Job-board clade scenario.
+//! Job-board fleet scenario.
 //!
 //! **Spine**:
 //! - Deployer funds 1 poster + 5 workers with DAEJI, each worker registers in WorkerRegistry.

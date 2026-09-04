@@ -12,6 +12,7 @@ use anyhow::{Context, Result, bail};
 use roko_fs::RokoLayout;
 use tracing::info;
 
+use crate::plan_policy::{PlanExecutionPolicy, validate_plan_context};
 use crate::task_parser::TasksFile;
 
 /// A loaded plan ready for execution.
@@ -80,6 +81,22 @@ pub fn load_plan(dir: &Path) -> Result<Plan> {
     }
 
     let workdir = find_workspace_root(dir);
+    if let Some(workdir) = workdir.as_deref() {
+        let policy_issues =
+            validate_plan_context(&tasks, workdir, dir, PlanExecutionPolicy::for_environment());
+        if !policy_issues.is_empty() {
+            let details = policy_issues
+                .iter()
+                .map(|issue| format!("  - {issue}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            bail!(
+                "execution policy validation failed for {}:\n{}",
+                tasks_path.display(),
+                details
+            );
+        }
+    }
     let prd_excerpt = load_prd_excerpt_for_plan(workdir.as_deref(), &id);
 
     info!(plan_id = %id, task_count = tasks.tasks.len(), "loaded plan");
@@ -260,7 +277,7 @@ fn find_workspace_root(start: &Path) -> Option<PathBuf> {
 ///
 /// Checks:
 /// 1. `{workdir}/.roko/prd/published/{plan_id}.md`
-/// 2. `{workdir}/.roko/prd/draft/{plan_id}.md`
+/// 2. `{workdir}/.roko/prd/drafts/{plan_id}.md`
 ///
 /// Returns an empty string when `workdir` is `None` or no PRD file exists.
 fn load_prd_excerpt_for_plan(workdir: Option<&Path>, plan_id: &str) -> String {
@@ -271,6 +288,7 @@ fn load_prd_excerpt_for_plan(workdir: Option<&Path>, plan_id: &str) -> String {
     let prd_base = RokoLayout::for_project(root).prd_dir();
     let candidates = [
         prd_base.join("published").join(format!("{plan_id}.md")),
+        prd_base.join("drafts").join(format!("{plan_id}.md")),
         prd_base.join("draft").join(format!("{plan_id}.md")),
     ];
     for path in &candidates {

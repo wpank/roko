@@ -80,8 +80,8 @@ pub static TOPICS: &[TopicEntry] = &[
         internals: "Trait definitions live in `crates/roko-core/src/lib.rs`. The \
                     universal loop is wired in `crates/roko-cli/src/run.rs` via \
                     `run_once()`. Prompt assembly uses `RoleSystemPromptSpec` in \
-                    `orchestrate.rs`. Templates are in \
-                    `crates/roko-compose/src/templates/` (9 role templates).",
+                    the runner module (`runner/event_loop.rs`). Templates are in \
+                    `crates/roko-compose/src/templates/` (11 role templates).",
     },
     TopicEntry {
         name: "neuro",
@@ -182,9 +182,9 @@ pub static TOPICS: &[TopicEntry] = &[
                  (implementer, reviewer, architect), runs through gates, and persists \
                  results. Use `roko plan run <dir>` to execute, `--resume` to \
                  continue from a snapshot.",
-        internals: "Plan execution lives in `crates/roko-cli/src/orchestrate.rs` via \
-                    `PlanRunner`. DAG scheduling is owned by `crates/roko-cli/src/orchestrator/`. \
-                    Snapshots persist at `.roko/state/executor.json` for resumability. \
+        internals: "Plan execution lives in `crates/roko-cli/src/runner/event_loop.rs` \
+                    via `PlanRunner` (runner-v2). DAG scheduling is owned by the runner module. \
+                    Snapshots persist at `.roko/state/state-snapshot.json` for resumability. \
                     The merge queue handles concurrent task outputs. Process \
                     supervision via `roko-runtime` tracks agent lifecycles.",
     },

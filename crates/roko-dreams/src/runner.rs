@@ -170,6 +170,8 @@ impl DreamAgentConfig {
 
     fn agent_options(&self, workdir: &Path, extra_args: Vec<String>, name: String) -> AgentOptions {
         AgentOptions {
+            safety_layer: None,
+            temperament: None,
             command: Some(self.command.clone()),
             timeout_ms: Some(self.timeout_ms),
             system_prompt: None,
@@ -192,6 +194,7 @@ impl DreamAgentConfig {
             pre_discovered_local_tools: None,
             local_tool_mcp_servers: None,
             rate_limiter: None,
+            gemini_safety_settings: Vec::new(),
         }
     }
 }
@@ -889,6 +892,14 @@ impl DreamRunner {
             .with_context(|| format!("read episode log from {}", episodes_path.display()))?;
         let latest_report = self.latest_report()?;
         Ok(self.heartbeat_snapshot(&episodes, latest_report.as_ref(), Utc::now()))
+    }
+
+    /// Read-only preview of what a dream consolidation would process.
+    ///
+    /// Returns the heartbeat report without invoking any provider calls,
+    /// writing knowledge, or modifying any state. Useful for `--dry-run`.
+    pub fn dream_preview(&self) -> Result<DreamHeartbeatReport> {
+        self.heartbeat_report()
     }
 
     /// Run a full dream consolidation cycle against the workspace.
@@ -1596,6 +1607,8 @@ impl Agent for DreamReviewAgent {
                     routing_hints: Vec::new(),
                     cache_policy: CachePolicy::Default,
                     tools: Vec::new(),
+                    generation_settings: None,
+                    mcp_config: None,
                 };
 
                 match model_caller.call(request).await {
@@ -1609,6 +1622,7 @@ impl Agent for DreamReviewAgent {
                             output_tokens: response.usage.output_tokens.min(u32::MAX as u64) as u32,
                             cache_read_tokens: 0,
                             cache_create_tokens: 0,
+                            reasoning_tokens: 0,
                             cost_usd: response.usage.cost_usd as f32,
                             wall_ms: 0,
                         };

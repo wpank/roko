@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use roko_index::WorkspaceIndex;
-use roko_mcp_stdio::{JsonRpcError, JsonRpcRequest, serve_stdio};
+use roko_mcp_stdio::{JsonRpcError, JsonRpcRequest, MCP_PROTOCOL_VERSION, serve_stdio};
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -209,7 +209,7 @@ fn handle_request(request: JsonRpcRequest, index: &WorkspaceIndex) -> Result<Val
 
 fn handle_initialize() -> Value {
     json!({
-        "protocolVersion": "2024-11-05",
+        "protocolVersion": MCP_PROTOCOL_VERSION,
         "capabilities": {
             "tools": {}
         },

@@ -5,8 +5,16 @@
 # - OnSuccess / OnFailure branching
 # - When expressions with numeric comparison
 
+[graph]
 name = "conditional-branch"
 description = "Route execution based on quality gate score"
+version = "1.0.0"
+
+[graph.policy]
+mode = "one_shot"
+failure_strategy = "fail_fast"
+max_concurrent_nodes = 2
+timeout_ms = 600000
 
 # ─── Nodes ───────────────────────────────────────────────────────────────────
 
@@ -74,7 +82,7 @@ cell_type = "compose"
 [nodes.config]
 template = "Review complete. Action taken: {{inputs}}"
 
-# ─── Edges ──────────────────���───────────────────��────────────────────────────
+# ─── Edges ───────────────────────────────────────────────────────────────────
 
 # Linear: compose -> agent review.
 [[edges]]
@@ -128,11 +136,3 @@ to = "notify"
 
 [edges.condition]
 type = "always"
-
-# ─── Configuration ────────��──────────────────────────────────────────────────
-
-[config]
-max_tokens = 20000
-max_cost_usd = 2.0
-deadline = 600
-max_parallelism = 2

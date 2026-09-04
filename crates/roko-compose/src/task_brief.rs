@@ -292,13 +292,13 @@ mod tests {
     #[test]
     fn generate_brief_includes_what_section() {
         let generator = TaskBriefGenerator::new();
-        let task = make_task("T1", "Wire context provider", &["src/orchestrate.rs"]);
+        let task = make_task("T1", "Wire context provider", &["src/runner/event_loop.rs"]);
         let brief = generator.generate(&task, None, &[]);
 
         assert!(brief.contains("### What"));
         assert!(brief.contains("T1"));
         assert!(brief.contains("Wire context provider"));
-        assert!(brief.contains("orchestrate.rs"));
+        assert!(brief.contains("event_loop.rs"));
         assert!(brief.contains("Max lines of change: 50"));
         assert!(brief.contains("It should compile"));
     }
@@ -306,14 +306,14 @@ mod tests {
     #[test]
     fn generate_brief_extracts_why_from_plan() {
         let generator = TaskBriefGenerator::new();
-        let task = make_task("T1", "Wire context provider", &["src/orchestrate.rs"]);
+        let task = make_task("T1", "Wire context provider", &["src/runner/event_loop.rs"]);
 
         let plan = "# Implementation Plan\n\n\
                      This plan implements the context provider system.\n\n\
                      ## Phase 1: Core types\n\n\
                      First, create the core types in context_provider.rs.\n\n\
-                     ## Phase 2: Wire into orchestrate.rs\n\n\
-                     The orchestrate.rs file needs to call the context provider\n\
+                     ## Phase 2: Wire into event_loop.rs\n\n\
+                     The event_loop.rs file needs to call the context provider\n\
                      during dispatch_agent, between task parsing and prompt composition.\n\n\
                      ## Phase 3: Testing\n\n\
                      Write unit tests for all modules.";
@@ -321,13 +321,13 @@ mod tests {
         let brief = generator.generate(&task, Some(plan), &[]);
 
         assert!(brief.contains("### Why"));
-        assert!(brief.contains("orchestrate.rs"));
+        assert!(brief.contains("event_loop.rs"));
     }
 
     #[test]
     fn generate_brief_includes_sibling_deps() {
         let generator = TaskBriefGenerator::new();
-        let mut task = make_task("T2", "Wire ContextProvider", &["src/orchestrate.rs"]);
+        let mut task = make_task("T2", "Wire ContextProvider", &["src/runner/event_loop.rs"]);
         task.depends_on = vec!["T1".into()];
 
         let siblings = vec![

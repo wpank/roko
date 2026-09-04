@@ -8,10 +8,18 @@
 # If the gate fails, a conditional edge routes back to a retry compose
 # that includes the gate feedback.
 
+[graph]
 name = "task-execution"
 description = "Standard compose -> agent -> gate pipeline with retry on failure"
+version = "1.0.0"
 
-# ─── Nodes ────────��───────────────────��──────────────────────────────────────
+[graph.policy]
+mode = "one_shot"
+failure_strategy = "fail_fast"
+max_concurrent_nodes = 2
+timeout_ms = 900000
+
+# ─── Nodes ───────────────────────────────────────────────────────────────────
 
 [[nodes]]
 id = "compose_task"
@@ -152,11 +160,3 @@ to = "retry_agent"
 
 [edges.condition]
 type = "always"
-
-# ─── Configuration ───────────────���───────────────────────────────────���───────
-
-[config]
-max_tokens = 50000
-max_cost_usd = 5.0
-deadline = 900
-max_parallelism = 2

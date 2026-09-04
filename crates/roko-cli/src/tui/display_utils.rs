@@ -18,42 +18,48 @@ pub fn shorten_model(slug: &str) -> String {
 }
 
 /// Human-friendly model name for display, handling `None`/empty/sentinel values.
+///
+/// Returns an em-dash for missing/empty/sentinel values so the TUI shows a
+/// clear placeholder rather than a misleading label.
 pub fn display_model(model: Option<&str>) -> String {
     match model {
-        None | Some("") | Some("-") | Some("unknown-model") => "unknown".to_string(),
+        None | Some("") | Some("-") | Some("unknown-model") => "\u{2014}".to_string(),
         Some(m) => shorten_model(m),
     }
 }
 
 /// Extract the effective model identifier from an efficiency event.
 ///
-/// Prefers `model_used` (the model the backend actually routed to) over
-/// `model` (the requested model), falling back to `"unknown"`.
+/// Prefers `model_used` (the resolved model the backend actually routed to)
+/// over `model` (the requested model), falling back to `"unknown"`.
 pub fn event_model_slug(event: &roko_learn::efficiency::AgentEfficiencyEvent) -> String {
-    let model = event.model.trim();
     let used = event.model_used.trim();
-    if !model.is_empty() {
-        model.to_string()
-    } else if !used.is_empty() {
+    let model = event.model.trim();
+    if !used.is_empty() {
         used.to_string()
+    } else if !model.is_empty() {
+        model.to_string()
     } else {
         "unknown".to_string()
     }
 }
 
-/// Truncate a string to at most `max` characters, appending `...` when
+/// Truncate a string to at most `max` characters, appending an ellipsis when
 /// truncated. UTF-8 safe — counts by `char`, not by byte.
 pub fn truncate(s: &str, max: usize) -> String {
     let char_count = s.chars().count();
     if char_count <= max {
         return s.to_string();
     }
-    if max <= 3 {
-        return ".".repeat(max);
+    if max == 0 {
+        return String::new();
     }
-    let keep = max - 3;
+    if max <= 1 {
+        return "\u{2026}".to_string();
+    }
+    let keep = max - 1;
     let truncated: String = s.chars().take(keep).collect();
-    format!("{truncated}...")
+    format!("{truncated}\u{2026}")
 }
 
 #[cfg(test)]
@@ -69,26 +75,42 @@ mod tests {
 
     #[test]
     fn display_model_handles_sentinels() {
-        assert_eq!(display_model(None), "unknown");
-        assert_eq!(display_model(Some("")), "unknown");
-        assert_eq!(display_model(Some("-")), "unknown");
-        assert_eq!(display_model(Some("unknown-model")), "unknown");
+        assert_eq!(display_model(None), "\u{2014}");
+        assert_eq!(display_model(Some("")), "\u{2014}");
+        assert_eq!(display_model(Some("-")), "\u{2014}");
+        assert_eq!(display_model(Some("unknown-model")), "\u{2014}");
         assert_eq!(display_model(Some("claude-opus-4-6")), "o4-6");
+    }
+
+    #[test]
+    fn event_model_slug_prefers_resolved_then_requested() {
+        let mut event = roko_learn::efficiency::AgentEfficiencyEvent::default();
+        event.model = "requested-model".to_string();
+        event.model_used = "resolved-model".to_string();
+        assert_eq!(event_model_slug(&event), "resolved-model");
+
+        // Rows without a resolved model fall back to the requested slug.
+        event.model_used.clear();
+        assert_eq!(event_model_slug(&event), "requested-model");
+
+        event.model.clear();
+        assert_eq!(event_model_slug(&event), "unknown");
     }
 
     #[test]
     fn truncate_ascii() {
         assert_eq!(truncate("hello", 10), "hello");
-        assert_eq!(truncate("hello world", 8), "hello...");
+        assert_eq!(truncate("hello world", 8), "hello w\u{2026}");
         assert_eq!(truncate("ab", 2), "ab");
-        assert_eq!(truncate("abcdef", 3), "...");
+        assert_eq!(truncate("abcdef", 1), "\u{2026}");
+        assert_eq!(truncate("abcdef", 3), "ab\u{2026}");
     }
 
     #[test]
     fn truncate_utf8_safe() {
         // Multi-byte characters must not panic.
-        let s = "café résumé";
+        let s = "caf\u{00e9} r\u{00e9}sum\u{00e9}";
         let t = truncate(s, 6);
-        assert_eq!(t, "caf...");
+        assert_eq!(t, "caf\u{00e9} \u{2026}");
     }
 }

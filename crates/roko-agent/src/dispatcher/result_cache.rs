@@ -319,6 +319,7 @@ fn paths_overlap(a: &str, b: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use roko_core::tool::ToolResultContent;
     use serde_json::json;
 
     fn make_call(name: &str, args: serde_json::Value) -> ToolCall {
@@ -332,7 +333,7 @@ mod tests {
 
     fn ok_result(content: &str) -> ToolResult {
         ToolResult::Ok {
-            content: content.into(),
+            content: vec![ToolResultContent::from(content)],
             is_structured: false,
             artifacts: vec![],
         }

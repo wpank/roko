@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context as _;
@@ -42,6 +42,8 @@ use crate::dispatch::SubscriptionRegistry;
 use crate::event_bus::EventBus;
 use crate::runtime::CliRuntime;
 use crate::runtime::RunResult;
+use roko_chain::ChainClient;
+#[cfg(feature = "alloy-backend")]
 use roko_chain::alloy_impl::{AlloyChainClient, AlloyChainWallet};
 use roko_core::obs::metrics::MetricRegistry;
 use roko_fs::FileSubstrate;
@@ -382,6 +384,35 @@ pub struct FeedAgentCatalog {
 // AppState
 // ---------------------------------------------------------------------------
 
+const LISTENER_PROTECTED_BY_LOOPBACK: u8 = 1;
+const LISTENER_PROTECTED_BY_AUTH: u8 = 2;
+
+struct ListenerSecurity {
+    protections: AtomicU8,
+}
+
+impl ListenerSecurity {
+    fn new(bind: &str, auth_enabled: bool) -> Self {
+        Self {
+            protections: AtomicU8::new(Self::protection_mask(bind, auth_enabled)),
+        }
+    }
+
+    fn configure(&self, bind: &str, auth_enabled: bool) {
+        self.protections
+            .store(Self::protection_mask(bind, auth_enabled), Ordering::Release);
+    }
+
+    fn observability_allowed(&self) -> bool {
+        self.protections.load(Ordering::Acquire) != 0
+    }
+
+    fn protection_mask(bind: &str, auth_enabled: bool) -> u8 {
+        (u8::from(crate::routes::bind_is_loopback(bind)) * LISTENER_PROTECTED_BY_LOOPBACK)
+            | (u8::from(auth_enabled) * LISTENER_PROTECTED_BY_AUTH)
+    }
+}
+
 /// Shared server state, wrapped in `Arc` for handler access.
 pub struct AppState {
     /// Project working directory.
@@ -424,6 +455,10 @@ pub struct AppState {
     pub gateway_http: roko_gateway::GatewayHttpState,
     /// Full `roko.toml` schema configuration with lock-free reads.
     pub roko_config: ArcSwap<RokoConfig>,
+    /// Startup-owned listener/auth facts used by routes that expose private run
+    /// evidence. Config reloads must not reclassify an already-bound listener
+    /// or claim authentication middleware was installed after router creation.
+    listener_security: ListenerSecurity,
     /// Restart-safe API-key and agent-token registry.
     pub(crate) auth_registry: Arc<crate::routes::auth::AuthRegistry>,
     /// Shared append-only auth audit writer. Missing only when the audit file
@@ -474,9 +509,13 @@ pub struct AppState {
     pub heartbeats: RwLock<VecDeque<roko_core::HeartbeatPayload>>,
     /// Monotonic agent lifecycle observations committed before Lens delivery.
     pub agent_lifecycle: crate::agent_lifecycle::AgentLifecycleStore,
-    /// Optional alloy JSON-RPC client for on-chain reads (feature: alloy-backend).
-    pub chain_client: Option<Arc<AlloyChainClient>>,
+    /// Optional backend-neutral client used by registries and arenas.
+    pub chain_client: Option<Arc<dyn ChainClient>>,
+    /// Optional concrete Alloy client for provider-specific routes/watchers.
+    #[cfg(feature = "alloy-backend")]
+    pub alloy_chain_client: Option<Arc<AlloyChainClient>>,
     /// Optional alloy wallet for on-chain writes (feature: alloy-backend).
+    #[cfg(feature = "alloy-backend")]
     pub chain_wallet: Option<Arc<AlloyChainWallet>>,
     /// Restart-safe local registry lifecycle plus optional read-only chain indexer.
     pub(crate) registries: crate::routes::registries::RegistryRuntime,
@@ -529,7 +568,7 @@ pub struct AppState {
     pub feed_agent_catalog: RwLock<FeedAgentCatalog>,
 
     /// Shared chain watcher state exposed via REST and SSE.
-    pub chain: Arc<roko_chain::block_watcher::ChainState>,
+    pub chain: Arc<roko_chain::chain_state::ChainState>,
 
     /// Runtime feed instances started at serve-time and queryable via
     /// `GET /api/feeds/runtime` and `GET /api/feeds/runtime/{id}`.
@@ -849,8 +888,24 @@ impl AppState {
         let state_hub = state_hub
             .unwrap_or_else(|| Self::state_hub_for_workdir_with_config(&workdir, &roko_config));
 
-        // Initialize chain client + wallet from [chain] config section.
-        let (chain_client, chain_wallet) = Self::init_chain(&roko_config);
+        // Initialize the real RPC backend only in builds that explicitly opt
+        // into it. Local chain registries remain available in lean builds.
+        #[cfg(feature = "alloy-backend")]
+        let (alloy_chain_client, chain_wallet) = Self::init_chain(&roko_config);
+        #[cfg(feature = "alloy-backend")]
+        let chain_client: Option<Arc<dyn ChainClient>> = alloy_chain_client
+            .as_ref()
+            .map(|client| Arc::clone(client) as Arc<dyn ChainClient>);
+        #[cfg(not(feature = "alloy-backend"))]
+        let chain_client: Option<Arc<dyn ChainClient>> = {
+            if roko_config.chain.enabled && roko_config.chain.rpc_url.is_some() {
+                tracing::warn!(
+                    "[chain] RPC configuration ignored: rebuild roko with \
+                     `--features alloy-backend` to enable real chain access"
+                );
+            }
+            None
+        };
         let registries = crate::routes::registries::RegistryRuntime::open(
             &workdir,
             &roko_config,
@@ -1034,6 +1089,10 @@ impl AppState {
             model_call_service,
             gateway_http,
             roko_config: ArcSwap::from_pointee(roko_config.clone()),
+            listener_security: ListenerSecurity::new(
+                &roko_config.server.bind,
+                roko_config.serve.auth.enabled,
+            ),
             auth_registry,
             auth_audit,
             provider_health_registry,
@@ -1058,6 +1117,9 @@ impl AppState {
             heartbeats: RwLock::new(VecDeque::new()),
             agent_lifecycle,
             chain_client,
+            #[cfg(feature = "alloy-backend")]
+            alloy_chain_client,
+            #[cfg(feature = "alloy-backend")]
             chain_wallet,
             registries,
             arenas,
@@ -1086,7 +1148,7 @@ impl AppState {
                 .filter(|s| !s.is_empty())
                 .or_else(|| roko_config.relay.url.clone()),
             feed_agent_catalog: RwLock::new(FeedAgentCatalog::default()),
-            chain: Arc::new(roko_chain::block_watcher::ChainState::default()),
+            chain: Arc::new(roko_chain::chain_state::ChainState::default()),
             runtime_feeds,
             feed_bus_bridge,
             groups,
@@ -1098,6 +1160,7 @@ impl AppState {
 
     /// Build chain client + wallet from the `[chain]` config section.
     /// Returns `(None, None)` when chain is disabled or `chain.rpc_url` is not set.
+    #[cfg(feature = "alloy-backend")]
     fn init_chain(
         config: &RokoConfig,
     ) -> (Option<Arc<AlloyChainClient>>, Option<Arc<AlloyChainWallet>>) {
@@ -1160,6 +1223,20 @@ impl AppState {
     /// Atomically swap in a new config snapshot.
     pub fn store_roko_config(&self, roko_config: RokoConfig) {
         self.roko_config.store(Arc::new(roko_config));
+    }
+
+    /// Record the listener and authentication boundary selected during server
+    /// startup. This state is intentionally independent from hot-reloaded
+    /// configuration because neither the bound socket nor installed middleware
+    /// changes when `roko.toml` is reloaded.
+    pub fn configure_listener_security(&self, bind: &str, auth_enabled: bool) {
+        self.listener_security.configure(bind, auth_enabled);
+    }
+
+    /// Whether private run-observability routes are protected by loopback
+    /// binding or authentication middleware installed at router construction.
+    pub(crate) fn run_observability_allowed(&self) -> bool {
+        self.listener_security.observability_allowed()
     }
 
     /// Return a reference-counted handle to the per-model gateway counters,
@@ -1448,6 +1525,7 @@ impl AppState {
                     .clone()
                     .unwrap_or_else(|| stored.agent_id.clone()),
                 model: stored.model.clone().unwrap_or_default(),
+                provider: String::new(),
             });
         stored
     }
@@ -1846,6 +1924,43 @@ mod tests {
         }
 
         assert_eq!(state.load_roko_config().server.port, 5000);
+    }
+
+    #[test]
+    fn listener_security_is_not_reclassified_by_config_reload_snapshots() {
+        let tempdir = tempdir().expect("tempdir");
+        let mut initial = RokoConfig::default();
+        initial.server.bind = "0.0.0.0".to_string();
+        initial.serve.auth.enabled = false;
+        let state = AppState::new(
+            tempdir.path().to_path_buf(),
+            Arc::new(NoOpRuntime),
+            initial,
+            Arc::new(ManualBackend::default()),
+        )
+        .expect("AppState::new");
+
+        state.configure_listener_security("0.0.0.0", false);
+        assert!(!state.run_observability_allowed());
+
+        let mut reloaded = state.load_roko_config().as_ref().clone();
+        reloaded.server.bind = "127.0.0.1".to_string();
+        reloaded.serve.auth.enabled = true;
+        state.store_roko_config(reloaded);
+        assert!(
+            !state.run_observability_allowed(),
+            "reload cannot claim a public listener became loopback or gained middleware"
+        );
+
+        state.configure_listener_security("127.0.0.1", false);
+        assert!(state.run_observability_allowed());
+        let mut reloaded = state.load_roko_config().as_ref().clone();
+        reloaded.server.bind = "0.0.0.0".to_string();
+        state.store_roko_config(reloaded);
+        assert!(
+            state.run_observability_allowed(),
+            "reload cannot claim an existing loopback listener became public"
+        );
     }
 
     #[test]

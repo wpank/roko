@@ -12,7 +12,6 @@ use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use roko_chain::ChainClient as _;
 use roko_chain::arena::{
     AggregationRule, Arena, ArenaCategory, ArenaError, ArenaRegistry, ArenaState,
     AttemptSettlement, AttemptState, GroundTruthSource, Leaderboard, ReleaseCondition,

@@ -10,10 +10,10 @@ use roko_learn::model_router::RoutingContext;
 
 use super::task_dag::SkippedReason;
 use super::types::{
-    AgentDispatchOutcome, PlanLifecycleStatus, RetryAction, RetryDecision, RunnerEvent,
-    RunnerFailureKind, RunnerLifecycleProjection, RunnerRunStatus, TaskAttemptLifecycle,
-    TaskAttemptOutcome, TaskAttemptRef, TaskAttemptStatus, TaskLifecycle, TaskLifecycleStatus,
-    retry_delay,
+    AgentDispatchOutcome, PLAN_VERIFY_TASK_ID, PlanLifecycleStatus, RetryAction, RetryDecision,
+    RunnerEvent, RunnerFailureKind, RunnerLifecycleProjection, RunnerRunStatus,
+    TaskAttemptLifecycle, TaskAttemptOutcome, TaskAttemptRef, TaskAttemptStatus, TaskLifecycle,
+    TaskLifecycleStatus, retry_delay,
 };
 
 /// Tracks scheduled GitHub sync timestamps so the runner knows when to
@@ -90,6 +90,8 @@ pub struct RunState {
     pub cache_read_tokens: u64,
     /// Cache write tokens this task.
     pub cache_write_tokens: u64,
+    /// Reasoning/thinking tokens this task (subset of output_tokens).
+    pub reasoning_tokens: u64,
     /// Estimated cost in USD this task.
     pub cost_usd: f64,
     /// Number of agent spawn attempts for the current task (retries).
@@ -158,6 +160,9 @@ pub struct RunState {
     /// Files created or modified by each completed task.
     /// Key: `"{plan_id}:{task_id}"`, value: list of file paths.
     pub task_outputs: HashMap<String, Vec<String>>,
+    /// Durable timeout-salvage input identities awaiting ordinary gates,
+    /// keyed by exact attempt.
+    pub timeout_salvage_input_fingerprints: HashMap<String, String>,
 
     // ─── Health ──────────────────────────────────────────────────────
     /// Consecutive snapshot-save failures. After 3, `snapshot_degraded` is set.
@@ -197,7 +202,21 @@ pub struct RunState {
     /// Dispatch-time routing context for the current task. Stored here
     /// so `FeedbackEvent::TaskCompleted` can carry the real feature
     /// vector to the CascadeRouter's bandit.
+    ///
+    /// P1-6: The dispatch site writes routing_context to the per-task
+    /// `TaskRuntimeState` snapshot immediately at dispatch time, then
+    /// mirrors the value here for the single-task synchronous path.
+    /// `restore_task_runtime` swaps the per-task snapshot back before
+    /// event processing, so the feedback path always sees the correct
+    /// context even under concurrent dispatches.
     pub routing_context: Option<RoutingContext>,
+
+    /// Multiplicative context shrink factor for the current task, applied
+    /// on context overflow retries. Starts at `1.0`; each
+    /// `ContextOverflow` retry multiplies by `0.75` (reducing injected
+    /// context by 25%). Stored per `plan_id:task_id` so shrinkage
+    /// accumulates across consecutive overflow retries of the same task.
+    pub context_shrink_factors: HashMap<String, f64>,
 
     /// Per-task failure reasons (plan_id:task_id → reason string).
     /// Populated when a task fails so the final summary can show why.
@@ -209,6 +228,15 @@ pub struct RunState {
     /// `config.budget_override` is true).
     pub budget_exhausted: bool,
 
+    /// Whether the daily budget guardrail has been tripped for the current run.
+    /// Once set, every subsequent dispatch is blocked (unless
+    /// `config.budget_override` is true).
+    pub daily_budget_exhausted: bool,
+
+    /// Cost already recorded in the costs log for today *before* this run
+    /// started. Combined with `total_cost_usd` to enforce `max_daily_usd`.
+    pub prior_daily_cost_usd: f64,
+
     /// Whether the disk budget has been exceeded for the current run.
     /// Once set, every subsequent dispatch is blocked until the operator
     /// frees space or raises `resources.max_plan_disk_mb`.
@@ -218,6 +246,13 @@ pub struct RunState {
     /// Role of the current task (e.g. "implementer", "strategist").
     /// Populated from the task definition's `role` field at dispatch time.
     pub current_task_role: String,
+
+    // ─── Model Choice Source ────────────────────────────────────────
+    /// Whether the current task's model was forced via `--model` /
+    /// `--force-model` / `--force-backend`. When `true`, feedback
+    /// writers tag the observation as `ModelChoiceSource::Override` so
+    /// the cascade router's learned policy is not corrupted.
+    pub model_forced: bool,
 
     // ─── Review Verdict ──────────────────────────────────────────────
     /// Parsed structured review verdict from the most recent agent turn.
@@ -249,7 +284,7 @@ pub struct RunState {
     // ─── PR / Gate Updates ──────────────────────────────────────────
     /// Maps `plan_id` to the GitHub PR number associated with that plan.
     /// Populated when a plan opens or discovers its PR; consumed by the
-    /// gate-result PR-update hook when `github.auto_update_prs = true`.
+    /// gate-result PR-update hook.
     pub plan_pr_numbers: HashMap<String, u64>,
 }
 
@@ -270,6 +305,7 @@ impl RunState {
             tokens_out: 0,
             cache_read_tokens: 0,
             cache_write_tokens: 0,
+            reasoning_tokens: 0,
             cost_usd: 0.0,
             task_agent_calls: 0,
             plan_id: String::new(),
@@ -296,6 +332,7 @@ impl RunState {
             failed_tasks: HashMap::new(),
             skipped_tasks: HashMap::new(),
             task_outputs: HashMap::new(),
+            timeout_salvage_input_fingerprints: HashMap::new(),
             snapshot_fail_streak: 0,
             snapshot_degraded: false,
             started_at: Instant::now(),
@@ -310,10 +347,14 @@ impl RunState {
             revised_tasks: HashMap::new(),
             task_fingerprints: Vec::new(),
             routing_context: None,
+            context_shrink_factors: HashMap::new(),
             failure_reasons: HashMap::new(),
             budget_exhausted: false,
+            daily_budget_exhausted: false,
+            prior_daily_cost_usd: 0.0,
             disk_budget_paused: false,
             current_task_role: String::new(),
+            model_forced: false,
             parsed_review_verdict: None,
             express_mode: false,
             cumulative_reflection_cost_usd: 0.0,
@@ -352,12 +393,17 @@ impl RunState {
         let attempt = value.max(1);
         let key = task_key(plan_id, task_id);
         self.ensure_task_lifecycle(plan_id, task_id, 0);
-        if let Some(task) = self.lifecycle.tasks.get_mut(&key) {
+        if let Some(task) = self.task_lifecycle_mut(task_id, &key) {
             task.current_attempt = task.current_attempt.max(attempt);
             task.next_attempt = task
                 .next_attempt
                 .max(task.current_attempt.saturating_add(1));
-            self.iterations.insert(key, task.current_attempt);
+        }
+        if let Some(val) = self
+            .task_lifecycle_mut(task_id, &key)
+            .map(|t| t.current_attempt)
+        {
+            self.iterations.insert(key, val);
         }
     }
 
@@ -369,9 +415,7 @@ impl RunState {
         let key = task_key(plan_id, task_id);
         self.ensure_task_lifecycle(plan_id, task_id, 0);
         let attempt = self
-            .lifecycle
-            .tasks
-            .get_mut(&key)
+            .task_lifecycle_mut(task_id, &key)
             .map(|task| {
                 let attempt = task
                     .next_attempt
@@ -464,6 +508,8 @@ impl RunState {
                 ..
             } => {
                 if let Some(attempt) = &timeout.attempt {
+                    self.timeout_salvage_input_fingerprints
+                        .remove(&attempt.key());
                     self.upsert_attempt(
                         attempt,
                         TaskAttemptStatus::TimedOut,
@@ -473,6 +519,24 @@ impl RunState {
                     );
                 } else {
                     self.lifecycle.global_timeout = Some(timeout.clone());
+                }
+            }
+            RunnerEvent::TimeoutSalvagedToGate {
+                timeout,
+                timestamp_ms,
+                input_fingerprint,
+                ..
+            } => {
+                if let Some(attempt) = &timeout.attempt {
+                    self.timeout_salvage_input_fingerprints
+                        .insert(attempt.key(), input_fingerprint.clone());
+                    self.upsert_attempt(
+                        attempt,
+                        TaskAttemptStatus::SalvagedToGate,
+                        *timestamp_ms,
+                        None,
+                        None,
+                    );
                 }
             }
             RunnerEvent::AgentDispatchStarted {
@@ -591,6 +655,8 @@ impl RunState {
                 timestamp_ms,
                 ..
             } => {
+                self.timeout_salvage_input_fingerprints
+                    .remove(&attempt.key());
                 let status = match outcome {
                     TaskAttemptOutcome::Passed => TaskAttemptStatus::Passed,
                     TaskAttemptOutcome::Failed => TaskAttemptStatus::Failed,
@@ -670,31 +736,48 @@ impl RunState {
 
     fn ensure_task_lifecycle(&mut self, plan_id: &str, task_id: &str, timestamp_ms: u64) {
         let key = task_key(plan_id, task_id);
-        self.lifecycle
-            .tasks
-            .entry(key.clone())
-            .or_insert_with(|| TaskLifecycle {
-                plan_id: plan_id.to_string(),
-                task_id: task_id.to_string(),
-                status: TaskLifecycleStatus::Started,
-                current_attempt: 1,
-                next_attempt: 2,
-                started_at_ms: timestamp_ms,
-                completed_at_ms: None,
-                latest_failure_kind: None,
-            });
+        let map = if task_id == PLAN_VERIFY_TASK_ID {
+            &mut self.lifecycle.plan_verification
+        } else {
+            &mut self.lifecycle.tasks
+        };
+        map.entry(key.clone()).or_insert_with(|| TaskLifecycle {
+            plan_id: plan_id.to_string(),
+            task_id: task_id.to_string(),
+            status: TaskLifecycleStatus::Started,
+            current_attempt: 1,
+            next_attempt: 2,
+            started_at_ms: timestamp_ms,
+            completed_at_ms: None,
+            latest_failure_kind: None,
+        });
         self.iterations.entry(key).or_insert(1);
+    }
+
+    /// Look up a task lifecycle entry in the correct map (plan_verification for
+    /// `plan-verify` tasks, `tasks` for everything else).
+    fn task_lifecycle_mut(&mut self, task_id: &str, key: &str) -> Option<&mut TaskLifecycle> {
+        if task_id == PLAN_VERIFY_TASK_ID {
+            self.lifecycle.plan_verification.get_mut(key)
+        } else {
+            self.lifecycle.tasks.get_mut(key)
+        }
     }
 
     fn observe_attempt_number(&mut self, attempt: &TaskAttemptRef) {
         let key = attempt.task_key();
         self.ensure_task_lifecycle(&attempt.plan_id, &attempt.task_id, 0);
-        if let Some(task) = self.lifecycle.tasks.get_mut(&key) {
+        if let Some(task) = self.task_lifecycle_mut(&attempt.task_id, &key) {
             task.current_attempt = task.current_attempt.max(attempt.attempt.max(1));
             task.next_attempt = task
                 .next_attempt
                 .max(task.current_attempt.saturating_add(1));
-            self.iterations.insert(key, task.current_attempt);
+        }
+        if let Some(val) = self
+            .task_lifecycle_mut(&attempt.task_id, &key)
+            .map(|t| t.current_attempt)
+        {
+            self.iterations.insert(key, val);
         }
     }
 
@@ -702,7 +785,7 @@ impl RunState {
         self.ensure_task_lifecycle(&attempt.plan_id, &attempt.task_id, timestamp_ms);
         self.observe_attempt_number(attempt);
         self.supersede_retry_attempts_before(attempt, timestamp_ms);
-        if let Some(task) = self.lifecycle.tasks.get_mut(&attempt.task_key()) {
+        if let Some(task) = self.task_lifecycle_mut(&attempt.task_id, &attempt.task_key()) {
             if !task.status.is_terminal() {
                 task.status = TaskLifecycleStatus::Running;
                 task.completed_at_ms = None;
@@ -743,7 +826,8 @@ impl RunState {
         timestamp_ms: u64,
     ) {
         self.ensure_task_lifecycle(&attempt.plan_id, &attempt.task_id, 0);
-        if let Some(task) = self.lifecycle.tasks.get_mut(&attempt.task_key()) {
+        let task_key = attempt.task_key();
+        if let Some(task) = self.task_lifecycle_mut(&attempt.task_id, &task_key) {
             task.latest_failure_kind = Some(decision.failure_kind);
             match decision.action {
                 RetryAction::RetryAfterBackoff | RetryAction::Replan => {
@@ -756,8 +840,6 @@ impl RunState {
                     task.next_attempt = task
                         .next_attempt
                         .max(task.current_attempt.saturating_add(1));
-                    self.iterations
-                        .insert(attempt.task_key(), task.current_attempt.max(1));
                 }
                 RetryAction::Exhausted => {
                     task.status = TaskLifecycleStatus::Exhausted;
@@ -767,6 +849,17 @@ impl RunState {
                     task.status = TaskLifecycleStatus::Failed;
                     task.completed_at_ms = Some(timestamp_ms);
                 }
+            }
+        }
+        if let Some(val) = self
+            .task_lifecycle_mut(&attempt.task_id, &task_key)
+            .map(|t| t.current_attempt.max(1))
+        {
+            if matches!(
+                decision.action,
+                RetryAction::RetryAfterBackoff | RetryAction::Replan
+            ) {
+                self.iterations.insert(task_key, val);
             }
         }
     }
@@ -782,7 +875,7 @@ impl RunState {
             self.apply_attempt_terminal_to_task(attempt, status, timestamp_ms, failure_kind);
             return;
         }
-        if let Some(task) = self.lifecycle.tasks.get_mut(&attempt.task_key()) {
+        if let Some(task) = self.task_lifecycle_mut(&attempt.task_id, &attempt.task_key()) {
             if let Some(failure_kind) = failure_kind {
                 task.latest_failure_kind = Some(failure_kind);
             }
@@ -804,7 +897,7 @@ impl RunState {
         if status.is_terminal() {
             self.supersede_retry_attempts_through(attempt, timestamp_ms);
         }
-        if let Some(task) = self.lifecycle.tasks.get_mut(&attempt.task_key()) {
+        if let Some(task) = self.task_lifecycle_mut(&attempt.task_id, &attempt.task_key()) {
             if attempt.attempt < task.current_attempt && status == TaskAttemptStatus::Superseded {
                 return;
             }
@@ -839,6 +932,7 @@ impl RunState {
         self.tokens_out = 0;
         self.cache_read_tokens = 0;
         self.cache_write_tokens = 0;
+        self.reasoning_tokens = 0;
         self.cost_usd = 0.0;
         self.task_agent_calls = 0;
         self.plan_id = plan_id.to_string();
@@ -851,6 +945,29 @@ impl RunState {
         self.task_started_at = Instant::now();
         self.last_dispatch_ms = 0;
         self.routing_context = None;
+        self.model_forced = false;
+    }
+
+    /// Return the context shrink factor for the given plan/task pair.
+    /// Defaults to `1.0` (no shrinkage). Each context overflow retry
+    /// multiplies by `0.75`.
+    pub fn context_shrink_factor(&self, plan_id: &str, task_id: &str) -> f64 {
+        let key = format!("{plan_id}:{task_id}");
+        self.context_shrink_factors
+            .get(&key)
+            .copied()
+            .unwrap_or(1.0)
+    }
+
+    /// Shrink the context budget for the given task by 25%.
+    pub fn apply_context_overflow_shrink(&mut self, plan_id: &str, task_id: &str) {
+        let key = format!("{plan_id}:{task_id}");
+        let current = self
+            .context_shrink_factors
+            .get(&key)
+            .copied()
+            .unwrap_or(1.0);
+        self.context_shrink_factors.insert(key, current * 0.75);
     }
 
     /// Record a completed task, rolling per-task stats into totals.
@@ -1314,6 +1431,67 @@ mod tests {
         ));
 
         assert!(state.task_attempt_is_terminal(&attempt));
+    }
+
+    #[test]
+    fn synthetic_plan_verify_attempt_settles_after_gate_completion() {
+        let mut state = RunState::new(1);
+        let run_id = state.run_id().to_string();
+        let attempt = TaskAttemptRef::new("plan", "plan-verify", 1);
+        state.apply_runner_event(&RunnerEvent::gate_dispatch_started(
+            &run_id,
+            attempt.clone(),
+            GateCompletionKind::PlanVerify,
+            0,
+        ));
+        let completion = GateCompletion {
+            effect: None,
+            kind: GateCompletionKind::PlanVerify,
+            attempt: Some(attempt.clone()),
+            plan_id: "plan".into(),
+            task_id: "plan-verify".into(),
+            rung: 0,
+            passed: true,
+            failure_kind: None,
+            verdicts: Vec::new(),
+            output: "plan verify passed".into(),
+            duration_ms: 10,
+            selected_rungs: Vec::new(),
+        };
+        state.apply_runner_event(&RunnerEvent::gate_completed(
+            &run_id,
+            attempt.clone(),
+            &completion,
+        ));
+        assert_eq!(
+            state.lifecycle.task_attempts[&attempt.key()].status,
+            TaskAttemptStatus::Gating
+        );
+
+        state.apply_runner_event(&RunnerEvent::task_attempt_completed(
+            &run_id,
+            attempt.clone(),
+            TaskAttemptOutcome::Passed,
+            None,
+            completion.duration_ms,
+            "",
+            "",
+        ));
+
+        assert!(state.task_attempt_is_terminal(&attempt));
+        assert_eq!(
+            state.lifecycle.task_attempts[&attempt.key()].status,
+            TaskAttemptStatus::Passed
+        );
+        assert_eq!(
+            state.lifecycle.plan_verification["plan:plan-verify"].status,
+            TaskLifecycleStatus::Passed
+        );
+        // plan-verify must NOT appear in the executable tasks map.
+        assert!(
+            !state.lifecycle.tasks.contains_key("plan:plan-verify"),
+            "plan-verify should be in plan_verification, not tasks"
+        );
     }
 
     #[test]

@@ -55,3 +55,24 @@ fn doctor_human_output_succeeds_for_bootstrapped_workspace() {
         .stdout(contains("[ok] layout"))
         .stdout(contains("[skipped] serve_health"));
 }
+
+#[test]
+fn doctor_network_json_produces_summary_and_checks() {
+    let temp = tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("roko.toml"),
+        "[agent]\ncommand = \"echo\"\n",
+    )
+    .unwrap();
+    bootstrap_layout(temp.path());
+
+    Command::cargo_bin("roko")
+        .unwrap()
+        .args(["doctor", "network", "--workdir"])
+        .arg(temp.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .stdout(contains("\"summary\""))
+        .stdout(contains("\"checks\""));
+}

@@ -38,6 +38,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::process::Command;
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard, oneshot};
+use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 /// Locks older than this are considered stale (§15.7).
@@ -384,6 +385,26 @@ pub enum WorktreeError {
         /// Failed containment or extension invariant.
         reason: String,
     },
+}
+
+/// Interruption-aware error returned while preparing an attempt worktree.
+///
+/// The cancellation variants only return after ownership of any started
+/// mutation has been transferred to the manager's runtime-independent worker.
+/// That worker retains the repository reservation until the mutation has
+/// stopped and its journal has converged, so returning at a runner deadline
+/// cannot expose an unowned Git writer.
+#[derive(Debug, Error)]
+pub enum WorktreeOperationError {
+    /// The caller's cancellation token fired before preparation completed.
+    #[error("worktree preparation cancelled")]
+    Cancelled,
+    /// The caller's absolute preparation deadline elapsed.
+    #[error("worktree preparation deadline elapsed")]
+    Deadline,
+    /// Ordinary worktree validation or mutation failure.
+    #[error(transparent)]
+    Worktree(#[from] WorktreeError),
 }
 
 /// Derive the canonical branch name for a plan (§15.3).
@@ -780,6 +801,99 @@ impl WorktreeManager {
             retain_lock_if_cleanup_unproved(repository_lock, &lifecycle);
             result
         })
+        .await
+    }
+
+    /// Ensure an exact attempt checkout is tracked, safely reattaching the
+    /// canonical attempt branch after process restart when it already exists.
+    pub async fn ensure_for_attempt(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+        attempt: u32,
+    ) -> Result<WorktreeHandle, WorktreeError> {
+        let id = format_attempt_worktree_id(plan_id, task_id, attempt);
+        let branch = format_attempt_branch_name(plan_id, task_id, attempt);
+        let base = self.accepted.lock().get(plan_id).map_or_else(
+            || self.config.base_branch.clone(),
+            |accepted| accepted.commit_oid.clone(),
+        );
+        let operation = Arc::clone(&self.operations).lock_owned().await;
+        let manager = self.clone();
+        await_owned_operation(operation, move |lifecycle| async move {
+            let repository_lock = manager.acquire_repository_mutation_lock()?;
+            let result = if manager.active.lock().contains_key(&id) {
+                manager
+                    .try_reattach_locked_with_branch(&id, &branch)
+                    .await?
+                    .ok_or_else(|| WorktreeError::NotFound(id.clone()))
+            } else if let Some(handle) = manager
+                .try_reattach_locked_with_branch(&id, &branch)
+                .await?
+            {
+                Ok(handle)
+            } else {
+                manager.create_locked(&id, &branch, &base, &lifecycle).await
+            };
+            retain_lock_if_cleanup_unproved(repository_lock, &lifecycle);
+            result
+        })
+        .await
+    }
+
+    /// Ensure an exact attempt checkout while observing runner cancellation
+    /// and an absolute deadline through both reservation and Git preparation.
+    ///
+    /// If interrupted after the worker starts, cancellation is signalled to
+    /// its mutation lifecycle before this future returns. The worker continues
+    /// to own the repository reservation until contained Git descendants have
+    /// exited and creation-journal reconciliation is complete.
+    pub async fn ensure_for_attempt_controlled(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+        attempt: u32,
+        cancel: &CancellationToken,
+        deadline: Option<tokio::time::Instant>,
+    ) -> Result<WorktreeHandle, WorktreeOperationError> {
+        let id = format_attempt_worktree_id(plan_id, task_id, attempt);
+        let branch = format_attempt_branch_name(plan_id, task_id, attempt);
+        let base = self.accepted.lock().get(plan_id).map_or_else(
+            || self.config.base_branch.clone(),
+            |accepted| accepted.commit_oid.clone(),
+        );
+        let operation = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(WorktreeOperationError::Cancelled),
+            _ = await_optional_deadline(deadline) => {
+                return Err(WorktreeOperationError::Deadline);
+            }
+            operation = Arc::clone(&self.operations).lock_owned() => operation,
+        };
+        let manager = self.clone();
+        await_owned_operation_controlled(
+            operation,
+            move |lifecycle| async move {
+                let repository_lock = manager.acquire_repository_mutation_lock()?;
+                let result = if manager.active.lock().contains_key(&id) {
+                    manager
+                        .try_reattach_locked_with_branch(&id, &branch)
+                        .await?
+                        .ok_or_else(|| WorktreeError::NotFound(id.clone()))
+                } else if let Some(handle) = manager
+                    .try_reattach_locked_with_branch(&id, &branch)
+                    .await?
+                {
+                    Ok(handle)
+                } else {
+                    manager.create_locked(&id, &branch, &base, &lifecycle).await
+                };
+                retain_lock_if_cleanup_unproved(repository_lock, &lifecycle);
+                result
+            },
+            cancel,
+            deadline,
+        )
         .await
     }
     /// Return the checkout owned by an exact task attempt.
@@ -1357,6 +1471,16 @@ impl WorktreeManager {
         &self,
         plan_id: &str,
     ) -> Result<Option<WorktreeHandle>, WorktreeError> {
+        let expected_branch = format_branch_name(plan_id);
+        self.try_reattach_locked_with_branch(plan_id, &expected_branch)
+            .await
+    }
+
+    async fn try_reattach_locked_with_branch(
+        &self,
+        plan_id: &str,
+        expected_branch: &str,
+    ) -> Result<Option<WorktreeHandle>, WorktreeError> {
         validate_id(plan_id)?;
         let path = self.path_for(plan_id);
         self.reject_outstanding_creation_marker(plan_id).await?;
@@ -1477,7 +1601,6 @@ impl WorktreeManager {
             .git_probe_stdout_at(&path, &["symbolic-ref", "--quiet", "--short", "HEAD"])
             .await
             .map_err(|error| reattach_rejected(plan_id, error.to_string()))?;
-        let expected_branch = format_branch_name(plan_id);
         if branch != expected_branch {
             return Err(reattach_rejected(
                 plan_id,
@@ -3542,6 +3665,58 @@ where
     F: FnOnce(Arc<OperationLifecycle>) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = Result<T, WorktreeError>> + Send + 'static,
 {
+    let (_lifecycle, result_rx) = start_owned_operation(operation, operation_fn)?;
+    receive_owned_operation(result_rx).await
+}
+
+async fn await_owned_operation_controlled<T, F, Fut>(
+    operation: OwnedMutexGuard<()>,
+    operation_fn: F,
+    cancel: &CancellationToken,
+    deadline: Option<tokio::time::Instant>,
+) -> Result<T, WorktreeOperationError>
+where
+    T: Send + 'static,
+    F: FnOnce(Arc<OperationLifecycle>) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<T, WorktreeError>> + Send + 'static,
+{
+    let (lifecycle, mut result_rx) = start_owned_operation(operation, operation_fn)?;
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => {
+            lifecycle.request_cancel();
+            Err(WorktreeOperationError::Cancelled)
+        }
+        _ = await_optional_deadline(deadline) => {
+            lifecycle.request_cancel();
+            Err(WorktreeOperationError::Deadline)
+        }
+        result = &mut result_rx => receive_owned_operation_result(result).map_err(Into::into),
+    }
+}
+
+async fn await_optional_deadline(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending::<()>().await,
+    }
+}
+
+fn start_owned_operation<T, F, Fut>(
+    operation: OwnedMutexGuard<()>,
+    operation_fn: F,
+) -> Result<
+    (
+        Arc<OperationLifecycle>,
+        oneshot::Receiver<Result<T, WorktreeError>>,
+    ),
+    WorktreeError,
+>
+where
+    T: Send + 'static,
+    F: FnOnce(Arc<OperationLifecycle>) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<T, WorktreeError>> + Send + 'static,
+{
     let lifecycle = Arc::new(OperationLifecycle::default());
     let worker_lifecycle = Arc::clone(&lifecycle);
     let (result_tx, result_rx) = oneshot::channel();
@@ -3585,7 +3760,19 @@ where
         shutdown_owner.disarm();
     });
 
-    result_rx.await.map_err(|_| {
+    Ok((lifecycle, result_rx))
+}
+
+async fn receive_owned_operation<T>(
+    result_rx: oneshot::Receiver<Result<T, WorktreeError>>,
+) -> Result<T, WorktreeError> {
+    receive_owned_operation_result(result_rx.await)
+}
+
+fn receive_owned_operation_result<T>(
+    result: Result<Result<T, WorktreeError>, oneshot::error::RecvError>,
+) -> Result<T, WorktreeError> {
+    result.map_err(|_| {
         WorktreeError::IoError(std::io::Error::other(
             "runtime-independent worktree mutation worker ended without a result",
         ))

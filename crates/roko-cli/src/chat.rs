@@ -346,6 +346,7 @@ pub async fn run_direct_provider_chat(
                 latency_ms,
                 success: result.success,
                 provider_success: Some(result.success),
+                error_class: None,
             })
             .await
         {

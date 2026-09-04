@@ -317,22 +317,22 @@ mod tests {
             agents_md: "# AGENTS.md\nFollow conventions.".into(),
             plan: PlanSlice {
                 num: "042".into(),
-                base: "golem-mortality".into(),
-                title: "Implement mortality model".into(),
-                content: "## Plan\nBuild the mortality model.".into(),
+                base: "agent-lifecycle".into(),
+                title: "Implement agent lifecycle model".into(),
+                content: "## Plan\nBuild the agent lifecycle model.".into(),
             },
             task_id: "T2".into(),
             task_title: "Implement Gompertz formula".into(),
             task_files: vec![
-                "crates/golem-core/src/mortality.rs".into(),
-                "crates/golem-core/src/lib.rs".into(),
+                "crates/roko-core/src/lifecycle.rs".into(),
+                "crates/roko-core/src/lib.rs".into(),
             ],
             acceptance_criteria: vec![
                 "compute_rate returns correct Gompertz values".into(),
                 "All tests pass".into(),
             ],
             brief: "Strategist brief content.".into(),
-            workspace_map: "crates/golem-core/src/lib.rs".into(),
+            workspace_map: "crates/roko-core/src/lib.rs".into(),
             prd2_extract: "## PRD2\nGompertz: lambda(t) = ae^(bt).".into(),
             cross_plan_context: "plan-041: done".into(),
             ignored_tests: "test_old_feature: reason".into(),
@@ -341,14 +341,14 @@ mod tests {
             task_enhancements: Some(TaskEnhancements {
                 types_to_define: vec!["MortalityRate".into()],
                 formulas: vec!["lambda(t) = a * e^(b*t)".into()],
-                imports: vec!["use golem_core::mortality::*".into()],
+                imports: vec!["use roko_core::lifecycle::*".into()],
                 example_pattern: Some("match rate { .. }".into()),
                 test_invariants: vec!["INV-001".into()],
             }),
             sibling_tasks: vec![SiblingTask {
                 id: "T3".into(),
                 title: "Implement lifecycle hooks".into(),
-                files: vec!["crates/golem-core/src/lifecycle.rs".into()],
+                files: vec!["crates/roko-core/src/lifecycle.rs".into()],
             }],
             file_context: Some("// mortality.rs\npub struct MortalityRate;".into()),
             learning_pack: Some("Playbook: use Gompertz from Finkelstein 2008.".into()),
@@ -405,7 +405,7 @@ mod tests {
         // Assignment section includes task id and files
         let assignment = &sections[7].content;
         assert!(assignment.contains("T2"));
-        assert!(assignment.contains("golem-mortality"));
+        assert!(assignment.contains("agent-lifecycle"));
         assert!(assignment.contains("Implement Gompertz formula"));
         assert!(assignment.contains("mortality.rs"));
         assert!(assignment.contains("Acceptance Criteria"));

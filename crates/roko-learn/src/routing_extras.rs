@@ -447,13 +447,13 @@ impl CalibrationBin {
 }
 
 // ---------------------------------------------------------------------------
-// Public utility re-exports for orchestrate.rs wiring
+// Public utility re-exports for runner-v2 wiring
 // ---------------------------------------------------------------------------
 
 /// Map a model slug to a tier rank (0 = fast/cheap, 1 = standard, 2 = premium).
 ///
 /// This is the public wrapper around the internal `tier_rank_for_slug`
-/// used by orchestrate.rs for inline lookahead logic.
+/// used by the runner-v2 event loop for inline lookahead logic.
 #[must_use]
 pub fn tier_rank(slug: &str) -> u8 {
     tier_rank_for_slug(slug)
@@ -462,7 +462,7 @@ pub fn tier_rank(slug: &str) -> u8 {
 /// Estimate success probability from calibration data for a given model.
 ///
 /// Public wrapper around the internal `estimate_success_probability` used
-/// by orchestrate.rs for inline lookahead tier-downgrade decisions.
+/// by the runner-v2 event loop for inline lookahead tier-downgrade decisions.
 #[must_use]
 pub fn estimate_model_success(cal: &ModelCalibration) -> f64 {
     estimate_success_probability(cal)

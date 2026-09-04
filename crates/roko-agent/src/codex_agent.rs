@@ -22,7 +22,7 @@ use crate::http::HttpPostError;
 use crate::http::{HttpPoster, ReqwestPoster};
 use crate::multimodal::openai_messages;
 use crate::provider::ProviderSemaphores;
-use crate::usage::Usage;
+use crate::usage::{UsageObservation, UsageSource};
 use async_trait::async_trait;
 use roko_core::defaults::{DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_REQUEST_TIMEOUT_MS};
 use roko_core::{
@@ -298,7 +298,9 @@ impl CodexAgent {
             .tag("agent", &self.name)
             .tag("failed", "true")
             .build();
-        AgentResult::fail(output).with_usage(Usage {
+        AgentResult::fail(output).with_usage_obs(UsageObservation {
+            source: UsageSource::Unknown,
+            model: Some(self.model.clone()),
             wall_ms,
             ..Default::default()
         })
@@ -507,12 +509,24 @@ impl Agent for CodexAgent {
         }
 
         let wall_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let usage = Usage {
-            input_tokens: parsed.usage.prompt_tokens,
-            output_tokens: parsed.usage.completion_tokens,
-            cache_read_tokens: parsed.usage.cache_read_tokens(),
-            cache_create_tokens: 0,
-            cost_usd: 0.0,
+        let usage_obs = UsageObservation {
+            input_tokens: Some(u64::from(parsed.usage.prompt_tokens)),
+            output_tokens: Some(u64::from(parsed.usage.completion_tokens)),
+            cache_creation_tokens: Some(0),
+            cache_read_tokens: Some(u64::from(parsed.usage.cache_read_tokens())),
+            reasoning_tokens: None,
+            // Cost is not reported by the provider; dispatch back-fills it
+            // from the model profile's pricing (`fill_cost_from_profile`).
+            cost_usd: None,
+            source: UsageSource::ProviderReported,
+            // Prefer the provider-reported model over the configured slug.
+            model: Some(
+                parsed
+                    .model
+                    .clone()
+                    .filter(|model| !model.is_empty())
+                    .unwrap_or_else(|| self.model.clone()),
+            ),
             wall_ms,
         };
 
@@ -529,7 +543,7 @@ impl Agent for CodexAgent {
         }
         let output = builder.build();
 
-        AgentResult::ok(output).with_usage(usage)
+        AgentResult::ok(output).with_usage_obs(usage_obs)
     }
 
     fn name(&self) -> &str {
@@ -740,6 +754,44 @@ mod tests {
         assert_eq!(result.output.tag("stop_reason"), Some("stop"));
         assert_eq!(result.output.tag("response_id"), Some("chatcmpl-abc"));
         assert_eq!(poster.call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn usage_obs_carries_provider_reported_model() {
+        let poster = MockPoster::ok(canned_ok("hello world", 12, 34));
+        let agent = agent_with(poster);
+        let result = agent.run(&prompt("hi"), &Context::now()).await;
+        assert!(result.success);
+        let usage_obs = result.usage_obs.expect("usage_obs populated");
+        assert_eq!(
+            usage_obs.model.as_deref(),
+            Some("gpt-5-codex"),
+            "provider-reported model must be carried through"
+        );
+        assert_eq!(usage_obs.source, UsageSource::ProviderReported);
+        assert_eq!(usage_obs.input_tokens, Some(12));
+        assert_eq!(usage_obs.output_tokens, Some(34));
+    }
+
+    #[tokio::test]
+    async fn usage_obs_falls_back_to_configured_model() {
+        // Response without a top-level `model` field.
+        let body = serde_json::json!({
+            "id": "chatcmpl-nomodel",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "hi"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        })
+        .to_string();
+        let poster = MockPoster::ok(body);
+        let agent = agent_with(poster);
+        let result = agent.run(&prompt("hi"), &Context::now()).await;
+        assert!(result.success);
+        let usage_obs = result.usage_obs.expect("usage_obs populated");
+        assert_eq!(usage_obs.model.as_deref(), Some("gpt-5-codex"));
     }
 
     #[tokio::test]
@@ -1018,6 +1070,7 @@ mod tests {
                 extra_headers: None,
                 max_concurrent: Some(1),
                 limits: None,
+                require_confirmation: false,
             },
         );
 

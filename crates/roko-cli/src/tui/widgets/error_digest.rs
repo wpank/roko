@@ -3,17 +3,20 @@
 //! Provides two rendering modes:
 //! - `render_error_digest`: compact inline panel for embedding in other views
 //! - `render_error_aggregation_panel`: full scrollable panel for the F5:Errors tab
-//!   with categorized errors, red border when active, and scroll support
+//!   with categorized errors grouped by source, severity icons, cross-source
+//!   dedup, remediation hints, and scroll support
 
 use std::collections::BTreeMap;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 
-use roko_core::dashboard_snapshot::{ErrorEntry, GateVerdictView, SnapshotStats};
+use roko_core::dashboard_snapshot::{
+    DiagnosisSeverity, ErrorEntry, GateVerdictView, SnapshotStats,
+};
 
 use super::super::dashboard::Theme;
 use crate::tui::state::TuiState;
@@ -22,13 +25,16 @@ use crate::tui::state::TuiState;
 // Error categories
 // ---------------------------------------------------------------------------
 
-/// Error source category for aggregation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// Error source category for aggregation and grouping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum ErrorCategory {
     Gate,
     Compile,
     Agent,
+    Timeout,
+    DagStuck,
     Preflight,
+    Conductor,
     Runtime,
 }
 
@@ -38,33 +44,93 @@ impl ErrorCategory {
             Self::Gate => "gate",
             Self::Compile => "compile",
             Self::Agent => "agent",
+            Self::Timeout => "timeout",
+            Self::DagStuck => "dag-stuck",
             Self::Preflight => "preflight",
+            Self::Conductor => "conductor",
             Self::Runtime => "runtime",
         }
     }
 
-    fn icon(self) -> &'static str {
+    fn heading(self) -> &'static str {
         match self {
-            Self::Gate => "\u{2718}",      // ✘
-            Self::Compile => "\u{2692}",   // ⚒
-            Self::Agent => "\u{26a0}",     // ⚠
-            Self::Preflight => "\u{2691}", // ⚑
-            Self::Runtime => "\u{26a1}",   // ⚡
+            Self::Gate => "Gate Failures",
+            Self::Compile => "Compile Errors",
+            Self::Agent => "Agent Failures",
+            Self::Timeout => "Timeouts",
+            Self::DagStuck => "DAG Stuck",
+            Self::Preflight => "Preflight Checks",
+            Self::Conductor => "Conductor Diagnoses",
+            Self::Runtime => "Runtime Errors",
         }
     }
 
     fn from_message(msg: &str) -> Self {
         let lower = msg.to_ascii_lowercase();
-        if lower.contains("gate") || lower.contains("verify") || lower.contains("rung") {
+        if lower.contains("dag")
+            && (lower.contains("stuck") || lower.contains("deadlock") || lower.contains("cycle"))
+        {
+            Self::DagStuck
+        } else if lower.contains("timeout")
+            || lower.contains("timed out")
+            || lower.contains("stall")
+        {
+            Self::Timeout
+        } else if lower.contains("gate") || lower.contains("verify") || lower.contains("rung") {
             Self::Gate
         } else if lower.contains("compil") || lower.contains("cargo") || lower.contains("rustc") {
             Self::Compile
-        } else if lower.contains("agent") || lower.contains("stall") || lower.contains("timeout") {
+        } else if lower.contains("agent") {
             Self::Agent
         } else if lower.contains("preflight") || lower.contains("pre-flight") {
             Self::Preflight
+        } else if lower.contains("conductor") || lower.contains("diagnos") {
+            Self::Conductor
         } else {
             Self::Runtime
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Severity
+// ---------------------------------------------------------------------------
+
+/// Severity level for rendering icons and colors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Severity {
+    Info,
+    Warning,
+    Error,
+}
+
+impl Severity {
+    fn icon(self) -> &'static str {
+        match self {
+            Self::Error => "\u{2718}",   // ✘
+            Self::Warning => "\u{25b2}", // ▲
+            Self::Info => "\u{25cf}",    // ●
+        }
+    }
+
+    fn color(self, theme: &Theme) -> Color {
+        match self {
+            Self::Error => theme.danger,
+            Self::Warning => theme.warning,
+            Self::Info => theme.info,
+        }
+    }
+
+    fn from_category(cat: ErrorCategory) -> Self {
+        match cat {
+            ErrorCategory::Gate
+            | ErrorCategory::Compile
+            | ErrorCategory::Runtime
+            | ErrorCategory::DagStuck => Self::Error,
+            ErrorCategory::Agent | ErrorCategory::Preflight | ErrorCategory::Timeout => {
+                Self::Warning
+            }
+            ErrorCategory::Conductor => Self::Info,
         }
     }
 }
@@ -73,10 +139,13 @@ impl ErrorCategory {
 #[derive(Debug, Clone)]
 struct CategorizedError {
     category: ErrorCategory,
+    severity: Severity,
     message: String,
     ts_millis: u64,
     /// Optional source context (e.g. plan/task id).
     source: String,
+    /// Suggested remediation action, if inferrable.
+    remediation: Option<&'static str>,
 }
 
 // ---------------------------------------------------------------------------
@@ -90,6 +159,98 @@ fn fmt_ts(ts_millis: u64) -> String {
     let m = (secs / 60) % 60;
     let s = secs % 60;
     format!("{h:02}:{m:02}:{s:02}")
+}
+
+/// Normalize a message for cross-source dedup comparison.
+fn normalize_for_dedup(msg: &str) -> String {
+    let lower = msg.to_ascii_lowercase();
+    lower
+        .trim_start_matches("gate failed for ")
+        .trim_start_matches("agent ")
+        .trim_start_matches("compile gate failed: ")
+        .trim_start_matches("test gate failed: ")
+        .trim()
+        .to_string()
+}
+
+/// Infer a remediation hint from the error message.
+fn infer_remediation(msg: &str, category: ErrorCategory) -> Option<&'static str> {
+    let lower = msg.to_ascii_lowercase();
+    // Check for specific actionable patterns first, regardless of category.
+    if lower.contains("worktree")
+        && (lower.contains("exceed") || lower.contains("maximum") || lower.contains("limit"))
+    {
+        return Some("worktree count exceeds maximum \u{2192} roko doctor disk");
+    }
+    if lower.contains("disk") || lower.contains("no space") {
+        return Some("free disk space \u{2192} roko doctor disk");
+    }
+    match category {
+        ErrorCategory::Compile => {
+            if lower.contains("semicolon") || lower.contains("syntax") {
+                Some("fix syntax error in source file")
+            } else if lower.contains("missing") || lower.contains("unresolved") {
+                Some("add missing import or dependency")
+            } else if lower.contains("type") || lower.contains("mismatch") {
+                Some("fix type mismatch in source")
+            } else {
+                Some("fix compile error and retry")
+            }
+        }
+        ErrorCategory::Gate => {
+            if lower.contains("test") {
+                Some("fix failing tests")
+            } else if lower.contains("clippy") || lower.contains("lint") {
+                Some("resolve clippy/lint warnings \u{2192} cargo clippy --fix")
+            } else if lower.contains("format") || lower.contains("fmt") {
+                Some("run cargo +nightly fmt --all")
+            } else if lower.contains("compile") || lower.contains("build") {
+                Some("fix compile error and retry")
+            } else {
+                Some("investigate gate failure output")
+            }
+        }
+        ErrorCategory::Agent => Some("check agent logs for details"),
+        ErrorCategory::Timeout => Some("check agent responsiveness or increase timeout"),
+        ErrorCategory::DagStuck => {
+            Some("check plan dependencies for cycles \u{2192} roko plan validate")
+        }
+        ErrorCategory::Preflight => Some("fix preflight conditions before retrying"),
+        ErrorCategory::Conductor => None,
+        ErrorCategory::Runtime => {
+            if lower.contains("memory") || lower.contains("oom") {
+                Some("reduce memory usage or increase limits")
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// Infer a short actionable hint for the compact inline error list.
+fn infer_compact_hint(msg: &str) -> Option<&'static str> {
+    let lower = msg.to_ascii_lowercase();
+    if lower.contains("worktree")
+        && (lower.contains("exceed") || lower.contains("maximum") || lower.contains("limit"))
+    {
+        Some("roko doctor disk")
+    } else if lower.contains("disk") || lower.contains("no space") {
+        Some("roko doctor disk")
+    } else if lower.contains("timeout") || lower.contains("timed out") || lower.contains("stall") {
+        Some("increase timeout or check agent")
+    } else if lower.contains("dag") && (lower.contains("stuck") || lower.contains("cycle")) {
+        Some("check plan dependencies for cycles")
+    } else if lower.contains("compil") || lower.contains("syntax") || lower.contains("rustc") {
+        Some("fix compile error")
+    } else if lower.contains("test") && lower.contains("fail") {
+        Some("fix failing tests")
+    } else if lower.contains("clippy") || lower.contains("lint") {
+        Some("cargo clippy --fix")
+    } else if lower.contains("format") || lower.contains("fmt") {
+        Some("cargo fmt")
+    } else {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -110,8 +271,9 @@ pub fn render_error_digest(
 ) {
     let outer = Block::default()
         .borders(Borders::ALL)
-        .border_style(theme.muted())
-        .title(Span::styled("Errors & Gates", theme.accent()));
+        .border_style(Theme::unfocused_border_style())
+        .title(Span::styled("Errors & Gates", theme.section_header()))
+        .style(Theme::block_style());
     let inner = outer.inner(area);
     frame.render_widget(outer, area);
 
@@ -119,16 +281,24 @@ pub fn render_error_digest(
         return;
     }
 
+    // Gate summary (3 lines) + severity bar (1 line) + recent errors (rest).
     let sections = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
         .split(inner);
 
     // --- Verify summary ---
     render_gate_summary(frame, sections[0], gates, stats, theme);
 
-    // --- Error list ---
-    render_error_list(frame, sections[1], errors, theme);
+    // --- Severity bar ---
+    render_severity_bar(frame, sections[1], errors, theme);
+
+    // --- Recent errors (5 most recent) ---
+    render_error_list(frame, sections[2], errors, theme);
 }
 
 // ---------------------------------------------------------------------------
@@ -138,7 +308,9 @@ pub fn render_error_digest(
 /// Render the full error aggregation panel.
 ///
 /// Collects errors from all sources (gate failures, efficiency gate errors,
-/// snapshot errors, gate recent failures) into categorized sections.
+/// snapshot errors, conductor diagnoses, conductor alerts, gate recent failures)
+/// into categorized sections with cross-source dedup, severity icons, and
+/// remediation hints.
 /// Panel border turns red when errors are active.
 pub fn render_error_aggregation_panel(
     frame: &mut Frame<'_>,
@@ -160,20 +332,19 @@ pub fn render_error_aggregation_panel(
     let border_style = if has_active_errors {
         theme.danger()
     } else {
-        theme.muted()
+        Theme::unfocused_border_style()
     };
     let title_style = if has_active_errors {
-        Style::default()
-            .fg(theme.danger)
-            .add_modifier(Modifier::BOLD)
+        theme.danger().add_modifier(Modifier::BOLD)
     } else {
-        theme.accent()
+        theme.section_header()
     };
 
     let block = Block::default()
         .borders(Borders::ALL)
         .title(Span::styled(title, title_style))
-        .border_style(border_style);
+        .border_style(border_style)
+        .style(Theme::block_style());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -209,17 +380,17 @@ pub fn render_error_aggregation_panel(
         return;
     }
 
-    // Layout: top 3 lines = category summary, rest = scrollable error list.
+    // Layout: top 3 lines = category summary, rest = scrollable grouped list.
     let sections = Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).split(inner);
 
-    // Category summary counts.
+    // Category summary counts with severity icons.
     render_category_summary(frame, sections[0], &all_errors, theme);
 
-    // Scrollable error list (most recent first).
-    render_categorized_error_list(frame, sections[1], &all_errors, scroll, theme);
+    // Scrollable error list grouped by source category.
+    render_grouped_error_list(frame, sections[1], &all_errors, scroll, theme);
 }
 
-/// Render category summary bar showing counts per error type.
+/// Render category summary bar showing counts per error type with severity icons.
 fn render_category_summary(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -233,30 +404,79 @@ fn render_category_summary(
 
     let mut spans: Vec<Span<'_>> = vec![Span::styled("  ", Style::default())];
     for (cat, count) in &counts {
-        let cat_color = category_color(*cat, theme);
+        let sev = Severity::from_category(*cat);
+        let sev_color = sev.color(theme);
         spans.push(Span::styled(
-            format!("{} ", cat.icon()),
-            Style::default().fg(cat_color),
+            format!("{} ", sev.icon()),
+            Style::default().fg(sev_color),
         ));
+        let count_style = match sev {
+            Severity::Error => theme.danger().add_modifier(Modifier::BOLD),
+            Severity::Warning => theme.warning().add_modifier(Modifier::BOLD),
+            Severity::Info => Style::default().fg(sev_color),
+        };
         spans.push(Span::styled(
-            format!("{}: {count}  ", cat.label()),
-            Style::default().fg(cat_color),
+            format!("{}: ", cat.label()),
+            Style::default().fg(sev_color),
         ));
+        spans.push(Span::styled(format!("{count}  "), count_style));
     }
 
     let line1 = Line::from(spans);
 
-    // Total + newest timestamp.
+    // Severity distribution bar: ERR:5 ██ WARN:12 ████ INFO:200 ████████████
+    let error_total = errors
+        .iter()
+        .filter(|e| e.severity == Severity::Error)
+        .count();
+    let warn_total = errors
+        .iter()
+        .filter(|e| e.severity == Severity::Warning)
+        .count();
+    let info_total = errors
+        .iter()
+        .filter(|e| e.severity == Severity::Info)
+        .count();
     let newest_ts = errors.iter().map(|e| e.ts_millis).max().unwrap_or(0);
-    let line2 = Line::from(vec![
-        Span::styled(
-            format!("  total: {}  ", errors.len()),
-            Style::default()
-                .fg(theme.danger)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(format!("latest: {}", fmt_ts(newest_ts)), theme.muted()),
-    ]);
+
+    let bar_budget = (area.width as usize).saturating_sub(40);
+    let total = errors.len().max(1);
+    let err_blocks = (error_total * bar_budget / total).max(if error_total > 0 { 1 } else { 0 });
+    let wrn_blocks = (warn_total * bar_budget / total).max(if warn_total > 0 { 1 } else { 0 });
+    let inf_blocks = bar_budget.saturating_sub(err_blocks + wrn_blocks);
+
+    let mut bar_spans: Vec<Span<'_>> = vec![Span::styled("  ", Style::default())];
+    if error_total > 0 {
+        bar_spans.push(Span::styled(
+            format!("ERR:{error_total} "),
+            theme.danger().add_modifier(Modifier::BOLD),
+        ));
+        bar_spans.push(Span::styled("\u{2588}".repeat(err_blocks), theme.danger()));
+        bar_spans.push(Span::styled(" ", Style::default()));
+    }
+    if warn_total > 0 {
+        bar_spans.push(Span::styled(
+            format!("WARN:{warn_total} "),
+            theme.warning().add_modifier(Modifier::BOLD),
+        ));
+        bar_spans.push(Span::styled("\u{2588}".repeat(wrn_blocks), theme.warning()));
+        bar_spans.push(Span::styled(" ", Style::default()));
+    }
+    if info_total > 0 {
+        bar_spans.push(Span::styled(
+            format!("INFO:{info_total} "),
+            Style::default().fg(theme.info),
+        ));
+        bar_spans.push(Span::styled(
+            "\u{2588}".repeat(inf_blocks),
+            Style::default().fg(theme.info),
+        ));
+    }
+    bar_spans.push(Span::styled(
+        format!("  latest: {}", fmt_ts(newest_ts)),
+        theme.muted(),
+    ));
+    let line2 = Line::from(bar_spans);
 
     let sep = "\u{2500}".repeat(area.width.saturating_sub(2) as usize);
     let line3 = Line::from(Span::styled(
@@ -267,8 +487,8 @@ fn render_category_summary(
     frame.render_widget(Paragraph::new(vec![line1, line2, line3]), area);
 }
 
-/// Render the scrollable categorized error list.
-fn render_categorized_error_list(
+/// Render the scrollable error list grouped by source category.
+fn render_grouped_error_list(
     frame: &mut Frame<'_>,
     area: Rect,
     errors: &[CategorizedError],
@@ -277,56 +497,126 @@ fn render_categorized_error_list(
 ) {
     let mut lines: Vec<Line<'_>> = Vec::new();
 
-    // Show most recent first.
-    let mut sorted: Vec<&CategorizedError> = errors.iter().collect();
-    sorted.sort_by(|a, b| b.ts_millis.cmp(&a.ts_millis));
+    // Render in fixed category order so groups are stable.
+    let categories = [
+        ErrorCategory::Gate,
+        ErrorCategory::Compile,
+        ErrorCategory::Agent,
+        ErrorCategory::Timeout,
+        ErrorCategory::DagStuck,
+        ErrorCategory::Preflight,
+        ErrorCategory::Conductor,
+        ErrorCategory::Runtime,
+    ];
 
-    for err in &sorted {
-        let cat_color = category_color(err.category, theme);
-        let ts = fmt_ts(err.ts_millis);
-        let max_msg_len = (area.width as usize).saturating_sub(26);
-        let msg = if err.message.len() > max_msg_len {
-            format!("{}...", &err.message[..max_msg_len.saturating_sub(3)])
-        } else {
-            err.message.clone()
+    for cat in &categories {
+        let mut cat_errors: Vec<&CategorizedError> =
+            errors.iter().filter(|e| e.category == *cat).collect();
+        if cat_errors.is_empty() {
+            continue;
+        }
+        // Most recent first within each group.
+        cat_errors.sort_by(|a, b| b.ts_millis.cmp(&a.ts_millis));
+
+        let sev = Severity::from_category(*cat);
+        let heading_color = sev.color(theme);
+
+        // Section heading with most recent timestamp.
+        let most_recent_ts = cat_errors.first().map(|e| fmt_ts(e.ts_millis));
+        let count_style = match sev {
+            Severity::Error => theme.danger().add_modifier(Modifier::BOLD),
+            Severity::Warning => theme.warning().add_modifier(Modifier::BOLD),
+            Severity::Info => Style::default().fg(theme.info),
         };
-
-        let mut spans = vec![
-            Span::styled(format!(" [{ts}] "), theme.muted()),
+        let mut heading_spans = vec![
             Span::styled(
-                format!("{} ", err.category.icon()),
-                Style::default().fg(cat_color),
+                format!(" {} ", sev.icon()),
+                Style::default().fg(heading_color),
             ),
+            Span::styled(
+                cat.heading().to_string(),
+                theme.section_header().add_modifier(Modifier::UNDERLINED),
+            ),
+            Span::styled(" (", theme.muted()),
+            Span::styled(format!("{}", cat_errors.len()), count_style),
+            Span::styled(")", theme.muted()),
         ];
+        if let Some(ts) = most_recent_ts {
+            heading_spans.push(Span::styled(format!("  latest: {ts}"), theme.muted()));
+        }
+        lines.push(Line::from(heading_spans));
 
-        if !err.source.is_empty() {
-            spans.push(Span::styled(
-                format!("{}: ", err.source),
-                Style::default().fg(theme.info),
-            ));
+        for err in &cat_errors {
+            let ts = fmt_ts(err.ts_millis);
+            let sev_color = err.severity.color(theme);
+            let max_msg_len = (area.width as usize).saturating_sub(28);
+            let msg = if err.message.chars().count() > max_msg_len && max_msg_len > 1 {
+                let truncated: String = err
+                    .message
+                    .chars()
+                    .take(max_msg_len.saturating_sub(1))
+                    .collect();
+                format!("{truncated}\u{2026}")
+            } else {
+                err.message.clone()
+            };
+
+            let mut spans = vec![
+                Span::styled(format!("   [{ts}] "), theme.muted()),
+                Span::styled(
+                    format!("{} ", err.severity.icon()),
+                    Style::default().fg(sev_color),
+                ),
+            ];
+
+            if !err.source.is_empty() {
+                spans.push(Span::styled(
+                    format!("{}: ", err.source),
+                    Style::default().fg(theme.info),
+                ));
+            }
+
+            spans.push(Span::styled(msg, Style::default().fg(sev_color)));
+            lines.push(Line::from(spans));
+
+            // Remediation hint line.
+            if let Some(hint) = err.remediation {
+                lines.push(Line::from(vec![
+                    Span::styled("     \u{2192} ", Style::default().fg(theme.muted)),
+                    Span::styled(
+                        hint,
+                        Style::default()
+                            .fg(theme.accent)
+                            .add_modifier(Modifier::ITALIC),
+                    ),
+                ]));
+            }
         }
 
-        spans.push(Span::styled(msg, Style::default().fg(cat_color)));
-        lines.push(Line::from(spans));
+        // Blank separator between groups.
+        lines.push(Line::from(""));
     }
 
-    let para = Paragraph::new(lines)
-        .wrap(Wrap { trim: false })
-        .scroll((scroll, 0));
+    let para = Paragraph::new(lines).scroll((scroll, 0));
     frame.render_widget(para, area);
 }
 
-/// Collect errors from all TUI sources into a unified list.
+/// Collect errors from all TUI sources into a unified list with cross-source dedup.
 fn collect_all_errors(tui_state: &TuiState) -> Vec<CategorizedError> {
     let mut errors = Vec::new();
 
     // 1. Gate recent failures (from runner state).
     for failure in &tui_state.gate_recent_failures {
+        let category = ErrorCategory::from_message(&failure.summary);
+        let severity = Severity::from_category(category);
+        let remediation = infer_remediation(&failure.summary, category);
         errors.push(CategorizedError {
-            category: ErrorCategory::Gate,
+            category,
+            severity,
             message: failure.summary.clone(),
             ts_millis: failure.ts.timestamp_millis() as u64,
             source: format!("{}/{}", failure.plan_id, failure.task_id),
+            remediation,
         });
     }
 
@@ -337,20 +627,27 @@ fn collect_all_errors(tui_state: &TuiState) -> Vec<CategorizedError> {
                 .map(|dt| dt.timestamp_millis() as u64)
                 .unwrap_or(0);
             for gate_error in &event.gate_errors {
+                let category = ErrorCategory::from_message(gate_error);
+                let severity = Severity::from_category(category);
+                let remediation = infer_remediation(gate_error, category);
                 errors.push(CategorizedError {
-                    category: ErrorCategory::from_message(gate_error),
+                    category,
+                    severity,
                     message: gate_error.clone(),
                     ts_millis: ts,
                     source: format!("{}/{}", event.plan_id, event.task_id),
+                    remediation,
                 });
             }
             // If no specific gate errors, create a generic one.
             if event.gate_errors.is_empty() {
                 errors.push(CategorizedError {
                     category: ErrorCategory::Gate,
+                    severity: Severity::Error,
                     message: format!("gate failed for {} (model: {})", event.task_id, event.model),
                     ts_millis: ts,
                     source: format!("{}/{}", event.plan_id, event.task_id),
+                    remediation: Some("investigate gate failure output"),
                 });
             }
         }
@@ -358,11 +655,16 @@ fn collect_all_errors(tui_state: &TuiState) -> Vec<CategorizedError> {
 
     // 3. Gate results page failure rows.
     for failure_row in &tui_state.gate_results_page.failure_rows {
+        let category = ErrorCategory::from_message(&failure_row.error_excerpt);
+        let severity = Severity::from_category(category);
+        let remediation = infer_remediation(&failure_row.error_excerpt, category);
         errors.push(CategorizedError {
-            category: ErrorCategory::Gate,
+            category,
+            severity,
             message: failure_row.error_excerpt.clone(),
             ts_millis: failure_row.created_at_ms.max(0) as u64,
             source: failure_row.task_id.clone(),
+            remediation,
         });
     }
 
@@ -378,22 +680,76 @@ fn collect_all_errors(tui_state: &TuiState) -> Vec<CategorizedError> {
                 .unwrap_or(0);
             errors.push(CategorizedError {
                 category: ErrorCategory::Agent,
+                severity: Severity::Warning,
                 message: format!("agent {} failed", agent.id),
                 ts_millis: ts,
                 source: agent.plan_id.clone().unwrap_or_default(),
+                remediation: Some("check agent logs for details"),
             });
         }
     }
 
-    // Deduplicate by (category, message, source) keeping the latest timestamp.
+    // 5. Conductor diagnoses (severity-mapped).
+    for diag in &tui_state.diagnoses {
+        let severity = match diag.severity {
+            DiagnosisSeverity::Alert => Severity::Error,
+            DiagnosisSeverity::Warn => Severity::Warning,
+            DiagnosisSeverity::Info => Severity::Info,
+        };
+        let remediation = diag.suggested_action.as_deref().and_then(|action| {
+            if action.trim().is_empty() {
+                None
+            } else if action.contains("restart") {
+                Some("restart the affected component")
+            } else if action.contains("timeout") || action.contains("increase") {
+                Some("increase timeout or resource limit")
+            } else if action.contains("disk") || action.contains("space") {
+                Some("free disk space or increase quota")
+            } else {
+                Some("review conductor diagnosis for suggested action")
+            }
+        });
+        errors.push(CategorizedError {
+            category: ErrorCategory::Conductor,
+            severity,
+            message: if diag.detail.is_empty() {
+                diag.subject.clone()
+            } else {
+                format!("{}: {}", diag.subject, diag.detail)
+            },
+            ts_millis: diag.ts.timestamp_millis() as u64,
+            source: String::new(),
+            remediation,
+        });
+    }
+
+    // 6. Conductor alerts.
+    for alert in &tui_state.conductor_alerts {
+        let severity = match alert.severity.as_str() {
+            "error" | "critical" | "alert" => Severity::Error,
+            "warning" | "warn" => Severity::Warning,
+            _ => Severity::Info,
+        };
+        errors.push(CategorizedError {
+            category: ErrorCategory::Conductor,
+            severity,
+            message: alert.message.clone(),
+            ts_millis: alert.created_at_ms.max(0) as u64,
+            source: String::new(),
+            remediation: None,
+        });
+    }
+
+    // Cross-source dedup: normalize messages and keep the entry with the
+    // latest timestamp for each (source, normalized_message) pair.
     errors.sort_by(|a, b| {
-        a.category
-            .cmp(&b.category)
-            .then_with(|| a.message.cmp(&b.message))
-            .then_with(|| a.source.cmp(&b.source))
+        a.source
+            .cmp(&b.source)
+            .then_with(|| normalize_for_dedup(&a.message).cmp(&normalize_for_dedup(&b.message)))
+            .then_with(|| b.ts_millis.cmp(&a.ts_millis))
     });
     errors.dedup_by(|a, b| {
-        a.category == b.category && a.message == b.message && a.source == b.source
+        a.source == b.source && normalize_for_dedup(&a.message) == normalize_for_dedup(&b.message)
     });
 
     // Sort by timestamp descending (most recent first).
@@ -402,14 +758,29 @@ fn collect_all_errors(tui_state: &TuiState) -> Vec<CategorizedError> {
     errors
 }
 
-fn category_color(cat: ErrorCategory, theme: &Theme) -> ratatui::style::Color {
-    match cat {
-        ErrorCategory::Gate => theme.danger,
-        ErrorCategory::Compile => theme.warning,
-        ErrorCategory::Agent => theme.info,
-        ErrorCategory::Preflight => theme.warning,
-        ErrorCategory::Runtime => theme.danger,
+/// Render a compact severity distribution bar for the inline digest.
+fn render_severity_bar(frame: &mut Frame<'_>, area: Rect, errors: &[ErrorEntry], theme: &Theme) {
+    if errors.is_empty() || area.width < 10 {
+        return;
     }
+    // In the compact view we only have ErrorEntry (no severity field), so count all as errors.
+    let count = errors.len();
+    let bar_budget = (area.width as usize).saturating_sub(16);
+    let blocks = bar_budget.min(count);
+    let mut spans = vec![
+        Span::styled(
+            format!("ERR:{count} "),
+            theme.danger().add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("\u{2588}".repeat(blocks), theme.danger()),
+    ];
+    if blocks < bar_budget {
+        spans.push(Span::styled(
+            "\u{2591}".repeat(bar_budget.saturating_sub(blocks)),
+            Style::default().fg(theme.muted),
+        ));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 /// Render the gate pass/fail ratio header.
@@ -454,7 +825,7 @@ fn render_gate_summary(
     frame.render_widget(para, area);
 }
 
-/// Render the scrollable error list.
+/// Render the 5 most recent errors with timestamps.
 fn render_error_list(frame: &mut Frame<'_>, area: Rect, errors: &[ErrorEntry], theme: &Theme) {
     if errors.is_empty() {
         let empty = Paragraph::new("No errors").style(theme.muted());
@@ -462,18 +833,28 @@ fn render_error_list(frame: &mut Frame<'_>, area: Rect, errors: &[ErrorEntry], t
         return;
     }
 
-    // Show most recent errors first.
+    let visible = (area.height as usize).min(5);
     let items: Vec<ListItem<'_>> = errors
         .iter()
         .rev()
-        .take(area.height as usize)
+        .take(visible)
         .map(|entry| {
             let ts = fmt_ts(entry.ts_millis);
-            let line = Line::from(vec![
+            let hint = infer_compact_hint(&entry.message);
+            let mut spans = vec![
                 Span::styled(format!("[{ts}] "), theme.muted()),
+                Span::styled("\u{2718} ", theme.danger()),
                 Span::styled(&entry.message, theme.danger()),
-            ]);
-            ListItem::new(line)
+            ];
+            if let Some(h) = hint {
+                spans.push(Span::styled(
+                    format!(" \u{2192} {h}"),
+                    Style::default()
+                        .fg(theme.accent)
+                        .add_modifier(Modifier::ITALIC),
+                ));
+            }
+            ListItem::new(Line::from(spans))
         })
         .collect();
 
@@ -618,16 +999,125 @@ mod tests {
             ErrorCategory::Compile
         );
         assert_eq!(
-            ErrorCategory::from_message("agent timeout after 5min"),
+            ErrorCategory::from_message("agent spawn failed"),
             ErrorCategory::Agent
+        );
+        assert_eq!(
+            ErrorCategory::from_message("agent timeout after 5min"),
+            ErrorCategory::Timeout
+        );
+        assert_eq!(
+            ErrorCategory::from_message("task timed out waiting for response"),
+            ErrorCategory::Timeout
+        );
+        assert_eq!(
+            ErrorCategory::from_message("dag stuck: cycle detected in dependencies"),
+            ErrorCategory::DagStuck
+        );
+        assert_eq!(
+            ErrorCategory::from_message("dag deadlock: no runnable tasks"),
+            ErrorCategory::DagStuck
         );
         assert_eq!(
             ErrorCategory::from_message("preflight check denied"),
             ErrorCategory::Preflight
         );
         assert_eq!(
+            ErrorCategory::from_message("conductor diagnosis: resource low"),
+            ErrorCategory::Conductor
+        );
+        assert_eq!(
             ErrorCategory::from_message("unexpected error"),
             ErrorCategory::Runtime
         );
+    }
+
+    #[test]
+    fn severity_icons_and_colors() {
+        assert_eq!(Severity::Error.icon(), "\u{2718}");
+        assert_eq!(Severity::Warning.icon(), "\u{25b2}");
+        assert_eq!(Severity::Info.icon(), "\u{25cf}");
+
+        let theme = Theme::dark();
+        assert_eq!(Severity::Error.color(&theme), theme.danger);
+        assert_eq!(Severity::Warning.color(&theme), theme.warning);
+        assert_eq!(Severity::Info.color(&theme), theme.info);
+    }
+
+    #[test]
+    fn remediation_inference() {
+        assert_eq!(
+            infer_remediation(
+                "compile gate failed: missing semicolon",
+                ErrorCategory::Compile
+            ),
+            Some("fix syntax error in source file"),
+        );
+        assert_eq!(
+            infer_remediation("test gate failed", ErrorCategory::Gate),
+            Some("fix failing tests"),
+        );
+        assert_eq!(
+            infer_remediation("agent timeout", ErrorCategory::Timeout),
+            Some("check agent responsiveness or increase timeout"),
+        );
+        assert_eq!(
+            infer_remediation("worktree count exceeds maximum", ErrorCategory::Runtime),
+            Some("worktree count exceeds maximum \u{2192} roko doctor disk"),
+        );
+        assert_eq!(
+            infer_remediation("dag stuck: cycle in plan", ErrorCategory::DagStuck),
+            Some("check plan dependencies for cycles \u{2192} roko plan validate"),
+        );
+        assert_eq!(
+            infer_remediation("no space left on device", ErrorCategory::Runtime),
+            Some("free disk space \u{2192} roko doctor disk"),
+        );
+        assert!(infer_remediation("unknown runtime issue", ErrorCategory::Runtime).is_none());
+    }
+
+    #[test]
+    fn cross_source_dedup() {
+        let mut state = TuiState::new();
+
+        // Same error from two sources: gate_recent_failures and gate results page.
+        state.gate_recent_failures.push(roko_core::FailureEntry {
+            plan_id: "plan-a".into(),
+            task_id: "t1".into(),
+            summary: "compile gate failed: missing import".into(),
+            ..Default::default()
+        });
+
+        state
+            .gate_results_page
+            .failure_rows
+            .push(crate::tui::dashboard::GateFailureRow {
+                task_id: "plan-a/t1".into(),
+                error_excerpt: "compile gate failed: missing import".into(),
+                created_at_ms: 5000,
+                gate_name: String::new(),
+            });
+
+        let errors = collect_all_errors(&state);
+        let matching: Vec<_> = errors
+            .iter()
+            .filter(|e| e.message.contains("missing import"))
+            .collect();
+        assert_eq!(
+            matching.len(),
+            1,
+            "cross-source dedup should merge duplicates from different sources"
+        );
+    }
+
+    #[test]
+    fn normalize_strips_common_prefixes() {
+        assert_eq!(normalize_for_dedup("compile gate failed: foo"), "foo");
+        assert_eq!(normalize_for_dedup("test gate failed: bar"), "bar");
+        assert_eq!(
+            normalize_for_dedup("gate failed for task-1 (model: x)"),
+            "task-1 (model: x)"
+        );
+        assert_eq!(normalize_for_dedup("  some error  "), "some error");
     }
 }

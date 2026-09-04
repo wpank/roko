@@ -2,17 +2,22 @@
 //! [`Agent`](crate::agent::Agent) trait.
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use roko_core::extension::CamelTaintLevel;
-use roko_core::tool::{ToolContext, ToolDef};
+use roko_core::tool::{
+    AuditSink, CancelToken, CorrelationEnvelope, MetricsSink, NeverCancel, NoopAuditSink,
+    NoopMetricsSink, NoopTraceSink, ToolContext, ToolDef, ToolPermission, TraceSink,
+};
 use roko_core::{Body, Context, Kind, Signal};
 use roko_fs::RokoLayout;
 
 use crate::agent::{Agent, AgentResult, derived_output};
 use crate::multimodal::{anthropic_messages, gemini_messages, openai_messages};
-use crate::streaming::StreamChunk;
 use crate::task_runner::task_id_from_context;
+use crate::tool_loop::StreamEvent;
 use roko_core::{ModelInputMessage, validate_model_input_messages};
 
 use super::{StopReason, ToolLoop, ToolLoopOutput, ToolLoopTurnTrace};
@@ -30,6 +35,14 @@ pub struct ToolLoopAgent {
     immune_root_path: Option<PathBuf>,
     input_messages: Vec<ModelInputMessage>,
     input_format: MultimodalInputFormat,
+    // Production dispatch policy fields (T026/T027/T032)
+    timeout: Duration,
+    capabilities: ToolPermission,
+    audit_sink: Arc<dyn AuditSink>,
+    trace_sink: Arc<dyn TraceSink>,
+    metrics_sink: Arc<dyn MetricsSink>,
+    cancel_token: Arc<dyn CancelToken>,
+    correlation: CorrelationEnvelope,
 }
 
 /// Provider-facing format used for the initial structured message history.
@@ -58,6 +71,19 @@ impl ToolLoopAgent {
             worktree_path,
             input_messages: Vec::new(),
             input_format: MultimodalInputFormat::default(),
+            timeout: Duration::from_secs(60),
+            capabilities: ToolPermission {
+                read: true,
+                write: true,
+                exec: true,
+                git: true,
+                network: false,
+            },
+            audit_sink: Arc::new(NoopAuditSink),
+            trace_sink: Arc::new(NoopTraceSink),
+            metrics_sink: Arc::new(NoopMetricsSink),
+            cancel_token: Arc::new(NeverCancel),
+            correlation: CorrelationEnvelope::empty(),
         }
     }
 
@@ -114,6 +140,76 @@ impl ToolLoopAgent {
         self
     }
 
+    /// Override the tool-call timeout used for the production `ToolContext`.
+    #[must_use]
+    pub const fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// Override the capability flags granted to tool handlers.
+    #[must_use]
+    pub const fn with_capabilities(mut self, capabilities: ToolPermission) -> Self {
+        self.capabilities = capabilities;
+        self
+    }
+
+    /// Attach a real audit sink for production dispatch.
+    #[must_use]
+    pub fn with_audit_sink(mut self, sink: Arc<dyn AuditSink>) -> Self {
+        self.audit_sink = sink;
+        self
+    }
+
+    /// Attach a real trace sink for production dispatch.
+    #[must_use]
+    pub fn with_trace_sink(mut self, sink: Arc<dyn TraceSink>) -> Self {
+        self.trace_sink = sink;
+        self
+    }
+
+    /// Attach a real metrics sink for production dispatch.
+    #[must_use]
+    pub fn with_metrics_sink(mut self, sink: Arc<dyn MetricsSink>) -> Self {
+        self.metrics_sink = sink;
+        self
+    }
+
+    /// Wire the active agent cancellation token (T027).
+    #[must_use]
+    pub fn with_cancel_token(mut self, token: Arc<dyn CancelToken>) -> Self {
+        self.cancel_token = token;
+        self
+    }
+
+    /// Attach correlation metadata for trace/audit joining (T032).
+    #[must_use]
+    pub fn with_correlation(mut self, correlation: CorrelationEnvelope) -> Self {
+        self.correlation = correlation;
+        self
+    }
+
+    /// Build a production [`ToolContext`] using the configured sinks,
+    /// cancel token, capabilities, and correlation data.
+    fn build_tool_context(&self) -> ToolContext {
+        ToolContext::production(
+            &self.worktree_path,
+            self.timeout,
+            self.capabilities,
+            Arc::clone(&self.audit_sink),
+            Arc::clone(&self.trace_sink),
+            Arc::clone(&self.metrics_sink),
+            Arc::clone(&self.cancel_token),
+            self.correlation.clone(),
+        )
+        .with_immune_root(
+            self.immune_root_path
+                .as_deref()
+                .unwrap_or(&self.worktree_path),
+        )
+        .with_taint_level(CamelTaintLevel::External)
+    }
+
     fn structured_messages(&self) -> Vec<serde_json::Value> {
         let mut messages = match self.input_format {
             MultimodalInputFormat::Anthropic => anthropic_messages(&self.input_messages),
@@ -131,11 +227,45 @@ impl ToolLoopAgent {
         messages
     }
 
-    fn output_signal(input: &Signal, text: &str, stop_reason: &str, iterations: usize) -> Signal {
-        derived_output(input, Kind::AgentOutput, Body::text(text))
+    fn output_signal(
+        &self,
+        input: &Signal,
+        text: &str,
+        stop_reason: &str,
+        iterations: usize,
+    ) -> Signal {
+        let builder = derived_output(input, Kind::AgentOutput, Body::text(text))
             .tag("stop_reason", stop_reason)
-            .tag("iterations", iterations.to_string())
-            .build()
+            .tag("iterations", iterations.to_string());
+        match self.model_slug() {
+            Some(slug) => builder.tag("model", slug).build(),
+            None => builder.build(),
+        }
+    }
+
+    /// Model slug configured on the tool loop's model profile, if any.
+    ///
+    /// The tool loop aggregates legacy [`crate::usage::Usage`] per turn, which
+    /// has no model field; the profile attached via
+    /// [`ToolLoop::with_model_profile`] is the only model identity available
+    /// at this layer.
+    fn model_slug(&self) -> Option<&str> {
+        self.tool_loop
+            .model_profile
+            .as_ref()
+            .map(|profile| profile.slug.as_str())
+            .filter(|slug| !slug.is_empty())
+    }
+
+    /// Stamp the configured model slug onto the usage observation so model
+    /// attribution survives the legacy `Usage` conversion.
+    fn attach_model(&self, mut result: AgentResult) -> AgentResult {
+        if let Some(slug) = self.model_slug()
+            && let Some(usage_obs) = result.usage_obs.as_mut()
+        {
+            usage_obs.model = Some(slug.to_string());
+        }
+        result
     }
 
     fn checkpoint_path(&self, ctx: &Context) -> Option<PathBuf> {
@@ -204,13 +334,7 @@ impl ToolLoopAgent {
 impl Agent for ToolLoopAgent {
     async fn run(&self, input: &Signal, ctx: &Context) -> AgentResult {
         let prompt = input.body.as_text().unwrap_or_default();
-        let tool_ctx = ToolContext::testing(&self.worktree_path)
-            .with_immune_root(
-                self.immune_root_path
-                    .as_deref()
-                    .unwrap_or(&self.worktree_path),
-            )
-            .with_taint_level(CamelTaintLevel::External);
+        let tool_ctx = self.build_tool_context();
         let tool_loop = match self.checkpoint_path(ctx) {
             Some(path) => self.tool_loop.clone().with_checkpoint_path(path),
             None => self.tool_loop.clone(),
@@ -225,7 +349,7 @@ impl Agent for ToolLoopAgent {
                 )
                 .await
         } else if let Err(error) = validate_model_input_messages(&self.input_messages) {
-            return AgentResult::fail(Self::output_signal(
+            return AgentResult::fail(self.output_signal(
                 input,
                 &format!("invalid image input: {error}"),
                 "backend_error",
@@ -238,35 +362,35 @@ impl Agent for ToolLoopAgent {
         };
 
         let result = match &output.stop_reason {
-            StopReason::Stop => AgentResult::ok(Self::output_signal(
+            StopReason::Stop => AgentResult::ok(self.output_signal(
                 input,
                 &output.final_text,
                 "stop",
                 output.iterations,
             ))
             .with_usage(output.total_usage),
-            StopReason::MaxIterations => AgentResult::fail(Self::output_signal(
+            StopReason::MaxIterations => AgentResult::fail(self.output_signal(
                 input,
                 &format!("Max iterations ({}) reached", output.iterations),
                 "max_iterations",
                 output.iterations,
             ))
             .with_usage(output.total_usage),
-            StopReason::Cancelled => AgentResult::fail(Self::output_signal(
+            StopReason::Cancelled => AgentResult::fail(self.output_signal(
                 input,
                 "Tool loop cancelled",
                 "cancelled",
                 output.iterations,
             ))
             .with_usage(output.total_usage),
-            StopReason::BackendError(err) => AgentResult::fail(Self::output_signal(
+            StopReason::BackendError(err) => AgentResult::fail(self.output_signal(
                 input,
                 err,
                 "backend_error",
                 output.iterations,
             ))
             .with_usage(output.total_usage),
-            StopReason::BudgetExhausted => AgentResult::fail(Self::output_signal(
+            StopReason::BudgetExhausted => AgentResult::fail(self.output_signal(
                 input,
                 "Budget exhausted",
                 "budget_exhausted",
@@ -275,7 +399,8 @@ impl Agent for ToolLoopAgent {
             .with_usage(output.total_usage),
         };
 
-        Self::attach_trace_metadata(result, input, &output)
+        let result = Self::attach_trace_metadata(result, input, &output);
+        self.attach_model(result)
     }
 
     fn name(&self) -> &str {
@@ -294,16 +419,10 @@ impl Agent for ToolLoopAgent {
         &self,
         input: &Signal,
         ctx: &Context,
-        event_tx: mpsc::Sender<StreamChunk>,
+        event_tx: mpsc::Sender<StreamEvent>,
     ) -> AgentResult {
         let prompt = input.body.as_text().unwrap_or_default();
-        let tool_ctx = ToolContext::testing(&self.worktree_path)
-            .with_immune_root(
-                self.immune_root_path
-                    .as_deref()
-                    .unwrap_or(&self.worktree_path),
-            )
-            .with_taint_level(CamelTaintLevel::External);
+        let tool_ctx = self.build_tool_context();
         let tool_loop = match self.checkpoint_path(ctx) {
             Some(path) => self.tool_loop.clone().with_checkpoint_path(path),
             None => self.tool_loop.clone(),
@@ -319,7 +438,7 @@ impl Agent for ToolLoopAgent {
                 )
                 .await
         } else if let Err(error) = validate_model_input_messages(&self.input_messages) {
-            return AgentResult::fail(Self::output_signal(
+            return AgentResult::fail(self.output_signal(
                 input,
                 &format!("invalid image input: {error}"),
                 "backend_error",
@@ -337,35 +456,35 @@ impl Agent for ToolLoopAgent {
         };
 
         let result = match &output.stop_reason {
-            StopReason::Stop => AgentResult::ok(Self::output_signal(
+            StopReason::Stop => AgentResult::ok(self.output_signal(
                 input,
                 &output.final_text,
                 "stop",
                 output.iterations,
             ))
             .with_usage(output.total_usage),
-            StopReason::MaxIterations => AgentResult::fail(Self::output_signal(
+            StopReason::MaxIterations => AgentResult::fail(self.output_signal(
                 input,
                 &format!("Max iterations ({}) reached", output.iterations),
                 "max_iterations",
                 output.iterations,
             ))
             .with_usage(output.total_usage),
-            StopReason::Cancelled => AgentResult::fail(Self::output_signal(
+            StopReason::Cancelled => AgentResult::fail(self.output_signal(
                 input,
                 "Tool loop cancelled",
                 "cancelled",
                 output.iterations,
             ))
             .with_usage(output.total_usage),
-            StopReason::BackendError(err) => AgentResult::fail(Self::output_signal(
+            StopReason::BackendError(err) => AgentResult::fail(self.output_signal(
                 input,
                 err,
                 "backend_error",
                 output.iterations,
             ))
             .with_usage(output.total_usage),
-            StopReason::BudgetExhausted => AgentResult::fail(Self::output_signal(
+            StopReason::BudgetExhausted => AgentResult::fail(self.output_signal(
                 input,
                 "Budget exhausted",
                 "budget_exhausted",
@@ -374,7 +493,8 @@ impl Agent for ToolLoopAgent {
             .with_usage(output.total_usage),
         };
 
-        Self::attach_trace_metadata(result, input, &output)
+        let result = Self::attach_trace_metadata(result, input, &output);
+        self.attach_model(result)
     }
 }
 
@@ -436,7 +556,7 @@ mod tests {
                 .iter()
                 .map(|(call, result)| {
                     let content = match result {
-                        ToolResult::Ok { content, .. } => content.clone(),
+                        ToolResult::Ok { .. } => result.text_content(),
                         ToolResult::Err(err) => format!("error: {err}"),
                     };
                     serde_json::json!({
@@ -627,5 +747,32 @@ mod tests {
             "backend error: server error"
         );
         assert_eq!(result.output.tag("stop_reason"), Some("backend_error"));
+    }
+
+    #[tokio::test]
+    async fn tool_loop_agent_stamps_configured_model_on_result() {
+        let profile = roko_core::config::schema::ModelProfile {
+            provider: "openai_compat".to_string(),
+            slug: "gpt-5.6-sol".to_string(),
+            ..Default::default()
+        };
+        let tool_loop = make_tool_loop(Arc::new(TwoStepBackend::new())).with_model_profile(profile);
+        let agent = ToolLoopAgent::new(tool_loop)
+            .with_tools(test_tools())
+            .with_worktree_path("/tmp");
+        let input = Signal::builder(Kind::Prompt)
+            .body(Body::text("call the tool"))
+            .build();
+
+        let result = agent.run(&input, &Context::now()).await;
+
+        assert!(result.success);
+        assert_eq!(result.output.tag("model"), Some("gpt-5.6-sol"));
+        let usage_obs = result.usage_obs.expect("usage_obs populated");
+        assert_eq!(
+            usage_obs.model.as_deref(),
+            Some("gpt-5.6-sol"),
+            "usage_obs must carry the configured model slug"
+        );
     }
 }

@@ -13,6 +13,8 @@ use super::super::state::{AgentRow, AgentStatus};
 /// Render a table of parallel agent instances.
 ///
 /// Active agents are sorted first. The selected row is highlighted.
+/// Includes agent name, role/model combined column, current task,
+/// a mini context-usage progress bar, and compact token usage.
 pub(crate) fn render_parallel_pool(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -20,9 +22,15 @@ pub(crate) fn render_parallel_pool(
     selected: usize,
     theme: &Theme,
 ) {
+    let active_count = agents.iter().filter(|a| a.active).count();
+    let title = if active_count > 0 {
+        format!("Agents ({active_count} active)")
+    } else {
+        "Agents".to_string()
+    };
     let block = Block::default()
         .borders(Borders::ALL)
-        .title("parallel agents")
+        .title(title)
         .border_style(Theme::unfocused_border_style())
         .title_style(Theme::unfocused_title_style())
         .style(Theme::block_style());
@@ -34,7 +42,7 @@ pub(crate) fn render_parallel_pool(
     }
 
     if agents.is_empty() {
-        let empty = Paragraph::new("no parallel agents")
+        let empty = Paragraph::new("No agents running \u{2014} agents spawn when plans execute")
             .style(theme.muted())
             .alignment(Alignment::Center);
         frame.render_widget(empty, inner);
@@ -49,6 +57,9 @@ pub(crate) fn render_parallel_pool(
             .then_with(|| a.role.cmp(&b.role))
             .then_with(|| a.id.cmp(&b.id))
     });
+
+    let wide = inner.width >= 80;
+    let medium = inner.width >= 50;
 
     let rows: Vec<Row<'_>> = sorted
         .iter()
@@ -67,54 +78,75 @@ pub(crate) fn render_parallel_pool(
             } else {
                 "-".to_string()
             };
-            let status = agent.status;
-            let ctx_limit = agent.context_limit.max(1);
-            let ctx_ratio = (agent.input_tokens as f64 / ctx_limit as f64).clamp(0.0, 1.0);
 
-            Row::new(vec![
-                Cell::from(truncate(&agent.id, 12)),
-                Cell::from(truncate(&agent.role, 10)),
-                Cell::from(truncate(&agent.model, 12)),
-                Cell::from(truncate(&current_task, 18)),
-                Cell::from(render_status_label(status, theme)),
-                Cell::from(render_context_gauge(
-                    agent.input_tokens,
-                    ctx_limit,
-                    ctx_ratio,
-                    theme,
+            // Combined role/model cell for density.
+            let role_model = if medium {
+                format!(
+                    "{}/{}",
+                    truncate(&agent.role, 8),
+                    shorten_model_name(&agent.model)
+                )
+            } else {
+                truncate(&agent.role, 10)
+            };
+
+            let status = agent.status;
+            let task_w = if wide { 20 } else { 14 };
+            let mut cells = vec![
+                Cell::from(truncate(&agent.id, 10)),
+                Cell::from(Span::styled(
+                    truncate(&role_model, if wide { 20 } else { 14 }),
+                    Style::default().fg(theme.foreground),
                 )),
-            ])
-            .style(row_style)
+                Cell::from(truncate(&current_task, task_w)),
+                Cell::from(render_status_label(status, theme)),
+                Cell::from(render_context_bar(agent, theme)),
+            ];
+            if wide {
+                cells.push(Cell::from(render_compact_usage(
+                    agent.input_tokens,
+                    agent.output_tokens,
+                    theme,
+                )));
+            }
+            Row::new(cells).style(row_style)
         })
         .collect();
 
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(12),
-            Constraint::Length(10),
-            Constraint::Length(12),
-            Constraint::Min(10),
-            Constraint::Length(8),
-            Constraint::Min(14),
-        ],
-    )
-    .header(
-        Row::new(vec![
-            Cell::from("agent id"),
-            Cell::from("role"),
-            Cell::from("model"),
-            Cell::from("task"),
-            Cell::from("progress"),
-            Cell::from("context"),
-        ])
-        .style(
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD),
-        ),
-    )
-    .column_spacing(1);
+    let task_w = if wide { 20u16 } else { 14 };
+    let role_w = if wide { 20u16 } else { 14 };
+
+    let mut widths = vec![
+        Constraint::Length(10),
+        Constraint::Length(role_w),
+        Constraint::Min(task_w.min(10)),
+        Constraint::Length(8),
+        Constraint::Length(10),
+    ];
+    if wide {
+        widths.push(Constraint::Min(12));
+    }
+
+    let mut header_cells = vec![
+        Cell::from("agent"),
+        Cell::from("role/model"),
+        Cell::from("task"),
+        Cell::from("status"),
+        Cell::from("ctx"),
+    ];
+    if wide {
+        header_cells.push(Cell::from("tokens"));
+    }
+
+    let table = Table::new(rows, widths)
+        .header(
+            Row::new(header_cells).style(
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        )
+        .column_spacing(1);
 
     frame.render_widget(table, inner);
 }
@@ -135,32 +167,69 @@ fn render_status_label(status: AgentStatus, theme: &Theme) -> Line<'static> {
     )])
 }
 
-fn render_context_gauge(
-    input_tokens: u64,
-    context_limit: u64,
-    ctx_ratio: f64,
-    theme: &Theme,
-) -> Line<'static> {
-    let gauge_width = 6usize;
-    let filled = (ctx_ratio * gauge_width as f64).round() as usize;
-    let empty = gauge_width.saturating_sub(filled);
-    let fill_color = if ctx_ratio >= 0.8 {
+/// Mini context-usage progress bar: `[=====>   ] 42%`
+fn render_context_bar(agent: &AgentRow, theme: &Theme) -> Line<'static> {
+    let total = agent.input_tokens + agent.output_tokens;
+    let limit = agent.context_limit;
+    if limit == 0 || total == 0 {
+        return Line::from(Span::styled("-", Style::default().fg(theme.muted)));
+    }
+    let ratio = (total as f64 / limit as f64).clamp(0.0, 1.0);
+    let pct = (ratio * 100.0).round() as u64;
+    let bar_w = 6;
+    let filled = (ratio * bar_w as f64).round() as usize;
+    let bar = format!(
+        "{}{}",
+        "\u{2588}".repeat(filled.min(bar_w)),
+        "\u{2591}".repeat(bar_w.saturating_sub(filled)),
+    );
+    let color = if ratio >= 0.8 {
         theme.danger
-    } else if ctx_ratio >= 0.5 {
+    } else if ratio >= 0.5 {
         theme.warning
     } else {
-        theme.accent
+        theme.info
     };
-
-    let label = format!("{}k/{}k", input_tokens / 1000, context_limit.max(1) / 1000);
-
     Line::from(vec![
-        Span::styled(
-            "\u{2588}".repeat(filled),
-            Style::default().fg(fill_color).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("\u{2500}".repeat(empty), Style::default().fg(theme.muted)),
-        Span::styled(" ", Style::default()),
-        Span::styled(label, Style::default().fg(theme.foreground)),
+        Span::styled(bar, Style::default().fg(color)),
+        Span::styled(format!("{pct:>3}%"), Style::default().fg(theme.muted)),
     ])
+}
+
+/// Compact token usage: `12k/4k` (input/output).
+fn render_compact_usage(input_tokens: u64, output_tokens: u64, theme: &Theme) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(fmt_k(input_tokens), Style::default().fg(theme.foreground)),
+        Span::styled("/", Style::default().fg(theme.muted)),
+        Span::styled(fmt_k(output_tokens), Style::default().fg(theme.foreground)),
+    ])
+}
+
+fn fmt_k(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{}k", n / 1_000)
+    } else {
+        n.to_string()
+    }
+}
+
+/// Shorten model slug for compact display: "claude-sonnet-4-20250514" -> "sonnet-4".
+fn shorten_model_name(model: &str) -> String {
+    // Strip common prefixes and date suffixes.
+    let s = model
+        .strip_prefix("claude-")
+        .or_else(|| model.strip_prefix("gpt-"))
+        .unwrap_or(model);
+    // Remove date suffix (e.g. "-20250514").
+    let s = if s.len() > 10 {
+        s.split('-')
+            .take_while(|part| part.len() < 8 || part.parse::<u64>().is_err())
+            .collect::<Vec<_>>()
+            .join("-")
+    } else {
+        s.to_string()
+    };
+    if s.len() > 12 { s[..12].to_string() } else { s }
 }

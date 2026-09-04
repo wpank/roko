@@ -31,7 +31,6 @@ use crate::introspection::{Intervention, MetacognitiveMonitor, Turn};
 use crate::lifecycle::{BudgetStatus, BudgetTracker, CognitiveTier, TurnCostRecord};
 use crate::provider::ProviderError;
 use crate::retry::{ErrorClass, RetryPolicy};
-use crate::streaming::StreamChunk;
 use crate::translate::{BackendResponse, RenderedTools, SessionState, Translator};
 use crate::usage::Usage;
 
@@ -153,27 +152,6 @@ pub trait LlmBackend: Send + Sync {
     fn backend_id(&self) -> &'static str {
         "unknown"
     }
-
-    /// Send the current conversation state to the backend in streaming mode.
-    ///
-    /// **Deprecated**: prefer [`stream_turn`](Self::stream_turn) for new code.
-    /// This method exists for backward compatibility with callers that use
-    /// the channel-based `StreamChunk` API. The default calls `send_turn`.
-    ///
-    /// Backends with native streaming (e.g. `OpenAiCompatLlmBackend`)
-    /// override this to emit `StreamChunk` values into the channel
-    /// as they arrive.
-    // TODO(082): migrate callers to stream_turn, then remove this method.
-    async fn send_turn_streaming(
-        &self,
-        messages: &[serde_json::Value],
-        tools: &RenderedTools,
-        session: &SessionState,
-        event_tx: mpsc::Sender<StreamChunk>,
-    ) -> Result<BackendResponse, LlmError> {
-        let _ = event_tx;
-        self.send_turn(messages, tools, session).await
-    }
 }
 
 /// Errors from an [`LlmBackend`].
@@ -271,53 +249,6 @@ pub enum StreamEventKind {
     },
 }
 
-/// Convert a [`StreamChunk`] into a [`StreamEvent`] with the current timestamp.
-impl From<StreamChunk> for StreamEvent {
-    fn from(chunk: StreamChunk) -> Self {
-        let kind = match chunk {
-            StreamChunk::ContentDelta(text) => StreamEventKind::TextDelta(text),
-            StreamChunk::ReasoningDelta(text) => StreamEventKind::ReasoningDelta(text),
-            StreamChunk::ToolCallDelta {
-                index: _,
-                id_delta,
-                name_delta,
-                arguments_delta,
-            } => {
-                // When both id and name are present, this is a start + delta.
-                // When only arguments are present, it's a delta.
-                if id_delta.is_some() || name_delta.is_some() {
-                    // For the combined start case, we emit a ToolCallStart.
-                    // Callers who need the delta portion should use the raw
-                    // streaming path; this conversion is for compatibility.
-                    StreamEventKind::ToolCallStart {
-                        id: id_delta.unwrap_or_default(),
-                        name: name_delta.unwrap_or_default(),
-                    }
-                } else {
-                    StreamEventKind::ToolCallDelta {
-                        id: String::new(),
-                        json_fragment: arguments_delta,
-                    }
-                }
-            }
-            StreamChunk::Usage(usage) => StreamEventKind::Usage(usage),
-            StreamChunk::Done(finish_reason) => StreamEventKind::Done {
-                finish_reason: format!("{finish_reason:?}"),
-            },
-            StreamChunk::Error(msg) => StreamEventKind::Done {
-                finish_reason: format!("error: {msg}"),
-            },
-            StreamChunk::ToolProgress { tool, status } => {
-                StreamEventKind::TextDelta(format!("[{tool}] {status}"))
-            }
-        };
-        StreamEvent {
-            kind,
-            timestamp: std::time::Instant::now(),
-        }
-    }
-}
-
 /// Per-turn configuration that replaces scattered parameters.
 ///
 /// Previously these were passed as individual arguments or threaded through
@@ -354,6 +285,20 @@ impl Default for TurnConfig {
     }
 }
 
+/// Split a stream event id that may contain an embedded real provider id.
+///
+/// OpenAI SSE tool call events use a composite key format
+/// `"__idx_N\0real_id"` so the accumulator can key by index while
+/// preserving the provider-assigned call id.  Non-composite ids
+/// (e.g. from Anthropic) pass through unchanged.
+fn split_stream_key(id: &str) -> (String, String) {
+    if let Some(sep) = id.find('\0') {
+        (id[..sep].to_string(), id[sep + 1..].to_string())
+    } else {
+        (id.to_string(), id.to_string())
+    }
+}
+
 /// Collect a `StreamEvent` stream into a [`BackendResponse`] and capture TTFT.
 ///
 /// This is the default implementation used by [`LlmBackend::send_turn`]'s
@@ -371,8 +316,13 @@ pub async fn collect_stream_to_response(
     let mut usage = Usage::default();
     let mut finish_reason = "stop".to_string();
     let mut ttft_ms: Option<u64> = None;
-    // Track in-progress tool calls: id -> (name, accumulated_args)
-    let mut in_progress_calls: std::collections::HashMap<String, (String, String)> =
+    // Track in-progress tool calls: key -> (real_id, name, accumulated_args).
+    //
+    // The key is whatever `id` the stream events carry. For OpenAI SSE
+    // streams this is an index-based key ("__idx_0", "__idx_1", …) because
+    // the real provider id only appears on the first chunk of each call.
+    // The real id is stored separately so it can be recovered at flush time.
+    let mut in_progress_calls: std::collections::HashMap<String, (String, String, String)> =
         Default::default();
 
     while let Some(event) = stream.next().await {
@@ -388,16 +338,36 @@ pub async fn collect_stream_to_response(
                 reasoning.push_str(&delta);
             }
             StreamEventKind::ToolCallStart { id, name } => {
-                in_progress_calls.insert(id, (name, String::new()));
+                // The id may embed a real provider id after a NUL separator
+                // (format: "__idx_N\0real_id"). An optional SOH (\x01)
+                // suffix carries initial argument fragments from the same
+                // SSE chunk: "__idx_N\0real_id\x01{\"value\":".
+                let (id_part, initial_args) = if let Some(soh) = id.find('\x01') {
+                    (id[..soh].to_string(), id[soh + 1..].to_string())
+                } else {
+                    (id.clone(), String::new())
+                };
+                let (key, real_id) = split_stream_key(&id_part);
+                in_progress_calls.insert(key, (real_id, name, initial_args));
             }
             StreamEventKind::ToolCallDelta { id, json_fragment } => {
-                if let Some((_name, args)) = in_progress_calls.get_mut(&id) {
+                let (key, _) = split_stream_key(&id);
+                if let Some((_real_id, _name, args)) = in_progress_calls.get_mut(&key) {
                     args.push_str(&json_fragment);
                 }
             }
             StreamEventKind::ToolCallEnd { id, name, args } => {
-                in_progress_calls.remove(&id);
-                tool_calls.push(roko_core::tool::ToolCall::new(id, name, args));
+                let (key, real_id_override) = split_stream_key(&id);
+                // Prefer the id from the End event, fall back to the stored one.
+                let real_id = if !real_id_override.is_empty() {
+                    real_id_override
+                } else if let Some((stored_id, _, _)) = in_progress_calls.get(&key) {
+                    stored_id.clone()
+                } else {
+                    key.clone()
+                };
+                in_progress_calls.remove(&key);
+                tool_calls.push(roko_core::tool::ToolCall::new(real_id, name, args));
             }
             StreamEventKind::Usage(u) => usage = u,
             StreamEventKind::Done { finish_reason: fr } => {
@@ -409,13 +379,13 @@ pub async fn collect_stream_to_response(
     // Flush any in-progress calls that got deltas but no ToolCallEnd event.
     // This handles the common case where providers send start+delta but
     // the stream ends before a formal end event.
-    for (id, (name, args_str)) in in_progress_calls {
+    for (_key, (real_id, name, args_str)) in in_progress_calls {
         let args = if args_str.trim().is_empty() {
             serde_json::json!({})
         } else {
             serde_json::from_str(&args_str).unwrap_or_else(|_| serde_json::Value::String(args_str))
         };
-        tool_calls.push(roko_core::tool::ToolCall::new(id, name, args));
+        tool_calls.push(roko_core::tool::ToolCall::new(real_id, name, args));
     }
 
     // Build an OpenAI-shaped JSON response so existing translators work.
@@ -459,6 +429,22 @@ pub async fn collect_stream_to_response(
         },
     });
 
+    // Mirror tool calls at the top level for translators that read
+    // `v.get("tool_calls")` rather than `choices[0].message.tool_calls`.
+    if !tool_calls.is_empty() {
+        let top_level: Vec<serde_json::Value> = tool_calls
+            .iter()
+            .map(|tc| {
+                serde_json::json!({
+                    "id": tc.id,
+                    "name": tc.name,
+                    "arguments": tc.arguments,
+                })
+            })
+            .collect();
+        json["tool_calls"] = serde_json::Value::Array(top_level);
+    }
+
     // Stash TTFT in metadata for downstream consumers.
     if let Some(ttft) = ttft_ms {
         json["metadata"] = serde_json::json!({ "provider_ttft_ms": ttft });
@@ -482,11 +468,55 @@ pub fn response_to_synthetic_stream(
         .extract_finish_reason_raw()
         .unwrap_or_else(|| "stop".to_string());
 
-    let events = vec![
-        Ok(StreamEvent::now(StreamEventKind::TextDelta(text))),
-        Ok(StreamEvent::now(StreamEventKind::Usage(usage))),
-        Ok(StreamEvent::now(StreamEventKind::Done { finish_reason })),
-    ];
+    let mut events = vec![Ok(StreamEvent::now(StreamEventKind::TextDelta(text)))];
+
+    // Emit tool call events from the response so that
+    // `collect_stream_to_response` can round-trip tool calls
+    // through the synthetic stream.
+    if let BackendResponse::Json(ref json) = response {
+        // OpenAI format: choices[0].message.tool_calls
+        let tool_calls = json
+            .pointer("/choices/0/message/tool_calls")
+            .and_then(|v| v.as_array())
+            .or_else(|| json.get("tool_calls").and_then(|v| v.as_array()));
+        if let Some(calls) = tool_calls {
+            for tc in calls {
+                let id = tc
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let name = tc
+                    .pointer("/function/name")
+                    .or_else(|| tc.get("name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let args = tc
+                    .pointer("/function/arguments")
+                    .or_else(|| tc.get("arguments"))
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+                let args_val = if let Some(s) = args.as_str() {
+                    serde_json::from_str(s).unwrap_or(serde_json::json!({}))
+                } else if args.is_object() {
+                    args
+                } else {
+                    serde_json::json!({})
+                };
+                events.push(Ok(StreamEvent::now(StreamEventKind::ToolCallEnd {
+                    id,
+                    name,
+                    args: args_val,
+                })));
+            }
+        }
+    }
+
+    events.push(Ok(StreamEvent::now(StreamEventKind::Usage(usage))));
+    events.push(Ok(StreamEvent::now(StreamEventKind::Done {
+        finish_reason,
+    })));
 
     Box::pin(stream::iter(events))
 }
@@ -549,7 +579,7 @@ fn tool_result_previews(results: &[(ToolCall, roko_core::tool::ToolResult)]) -> 
     results
         .iter()
         .map(|(_call, result)| match result {
-            roko_core::tool::ToolResult::Ok { content, .. } => truncate_preview(content, 120),
+            roko_core::tool::ToolResult::Ok { .. } => truncate_preview(&result.text_content(), 120),
             roko_core::tool::ToolResult::Err(err) => {
                 truncate_preview(&format!("error: {err}"), 120)
             }
@@ -814,7 +844,7 @@ impl ToolLoop {
         user: &str,
         tools: &[ToolDef],
         ctx: &ToolContext,
-        event_tx: mpsc::Sender<StreamChunk>,
+        event_tx: mpsc::Sender<StreamEvent>,
     ) -> ToolLoopOutput {
         let messages = if self.few_shot_messages.is_empty() {
             result_msg::initial_messages(system, user)
@@ -845,7 +875,7 @@ impl ToolLoop {
         messages: Vec<Value>,
         tools: &[ToolDef],
         ctx: &ToolContext,
-        event_tx: mpsc::Sender<StreamChunk>,
+        event_tx: mpsc::Sender<StreamEvent>,
     ) -> ToolLoopOutput {
         self.run_inner_with_mcp_errors(
             messages,
@@ -911,7 +941,7 @@ impl ToolLoop {
         total_usage: Usage,
         tools: &[ToolDef],
         ctx: &ToolContext,
-        event_tx: Option<mpsc::Sender<StreamChunk>>,
+        event_tx: Option<mpsc::Sender<StreamEvent>>, // retained for API compat
         session: SessionState,
     ) -> ToolLoopOutput {
         let mut output = self
@@ -944,7 +974,7 @@ impl ToolLoop {
         mut total_usage: Usage,
         tools: &[ToolDef],
         ctx: &ToolContext,
-        event_tx: Option<mpsc::Sender<StreamChunk>>,
+        event_tx: Option<mpsc::Sender<StreamEvent>>,
         initial_session: SessionState,
     ) -> ToolLoopOutput {
         let rendered_tools = self.translator.render_tools(tools);
@@ -1006,36 +1036,51 @@ impl ToolLoop {
                 }
             }
 
-            // Send current conversation to the backend.
-            let response = match match &event_tx {
-                Some(event_tx) => {
-                    self.send_turn_streaming_with_retry(
-                        &messages,
-                        &rendered_tools,
-                        &session,
-                        event_tx.clone(),
-                    )
+            // Send current conversation to the backend. When a streaming
+            // event channel is active, use `stream_turn` so incremental
+            // events are forwarded to the caller before the response is
+            // assembled.
+            let response = if let Some(ref tx) = event_tx {
+                match self
+                    .send_turn_streaming(&messages, &rendered_tools, &session, tx)
                     .await
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let cp = Checkpoint::new(iterations, all_calls.clone(), messages)
+                            .with_session(session.clone());
+                        return ToolLoopOutput {
+                            final_text: String::new(),
+                            iterations,
+                            tool_calls: all_calls,
+                            total_usage,
+                            stop_reason: StopReason::BackendError(e.to_string()),
+                            checkpoint: Some(cp),
+                            turn_traces,
+                            mcp_errors: Vec::new(),
+                        };
+                    }
                 }
-                None => {
-                    self.send_turn_with_retry(&messages, &rendered_tools, &session)
-                        .await
-                }
-            } {
-                Ok(r) => r,
-                Err(e) => {
-                    let cp = Checkpoint::new(iterations, all_calls.clone(), messages)
-                        .with_session(session.clone());
-                    return ToolLoopOutput {
-                        final_text: String::new(),
-                        iterations,
-                        tool_calls: all_calls,
-                        total_usage,
-                        stop_reason: StopReason::BackendError(e.to_string()),
-                        checkpoint: Some(cp),
-                        turn_traces,
-                        mcp_errors: Vec::new(),
-                    };
+            } else {
+                match self
+                    .send_turn_with_retry(&messages, &rendered_tools, &session)
+                    .await
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let cp = Checkpoint::new(iterations, all_calls.clone(), messages)
+                            .with_session(session.clone());
+                        return ToolLoopOutput {
+                            final_text: String::new(),
+                            iterations,
+                            tool_calls: all_calls,
+                            total_usage,
+                            stop_reason: StopReason::BackendError(e.to_string()),
+                            checkpoint: Some(cp),
+                            turn_traces,
+                            mcp_errors: Vec::new(),
+                        };
+                    }
                 }
             };
             merge_session_state(&mut session, self.backend.extract_session(&response));
@@ -1049,6 +1094,7 @@ impl ToolLoop {
                     profile.cost_input_per_m,
                     profile.cost_output_per_m,
                     profile.cost_cache_read_per_m,
+                    profile.cost_cache_write_per_m,
                 );
             }
 
@@ -1365,45 +1411,38 @@ impl ToolLoop {
         Err(LlmError::RetriesExhausted)
     }
 
-    /// Streaming variant of [`send_turn_with_retry`](Self::send_turn_with_retry).
-    ///
-    /// Applies the same retry policy with exponential backoff when the
-    /// streaming backend returns a retryable `LlmError::Provider` error.
-    async fn send_turn_streaming_with_retry(
+    /// Send a turn through `stream_turn`, forwarding each event to `tx`
+    /// and collecting the final response via [`collect_stream_to_response`].
+    async fn send_turn_streaming(
         &self,
         messages: &[serde_json::Value],
         tools: &RenderedTools,
         session: &SessionState,
-        event_tx: mpsc::Sender<StreamChunk>,
+        tx: &mpsc::Sender<StreamEvent>,
     ) -> Result<BackendResponse, LlmError> {
-        for attempt in 0..self.retry_policy.max_attempts {
-            match self
-                .backend
-                .send_turn_streaming(messages, tools, session, event_tx.clone())
-                .await
-            {
-                Ok(response) => return Ok(response),
-                Err(LlmError::Provider(ref error))
-                    if self.retry_policy.should_retry(error, attempt) =>
-                {
-                    let delay = self
-                        .retry_policy
-                        .delay_with_retry_after(attempt, error.retry_after_ms());
-                    tracing::warn!(
-                        attempt = attempt + 1,
-                        max_attempts = self.retry_policy.max_attempts,
-                        delay_ms = delay,
-                        error_class = %ErrorClass::from(error),
-                        error = %error,
-                        "retrying after transient streaming error"
-                    );
-                    tokio::time::sleep(Duration::from_millis(delay)).await;
-                }
-                Err(error) => return Err(error),
-            }
-        }
+        use futures::StreamExt;
 
-        Err(LlmError::RetriesExhausted)
+        let config = self.turn_config();
+        let stream = self
+            .backend
+            .stream_turn(messages, tools, session, &config)
+            .await?;
+
+        // Tee: forward every event to the caller channel while also
+        // collecting into a vec for `collect_stream_to_response`.
+        let tx = tx.clone();
+        let tee_stream = stream.then(move |result| {
+            let tx = tx.clone();
+            async move {
+                if let Ok(ref event) = result {
+                    let _ = tx.send(event.clone()).await;
+                }
+                result
+            }
+        });
+
+        let request_start = std::time::Instant::now();
+        collect_stream_to_response(Box::pin(tee_stream), request_start).await
     }
 }
 
@@ -1542,7 +1581,7 @@ mod tests {
                 .iter()
                 .map(|(call, res)| {
                     let content = match res {
-                        ToolResult::Ok { content, .. } => content.clone(),
+                        ToolResult::Ok { .. } => res.text_content(),
                         ToolResult::Err(e) => format!("error: {e}"),
                     };
                     serde_json::json!({
@@ -2050,7 +2089,7 @@ mod tests {
                     None
                 }
             });
-        let dispatcher = Arc::new(ToolDispatcher::new(registry, resolver));
+        let dispatcher = Arc::new(ToolDispatcher::new_unguarded(registry, resolver));
         let translator: Arc<dyn Translator> = Arc::new(MockTranslator);
         ToolLoop::new(translator, dispatcher, backend).with_max_iterations(max_iterations)
     }
@@ -2456,7 +2495,7 @@ mod tests {
                     None
                 }
             });
-        let dispatcher = Arc::new(ToolDispatcher::new(registry, resolver));
+        let dispatcher = Arc::new(ToolDispatcher::new_unguarded(registry, resolver));
         let translator: Arc<dyn Translator> = Arc::new(MockTranslator);
         let tl = ToolLoop::new(translator, dispatcher, backend).with_max_iterations(100);
 
@@ -2907,6 +2946,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn collect_stream_parallel_tool_calls_with_index_keys() {
+        // Simulates two parallel OpenAI tool calls where deltas use
+        // index-based keys ("__idx_0", "__idx_1") instead of provider ids.
+        use futures::stream;
+        let events = vec![
+            // Tool call 0: start with real id embedded
+            Ok(StreamEvent::now(StreamEventKind::ToolCallStart {
+                id: "__idx_0\0call_abc".to_string(),
+                name: "read_file".to_string(),
+            })),
+            // Tool call 1: start with real id embedded
+            Ok(StreamEvent::now(StreamEventKind::ToolCallStart {
+                id: "__idx_1\0call_def".to_string(),
+                name: "write_file".to_string(),
+            })),
+            // Delta for tool call 0
+            Ok(StreamEvent::now(StreamEventKind::ToolCallDelta {
+                id: "__idx_0".to_string(),
+                json_fragment: r#"{"path":"#.to_string(),
+            })),
+            // Delta for tool call 1
+            Ok(StreamEvent::now(StreamEventKind::ToolCallDelta {
+                id: "__idx_1".to_string(),
+                json_fragment: r#"{"path":"b.txt","#.to_string(),
+            })),
+            // More delta for tool call 0
+            Ok(StreamEvent::now(StreamEventKind::ToolCallDelta {
+                id: "__idx_0".to_string(),
+                json_fragment: r#""a.txt"}"#.to_string(),
+            })),
+            // More delta for tool call 1
+            Ok(StreamEvent::now(StreamEventKind::ToolCallDelta {
+                id: "__idx_1".to_string(),
+                json_fragment: r#""content":"hello"}"#.to_string(),
+            })),
+            Ok(StreamEvent::now(StreamEventKind::Done {
+                finish_reason: "tool_calls".to_string(),
+            })),
+        ];
+        let stream = Box::pin(stream::iter(events));
+        let start = std::time::Instant::now();
+        let response = collect_stream_to_response(stream, start).await.unwrap();
+
+        let BackendResponse::Json(ref json) = response else {
+            panic!("expected Json response");
+        };
+        let tool_calls = json
+            .pointer("/choices/0/message/tool_calls")
+            .and_then(|tc| tc.as_array())
+            .expect("expected tool_calls array");
+        assert_eq!(tool_calls.len(), 2, "should have two separate tool calls");
+
+        // Both tool calls should have their real provider ids, not index keys.
+        let ids: Vec<&str> = tool_calls
+            .iter()
+            .filter_map(|tc| tc.get("id").and_then(|v| v.as_str()))
+            .collect();
+        assert!(ids.contains(&"call_abc"), "should recover real id call_abc");
+        assert!(ids.contains(&"call_def"), "should recover real id call_def");
+
+        // Arguments should be correctly separated, not concatenated.
+        let names: Vec<&str> = tool_calls
+            .iter()
+            .filter_map(|tc| tc.pointer("/function/name").and_then(|v| v.as_str()))
+            .collect();
+        assert!(names.contains(&"read_file"));
+        assert!(names.contains(&"write_file"));
+    }
+
+    #[tokio::test]
     async fn collect_stream_usage_is_preserved() {
         use futures::stream;
         let usage = crate::usage::Usage {
@@ -3037,32 +3146,6 @@ mod tests {
         assert!(config.stop_sequences.is_empty());
     }
 
-    #[test]
-    fn stream_event_from_stream_chunk_content_delta() {
-        let chunk = StreamChunk::ContentDelta("hello".to_string());
-        let event: StreamEvent = chunk.into();
-        assert!(matches!(event.kind, StreamEventKind::TextDelta(ref text) if text == "hello"));
-    }
-
-    #[test]
-    fn stream_event_from_stream_chunk_reasoning_delta() {
-        let chunk = StreamChunk::ReasoningDelta("thinking".to_string());
-        let event: StreamEvent = chunk.into();
-        assert!(matches!(
-            event.kind,
-            StreamEventKind::ReasoningDelta(ref text) if text == "thinking"
-        ));
-    }
-
-    #[test]
-    fn stream_event_from_stream_chunk_done() {
-        let chunk = StreamChunk::Done(crate::translate::FinishReason::ToolCalls);
-        let event: StreamEvent = chunk.into();
-        assert!(
-            matches!(event.kind, StreamEventKind::Done { ref finish_reason } if finish_reason.contains("ToolCalls"))
-        );
-    }
-
     #[tokio::test]
     async fn stream_turn_default_wraps_send_turn() {
         let backend = FinalAnswerBackend {
@@ -3149,5 +3232,166 @@ mod tests {
 
         let config = tl.turn_config();
         assert_eq!(config.max_tokens, 8192);
+    }
+
+    // ── Streaming contract tests (#333) ─────────────────────────────
+
+    /// A backend that only implements `send_turn` -- proves no recursion
+    /// because `stream_turn` falls through to the default (which calls
+    /// `send_turn` -> synthetic stream). If there were mutual recursion,
+    /// this would stack-overflow.
+    struct SendTurnOnlyBackend;
+
+    #[async_trait]
+    impl LlmBackend for SendTurnOnlyBackend {
+        async fn send_turn(
+            &self,
+            _messages: &[serde_json::Value],
+            _tools: &RenderedTools,
+            _session: &SessionState,
+        ) -> Result<BackendResponse, LlmError> {
+            Ok(BackendResponse::Json(serde_json::json!({
+                "choices": [{"message": {"role": "assistant", "content": "hello"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            })))
+        }
+
+        fn backend_id(&self) -> &'static str {
+            "send-turn-only"
+        }
+    }
+
+    #[tokio::test]
+    async fn streaming_contract_no_recursion_send_turn_only() {
+        let backend = SendTurnOnlyBackend;
+        let config = TurnConfig::default();
+        let stream = backend
+            .stream_turn(
+                &[],
+                &RenderedTools::JsonArray(serde_json::json!([])),
+                &SessionState::default(),
+                &config,
+            )
+            .await
+            .unwrap();
+
+        let start = std::time::Instant::now();
+        let response = collect_stream_to_response(stream, start).await.unwrap();
+        assert_eq!(response.extract_text(), "hello");
+    }
+
+    /// A backend that only implements `stream_turn` -- proves the default
+    /// `send_turn` correctly collects the stream into a response.
+    struct StreamTurnOnlyBackend;
+
+    #[async_trait]
+    impl LlmBackend for StreamTurnOnlyBackend {
+        async fn send_turn(
+            &self,
+            messages: &[serde_json::Value],
+            tools: &RenderedTools,
+            session: &SessionState,
+        ) -> Result<BackendResponse, LlmError> {
+            let config = TurnConfig::default();
+            let stream = self.stream_turn(messages, tools, session, &config).await?;
+            let start = std::time::Instant::now();
+            collect_stream_to_response(stream, start).await
+        }
+
+        async fn stream_turn(
+            &self,
+            _messages: &[serde_json::Value],
+            _tools: &RenderedTools,
+            _session: &SessionState,
+            _config: &TurnConfig,
+        ) -> Result<futures::stream::BoxStream<'static, Result<StreamEvent, LlmError>>, LlmError>
+        {
+            use futures::stream;
+            let events = vec![
+                Ok(StreamEvent::now(StreamEventKind::TextDelta(
+                    "streamed".to_string(),
+                ))),
+                Ok(StreamEvent::now(StreamEventKind::Done {
+                    finish_reason: "stop".to_string(),
+                })),
+            ];
+            Ok(Box::pin(stream::iter(events)))
+        }
+
+        fn backend_id(&self) -> &'static str {
+            "stream-turn-only"
+        }
+    }
+
+    #[tokio::test]
+    async fn streaming_contract_stream_turn_only_collects() {
+        let backend = StreamTurnOnlyBackend;
+        let response = backend
+            .send_turn(
+                &[],
+                &RenderedTools::JsonArray(serde_json::json!([])),
+                &SessionState::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.extract_text(), "streamed");
+    }
+
+    /// A backend that emits an error after partial text -- proves
+    /// error-after-partial is propagated correctly.
+    struct ErrorAfterPartialBackend;
+
+    #[async_trait]
+    impl LlmBackend for ErrorAfterPartialBackend {
+        async fn send_turn(
+            &self,
+            _messages: &[serde_json::Value],
+            _tools: &RenderedTools,
+            _session: &SessionState,
+        ) -> Result<BackendResponse, LlmError> {
+            Err(LlmError::Backend("not implemented".to_string()))
+        }
+
+        async fn stream_turn(
+            &self,
+            _messages: &[serde_json::Value],
+            _tools: &RenderedTools,
+            _session: &SessionState,
+            _config: &TurnConfig,
+        ) -> Result<futures::stream::BoxStream<'static, Result<StreamEvent, LlmError>>, LlmError>
+        {
+            use futures::stream;
+            let events = vec![
+                Ok(StreamEvent::now(StreamEventKind::TextDelta(
+                    "partial".to_string(),
+                ))),
+                Err(LlmError::Network("connection reset".to_string())),
+            ];
+            Ok(Box::pin(stream::iter(events)))
+        }
+
+        fn backend_id(&self) -> &'static str {
+            "error-after-partial"
+        }
+    }
+
+    #[tokio::test]
+    async fn streaming_contract_error_after_partial_preserved() {
+        let backend = ErrorAfterPartialBackend;
+        let config = TurnConfig::default();
+        let stream = backend
+            .stream_turn(
+                &[],
+                &RenderedTools::JsonArray(serde_json::json!([])),
+                &SessionState::default(),
+                &config,
+            )
+            .await
+            .unwrap();
+
+        let start = std::time::Instant::now();
+        let result = collect_stream_to_response(stream, start).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("connection reset"));
     }
 }

@@ -12,15 +12,12 @@ fn call_with_args(name: &str, args: serde_json::Value) -> ToolCall {
 }
 
 fn assert_ok_text(result: ToolResult, substr: &str) {
-    match result {
-        ToolResult::Ok { content, .. } => {
-            assert!(
-                content.contains(substr),
-                "content={content} (want substring {substr})"
-            );
-        }
-        ToolResult::Err(e) => panic!("expected Ok, got Err: {e}"),
-    }
+    assert!(result.is_ok(), "expected Ok, got Err: {result:?}");
+    let content = result.text_content();
+    assert!(
+        content.contains(substr),
+        "content={content} (want substring {substr})"
+    );
 }
 
 #[tokio::test]
@@ -212,7 +209,8 @@ async fn ls_lists_entries() {
     let call = call_with_args("ls", serde_json::json!({}));
     let result = handler.execute(call, &ctx).await;
     match result {
-        ToolResult::Ok { content, .. } => {
+        ToolResult::Ok { .. } => {
+            let content = result.text_content();
             assert!(content.contains("a.txt"), "listing={content}");
             assert!(content.contains("sub"), "listing={content}");
         }
@@ -280,8 +278,9 @@ async fn exit_plan_mode_returns_structured_payload() {
             ..
         } => {
             assert!(is_structured);
-            assert!(content.contains("plan_submitted"));
-            assert!(content.contains("plan_length_chars"));
+            let text: String = content.iter().filter_map(|c| c.as_text()).collect();
+            assert!(text.contains("plan_submitted"));
+            assert!(text.contains("plan_length_chars"));
         }
         ToolResult::Err(e) => panic!("exit_plan_mode failed: {e}"),
     }
@@ -396,7 +395,8 @@ async fn glob_finds_matching_files() {
     let call = call_with_args("glob", serde_json::json!({ "pattern": "**/*.rs" }));
     let result = handler.execute(call, &ctx).await;
     match result {
-        ToolResult::Ok { content, .. } => {
+        ToolResult::Ok { .. } => {
+            let content = result.text_content();
             assert!(content.contains("src/main.rs"), "got: {content}");
             assert!(content.contains("src/lib.rs"), "got: {content}");
             assert!(!content.contains("README.md"), "got: {content}");
@@ -487,8 +487,10 @@ async fn grep_finds_matching_lines() {
     let handler = handler_for("grep").expect("grep");
     let ctx = ToolContext::testing(worktree);
     let call = call_with_args("grep", serde_json::json!({ "pattern": "beta" }));
-    match handler.execute(call, &ctx).await {
-        ToolResult::Ok { content, .. } => {
+    let result = handler.execute(call, &ctx).await;
+    match result {
+        ToolResult::Ok { .. } => {
+            let content = result.text_content();
             assert!(content.contains("a.txt:2:beta"), "got: {content}");
             assert!(content.contains("b.txt:2:beta"), "got: {content}");
             assert!(!content.contains("alpha"));
@@ -513,8 +515,10 @@ async fn grep_files_with_matches_mode() {
         "grep",
         serde_json::json!({ "pattern": "fn ", "mode": "files_with_matches" }),
     );
-    match handler.execute(call, &ctx).await {
-        ToolResult::Ok { content, .. } => {
+    let result = handler.execute(call, &ctx).await;
+    match result {
+        ToolResult::Ok { .. } => {
+            let content = result.text_content();
             assert!(content.contains("x.rs"));
             assert!(content.contains("y.rs"));
             // Should not include line numbers in files_with_matches mode.
@@ -537,8 +541,10 @@ async fn grep_count_mode() {
         "grep",
         serde_json::json!({ "pattern": "a", "mode": "count" }),
     );
-    match handler.execute(call, &ctx).await {
-        ToolResult::Ok { content, .. } => {
+    let result = handler.execute(call, &ctx).await;
+    match result {
+        ToolResult::Ok { .. } => {
+            let content = result.text_content();
             assert!(content.contains("x.txt:3"), "got: {content}");
         }
         ToolResult::Err(e) => panic!("grep failed: {e}"),

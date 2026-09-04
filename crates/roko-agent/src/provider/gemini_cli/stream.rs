@@ -60,11 +60,11 @@ struct GeminiError {
 
 #[derive(Debug, Deserialize)]
 struct GeminiStats {
-    #[serde(default)]
+    #[serde(default, alias = "promptTokenCount")]
     input_tokens: u64,
-    #[serde(default)]
+    #[serde(default, alias = "candidatesTokenCount")]
     output_tokens: u64,
-    #[serde(default)]
+    #[serde(default, alias = "cachedContentTokenCount")]
     cached: u64,
 }
 
@@ -121,6 +121,7 @@ pub fn parse_stream_line(line: &str) -> Vec<AgentRuntimeEvent> {
                     output_tokens: stats.output_tokens,
                     cache_read_tokens: stats.cached,
                     cache_write_tokens: 0,
+                    reasoning_tokens: 0,
                 });
             }
             if is_error {
@@ -192,6 +193,7 @@ mod tests {
                     output_tokens: 7,
                     cache_read_tokens: 3,
                     cache_write_tokens: 0,
+                    reasoning_tokens: 0,
                 },
                 AgentRuntimeEvent::TurnCompleted {
                     session_id: None,
@@ -245,5 +247,33 @@ mod tests {
                 .is_empty()
         );
         assert!(parse_stream_line("not json").is_empty());
+    }
+
+    #[test]
+    fn parses_usage_metadata_with_google_api_field_names() {
+        // The Gemini CLI may emit usageMetadata with Google API naming
+        // (promptTokenCount, candidatesTokenCount) rather than the
+        // normalized input_tokens/output_tokens.
+        let events = parse_stream_line(
+            r#"{"type":"result","status":"success","stats":{"promptTokenCount":500,"candidatesTokenCount":120,"cachedContentTokenCount":50}}"#,
+        );
+        assert_eq!(
+            events,
+            vec![
+                AgentRuntimeEvent::TokenUsage {
+                    input_tokens: 500,
+                    output_tokens: 120,
+                    cache_read_tokens: 50,
+                    cache_write_tokens: 0,
+                    reasoning_tokens: 0,
+                },
+                AgentRuntimeEvent::TurnCompleted {
+                    session_id: None,
+                    total_cost_usd: None,
+                    num_turns: None,
+                    is_error: false,
+                },
+            ]
+        );
     }
 }

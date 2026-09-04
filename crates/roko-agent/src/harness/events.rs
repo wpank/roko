@@ -125,6 +125,7 @@ pub fn harness_events_to_agent_result(
         output_tokens: u32::try_from(output_tokens).unwrap_or(u32::MAX),
         cache_read_tokens: 0,
         cache_create_tokens: 0,
+        reasoning_tokens: 0,
         cost_usd: 0.0,
         wall_ms,
     };

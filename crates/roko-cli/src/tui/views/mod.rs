@@ -13,7 +13,7 @@
 //!
 //! | Tab (F-key) | Region | Sub-views |
 //! |-------------|--------|-----------|
-//! | F1 Dashboard | Overview | Health, Mesh Status, Cost |
+//! | F1 Dashboard | Overview | (own sub-tab system) |
 //! | F2 Plans | Plan Detail | DAG View, Task Detail, Wave Progress |
 //! | F3 Agents | Agent Detail | Output Stream, Verify Results, Token Burn |
 //! | F4 Git | Git Detail | Branch Tree, Commit Graph, Worktrees |
@@ -24,7 +24,6 @@
 //! | F9 Atelier | Workshop | PRD Workshop, Plan Explorer |
 //! | F10 Learning | Learning | Route, History, Efficiency |
 
-pub mod affect_view;
 pub mod agents_view;
 pub mod atelier_view;
 pub mod config_view;
@@ -50,16 +49,6 @@ use super::tabs::Tab;
 /// sub-views for a given tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SubView {
-    // ── Region 1: Dashboard (F1) ──
-    /// Health gauges and status overview.
-    DashboardHealth,
-    /// Agent mesh / collective status.
-    MeshStatus,
-    /// Cost and budget overview.
-    CostOverview,
-    /// Daimon affect state panel.
-    AffectView,
-
     // ── Region 2: Plans (F2) ──
     /// Plan DAG visualization.
     PlanDagView,
@@ -142,12 +131,8 @@ impl SubView {
     #[must_use]
     pub const fn for_tab(tab: Tab) -> &'static [SubView] {
         match tab {
-            Tab::Dashboard => &[
-                SubView::DashboardHealth,
-                SubView::MeshStatus,
-                SubView::CostOverview,
-                SubView::AffectView,
-            ],
+            // Dashboard uses its own internal sub-tab system in dashboard_view.rs.
+            Tab::Dashboard => &[],
             Tab::Plans => &[
                 SubView::PlanDagView,
                 SubView::TaskDetail,
@@ -195,10 +180,6 @@ impl SubView {
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
-            Self::DashboardHealth => "Health",
-            Self::MeshStatus => "Mesh",
-            Self::CostOverview => "Cost",
-            Self::AffectView => "Affect",
             Self::PlanDagView => "DAG",
             Self::TaskDetail => "Task",
             Self::WaveProgress => "Waves",
@@ -219,7 +200,7 @@ impl SubView {
             Self::EpisodeReplay => "Episodes",
             Self::KnowledgeBrowse => "Knowledge",
             Self::CostByModel => "Cost/Model",
-            Self::ThreePanelInspect => "Inspect",
+            Self::ThreePanelInspect => "Runtime",
             Self::JobList => "Jobs",
             Self::JobDetail => "Detail",
             Self::CreateJob => "New Job",
@@ -282,9 +263,15 @@ pub struct ViewState {
 
 impl ViewState {
     /// Resolve the active [`SubView`] for the given tab.
+    ///
+    /// Returns `None` for tabs that manage their own sub-tab system (e.g. Dashboard).
     #[must_use]
     pub fn active_sub_view(&self, tab: Tab) -> SubView {
         let views = SubView::for_tab(tab);
+        if views.is_empty() {
+            // Tabs with empty for_tab (e.g. Dashboard) use their own sub-tab system.
+            return SubView::PlanDagView; // unreachable in practice
+        }
         views.get(self.sub_tab).copied().unwrap_or(views[0])
     }
 }

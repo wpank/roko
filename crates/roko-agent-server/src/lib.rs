@@ -15,7 +15,6 @@ use tokio::net::TcpListener;
 use tokio::time::MissedTickBehavior;
 use tower_http::trace::TraceLayer;
 
-use roko_agent::dispatcher::ToolDispatcher;
 use roko_agent::tool_loop::LlmBackend;
 use roko_chain::ChainClient;
 use roko_neuro::KnowledgeStore;
@@ -32,7 +31,7 @@ pub use registration::{
 };
 pub use state::{
     AgentMetrics, AgentPrediction, AgentPredictionResidual, AgentRuntimeStats, AgentState,
-    DispatchLike, MessageContext, PredictionCreateRequest, SidecarDispatchError,
+    DispatchLike, DispatchProfile, MessageContext, PredictionCreateRequest, SidecarDispatchError,
 };
 
 type BoxFutureResult = Pin<Box<dyn Future<Output = Result<()>> + Send>>;
@@ -178,8 +177,8 @@ pub struct AgentServerBuilder {
     chain_client: Option<Arc<dyn ChainClient>>,
     llm_backend: Option<Arc<dyn LlmBackend>>,
     knowledge_store: Option<Arc<KnowledgeStore>>,
-    dispatcher: Option<Arc<ToolDispatcher>>,
     message_dispatcher: Option<Arc<dyn DispatchLike>>,
+    dispatch_profile: Option<DispatchProfile>,
     features: FeatureFlags,
     on_start: Option<StartHook>,
     registration: Option<AgentRegistration>,
@@ -245,17 +244,17 @@ impl AgentServerBuilder {
         self
     }
 
-    /// Attach an optional tool dispatcher for message handling.
-    #[must_use]
-    pub fn with_dispatcher(mut self, dispatcher: Arc<ToolDispatcher>) -> Self {
-        self.dispatcher = Some(dispatcher);
-        self
-    }
-
     /// Attach an optional message dispatcher for the messaging routes.
     #[must_use]
     pub fn with_message_dispatcher(mut self, dispatcher: Arc<dyn DispatchLike>) -> Self {
         self.message_dispatcher = Some(dispatcher);
+        self
+    }
+
+    /// Inject a resolved dispatch profile for model/role/cost resolution (#283).
+    #[must_use]
+    pub fn dispatch_profile(mut self, profile: DispatchProfile) -> Self {
+        self.dispatch_profile = Some(profile);
         self
     }
 
@@ -360,11 +359,11 @@ impl AgentServerBuilder {
         if let Some(log_path) = self.log_path {
             state = state.with_log_path(log_path);
         }
-        if let Some(dispatcher) = self.dispatcher {
-            state = state.with_dispatcher(dispatcher);
-        }
         if let Some(dispatcher) = self.message_dispatcher {
             state = state.with_message_dispatcher(dispatcher);
+        }
+        if let Some(profile) = self.dispatch_profile {
+            state = state.with_dispatch_profile(profile);
         }
         let state = Arc::new(state);
 

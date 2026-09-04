@@ -126,18 +126,16 @@ fn parse_function_calls(function_calls: &[Value]) -> Result<Vec<ToolCall>, Trans
 }
 
 fn render_response_payload(result: &ToolResult) -> Value {
+    let text = result.text_content();
     match result {
-        ToolResult::Ok {
-            content,
-            is_structured,
-            ..
-        } if *is_structured => serde_json::from_str(content).unwrap_or_else(|_| {
-            json!({
-                "result": content,
-            })
-        }),
-        ToolResult::Ok { content, .. } => json!({
-            "result": content,
+        ToolResult::Ok { is_structured, .. } if *is_structured => serde_json::from_str(&text)
+            .unwrap_or_else(|_| {
+                json!({
+                    "result": text,
+                })
+            }),
+        ToolResult::Ok { .. } => json!({
+            "result": text,
         }),
         ToolResult::Err(error) => json!({
             "error": error.to_string(),

@@ -5,12 +5,20 @@
 //!
 //! ```text
 //! Healthy ──[N consecutive failures]──▶ Unhealthy { recovery_at }
-//!     ▲                                        │
+//!     ▲         OR rolling rate < 30%          │
 //!     │                                  [now ≥ recovery_at]
 //!     │                                        ▼
 //!     └────[record_success]──────────── Probing
 //!                                 [record_failure]──▶ Unhealthy (timer reset)
 //! ```
+//!
+//! Two independent conditions trip the circuit Open:
+//!
+//! 1. **Consecutive failures** — 3 or more failures in a row (existing behaviour).
+//! 2. **Rolling success rate** — fewer than 30% successes across the last 10
+//!    requests.  This catches providers that limp along with occasional successes
+//!    that continuously reset the consecutive-failure counter while the overall
+//!    error rate is very high (e.g. openai at 12% success over 49 calls).
 //!
 //! # Thread safety
 //!
@@ -34,6 +42,19 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+// ─── Rolling-window circuit-trip constants ──────────────────────────────────
+
+/// Number of most-recent outcomes tracked for the rolling success-rate check.
+const ROLLING_WINDOW: usize = 10;
+
+/// Minimum acceptable success rate over the rolling window.
+///
+/// When the observed rate drops below this value the circuit trips Open even
+/// if no individual failure streak has reached the consecutive-failure
+/// threshold.  Set to 30% so that a provider succeeding on only 3 out of
+/// every 10 calls is treated as degraded.
+const ROLLING_SUCCESS_RATE_MIN: f64 = 0.30;
 
 // ─── Serializable health snapshot types ────────────────────────────────────
 
@@ -98,6 +119,15 @@ pub struct ProviderHealth {
     pub cooldown_until: Option<i64>,
     /// Rolling window of recent failures.
     pub failure_window: VecDeque<FailureRecord>,
+    /// Sliding window of the last [`ROLLING_WINDOW`] outcomes.
+    ///
+    /// `true` = success, `false` = failure.  Populated by both
+    /// [`Self::record_success`] and [`Self::record_failure`] and used to
+    /// detect a low rolling success rate independently of the
+    /// consecutive-failure counter.  Default-deserializes as empty so
+    /// persisted snapshots without this field load cleanly.
+    #[serde(default)]
+    pub recent_outcomes: VecDeque<bool>,
 }
 
 impl ProviderHealth {
@@ -116,9 +146,21 @@ impl ProviderHealth {
         if self.state == CircuitState::HalfOpen || self.state == CircuitState::Open {
             self.state = CircuitState::Closed;
         }
+        // Update rolling window.
+        self.recent_outcomes.push_back(true);
+        if self.recent_outcomes.len() > ROLLING_WINDOW {
+            self.recent_outcomes.pop_front();
+        }
     }
 
     /// Record a failed request and update the circuit state.
+    ///
+    /// The circuit trips Open when either condition holds:
+    ///
+    /// 1. **3+ consecutive failures** — the existing streak check.
+    /// 2. **Rolling success rate < 30%** over the last 10 requests — catches
+    ///    providers that limp along with occasional successes (like openai at
+    ///    12%) without ever hitting three failures in a row.
     pub fn record_failure(&mut self, error: ErrorClass, now_ms: i64) {
         self.total_requests = self.total_requests.saturating_add(1);
         self.consecutive_failures = self.consecutive_failures.saturating_add(1);
@@ -132,8 +174,29 @@ impl ProviderHealth {
             self.failure_window.pop_front();
         }
 
-        // Trip to Open after 3 consecutive failures.
-        if self.consecutive_failures >= 3 {
+        // Update rolling window.
+        self.recent_outcomes.push_back(false);
+        if self.recent_outcomes.len() > ROLLING_WINDOW {
+            self.recent_outcomes.pop_front();
+        }
+
+        // Condition 1: trip to Open after 3 consecutive failures.
+        let should_trip_consecutive = self.consecutive_failures >= 3;
+
+        // Condition 2: trip to Open when rolling success rate is below the
+        // minimum threshold over a full window of ROLLING_WINDOW requests.
+        let should_trip_rate = if self.recent_outcomes.len() >= ROLLING_WINDOW {
+            let successes = self.recent_outcomes.iter().filter(|&&ok| ok).count();
+            #[allow(clippy::cast_precision_loss)]
+            let rate = successes as f64 / ROLLING_WINDOW as f64;
+            rate < ROLLING_SUCCESS_RATE_MIN
+        } else {
+            false
+        };
+
+        if should_trip_consecutive || should_trip_rate {
+            // When already Open, each additional failure extends the cooldown
+            // (original behaviour). When Closed or HalfOpen, transition to Open.
             self.state = CircuitState::Open;
             self.cooldown_until = Some(now_ms + self.cooldown_ms(error));
         }
@@ -439,6 +502,7 @@ fn new_provider_health(provider_id: &str) -> ProviderHealth {
         last_success_at: None,
         cooldown_until: None,
         failure_window: VecDeque::new(),
+        recent_outcomes: VecDeque::new(),
     }
 }
 
@@ -1109,6 +1173,7 @@ mod tests {
                     error_class: ErrorClass::Timeout,
                 },
             ]),
+            recent_outcomes: VecDeque::new(),
         };
 
         let json = serde_json::to_string(&health).expect("serialize provider health");
@@ -1136,6 +1201,7 @@ mod tests {
             last_success_at: None,
             cooldown_until: None,
             failure_window: VecDeque::new(),
+            recent_outcomes: VecDeque::new(),
         };
 
         health.record_failure(ErrorClass::Timeout, 1_000);
@@ -1168,6 +1234,7 @@ mod tests {
             last_success_at: None,
             cooldown_until: None,
             failure_window: VecDeque::new(),
+            recent_outcomes: VecDeque::new(),
         };
 
         health.record_failure(ErrorClass::RateLimit, 10);
@@ -1554,6 +1621,7 @@ mod tests {
             last_success_at: Some(2_000),
             cooldown_until: Some(33_000),
             failure_window: window,
+            recent_outcomes: VecDeque::new(),
         };
 
         let json = serde_json::to_string_pretty(&health).unwrap();

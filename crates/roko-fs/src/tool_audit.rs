@@ -11,26 +11,69 @@
 //! - Append-only, create-if-missing, line-buffered via `BufWriter`.
 //! - `tokio::sync::Mutex<BufWriter<File>>` — short critical section.
 //! - Pure sink: records facts, never rejects or mutates the call.
+//!
+//! # Scrubbed adapter (T028)
+//!
+//! [`ScrubAuditAdapter`] wraps a `ToolAuditLog` and a `LogScrubber`,
+//! sanitizing tool arguments and result content before persistence.
+//! Raw `ToolCall.arguments` are never written — only bounded, scrubbed
+//! representations land on disk.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::sync::Mutex;
 
+use roko_core::obs::LogScrubber;
 use roko_core::tool::{ToolCall, ToolResult};
 
 /// The default audit-log path relative to the worktree.
 pub const DEFAULT_AUDIT_PATH: &str = ".roko/tool_audit.jsonl";
+
+/// Maximum byte length for serialized tool arguments in audit records.
+/// Arguments exceeding this are truncated with a `[truncated]` marker.
+const MAX_ARGUMENTS_BYTES: usize = 4096;
 
 // ─── Wire types ───────────────────────────────────────────────────────────────
 
 /// A single audit-log line. The `kind` discriminator is written as a JSON
 /// field so consumers can distinguish admit lines from result lines while
 /// `tail -f`-ing a single file.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AuditLine {
+    /// A tool call was admitted for execution.
+    Admit {
+        /// Timestamp in milliseconds.
+        ts_ms: i64,
+        /// Provider-assigned call identifier.
+        call_id: String,
+        /// Canonical tool name.
+        call_name: String,
+        /// Scrubbed argument summary.
+        arguments_scrubbed: String,
+    },
+    /// A tool call completed with a result.
+    Result {
+        /// Timestamp in milliseconds.
+        ts_ms: i64,
+        /// Provider-assigned call identifier.
+        call_id: String,
+        /// Canonical tool name.
+        call_name: String,
+        /// Whether the call succeeded.
+        ok: bool,
+        /// Scrubbed result content.
+        content_scrubbed: String,
+    },
+}
+
+/// A single raw (unscrubbed) audit-log line — internal only.
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-enum AuditLine<'a> {
+enum RawAuditLine<'a> {
     Admit {
         ts_ms: i64,
         call: &'a ToolCall,
@@ -116,8 +159,7 @@ impl ToolAuditLog {
     /// Returns an error if serialization or the write fails.
     pub async fn record_admit(&self, call: &ToolCall) -> std::io::Result<()> {
         let ts_ms = chrono::Utc::now().timestamp_millis();
-        let line = AuditLine::Admit { ts_ms, call };
-        // Serialize synchronously before the first .await so the future is Send.
+        let line = RawAuditLine::Admit { ts_ms, call };
         let bytes = Self::serialize_line(&line)?;
         self.write_line(bytes).await
     }
@@ -133,14 +175,26 @@ impl ToolAuditLog {
     /// Returns an error if serialization or the write fails.
     pub async fn record_result(&self, call: &ToolCall, result: &ToolResult) -> std::io::Result<()> {
         let ts_ms = chrono::Utc::now().timestamp_millis();
-        let line = AuditLine::Result {
+        let line = RawAuditLine::Result {
             ts_ms,
             call_id: &call.id,
             call_name: &call.name,
             result,
         };
-        // Serialize synchronously before the first .await so the future is Send.
         let bytes = Self::serialize_line(&line)?;
+        self.write_line(bytes).await
+    }
+
+    /// Record a pre-scrubbed audit line directly.
+    ///
+    /// Used by [`ScrubAuditAdapter`] to write lines that have already been
+    /// sanitized through a [`LogScrubber`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization or the write fails.
+    pub async fn record_scrubbed(&self, line: &AuditLine) -> std::io::Result<()> {
+        let bytes = Self::serialize_line(line)?;
         self.write_line(bytes).await
     }
 
@@ -176,6 +230,95 @@ impl ToolAuditLog {
         bytes.push(b'\n');
         Ok(bytes)
     }
+}
+
+// ─── ScrubAuditAdapter (T028) ────────────────────────────────────────────────
+
+/// Adapter that sanitizes tool call arguments and result content before
+/// writing to a [`ToolAuditLog`].
+///
+/// Raw `ToolCall.arguments` JSON is never persisted. Instead, the adapter:
+/// 1. Serializes the arguments to a string
+/// 2. Truncates to [`MAX_ARGUMENTS_BYTES`]
+/// 3. Runs the string through a [`LogScrubber`] to redact secrets
+///
+/// Similarly, result content is scrubbed before persistence.
+#[derive(Debug)]
+pub struct ScrubAuditAdapter {
+    log: Arc<ToolAuditLog>,
+    scrubber: Arc<LogScrubber>,
+}
+
+impl ScrubAuditAdapter {
+    /// Create a new adapter wrapping the given log and scrubber.
+    #[must_use]
+    pub fn new(log: Arc<ToolAuditLog>, scrubber: Arc<LogScrubber>) -> Self {
+        Self { log, scrubber }
+    }
+
+    /// Record an admitted call with scrubbed arguments.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the write fails.
+    pub async fn record_admit(&self, call: &ToolCall) -> std::io::Result<()> {
+        let ts_ms = chrono::Utc::now().timestamp_millis();
+        let arguments_raw = serde_json::to_string(&call.arguments).unwrap_or_default();
+        let arguments_bounded = truncate_str(&arguments_raw, MAX_ARGUMENTS_BYTES);
+        let arguments_scrubbed = self.scrubber.scrub(arguments_bounded);
+
+        let line = AuditLine::Admit {
+            ts_ms,
+            call_id: call.id.clone(),
+            call_name: call.name.clone(),
+            arguments_scrubbed,
+        };
+        self.log.record_scrubbed(&line).await
+    }
+
+    /// Record a terminal result with scrubbed content.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the write fails.
+    pub async fn record_result(&self, call: &ToolCall, result: &ToolResult) -> std::io::Result<()> {
+        let ts_ms = chrono::Utc::now().timestamp_millis();
+        let (ok, raw_content) = match result {
+            ToolResult::Ok { .. } => (true, result.text_content()),
+            ToolResult::Err(e) => (false, format!("{e}")),
+        };
+        let content_bounded = truncate_str(&raw_content, MAX_ARGUMENTS_BYTES);
+        let content_scrubbed = self.scrubber.scrub(content_bounded);
+
+        let line = AuditLine::Result {
+            ts_ms,
+            call_id: call.id.clone(),
+            call_name: call.name.clone(),
+            ok,
+            content_scrubbed,
+        };
+        self.log.record_scrubbed(&line).await
+    }
+
+    /// Reference to the underlying audit log.
+    #[must_use]
+    pub fn inner(&self) -> &Arc<ToolAuditLog> {
+        &self.log
+    }
+}
+
+/// Truncate a string to at most `max_bytes` UTF-8 bytes, appending
+/// `[truncated]` if it was shortened.
+fn truncate_str(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    // Find the last char boundary at or before max_bytes.
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -486,6 +629,180 @@ mod tests {
         for (i, line) in lines.iter().enumerate() {
             let _: serde_json::Value = serde_json::from_str(line)
                 .unwrap_or_else(|e| panic!("line {i} is invalid JSON: {e}\nLine: {line}"));
+        }
+    }
+
+    // ── 13 (T028) ─────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn scrub_adapter_redacts_arguments() {
+        let dir = TempDir::new().expect("tempdir");
+        let log = Arc::new(ToolAuditLog::open(dir.path()).await.expect("open"));
+        let scrubber = Arc::new(LogScrubber::new());
+        let adapter = ScrubAuditAdapter::new(log.clone(), scrubber);
+
+        let call = ToolCall::at(
+            "s1",
+            "bash",
+            serde_json::json!({
+                "command": "curl -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test.sig' http://api.example.com"
+            }),
+            1_700_000_000_000,
+        );
+
+        adapter.record_admit(&call).await.expect("scrub admit");
+
+        let lines = read_lines(log.path()).await;
+        assert_eq!(lines.len(), 1);
+        let json: serde_json::Value = serde_json::from_str(&lines[0]).expect("parse JSON");
+        assert_eq!(json["kind"], "admit");
+        assert_eq!(json["call_id"], "s1");
+        assert_eq!(json["call_name"], "bash");
+        // The Bearer token must be redacted.
+        let args = json["arguments_scrubbed"]
+            .as_str()
+            .expect("arguments_scrubbed");
+        assert!(
+            !args.contains("eyJhbGciOi"),
+            "Bearer token must be scrubbed from arguments"
+        );
+    }
+
+    // ── 14 (T028) ─────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn scrub_adapter_redacts_result_content() {
+        let dir = TempDir::new().expect("tempdir");
+        let log = Arc::new(ToolAuditLog::open(dir.path()).await.expect("open"));
+        let scrubber = Arc::new(LogScrubber::new());
+        // Add a custom literal secret.
+        scrubber
+            .add_literal_value("my-api-key-12345678901234567890", "CUSTOM_KEY")
+            .unwrap();
+        let adapter = ScrubAuditAdapter::new(log.clone(), scrubber);
+
+        let call = make_call("s2", "read_file");
+        let result = ToolResult::text("config: my-api-key-12345678901234567890\nhost: localhost");
+
+        adapter
+            .record_result(&call, &result)
+            .await
+            .expect("scrub result");
+
+        let lines = read_lines(log.path()).await;
+        assert_eq!(lines.len(), 1);
+        let json: serde_json::Value = serde_json::from_str(&lines[0]).expect("parse JSON");
+        assert_eq!(json["kind"], "result");
+        assert!(json["ok"].as_bool().unwrap());
+        let content = json["content_scrubbed"].as_str().expect("content_scrubbed");
+        assert!(
+            !content.contains("my-api-key-12345678901234567890"),
+            "literal secret must be scrubbed from result content"
+        );
+        assert!(
+            content.contains("[REDACTED:CUSTOM_KEY]"),
+            "replacement must name the secret"
+        );
+    }
+
+    // ── 15 (T028) ─────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn scrub_adapter_truncates_large_arguments() {
+        let dir = TempDir::new().expect("tempdir");
+        let log = Arc::new(ToolAuditLog::open(dir.path()).await.expect("open"));
+        let scrubber = Arc::new(LogScrubber::empty());
+        let adapter = ScrubAuditAdapter::new(log.clone(), scrubber);
+
+        // Create arguments larger than MAX_ARGUMENTS_BYTES.
+        let big_value = "x".repeat(10_000);
+        let call = ToolCall::at(
+            "big",
+            "write_file",
+            serde_json::json!({"content": big_value}),
+            1_700_000_000_000,
+        );
+
+        adapter.record_admit(&call).await.expect("admit big");
+
+        let lines = read_lines(log.path()).await;
+        let json: serde_json::Value = serde_json::from_str(&lines[0]).expect("parse JSON");
+        let args = json["arguments_scrubbed"]
+            .as_str()
+            .expect("arguments_scrubbed");
+        // Must be truncated to MAX_ARGUMENTS_BYTES or less.
+        assert!(
+            args.len() <= MAX_ARGUMENTS_BYTES,
+            "arguments must be truncated: got {} bytes",
+            args.len()
+        );
+    }
+
+    // ── 16 ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn truncate_str_handles_ascii() {
+        assert_eq!(truncate_str("hello", 10), "hello");
+        assert_eq!(truncate_str("hello", 3), "hel");
+        assert_eq!(truncate_str("hello", 0), "");
+    }
+
+    #[test]
+    fn truncate_str_handles_multibyte_utf8() {
+        let emoji = "Hello 🌍 World";
+        // '🌍' is 4 bytes at offset 6. Truncating at 8 should land inside
+        // the emoji and back up to offset 6.
+        let result = truncate_str(emoji, 8);
+        assert!(result.len() <= 8);
+        assert!(result.is_char_boundary(result.len()));
+    }
+
+    // ── 17 (T028) ─────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn scrub_adapter_handles_error_results() {
+        let dir = TempDir::new().expect("tempdir");
+        let log = Arc::new(ToolAuditLog::open(dir.path()).await.expect("open"));
+        let scrubber = Arc::new(LogScrubber::empty());
+        let adapter = ScrubAuditAdapter::new(log.clone(), scrubber);
+
+        let call = make_call("err1", "bash");
+        let result = ToolResult::err(roko_core::tool::ToolError::Cancelled);
+
+        adapter
+            .record_result(&call, &result)
+            .await
+            .expect("err result");
+
+        let lines = read_lines(log.path()).await;
+        let json: serde_json::Value = serde_json::from_str(&lines[0]).expect("parse JSON");
+        assert_eq!(json["kind"], "result");
+        assert!(
+            !json["ok"].as_bool().unwrap(),
+            "error result should have ok=false"
+        );
+    }
+
+    // ── 18 (T028) ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn audit_line_roundtrips_through_serde() {
+        let line = AuditLine::Admit {
+            ts_ms: 1_700_000_000_000,
+            call_id: "c1".to_string(),
+            call_name: "bash".to_string(),
+            arguments_scrubbed: r#"{"x":1}"#.to_string(),
+        };
+        let json = serde_json::to_string(&line).expect("serialize");
+        let decoded: AuditLine = serde_json::from_str(&json).expect("deserialize");
+        match decoded {
+            AuditLine::Admit {
+                call_id, call_name, ..
+            } => {
+                assert_eq!(call_id, "c1");
+                assert_eq!(call_name, "bash");
+            }
+            _ => panic!("expected Admit variant"),
         }
     }
 }

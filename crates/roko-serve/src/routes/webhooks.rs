@@ -1,7 +1,7 @@
 //! Webhook ingress endpoints.
 //!
 //! GitHub and Slack webhooks are verified, converted into typed
-//! [`roko_core::Signal`]s, persisted through `.roko/signals.jsonl`, and
+//! [`roko_core::Signal`]s, persisted through `.roko/engrams.jsonl`, and
 //! published onto the shared event bus.
 
 use std::sync::Arc;
@@ -1015,7 +1015,7 @@ mod tests {
             "repository": "roko",
             "changes": ["a.rs", "b.rs"],
         }));
-        let signal = Engram::builder(Kind::Custom("github:push".into()))
+        let signal = Signal::builder(Kind::Custom("github:push".into()))
             .body(body.clone())
             .provenance(Provenance::external("github:webhook"))
             .build();

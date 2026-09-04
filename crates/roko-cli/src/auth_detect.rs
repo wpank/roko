@@ -84,11 +84,15 @@ fn detect_from_config(config: &roko_core::config::schema::RokoConfig) -> Option<
         // dispatch via a local subprocess.
         if matches!(
             provider.kind,
-            ProviderKind::ClaudeCli | ProviderKind::Hermes | ProviderKind::OpenClaw
+            ProviderKind::ClaudeCli
+                | ProviderKind::CodexCli
+                | ProviderKind::Hermes
+                | ProviderKind::OpenClaw
         ) {
             let default_cmd = provider.kind.label();
             let cmd = provider.command.as_deref().unwrap_or(match provider.kind {
                 ProviderKind::ClaudeCli => "claude",
+                ProviderKind::CodexCli => "codex",
                 _ => default_cmd,
             });
             if Command::new(cmd)

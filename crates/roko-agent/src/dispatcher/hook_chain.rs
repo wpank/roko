@@ -57,6 +57,11 @@ impl SafetyHookChain {
         self.hooks.is_empty()
     }
 
+    /// Iterate over the names of all hooks in chain order.
+    pub fn hook_names(&self) -> impl Iterator<Item = &str> {
+        self.hooks.iter().map(|h| h.name.as_str())
+    }
+
     /// Run all hooks sequentially for the given tool call.
     ///
     /// Returns the (possibly modified) parameters and a list of audit records.

@@ -168,6 +168,8 @@ mod tests {
             ended_at_ms: 10,
             events: Vec::new(),
             outcome: ToolOutcome::success(10, 0.0),
+            enforcement_owner: None,
+            policy_owner: None,
         }
     }
 

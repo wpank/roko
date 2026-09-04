@@ -10,8 +10,8 @@ use std::str::FromStr;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use alloy::dyn_abi::{DynSolValue, EventExt};
-use alloy::json_abi::Event as AbiEvent;
+use alloy_dyn_abi::{DynSolValue, EventExt};
+use alloy_json_abi::Event as AbiEvent;
 use alloy_primitives::B256;
 use anyhow::{Context, Result};
 use base64::Engine as _;
@@ -2798,7 +2798,7 @@ mod tests {
         crate::publish_chain_watcher_payload(
             state,
             "chain:log",
-            serde_json::to_value(roko_chain::block_watcher::RawLogInfo {
+            serde_json::to_value(roko_chain::chain_state::RawLogInfo {
                 block_number,
                 block_hash: block_hash.to_string(),
                 tx_hash: tx_hash.to_string(),
@@ -2823,7 +2823,7 @@ mod tests {
         crate::publish_chain_watcher_payload(
             state,
             "chain:block",
-            serde_json::to_value(roko_chain::block_watcher::BlockInfo {
+            serde_json::to_value(roko_chain::chain_state::BlockInfo {
                 number,
                 hash: hash.to_string(),
                 parent_hash: parent_hash.to_string(),
@@ -2901,7 +2901,7 @@ mod tests {
         crate::publish_chain_watcher_payload(
             &state,
             "chain:reorg",
-            serde_json::to_value(roko_chain::block_watcher::ChainReorgInfo {
+            serde_json::to_value(roko_chain::chain_state::ChainReorgInfo {
                 orphaned_block_hashes: vec!["0xORPHAN".to_string()],
             })
             .unwrap(),

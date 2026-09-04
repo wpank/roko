@@ -26,6 +26,7 @@ use std::path::{Path, PathBuf};
 ///     extra_env: vec![],
 ///     label: Some("check-login-module".into()),
 ///     target_crates: vec!["roko-agent".into()],
+///     cargo_profile: None,
 /// };
 /// let sig = Signal::builder(Kind::Task)
 ///     .body(Body::from_json(&payload).expect("example payload should serialize"))
@@ -50,6 +51,14 @@ pub struct GatePayload {
     /// unrelated crates don't cause false gate failures.
     #[serde(default)]
     pub target_crates: Vec<String>,
+
+    /// Optional Cargo profile selected by runner-owned Cargo gates.
+    ///
+    /// This is deliberately an explicit argument rather than only a set of
+    /// `CARGO_PROFILE_*` environment variables: those variables configure a
+    /// profile but do not cause Cargo to select it. Non-Cargo gates ignore it.
+    #[serde(default)]
+    pub cargo_profile: Option<String>,
 }
 
 impl GatePayload {
@@ -62,6 +71,7 @@ impl GatePayload {
             extra_env: Vec::new(),
             label: None,
             target_crates: Vec::new(),
+            cargo_profile: None,
         }
     }
 
@@ -90,6 +100,13 @@ impl GatePayload {
     #[must_use]
     pub fn with_target_crates(mut self, crates: Vec<String>) -> Self {
         self.target_crates = crates;
+        self
+    }
+
+    /// Select a named Cargo profile for runner-owned Cargo invocations.
+    #[must_use]
+    pub fn with_cargo_profile(mut self, profile: impl Into<String>) -> Self {
+        self.cargo_profile = Some(profile.into());
         self
     }
 }
@@ -385,7 +402,8 @@ mod tests {
         let p = GatePayload::in_dir("/repo")
             .with_target_dir("/tmp/target")
             .with_env("RUST_LOG", "debug")
-            .with_label("plan-42");
+            .with_label("plan-42")
+            .with_cargo_profile("dev-fast");
         assert_eq!(p.working_dir, PathBuf::from("/repo"));
         assert_eq!(
             p.target_dir.as_deref(),
@@ -393,6 +411,7 @@ mod tests {
         );
         assert_eq!(p.extra_env, vec![("RUST_LOG".into(), "debug".into())]);
         assert_eq!(p.label.as_deref(), Some("plan-42"));
+        assert_eq!(p.cargo_profile.as_deref(), Some("dev-fast"));
     }
 
     #[test]

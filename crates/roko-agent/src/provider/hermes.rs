@@ -5,8 +5,7 @@ use crate::provider::{
     AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, configured_resource_limits,
 };
 use roko_core::agent::ProviderKind;
-use roko_core::config::schema::{ModelProfile, ProviderConfig};
-use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
+use roko_core::config::schema::{ModelProfile, ProviderConfig, ProviderTransport};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -35,10 +34,7 @@ impl ProviderAdapter for HermesProviderAdapter {
             return Err(AgentCreationError::InvalidKind(provider.kind));
         }
 
-        let timeout_ms = options
-            .timeout_ms
-            .or(provider.timeout_ms)
-            .unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS);
+        let timeout_ms = options.effective_timeout_ms(provider.timeout_ms);
         let timeout = Duration::from_millis(timeout_ms);
 
         let working_dir = options
@@ -47,112 +43,83 @@ impl ProviderAdapter for HermesProviderAdapter {
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
         let resource_limits = configured_resource_limits(provider)?;
 
-        // Tier selection: base_url → HTTP, args contain "acp" → ACP, else → oneshot.
-        let is_acp = provider
-            .args
-            .as_ref()
-            .is_some_and(|args| args.iter().any(|a| a == "acp"));
-
-        if provider.base_url.is_some() {
-            // Tier 1: HTTP via HermesHttpAgent.
-            let mut config = HermesConfig::from_provider_config(provider);
-            config.timeout = timeout;
-            if model.slug.is_empty() {
-                // No model override — use config default.
-            } else {
-                config.model = Some(model.slug.clone());
+        // Tier selection via typed transport.
+        let transport = provider.transport();
+        match transport {
+            ProviderTransport::Http { .. } => {
+                // Tier 1: HTTP via HermesHttpAgent.
+                let mut config = HermesConfig::from_provider_config(provider);
+                config.timeout = timeout;
+                if !model.slug.is_empty() {
+                    config.model = Some(model.slug.clone());
+                }
+                let mut agent = HermesHttpAgent::new(config);
+                if let Some(prompt) = &options.system_prompt {
+                    agent = agent.with_system_prompt(prompt.clone());
+                }
+                Ok(Box::new(agent))
             }
-            let agent = HermesHttpAgent::new(config);
-            Ok(Box::new(agent))
-        } else if is_acp {
-            // Tier 3: ACP over stdio.
-            let binary = provider
-                .command
-                .as_deref()
-                .map(str::trim)
-                .filter(|c| !c.is_empty())
-                .unwrap_or("hermes");
-            let config = HermesAcpConfig {
-                binary: binary.to_string(),
-                cwd: working_dir,
-                session_key: None,
-                model_hint: if model.slug.is_empty() {
-                    None
-                } else {
-                    Some(model.slug.clone())
-                },
-                timeout,
-                mcp_servers: options.local_tool_mcp_servers.as_ref().map(|servers| {
-                    Value::Array(servers.iter().map(|server| server.to_acp_json()).collect())
-                }),
-                resource_limits,
-            };
-            let agent = HermesAcpAgent::new(config);
-            Ok(Box::new(agent))
-        } else {
-            // Tier 2: One-shot CLI.
-            let binary = provider
-                .command
-                .as_deref()
-                .map(str::trim)
-                .filter(|c| !c.is_empty())
-                .unwrap_or("hermes");
-            let config = HermesOneShotConfig {
-                binary: binary.to_string(),
-                flavor: HermesFlavor::ChatQuiet,
-                model_override: if model.slug.is_empty() {
-                    None
-                } else {
-                    Some(model.slug.clone())
-                },
-                timeout,
-                resource_limits,
-                ..Default::default()
-            };
-            let agent = HermesOneShotAgent::new(config);
-            Ok(Box::new(agent))
+            ProviderTransport::Acp { ref command, .. } => {
+                // Tier 3: ACP over stdio.
+                let binary = command.trim();
+                let binary = if binary.is_empty() { "hermes" } else { binary };
+                let config = HermesAcpConfig {
+                    binary: binary.to_string(),
+                    cwd: working_dir,
+                    session_key: None,
+                    model_hint: if model.slug.is_empty() {
+                        None
+                    } else {
+                        Some(model.slug.clone())
+                    },
+                    timeout,
+                    mcp_servers: options.local_tool_mcp_servers.as_ref().map(|servers| {
+                        Value::Array(servers.iter().map(|server| server.to_acp_json()).collect())
+                    }),
+                    resource_limits,
+                    system_prompt: options.system_prompt.clone(),
+                };
+                let agent = HermesAcpAgent::new(config);
+                Ok(Box::new(agent))
+            }
+            ProviderTransport::Cli { .. } | ProviderTransport::Local => {
+                // Tier 2: One-shot CLI.
+                let binary = match &transport {
+                    ProviderTransport::Cli { command, .. } => {
+                        let trimmed = command.trim();
+                        if trimmed.is_empty() {
+                            "hermes"
+                        } else {
+                            trimmed
+                        }
+                    }
+                    _ => "hermes",
+                };
+                let config = HermesOneShotConfig {
+                    binary: binary.to_string(),
+                    flavor: HermesFlavor::ChatQuiet,
+                    model_override: if model.slug.is_empty() {
+                        None
+                    } else {
+                        Some(model.slug.clone())
+                    },
+                    timeout,
+                    resource_limits,
+                    system_prompt: options.system_prompt.clone(),
+                    ..Default::default()
+                };
+                let agent = HermesOneShotAgent::new(config);
+                Ok(Box::new(agent))
+            }
         }
     }
 
+    fn supports_per_call_local_mcp(&self, provider: &ProviderConfig) -> bool {
+        matches!(provider.transport(), ProviderTransport::Acp { .. })
+    }
+
     fn classify_error(&self, status: u16, body: &Value) -> ProviderError {
-        let stderr = body
-            .as_str()
-            .or_else(|| body.pointer("/error").and_then(Value::as_str))
-            .or_else(|| body.pointer("/message").and_then(Value::as_str))
-            .unwrap_or("");
-        let lower = stderr.to_ascii_lowercase();
-
-        if lower.contains("rate limit") {
-            return ProviderError::RateLimit {
-                retry_after_ms: None,
-            };
-        }
-        if lower.contains("unauthorized") || lower.contains("permission denied") {
-            return ProviderError::AuthFailure;
-        }
-        if lower.contains("timed out") || lower.contains("timeout") {
-            return ProviderError::Timeout;
-        }
-        if lower.contains("model not found") || lower.contains("unknown model") {
-            return ProviderError::ModelNotFound;
-        }
-
-        match status {
-            429 => ProviderError::RateLimit {
-                retry_after_ms: None,
-            },
-            401 | 403 => ProviderError::AuthFailure,
-            404 => ProviderError::ModelNotFound,
-            408 => ProviderError::Timeout,
-            500..=599 => ProviderError::ServerError(status),
-            _ => {
-                if stderr.is_empty() {
-                    ProviderError::Other(format!("Hermes exit status {status}"))
-                } else {
-                    ProviderError::Other(stderr.to_string())
-                }
-            }
-        }
+        super::error_classify::classify_cli_error(status, body, "Hermes")
     }
 }
 
@@ -180,6 +147,7 @@ mod tests {
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         let model = ModelProfile {
             provider: "hermes".to_string(),
@@ -210,6 +178,7 @@ mod tests {
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         let model = ModelProfile {
             provider: "hermes".to_string(),
@@ -240,6 +209,7 @@ mod tests {
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         let model = ModelProfile {
             provider: "hermes".to_string(),
@@ -270,6 +240,7 @@ mod tests {
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         let model = ModelProfile::default();
         let options = AgentOptions::default();

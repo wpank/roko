@@ -1,0 +1,199 @@
+{
+  "schema_version": 1,
+  "defaults": {
+    "deadline_seconds": 600,
+    "repetitions": 5
+  },
+  "lanes": [
+    {
+      "id": "current-roko",
+      "label": "Current Roko",
+      "kind": "command",
+      "network": true,
+      "estimated_max_cost_usd": 1.0,
+      "enabled_by_default": true,
+      "argv": [
+        "{roko_bin}",
+        "plan",
+        "run",
+        "{plan}",
+        "--no-tui",
+        "--max-retries",
+        "0",
+        "--max-tasks",
+        "1",
+        "--log-file",
+        "{bundle}/events.jsonl"
+      ],
+      "env": {
+        "ROKO_COMPILE_CONCURRENCY": "1",
+        "SKIP_FRONTEND_BUILD": "1"
+      },
+      "unset_env": [
+        "ROKO_FAST_MODE",
+        "ROKO_FAST_PLAN_DEADLINE_SECS",
+        "ROKO_FAST_SETTLEMENT_HEADROOM_SECS",
+        "ROKO_GATE_MODE",
+        "ROKO_SKIP_PREFLIGHT",
+        "ROKO_TASK_VERIFY_ONLY"
+      ],
+      "evidence_args": [
+        "--require-events"
+      ]
+    },
+    {
+      "id": "roko-fast",
+      "label": "Roko FAST",
+      "kind": "command",
+      "network": true,
+      "estimated_max_cost_usd": 0.5,
+      "enabled_by_default": true,
+      "argv": [
+        "{roko_bin}",
+        "plan",
+        "run",
+        "{plan}",
+        "--no-tui",
+        "--skip-preflight",
+        "--max-retries",
+        "0",
+        "--max-tasks",
+        "1",
+        "--log-file",
+        "{bundle}/events.jsonl"
+      ],
+      "env": {
+        "ROKO_COMPILE_CONCURRENCY": "1",
+        "ROKO_FAST_MODE": "1",
+        "ROKO_FAST_PLAN_DEADLINE_SECS": "{runner_deadline}",
+        "ROKO_FAST_SETTLEMENT_HEADROOM_SECS": "{settlement_headroom}",
+        "ROKO_GATE_MODE": "focused",
+        "ROKO_SKIP_PREFLIGHT": "1",
+        "ROKO_TASK_VERIFY_ONLY": "1",
+        "SKIP_FRONTEND_BUILD": "1"
+      },
+      "evidence_args": [
+        "--require-events"
+      ]
+    },
+    {
+      "id": "manual-codex",
+      "label": "Manual Codex fast prompt",
+      "kind": "manual",
+      "network": true,
+      "estimated_max_cost_usd": 1.0,
+      "enabled_by_default": false,
+      "argv": null,
+      "env": {},
+      "unset_env": [],
+      "evidence_args": []
+    },
+    {
+      "id": "manual-claude",
+      "label": "Manual Claude fast prompt",
+      "kind": "manual",
+      "network": true,
+      "estimated_max_cost_usd": 1.0,
+      "enabled_by_default": false,
+      "argv": null,
+      "env": {},
+      "unset_env": [],
+      "evidence_args": []
+    }
+  ],
+  "fixtures": [
+    {
+      "id": "enum-config",
+      "category": "one-line enum/string/config change",
+      "plan": "plans/disabled-providers-list",
+      "warmup_argv": [
+        "cargo",
+        "check",
+        "--profile",
+        "dev-fast",
+        "-p",
+        "roko-core",
+        "-p",
+        "roko-learn"
+      ]
+    },
+    {
+      "id": "local-types",
+      "category": "local type block with derives/imports",
+      "plan": "plans/codex-cost-reporting",
+      "warmup_argv": [
+        "cargo",
+        "check",
+        "--profile",
+        "dev-fast",
+        "-p",
+        "roko-agent"
+      ]
+    },
+    {
+      "id": "store-logic",
+      "category": "pure store/matching logic",
+      "plan": "plans/rate-limiter-poison-recovery",
+      "warmup_argv": [
+        "cargo",
+        "check",
+        "--profile",
+        "dev-fast",
+        "-p",
+        "roko-agent"
+      ]
+    },
+    {
+      "id": "cli-output",
+      "category": "CLI parser plus human/JSON output",
+      "plan": "plans/skip-permissions-opt-in",
+      "warmup_argv": [
+        "cargo",
+        "check",
+        "--profile",
+        "dev-fast",
+        "-p",
+        "roko-cli"
+      ]
+    },
+    {
+      "id": "http-endpoint",
+      "category": "HTTP endpoint behavior",
+      "plan": "plans/serve-rate-body-limits",
+      "warmup_argv": [
+        "cargo",
+        "check",
+        "--profile",
+        "dev-fast",
+        "-p",
+        "roko-serve"
+      ]
+    },
+    {
+      "id": "persistence-concurrency",
+      "category": "persistence/concurrency invariant",
+      "plan": "plans/snapshot-backup-staging",
+      "warmup_argv": [
+        "cargo",
+        "check",
+        "--profile",
+        "dev-fast",
+        "-p",
+        "roko-cli"
+      ]
+    },
+    {
+      "id": "tui-visual",
+      "category": "TUI/web visual change",
+      "plan": "plans/tui-metric-smoothing",
+      "warmup_argv": [
+        "cargo",
+        "check",
+        "--profile",
+        "dev-fast",
+        "-p",
+        "roko-cli"
+      ]
+    }
+  ]
+}

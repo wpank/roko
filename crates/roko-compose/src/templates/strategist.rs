@@ -256,12 +256,11 @@ mod tests {
             agents_md: "# AGENTS.md\nConventions.".into(),
             plan: PlanSlice {
                 num: "042".into(),
-                base: "golem-mortality".into(),
-                title: "Implement mortality model".into(),
-                content: "## Plan\nDesign the mortality model.".into(),
+                base: "agent-lifecycle".into(),
+                title: "Implement agent lifecycle model".into(),
+                content: "## Plan\nDesign the agent lifecycle model.".into(),
             },
-            workspace_map: "crates/golem-core/src/lib.rs\ncrates/golem-core/src/mortality.rs"
-                .into(),
+            workspace_map: "crates/roko-core/src/lib.rs\ncrates/roko-core/src/lifecycle.rs".into(),
             cross_plan_context: "plan-041: done\nplan-040: done".into(),
             prd2_extract: "## PRD2\nGompertz: lambda(t) = ae^(bt).".into(),
             iteration: 2,
@@ -273,8 +272,8 @@ mod tests {
             decomposition: Some("Step 1: Define types.\nStep 2: Implement formulas.".into()),
             preflight: Some("all green, 142 tests passing".into()),
             ignored_tests: Some("test_old_feature: reason".into()),
-            brief_write_path: ".roko/plans/golem-mortality/brief.md".into(),
-            tasks_write_path: ".roko/plans/golem-mortality/042-tasks.toml".into(),
+            brief_write_path: ".roko/plans/agent-lifecycle/brief.md".into(),
+            tasks_write_path: ".roko/plans/agent-lifecycle/042-tasks.toml".into(),
         }
     }
 
@@ -325,7 +324,7 @@ mod tests {
 
         // Output paths section contains write paths and remediation instruction
         let output = &sections[9].content;
-        assert!(output.contains("golem-mortality"));
+        assert!(output.contains("agent-lifecycle"));
         assert!(output.contains("brief.md"));
         assert!(output.contains("042-tasks.toml"));
         assert!(output.contains("Remediation Plan"));

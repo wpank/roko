@@ -82,6 +82,9 @@ pub enum ProviderKind {
     /// OpenClaw inference runtime (CLI one-shot or ACP).
     #[serde(alias = "OpenClaw", alias = "open_claw", alias = "openclaw")]
     OpenClaw,
+    /// OpenAI `codex` CLI subprocess protocol (`codex exec --json`).
+    #[serde(alias = "CodexCli", alias = "codex")]
+    CodexCli,
 }
 
 impl ProviderKind {
@@ -100,6 +103,7 @@ impl ProviderKind {
             Self::CursorCli => "cursor_cli",
             Self::Hermes => "hermes",
             Self::OpenClaw => "openclaw",
+            Self::CodexCli => "codex_cli",
         }
     }
 
@@ -133,6 +137,7 @@ impl ProviderKind {
             Self::CerebrasApi => AgentBackend::Cerebras,
             Self::Hermes => AgentBackend::Hermes,
             Self::OpenClaw => AgentBackend::OpenClaw,
+            Self::CodexCli => AgentBackend::Codex,
         }
     }
 }
@@ -245,7 +250,8 @@ impl From<AgentBackend> for ProviderKind {
     fn from(backend: AgentBackend) -> Self {
         match backend {
             AgentBackend::Claude => ProviderKind::ClaudeCli,
-            AgentBackend::Codex | AgentBackend::OpenAi => ProviderKind::OpenAiCompat,
+            AgentBackend::Codex => ProviderKind::CodexCli,
+            AgentBackend::OpenAi => ProviderKind::OpenAiCompat,
             AgentBackend::Cursor => ProviderKind::CursorAcp,
             AgentBackend::Ollama => ProviderKind::OpenAiCompat,
             AgentBackend::Perplexity => ProviderKind::PerplexityApi,
@@ -801,7 +807,7 @@ pub enum AgentRole {
     MergeResolver,
     /// Tests CLI/terminal entry points end-to-end.
     TerminalValidator,
-    /// Exercises Golem agent lifecycle (spawn/tick/teardown).
+    /// Exercises agent lifecycle (spawn/tick/teardown).
     GolemLifecycleTester,
     /// Detects divergence between PRD and implementation.
     SpecDriftDetector,
@@ -1217,7 +1223,7 @@ mod tests {
         );
         assert_eq!(
             ProviderKind::from(AgentBackend::Codex),
-            ProviderKind::OpenAiCompat
+            ProviderKind::CodexCli
         );
         assert_eq!(
             ProviderKind::from(AgentBackend::OpenAi),
@@ -1256,6 +1262,7 @@ mod tests {
             (ProviderKind::GeminiApi, "gemini_api"),
             (ProviderKind::GeminiCli, "gemini_cli"),
             (ProviderKind::Hermes, "hermes"),
+            (ProviderKind::CodexCli, "codex_cli"),
         ];
 
         for (kind, label) in kinds {
@@ -1278,6 +1285,10 @@ mod tests {
         // Verify that "openclaw" (from label()) now deserializes correctly.
         let from_label: ProviderKind = serde_json::from_str("\"openclaw\"").unwrap();
         assert_eq!(from_label, ProviderKind::OpenClaw);
+
+        // CodexCli: verify the "codex" alias deserializes correctly.
+        let from_codex_alias: ProviderKind = serde_json::from_str("\"codex\"").unwrap();
+        assert_eq!(from_codex_alias, ProviderKind::CodexCli);
     }
 
     #[test]
@@ -1420,6 +1431,7 @@ mod tests {
                 extra_headers: None,
                 max_concurrent: Some(8),
                 limits: None,
+                require_confirmation: false,
             },
         );
         config.models.insert(

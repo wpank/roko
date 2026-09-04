@@ -6,6 +6,8 @@
 //!
 //! If the endpoint is unreachable the tests will fail, not silently skip.
 
+#![cfg(feature = "alloy-backend")]
+
 use std::sync::Arc;
 
 use serde_json::json;
@@ -58,8 +60,9 @@ fn test_ctx() -> (tempfile::TempDir, ToolContext) {
 
 fn parse_ok_json(result: &ToolResult) -> serde_json::Value {
     match result {
-        ToolResult::Ok { content, .. } => {
-            serde_json::from_str(content).expect("ToolResult content should be valid JSON")
+        ToolResult::Ok { .. } => {
+            let text = result.text_content();
+            serde_json::from_str(&text).expect("ToolResult content should be valid JSON")
         }
         ToolResult::Err(e) => panic!("expected ToolResult::Ok but got Err: {e}"),
     }

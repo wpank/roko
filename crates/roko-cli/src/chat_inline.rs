@@ -7,7 +7,6 @@
 //! Falls back to the legacy line-oriented REPL when stdout is not a TTY.
 
 use std::collections::HashMap;
-use std::fs;
 use std::io::Write as _;
 use std::time::{Duration, Instant};
 
@@ -35,7 +34,6 @@ use crate::tui::Theme;
 
 use crate::chat_session::{ChatAgentSession, SlashResult};
 use chrono;
-use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
 use roko_learn::cost_table::CostTable;
 
 // ---------------------------------------------------------------------------
@@ -583,6 +581,7 @@ impl InputState {
     }
 
     /// Number of lines in the buffer.
+    #[allow(dead_code)]
     fn line_count(&self) -> usize {
         self.buffer.lines().count().max(1)
     }
@@ -714,9 +713,11 @@ enum DispatchMode {
         client: reqwest::Client,
         backend_url: String,
         is_sidecar: bool,
+        #[allow(dead_code)]
         serve_url: String,
     },
     /// Deprecated direct fallback. Kept only to make stale paths fail visibly.
+    #[allow(dead_code)]
     Direct { auth: AuthMethod },
     /// Full agent session with system prompt, tools, MCP, safety.
     Session,
@@ -3197,7 +3198,7 @@ fn handle_slash_command(
         "/status" => {
             let roko_dir = std::path::Path::new(".roko");
             let has_roko = roko_dir.exists();
-            let signal_count = std::fs::read_to_string(".roko/signals.jsonl")
+            let signal_count = std::fs::read_to_string(".roko/engrams.jsonl")
                 .map(|s| s.lines().count())
                 .unwrap_or(0);
             let episode_count = std::fs::read_to_string(".roko/episodes.jsonl")
@@ -3222,35 +3223,42 @@ fn handle_slash_command(
             ])?;
         }
         "/doctor" => {
-            let checks = [
-                ("roko.toml", std::path::Path::new("roko.toml").exists()),
-                (".roko/", std::path::Path::new(".roko").exists()),
-                ("git", std::path::Path::new(".git").exists()),
-                ("ZAI_API_KEY", std::env::var("ZAI_API_KEY").is_ok()),
-                (
-                    "ANTHROPIC_API_KEY",
-                    std::env::var("ANTHROPIC_API_KEY").is_ok(),
-                ),
-                ("OPENAI_API_KEY", std::env::var("OPENAI_API_KEY").is_ok()),
-                ("GEMINI_API_KEY", std::env::var("GEMINI_API_KEY").is_ok()),
-                (
-                    "MOONSHOT_API_KEY",
-                    std::env::var("MOONSHOT_API_KEY").is_ok(),
-                ),
-                (
-                    "PERPLEXITY_API_KEY",
-                    std::env::var("PERPLEXITY_API_KEY").is_ok(),
-                ),
-            ];
+            // Use the shared diagnostic service for chat /doctor checks.
+            // Fixed adapter matrix: config, workspace, git, credentials.
+            use roko_execution::diagnostics::{
+                DiagnosticCheckId, DiagnosticRequest, DiagnosticService, DiagnosticSeverity,
+            };
+
+            let selected = [
+                DiagnosticCheckId::Config,
+                DiagnosticCheckId::Workspace,
+                DiagnosticCheckId::Git,
+                DiagnosticCheckId::Credentials,
+            ]
+            .into_iter()
+            .collect();
+
+            let report = DiagnosticService::run(&DiagnosticRequest {
+                workdir: std::env::current_dir().unwrap_or_default(),
+                selected,
+                profile: None,
+                allow_repairs: false,
+            });
+
             let mut lines = vec![styled::section_start(
                 theme,
                 "doctor",
                 "workspace health",
                 None,
             )];
-            for (name, ok) in &checks {
-                let icon = if *ok { symbols::PASS } else { symbols::FAIL };
-                lines.push(styled::continuation(theme, icon, name, None));
+            for finding in &report.findings {
+                let icon = match finding.severity {
+                    DiagnosticSeverity::Info => symbols::PASS,
+                    DiagnosticSeverity::Warning => symbols::WARN,
+                    DiagnosticSeverity::Error => symbols::FAIL,
+                };
+                let label = format!("{}: {}", finding.check_id, finding.message);
+                lines.push(styled::continuation(theme, icon, &label, None));
             }
             lines.push(Line::from(vec![Span::styled(
                 symbols::END.to_string(),

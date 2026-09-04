@@ -237,6 +237,7 @@ impl PluginConfinement {
         }
     }
 
+    #[allow(dead_code)]
     fn is_supported(&self) -> bool {
         !matches!(self, Self::Unsupported { .. })
     }
@@ -1675,10 +1676,13 @@ timeout_ms = 1000
                 &ToolContext::testing(tmp.path()),
             )
             .await;
-        assert!(matches!(
-            result,
-            ToolResult::Ok { ref content, .. } if content == "plugin-ok"
-        ));
+        match &result {
+            ToolResult::Ok { content, .. } => {
+                let text: String = content.iter().filter_map(|c| c.as_text()).collect();
+                assert_eq!(text, "plugin-ok");
+            }
+            other => panic!("expected Ok, got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -1843,10 +1847,13 @@ timeout_ms = 1000
             )
             .await;
 
-        assert!(matches!(
-            result,
-            ToolResult::Ok { ref content, .. } if content == &format!("{host_path}:unset")
-        ));
+        match &result {
+            ToolResult::Ok { content, .. } => {
+                let text: String = content.iter().filter_map(|c| c.as_text()).collect();
+                assert_eq!(text, format!("{host_path}:unset"));
+            }
+            other => panic!("expected Ok, got {other:?}"),
+        }
     }
 
     #[tokio::test]

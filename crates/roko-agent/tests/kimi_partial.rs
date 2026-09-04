@@ -1,67 +1,14 @@
 #![allow(missing_docs)]
 
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+mod common;
 
-use async_trait::async_trait;
-use roko_agent::http::{HttpPostError, HttpPoster};
+use std::sync::Arc;
+
+use roko_agent::http::HttpPoster;
 use roko_agent::translate::openai::build_partial_continuation;
 use serde_json::Value;
 
-#[derive(Debug, Clone)]
-struct RecordedRequest {
-    url: String,
-    headers: Vec<(String, String)>,
-    body: Value,
-    timeout_ms: u64,
-}
-
-#[derive(Debug)]
-struct MockHttpPoster {
-    responses: Mutex<VecDeque<String>>,
-    requests: Mutex<Vec<RecordedRequest>>,
-}
-
-impl MockHttpPoster {
-    fn new(responses: Vec<String>) -> Arc<Self> {
-        Arc::new(Self {
-            responses: Mutex::new(responses.into_iter().collect()),
-            requests: Mutex::new(Vec::new()),
-        })
-    }
-
-    fn requests(&self) -> Vec<RecordedRequest> {
-        self.requests.lock().expect("requests lock").clone()
-    }
-}
-
-#[async_trait]
-impl HttpPoster for MockHttpPoster {
-    async fn post_json(
-        &self,
-        url: &str,
-        headers: &[(String, String)],
-        body: &[u8],
-        timeout_ms: u64,
-    ) -> Result<String, HttpPostError> {
-        let body: Value = serde_json::from_slice(body).expect("request body must be json");
-        self.requests
-            .lock()
-            .expect("requests lock")
-            .push(RecordedRequest {
-                url: url.to_string(),
-                headers: headers.to_vec(),
-                body,
-                timeout_ms,
-            });
-
-        self.responses
-            .lock()
-            .expect("responses lock")
-            .pop_front()
-            .ok_or_else(|| HttpPostError::transport("no mock response queued"))
-    }
-}
+use common::MockHttpPoster;
 
 fn endpoint(base_url: &str) -> String {
     format!("{}/chat/completions", base_url.trim_end_matches('/'))
@@ -146,7 +93,7 @@ async fn kimi_partial_flow() {
     })
     .to_string();
 
-    let poster = MockHttpPoster::new(vec![first_response, second_response]);
+    let poster = MockHttpPoster::from_bodies(vec![first_response, second_response]);
     let base_url = "https://api.moonshot.ai/v1";
     let model = "kimi-k2.5";
 

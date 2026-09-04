@@ -191,6 +191,7 @@ mod tests {
             model: model.to_string(),
             provider: "test".to_string(),
             timestamp_ms: 0,
+            is_model_override: false,
         }
     }
 
@@ -202,6 +203,7 @@ mod tests {
                 output_tokens: 50,
                 cache_read_tokens: 0,
                 cache_create_tokens: 0,
+                reasoning_tokens: 0,
                 cost_usd: 0.01,
                 wall_ms: 100,
             },

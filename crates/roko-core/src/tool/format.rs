@@ -348,6 +348,53 @@ pub fn profile_for_model(slug: &str) -> ToolFormatProfile {
         };
     }
 
+    // DeepSeek (V3/R1/Coder) → OpenAI-compat JSON, strong tool support
+    if slug.starts_with("deepseek") {
+        return ToolFormatProfile {
+            preferred: ToolFormat::OpenAiJson,
+            fallback_chain: vec![ToolFormat::JsonMode, ToolFormat::ReActText],
+            supports_tools: true,
+            parallel_safe: true,
+            max_tools_before_degrade: 16,
+            needs_stream_disabled: false,
+            tool_call_id_len: None,
+            demotion_after_failures: 3,
+        };
+    }
+
+    // Kimi (Moonshot AI) → OpenAI-compat JSON
+    if slug.starts_with("kimi") || slug.starts_with("moonshot") {
+        return ToolFormatProfile {
+            preferred: ToolFormat::OpenAiJson,
+            fallback_chain: vec![ToolFormat::JsonMode, ToolFormat::ReActText],
+            supports_tools: true,
+            parallel_safe: true,
+            max_tools_before_degrade: 16,
+            needs_stream_disabled: false,
+            tool_call_id_len: None,
+            demotion_after_failures: 3,
+        };
+    }
+
+    // GLM (ZhipuAI) → OpenAI-compat JSON.
+    // GLM-4-plus/4-long were the first parallel-safe variants; GLM-5+ all
+    // support parallel tool calls, so default to true for any generation
+    // beyond 4 and only restrict legacy GLM-4 base/air models.
+    if slug.starts_with("glm") {
+        let parallel =
+            !slug.starts_with("glm-4") || slug.contains("4-plus") || slug.contains("4-long");
+        return ToolFormatProfile {
+            preferred: ToolFormat::OpenAiJson,
+            fallback_chain: vec![ToolFormat::JsonMode, ToolFormat::ReActText],
+            supports_tools: true,
+            parallel_safe: parallel,
+            max_tools_before_degrade: 8,
+            needs_stream_disabled: false,
+            tool_call_id_len: None,
+            demotion_after_failures: 3,
+        };
+    }
+
     // `ollama/…` prefix (local gateway) — treat as unknown but disable stream
     if slug.starts_with("ollama/") {
         return profile_for_model(slug.trim_start_matches("ollama/"));
@@ -501,6 +548,50 @@ mod tests {
     fn ollama_prefix_strips_and_looks_up() {
         let p = profile_for_model("ollama/qwen3-32b");
         assert_eq!(p.preferred, ToolFormat::HermesJson);
+    }
+
+    #[test]
+    fn profile_for_deepseek_model() {
+        for slug in &["deepseek-v3", "deepseek-r1", "deepseek-coder-v2"] {
+            let p = profile_for_model(slug);
+            assert_eq!(p.preferred, ToolFormat::OpenAiJson, "slug={slug}");
+            assert!(p.supports_tools, "slug={slug}");
+            assert!(p.parallel_safe, "slug={slug}");
+            assert_eq!(p.max_tools_before_degrade, 16, "slug={slug}");
+            assert!(!p.needs_stream_disabled, "slug={slug}");
+        }
+    }
+
+    #[test]
+    fn profile_for_kimi_model() {
+        for slug in &["kimi-k2", "kimi-1.5", "moonshot-v1-8k"] {
+            let p = profile_for_model(slug);
+            assert_eq!(p.preferred, ToolFormat::OpenAiJson, "slug={slug}");
+            assert!(p.supports_tools, "slug={slug}");
+            assert!(p.parallel_safe, "slug={slug}");
+            assert_eq!(p.max_tools_before_degrade, 16, "slug={slug}");
+        }
+    }
+
+    #[test]
+    fn profile_for_glm_model() {
+        let p = profile_for_model("glm-4-plus");
+        assert_eq!(p.preferred, ToolFormat::OpenAiJson);
+        assert!(p.supports_tools);
+        assert!(p.parallel_safe);
+        assert_eq!(p.max_tools_before_degrade, 8);
+
+        // Base GLM-4 is not parallel_safe
+        let p2 = profile_for_model("glm-4");
+        assert!(p2.supports_tools);
+        assert!(!p2.parallel_safe);
+    }
+
+    #[test]
+    fn ollama_strips_deepseek_prefix() {
+        let p = profile_for_model("ollama/deepseek-v3");
+        assert_eq!(p.preferred, ToolFormat::OpenAiJson);
+        assert!(p.supports_tools);
     }
 
     #[test]

@@ -90,6 +90,9 @@ pub struct ThresholdProfile {
 
 impl ThresholdProfile {
     /// Coding domain: strict compile/clippy, moderate test tolerance.
+    ///
+    /// Audit #80: all 7 rungs are pre-populated so no rung falls back to
+    /// the lazy 0.5 default.
     #[must_use]
     pub fn coding() -> Self {
         let mut priors = HashMap::new();
@@ -97,6 +100,9 @@ impl ThresholdProfile {
         priors.insert(1, 0.80); // clippy: usually passes
         priors.insert(2, 0.65); // test: moderate expectation
         priors.insert(3, 0.50); // diff review: neutral
+        priors.insert(4, 0.85); // fmt: formatting should pass
+        priors.insert(5, 0.50); // custom/shell: neutral
+        priors.insert(6, 0.50); // judge: neutral
         Self {
             name: "coding".into(),
             rung_priors: priors,
@@ -107,6 +113,8 @@ impl ThresholdProfile {
     }
 
     /// Research domain: lenient compile, strict correctness.
+    ///
+    /// Audit #80: all 7 rungs are pre-populated.
     #[must_use]
     pub fn research() -> Self {
         let mut priors = HashMap::new();
@@ -114,6 +122,9 @@ impl ThresholdProfile {
         priors.insert(1, 0.60); // clippy: flexible
         priors.insert(2, 0.85); // test: must be correct
         priors.insert(3, 0.40); // diff: exploratory
+        priors.insert(4, 0.60); // fmt: flexible
+        priors.insert(5, 0.50); // custom/shell: neutral
+        priors.insert(6, 0.50); // judge: neutral
         Self {
             name: "research".into(),
             rung_priors: priors,
@@ -124,6 +135,8 @@ impl ThresholdProfile {
     }
 
     /// Security domain: strict everything, few retries.
+    ///
+    /// Audit #80: all 7 rungs are pre-populated.
     #[must_use]
     pub fn security() -> Self {
         let mut priors = HashMap::new();
@@ -131,6 +144,9 @@ impl ThresholdProfile {
         priors.insert(1, 0.90); // clippy: strict
         priors.insert(2, 0.90); // test: strict
         priors.insert(3, 0.80); // diff: careful review
+        priors.insert(4, 0.90); // fmt: strict formatting
+        priors.insert(5, 0.70); // custom/shell: moderately strict
+        priors.insert(6, 0.75); // judge: strict review
         Self {
             name: "security".into(),
             rung_priors: priors,
@@ -202,11 +218,24 @@ fn default_cusum_threshold() -> f64 {
     DEFAULT_CUSUM_THRESHOLD
 }
 
+/// Total number of gate rungs in the pipeline (0 through 6 inclusive).
+///
+/// Rungs: 0=compile, 1=clippy, 2=test, 3=diff, 4=fmt, 5=custom/shell, 6=judge.
+pub const TOTAL_RUNGS: u32 = 7;
+
 impl AdaptiveThresholds {
-    /// Create a new empty set of adaptive thresholds.
+    /// Create a new set of adaptive thresholds with all 7 rungs pre-populated.
+    ///
+    /// Audit #80: every rung starts with a neutral `RungStats::default()`
+    /// so the EMA/CUSUM tracking begins immediately on first observation
+    /// rather than being lazily initialized.
     pub fn new() -> Self {
+        let mut rungs = HashMap::with_capacity(TOTAL_RUNGS as usize);
+        for rung in 0..TOTAL_RUNGS {
+            rungs.insert(rung, RungStats::default());
+        }
         Self {
-            rungs: HashMap::new(),
+            rungs,
             cusum_sensitivity: DEFAULT_CUSUM_SENSITIVITY,
             cusum_threshold: DEFAULT_CUSUM_THRESHOLD,
             spc_detectors: HashMap::new(),

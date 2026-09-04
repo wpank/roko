@@ -8,7 +8,7 @@
 //! No network requests are made.
 
 use roko_core::agent::ProviderKind;
-use roko_core::config::schema::{ProviderConfig, RokoConfig};
+use roko_core::config::schema::{ProviderConfig, ProviderTransport, RokoConfig};
 use std::collections::HashSet;
 
 /// A single provider readiness issue detected during pre-flight.
@@ -97,52 +97,30 @@ fn check_single_provider(
     provider: &ProviderConfig,
     issues: &mut Vec<ProviderReadinessIssue>,
 ) {
-    match provider.kind {
-        ProviderKind::ClaudeCli => {
-            let command = provider.command.as_deref().unwrap_or("claude");
+    let transport = provider.transport();
+    match transport {
+        ProviderTransport::Cli { ref command, .. } | ProviderTransport::Acp { ref command, .. } => {
             if !binary_on_path(command) {
+                let hint = match provider.kind {
+                    ProviderKind::ClaudeCli => {
+                        "claude CLI not found on PATH. Install: https://claude.ai/cli".to_string()
+                    }
+                    ProviderKind::CodexCli => {
+                        "codex CLI not found on PATH. Install: https://github.com/openai/codex"
+                            .to_string()
+                    }
+                    _ => format!("command '{command}' not found on PATH."),
+                };
                 issues.push(ProviderReadinessIssue {
                     provider_name: provider_name.to_string(),
-                    message: "claude CLI not found on PATH. Install: https://claude.ai/cli"
-                        .to_string(),
+                    message: hint,
                 });
             }
         }
-        ProviderKind::CursorAcp | ProviderKind::CursorCli => {
-            // Cursor handles auth/process ownership differently.
-            // Only check if an explicit command is configured.
-            let default_cmd = if provider.kind == ProviderKind::CursorCli {
-                Some("agent")
-            } else {
-                None
-            };
-            let command = provider.command.as_deref().or(default_cmd);
-            if let Some(command) = command
-                && !binary_on_path(command)
-            {
-                issues.push(ProviderReadinessIssue {
-                    provider_name: provider_name.to_string(),
-                    message: format!("Cursor command '{}' not found on PATH.", command),
-                });
-            }
-        }
-        ProviderKind::GeminiCli => {
-            let command = provider.command.as_deref().unwrap_or("gemini");
-            if !binary_on_path(command) {
-                issues.push(ProviderReadinessIssue {
-                    provider_name: provider_name.to_string(),
-                    message: format!("Gemini CLI command '{command}' not found on PATH."),
-                });
-            }
-        }
-        ProviderKind::AnthropicApi
-        | ProviderKind::OpenAiCompat
-        | ProviderKind::PerplexityApi
-        | ProviderKind::GeminiApi
-        | ProviderKind::CerebrasApi => {
+        ProviderTransport::Http { .. } => {
             check_api_key_env(provider_name, provider, issues);
         }
-        ProviderKind::Hermes | ProviderKind::OpenClaw => {
+        ProviderTransport::Local => {
             // Harness adapters handle their own readiness via HarnessProbe.
         }
     }
@@ -296,6 +274,7 @@ mod tests {
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
         config.models.insert(
@@ -337,6 +316,7 @@ mod tests {
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
         config.models.insert(
@@ -370,6 +350,7 @@ mod tests {
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
         // SAFETY: test is single-threaded; no other thread reads this env var.

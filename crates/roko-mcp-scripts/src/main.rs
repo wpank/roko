@@ -5,7 +5,7 @@
 //! a `# description:` comment near the top of the file, executed, and return
 //! captured stdout/stderr in the MCP tool result payload.
 
-use roko_mcp_stdio::{JsonRpcError, JsonRpcRequest, serve_stdio};
+use roko_mcp_stdio::{JsonRpcError, JsonRpcRequest, MCP_PROTOCOL_VERSION, serve_stdio};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -96,7 +96,7 @@ fn handle_request(
 
 fn handle_initialize() -> Value {
     json!({
-        "protocolVersion": "2024-11-05",
+        "protocolVersion": MCP_PROTOCOL_VERSION,
         "capabilities": {
             "tools": {}
         },

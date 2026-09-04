@@ -21,6 +21,7 @@ pub enum Severity {
 }
 
 impl Severity {
+    #[allow(dead_code)]
     fn label(self) -> &'static str {
         match self {
             Self::Error => "error",
@@ -62,6 +63,7 @@ pub struct ValidationReport {
 
 impl ValidationReport {
     #[must_use]
+    #[allow(dead_code)]
     pub fn exit_code(&self, strict: bool) -> i32 {
         if self.totals.errors > 0 || (strict && self.totals.warnings > 0) {
             1
@@ -98,6 +100,7 @@ impl TaskSnapshot {
     }
 }
 
+#[allow(dead_code)]
 pub fn validate_plans_dir(
     dir: &Path,
     models: Option<&IndexMap<String, ModelProfile>>,
@@ -145,6 +148,31 @@ fn validate_plans_dir_impl(
                 plan.diagnostics.extend(ref_diagnostics);
             }
 
+            if let Ok(tasks_file) = roko_cli::task_parser::TasksFile::parse(&tasks_path) {
+                let plan_dir = tasks_path.parent().unwrap_or(dir);
+                for issue in roko_cli::plan_policy::validate_plan_context(
+                    &tasks_file,
+                    workdir,
+                    plan_dir,
+                    roko_cli::plan_policy::PlanExecutionPolicy::for_environment(),
+                ) {
+                    // The file-reference pass already classifies missing read
+                    // prerequisites as PLAN_030/PLAN_031 warnings, including
+                    // declared cross-plan outputs. Do not duplicate and promote
+                    // the same finding to a fail-fast runner-policy error here.
+                    if issue.code == "PLAN_CONTEXT_MISSING" {
+                        continue;
+                    }
+                    plan.diagnostics.push(Diagnostic {
+                        severity: Severity::Error,
+                        rule_id: issue.code.to_string(),
+                        plan_id: Some(plan.plan_id.clone()),
+                        task_id: issue.task_id,
+                        message: issue.message,
+                    });
+                }
+            }
+
             let existing_crates = collect_workspace_package_names(workdir, "crates");
             if !existing_crates.is_empty()
                 && let Ok(content) = std::fs::read_to_string(&tasks_path)
@@ -185,6 +213,7 @@ fn validate_plans_dir_impl(
     Ok(ValidationReport { plans, totals })
 }
 
+#[allow(dead_code)]
 pub fn render_text(report: &ValidationReport) -> String {
     let mut out = String::new();
     let mut printed_plan = false;
@@ -225,6 +254,7 @@ pub fn render_text(report: &ValidationReport) -> String {
     out
 }
 
+#[allow(dead_code)]
 pub fn render_json(report: &ValidationReport) -> Result<String> {
     serde_json::to_string_pretty(report).context("serialize plan validation report")
 }
@@ -263,6 +293,14 @@ fn collect_tasks_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(
     for entry in entries {
         let path = entry.path();
         if path.is_dir() {
+            // Skip archived plans — they contain stale references to
+            // removed files/models and should not block active plan runs.
+            if path
+                .file_name()
+                .is_some_and(|name| name == "archive" || name == "archived")
+            {
+                continue;
+            }
             collect_tasks_files_recursive(&path, out)?;
         } else if path.is_file() && path.file_name().is_some_and(|name| name == "tasks.toml") {
             out.push(path);

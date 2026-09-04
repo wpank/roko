@@ -171,8 +171,25 @@ impl EffectsConfig {
 
     fn apply_preset(&mut self, preset: EffectsPreset) {
         self.preset = preset;
+        self.screen_postfx = !matches!(preset, EffectsPreset::Off);
         self.nerv_viz = matches!(preset, EffectsPreset::Full);
-        self.particles = matches!(preset, EffectsPreset::Minimal | EffectsPreset::Full);
+        // Mori's default treatment keeps the interface still and legible.
+        // Character particles are an explicit Full-preset flourish.
+        self.particles = matches!(preset, EffectsPreset::Full);
+        // Full preset enables the remaining dormant effects.
+        self.bloom_enabled = matches!(preset, EffectsPreset::Full);
+        self.shadows_enabled = matches!(preset, EffectsPreset::Full);
+        self.vfx_enabled = matches!(preset, EffectsPreset::Full);
+        self.bloom_intensity = if matches!(preset, EffectsPreset::Full) {
+            0.15
+        } else {
+            0.0
+        };
+        self.vignette_intensity = if matches!(preset, EffectsPreset::Full) {
+            0.20
+        } else {
+            0.0
+        };
     }
 }
 
@@ -185,23 +202,28 @@ pub fn save_preset_to_root(root: &Path, preset: EffectsPreset) -> Result<(), Str
         Err(err) => return Err(format!("read roko.toml: {err}")),
     };
 
-    let mut root_val = if content.trim().is_empty() {
-        toml::Value::Table(toml::map::Map::new())
+    let mut document = if content.trim().is_empty() {
+        toml_edit::DocumentMut::new()
     } else {
         content
-            .parse::<toml::Value>()
+            .parse::<toml_edit::DocumentMut>()
             .map_err(|e| format!("parse roko.toml: {e}"))?
     };
 
-    set_toml_path(
-        &mut root_val,
-        "tui.effects.preset",
-        toml::Value::String(preset.as_toml_value().to_string()),
-    )?;
+    let preset_item = &mut document["tui"]["effects"]["preset"];
+    if let Some(existing) = preset_item.as_value_mut() {
+        // Replacing an Item discards its inline decoration. Preserve the
+        // existing whitespace/comment so cycling effects does not rewrite
+        // an operator-maintained config file beyond the requested value.
+        let decor = existing.decor().clone();
+        *existing = toml_edit::Value::from(preset.as_toml_value());
+        *existing.decor_mut() = decor;
+    } else {
+        *preset_item = toml_edit::value(preset.as_toml_value());
+    }
 
-    let toml_str =
-        toml::to_string_pretty(&root_val).map_err(|e| format!("serialize roko.toml: {e}"))?;
-    std::fs::write(&config_path, toml_str).map_err(|e| format!("write roko.toml: {e}"))?;
+    std::fs::write(&config_path, document.to_string())
+        .map_err(|e| format!("write roko.toml: {e}"))?;
     Ok(())
 }
 
@@ -221,37 +243,6 @@ fn string_at_path(value: &toml::Value, path: &[&str]) -> Option<String> {
     current.as_str().map(|s| s.to_string())
 }
 
-fn set_toml_path(root: &mut toml::Value, key: &str, val: toml::Value) -> Result<(), String> {
-    let parts: Vec<&str> = key.split('.').collect();
-    if parts.is_empty() {
-        return Err("empty TOML path".to_string());
-    }
-
-    let mut current = root;
-    for part in &parts[..parts.len() - 1] {
-        if !current.is_table() {
-            *current = toml::Value::Table(toml::map::Map::new());
-        }
-
-        let table = current
-            .as_table_mut()
-            .ok_or_else(|| format!("config path {key}: not a table"))?;
-        current = table
-            .entry((*part).to_string())
-            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
-    }
-
-    if !current.is_table() {
-        *current = toml::Value::Table(toml::map::Map::new());
-    }
-
-    let table = current
-        .as_table_mut()
-        .ok_or_else(|| format!("config path {key}: not a table"))?;
-    table.insert(parts[parts.len() - 1].to_string(), val);
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,19 +254,23 @@ mod tests {
         assert_eq!(config.preset, EffectsPreset::Minimal);
         assert!(config.screen_postfx);
         assert!(!config.nerv_viz);
-        assert!(config.particles);
+        assert!(!config.particles);
 
         assert_eq!(config.cycle_preset(), EffectsPreset::Full);
         assert!(config.screen_postfx);
         assert!(config.nerv_viz);
         assert!(config.particles);
+        assert!(config.bloom_enabled);
+        assert!(config.shadows_enabled);
+        assert!(config.vfx_enabled);
 
         assert_eq!(config.cycle_preset(), EffectsPreset::Off);
-        // Screen post-processing is an independent Ctrl-E toggle; changing
-        // the state-visualization preset must not silently change it.
-        assert!(config.screen_postfx);
+        assert!(!config.screen_postfx);
         assert!(!config.nerv_viz);
         assert!(!config.particles);
+        assert!(!config.bloom_enabled);
+        assert!(!config.shadows_enabled);
+        assert!(!config.vfx_enabled);
     }
 
     #[test]
@@ -291,13 +286,28 @@ mod tests {
         assert_eq!(config.preset, EffectsPreset::Minimal);
         assert!(config.screen_postfx);
         assert!(!config.nerv_viz);
-        assert!(config.particles);
+        assert!(!config.particles);
 
         config
             .save_preset(dir.path())
             .expect("save preset to roko.toml");
         let saved = std::fs::read_to_string(dir.path().join("roko.toml")).expect("read back");
         assert!(saved.contains("preset = \"minimal\""));
+    }
+
+    #[test]
+    fn save_preserves_comments_and_existing_order() {
+        let dir = tempdir().expect("tempdir");
+        let original = "# operator note\n[project]\nname = \"demo\"\n\n[tui.effects]\n# keep this note\npreset = \"minimal\" # inline\nscreen_postfx = true\n";
+        std::fs::write(dir.path().join("roko.toml"), original).expect("write roko.toml");
+
+        save_preset_to_root(dir.path(), EffectsPreset::Full).expect("save full preset");
+        let saved = std::fs::read_to_string(dir.path().join("roko.toml")).expect("read back");
+
+        assert!(saved.starts_with("# operator note\n[project]"));
+        assert!(saved.contains("# keep this note"));
+        assert!(saved.contains("preset = \"full\" # inline"));
+        assert!(saved.find("[project]") < saved.find("[tui.effects]"));
     }
 
     #[test]

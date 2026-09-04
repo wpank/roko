@@ -19,6 +19,12 @@ pub struct SseEvent {
     pub kind: String,
     /// Run ID.
     pub run_id: String,
+    /// Exact next-byte cursor in the durable per-run index when the producer
+    /// persisted and flushed before publication. In-process producers that do
+    /// not own that boundary leave this absent; clients then retain their last
+    /// durable cursor and recover the event from indexed replay after flush.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<u64>,
     /// Event-specific data.
     pub data: serde_json::Value,
 }
@@ -84,7 +90,9 @@ impl SseAdapter {
         handle.spawn(async move {
             loop {
                 match rx.recv().await {
-                    Ok(envelope) => adapter.consume(&envelope.payload),
+                    Ok(envelope) => {
+                        adapter.consume_with_cursor(&envelope.payload, envelope.cursor);
+                    }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         tracing::warn!(n, "workflow SSE runtime event bridge lagged");
                         continue;
@@ -97,6 +105,27 @@ impl SseAdapter {
 
     pub fn consume_envelope(&self, envelope: &RuntimeEventEnvelope) {
         self.consume(&envelope.payload);
+    }
+
+    /// Publish an event with an exact durable per-run byte cursor.
+    pub fn consume_with_cursor(&self, event: &RuntimeEvent, cursor: Option<u64>) {
+        self.publish(event, cursor);
+    }
+
+    fn publish(&self, event: &RuntimeEvent, cursor: Option<u64>) {
+        let mut sse_event = Self::to_sse_event(event);
+        sse_event.cursor = cursor;
+        // Non-blocking: if no subscribers exist, the event is dropped.
+        let _ = self.sender.send(sse_event);
+
+        let consumer = self
+            .state_hub_consumer
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(consumer) = consumer {
+            consumer.consume(event);
+        }
     }
 
     /// Convert a RuntimeEvent to an SseEvent.
@@ -494,11 +523,43 @@ impl SseAdapter {
                     "status": status,
                 }),
             ),
+            // v2 events carry identity on the envelope, not the payload.
+            // Serialize the full payload as data and use the kind label.
+            RuntimeEvent::WaveStarted { .. }
+            | RuntimeEvent::WaveCompleted { .. }
+            | RuntimeEvent::TaskRetrying { .. }
+            | RuntimeEvent::TaskSkipped { .. }
+            | RuntimeEvent::AgentProgress { .. }
+            | RuntimeEvent::UsageRecorded { .. }
+            | RuntimeEvent::GateRungStarted { .. }
+            | RuntimeEvent::GateRungOutput { .. }
+            | RuntimeEvent::GateRungCompleted { .. }
+            | RuntimeEvent::ApprovalRequested { .. }
+            | RuntimeEvent::ApprovalResolved { .. }
+            | RuntimeEvent::ControlApplied { .. }
+            | RuntimeEvent::BudgetUpdated { .. }
+            | RuntimeEvent::WorkspaceAcquired { .. }
+            | RuntimeEvent::WorkspaceReleased { .. }
+            | RuntimeEvent::MergeQueued { .. }
+            | RuntimeEvent::MergeCompleted { .. }
+            | RuntimeEvent::PublishCompleted { .. }
+            | RuntimeEvent::FeedbackSinkSettled { .. }
+            | RuntimeEvent::FeedbackSinkFailed { .. }
+            | RuntimeEvent::PredictionPublished { .. }
+            | RuntimeEvent::ActualRecorded { .. }
+            | RuntimeEvent::CorrectionApplied { .. }
+            | RuntimeEvent::SequenceGap { .. }
+            | RuntimeEvent::Extension { .. } => (
+                event.kind(),
+                "",
+                serde_json::to_value(event).unwrap_or_default(),
+            ),
         };
 
         SseEvent {
             kind: kind.to_string(),
             run_id: run_id.to_string(),
+            cursor: None,
             data,
         }
     }
@@ -512,18 +573,7 @@ pub fn sse_event_consumer(adapter: &Arc<SseAdapter>) -> Arc<dyn EventConsumer> {
 
 impl EventConsumer for SseAdapter {
     fn consume(&self, event: &RuntimeEvent) {
-        let sse_event = Self::to_sse_event(event);
-        // Non-blocking: if no subscribers exist, the event is dropped.
-        let _ = self.sender.send(sse_event);
-
-        let consumer = self
-            .state_hub_consumer
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        if let Some(consumer) = consumer {
-            consumer.consume(event);
-        }
+        self.publish(event, None);
     }
 }
 
@@ -558,6 +608,24 @@ mod tests {
 
         let event = rx.try_recv().unwrap();
         assert_eq!(event.kind, "workflow_started");
+    }
+
+    #[test]
+    fn durable_cursor_is_forwarded_to_sse_clients() {
+        let adapter = SseAdapter::new(16);
+        let mut rx = adapter.subscribe();
+
+        adapter.consume_with_cursor(
+            &RuntimeEvent::WorkflowStarted {
+                run_id: "r1".into(),
+                template: "express".into(),
+                prompt: "fix bug".into(),
+            },
+            Some(128),
+        );
+
+        let event = rx.try_recv().expect("cursor-bearing SSE event");
+        assert_eq!(event.cursor, Some(128));
     }
 
     #[test]

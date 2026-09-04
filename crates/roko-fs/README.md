@@ -12,7 +12,7 @@ roko-core = { path = "../roko-core" }
 
 ## What's inside
 
-- **`FileSubstrate`** — persists signals to `<dir>/signals.jsonl`, replays on startup, serves queries from an in-memory index.
+- **`FileSubstrate`** — persists signals to `<dir>/engrams.jsonl`, replays on startup, serves queries from an in-memory index.
 - **`JsonlTraceSink`** — append-only trace log for debugging.
 - **`MetricsLog`** — structured counters written alongside signals.
 
@@ -34,7 +34,7 @@ let all = reopened.query(&Query::of_kind(Kind::Episode), &Context::now()).await?
 ## Why JSONL + in-memory index
 
 - **Append-only** writes are crash-safe — a partial last line is skipped on replay.
-- **JSONL** is grep-able, diff-able, human-readable. You can inspect `.roko/signals.jsonl` with `jq` and see exactly what happened.
+- **JSONL** is grep-able, diff-able, human-readable. You can inspect `.roko/engrams.jsonl` with `jq` and see exactly what happened.
 - **In-memory index** gives the same query latency as `MemorySubstrate` (tens of MB per million signals).
 - Swap in SQLite/sled later behind the same `Substrate` trait without touching callers.
 

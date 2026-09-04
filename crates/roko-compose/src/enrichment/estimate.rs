@@ -45,8 +45,20 @@ struct ModelPricing {
 
 /// Look up pricing for a model identifier.
 ///
-/// Returns conservative estimates if the model is unknown.
+/// Registry-first: known slugs (claude, glm, kimi, gpt-5.x, codex, sonar)
+/// resolve through the shared
+/// [`roko_core::config::model_registry::builtin_pricing`] table so every
+/// layer prices the same. The legacy substring ladder remains for slugs the
+/// registry does not know (e.g. gpt-4o), and unknown models still fall back
+/// to conservative Sonnet-tier pricing.
 fn model_pricing(model: &str) -> ModelPricing {
+    if let Some(pricing) = roko_core::config::model_registry::builtin_pricing(model) {
+        return ModelPricing {
+            input_per_million: pricing.input_per_m,
+            output_per_million: pricing.output_per_m,
+        };
+    }
+
     // Normalize: check for key substrings.
     let m = model.to_ascii_lowercase();
     if m.contains("opus") {
@@ -480,6 +492,33 @@ mod tests {
         assert!(
             (known.estimated_cost_usd - unknown.estimated_cost_usd).abs() < 0.0001,
             "unknown model should default to sonnet pricing"
+        );
+    }
+
+    #[test]
+    fn codex_priced_from_registry_not_sonnet_fallback() {
+        // Registry knows codex/gpt-5.x rates ($2/$8), which are cheaper than
+        // the sonnet default ($3/$15) unknown models get.
+        let codex = estimate_enrichment(
+            &default_plan_info(),
+            TaskComplexityBand::Standard,
+            ALL_ORDERED,
+            "gpt-5.6-sol",
+            false,
+        );
+        let sonnet_fallback = estimate_enrichment(
+            &default_plan_info(),
+            TaskComplexityBand::Standard,
+            ALL_ORDERED,
+            "some-mystery-model-v3",
+            false,
+        );
+
+        assert!(
+            codex.estimated_cost_usd < sonnet_fallback.estimated_cost_usd,
+            "codex ({}) should price below the sonnet fallback ({})",
+            codex.estimated_cost_usd,
+            sonnet_fallback.estimated_cost_usd
         );
     }
 }

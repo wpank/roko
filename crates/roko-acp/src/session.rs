@@ -1705,7 +1705,8 @@ pub fn resolve_bare_mode(config_override: Option<bool>, workdir: &Path) -> bool 
     let roko_dir = workdir.join(".roko");
     let has_roko_dir = roko_dir.is_dir()
         && (roko_dir.join("state").is_dir()
-            || roko_dir.join("signals.jsonl").exists()
+            || roko_dir.join("engrams.jsonl").exists()
+            || roko_dir.join("signals.jsonl").exists() // legacy name
             || roko_dir.join("episodes.jsonl").exists());
     let has_config = workdir.join("roko.toml").is_file();
 

@@ -75,6 +75,13 @@ pub(crate) fn render(
         SubView::JobDetail => {
             if let Some(job) = jobs.get(selected) {
                 render_job_detail(frame, content, job, tui_state, theme);
+            } else {
+                crate::tui::empty_state::render_pane_empty_compact(
+                    frame,
+                    content,
+                    "Select a job to view details",
+                    theme,
+                );
             }
         }
         SubView::CreateJob => render_create_job(frame, content, tui_state, theme),
@@ -84,6 +91,13 @@ pub(crate) fn render(
             render_job_list(frame, sidebar, jobs, selected, theme);
             if let Some(job) = jobs.get(selected) {
                 render_job_detail(frame, detail, job, tui_state, theme);
+            } else {
+                crate::tui::empty_state::render_pane_empty_compact(
+                    frame,
+                    detail,
+                    "Select a job to view details",
+                    theme,
+                );
             }
         }
     }

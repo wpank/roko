@@ -19022,6 +19022,7 @@ fn settle_persisted_terminal(
                 &attempt.task_id,
                 &task_refs,
             );
+            publish_critical_path_eta(task_index, task_dag, tui, &attempt.plan_id);
         }
         TaskAttemptOutcome::Cancelled => {}
     }
@@ -19316,12 +19317,18 @@ fn publish_critical_path_eta(
     if task_refs.is_empty() {
         return;
     }
-    let completed = task_dag
+    // Collect all terminal task IDs (completed + failed + skipped) so they
+    // are excluded from the remaining critical-path estimate.
+    let terminal = task_dag
         .plan(plan_id)
-        .map(|dag| &dag.completed)
-        .cloned()
+        .map(|dag| {
+            let mut ids = dag.completed.clone();
+            ids.extend(dag.failed.iter().cloned());
+            ids.extend(dag.skipped.keys().cloned());
+            ids
+        })
         .unwrap_or_default();
-    let eta = super::task_dag::remaining_eta_minutes(&task_refs, &completed);
+    let eta = super::task_dag::remaining_eta_minutes(&task_refs, &terminal);
     tui.critical_path_eta(plan_id, eta);
 }
 

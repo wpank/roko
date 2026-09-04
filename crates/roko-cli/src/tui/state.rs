@@ -2898,9 +2898,13 @@ impl TuiState {
     }
 
     /// Whether the cached MCP configuration should be refreshed.
+    ///
+    /// MCP config changes very rarely (only when roko.toml is edited), so a
+    /// 30-second refresh cadence avoids unnecessary disk I/O while still
+    /// picking up changes within a reasonable window.
     #[must_use]
     pub fn mcp_config_needs_refresh(&self) -> bool {
-        const MCP_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+        const MCP_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
         self.mcp_config_refreshed_at
             .is_none_or(|refreshed| refreshed.elapsed() >= MCP_REFRESH_INTERVAL)
     }
@@ -2972,10 +2976,14 @@ impl TuiState {
     }
 
     /// Whether the conductor snapshot is stale and needs a refresh.
+    ///
+    /// Conductor config is read from roko.toml which changes rarely; a
+    /// 30-second cadence avoids per-frame disk I/O while keeping the panel
+    /// reasonably up to date.
     #[must_use]
     pub fn conductor_snapshot_needs_refresh(&self) -> bool {
         self.conductor_snapshot_refreshed_at
-            .map_or(true, |t| t.elapsed() > Duration::from_secs(5))
+            .map_or(true, |t| t.elapsed() > Duration::from_secs(30))
     }
 
     // -- aggregate queries (used by header_bar, status_bar, etc.) -----------
@@ -4462,7 +4470,16 @@ impl TuiState {
             *cached = render_cached_output(raw_output, theme);
         }
 
-        cached.styled_lines.clone()
+        let lines = cached.styled_lines.clone();
+
+        // Evict the entire render cache when it grows beyond 64 entries.
+        // This is a render-only cache -- entries rebuild on the next frame.
+        const MAX_CACHE_ENTRIES: usize = 64;
+        if cache.len() > MAX_CACHE_ENTRIES {
+            cache.clear();
+        }
+
+        lines
     }
 
     /// Append one streamed chunk for the given agent, trimming to the last 200 entries.

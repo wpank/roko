@@ -276,16 +276,13 @@ fn render_with_entries(
 
     if filtered_entries.is_empty() {
         let empty_text = if entries.is_empty() {
-            "No logs yet · events appear here as the run starts"
+            "No logs yet \u{00b7} events appear here as the run starts"
         } else if search.active && search.mode == SearchMode::Filter {
-            "No logs match this search · press f to highlight instead"
+            "No logs match this search \u{00b7} press / to change filter"
         } else {
-            "No logs match the active levels · press a to show all"
+            "No logs match the active levels \u{00b7} press a to show all"
         };
-        let empty = Paragraph::new(empty_text)
-            .style(theme.muted())
-            .wrap(Wrap { trim: false });
-        frame.render_widget(empty, inner);
+        crate::tui::empty_state::render_pane_empty_compact(frame, inner, empty_text, theme);
         return;
     }
 

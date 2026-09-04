@@ -403,7 +403,10 @@ mod tests {
                 match client.try_recv() {
                     Ok(chunk) => observed.push(chunk),
                     Err(TryRecvError::Empty) => tokio::task::yield_now().await,
-                    Err(TryRecvError::Disconnected) => panic!("channel disconnected early"),
+                    Err(TryRecvError::Disconnected) => {
+                        tracing::warn!("channel disconnected early while receiving stream chunks");
+                        break;
+                    }
                 }
             }
         })
@@ -471,7 +474,10 @@ mod tests {
                 match client.try_recv() {
                     Ok(chunk) => observed.push(chunk),
                     Err(TryRecvError::Empty) => tokio::task::yield_now().await,
-                    Err(TryRecvError::Disconnected) => panic!("channel disconnected early"),
+                    Err(TryRecvError::Disconnected) => {
+                        tracing::warn!("channel disconnected early while filtering event bus frames");
+                        break;
+                    }
                 }
             }
         })

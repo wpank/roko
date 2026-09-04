@@ -218,63 +218,6 @@ fn write_blank_braille(cell: &mut Cell, bits: u8, fg: Color, bg: Color) {
     cell.set_bg(bg);
 }
 
-/// Draw pulsing connector traces across empty regions.
-#[allow(dead_code)]
-fn guide_lines(area: Rect, buf: &mut Buffer, elapsed: f64, intensity: f64, seed: u64) {
-    if area.width < 8 || area.height < 4 {
-        return;
-    }
-
-    let intensity = clamp01(intensity);
-    if intensity <= 0.0 {
-        return;
-    }
-
-    let line_count = 2 + (intensity * 2.0).round() as usize;
-    let pulse = (elapsed * (1.1 + intensity)).sin() * 0.5 + 0.5;
-
-    for idx in 0..line_count {
-        // Seed mixing is intentionally modulo 2^64. Plain multiplication
-        // panics in debug builds once an active view renders enough guides.
-        let line_seed = seed ^ (idx as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-        let from_y = area.top()
-            + (unit_from_hash(line_seed ^ 0x11) * area.height.saturating_sub(1) as f64).round()
-                as u16;
-        let to_y = area.top()
-            + (unit_from_hash(line_seed ^ 0x29) * area.height.saturating_sub(1) as f64).round()
-                as u16;
-        let slope = (to_y as f64 - from_y as f64) / area.width.max(1) as f64;
-        let phase = unit_from_hash(line_seed ^ 0x51) * std::f64::consts::TAU;
-
-        for step in 0..area.width {
-            let x = area.left() + step;
-            let y = (from_y as f64
-                + slope * step as f64
-                + ((elapsed * 1.8 + step as f64 * 0.15 + phase).sin() * intensity * 0.8))
-                .round()
-                .clamp(area.top() as f64, area.bottom().saturating_sub(1) as f64)
-                as u16;
-
-            if let Some(cell) = buf.cell_mut((x, y)) {
-                if !is_blank(cell) {
-                    continue;
-                }
-
-                let strength = 0.35 + 0.65 * pulse;
-                let fg = pulse_tint(0.45 + 0.35 * intensity, strength);
-                let bg = pulse_tint(0.05 + 0.10 * intensity, strength * 0.25);
-                let bits = match (step + idx as u16) % 4 {
-                    0 => 0x09,
-                    1 => 0x12,
-                    2 => 0x24,
-                    _ => 0x48,
-                };
-                write_blank_braille(cell, bits, fg, bg);
-            }
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // NervViz overlays
 // ---------------------------------------------------------------------------
@@ -1231,19 +1174,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn guide_lines_uses_wrapping_seed_arithmetic() {
-        let area = Rect::new(0, 0, 80, 24);
-        let mut buf = Buffer::empty(area);
-
-        // Full intensity renders four guide lines.  The third line multiplies
-        // the golden-ratio seed by two, which must wrap rather than panic in a
-        // debug build.
-        guide_lines(area, &mut buf, 1.0, 1.0, 7);
-
-        assert!(buf.content.iter().any(|cell| !is_blank(cell)));
     }
 
     #[test]

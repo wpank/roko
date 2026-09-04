@@ -40,6 +40,10 @@ pub enum PaneEmpty {
     NoLogsMatch,
     /// Empty inspect data.
     NoInspectData,
+    /// No provider data in config health view.
+    NoProviderData,
+    /// No job selected in marketplace detail pane.
+    NoJobSelected,
 }
 
 /// Per-pane empty state content: (icon, title, hint_lines).
@@ -92,6 +96,22 @@ fn pane_empty_content(pane: PaneEmpty) -> (&'static str, &'static str, &'static 
             &[
                 "Run a plan to generate telemetry data",
                 "roko plan run plans/ --engine runner-v2",
+            ],
+        ),
+        PaneEmpty::NoProviderData => (
+            "\u{25cb}",
+            "No provider data",
+            &[
+                "Run agents to populate provider health metrics",
+                "roko config providers health",
+            ],
+        ),
+        PaneEmpty::NoJobSelected => (
+            "\u{229A}",
+            "No job selected",
+            &[
+                "Select a job from the list to view its details",
+                "Use j/k to navigate, Enter to focus detail",
             ],
         ),
     }
@@ -392,6 +412,8 @@ mod tests {
             PaneEmpty::NoAgentOutput,
             PaneEmpty::NoLogsMatch,
             PaneEmpty::NoInspectData,
+            PaneEmpty::NoProviderData,
+            PaneEmpty::NoJobSelected,
         ];
         for pane in all {
             let (icon, title, hints) = pane_empty_content(pane);
@@ -414,6 +436,8 @@ mod tests {
             PaneEmpty::NoAgentOutput,
             PaneEmpty::NoLogsMatch,
             PaneEmpty::NoInspectData,
+            PaneEmpty::NoProviderData,
+            PaneEmpty::NoJobSelected,
         ];
         for pane in panes {
             terminal

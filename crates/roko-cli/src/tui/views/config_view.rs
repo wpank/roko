@@ -673,10 +673,12 @@ fn render_provider_health(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiStat
     let providers = aggregate_providers(tui_state);
 
     if providers.is_empty() {
-        let empty = Paragraph::new("no provider data -- run agents to populate")
-            .style(theme.metadata())
-            .wrap(Wrap { trim: false });
-        frame.render_widget(empty, inner);
+        crate::tui::empty_state::render_pane_empty_compact(
+            frame,
+            inner,
+            "No provider data \u{00b7} run agents to populate",
+            theme,
+        );
         return;
     }
 
@@ -792,10 +794,12 @@ fn render_model_comparison(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiSta
     frame.render_widget(block, area);
 
     if tui_state.cascade_router.model_slugs.is_empty() {
-        let empty = Paragraph::new("no model data --- run agents to populate cascade router")
-            .style(theme.metadata())
-            .wrap(Wrap { trim: false });
-        frame.render_widget(empty, inner);
+        crate::tui::empty_state::render_pane_empty_compact(
+            frame,
+            inner,
+            "No model data \u{00b7} run agents to populate cascade router",
+            theme,
+        );
         return;
     }
 

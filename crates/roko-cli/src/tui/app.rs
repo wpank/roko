@@ -979,22 +979,57 @@ impl App {
                 self.tui_state.active_tab = tab;
                 let backend = TestBackend::new(width, height);
                 let mut terminal = Terminal::new(backend).expect("TestBackend terminal");
-                terminal.draw(|frame| self.draw(frame)).expect("draw tab");
-                let buffer = terminal.backend().buffer();
-                let w = buffer.area.width as usize;
-                let text = buffer
-                    .content
-                    .chunks(w)
-                    .map(|row| {
-                        row.iter()
-                            .map(|cell| cell.symbol())
-                            .collect::<String>()
-                            .trim_end()
-                            .to_string()
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                (tab, text)
+                match terminal.draw(|frame| self.draw(frame)) {
+                    Ok(_) => {
+                        let buffer = terminal.backend().buffer();
+                        let w = buffer.area.width as usize;
+                        let text = buffer
+                            .content
+                            .chunks(w)
+                            .map(|row| {
+                                row.iter()
+                                    .map(|cell| cell.symbol())
+                                    .collect::<String>()
+                                    .trim_end()
+                                    .to_string()
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        (tab, text)
+                    }
+                    Err(e) => {
+                        tracing::error!(?tab, error = %e, "tab render failed");
+                        // Re-render with a fallback error message so the
+                        // snapshot still contains something useful instead of
+                        // crashing the whole process.
+                        let fallback = TestBackend::new(width, height);
+                        let mut term2 = Terminal::new(fallback).expect("TestBackend terminal");
+                        let msg = format!("Render error: {e}");
+                        let _ = term2.draw(|frame| {
+                            frame.render_widget(
+                                Paragraph::new(msg.clone())
+                                    .style(Style::default().fg(Theme::WARNING))
+                                    .alignment(Alignment::Center),
+                                frame.area(),
+                            );
+                        });
+                        let buffer = term2.backend().buffer();
+                        let w = buffer.area.width as usize;
+                        let text = buffer
+                            .content
+                            .chunks(w)
+                            .map(|row| {
+                                row.iter()
+                                    .map(|cell| cell.symbol())
+                                    .collect::<String>()
+                                    .trim_end()
+                                    .to_string()
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        (tab, text)
+                    }
+                }
             })
             .collect();
         self.tui_state.active_tab = previous_tab;
@@ -1979,6 +2014,12 @@ impl App {
             }
             TuiAction::SwitchDetailTab(idx) => {
                 self.tui_state.plan_detail_tab = idx;
+                // Move focus to the right panel so subsequent Up/Down/j/k
+                // keys scroll the detail pane (e.g. procs_scroll for the
+                // Processes sub-tab) instead of the plan tree (P6.5/P7.3).
+                if matches!(self.tui_state.active_tab, Tab::Dashboard | Tab::Plans) {
+                    self.tui_state.focus = FocusZone::RightPanel;
+                }
             }
             TuiAction::ApproveCommand => {
                 if !self.resolve_active_approval(true) {
@@ -4549,6 +4590,10 @@ impl App {
         // Derive commit/worktree views before moving view_data.
         self.tui_state.git_commit_graph = convert_git_commit_graph(&bg.view_data.commits);
         self.tui_state.git_worktree_list = convert_git_worktree_list(&bg.view_data.worktrees);
+        // Propagate diff_text into the dashboard's git_diff field so the
+        // Dashboard diff sub-view stays current (P7.1).  Extract before
+        // the view_data move below.
+        self.tui_state.git_diff = bg.view_data.diff_text.clone();
         // git_branch_tree accessed via git_view_data when present; skip clone.
         self.tui_state.git_view_data = Some(bg.view_data);
         self.tui_state.git_summary_lines = bg.summary_lines;
@@ -4938,11 +4983,6 @@ impl App {
         PageRegistry::from_dashboard(&self.scaffold)
     }
 
-    #[allow(dead_code)]
-    fn scroll_for(&self, page: PageId) -> u16 {
-        self.scroll_offset.get(&page).copied().unwrap_or(0)
-    }
-
     fn clamp_signal_selection(&mut self) {
         let len = self.tui_state.recent_signals.len();
         if len == 0 {
@@ -4971,11 +5011,6 @@ impl App {
             execute!(stdout, EnterAlternateScreen).context("enter alternate screen")?;
         }
         Terminal::new(CrosstermBackend::new(stdout)).context("create terminal")
-    }
-
-    #[allow(dead_code)]
-    fn leave_terminal() -> Result<()> {
-        Self::cleanup_terminal()
     }
 
     fn cleanup_terminal() -> Result<()> {

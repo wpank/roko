@@ -773,17 +773,17 @@ pub fn critical_path(tasks: &[&TaskDef]) -> Option<CriticalPathResult> {
 }
 
 /// Compute the remaining ETA from the critical path, accounting for
-/// completed and in-progress tasks.
+/// terminal and in-progress tasks.
 ///
-/// - Completed tasks contribute zero remaining time.
+/// - Terminal tasks (completed, failed, skipped) contribute zero remaining time.
 /// - In-progress tasks contribute their full estimate (conservative).
 /// - Pending tasks on the critical path contribute their full estimate.
 #[must_use]
-pub fn remaining_eta_minutes(tasks: &[&TaskDef], completed: &HashSet<TaskId>) -> Option<u32> {
-    // Recompute critical path considering only non-completed tasks.
+pub fn remaining_eta_minutes(tasks: &[&TaskDef], terminal: &HashSet<TaskId>) -> Option<u32> {
+    // Recompute critical path considering only non-terminal tasks.
     let remaining_tasks: Vec<&TaskDef> = tasks
         .iter()
-        .filter(|t| !completed.contains(&t.id))
+        .filter(|t| !terminal.contains(&t.id))
         .copied()
         .collect();
     let remaining_refs: Vec<&TaskDef> = remaining_tasks.iter().copied().collect();

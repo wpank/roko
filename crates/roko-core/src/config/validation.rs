@@ -599,42 +599,36 @@ pub fn validate_provider_semantics(config: &RokoConfig) -> Vec<SemanticFinding> 
         // Rule: provider.invalid_base_url
         if let Some(ref url_str) = provider.base_url {
             let trimmed = url_str.trim();
-            if !trimmed.is_empty() {
-                if let Err(reason) = validate_base_url(trimmed) {
-                    findings.push(SemanticFinding {
-                        code: SemanticFindingCode::ProviderInvalidBaseUrl,
-                        severity: InvariantSeverity::Error,
-                        path: format!("providers.{name}.base_url"),
-                        message: format!("provider '{name}': {reason}"),
-                    });
-                }
+            if !trimmed.is_empty() && let Err(reason) = validate_base_url(trimmed) {
+                findings.push(SemanticFinding {
+                    code: SemanticFindingCode::ProviderInvalidBaseUrl,
+                    severity: InvariantSeverity::Error,
+                    path: format!("providers.{name}.base_url"),
+                    message: format!("provider '{name}': {reason}"),
+                });
             }
         }
 
         // Rule: provider.invalid_timeout
-        if let Some(timeout) = provider.timeout_ms {
-            if timeout == 0 {
-                findings.push(SemanticFinding {
-                    code: SemanticFindingCode::ProviderInvalidTimeout,
-                    severity: InvariantSeverity::Error,
-                    path: format!("providers.{name}.timeout_ms"),
-                    message: format!(
-                        "provider '{name}' has timeout_ms = 0; must be > 0"
-                    ),
-                });
-            }
+        if let Some(0) = provider.timeout_ms {
+            findings.push(SemanticFinding {
+                code: SemanticFindingCode::ProviderInvalidTimeout,
+                severity: InvariantSeverity::Error,
+                path: format!("providers.{name}.timeout_ms"),
+                message: format!(
+                    "provider '{name}' has timeout_ms = 0; must be > 0"
+                ),
+            });
         }
-        if let Some(max_conc) = provider.max_concurrent {
-            if max_conc == 0 {
-                findings.push(SemanticFinding {
-                    code: SemanticFindingCode::ProviderInvalidTimeout,
-                    severity: InvariantSeverity::Error,
-                    path: format!("providers.{name}.max_concurrent"),
-                    message: format!(
-                        "provider '{name}' has max_concurrent = 0; must be > 0"
-                    ),
-                });
-            }
+        if let Some(0) = provider.max_concurrent {
+            findings.push(SemanticFinding {
+                code: SemanticFindingCode::ProviderInvalidTimeout,
+                severity: InvariantSeverity::Error,
+                path: format!("providers.{name}.max_concurrent"),
+                message: format!(
+                    "provider '{name}' has max_concurrent = 0; must be > 0"
+                ),
+            });
         }
     }
 
@@ -885,11 +879,10 @@ fn validate_base_url(url: &str) -> Result<(), String> {
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return Err("scheme must be http or https".to_string());
     }
-    let after_scheme = if url.starts_with("https://") {
-        &url[8..]
-    } else {
-        &url[7..]
-    };
+    let after_scheme = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
     // Reject credentials (user:pass@host).
     if let Some(at_pos) = after_scheme.find('@') {
         // Only reject if @ appears before the first / (i.e., in authority).

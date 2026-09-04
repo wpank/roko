@@ -156,7 +156,6 @@ pub struct DoInput {
 /// Input fields specific to `roko plan run`.
 #[derive(Debug, Clone, Default)]
 pub struct PlanRunInput {
-    pub force_backend: Option<String>,
     pub no_tui: bool,
     pub approval: bool,
     pub dangerously_skip_permissions: bool,
@@ -200,8 +199,8 @@ pub struct LearnTuneInput {
 #[derive(Debug, Clone)]
 pub struct ResolvedExecutionOverrides {
     // ── Model / provider ────────────────────────────────────────────
-    /// Resolved model override (from `--model`, `--force-model`, or `--force-backend`).
-    /// `--force-backend` (plan-local) wins over `--model` (global).
+    /// Resolved model override from the global `--model` flag (aliases:
+    /// `--force-model`, `--force-backend`).
     pub model: Option<String>,
 
     /// Resolved provider override from `--provider`.
@@ -375,13 +374,12 @@ impl ResolvedExecutionOverrides {
     }
 
     /// Resolve overrides for `roko plan run`.
+    ///
+    /// `--force-backend` is now a hidden alias on the global `--model` flag,
+    /// so `flags.model` already carries the value regardless of which alias
+    /// the operator used.
     pub fn for_plan_run(flags: &GlobalCliFlags<'_>, input: &PlanRunInput) -> Self {
         let mut resolved = Self::resolve_globals(flags);
-
-        // --force-backend (plan-local) wins over --model (global).
-        if let Some(ref fb) = input.force_backend {
-            resolved.model = Some(fb.clone());
-        }
 
         // Presentation: --approval/--tui -> Tui, --no-tui -> Text, neither -> Auto.
         resolved.presentation = if input.approval {
@@ -700,25 +698,7 @@ mod tests {
     // ── for_plan_run ─────────────────────────────────────────────────
 
     #[test]
-    fn plan_run_force_backend_wins_model() {
-        let flags = GlobalCliFlags {
-            model: Some("opus"),
-            ..default_flags()
-        };
-        let plan = PlanRunInput {
-            force_backend: Some("sonnet".into()),
-            ..PlanRunInput::default()
-        };
-        let r = ResolvedExecutionOverrides::for_plan_run(&flags, &plan);
-        assert_eq!(
-            r.model.as_deref(),
-            Some("sonnet"),
-            "--force-backend must win over --model"
-        );
-    }
-
-    #[test]
-    fn plan_run_global_model_without_force_backend() {
+    fn plan_run_global_model_propagates() {
         let flags = GlobalCliFlags {
             model: Some("opus"),
             ..default_flags()

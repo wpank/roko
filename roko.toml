@@ -21,7 +21,6 @@ max_turn_usd = 0.50
 prompt_token_budget = 10000
 
 [chain]
-auto_deploy_contracts = false
 enabled = false
 profile = "mirage"
 

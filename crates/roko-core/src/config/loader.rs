@@ -1471,6 +1471,32 @@ fn build_schema_tree() -> toml::Value {
             watcher_table.insert("paths".to_string(), toml::Value::Array(Vec::new()));
             toml::Value::Table(watcher_table)
         });
+        // `tui.effects` is `Option<toml::Value>` and skipped when None.
+        // Populate the known effects keys so the schema walker accepts
+        // `[tui.effects]` sub-fields. The full `EffectsConfig` type lives
+        // in `roko-cli`; we list the known leaf keys here manually.
+        if let Some(tui) = table.get_mut("tui").and_then(|v| v.as_table_mut()) {
+            tui.entry("effects".to_string()).or_insert_with(|| {
+                let mut effects = toml::map::Map::new();
+                for key in &[
+                    "preset",
+                    "screen_postfx",
+                    "nerv_viz",
+                    "particles",
+                    "bloom_enabled",
+                    "shadows_enabled",
+                    "vfx_enabled",
+                    "bloom_intensity",
+                    "vignette_intensity",
+                ] {
+                    effects.insert(
+                        (*key).to_string(),
+                        toml::Value::String(String::new()),
+                    );
+                }
+                toml::Value::Table(effects)
+            });
+        }
     }
 
     value
@@ -1928,9 +1954,72 @@ fn deserialize_migrated_toml(text: &str) -> Result<RokoConfig, String> {
     if report.to_version < migrator.target_version {
         return Err(report.warnings.join("; "));
     }
+    // Strip unknown fields from sub-tables so that global configs with
+    // forward-looking or custom fields do not fail `deny_unknown_fields`
+    // validation on sub-structs. The schema tree knows every valid key at
+    // every nesting level; anything not in the tree is silently dropped.
+    let schema = build_schema_tree();
+    strip_unknown_fields(&mut value, &schema, "");
     value
         .try_into::<RokoConfig>()
         .map_err(|error| error.to_string())
+}
+
+/// Recursively remove keys from `input` that are absent in `schema`.
+///
+/// Dynamic map sections (providers, models, etc.) are walked using the
+/// sentinel template value so user-defined map keys are preserved while
+/// extra fields within each value are stripped.
+fn strip_unknown_fields(input: &mut toml::Value, schema: &toml::Value, prefix: &str) {
+    let Some(input_table) = input.as_table_mut() else {
+        return;
+    };
+
+    let is_dynamic = DYNAMIC_MAP_SECTIONS
+        .iter()
+        .any(|section| !prefix.is_empty() && *section == prefix);
+
+    if is_dynamic {
+        let value_schema = schema.as_table().and_then(|t| t.values().next()).cloned();
+        if let Some(ref vs) = value_schema {
+            for (_key, val) in input_table.iter_mut() {
+                strip_unknown_fields(val, vs, prefix);
+            }
+        }
+        return;
+    }
+
+    let Some(schema_table) = schema.as_table() else {
+        return;
+    };
+
+    // Collect keys to remove (cannot mutate while iterating).
+    let to_remove: Vec<String> = input_table
+        .keys()
+        .filter(|k| !schema_table.contains_key(k.as_str()))
+        .cloned()
+        .collect();
+
+    for key in &to_remove {
+        tracing::debug!(
+            prefix = prefix,
+            key = key.as_str(),
+            "stripping unknown field from global config"
+        );
+        input_table.remove(key);
+    }
+
+    // Recurse into surviving sub-tables.
+    for (key, val) in input_table.iter_mut() {
+        if let Some(schema_val) = schema_table.get(key) {
+            let child_prefix = if prefix.is_empty() {
+                key.clone()
+            } else {
+                format!("{prefix}.{key}")
+            };
+            strip_unknown_fields(val, schema_val, &child_prefix);
+        }
+    }
 }
 
 /// Merge an already-parsed global layer beneath a project config.

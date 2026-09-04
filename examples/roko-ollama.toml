@@ -18,9 +18,8 @@ focused = "llama3-1-8b"
 integrative = "llama3-1-8b"
 architectural = "llama3-1-8b"
 
-[prompt]
-token_budget = 8000
-role = "You are a Roko agent using a local Ollama server. Prefer short, practical responses and avoid unnecessary tool chatter."
+[budget]
+prompt_token_budget = 8000
 
 [gates]
 clippy_enabled = true

@@ -353,12 +353,9 @@ struct Cli {
     /// unconditionally. The outcome is tagged as a manual override so the
     /// router does not conflate it with its own learned policy.
     ///
-    /// `--force-model` is an accepted alias for this flag.
-    ///
-    /// For `plan run` only, the subcommand-level `--force-backend` flag is
-    /// also available and takes priority over this global flag when both are
-    /// specified.
-    #[arg(long, global = true, visible_alias = "force-model")]
+    /// `--force-model` and `--force-backend` are accepted aliases for this
+    /// flag, retained for backward compatibility.
+    #[arg(long, global = true, visible_alias = "force-model", alias = "force-backend")]
     model: Option<String>,
 
     /// Set the repository / working directory root.
@@ -1920,24 +1917,9 @@ Examples:
         /// plans, stale lock) and proceed directly to plan execution.
         #[arg(long)]
         skip_preflight: bool,
-        /// Override the model for this plan run, bypassing adaptive routing.
-        ///
-        /// This is a **subcommand-level convenience** duplicate of the global
-        /// `--model` flag, placed after `plan run` so you do not need to put it
-        /// before the subcommand. When both `--force-backend` and the global
-        /// `--model` are specified, `--force-backend` wins.
-        ///
-        /// Despite the name, this sets the **model slug** (e.g.
-        /// `claude-sonnet-4-5`), not a provider backend. It bypasses the
-        /// cascade router entirely and the outcome is tagged as a manual
-        /// override for learning purposes.
-        ///
-        /// Prefer the global `--model` flag for new scripts; `--force-backend`
-        /// is retained for backward compatibility.
-        ///
-        /// Example: `roko plan run plans/ --force-backend claude-sonnet-4-5`
-        #[arg(long, value_name = "MODEL_SLUG")]
-        force_backend: Option<String>,
+        // NOTE: `--force-backend` was removed from this subcommand and
+        // consolidated into the global `--model` flag (hidden alias).
+        // Use `roko plan run --model <slug> plans/` instead.
         /// Capture event-driven screenshots during execution.
         ///
         /// Screenshots are saved to `.roko/screenshots/run-<timestamp>/` with
@@ -3902,7 +3884,6 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
                 dangerously_skip_permissions: false,
                 log_file: None,
                 skip_preflight: false,
-                force_backend: None,
                 screenshots: false,
                 screenshot_interval: 60,
                 screenshot_dir: None,
@@ -7981,18 +7962,13 @@ mod tests {
     }
 
     #[test]
-    fn cli_flags_plan_run_force_backend_wins_model() {
-        let cli = Cli::try_parse_from(["roko", "--model", "opus", "status"]).unwrap();
-        let flags = global_cli_flags(&cli);
-        let plan = PlanRunInput {
-            force_backend: Some("sonnet".into()),
-            ..PlanRunInput::default()
-        };
-        let overrides = ResolvedExecutionOverrides::for_plan_run(&flags, &plan);
+    fn cli_flags_force_backend_alias_resolves_to_model() {
+        let cli =
+            Cli::try_parse_from(["roko", "--force-backend", "sonnet", "status"]).unwrap();
         assert_eq!(
-            overrides.model.as_deref(),
+            cli.model.as_deref(),
             Some("sonnet"),
-            "--force-backend must win over --model"
+            "--force-backend must resolve to the unified model field"
         );
     }
 

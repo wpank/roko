@@ -873,7 +873,7 @@ pub(crate) async fn run_plan_execution(
         workdir: workdir.to_path_buf(),
         plan_dir: plans_dir.to_path_buf(),
         model: roko_config.agent.default_model.clone(),
-        cli_model_override: cli.model.clone(), // global --model / --force-model
+        cli_model_override: cli.model.clone(), // global --model
         timeout_secs: roko_config.timeouts.agent_dispatch_secs,
         plan_timeout_secs: roko_config.timeouts.plan_total_secs,
         max_retries: 2,

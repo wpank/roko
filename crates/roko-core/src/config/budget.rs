@@ -2,9 +2,10 @@
 //!
 //! ## Ceiling semantics
 //!
-//! `max_plan_usd` and `max_turn_usd` use **0.0 = unlimited**:
+//! `max_plan_usd`, `max_turn_usd`, and `max_task_retry_usd` use **0.0 = unlimited**:
 //!
-//! * When the field is absent from `roko.toml` the default is `0.0` (no cap).
+//! * When the field is absent from `roko.toml` the default is `0.0` (no cap),
+//!   except for `max_task_retry_usd` which defaults to `5.0` ($5 per task).
 //! * When set to a positive value the runner enforces that ceiling.
 //! * Negative, `NaN`, and `Inf` values are rejected at pre-flight validation
 //!   (see `event_loop::validate_budget_ceilings`).
@@ -22,6 +23,7 @@ use serde::{Deserialize, Serialize};
 /// any spend cap for that dimension.
 #[allow(clippy::derive_partial_eq_without_eq)] // contains f32
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BudgetConfig {
     /// Per-plan cost ceiling in USD. `0.0` means unlimited.
     #[serde(default)]
@@ -36,7 +38,9 @@ pub struct BudgetConfig {
     /// in USD. `0.0` means unlimited. When the total cost of all attempts
     /// for one task exceeds this value, the next retry is suppressed and the
     /// task is marked failed with reason "cumulative cost cap exceeded".
-    #[serde(default)]
+    ///
+    /// Default: `5.0` ($5.00 per task across all retries).
+    #[serde(default = "default_max_task_retry_usd")]
     pub max_task_retry_usd: f32,
     /// Per-calendar-day cost ceiling in USD, enforced across all plan runs.
     /// `0.0` means unlimited. When the day's total spend (read from the
@@ -96,6 +100,10 @@ impl Default for TaskBudgetMultipliers {
     }
 }
 
+const fn default_max_task_retry_usd() -> f32 {
+    5.0
+}
+
 const fn default_prompt_token_budget() -> usize {
     10_000
 }
@@ -106,7 +114,7 @@ impl Default for BudgetConfig {
             max_plan_usd: 0.0,
             max_task_usd: 0.0,
             max_turn_usd: 0.0,
-            max_task_retry_usd: 0.0,
+            max_task_retry_usd: default_max_task_retry_usd(),
             max_daily_usd: 0.0,
             prompt_token_budget: default_prompt_token_budget(),
             tier_multipliers: TaskBudgetMultipliers::default(),

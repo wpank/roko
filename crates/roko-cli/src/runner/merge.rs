@@ -247,6 +247,76 @@ impl MergeBackend for GitMergeBackend {
             );
         }
 
+        // G06: Pre-merge feasibility check via `git merge-tree --write-tree` (git 2.39+).
+        // This predicts conflicts without side effects so we can log early warnings.
+        // Advisory only — we never skip the merge based on the prediction.
+        let merge_tree = tokio::process::Command::new("git")
+            .args(["merge-tree", "--write-tree", "HEAD", &request.branch_name])
+            .current_dir(&config.workdir)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .await;
+        match merge_tree {
+            Ok(ref out) if !out.status.success() => {
+                // merge-tree reports conflicts; parse conflict markers from stdout.
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                let conflict_paths: Vec<&str> = stdout
+                    .lines()
+                    .filter(|l| l.contains("CONFLICT"))
+                    .collect();
+                if !conflict_paths.is_empty() {
+                    tracing::warn!(
+                        "pre-merge check predicted {} conflict(s) for branch `{}`: {}",
+                        conflict_paths.len(),
+                        request.branch_name,
+                        conflict_paths.join("; "),
+                    );
+                }
+            }
+            Ok(_) => {
+                tracing::debug!(
+                    "pre-merge check: no conflicts predicted for branch `{}`",
+                    request.branch_name,
+                );
+            }
+            Err(ref e) => {
+                // git merge-tree unavailable (git < 2.39) or spawn failure — log and
+                // continue; the actual merge will catch any real conflicts.
+                tracing::debug!(
+                    "pre-merge feasibility check skipped (git merge-tree not available or failed to spawn): {e}",
+                );
+            }
+        }
+
+        // G02: Auto-commit dirty state before merge to prevent "would be overwritten" errors.
+        // Mori did this; without it, uncommitted changes in the target worktree cause
+        // git merge to fail with "Your local changes would be overwritten by merge."
+        let status = tokio::process::Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(&config.workdir)
+            .output()
+            .await;
+        if let Ok(out) = &status {
+            if !out.stdout.is_empty() {
+                let _ = tokio::process::Command::new("git")
+                    .args(["add", "-A"])
+                    .current_dir(&config.workdir)
+                    .output()
+                    .await;
+                let _ = tokio::process::Command::new("git")
+                    .args([
+                        "commit",
+                        "--allow-empty",
+                        "-m",
+                        "chore: auto-commit before merge",
+                    ])
+                    .current_dir(&config.workdir)
+                    .env("GIT_TERMINAL_PROMPT", "0")
+                    .output()
+                    .await;
+            }
+        }
+
         // G05: try fast-forward first to avoid unnecessary merge commits.
         // Fall back to --no-ff only when the history has diverged.
         let ff_result = tokio::process::Command::new("git")

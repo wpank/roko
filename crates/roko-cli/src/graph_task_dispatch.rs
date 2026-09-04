@@ -342,8 +342,8 @@ pub struct GraphTaskDispatcher {
     workdir: PathBuf,
     budget_policy: GraphPlanBudgetPolicy,
     budget_ledger: GraphPlanBudgetLedger,
-    /// CLI model override (from `--model` / `--force-backend`). When set, this
-    /// replaces the config default and any per-task `model_hint` in dispatch.
+    /// CLI model override (from `--model`). When set, this replaces the
+    /// config default and any per-task `model_hint` in dispatch.
     cli_model_override: Option<String>,
     /// Whether to skip agent permission prompts (from `--dangerously-skip-permissions`).
     dangerously_skip_permissions: bool,
@@ -368,7 +368,7 @@ impl GraphTaskDispatcher {
         }
     }
 
-    /// Set the CLI model override (from `--model` / `--force-backend`).
+    /// Set the CLI model override (from `--model`).
     ///
     /// When set, this bypasses adaptive routing and forces all graph task
     /// dispatches to use the specified model slug.
@@ -463,7 +463,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             workdir: self.workdir.clone(),
             // CLI model override takes priority over the task model_hint and
             // the configured default. This mirrors the runner-v2 semantics
-            // where `--model` / `--force-backend` bypass adaptive routing.
+            // where `--model` bypasses adaptive routing.
             model_hint: Some(
                 self.cli_model_override
                     .clone()

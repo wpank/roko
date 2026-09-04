@@ -272,6 +272,7 @@ mod provider_identity_tests {
 /// without hardcoding them into Rust.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProviderConfig {
     /// Protocol family used to talk to the provider.
     pub kind: ProviderKind,
@@ -558,6 +559,7 @@ pub struct ProviderRouting {
 /// API slug that gets sent on the wire.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelProfile {
     /// Key into the `[providers.*]` table.
     pub provider: String,

@@ -55,6 +55,10 @@ impl FeedbackSink for EpisodeSink {
             outcome,
             succeeded,
             prompt_text,
+            cache_read_tokens,
+            knowledge_ids,
+            playbook_ids,
+            initial_model,
             ..
         } = event
         else {
@@ -80,6 +84,38 @@ impl FeedbackSink for EpisodeSink {
         episode
             .extra
             .insert("plan_id".into(), serde_json::Value::String(plan_id.clone()));
+
+        // ── Compounding metric keys (P3-4) ───────────────────────────────
+        // Populate the episode `extra` bag with dispatch-time metadata so
+        // downstream learning loops (c-factor, autocatalytic metrics,
+        // playbook scoring) can observe non-zero values.
+        episode.extra.insert(
+            "knowledge_used".into(),
+            serde_json::Value::Bool(!knowledge_ids.is_empty()),
+        );
+        if let Some(first_pb) = playbook_ids.first() {
+            episode
+                .extra
+                .insert("playbook_id".into(), serde_json::Value::String(first_pb.clone()));
+        }
+        episode.extra.insert(
+            "cache_hit".into(),
+            serde_json::Value::Bool(*cache_read_tokens > 0),
+        );
+        if !initial_model.is_empty() {
+            episode.extra.insert(
+                "initial_model".into(),
+                serde_json::Value::String(initial_model.clone()),
+            );
+        }
+        // The `successful_model` is the model that actually produced the
+        // output — already recorded in `episode.model` but also placed in
+        // `extra` for uniform downstream consumption.
+        episode.extra.insert(
+            "successful_model".into(),
+            serde_json::Value::String(outcome.model.clone()),
+        );
+
         attach_episode_hdc_fingerprint(
             &mut episode,
             plan_id,
@@ -157,6 +193,10 @@ mod tests {
             succeeded: true,
             routing_context: None,
             prompt_text: Some("system prompt\n\nuser prompt".into()),
+            cache_read_tokens: 0,
+            knowledge_ids: vec!["k-1".into()],
+            playbook_ids: vec!["pb-1".into()],
+            initial_model: "claude-sonnet-4-6".into(),
         };
         sink.on_event(&event).await.unwrap();
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -168,6 +208,27 @@ mod tests {
         );
         assert!(contents.contains("\"task_id\":\"task-1\""));
         assert!(contents.contains("\"hdc_fingerprint\""));
+        // P3-4: episode extra keys for compounding metrics
+        assert!(
+            contents.contains("\"knowledge_used\":true"),
+            "extra should contain knowledge_used"
+        );
+        assert!(
+            contents.contains("\"playbook_id\":\"pb-1\""),
+            "extra should contain playbook_id"
+        );
+        assert!(
+            contents.contains("\"cache_hit\":false"),
+            "extra should contain cache_hit (false when cache_read_tokens=0)"
+        );
+        assert!(
+            contents.contains("\"initial_model\":\"claude-sonnet-4-6\""),
+            "extra should contain initial_model"
+        );
+        assert!(
+            contents.contains("\"successful_model\":\"claude-sonnet-4-6\""),
+            "extra should contain successful_model"
+        );
     }
 
     #[tokio::test]

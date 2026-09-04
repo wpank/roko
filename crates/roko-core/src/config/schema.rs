@@ -215,6 +215,7 @@ const fn default_vcg_warmup_observations() -> u32 {
 /// Controls how the runner-v2 `PromptComposer` allocates token budget across
 /// candidate prompt sections and when the VCG auction activates.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PromptConfig {
     /// Budget-allocation strategy for prompt composition.
     ///
@@ -245,6 +246,7 @@ impl Default for PromptConfig {
 /// Controls how strictly the config loader treats issues like dangling
 /// provider references and other semantic errors.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ValidationConfig {
     /// When true, missing provider references and other config issues
     /// become hard errors instead of warnings. Useful for CI and
@@ -1637,6 +1639,7 @@ pub fn validate_references(config: &RokoConfig) -> Vec<ValidationWarning> {
 
 /// Conductor (meta-orchestrator) settings.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConductorConfig {
     #[serde(default = "default_max_agents")]
     pub max_agents: usize,
@@ -2065,6 +2068,7 @@ fn run_resolve_api_key_child(test_name: &str, api_key_env: &str, expected: Optio
 /// interval_secs = 21600
 /// ```
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ColdStorageConfig {
     /// Whether cold archival is enabled.
     #[serde(default = "ColdStorageConfig::default_enabled")]
@@ -2142,6 +2146,7 @@ impl Default for ColdStorageConfig {
 /// auto_cleanup_on_complete = true
 /// ```
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResourcesConfig {
     /// Minimum free disk space in MB required to start a plan run.
     ///
@@ -2351,6 +2356,7 @@ pub enum RunnerSandboxLevel {
 /// `roko-cli` so that both the CLI config layer and direct `RokoConfig`
 /// consumers (e.g. `RunConfig::from_roko_config`) see the same schema.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CoreRunnerConfig {
     /// Maximum number of tasks executing concurrently within a plan.
     /// Defaults to 4. A value of 1 preserves sequential execution.

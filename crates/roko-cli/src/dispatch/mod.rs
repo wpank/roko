@@ -100,8 +100,8 @@ pub struct DispatchContext {
     /// Highest-priority model slug override (manual operator decision).
     ///
     /// Populated from `RunConfig.cli_model_override`, which in turn comes
-    /// from the global `--model` / `--force-model` CLI flag or the
-    /// subcommand-level `--force-backend` flag on `plan run`.
+    /// from the unified global `--model` CLI flag (aliases: `--force-model`,
+    /// `--force-backend`).
     ///
     /// When set, the model router returns this slug immediately with
     /// `ModelChoiceSource::Override`, skipping task hints and the cascade
@@ -286,10 +286,10 @@ impl Dispatcher {
 pub struct RunnerDispatchPlan {
     /// Selected model + backend.
     pub model: ModelSpec,
-    /// `true` if the model came from an operator override (`--model`,
-    /// `--force-model`, or `--force-backend`) rather than the cascade
-    /// router. Recorded so feedback writers tag observations as manual
-    /// overrides and the router's learned policy is not corrupted.
+    /// `true` if the model came from an operator override (`--model`)
+    /// rather than the cascade router. Recorded so feedback writers tag
+    /// observations as manual overrides and the router's learned policy
+    /// is not corrupted.
     pub forced: bool,
     /// Assembled prompt, allowlist, diagnostics.
     pub prompt: AssembledPrompt,

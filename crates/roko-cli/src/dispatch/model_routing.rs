@@ -1,23 +1,17 @@
 //! Model routing — turn a task + dispatch context into a [`ModelSpec`].
 //!
-//! ## CLI flag disambiguation
+//! ## CLI flag
 //!
-//! Three CLI names exist for model overrides:
-//!
-//! | Flag | Scope | Field | Notes |
-//! |------|-------|-------|-------|
-//! | `--model` | Global (before subcommand) | `Cli.model` | Primary name |
-//! | `--force-model` | Global (before subcommand) | `Cli.model` | Alias for `--model` |
-//! | `--force-backend` | `plan run` subcommand only | `PlanRun.force_backend` | Subcommand convenience; wins over global `--model` |
-//!
-//! All three ultimately populate `RunConfig.cli_model_override`, which the
-//! event loop copies into `DispatchContext.force_backend`. This module reads
-//! that field as the highest-priority input.
+//! A single global `--model` flag (with hidden aliases `--force-model` and
+//! `--force-backend` for backward compatibility) populates
+//! `RunConfig.cli_model_override`, which the event loop copies into
+//! `DispatchContext.force_backend`. This module reads that field as the
+//! highest-priority input.
 //!
 //! ## Decision pipeline
 //!
-//! 1. **Manual override**. `force_backend` from CLI (`--model` /
-//!    `--force-model` / `--force-backend`) wins unconditionally. This
+//! 1. **Manual override**. `force_backend` from CLI (`--model`) wins
+//!    unconditionally. This
 //!    preserves the operator's ability to pin a model during incidents —
 //!    and the choice is recorded so the feedback loop can learn from
 //!    operator preferences.
@@ -68,7 +62,7 @@ pub struct RoutingInputs {
     pub task_tier: String,
     /// Author-provided model hint (`task.model_hint`).
     pub task_model_hint: Option<String>,
-    /// Operator override from CLI `--model` / `--force-model` / `--force-backend`.
+    /// Operator override from the unified CLI `--model` flag.
     /// Highest priority: when set, the router returns this slug immediately.
     pub force_backend: Option<String>,
     /// Remaining USD budget for the plan.
@@ -114,7 +108,7 @@ impl RoutingInputs {
 /// Why the router picked this model — preserved for feedback writers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelChoiceSource {
-    /// Operator override via `--model` / `--force-model` / `--force-backend`.
+    /// Operator override via the unified `--model` flag.
     Override,
     /// Author intent (`task.model_hint`).
     TaskHint,

@@ -448,7 +448,6 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             dangerously_skip_permissions,
             log_file,
             skip_preflight,
-            force_backend,
             screenshots,
             screenshot_interval,
             screenshot_dir,
@@ -457,13 +456,11 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             let t_total = std::time::Instant::now();
             let t_setup = std::time::Instant::now();
 
-            // Merge the subcommand-level `--force-backend` with the global
-            // `--model` (aka `--force-model`). The subcommand flag wins when
-            // both are present so that `roko plan run --force-backend X`
-            // always takes effect even if a global `--model Y` was set.
-            // Both ultimately populate `RunConfig.cli_model_override`, which
-            // the event loop maps to `DispatchContext.force_backend`.
-            let effective_model_override = force_backend.as_ref().or(cli.model.as_ref()).cloned();
+            // The global `--model` flag (with `--force-model` and
+            // `--force-backend` as aliases) is the single model override.
+            // It populates `RunConfig.cli_model_override`, which the event
+            // loop maps to `DispatchContext.force_backend`.
+            let effective_model_override = cli.model.clone();
 
             // Auto-enable inline TUI when stdout is an interactive terminal,
             // unless the user explicitly opted out with --no-tui (item 108).
@@ -2715,7 +2712,7 @@ fn validate_graph_execution_options(engine: PlanEngine, approval: bool) -> Resul
 /// operators are never surprised by dropped configuration.
 ///
 /// Flags that ARE forwarded to the graph engine (and thus do NOT warn):
-///   `--model` / `--force-backend`, `--dangerously-skip-permissions`,
+///   `--model`, `--dangerously-skip-permissions`,
 ///   `--resume-plan`, `--fresh`, `--force-resume`, `--max-retries`,
 ///   `--max-tasks`, `--budget-override`, `--no-budget`, `--no-tui`
 ///

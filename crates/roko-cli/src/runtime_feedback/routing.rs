@@ -215,6 +215,10 @@ mod tests {
             succeeded: true,
             routing_context: None,
             prompt_text: None,
+            cache_read_tokens: 0,
+            knowledge_ids: vec![],
+            playbook_ids: vec![],
+            initial_model: String::new(),
         };
         sink.on_event(&event).await.unwrap();
         let snap = r.confidence_snapshot();
@@ -242,6 +246,10 @@ mod tests {
             succeeded: false,
             routing_context: None,
             prompt_text: None,
+            cache_read_tokens: 0,
+            knowledge_ids: vec![],
+            playbook_ids: vec![],
+            initial_model: String::new(),
         };
         sink.on_event(&event).await.unwrap();
         let (trials, successes) = r
@@ -273,6 +281,10 @@ mod tests {
             succeeded: true,
             routing_context: None,
             prompt_text: None,
+            cache_read_tokens: 0,
+            knowledge_ids: vec![],
+            playbook_ids: vec![],
+            initial_model: String::new(),
         };
         sink.on_event(&event).await.unwrap();
         // record_override_outcome uses observe_multi_objective with
@@ -299,6 +311,10 @@ mod tests {
             succeeded: true,
             routing_context: None,
             prompt_text: None,
+            cache_read_tokens: 0,
+            knowledge_ids: vec![],
+            playbook_ids: vec![],
+            initial_model: String::new(),
         };
         sink.on_event(&event).await.unwrap();
         assert!(
@@ -331,6 +347,10 @@ mod tests {
             succeeded: true,
             routing_context: Some(ctx),
             prompt_text: None,
+            cache_read_tokens: 0,
+            knowledge_ids: vec![],
+            playbook_ids: vec![],
+            initial_model: String::new(),
         };
         sink.on_event(&event).await.unwrap();
         assert!(
@@ -360,6 +380,10 @@ mod tests {
             succeeded: true,
             routing_context: None,
             prompt_text: None,
+            cache_read_tokens: 0,
+            knowledge_ids: vec![],
+            playbook_ids: vec![],
+            initial_model: String::new(),
         };
         sink.on_event(&event).await.unwrap();
         assert!(

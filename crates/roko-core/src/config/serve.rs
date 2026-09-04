@@ -37,6 +37,7 @@ fn default_projection_history_retention() -> String {
 
 /// API serving options.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServeConfig {
     /// Port override for `roko serve`. Falls back to `server.port` (default 6677).
     #[serde(default)]
@@ -453,6 +454,7 @@ otlp_endpoint = "http://otel:4317"
 
 /// HTTP server / gateway settings.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     /// Address to bind to.
     #[serde(default = "default_bind")]
@@ -576,6 +578,7 @@ impl Default for DeployConfig {
 
 /// Cron scheduler configuration.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SchedulerConfig {
     /// Cron jobs configured at startup.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

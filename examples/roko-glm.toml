@@ -18,9 +18,8 @@ focused = "glm-5-1"
 integrative = "glm-5-1"
 architectural = "glm-5-1"
 
-[prompt]
-token_budget = 12000
-role = "You are a Roko agent using the GLM provider. Be concise, direct, and implementation-focused."
+[budget]
+prompt_token_budget = 12000
 
 [gates]
 clippy_enabled = true

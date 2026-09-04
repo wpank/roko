@@ -85,6 +85,7 @@ impl GateRungConfig {
 
 /// Verify (verification) settings.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GatesConfig {
     /// Explicit verification breadth. Defaults to the historical full lane.
     #[serde(default)]
@@ -380,6 +381,7 @@ fn default_pipeline_template() -> String {
 
 /// Complexity-to-pipeline mapping.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PipelineConfig {
     /// Workflow template used by `roko run` when no per-task band is resolved.
     /// Valid values: "standard", "express", "focused", "integrative", "full", "architectural".

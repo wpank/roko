@@ -612,11 +612,17 @@ pub struct ProviderStatus {
     pub total_attempts: u64,
     /// Lifetime successful attempts.
     pub total_successes: u64,
+    /// Sliding window of the last [`ROLLING_WINDOW`] outcomes.
+    ///
+    /// `true` = success, `false` = failure.  Used by the in-memory tracker
+    /// to detect providers with a low rolling success rate independently of
+    /// the consecutive-failure counter.
+    pub(crate) recent_outcomes: VecDeque<bool>,
 }
 
 impl ProviderStatus {
     /// Create a fresh status entry for `provider`.
-    const fn new(provider: String) -> Self {
+    fn new(provider: String) -> Self {
         Self {
             provider,
             state: HealthState::Healthy,
@@ -625,6 +631,7 @@ impl ProviderStatus {
             last_success_at: None,
             total_attempts: 0,
             total_successes: 0,
+            recent_outcomes: VecDeque::new(),
         }
     }
 
@@ -714,13 +721,25 @@ impl ProviderHealthTracker {
         status.consecutive_failures = 0;
         status.last_success_at = Some(now);
         status.state = HealthState::Healthy;
+
+        // Update rolling window.
+        status.recent_outcomes.push_back(true);
+        if status.recent_outcomes.len() > ROLLING_WINDOW {
+            status.recent_outcomes.pop_front();
+        }
     }
 
     /// Record a failed LLM call for `provider`.
     ///
-    /// Increments consecutive failures. When the counter reaches the
-    /// configured threshold the provider transitions to
-    /// [`HealthState::Unhealthy`].
+    /// Increments consecutive failures. The circuit trips to
+    /// [`HealthState::Unhealthy`] when any of these conditions hold:
+    ///
+    /// 1. **Consecutive failures** reach the configured threshold.
+    /// 2. **Rolling success rate** drops below [`ROLLING_SUCCESS_RATE_MIN`]
+    ///    over the last [`ROLLING_WINDOW`] requests (catches providers that
+    ///    limp along with occasional successes, like openai at 12%).
+    /// 3. The provider is currently **Probing** (a single probe failure
+    ///    re-trips the breaker).
     ///
     /// The key is normalized before storage.
     #[allow(clippy::significant_drop_tightening)]
@@ -741,10 +760,29 @@ impl ProviderHealthTracker {
         status.consecutive_failures = status.consecutive_failures.saturating_add(1);
         status.last_failure_at = Some(now);
 
-        // Transition on threshold or re-trip from Probing.
-        if status.consecutive_failures >= self.failure_threshold
-            || status.state == HealthState::Probing
-        {
+        // Update rolling window.
+        status.recent_outcomes.push_back(false);
+        if status.recent_outcomes.len() > ROLLING_WINDOW {
+            status.recent_outcomes.pop_front();
+        }
+
+        // Condition 1: consecutive failures reach the configured threshold.
+        let should_trip_consecutive = status.consecutive_failures >= self.failure_threshold;
+
+        // Condition 2: rolling success rate below minimum over a full window.
+        #[allow(clippy::cast_precision_loss)]
+        let should_trip_rate = if status.recent_outcomes.len() >= ROLLING_WINDOW {
+            let successes = status.recent_outcomes.iter().filter(|&&ok| ok).count();
+            let rate = successes as f64 / ROLLING_WINDOW as f64;
+            rate < ROLLING_SUCCESS_RATE_MIN
+        } else {
+            false
+        };
+
+        // Condition 3: re-trip from Probing.
+        let should_trip_probing = status.state == HealthState::Probing;
+
+        if should_trip_consecutive || should_trip_rate || should_trip_probing {
             status.state = HealthState::Unhealthy { recovery_at };
         }
     }
@@ -903,6 +941,7 @@ fn provider_status_from_persisted(health: ProviderHealth) -> ProviderStatus {
             .and_then(DateTime::<Utc>::from_timestamp_millis),
         total_attempts: health.total_requests,
         total_successes: health.total_requests.saturating_sub(health.total_failures),
+        recent_outcomes: health.recent_outcomes,
     }
 }
 
@@ -2455,5 +2494,83 @@ mod tests {
         let status = tracker.get("openclaw-infer");
         assert_eq!(status.provider, "openclaw_infer");
         assert_eq!(status.state, HealthState::Healthy);
+    }
+
+    // ─── Rolling success-rate circuit trip (P3-2) ─────────────────────
+
+    /// A provider at ~12% success rate trips Open via the rolling-window
+    /// check even though occasional successes reset the consecutive-failure
+    /// counter.  This reproduces the scenario from the dogfood run where
+    /// openai stayed Closed at 12% success over 49 calls.
+    #[test]
+    fn tracker_low_rolling_success_rate_trips_breaker() {
+        // Use threshold=100 so consecutive failures alone can never trip.
+        let tracker = ProviderHealthTracker::with_config(100, Duration::from_secs(600));
+
+        // Simulate ~12% success rate: 1 success then 7 failures, repeated.
+        // After the first 10 outcomes the rolling window is full.
+        for cycle in 0..6 {
+            tracker.record_success("openai");
+            for _ in 0..7 {
+                tracker.record_failure("openai");
+            }
+            // After cycle 1 (16 total), window = last 10 = [F,F,F,F,F,S,F,F,F,F]
+            // which has 1 success = 10% < 30%.
+            if cycle >= 1 {
+                assert!(
+                    !tracker.is_healthy("openai"),
+                    "provider at ~12% success should be Unhealthy after cycle {cycle}"
+                );
+                // Allow re-probing for the next cycle by recording a success
+                // (simulates cooldown expiry + probe).
+                tracker.record_success("openai");
+            }
+        }
+    }
+
+    /// The rolling-window check does NOT trip the breaker when the success
+    /// rate is above the threshold (50%).  This confirms the consecutive-only
+    /// case is unaffected.
+    #[test]
+    fn tracker_moderate_success_rate_stays_healthy() {
+        // Use threshold=100 so consecutive failures can never trip.
+        let tracker = ProviderHealthTracker::with_config(100, Duration::from_secs(600));
+
+        // 50% success rate: alternating success and failure.
+        for _ in 0..20 {
+            tracker.record_success("anthropic");
+            tracker.record_failure("anthropic");
+        }
+
+        // 50% > 30% threshold, so should remain healthy.
+        assert!(
+            tracker.is_healthy("anthropic"),
+            "50% success rate should not trip the rolling-window check"
+        );
+    }
+
+    /// Rolling-window trip on the ProviderHealth (serializable) struct:
+    /// reproduce the exact 12% scenario and verify circuit opens.
+    #[test]
+    fn snapshot_low_rolling_success_rate_trips() {
+        let mut h = new_provider_health("openai");
+
+        // Simulate 49 calls with ~12% success (6 successes, 43 failures).
+        let mut ms = 1000;
+        for _ in 0..6 {
+            h.record_success();
+            ms += 100;
+            for _ in 0..7 {
+                h.record_failure(ErrorClass::ServerError, ms);
+                ms += 100;
+            }
+        }
+        // After the first full window (10 outcomes), the rate drops below
+        // 30% and the circuit should be Open.
+        assert_eq!(
+            h.state,
+            CircuitState::Open,
+            "12% success rate over 48 calls should trip the circuit"
+        );
     }
 }

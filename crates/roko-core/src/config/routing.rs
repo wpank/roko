@@ -129,6 +129,7 @@ impl Default for RoutingRewardWeightsConfig {
 
 /// Model routing configuration.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RoutingConfig {
     /// Routing mode (`"auto_override"`).
     #[serde(default = "default_routing_mode")]

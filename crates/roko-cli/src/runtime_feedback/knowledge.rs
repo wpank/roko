@@ -329,6 +329,10 @@ mod tests {
             succeeded: true,
             routing_context: None,
             prompt_text: None,
+            cache_read_tokens: 0,
+            knowledge_ids: vec![],
+            playbook_ids: vec![],
+            initial_model: String::new(),
         })
         .await
         .unwrap();
@@ -350,6 +354,10 @@ mod tests {
             succeeded: false,
             routing_context: None,
             prompt_text: None,
+            cache_read_tokens: 0,
+            knowledge_ids: vec![],
+            playbook_ids: vec![],
+            initial_model: String::new(),
         })
         .await
         .unwrap();
@@ -370,6 +378,10 @@ mod tests {
             succeeded: true,
             routing_context: None,
             prompt_text: None,
+            cache_read_tokens: 0,
+            knowledge_ids: vec![],
+            playbook_ids: vec![],
+            initial_model: String::new(),
         })
         .await
         .unwrap();

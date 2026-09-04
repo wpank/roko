@@ -74,6 +74,15 @@ pub enum FeedbackEvent {
         /// Full prompt text for HDC episode fingerprinting, when emitted by
         /// runner v2.
         prompt_text: Option<String>,
+        /// Cache read tokens observed during this task (non-zero = cache hit).
+        cache_read_tokens: u64,
+        /// Neuro knowledge entry IDs surfaced during prompt composition.
+        knowledge_ids: Vec<String>,
+        /// Playbook IDs matched during prompt composition.
+        playbook_ids: Vec<String>,
+        /// Model slug initially selected by the dispatcher before cascade
+        /// routing, daimon modulation, and EFE adjustments.
+        initial_model: String,
     },
     /// A gate verdict landed for a task.
     GateOutcome {

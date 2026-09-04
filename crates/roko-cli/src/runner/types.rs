@@ -2344,10 +2344,8 @@ pub struct RunConfig {
     /// Hard CLI model override. Beats task model hints and the cascade
     /// router when present.
     ///
-    /// Set from:
-    /// - the global `--model` / `--force-model` flag, **or**
-    /// - the `plan run`-level `--force-backend` flag (which wins when both
-    ///   are specified).
+    /// Set from the unified global `--model` flag (aliases: `--force-model`,
+    /// `--force-backend`).
     ///
     /// The event loop copies this into `DispatchContext.force_backend`,
     /// which the model router reads as the highest-priority override.

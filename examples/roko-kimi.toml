@@ -18,9 +18,8 @@ focused = "kimi-k2-5"
 integrative = "kimi-k2-5"
 architectural = "kimi-k2-5"
 
-[prompt]
-token_budget = 12000
-role = "You are a Roko agent using the Kimi provider. Favor concise reasoning and code-first answers."
+[budget]
+prompt_token_budget = 12000
 
 [gates]
 clippy_enabled = true

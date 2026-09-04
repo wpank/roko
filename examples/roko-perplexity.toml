@@ -18,9 +18,8 @@ model = "sonar-pro"
 [agent.roles.fact_checker]
 model = "sonar"
 
-[prompt]
-token_budget = 12000
-role = "You are a Roko agent. Use Perplexity (sonar-pro) for research tasks requiring web-grounded citations, sonar for fast fact-checking, and Claude Opus for all coding and implementation work."
+[budget]
+prompt_token_budget = 12000
 
 [gates]
 clippy_enabled = true

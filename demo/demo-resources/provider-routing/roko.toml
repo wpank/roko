@@ -18,8 +18,8 @@ integrative = "claude-sonnet"
 architectural = "claude-sonnet"
 
 [budget]
-max_cost_per_task = 0.50
-max_cost_per_session = 5.00
+max_task_usd = 0.50
+max_plan_usd = 5.00
 
 [gates]
 clippy_enabled = true
@@ -126,6 +126,6 @@ cost_input_per_m = 0.00
 cost_output_per_m = 0.00
 
 [routing]
-fast = "claude-haiku"
-standard = "claude-sonnet"
-complex = "claude-sonnet"
+fast_task_model = "claude-haiku"
+standard_task_model = "claude-sonnet"
+complex_task_model = "claude-sonnet"

@@ -134,6 +134,10 @@ async fn run_config_facades_receive_runner_events() {
         succeeded: true,
         routing_context: None,
         prompt_text: None,
+        cache_read_tokens: 0,
+        knowledge_ids: vec![],
+        playbook_ids: vec![],
+        initial_model: String::new(),
     };
     let fb_gate = FeedbackEvent::GateOutcome {
         plan_id: "p-e2e".into(),

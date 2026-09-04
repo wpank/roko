@@ -46,6 +46,7 @@ impl Default for DreamsConfig {
 /// Learning subsystem configuration.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LearningConfig {
     /// Auto-refresh playbook rules after successful tasks.
     #[serde(default = "default_true")]

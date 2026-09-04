@@ -8,6 +8,7 @@ use crate::task::TaskDomain;
 
 /// Project-level metadata.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectConfig {
     /// Human-readable project name.
     #[serde(default = "default_project_name")]
@@ -50,6 +51,7 @@ impl Default for ProjectConfig {
 
 /// PRD lifecycle settings.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PrdConfig {
     /// Automatically generate a plan when a PRD is promoted.
     #[serde(default)]

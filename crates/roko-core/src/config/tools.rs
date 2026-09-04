@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 /// excluded_tools = ["write_file", "edit_file"]
 /// ```
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ToolsConfig {
     /// Global tool allowlist -- these tools are always available regardless of
     /// role or domain profile. Additive with profile-specific tools.

@@ -178,6 +178,10 @@ pub struct RunState {
     pub start_epoch_ms: u64,
     /// When the current task started (reset per task).
     pub task_started_at: Instant,
+    /// Epoch timestamp (ms since UNIX epoch) when the current task started.
+    /// Set alongside `task_started_at` in `reset_for_task` so that
+    /// duration calculations use wall-clock time, not just monotonic deltas.
+    pub task_start_epoch_ms: u64,
     /// How long the last dispatch_action (prompt assembly + spawn) took in ms.
     pub last_dispatch_ms: u64,
 
@@ -248,11 +252,23 @@ pub struct RunState {
     pub current_task_role: String,
 
     // ─── Model Choice Source ────────────────────────────────────────
-    /// Whether the current task's model was forced via `--model` /
-    /// `--force-model` / `--force-backend`. When `true`, feedback
-    /// writers tag the observation as `ModelChoiceSource::Override` so
-    /// the cascade router's learned policy is not corrupted.
+    /// Whether the current task's model was forced via `--model`.
+    /// When `true`, feedback writers tag the observation as
+    /// `ModelChoiceSource::Override` so the cascade router's learned
+    /// policy is not corrupted.
     pub model_forced: bool,
+
+    // ─── Episode Extra Metadata ─────────────────────────────────────
+    /// Knowledge IDs surfaced during prompt composition for this task.
+    /// Populated at dispatch time; consumed by EpisodeSink.
+    pub episode_knowledge_ids: Vec<String>,
+    /// Playbook IDs matched during prompt composition for this task.
+    /// Populated at dispatch time; consumed by EpisodeSink.
+    pub episode_playbook_ids: Vec<String>,
+    /// Model slug initially selected by the dispatcher before cascade
+    /// routing, daimon modulation, and EFE adjustments.
+    /// Populated at dispatch time; consumed by EpisodeSink.
+    pub episode_initial_model: String,
 
     // ─── Review Verdict ──────────────────────────────────────────────
     /// Parsed structured review verdict from the most recent agent turn.
@@ -341,6 +357,10 @@ impl RunState {
                 .unwrap_or_default()
                 .as_millis() as u64,
             task_started_at: Instant::now(),
+            task_start_epoch_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
             last_dispatch_ms: 0,
             replan_contexts: HashMap::new(),
             replan_ledger: super::persist::ReplanLedgerSnapshot::default(),
@@ -355,6 +375,9 @@ impl RunState {
             disk_budget_paused: false,
             current_task_role: String::new(),
             model_forced: false,
+            episode_knowledge_ids: Vec::new(),
+            episode_playbook_ids: Vec::new(),
+            episode_initial_model: String::new(),
             parsed_review_verdict: None,
             express_mode: false,
             cumulative_reflection_cost_usd: 0.0,
@@ -545,6 +568,11 @@ impl RunState {
                 timestamp_ms,
                 ..
             } => {
+                // Record the wall-clock epoch when the agent subprocess is
+                // about to start. `reset_for_task` sets the initial epoch
+                // at task queuing time; this update narrows it to the actual
+                // dispatch boundary so duration calculations are accurate.
+                self.task_start_epoch_ms = *timestamp_ms;
                 self.upsert_attempt(
                     attempt,
                     TaskAttemptStatus::DispatchingAgent,
@@ -943,9 +971,16 @@ impl RunState {
         self.gate_output.clear();
         // iteration is per-task in self.iterations, set from executor state
         self.task_started_at = Instant::now();
+        self.task_start_epoch_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
         self.last_dispatch_ms = 0;
         self.routing_context = None;
         self.model_forced = false;
+        self.episode_knowledge_ids.clear();
+        self.episode_playbook_ids.clear();
+        self.episode_initial_model.clear();
     }
 
     /// Return the context shrink factor for the given plan/task pair.

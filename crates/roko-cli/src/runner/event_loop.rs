@@ -121,10 +121,11 @@ use super::tui_bridge::TuiBridge;
 use super::types::{
     AgentCompletionSummary, AgentDispatchOutcome, AgentEvent, GateCompletion, GateCompletionKind,
     GateEffectRef, GateVerdictSummary, OwnerEffectRef, PlanOutcome, PlanRunSummary,
-    PromptAssemblyDiagnostics, ResumeMarker, ResumeOutcome, RetryDecision, RunConfig, RunOutcome,
-    RunTotals, RunnerEvent, RunnerFailureKind, RunnerRunStatus, TaskAttemptOutcome, TaskAttemptRef,
-    TaskAttemptStatus, TaskLifecycleStatus, TaskPhaseDurations, TaskRunCategory, TaskRunSummary,
-    TimeoutAgentSnapshot, TimeoutEvent, TimeoutKind, effective_plan_timeout_secs,
+    PromptAssemblyDiagnostics, ResumeMarker, ResumeOutcome, RetryAction, RetryDecision, RunConfig,
+    RunOutcome, RunTotals, RunnerEvent, RunnerFailureKind, RunnerRunStatus, TaskAttemptOutcome,
+    TaskAttemptRef, TaskAttemptStatus, TaskLifecycleStatus, TaskPhaseDurations, TaskRunCategory,
+    TaskRunSummary, TimeoutAgentSnapshot, TimeoutEvent, TimeoutKind,
+    effective_plan_timeout_secs,
 };
 use crate::execution_control::{CommandAckStatus, ExecutionCommand, ExecutionCommandKind, ack_for};
 
@@ -1470,10 +1471,14 @@ struct TaskRuntimeState {
     current_daimon_strategy: Option<StrategyCoordinates>,
     gate_output: String,
     task_started_at: Instant,
+    task_start_epoch_ms: u64,
     last_dispatch_ms: u64,
     phase_clock: TaskPhaseClock,
     routing_context: Option<roko_learn::model_router::RoutingContext>,
     model_forced: bool,
+    episode_knowledge_ids: Vec<String>,
+    episode_playbook_ids: Vec<String>,
+    episode_initial_model: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1565,10 +1570,14 @@ impl TaskRuntimeState {
             current_daimon_strategy: state.current_daimon_strategy.clone(),
             gate_output: state.gate_output.clone(),
             task_started_at: state.task_started_at,
+            task_start_epoch_ms: state.task_start_epoch_ms,
             last_dispatch_ms: state.last_dispatch_ms,
             phase_clock: TaskPhaseClock::new(state.task_started_at),
             routing_context: state.routing_context.clone(),
             model_forced: state.model_forced,
+            episode_knowledge_ids: state.episode_knowledge_ids.clone(),
+            episode_playbook_ids: state.episode_playbook_ids.clone(),
+            episode_initial_model: state.episode_initial_model.clone(),
         }
     }
 
@@ -1594,9 +1603,13 @@ impl TaskRuntimeState {
         state.current_daimon_strategy = self.current_daimon_strategy.clone();
         state.gate_output = self.gate_output.clone();
         state.task_started_at = self.task_started_at;
+        state.task_start_epoch_ms = self.task_start_epoch_ms;
         state.last_dispatch_ms = self.last_dispatch_ms;
         state.routing_context = self.routing_context.clone();
         state.model_forced = self.model_forced;
+        state.episode_knowledge_ids = self.episode_knowledge_ids.clone();
+        state.episode_playbook_ids = self.episode_playbook_ids.clone();
+        state.episode_initial_model = self.episode_initial_model.clone();
     }
 }
 
@@ -2550,7 +2563,18 @@ pub async fn run_with_tui_commands(
     let task_timeout_secs = duration_secs(agent_dispatch_timeout(&config));
 
     let exec_config = ExecutorConfig {
-        max_concurrent_plans: plans.len().max(1),
+        // Wire max_concurrent_plans from config instead of hardcoding plans.len().
+        // Priority: runner.max_concurrent_plans > conductor.max_parallel_plans > default (1).
+        max_concurrent_plans: config
+            .roko_config
+            .as_deref()
+            .and_then(|rc| {
+                rc.runner
+                    .max_concurrent_plans
+                    .or(Some(rc.conductor.max_parallel_plans))
+            })
+            .unwrap_or(1)
+            .max(1),
         max_concurrent_tasks,
         max_auto_fix_iterations: config.max_retries,
         task_timeout_secs,
@@ -2903,6 +2927,23 @@ pub async fn run_with_tui_commands(
     let worktrees =
         default_runner_worktree_manager_with_ttl(&config.workdir, worktree_idle_ttl_secs);
 
+    // ── Startup stuck-lock cleanup ────────────────────────────────────────
+    //
+    // `retain_lock_if_cleanup_unproved` deliberately leaks the mutation lock
+    // via `mem::forget`, which blocks all subsequent worktree operations for
+    // the lifetime of the process.  If that process crashed or was killed
+    // the kernel released the flock but the file remained.  Clear it before
+    // reclaim_idle so that idle eviction can actually acquire the lock.
+    match worktrees.clear_stuck_mutation_lock() {
+        Ok(true) => {
+            info!("cleared stuck worktree mutation lock on startup");
+        }
+        Ok(false) => {}
+        Err(err) => {
+            warn!(error = %err, "startup clear_stuck_mutation_lock failed (non-fatal)");
+        }
+    }
+
     // ── Startup orphan detection ─────────────────────────────────────────
     //
     // On every PlanRunner startup, call reclaim_idle() to evict worktrees
@@ -2922,6 +2963,17 @@ pub async fn run_with_tui_commands(
             warn!(error = %err, "startup worktree reclaim_idle failed (non-fatal)");
         }
     }
+
+    // ── Startup stale-attempt scan (G01 audit) ───────────────────────────
+    //
+    // After reclaiming idle tracked worktrees, scan `.roko/worktrees/` for
+    // on-disk directories that are NOT tracked by the WorktreeManager.
+    // These are orphans from previous crashed runs and should be removed so
+    // they do not accumulate.  `reclaim_idle` already calls
+    // `git worktree prune` for git metadata; this step handles the physical
+    // checkout directories that git no longer knows about.
+    cleanup_orphan_worktrees(&config.workdir, &worktrees).await;
+
     publish_worktree_count(config, &worktrees);
 
     // Per-run gate semaphore — limits how many gate rungs execute concurrently.
@@ -3477,6 +3529,9 @@ pub async fn run_with_tui_commands(
     // Conductor supervision fires every 5 s. Cheap: just locks + drains the
     // ring and calls evaluate_full (no IO, no await inside the branch).
     let mut conductor_supervision_interval = interval(Duration::from_secs(5));
+    // Cooldown gate: prevents conductor Restart storms by suppressing restarts
+    // that fire within 5 s of the previous one (P2-3).
+    let mut last_conductor_restart: Option<Instant> = None;
     // GitHub sync scheduler: checks config for [github].sync_interval_hours
     // and pushes state/progress to GitHub periodically.
     let github_sync_scheduler = GitHubSyncScheduler::from_config(&config);
@@ -5798,6 +5853,40 @@ pub async fn run_with_tui_commands(
                         decision_budget,
                         decision_reason,
                     );
+
+                    // ── Cumulative retry cost cap ──────────────────────────
+                    // Even when the attempt-count budget allows another retry,
+                    // block it if the total USD spent on this task across all
+                    // attempts exceeds the configured ceiling.
+                    if decision.should_retry() {
+                        let cap = config.max_task_retry_usd;
+                        if cap > 0.0 {
+                            let spent = state.task_cost(
+                                &completion.plan_id,
+                                &completion.task_id,
+                            );
+                            if spent >= cap {
+                                warn!(
+                                    plan_id = %completion.plan_id,
+                                    task_id = %completion.task_id,
+                                    spent_usd = spent,
+                                    cap_usd = cap,
+                                    attempt = completion_attempt.attempt,
+                                    "cumulative retry cost cap exceeded — suppressing retry"
+                                );
+                                decision.action = RetryAction::Exhausted;
+                                decision.exhausted = true;
+                                decision.next_attempt = None;
+                                decision.cooldown_ms = 0;
+                                decision.reason = format!(
+                                    "cumulative cost cap exceeded: \
+                                     ${spent:.4} >= ${cap:.2} across {} attempt(s)",
+                                    completion_attempt.attempt,
+                                );
+                            }
+                        }
+                    }
+
                     let failure_phase_durations = runtime_task_phase_durations(
                         &task_runtime_states,
                         &completion_attempt,
@@ -6435,6 +6524,7 @@ pub async fn run_with_tui_commands(
                     &cancel,
                     &run_id,
                     &plans,
+                    &mut last_conductor_restart,
                 )
                 .await;
                 // After a conductor Fail the cancel token will have been
@@ -7329,6 +7419,7 @@ async fn conductor_supervision_tick(
     cancel: &CancellationToken,
     run_id: &str,
     plans: &[Plan],
+    last_conductor_restart: &mut Option<Instant>,
 ) {
     // Guard: conductor supervision is opt-in (None when config absent).
     let (Some(conductor), Some(ring)) = (config.conductor.as_ref(), config.conductor_ring.as_ref())
@@ -7402,6 +7493,31 @@ async fn conductor_supervision_tick(
             ref watcher,
             ref reason,
         } => {
+            // ── P2-3: Restart cooldown ────────────────────────────────
+            // Suppress conductor restarts that fire within 5 s of the
+            // previous one.  Without this gate the conductor can loop
+            // 143+ times in a single session.
+            const RESTART_COOLDOWN: Duration = Duration::from_secs(5);
+            if let Some(prev) = *last_conductor_restart {
+                let elapsed = prev.elapsed();
+                if elapsed < RESTART_COOLDOWN {
+                    warn!(
+                        watcher = watcher.as_str(),
+                        elapsed_ms = elapsed.as_millis() as u64,
+                        cooldown_ms = RESTART_COOLDOWN.as_millis() as u64,
+                        "conductor_supervision: Restart suppressed — cooldown not elapsed"
+                    );
+                    tui.status(
+                        "conductor.restart_suppressed",
+                        &format!(
+                            "conductor restart suppressed (cooldown {:.1}s remaining)",
+                            (RESTART_COOLDOWN - elapsed).as_secs_f64()
+                        ),
+                    );
+                    return;
+                }
+            }
+
             warn!(
                 watcher = watcher.as_str(),
                 reason = reason.as_str(),
@@ -7503,6 +7619,9 @@ async fn conductor_supervision_tick(
                 gate_thresholds,
                 snapshot_writer,
             );
+            // Record the restart timestamp so the cooldown gate (P2-3) can
+            // suppress the next attempt if it arrives too quickly.
+            *last_conductor_restart = Some(Instant::now());
         }
 
         roko_core::ConductorDecision::Fail {
@@ -8936,6 +9055,10 @@ fn emit_runner_event_with_facades(
                 .then(|| state.current_prompt_text.clone()),
             agent_output: state.agent_output.clone(),
             model_forced: state.model_forced,
+            cache_read_tokens: state.cache_read_tokens,
+            knowledge_ids: state.episode_knowledge_ids.clone(),
+            playbook_ids: state.episode_playbook_ids.clone(),
+            initial_model: state.episode_initial_model.clone(),
         };
         if let Some(feedback) = runner_event_to_feedback(&event, &state.routing_context, &usage) {
             if let Some(tasks) = feedback_tasks {
@@ -9297,11 +9420,21 @@ struct TaskUsageSnapshot {
     duration_ms: u64,
     prompt_text: Option<String>,
     agent_output: String,
-    /// Whether the model was forced via `--model` / `--force-backend`.
+    /// Whether the model was forced via `--model`.
     /// When `true`, feedback writers tag the observation as
     /// `ModelChoiceSource::Override` so the cascade router's bandit
     /// policy is not corrupted by manual overrides.
     model_forced: bool,
+    /// Cache read tokens for this task (non-zero indicates a cache hit).
+    cache_read_tokens: u64,
+    /// Knowledge entry IDs surfaced during prompt composition.
+    knowledge_ids: Vec<String>,
+    /// Playbook IDs matched during prompt composition.
+    playbook_ids: Vec<String>,
+    /// Model slug initially selected by the dispatcher before cascade/daimon
+    /// adjustments. Together with the final model in `AgentOutcome`, this
+    /// lets episodes record both `initial_model` and `successful_model`.
+    initial_model: String,
 }
 
 #[derive(Debug, Clone)]
@@ -9890,6 +10023,10 @@ fn runner_event_to_feedback(
                 succeeded,
                 routing_context: routing_ctx.clone(),
                 prompt_text: usage.prompt_text.clone(),
+                cache_read_tokens: usage.cache_read_tokens,
+                knowledge_ids: usage.knowledge_ids.clone(),
+                playbook_ids: usage.playbook_ids.clone(),
+                initial_model: usage.initial_model.clone(),
             })
         }
         RunnerEvent::GateCompleted {
@@ -11486,6 +11623,47 @@ async fn dispatch_action(
                 }
             }
 
+            // ── Cumulative retry cost cap (dispatch-time) ────────────
+            // Before spawning a new attempt, reject dispatch when the
+            // cumulative cost of all prior attempts for this task exceeds
+            // `max_task_retry_usd`. This prevents runaway spending when a
+            // task retries many times.
+            {
+                let retry_cap = ctx.config.max_task_retry_usd;
+                if retry_cap > 0.0 && !ctx.config.budget_override {
+                    let cumulative_spent = ctx.state.task_cost(plan_id, &task_id);
+                    if cumulative_spent >= retry_cap {
+                        let message = format!(
+                            "cumulative cost cap exceeded for {task_id}: \
+                             ${cumulative_spent:.4} >= ${retry_cap:.2} \u{2014} refusing dispatch"
+                        );
+                        warn!(
+                            plan_id = %plan_id,
+                            task = %task_id,
+                            spent_usd = cumulative_spent,
+                            cap_usd = retry_cap,
+                            "{message}"
+                        );
+                        ctx.state.record_task_failure(plan_id, &task_id, &message);
+                        ctx.state.mark_task_failed(plan_id, &task_id);
+                        ctx.task_dag.clear_running(plan_id, &task_id);
+                        if let Err(error) = ctx
+                            .executor
+                            .apply_event(plan_id, &ExecutorEvent::Fatal(message.clone()))
+                        {
+                            error!(
+                                plan_id = %plan_id,
+                                %error,
+                                "failed to halt cumulative-cost-cap exhaustion"
+                            );
+                            ctx.state.force_plan_terminal(plan_id);
+                        }
+                        ctx.tui.error(&message);
+                        return ActionDispatchOutcome::Handled;
+                    }
+                }
+            }
+
             // Per-plan budget check using BudgetGuardrail (roko-learn).
             //
             // A one-shot guardrail is built from the configured ceiling and the
@@ -12505,9 +12683,9 @@ async fn dispatch_action(
                 role: role.to_string(),
                 workdir: plan_workdir.clone(),
                 model_hint: None,
-                // `cli_model_override` is set from `--model` / `--force-model`
-                // (global) or `--force-backend` (plan run subcommand). It is
-                // the highest-priority override in the model routing pipeline.
+                // `cli_model_override` is set from the unified `--model` flag.
+                // It is the highest-priority override in the model routing
+                // pipeline.
                 force_backend: ctx.config.cli_model_override.clone(),
                 budget_remaining_usd: if ctx.config.max_plan_usd > 0.0 {
                     (ctx.config.max_plan_usd - ctx.state.plan_cost(plan_id)).max(0.0)
@@ -12577,6 +12755,9 @@ async fn dispatch_action(
                 &dispatch_plan.prompt.diagnostics.experiment_assignments,
             );
             ctx.state.model_forced = dispatch_plan.forced;
+            // Capture the initial model slug before cascade/daimon adjustments
+            // so episodes can record both initial_model and successful_model.
+            ctx.state.episode_initial_model = dispatch_plan.model.slug.clone();
             let mut selected_source = "dispatcher".to_string();
             let allow_learned_model_modulation =
                 task_def.model_hint.is_none() && !dispatch_plan.forced;
@@ -12813,6 +12994,10 @@ async fn dispatch_action(
                 ctx.section_diagnostics
                     .insert(attempt_key, prompt_diagnostics.clone());
             }
+            // Populate episode metadata on RunState so EpisodeSink can record
+            // which knowledge entries and playbooks were active for this task.
+            ctx.state.episode_knowledge_ids = prompt_diagnostics.knowledge_ids.clone();
+            ctx.state.episode_playbook_ids = prompt_diagnostics.playbook_ids.clone();
             ctx.tui
                 .model_selected(plan_id, &task_id, &requested_model, &selected_source);
             let mut system_prompt = dispatch_plan.prompt.system_prompt;
@@ -20889,6 +21074,10 @@ mod tests {
                 prompt_text: None,
                 agent_output: String::new(),
                 model_forced: false,
+                cache_read_tokens: 0,
+                knowledge_ids: vec![],
+                playbook_ids: vec![],
+                initial_model: String::new(),
             },
         )
         .expect("plan completion feedback");

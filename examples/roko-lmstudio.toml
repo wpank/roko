@@ -17,9 +17,8 @@ focused = "qwen"
 integrative = "qwen"
 architectural = "qwen"
 
-[prompt]
-token_budget = 8000
-role = "You are a Roko agent running on a local LM Studio server. Prefer short, practical responses and avoid unnecessary tool chatter."
+[budget]
+prompt_token_budget = 8000
 
 [gates]
 clippy_enabled = true

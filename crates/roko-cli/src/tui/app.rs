@@ -2797,10 +2797,7 @@ impl App {
                     .get(self.tui_state.selected_agent)
                     .map(|a| a.id.as_str())
                     .unwrap_or("");
-                let history_records = self
-                    .tui_state
-                    .agent_output_history
-                    .records_for(selected_id);
+                let history_records = self.tui_state.agent_output_history.records_for(selected_id);
                 let lines: Vec<String> = if history_records.is_empty() {
                     self.tui_state
                         .agents

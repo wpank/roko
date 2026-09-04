@@ -94,9 +94,10 @@ impl FeedbackSink for EpisodeSink {
             serde_json::Value::Bool(!knowledge_ids.is_empty()),
         );
         if let Some(first_pb) = playbook_ids.first() {
-            episode
-                .extra
-                .insert("playbook_id".into(), serde_json::Value::String(first_pb.clone()));
+            episode.extra.insert(
+                "playbook_id".into(),
+                serde_json::Value::String(first_pb.clone()),
+            );
         }
         episode.extra.insert(
             "cache_hit".into(),

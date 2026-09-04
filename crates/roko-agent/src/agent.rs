@@ -82,7 +82,6 @@ impl AgentResult {
         v.push(self.output.clone());
         v
     }
-
 }
 
 /// Build an output signal that keeps the full upstream lineage from `input`.

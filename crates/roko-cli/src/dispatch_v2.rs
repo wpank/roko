@@ -1509,10 +1509,7 @@ impl AgentDispatcherV2 {
     ///
     /// When set, every tool call dispatched through this factory records
     /// scrubbed admit/result lines to `.roko/tool_audit.jsonl`.
-    pub fn with_tool_audit(
-        mut self,
-        adapter: Arc<roko_fs::tool_audit::ScrubAuditAdapter>,
-    ) -> Self {
+    pub fn with_tool_audit(mut self, adapter: Arc<roko_fs::tool_audit::ScrubAuditAdapter>) -> Self {
         self.tool_audit = Some(adapter);
         self
     }

@@ -25,7 +25,7 @@ use roko_gate::{
     parse_structured_review_verdict, review_verdict::ReviewVerdictContext,
 };
 use roko_runtime::JsonlLogger;
-use roko_runtime::effect_driver::RuntimeEvent as RuntimeDriverEvent;
+use roko_core::RuntimeEvent as RuntimeDriverEvent;
 use roko_runtime::event_bus::runtime_event_bus;
 // WorkflowConfig now imported from workflow_contract above.
 use roko_runtime::workflow_contract::{WorkflowConfig, WorkflowRunConfig, WorkflowRunReport};

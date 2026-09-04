@@ -355,7 +355,12 @@ struct Cli {
     ///
     /// `--force-model` and `--force-backend` are accepted aliases for this
     /// flag, retained for backward compatibility.
-    #[arg(long, global = true, visible_alias = "force-model", alias = "force-backend")]
+    #[arg(
+        long,
+        global = true,
+        visible_alias = "force-model",
+        alias = "force-backend"
+    )]
     model: Option<String>,
 
     /// Set the repository / working directory root.
@@ -8180,8 +8185,7 @@ mod tests {
 
     #[test]
     fn cli_flags_force_backend_alias_resolves_to_model() {
-        let cli =
-            Cli::try_parse_from(["roko", "--force-backend", "sonnet", "status"]).unwrap();
+        let cli = Cli::try_parse_from(["roko", "--force-backend", "sonnet", "status"]).unwrap();
         assert_eq!(
             cli.model.as_deref(),
             Some("sonnet"),

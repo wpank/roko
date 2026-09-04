@@ -8,8 +8,8 @@ use roko_core::Verdict;
 use roko_gate::classify_gate_failure;
 use tracing::info;
 
-use super::types::{GateCompletionKind, GateVerdictSummary, RunnerFailureKind};
 use super::gate_input::GateInputSnapshot;
+use super::types::{GateCompletionKind, GateVerdictSummary, RunnerFailureKind};
 
 // ── Attribution helpers ─────────────────────────────────────────────────
 

@@ -72,10 +72,11 @@ impl Translator for HermesXmlTranslator {
             })
             .collect();
 
-        let json_str =
-            serde_json::to_string_pretty(&arr).unwrap_or_else(|_| "[]".to_string());
+        let json_str = serde_json::to_string_pretty(&arr).unwrap_or_else(|_| "[]".to_string());
 
-        let mut block = String::from("You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions.\n\n");
+        let mut block = String::from(
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions.\n\n",
+        );
         block.push_str("<tools>\n");
         block.push_str(&json_str);
         block.push_str("\n</tools>\n\n");
@@ -88,10 +89,7 @@ impl Translator for HermesXmlTranslator {
         RenderedTools::SystemPromptBlock(block)
     }
 
-    fn parse_calls(
-        &self,
-        response: &BackendResponse,
-    ) -> Result<Vec<ToolCall>, TranslatorError> {
+    fn parse_calls(&self, response: &BackendResponse) -> Result<Vec<ToolCall>, TranslatorError> {
         let text = extract_text(response);
 
         // Parse all <tool_call>...</tool_call> blocks from the text.
@@ -140,9 +138,7 @@ impl Translator for HermesXmlTranslator {
                 "name": call.name,
                 "content": content,
             });
-            block.push_str(
-                &serde_json::to_string(&obj).unwrap_or_else(|_| "{}".to_string()),
-            );
+            block.push_str(&serde_json::to_string(&obj).unwrap_or_else(|_| "{}".to_string()));
             block.push_str("\n</tool_response>\n");
         }
         RenderedResults::TextBlock(block)
@@ -150,10 +146,7 @@ impl Translator for HermesXmlTranslator {
 
     /// Hermes models produce text responses; there is no structured
     /// assistant message to inject into conversation history.
-    fn render_assistant_message(
-        &self,
-        _response: &BackendResponse,
-    ) -> Option<serde_json::Value> {
+    fn render_assistant_message(&self, _response: &BackendResponse) -> Option<serde_json::Value> {
         None
     }
 }
@@ -229,7 +222,9 @@ fn tool_call_from_value(value: &serde_json::Value, index: usize) -> Option<ToolC
     if let Some(arr) = value.get("tool_calls").and_then(|v| v.as_array()) {
         // Take the first entry; multi-entry arrays inside a single
         // <tool_call> block are rare but handled.
-        return arr.first().and_then(|entry| extract_single_call(entry, index));
+        return arr
+            .first()
+            .and_then(|entry| extract_single_call(entry, index));
     }
 
     extract_single_call(value, index)
@@ -670,7 +665,11 @@ mod tests {
     #[test]
     fn render_assistant_message_returns_none() {
         let response = BackendResponse::Text("hello".into());
-        assert!(HermesXmlTranslator.render_assistant_message(&response).is_none());
+        assert!(
+            HermesXmlTranslator
+                .render_assistant_message(&response)
+                .is_none()
+        );
     }
 
     // ─── round trip ───────────────────────────────────────────────────────

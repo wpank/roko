@@ -3,7 +3,8 @@
 //! Reads the JSONL file written by JsonlLogger and builds a snapshot of the
 //! current state for each run_id. Used for resume and dashboard views.
 
-use crate::effect_driver::Result;
+/// Fallible result type used by projection operations.
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 use roko_core::runtime_event::{RuntimeEvent, RuntimeEventEnvelope};
 use std::collections::HashMap;
 use std::path::Path;

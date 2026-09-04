@@ -475,7 +475,9 @@ mod tests {
                     Ok(chunk) => observed.push(chunk),
                     Err(TryRecvError::Empty) => tokio::task::yield_now().await,
                     Err(TryRecvError::Disconnected) => {
-                        tracing::warn!("channel disconnected early while filtering event bus frames");
+                        tracing::warn!(
+                            "channel disconnected early while filtering event bus frames"
+                        );
                         break;
                     }
                 }

@@ -168,7 +168,8 @@ fn perplexity_tool_loop_agent(
     options: &AgentOptions,
 ) -> Result<Box<dyn Agent>, AgentCreationError> {
     let (registry, tools, resolver) = tool_registry_for_options(model, options)?;
-    let dispatcher = build_tool_dispatcher_with_audit(registry, resolver, options.tool_audit.clone());
+    let dispatcher =
+        build_tool_dispatcher_with_audit(registry, resolver, options.tool_audit.clone());
     let translator: Arc<dyn Translator> = Arc::new(OpenAiTranslator);
     let timeout_ms = options.effective_timeout_ms(None);
     let backend = Arc::new(PerplexityToolLoopBackend::new(

@@ -1,7 +1,6 @@
 //! Typed workflow run ledger and compatibility report adapter.
 //!
-//! This module is intentionally not wired into `WorkflowEngine` yet. It gives
-//! future runtime packets a typed source of truth that can produce the current
+//! Provides a typed source of truth that can produce the current
 //! `WorkflowRunReport` shape without replaying the event bus.
 
 use std::path::PathBuf;
@@ -11,8 +10,7 @@ use roko_core::foundation::TokenUsage;
 use roko_core::runtime_event::RuntimeEventEnvelope;
 use serde::{Deserialize, Serialize};
 
-use crate::pipeline_state::{CommitOutcome, Phase, WorkflowConfig};
-use crate::workflow_engine::{GateOutcome, WorkflowRunReport};
+use crate::workflow_contract::{CommitOutcome, GateOutcome, Phase, WorkflowConfig, WorkflowRunReport};
 
 /// Typed record for a single workflow run.
 #[derive(Debug, Clone)]

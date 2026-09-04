@@ -634,11 +634,7 @@ impl TaskDag {
     /// so it becomes eligible for dispatch again.
     ///
     /// Returns the task IDs that were reset.
-    pub fn reset_single_task_for_retry(
-        &mut self,
-        plan_id: &str,
-        task_id: &str,
-    ) -> Vec<TaskId> {
+    pub fn reset_single_task_for_retry(&mut self, plan_id: &str, task_id: &str) -> Vec<TaskId> {
         let plan = self.plan_mut(plan_id);
         let mut reset_ids = Vec::new();
         if plan.failed.remove(task_id) {

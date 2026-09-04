@@ -199,10 +199,7 @@ impl SharedAgentFactory {
     /// When set, every tool call dispatched through agents created by this
     /// factory records scrubbed admit/result lines to disk.
     #[must_use]
-    pub fn with_tool_audit(
-        mut self,
-        adapter: Arc<roko_fs::tool_audit::ScrubAuditAdapter>,
-    ) -> Self {
+    pub fn with_tool_audit(mut self, adapter: Arc<roko_fs::tool_audit::ScrubAuditAdapter>) -> Self {
         self.tool_audit = Some(adapter);
         self
     }

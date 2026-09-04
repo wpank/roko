@@ -1616,12 +1616,7 @@ fn render_prompt_stats_panel(
 
 /// Render a full-page C-Factor detail panel with overall gauge, component
 /// breakdown bars, trend direction, and agent contribution table.
-fn render_cfactor_detail(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    tui_state: &TuiState,
-    theme: &Theme,
-) {
+fn render_cfactor_detail(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme: &Theme) {
     let block = Block::bordered()
         .title(Span::styled(" C-Factor Detail ", theme.section_header()))
         .border_style(theme.accent());
@@ -1631,10 +1626,11 @@ fn render_cfactor_detail(
     let cf = match tui_state.cfactor.as_ref() {
         Some(cf) => cf,
         None => {
-            let empty = Paragraph::new("C-Factor not yet computed. Data appears during active plan runs.")
-                .style(theme.muted())
-                .alignment(Alignment::Center)
-                .wrap(Wrap { trim: false });
+            let empty =
+                Paragraph::new("C-Factor not yet computed. Data appears during active plan runs.")
+                    .style(theme.muted())
+                    .alignment(Alignment::Center)
+                    .wrap(Wrap { trim: false });
             frame.render_widget(empty, inner);
             return;
         }
@@ -1642,7 +1638,7 @@ fn render_cfactor_detail(
 
     // Layout: top gauge row, middle component bars, bottom agent contributions.
     let sections = Layout::vertical([
-        Constraint::Length(5),  // Overall score gauge + trend
+        Constraint::Length(5), // Overall score gauge + trend
         Constraint::Min(12),   // Component breakdown bars
         Constraint::Length(8), // Agent contributions table
     ])
@@ -1819,14 +1815,8 @@ fn render_cfactor_agents(
                 "neutral"
             };
             Row::new([
-                Cell::from(Span::styled(
-                    truncate(&ac.agent_id, 16),
-                    theme.value(),
-                )),
-                Cell::from(Span::styled(
-                    ac.episode_count.to_string(),
-                    theme.text(),
-                )),
+                Cell::from(Span::styled(truncate(&ac.agent_id, 16), theme.value())),
+                Cell::from(Span::styled(ac.episode_count.to_string(), theme.text())),
                 Cell::from(Span::styled(
                     format!("{:+.4}", ac.contribution_score),
                     impact_style,
@@ -1848,7 +1838,10 @@ fn render_cfactor_agents(
     .header(header)
     .block(
         Block::bordered()
-            .title(Span::styled(" Agent Contributions ", theme.section_header()))
+            .title(Span::styled(
+                " Agent Contributions ",
+                theme.section_header(),
+            ))
             .border_style(theme.accent()),
     );
 
@@ -1876,8 +1869,7 @@ fn compute_cfactor_trend(buckets: &[roko_learn::aggregate::CFactorBucket]) -> Tr
     // Recent half vs older half
     let mid = n / 2;
     let older_avg: f64 = buckets[..mid].iter().map(|b| b.avg).sum::<f64>() / mid as f64;
-    let recent_avg: f64 = buckets[mid..].iter().map(|b| b.avg).sum::<f64>()
-        / (n - mid) as f64;
+    let recent_avg: f64 = buckets[mid..].iter().map(|b| b.avg).sum::<f64>() / (n - mid) as f64;
     let delta = recent_avg - older_avg;
 
     if delta > 0.02 {

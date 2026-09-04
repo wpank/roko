@@ -827,14 +827,8 @@ mod tests {
             .set_fg(Color::Rgb(255, 128, 0))
             .set_bg(Color::Rgb(10, 20, 30));
         let ansi = buffer_to_ansi(&buf);
-        assert!(
-            ansi.contains(";38;2;255;128;0"),
-            "missing RGB fg: {ansi}"
-        );
-        assert!(
-            ansi.contains(";48;2;10;20;30"),
-            "missing RGB bg: {ansi}"
-        );
+        assert!(ansi.contains(";38;2;255;128;0"), "missing RGB fg: {ansi}");
+        assert!(ansi.contains(";48;2;10;20;30"), "missing RGB bg: {ansi}");
     }
 
     #[test]
@@ -848,14 +842,8 @@ mod tests {
             .set_fg(Color::Indexed(208))
             .set_bg(Color::Indexed(235));
         let ansi = buffer_to_ansi(&buf);
-        assert!(
-            ansi.contains(";38;5;208"),
-            "missing indexed fg: {ansi}"
-        );
-        assert!(
-            ansi.contains(";48;5;235"),
-            "missing indexed bg: {ansi}"
-        );
+        assert!(ansi.contains(";38;5;208"), "missing indexed fg: {ansi}");
+        assert!(ansi.contains(";48;5;235"), "missing indexed bg: {ansi}");
     }
 
     #[test]
@@ -1056,9 +1044,8 @@ mod tests {
     /// Helper: strip ANSI escapes from a string (for test assertions).
     fn strip_ansi(s: &str) -> String {
         static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-        let re = RE.get_or_init(|| {
-            regex::Regex::new(r"\x1b\[[0-9;]*[A-Za-z]").expect("valid ANSI regex")
-        });
+        let re = RE
+            .get_or_init(|| regex::Regex::new(r"\x1b\[[0-9;]*[A-Za-z]").expect("valid ANSI regex"));
         re.replace_all(s, "").into_owned()
     }
 }

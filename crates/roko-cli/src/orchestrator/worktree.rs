@@ -1456,14 +1456,15 @@ impl WorktreeManager {
         // file alone.
         let lock_fd = rustix::fs::open(
             &lock_path,
-            rustix::fs::OFlags::RDWR
-                | rustix::fs::OFlags::NOFOLLOW
-                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::OFlags::RDWR | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
             rustix::fs::Mode::empty(),
         )
         .map_err(std::io::Error::from)?;
 
-        match rustix::fs::flock(&lock_fd, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
+        match rustix::fs::flock(
+            &lock_fd,
+            rustix::fs::FlockOperation::NonBlockingLockExclusive,
+        ) {
             Ok(()) => {
                 // We own the lock now. The file is old and unowned -- remove it.
                 // Drop the fd first (releases flock), then unlink the path.

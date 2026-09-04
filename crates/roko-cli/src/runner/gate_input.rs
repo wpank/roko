@@ -32,10 +32,7 @@ fn hash_part(hasher: &mut Sha256, bytes: &[u8]) {
 }
 
 #[cfg(unix)]
-pub(super) fn metadata_unchanged(
-    before: &std::fs::Metadata,
-    after: &std::fs::Metadata,
-) -> bool {
+pub(super) fn metadata_unchanged(before: &std::fs::Metadata, after: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt;
     before.file_type() == after.file_type()
         && before.len() == after.len()
@@ -56,9 +53,7 @@ fn metadata_mode(_metadata: &std::fs::Metadata) -> u32 {
     0
 }
 
-pub(super) fn gate_input_snapshot_blocking(
-    workdir: &Path,
-) -> Result<GateInputSnapshot, String> {
+pub(super) fn gate_input_snapshot_blocking(workdir: &Path) -> Result<GateInputSnapshot, String> {
     #[cfg(not(unix))]
     return Err("stable gate input identity is unavailable on this platform".into());
     let git = |args: &[&str]| {

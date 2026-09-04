@@ -260,10 +260,8 @@ impl MergeBackend for GitMergeBackend {
             Ok(ref out) if !out.status.success() => {
                 // merge-tree reports conflicts; parse conflict markers from stdout.
                 let stdout = String::from_utf8_lossy(&out.stdout);
-                let conflict_paths: Vec<&str> = stdout
-                    .lines()
-                    .filter(|l| l.contains("CONFLICT"))
-                    .collect();
+                let conflict_paths: Vec<&str> =
+                    stdout.lines().filter(|l| l.contains("CONFLICT")).collect();
                 if !conflict_paths.is_empty() {
                     tracing::warn!(
                         "pre-merge check predicted {} conflict(s) for branch `{}`: {}",

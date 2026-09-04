@@ -1613,9 +1613,18 @@ pub fn validate_references(config: &RokoConfig) -> Vec<ValidationWarning> {
 
     // Routing tier model slugs.
     for (field, slug) in [
-        ("routing.fast_task_model", config.routing.fast_task_model.as_str()),
-        ("routing.standard_task_model", config.routing.standard_task_model.as_str()),
-        ("routing.complex_task_model", config.routing.complex_task_model.as_str()),
+        (
+            "routing.fast_task_model",
+            config.routing.fast_task_model.as_str(),
+        ),
+        (
+            "routing.standard_task_model",
+            config.routing.standard_task_model.as_str(),
+        ),
+        (
+            "routing.complex_task_model",
+            config.routing.complex_task_model.as_str(),
+        ),
     ] {
         let slug = slug.trim();
         if slug.is_empty() || explicit_model_keys.contains(slug) {

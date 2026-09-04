@@ -40,8 +40,8 @@ use super::types::{
 use super::{impact_analysis, impact_analysis::ImpactReport};
 
 // Re-export items from extracted modules for backward compatibility.
-pub use super::gate_adapter::{RunnerProductionGateAdapter, default_gate_adapter};
 pub(crate) use super::gate_adapter::FsGeneratedArtifactStore;
+pub use super::gate_adapter::{RunnerProductionGateAdapter, default_gate_adapter};
 
 // Import extracted helpers used within this module.
 use super::cargo_command::{
@@ -1303,7 +1303,16 @@ pub fn spawn_plan_verify(
                         main_target_dir.as_deref(),
                     );
                     all.extend(
-                        run_verify_steps(&signal, &ctx, &plan_id_for_run, &task_id, steps, 1, line_sink_for_run.clone()).await,
+                        run_verify_steps(
+                            &signal,
+                            &ctx,
+                            &plan_id_for_run,
+                            &task_id,
+                            steps,
+                            1,
+                            line_sink_for_run.clone(),
+                        )
+                        .await,
                     );
                 }
                 if accepted_input_snapshot(workdir_for_run, &expected_oid).await != Ok(before) {
@@ -1738,8 +1747,16 @@ async fn run_focused_baseline_verify(
         main_target_dir,
     );
     let ctx = roko_core::Context::now();
-    let verdicts =
-        run_verify_steps(&signal, &ctx, plan_id, task_id, steps, compile_concurrency, None).await;
+    let verdicts = run_verify_steps(
+        &signal,
+        &ctx,
+        plan_id,
+        task_id,
+        steps,
+        compile_concurrency,
+        None,
+    )
+    .await;
     let removal = timeout(
         Duration::from_secs(10),
         Command::new("git")
@@ -1859,10 +1876,10 @@ fn verify_step_gate(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::cargo_command::*;
     use super::super::gate_input::*;
     use super::super::gate_report::*;
+    use super::*;
 
     use std::collections::BTreeMap;
     use std::fs::File;
@@ -2748,8 +2765,8 @@ path = "src/shared.rs"
     #[cfg(unix)]
     #[test]
     fn equal_kind_len_mtime_inode_replacement_is_detected() {
-        use std::os::unix::fs::MetadataExt;
         use std::fs::OpenOptions;
+        use std::os::unix::fs::MetadataExt;
 
         let dir = git_repo();
         let input = dir.path().join("input");

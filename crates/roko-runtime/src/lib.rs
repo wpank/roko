@@ -47,7 +47,6 @@ pub mod cancel;
 pub mod connector_runtime;
 pub mod delta_consumer;
 pub mod demurrage_consumer;
-pub mod effect_driver;
 /// Cognitive energy model -- metabolic costs for cognitive operations.
 pub mod energy;
 pub mod event_bus;
@@ -59,7 +58,6 @@ pub mod jsonl_logger;
 pub mod lens_executor;
 pub mod lifecycle;
 pub mod metrics;
-pub mod pipeline_state;
 pub mod process;
 pub mod projection;
 pub mod pulse_bus;
@@ -70,11 +68,9 @@ pub mod run_registry;
 pub mod runtime_event_dashboard;
 pub mod state_hub;
 pub mod state_snapshot;
-pub mod task_scheduler;
 pub mod telemetry_projection_aggregator;
 pub mod theta_consumer;
 pub mod workflow_contract;
-pub mod workflow_engine;
 
 pub use builtin_lenses_derived::{
     AnomalyLens, CFactorLens, CollectiveIntelligenceLens, TrendLens, UsageLens,
@@ -89,7 +85,7 @@ pub use connector_runtime::{
     MAX_MANAGED_CONNECTORS, MAX_OPERATION_BYTES, MAX_QUERY_BYTES, MAX_RECONNECT_ATTEMPTS,
     MAX_RECONNECT_DELAY_MS, SharedConnectorRegistry,
 };
-pub use effect_driver::{EffectDriver, EffectServices};
+// EffectServices retired with WorkflowEngine (#276)
 pub use http_event_sink::HttpEventSink;
 // Foundation types re-exported from roko-core for backwards compatibility
 pub use jsonl_logger::JsonlLogger;
@@ -105,9 +101,8 @@ pub use lifecycle::{
     ProbeHandler, ProbeSpec, Ready, ResourcesAllocated, RestartBackoff, RoutingConfigured,
     ToolsLoaded, Unvalidated, Validated,
 };
-pub use pipeline_state::{
-    CommitOutcome, Phase, PipelineInput, PipelineOutput, PipelineStateV2, WorkflowConfig,
-    WorkflowOutcome,
+pub use workflow_contract::{
+    CommitOutcome, Phase, WorkflowConfig, WorkflowOutcome,
 };
 pub use projection::{RunSummary, RuntimeProjection};
 pub use pulse_bus::{PulseBus, PulseBusReceiver};
@@ -139,13 +134,13 @@ pub use state_snapshot::{
     STATE_SNAPSHOT_VERSION, StateSnapshot, load_durable_dashboard_projection,
     load_durable_runner_projection, validate_state_snapshot,
 };
-pub use task_scheduler::{SchedulableTask, TaskScheduler, TaskStatus};
+// task_scheduler retired with WorkflowEngine
 pub use telemetry_projection_aggregator::{
     LensPayload, LensSignalEnvelope, ProjectionUpdate, TelemetryProjectionAggregator,
     TelemetryProjectionError, TelemetryProjectionState,
 };
-pub use workflow_engine::{
-    GateOutcome, WorkflowEngine, WorkflowResult, WorkflowRunConfig, WorkflowRunReport,
+pub use workflow_contract::{
+    GateOutcome, WorkflowResult, WorkflowRunConfig, WorkflowRunReport,
 };
 
 #[cfg(test)]

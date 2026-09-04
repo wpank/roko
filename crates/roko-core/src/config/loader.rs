@@ -1530,10 +1530,7 @@ fn build_schema_tree() -> toml::Value {
                     "bloom_intensity",
                     "vignette_intensity",
                 ] {
-                    effects.insert(
-                        (*key).to_string(),
-                        toml::Value::String(String::new()),
-                    );
+                    effects.insert((*key).to_string(), toml::Value::String(String::new()));
                 }
                 toml::Value::Table(effects)
             });

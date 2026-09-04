@@ -125,8 +125,7 @@ use super::types::{
     PromptAssemblyDiagnostics, ResumeMarker, ResumeOutcome, RetryAction, RetryDecision, RunConfig,
     RunOutcome, RunTotals, RunnerEvent, RunnerFailureKind, RunnerRunStatus, TaskAttemptOutcome,
     TaskAttemptRef, TaskAttemptStatus, TaskLifecycleStatus, TaskPhaseDurations, TaskRunCategory,
-    TaskRunSummary, TimeoutAgentSnapshot, TimeoutEvent, TimeoutKind,
-    effective_plan_timeout_secs,
+    TaskRunSummary, TimeoutAgentSnapshot, TimeoutEvent, TimeoutKind, effective_plan_timeout_secs,
 };
 use crate::execution_control::{CommandAckStatus, ExecutionCommand, ExecutionCommandKind, ack_for};
 
@@ -3194,10 +3193,8 @@ pub async fn run_with_tui_commands(
         ),
     ));
     // Wire persistent JSONL tool audit so every tool call is recorded to disk.
-    match roko_fs::tool_audit::ToolAuditLog::open_at(
-        config.layout.root().join("tool_audit.jsonl"),
-    )
-    .await
+    match roko_fs::tool_audit::ToolAuditLog::open_at(config.layout.root().join("tool_audit.jsonl"))
+        .await
     {
         Ok(log) => {
             let scrubber = std::sync::Arc::new(roko_core::obs::LogScrubber::new());
@@ -12272,12 +12269,8 @@ async fn dispatch_action(
                             pipeline_rung,
                         ),
                     );
-                    let gate_line_sink = spawn_gate_line_forwarder(
-                        ctx.tui,
-                        &plan_id,
-                        &task_id,
-                        "preflight",
-                    );
+                    let gate_line_sink =
+                        spawn_gate_line_forwarder(ctx.tui, &plan_id, &task_id, "preflight");
                     let (gate_handle, start_tx) = gate_dispatch::spawn_gate(
                         preflight_effect.clone(),
                         plan_id.clone(),
@@ -14081,9 +14074,11 @@ async fn dispatch_action(
                             .await
                     } else {
                         Ok(crate::dispatch::factory::StartedSharedAgentBridge {
-                            handle: ctx
-                                .factory
-                                .spawn_shared_agent_bridge(request, raw_agent_tx, bridge_cancel_token),
+                            handle: ctx.factory.spawn_shared_agent_bridge(
+                                request,
+                                raw_agent_tx,
+                                bridge_cancel_token,
+                            ),
                         })
                     };
                     let bridge = match bridge_start {
@@ -14414,12 +14409,8 @@ async fn dispatch_action(
                     gate_plan_complexity_for_task_with_files(task_def, changed_files.as_deref());
                 let target_crates = task_target_crates(task_def);
                 {
-                    let gate_line_sink = spawn_gate_line_forwarder(
-                        ctx.tui,
-                        &plan_id,
-                        &task_id,
-                        "gate",
-                    );
+                    let gate_line_sink =
+                        spawn_gate_line_forwarder(ctx.tui, &plan_id, &task_id, "gate");
                     gate_dispatch::spawn_gate(
                         gate_effect.clone(),
                         plan_id.clone(),
@@ -14664,12 +14655,8 @@ async fn dispatch_action(
                 task_count = verify_steps.len(),
                 "dispatching plan verify"
             );
-            let plan_verify_line_sink = spawn_gate_line_forwarder(
-                ctx.tui,
-                &plan_id,
-                "plan-verify",
-                "plan-verify",
-            );
+            let plan_verify_line_sink =
+                spawn_gate_line_forwarder(ctx.tui, &plan_id, "plan-verify", "plan-verify");
             let (gate_handle, start_tx) = gate_dispatch::spawn_plan_verify(
                 gate_effect.clone(),
                 plan_id.clone(),

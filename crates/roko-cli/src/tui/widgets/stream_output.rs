@@ -239,14 +239,7 @@ pub fn render_output_lines_styled<'a>(
                 output,
                 is_error,
             } => {
-                render_tool_result(
-                    &mut styled,
-                    &tool_id,
-                    &output,
-                    is_error,
-                    opts,
-                    theme,
-                );
+                render_tool_result(&mut styled, &tool_id, &output, is_error, opts, theme);
             }
             StreamRecord::Reasoning { content, .. } => {
                 let text = format!("\u{25d0} {content}");
@@ -259,11 +252,7 @@ pub fn render_output_lines_styled<'a>(
                 styled.push(highlight_line(&content, theme.text(), opts));
             }
             StreamRecord::Plain { content } => {
-                styled.push(highlight_line(
-                    &content,
-                    Style::default(),
-                    opts,
-                ));
+                styled.push(highlight_line(&content, Style::default(), opts));
             }
         }
     }
@@ -412,10 +401,7 @@ fn highlight_line<'a>(text: &str, base_style: Style, opts: &RenderOptions) -> Li
         if start > last_end {
             spans.push(Span::styled(text[last_end..start].to_owned(), base_style));
         }
-        spans.push(Span::styled(
-            text[start..end].to_owned(),
-            highlight_style,
-        ));
+        spans.push(Span::styled(text[start..end].to_owned(), highlight_style));
         last_end = end;
     }
 
@@ -707,7 +693,11 @@ mod tests {
         // + tool result (status line + 1 body line + bottom cap)
         // Plus the separator between reasoning and tool_start
         // Let's count: plain, text, reasoning, sep, tool_start, status, body, cap
-        assert!(rendered.len() >= 5, "should have at least 5 lines, got {}", rendered.len());
+        assert!(
+            rendered.len() >= 5,
+            "should have at least 5 lines, got {}",
+            rendered.len()
+        );
     }
 
     #[test]
@@ -819,7 +809,10 @@ mod tests {
         let rendered = render_output_lines_styled(&lines, &theme, &opts);
         assert_eq!(rendered.len(), 1);
         // Should have: "hello" (highlighted) + " world " + "hello" (highlighted)
-        assert!(rendered[0].spans.len() >= 3, "expected at least 3 spans for search match");
+        assert!(
+            rendered[0].spans.len() >= 3,
+            "expected at least 3 spans for search match"
+        );
     }
 
     #[test]
@@ -847,8 +840,15 @@ mod tests {
         // text + separator + tool_start = 3 lines
         assert_eq!(rendered.len(), 3);
         // The separator is the middle line with the "---" chars.
-        let sep_content: String = rendered[1].spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(sep_content.contains('\u{2500}'), "separator should contain horizontal line char");
+        let sep_content: String = rendered[1]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            sep_content.contains('\u{2500}'),
+            "separator should contain horizontal line char"
+        );
     }
 
     #[test]

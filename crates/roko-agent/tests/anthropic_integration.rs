@@ -61,7 +61,6 @@ fn anthropic_model(supports_tools: bool) -> ModelProfile {
     }
 }
 
-
 // ─── Happy path ─────────────────────────────────────────────────────
 
 #[tokio::test]

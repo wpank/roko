@@ -711,12 +711,7 @@ fn render_plan_line(
 
 /// Render individual tasks underneath an expanded plan node with tree
 /// connectors and authored dependency annotations.
-fn render_task_subtree(
-    lines: &mut Vec<Line<'static>>,
-    plan: &PlanEntry,
-    indent: &str,
-    area: Rect,
-) {
+fn render_task_subtree(lines: &mut Vec<Line<'static>>, plan: &PlanEntry, indent: &str, area: Rect) {
     let task_count = plan.tasks.len();
     for (i, task) in plan.tasks.iter().enumerate() {
         let is_last = i + 1 == task_count;
@@ -767,18 +762,12 @@ fn render_task_subtree(
                 format!("{indent}  {connector}"),
                 Style::default().fg(Theme::TEXT_GHOST),
             ),
-            Span::styled(
-                format!("{icon} "),
-                Style::default().fg(icon_color),
-            ),
+            Span::styled(format!("{icon} "), Style::default().fg(icon_color)),
             Span::styled(display_name, Style::default().fg(status_color)),
         ];
 
         if !dep_suffix.is_empty() {
-            spans.push(Span::styled(
-                dep_suffix,
-                Style::default().fg(Theme::DREAM),
-            ));
+            spans.push(Span::styled(dep_suffix, Style::default().fg(Theme::DREAM)));
         }
 
         lines.push(Line::from(spans));
@@ -788,11 +777,11 @@ fn render_task_subtree(
 /// Status icon for a task entry.
 fn task_icon(status: &TaskStatus) -> (&'static str, Color) {
     match status {
-        TaskStatus::Done => ("\u{2713}", Theme::SAGE),       // ✓
-        TaskStatus::Active => ("\u{25b6}", Theme::WARNING),  // ►
-        TaskStatus::Failed => ("\u{2717}", Theme::EMBER),    // ✗
+        TaskStatus::Done => ("\u{2713}", Theme::SAGE), // ✓
+        TaskStatus::Active => ("\u{25b6}", Theme::WARNING), // ►
+        TaskStatus::Failed => ("\u{2717}", Theme::EMBER), // ✗
         TaskStatus::Blocked => ("\u{25cb}", Theme::TEXT_GHOST), // ○
-        TaskStatus::Pending => ("\u{00b7}", Theme::TEXT_DIM),  // ·
+        TaskStatus::Pending => ("\u{00b7}", Theme::TEXT_DIM), // ·
     }
 }
 

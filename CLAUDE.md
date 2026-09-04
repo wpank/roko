@@ -1,6 +1,6 @@
 # Roko
 
-Roko is a Rust toolkit for building agents that build themselves. 35 workspace members, ~800K LOC, 9,900+ tests.
+Roko is a Rust toolkit for building agents that build themselves. 37 workspace members, ~800K LOC, 10,300+ tests.
 
 **Goal**: roko develops itself — it reads PRDs, generates implementation plans, executes tasks
 via Claude agents, validates with gates, and persists results. The core loop is wired. Your job
@@ -181,12 +181,25 @@ pre-commit checks in the Building section.
 | Command | What it does |
 |---|---|
 | `roko init` | Create `.roko/` directory and `roko.toml` |
+| `roko setup` | Interactive setup wizard: detect providers, init workspace, verify |
 | `roko run "<prompt>"` | Single prompt through `WorkflowEngine` (compose -> provider -> gate -> persist) |
 | `roko do "<prompt>"` | Execute a task via agent dispatch (used internally by `roko run`) |
+| `roko develop "<prompt>"` | Plan-first development: generate plan, approve, execute |
+| `roko show [subject]` | Inspect workspace state: costs, agents, knowledge, plans, learning, history |
 | `roko status` | Query signals, report counts and episodes |
 | `roko doctor` | Diagnose workspace bootstrap state |
-| `roko doctor disk` | Report free space, stale targets, worktrees, and oversized JSONL logs |
+| `roko doctor disk/network` | Report free space, stale targets, worktrees, or network reachability |
+| `roko diagnose <plan-id>` | Diagnose why a plan failed (structured JSON output) |
+| `roko resume [run-id]` | Resume a plan execution from its last checkpoint |
 | `roko github status` | Inspect GitHub config, authentication, plan PR/CI state, and failure issues |
+| `roko think "<question>"` | Research a question without executing agents or changing files |
+| `roko note "<text>"` | Capture a quick note (no LLM, instant, with optional tags) |
+| `roko login [url]` | Authenticate with a roko-serve instance (browser or API key) |
+| `roko logout` | Remove stored credentials |
+| `roko whoami` | Show current authentication status |
+| `roko vision-loop <file>` | Iterative vision-guided UI refinement loop |
+| `roko history [id]` | List or show past chat session summaries |
+| `roko cache status/prune` | Inspect and safely prune workspace-local build/evidence caches |
 
 ### Planning & PRDs
 | Command | What it does |
@@ -194,11 +207,13 @@ pre-commit checks in the Building section.
 | `roko plan list/show/create` | Manage plans |
 | `roko plan run <dir> --engine runner-v2` | Execute plans through the live runner-v2 loop |
 | `roko plan generate/regenerate` | Generate or regenerate plans from prompts/PRDs |
+| `roko plan index` | Rebuild or verify the deterministic plans index |
 | `roko plan pause/resume/cancel` | Pause, resume, or cancel a running plan |
 | `roko plan retry <dir>` | Retry failed tasks in a plan |
 | `roko plan status <dir>` | Show execution status for a plan |
-| `roko plan queue` | List queued plans awaiting execution |
+| `roko plan queue show/validate/init` | Queue manifest operations |
 | `roko plan validate <dir>` | Lint tasks.toml without executing |
+| `roko backlog import/list/audit` | Import backlog specs as PRD ideas, list items, reconcile status |
 | `roko prd idea "<text>"` | Capture a work item idea |
 | `roko prd list/status` | List PRDs, coverage report |
 | `roko prd draft new/edit/promote/list` | Draft lifecycle |
@@ -209,6 +224,7 @@ pre-commit checks in the Building section.
 | Command | What it does |
 |---|---|
 | `roko agent create --name X --domain Y` | Create agent from manifest |
+| `roko agent delete --name X` | Delete an agent and clean up its state (ordered 8-step shutdown) |
 | `roko agent start --name X` | Start a long-running agent |
 | `roko agent stop --name X` | Stop a running agent |
 | `roko agent list` | List agents with status |
@@ -223,6 +239,7 @@ pre-commit checks in the Building section.
 | `roko research search "<query>"` | Direct web search (Perplexity) |
 | `roko research enhance-prd/plan/tasks` | Enhance documents with research |
 | `roko research analyze` | Analyze execution data |
+| `roko research list` | List all research artifacts |
 
 ### Knowledge (neuro + dreams + custody + archive)
 | Command | What it does |
@@ -242,6 +259,9 @@ pre-commit checks in the Building section.
 | Command | What it does |
 |---|---|
 | `roko learn all/router/experiments/efficiency/episodes` | Inspect learning state |
+| `roko learn reflexes` | Show T0 reflex rules (count, top five by hits, recent demotions) |
+| `roko learn gates` | Show adaptive gate threshold state |
+| `roko learn knowledge-stats` | Show durable knowledge entry counts |
 | `roko learn inspect gates/routing/budget` | Read-only subsystem inspection (thresholds, routing, budget) |
 | `roko learn tune gates/routing/budget` | (deprecated) Alias for `learn inspect` |
 
@@ -255,24 +275,38 @@ pre-commit checks in the Building section.
 | Command | What it does |
 |---|---|
 | `roko config init/show/path/edit/set` | Core config management |
+| `roko config doctor` | Print basic config health without modifying files |
 | `roko config validate/migrate` | Schema validation, legacy migration |
 | `roko config set-secret/check-secrets` | Secret management |
+| `roko config export` | Export config as environment variables for a deployment target |
+| `roko config env` | List all recognized environment variables with descriptions |
 | `roko config providers list/health/test` | LLM provider inspection |
+| `roko config providers available/discover/add/catalog/validate` | Provider discovery and setup |
 | `roko config models list/route` | Model inspection and routing |
 | `roko config subscriptions list/add/remove` | Event subscriptions |
 | `roko config events` | Configured event sources |
 | `roko config experiments` | Model A/B experiments |
-| `roko config plugins list/install/remove/audit` | Plugin management |
+| `roko config plugins list/install/remove/audit/publish` | Plugin management |
 | `roko config secrets set/get/list/rotate` | Profile-aware secrets |
+| `roko config mcp list/test/add` | MCP server configuration |
 | `roko config preset gates/routing/budget/model` | Apply validated config presets (with --dry-run, --yes) |
 
 ### Server & deployment
 | Command | What it does |
 |---|---|
 | `roko serve` | Start HTTP control plane (~376 canonical routes on :6677) |
+| `roko acp` | Start ACP (Agent Client Protocol) server for editor integration |
 | `roko daemon start/stop/status/logs/install` | Daemon lifecycle |
 | `roko deploy railway/fly/docker` | Cloud deployment |
 | `roko worker` | Run as deployed worker |
+
+### Graph, feeds, recipes, and triggers
+| Command | What it does |
+|---|---|
+| `roko graph run/validate/inspect` | Execute, validate, and inspect graph definitions (DAGs of cells) |
+| `roko feed list/status/start/stop` | Inspect and manage runtime data feeds |
+| `roko recipe list/show/validate/run` | Manage and evaluate pure-data feed recipes |
+| `roko trigger list/show/create/fire` | Manage trigger bindings |
 
 ### Utilities
 | Command | What it does |
@@ -280,7 +314,9 @@ pre-commit checks in the Building section.
 | `roko dashboard` | Interactive ratatui TUI (F1–F10 tabs) |
 | `roko replay <hash>` | Walk signal DAG by hash |
 | `roko inject <session> <payload>` | Signal injection |
-| `roko index build/search/stats` | Code intelligence index |
+| `roko index build/rebuild/search/stats` | Code intelligence index |
+| `roko run-index repair` | Inspect or rebuild derived per-run event indexes |
+| `roko bench demo/swe` | Run benchmark evaluations and write learning telemetry |
 | `roko new <type> <name>` | Scaffold boilerplate |
 | `roko explain <topic>` | Concept explainer (3 depth levels) |
 | `roko completions <shell>` | Shell completion scripts |

@@ -42,7 +42,7 @@ pub static TOPICS: &[TopicEntry] = &[
                     `GatePipeline` struct runs gates sequentially or in parallel. \
                     Adaptive thresholds persist at `.roko/learn/gate-thresholds.json` \
                     and use exponential moving averages (alpha=0.1 by default). The \
-                    `HotellingGate` uses Hotelling's T-squared statistic for \
+                    `HotellingDetector` uses Hotelling's T-squared statistic for \
                     multivariate anomaly detection. Verify verdicts emit \
                     `DashboardEvent::GateVerdict` for real-time TUI updates.",
     },

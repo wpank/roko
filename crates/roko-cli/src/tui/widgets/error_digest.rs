@@ -14,7 +14,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 
-use roko_core::dashboard_snapshot::{DiagnosisSeverity, ErrorEntry, GateVerdictView, SnapshotStats};
+use roko_core::dashboard_snapshot::{
+    DiagnosisSeverity, ErrorEntry, GateVerdictView, SnapshotStats,
+};
 
 use super::super::dashboard::Theme;
 use crate::tui::state::TuiState;
@@ -65,9 +67,14 @@ impl ErrorCategory {
 
     fn from_message(msg: &str) -> Self {
         let lower = msg.to_ascii_lowercase();
-        if lower.contains("dag") && (lower.contains("stuck") || lower.contains("deadlock") || lower.contains("cycle")) {
+        if lower.contains("dag")
+            && (lower.contains("stuck") || lower.contains("deadlock") || lower.contains("cycle"))
+        {
             Self::DagStuck
-        } else if lower.contains("timeout") || lower.contains("timed out") || lower.contains("stall") {
+        } else if lower.contains("timeout")
+            || lower.contains("timed out")
+            || lower.contains("stall")
+        {
             Self::Timeout
         } else if lower.contains("gate") || lower.contains("verify") || lower.contains("rung") {
             Self::Gate
@@ -116,8 +123,13 @@ impl Severity {
 
     fn from_category(cat: ErrorCategory) -> Self {
         match cat {
-            ErrorCategory::Gate | ErrorCategory::Compile | ErrorCategory::Runtime | ErrorCategory::DagStuck => Self::Error,
-            ErrorCategory::Agent | ErrorCategory::Preflight | ErrorCategory::Timeout => Self::Warning,
+            ErrorCategory::Gate
+            | ErrorCategory::Compile
+            | ErrorCategory::Runtime
+            | ErrorCategory::DagStuck => Self::Error,
+            ErrorCategory::Agent | ErrorCategory::Preflight | ErrorCategory::Timeout => {
+                Self::Warning
+            }
             ErrorCategory::Conductor => Self::Info,
         }
     }
@@ -165,7 +177,9 @@ fn normalize_for_dedup(msg: &str) -> String {
 fn infer_remediation(msg: &str, category: ErrorCategory) -> Option<&'static str> {
     let lower = msg.to_ascii_lowercase();
     // Check for specific actionable patterns first, regardless of category.
-    if lower.contains("worktree") && (lower.contains("exceed") || lower.contains("maximum") || lower.contains("limit")) {
+    if lower.contains("worktree")
+        && (lower.contains("exceed") || lower.contains("maximum") || lower.contains("limit"))
+    {
         return Some("worktree count exceeds maximum \u{2192} roko doctor disk");
     }
     if lower.contains("disk") || lower.contains("no space") {
@@ -196,12 +210,8 @@ fn infer_remediation(msg: &str, category: ErrorCategory) -> Option<&'static str>
                 Some("investigate gate failure output")
             }
         }
-        ErrorCategory::Agent => {
-            Some("check agent logs for details")
-        }
-        ErrorCategory::Timeout => {
-            Some("check agent responsiveness or increase timeout")
-        }
+        ErrorCategory::Agent => Some("check agent logs for details"),
+        ErrorCategory::Timeout => Some("check agent responsiveness or increase timeout"),
         ErrorCategory::DagStuck => {
             Some("check plan dependencies for cycles \u{2192} roko plan validate")
         }
@@ -220,7 +230,9 @@ fn infer_remediation(msg: &str, category: ErrorCategory) -> Option<&'static str>
 /// Infer a short actionable hint for the compact inline error list.
 fn infer_compact_hint(msg: &str) -> Option<&'static str> {
     let lower = msg.to_ascii_lowercase();
-    if lower.contains("worktree") && (lower.contains("exceed") || lower.contains("maximum") || lower.contains("limit")) {
+    if lower.contains("worktree")
+        && (lower.contains("exceed") || lower.contains("maximum") || lower.contains("limit"))
+    {
         Some("roko doctor disk")
     } else if lower.contains("disk") || lower.contains("no space") {
         Some("roko doctor disk")
@@ -413,9 +425,18 @@ fn render_category_summary(
     let line1 = Line::from(spans);
 
     // Severity distribution bar: ERR:5 ██ WARN:12 ████ INFO:200 ████████████
-    let error_total = errors.iter().filter(|e| e.severity == Severity::Error).count();
-    let warn_total = errors.iter().filter(|e| e.severity == Severity::Warning).count();
-    let info_total = errors.iter().filter(|e| e.severity == Severity::Info).count();
+    let error_total = errors
+        .iter()
+        .filter(|e| e.severity == Severity::Error)
+        .count();
+    let warn_total = errors
+        .iter()
+        .filter(|e| e.severity == Severity::Warning)
+        .count();
+    let info_total = errors
+        .iter()
+        .filter(|e| e.severity == Severity::Info)
+        .count();
     let newest_ts = errors.iter().map(|e| e.ts_millis).max().unwrap_or(0);
 
     let bar_budget = (area.width as usize).saturating_sub(40);
@@ -430,10 +451,7 @@ fn render_category_summary(
             format!("ERR:{error_total} "),
             theme.danger().add_modifier(Modifier::BOLD),
         ));
-        bar_spans.push(Span::styled(
-            "\u{2588}".repeat(err_blocks),
-            theme.danger(),
-        ));
+        bar_spans.push(Span::styled("\u{2588}".repeat(err_blocks), theme.danger()));
         bar_spans.push(Span::styled(" ", Style::default()));
     }
     if warn_total > 0 {
@@ -441,10 +459,7 @@ fn render_category_summary(
             format!("WARN:{warn_total} "),
             theme.warning().add_modifier(Modifier::BOLD),
         ));
-        bar_spans.push(Span::styled(
-            "\u{2588}".repeat(wrn_blocks),
-            theme.warning(),
-        ));
+        bar_spans.push(Span::styled("\u{2588}".repeat(wrn_blocks), theme.warning()));
         bar_spans.push(Span::styled(" ", Style::default()));
     }
     if info_total > 0 {
@@ -527,10 +542,7 @@ fn render_grouped_error_list(
             Span::styled(")", theme.muted()),
         ];
         if let Some(ts) = most_recent_ts {
-            heading_spans.push(Span::styled(
-                format!("  latest: {ts}"),
-                theme.muted(),
-            ));
+            heading_spans.push(Span::styled(format!("  latest: {ts}"), theme.muted()));
         }
         lines.push(Line::from(heading_spans));
 
@@ -539,8 +551,11 @@ fn render_grouped_error_list(
             let sev_color = err.severity.color(theme);
             let max_msg_len = (area.width as usize).saturating_sub(28);
             let msg = if err.message.chars().count() > max_msg_len && max_msg_len > 1 {
-                let truncated: String =
-                    err.message.chars().take(max_msg_len.saturating_sub(1)).collect();
+                let truncated: String = err
+                    .message
+                    .chars()
+                    .take(max_msg_len.saturating_sub(1))
+                    .collect();
                 format!("{truncated}\u{2026}")
             } else {
                 err.message.clone()
@@ -734,8 +749,7 @@ fn collect_all_errors(tui_state: &TuiState) -> Vec<CategorizedError> {
             .then_with(|| b.ts_millis.cmp(&a.ts_millis))
     });
     errors.dedup_by(|a, b| {
-        a.source == b.source
-            && normalize_for_dedup(&a.message) == normalize_for_dedup(&b.message)
+        a.source == b.source && normalize_for_dedup(&a.message) == normalize_for_dedup(&b.message)
     });
 
     // Sort by timestamp descending (most recent first).
@@ -745,12 +759,7 @@ fn collect_all_errors(tui_state: &TuiState) -> Vec<CategorizedError> {
 }
 
 /// Render a compact severity distribution bar for the inline digest.
-fn render_severity_bar(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    errors: &[ErrorEntry],
-    theme: &Theme,
-) {
+fn render_severity_bar(frame: &mut Frame<'_>, area: Rect, errors: &[ErrorEntry], theme: &Theme) {
     if errors.is_empty() || area.width < 10 {
         return;
     }
@@ -763,10 +772,7 @@ fn render_severity_bar(
             format!("ERR:{count} "),
             theme.danger().add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            "\u{2588}".repeat(blocks),
-            theme.danger(),
-        ),
+        Span::styled("\u{2588}".repeat(blocks), theme.danger()),
     ];
     if blocks < bar_budget {
         spans.push(Span::styled(
@@ -843,7 +849,9 @@ fn render_error_list(frame: &mut Frame<'_>, area: Rect, errors: &[ErrorEntry], t
             if let Some(h) = hint {
                 spans.push(Span::styled(
                     format!(" \u{2192} {h}"),
-                    Style::default().fg(theme.accent).add_modifier(Modifier::ITALIC),
+                    Style::default()
+                        .fg(theme.accent)
+                        .add_modifier(Modifier::ITALIC),
                 ));
             }
             ListItem::new(Line::from(spans))
@@ -1039,7 +1047,10 @@ mod tests {
     #[test]
     fn remediation_inference() {
         assert_eq!(
-            infer_remediation("compile gate failed: missing semicolon", ErrorCategory::Compile),
+            infer_remediation(
+                "compile gate failed: missing semicolon",
+                ErrorCategory::Compile
+            ),
             Some("fix syntax error in source file"),
         );
         assert_eq!(
@@ -1103,7 +1114,10 @@ mod tests {
     fn normalize_strips_common_prefixes() {
         assert_eq!(normalize_for_dedup("compile gate failed: foo"), "foo");
         assert_eq!(normalize_for_dedup("test gate failed: bar"), "bar");
-        assert_eq!(normalize_for_dedup("gate failed for task-1 (model: x)"), "task-1 (model: x)");
+        assert_eq!(
+            normalize_for_dedup("gate failed for task-1 (model: x)"),
+            "task-1 (model: x)"
+        );
         assert_eq!(normalize_for_dedup("  some error  "), "some error");
     }
 }

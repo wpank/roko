@@ -173,11 +173,7 @@ pub fn render(
         width: inner.width,
         height: inner.height.saturating_sub(1 + summary_lines as u16),
     };
-    let visible_lines: Vec<Line<'_>> = lines
-        .into_iter()
-        .skip(scroll)
-        .take(viewport_h)
-        .collect();
+    let visible_lines: Vec<Line<'_>> = lines.into_iter().skip(scroll).take(viewport_h).collect();
 
     let content = Paragraph::new(visible_lines).wrap(Wrap { trim: false });
     frame.render_widget(content, content_area);
@@ -227,10 +223,7 @@ fn render_header<'a>(name: &str, width: u16, theme: &Theme) -> Line<'a> {
     let label = format!(" {name} ");
     let dashes = w.saturating_sub(label.len() + 2);
     let line_str = format!("───{label}{}", "─".repeat(dashes));
-    Line::from(Span::styled(
-        truncate(&line_str, w),
-        theme.section_header(),
-    ))
+    Line::from(Span::styled(truncate(&line_str, w), theme.section_header()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -258,9 +251,7 @@ fn render_field_line<'a>(
         match (kind, &valid) {
             (ConfigFieldKind::ReadOnly, _) => (" ", Style::default()),
             (_, Some(_)) => ("X", theme.danger()),
-            (ConfigFieldKind::Bool | ConfigFieldKind::Enum(_), None) => {
-                ("+", theme.success())
-            }
+            (ConfigFieldKind::Bool | ConfigFieldKind::Enum(_), None) => ("+", theme.success()),
             (_, None) if source == ConfigSource::Env => ("!", theme.warning()),
             (_, None) => (" ", Style::default()),
         }
@@ -627,9 +618,7 @@ fn aggregate_providers(
     let mut providers: std::collections::BTreeMap<String, ProviderMetrics> =
         std::collections::BTreeMap::new();
     for event in &tui_state.efficiency_events {
-        let entry = providers
-            .entry(infer_provider(&event.model))
-            .or_default();
+        let entry = providers.entry(infer_provider(&event.model)).or_default();
         entry.total_calls += 1;
         if event.output_tokens > 0 {
             entry.successes += 1;
@@ -746,8 +735,10 @@ fn render_provider_health(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiStat
     ];
     let table = Table::new(rows, widths)
         .header(
-            Row::new(["provider", "status", "latency", "success", "errors", "cost", "calls"])
-                .style(theme.section_header()),
+            Row::new([
+                "provider", "status", "latency", "success", "errors", "cost", "calls",
+            ])
+            .style(theme.section_header()),
         )
         .column_spacing(1);
 
@@ -886,8 +877,7 @@ fn render_model_comparison(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiSta
     ];
     let table = Table::new(rows, widths)
         .header(
-            Row::new(["model", "tier", "cost", "gate %", "tries"])
-                .style(theme.section_header()),
+            Row::new(["model", "tier", "cost", "gate %", "tries"]).style(theme.section_header()),
         )
         .column_spacing(1);
     frame.render_widget(table, inner);
@@ -923,7 +913,11 @@ fn infer_tier(model: &str) -> String {
     }
 }
 
-fn provider_health_icon(rate: f64, total: u64, theme: &Theme) -> (&'static str, &'static str, Style) {
+fn provider_health_icon(
+    rate: f64,
+    total: u64,
+    theme: &Theme,
+) -> (&'static str, &'static str, Style) {
     if total == 0 {
         ("\u{25cb}", "no data", theme.metadata()) // ○
     } else if rate >= 90.0 {
@@ -955,10 +949,7 @@ fn build_provider_summary_line<'a>(
         }
         let rate = m.success_rate();
         let (icon, _, style) = provider_health_icon(rate, m.total_calls, theme);
-        spans.push(Span::styled(
-            format!("{icon} {name} {rate:.0}%"),
-            style,
-        ));
+        spans.push(Span::styled(format!("{icon} {name} {rate:.0}%"), style));
     }
 
     Some(Line::from(spans))

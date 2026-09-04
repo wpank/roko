@@ -1431,6 +1431,7 @@ mod tests {
                 extra_headers: None,
                 max_concurrent: Some(8),
                 limits: None,
+                require_confirmation: false,
             },
         );
         config.models.insert(

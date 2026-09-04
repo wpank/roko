@@ -83,7 +83,11 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
         "                F9 Atelier    F10 Learning",
         theme.muted(),
     )));
-    lines.push(kb("1-9 / 0", "switch tabs (except Agents/Logs/Plans)", theme));
+    lines.push(kb(
+        "1-9 / 0",
+        "switch tabs (except Agents/Logs/Plans)",
+        theme,
+    ));
     lines.push(kb("Alt+1-9", "switch sub-view within current tab", theme));
     lines.push(kb("Tab", "cycle focus forward between panels", theme));
     lines.push(kb("Shift+Tab", "cycle focus backward", theme));
@@ -279,7 +283,10 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
 
     // ── Text Input ───────────────────────────────────────────────────
     lines.extend(section("Text Input Modes", theme));
-    lines.push(sub_label("Inject / Filter / Log Search / Plan Filter:", theme));
+    lines.push(sub_label(
+        "Inject / Filter / Log Search / Plan Filter:",
+        theme,
+    ));
     lines.push(kb("Enter", "submit / accept", theme));
     lines.push(kb("Esc", "cancel", theme));
     lines.push(kb("Backspace", "delete character", theme));

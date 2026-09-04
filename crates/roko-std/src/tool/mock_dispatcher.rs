@@ -122,9 +122,7 @@ mod tests {
         mock.expect("read_file", ToolResult::text("contents"));
         let result = mock.dispatch(make_call("read_file"));
         assert!(result.is_ok());
-        if let ToolResult::Ok { content, .. } = result {
-            assert_eq!(content, "contents");
-        }
+        assert_eq!(result.text_content(), "contents");
     }
 
     #[test]
@@ -193,18 +191,10 @@ mod tests {
         // After queue exhausted, last one is reused.
         let r4 = mock.dispatch(make_call("bash"));
 
-        if let ToolResult::Ok { content, .. } = r1 {
-            assert_eq!(content, "first");
-        }
-        if let ToolResult::Ok { content, .. } = r2 {
-            assert_eq!(content, "second");
-        }
-        if let ToolResult::Ok { content, .. } = r3 {
-            assert_eq!(content, "third");
-        }
-        if let ToolResult::Ok { content, .. } = r4 {
-            assert_eq!(content, "third");
-        }
+        assert_eq!(r1.text_content(), "first");
+        assert_eq!(r2.text_content(), "second");
+        assert_eq!(r3.text_content(), "third");
+        assert_eq!(r4.text_content(), "third");
     }
 
     #[test]
@@ -226,7 +216,8 @@ mod tests {
         } = result
         {
             assert!(is_structured);
-            assert_eq!(content, r#"{"matches":3}"#);
+            let text: String = content.iter().filter_map(|c| c.as_text()).collect();
+            assert_eq!(text, r#"{"matches":3}"#);
         }
     }
 }

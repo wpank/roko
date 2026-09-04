@@ -185,15 +185,15 @@ impl Theme {
     #[must_use]
     pub const fn fallback_256() -> Self {
         Self {
-            foreground: Color::Indexed(182),    // mauve-grey ~#A58E9E
-            muted: Color::Indexed(139),         // dim rose-grey ~#91788A
-            background: Color::Indexed(16),     // near-black
-            accent: Color::Indexed(175),        // rose ~#B97894
+            foreground: Color::Indexed(182), // mauve-grey ~#A58E9E
+            muted: Color::Indexed(139),      // dim rose-grey ~#91788A
+            background: Color::Indexed(16),  // near-black
+            accent: Color::Indexed(175),     // rose ~#B97894
             accent_foreground: Color::Indexed(16),
-            success: Color::Indexed(108),       // sage green ~#7D9E8C
-            warning: Color::Indexed(179),       // amber ~#C39B5F
-            danger: Color::Indexed(167),        // ember ~#C36E55
-            info: Color::Indexed(103),          // dream indigo ~#7873A5
+            success: Color::Indexed(108), // sage green ~#7D9E8C
+            warning: Color::Indexed(179), // amber ~#C39B5F
+            danger: Color::Indexed(167),  // ember ~#C36E55
+            info: Color::Indexed(103),    // dream indigo ~#7873A5
             selection_background: Color::Indexed(236), // dark grey
             selection_foreground: Color::Indexed(187), // bone ~#D7C69E
         }
@@ -453,9 +453,7 @@ impl Theme {
     /// Bold section header style for panel/section titles.
     #[must_use]
     pub(crate) fn section_header(self) -> Style {
-        Style::default()
-            .fg(Self::BONE)
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(Self::BONE).add_modifier(Modifier::BOLD)
     }
 
     /// Dim label style for field names like "Status:", "Cost:".
@@ -541,8 +539,12 @@ impl Theme {
 }
 
 impl Default for Theme {
+    /// Default is the canonical dark palette. Use `from_env()` explicitly
+    /// when you need to honor `NO_COLOR` / `ROKO_HIGH_CONTRAST` env vars.
+    /// #366: avoids per-frame env lookups in any code path that constructs
+    /// a Theme via `Default::default()`.
     fn default() -> Self {
-        Self::from_env()
+        Self::dark()
     }
 }
 
@@ -609,9 +611,9 @@ pub(crate) fn gradient_ocean() -> Gradient {
 #[allow(dead_code)]
 pub(crate) fn gradient_rose() -> Gradient {
     Gradient {
-        start: (65.0, 36.0, 52.0),    // ROSE_DEEP
-        mid: (120.0, 115.0, 165.0),   // DREAM
-        end: (220.0, 155.0, 180.0),   // ROSE_BRIGHT
+        start: (65.0, 36.0, 52.0),  // ROSE_DEEP
+        mid: (120.0, 115.0, 165.0), // DREAM
+        end: (220.0, 155.0, 180.0), // ROSE_BRIGHT
     }
 }
 
@@ -622,9 +624,9 @@ pub(crate) fn gradient_rose() -> Gradient {
 #[must_use]
 pub(crate) fn gradient_progress() -> Gradient {
     Gradient {
-        start: (195.0, 110.0, 85.0),  // EMBER
-        mid: (195.0, 155.0, 95.0),    // WARNING
-        end: (125.0, 158.0, 140.0),   // SAGE
+        start: (195.0, 110.0, 85.0), // EMBER
+        mid: (195.0, 155.0, 95.0),   // WARNING
+        end: (125.0, 158.0, 140.0),  // SAGE
     }
 }
 

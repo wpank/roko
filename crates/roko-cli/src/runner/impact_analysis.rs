@@ -313,8 +313,7 @@ pub async fn analyze(
 
     match public_surface_classification(workdir, &report.changed_files, limit).await {
         Ok(classification) => {
-            report.high_impact =
-                report.high_impact || !classification.reasons.is_empty();
+            report.high_impact = report.high_impact || !classification.reasons.is_empty();
             report.high_impact_reasons.extend(classification.reasons);
             report.macro_api_change_detected = classification.macro_api_detected;
             report.schema_change_detected = classification.schema_change_detected;
@@ -852,9 +851,7 @@ pub fn classify_diff(diff_text: &str) -> DiffClassification {
             // covered by the contract bucket (e.g. derive(Serialize/
             // Deserialize)) AND the change is on a public item or lib.rs
             // root. Internal derives do not affect downstream crates.
-            if !contract
-                && (public || current_file.is_some_and(|f| f.ends_with("lib.rs")))
-            {
+            if !contract && (public || current_file.is_some_and(|f| f.ends_with("lib.rs"))) {
                 reasons.insert("macro-generated API changed (derive/proc_macro)".to_string());
             }
         }
@@ -1056,7 +1053,9 @@ fn try_symbol_oracle(
         if !path.ends_with(".rs") {
             continue;
         }
-        let is_producer = producer_prefixes.iter().any(|prefix| path.starts_with(prefix));
+        let is_producer = producer_prefixes
+            .iter()
+            .any(|prefix| path.starts_with(prefix));
         if !is_producer {
             continue;
         }
@@ -1106,9 +1105,7 @@ fn try_symbol_oracle(
 /// This is a test helper used by both the inline unit tests and integration
 /// tests that exercise the impact analyzer against synthetic workspaces.
 #[cfg(test)]
-fn mock_workspace_metadata(
-    crates: &[(&str, &[&str])],
-) -> cargo_metadata::Metadata {
+fn mock_workspace_metadata(crates: &[(&str, &[&str])]) -> cargo_metadata::Metadata {
     use serde_json::json;
 
     let workspace_root = "/mock";
@@ -1458,7 +1455,10 @@ diff --git a/crates/roko-core/src/lib.rs b/crates/roko-core/src/lib.rs
             "derive(Clone, Debug, Hash) must trigger macro_api_detected"
         );
         assert!(
-            classification.reasons.iter().any(|r| r.contains("macro-generated")),
+            classification
+                .reasons
+                .iter()
+                .any(|r| r.contains("macro-generated")),
             "public derive on lib.rs must produce macro-generated reason, got {:?}",
             classification.reasons
         );
@@ -1496,7 +1496,10 @@ diff --git a/config/schema.json b/config/schema.json
             "JSON schema file change must set schema_change_detected"
         );
         assert!(
-            classification.reasons.iter().any(|r| r.contains("non-Rust schema file")),
+            classification
+                .reasons
+                .iter()
+                .any(|r| r.contains("non-Rust schema file")),
             "schema file change must produce reason, got {:?}",
             classification.reasons
         );
@@ -1534,11 +1537,7 @@ diff --git a/config/schema.json b/config/schema.json
         assert!(names.contains(&"cli".to_string()));
 
         // Verify reverse dependents work with the helper.
-        let (deps, overflow) = reverse_dependents(
-            &metadata,
-            &["core".to_string()],
-            10,
-        );
+        let (deps, overflow) = reverse_dependents(&metadata, &["core".to_string()], 10);
         assert!(!overflow);
         // Both "agent" and "cli" depend on "core".
         assert!(
@@ -1565,7 +1564,9 @@ diff --git a/crates/core/src/config.rs b/crates/core/src/config.rs
 ";
         let reasons = classify_diff_lines(diff);
         assert!(
-            reasons.iter().any(|r| r.contains("public Rust item/signature")),
+            reasons
+                .iter()
+                .any(|r| r.contains("public Rust item/signature")),
             "public struct field must be flagged, got {reasons:?}"
         );
 
@@ -1574,11 +1575,7 @@ diff --git a/crates/core/src/config.rs b/crates/core/src/config.rs
             ("agent", &["core"]),
             ("cli", &["core", "agent"]),
         ]);
-        let (deps, overflow) = reverse_dependents(
-            &metadata,
-            &["core".to_string()],
-            10,
-        );
+        let (deps, overflow) = reverse_dependents(&metadata, &["core".to_string()], 10);
         assert!(!overflow);
         assert!(deps.len() >= 2, "expected >=2 reverse deps, got {deps:?}");
         assert!(deps.contains(&"agent".to_string()));
@@ -1589,16 +1586,9 @@ diff --git a/crates/core/src/config.rs b/crates/core/src/config.rs
     fn transitive_reverse_dependents_via_mock() {
         // "base" -> "mid" -> "leaf": changing "base" must transitively
         // reach both "mid" and "leaf".
-        let metadata = mock_workspace_metadata(&[
-            ("base", &[]),
-            ("mid", &["base"]),
-            ("leaf", &["mid"]),
-        ]);
-        let (deps, overflow) = reverse_dependents(
-            &metadata,
-            &["base".to_string()],
-            10,
-        );
+        let metadata =
+            mock_workspace_metadata(&[("base", &[]), ("mid", &["base"]), ("leaf", &["mid"])]);
+        let (deps, overflow) = reverse_dependents(&metadata, &["base".to_string()], 10);
         assert!(!overflow);
         assert!(
             deps.contains(&"mid".to_string()),
@@ -1612,15 +1602,8 @@ diff --git a/crates/core/src/config.rs b/crates/core/src/config.rs
 
     #[test]
     fn no_reverse_dependents_for_leaf_crate() {
-        let metadata = mock_workspace_metadata(&[
-            ("base", &[]),
-            ("leaf", &["base"]),
-        ]);
-        let (deps, overflow) = reverse_dependents(
-            &metadata,
-            &["leaf".to_string()],
-            10,
-        );
+        let metadata = mock_workspace_metadata(&[("base", &[]), ("leaf", &["base"])]);
+        let (deps, overflow) = reverse_dependents(&metadata, &["leaf".to_string()], 10);
         assert!(!overflow);
         assert!(
             deps.is_empty(),
@@ -1647,7 +1630,10 @@ diff --git a/crates/roko-cli/src/internal.rs b/crates/roko-cli/src/internal.rs
         );
         // No "macro-generated" reason since it is not on a pub item or lib.rs
         assert!(
-            !classification.reasons.iter().any(|r| r.contains("macro-generated")),
+            !classification
+                .reasons
+                .iter()
+                .any(|r| r.contains("macro-generated")),
             "internal derive should not produce a macro-generated reason, got {:?}",
             classification.reasons
         );

@@ -431,12 +431,12 @@ impl SafetyLayer {
             role_tools: HashMap::new(),
             role_overrides: HashMap::new(),
             temporal_monitor: None,
-            // Fail-closed policy with wildcard allows all tools by default.
-            // Callers that want strict enforcement should use
-            // `with_tool_permission_policy()` to supply an explicit list
-            // without the wildcard.
+            // Fail-closed: deny all tools by default. Callers must explicitly
+            // grant tools via `with_role()`, `with_contract()`, or
+            // `with_tool_permission_list()`. This ensures unknown roles that
+            // have no matching YAML bundle cannot access any tools.
             tool_permission_policy: ToolPermissionPolicy::AllowExplicit,
-            tool_permission_list: vec!["*".to_string()],
+            tool_permission_list: vec![],
             sandbox_level: SandboxLevel::Restrict,
         }
     }
@@ -501,19 +501,33 @@ impl SafetyLayer {
     }
 
     /// Override the role label used in rate-limit keys.
+    ///
+    /// Setting a known role grants wildcard tool-permission-list access
+    /// so the contract's own `allowed_tools` becomes the binding
+    /// per-tool constraint (the fail-closed default denies everything
+    /// until a role is explicitly applied).
     #[must_use]
     pub fn with_role(mut self, role: impl Into<String>) -> Self {
         let role = role.into();
         self.contract = self.contract_for_role(&role);
         self.role = role;
+        // A known role lifts the outer tool-permission gate; the
+        // contract's allowed_tools field is the binding constraint.
+        self.tool_permission_list = vec!["*".to_string()];
         self
     }
 
     /// Override the contract attached to the safety layer.
+    ///
+    /// Setting an explicit contract grants wildcard tool-permission-list
+    /// access so the contract's own `allowed_tools` becomes the binding
+    /// per-tool constraint.
     #[must_use]
     pub fn with_contract(mut self, contract: AgentContract) -> Self {
         self.role = contract.role.clone();
         self.contract = contract;
+        // An explicit contract lifts the outer tool-permission gate.
+        self.tool_permission_list = vec!["*".to_string()];
         self
     }
 
@@ -913,7 +927,17 @@ impl SafetyLayer {
                 is_structured,
                 artifacts,
             } => {
-                let cleaned = scrub::scrub_secrets(&content, &self.scrub_policy);
+                let cleaned: Vec<roko_core::tool::ToolResultContent> = content
+                    .into_iter()
+                    .map(|block| match block {
+                        roko_core::tool::ToolResultContent::Text { text } => {
+                            roko_core::tool::ToolResultContent::Text {
+                                text: scrub::scrub_secrets(&text, &self.scrub_policy),
+                            }
+                        }
+                        other => other,
+                    })
+                    .collect();
                 ToolResult::Ok {
                     content: cleaned,
                     is_structured,
@@ -1274,18 +1298,27 @@ impl SafetyLayer {
         });
 
         // When the restricted fallback produced a deny-all allowlist but
-        // the operator explicitly configured this role in TOML (either via
-        // a tools whitelist or any role override), defer tool-access
-        // control to the TOML role-tools whitelist instead of the
-        // contract's empty allowlist.  An operator-defined role without
-        // a tools list is intentionally permissive.
+        // the operator explicitly configured an **explicit tools whitelist**
+        // for this role in TOML, defer tool-access control to the TOML
+        // role-tools whitelist instead of the contract's empty allowlist.
+        //
+        // A role with only budget/alias overrides (no `tools` key) keeps
+        // the deny-all contract — budget-only config must NOT grant
+        // unrestricted tool access.
         if contract
             .allowed_tools
             .as_ref()
             .is_some_and(|t| t.is_empty())
-            && (self.role_tools.contains_key(role) || self.role_overrides.contains_key(role))
+            && self.role_tools.contains_key(role)
         {
+            // Only defer to the TOML tools whitelist when an explicit tools list
+            // was configured. A role with only budget/alias overrides keeps the
+            // deny-all contract.
             contract.allowed_tools = None;
+            tracing::info!(
+                role,
+                "contract: cleared deny-all allowlist; TOML tools whitelist is binding"
+            );
         }
 
         if let Some(role_override) = self.role_overrides.get(role)
@@ -1503,6 +1536,54 @@ mod tests {
     }
 
     #[test]
+    fn with_defaults_has_empty_tool_permission_list() {
+        let layer = SafetyLayer::with_defaults();
+        assert!(
+            layer.tool_permission_list.is_empty(),
+            "with_defaults() should deny all tools (empty list), got: {:?}",
+            layer.tool_permission_list
+        );
+        assert_eq!(
+            layer.tool_permission_policy,
+            ToolPermissionPolicy::AllowExplicit
+        );
+    }
+
+    #[test]
+    fn with_defaults_denies_all_tools() {
+        let layer = SafetyLayer::with_defaults();
+        let ctx = test_ctx();
+        // Use a tool name that is unknown to the sandbox (no filesystem
+        // path in its arguments) so the sandbox check passes and the
+        // AllowExplicit policy with an empty list is the gate that
+        // actually rejects the call.
+        let call = ToolCall::new(
+            "test-id",
+            "custom_tool",
+            serde_json::json!({"query": "test"}),
+        );
+        let err = layer
+            .check_pre_execution(&call, &ctx)
+            .expect_err("with_defaults should deny custom_tool");
+        assert!(
+            matches!(err, ToolError::PermissionDenied(_)),
+            "expected PermissionDenied, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn with_role_grants_tool_access() {
+        let layer = SafetyLayer::with_defaults().with_role("implementer");
+        assert_eq!(layer.tool_permission_list, vec!["*".to_string()]);
+    }
+
+    #[test]
+    fn with_contract_grants_tool_access() {
+        let layer = SafetyLayer::with_defaults().with_contract(AgentContract::permissive("test"));
+        assert_eq!(layer.tool_permission_list, vec!["*".to_string()]);
+    }
+
+    #[test]
     fn non_tool_corrigibility_blocks_oversight_tampering() {
         let layer = SafetyLayer::with_defaults();
         let action = DispatchSafetyContext::for_local_action(
@@ -1595,12 +1676,8 @@ mod tests {
             "key is sk-ant-api03-abcdefghij1234567890abcdefghij1234567890abcdefghij1234567890abcdefghij1234-AAAAAA",
         );
         let scrubbed = layer.scrub_output(result);
-        match scrubbed {
-            ToolResult::Ok { content, .. } => {
-                assert!(!content.contains("sk-ant-api03"));
-            }
-            _ => panic!("expected Ok variant"),
-        }
+        assert!(matches!(scrubbed, ToolResult::Ok { .. }));
+        assert!(!scrubbed.text_content().contains("sk-ant-api03"));
     }
 
     #[test]
@@ -1944,6 +2021,56 @@ mod tests {
             violation.severity,
             ViolationSeverity::Block,
             "opaque CLI writes forbidden by the contract must fail closed"
+        );
+    }
+
+    // ─── #60: Privilege escalation regression tests ─────────────────
+
+    #[test]
+    fn budget_only_override_keeps_deny_all_contract() {
+        // A role with only a budget override (no tools key) must keep the deny-all
+        // contract, not gain unrestricted tool access.
+        let mut config = RokoConfig::default();
+        config.agent.roles.insert(
+            "custom-role".to_string(),
+            roko_core::config::agent::RoleOverride {
+                budget: Some(roko_core::config::agent::AgentBudget {
+                    max_cost_usd_cents_per_turn: Some(100),
+                    ..Default::default()
+                }),
+                tools: None,
+                ..Default::default()
+            },
+        );
+        let layer = SafetyLayer::from_config(&config);
+        let contract = layer.contract_for_role("custom-role");
+        assert!(
+            contract
+                .allowed_tools
+                .as_ref()
+                .is_some_and(|t| t.is_empty()),
+            "budget-only role must keep deny-all allowed_tools, got: {:?}",
+            contract.allowed_tools
+        );
+    }
+
+    #[test]
+    fn explicit_tools_override_defers_to_toml_whitelist() {
+        let mut config = RokoConfig::default();
+        config.agent.roles.insert(
+            "tool-role".to_string(),
+            roko_core::config::agent::RoleOverride {
+                tools: Some(vec!["bash".to_string()]),
+                ..Default::default()
+            },
+        );
+        let layer = SafetyLayer::from_config(&config);
+        let contract = layer.contract_for_role("tool-role");
+        // None means the TOML whitelist is binding (not the contract's empty list).
+        assert!(
+            contract.allowed_tools.is_none(),
+            "tools-configured role must defer to TOML whitelist, got: {:?}",
+            contract.allowed_tools
         );
     }
 }

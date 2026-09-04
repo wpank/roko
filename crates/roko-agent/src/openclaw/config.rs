@@ -63,6 +63,8 @@ pub struct OpenClawInferConfig {
     pub timeout: Duration,
     /// Optional OS-enforced limits for the infer subprocess.
     pub resource_limits: Option<ResourceLimits>,
+    /// Optional system prompt passed via `--system-prompt`.
+    pub system_prompt: Option<String>,
 }
 
 impl Default for OpenClawInferConfig {
@@ -76,6 +78,7 @@ impl Default for OpenClawInferConfig {
             extra_args: vec!["--json".to_string()],
             timeout: Duration::from_millis(90_000),
             resource_limits: None,
+            system_prompt: None,
         }
     }
 }
@@ -162,6 +165,11 @@ impl OpenClawInferConfig {
         if let Some(thinking) = &self.thinking {
             args.push("--thinking".to_string());
             args.push(thinking.clone());
+        }
+
+        if let Some(sp) = &self.system_prompt {
+            args.push("--system-prompt".to_string());
+            args.push(sp.clone());
         }
 
         if let Some(flag) = self.transport_hint.as_flag() {

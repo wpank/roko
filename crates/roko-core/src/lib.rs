@@ -92,11 +92,11 @@ pub mod decay;
 pub mod defaults;
 
 pub mod demurrage;
-/// Canonical single-unit duration parser (`ms`, `s`, `m`, `h`, `d`).
-pub mod duration;
 pub mod dispatch_plan;
 /// Domain profiles for agent specialization: gate defaults, tool sets, context templates.
 pub mod domain_profile;
+/// Canonical single-unit duration parser (`ms`, `s`, `m`, `h`, `d`).
+pub mod duration;
 pub mod engram;
 pub mod error;
 /// Payload contracts carried by MCP, A2A, and x402 transports.
@@ -169,6 +169,8 @@ pub mod obs {
 }
 pub mod operating_frequency;
 pub mod phase;
+/// Executor-neutral plan mutation contract (v1) — deterministic DAG mutation kernel.
+pub mod plan_mutation;
 pub mod plugin;
 pub mod policy_manifest;
 pub mod polyglot;
@@ -243,27 +245,27 @@ pub use cognitive_workspace::{
     PolicyVersionRef, PromptSectionAudit, RewardObservation, TaskInvocationContract,
 };
 pub use conductor::{CognitiveSignal, ConductorDecision, ConductorEvaluation};
-pub use crash_report::{
-    CrashReport, build_crash_report, clear_active_plan, clear_active_provider, clear_active_task,
-    crash_report_path, has_recent_crash_report, read_crash_report, set_active_plan,
-    set_active_provider, set_active_task, write_crash_report, CRASH_REPORT_FILENAME,
-};
 pub use config::graduation::{GraduationConfig, GraduationPolicy};
 pub use connector::{
     ConnectorConfig, ConnectorHealth, ConnectorInfo, ConnectorKind, ConnectorRegistry,
     ConnectorStatus,
 };
 pub use context::Context;
+pub use crash_report::{
+    CRASH_REPORT_FILENAME, CrashReport, build_crash_report, clear_active_plan,
+    clear_active_provider, clear_active_task, crash_report_path, has_recent_crash_report,
+    read_crash_report, set_active_plan, set_active_provider, set_active_task, write_crash_report,
+};
 pub use datum::Datum;
 pub use decay::Decay;
 pub use demurrage::{Demurrage, DemurrageConfig, demurrage_tick};
-pub use duration::{DurationParseError, parse_duration, parse_duration_ms};
 pub use dispatch_plan::{
     ConfigBag, DispatchAttempt, DispatchAttemptKind, DispatchAuthStatus, DispatchCaller,
     DispatchPlan, DispatchRequest, DispatchRequirement, FallbackPolicy, ProviderDispatchError,
     TransportAuth, TransportPlan,
 };
 pub use domain_profile::{DomainProfile, TypedContext};
+pub use duration::{DurationParseError, parse_duration, parse_duration_ms};
 pub use engram::{Engram, EngramBuilder, GraduationError, HdcFingerprint, SignalStatus};
 pub use error::{Result, RokoError};
 pub use feed::{
@@ -287,10 +289,11 @@ pub use forensic::{
 pub use foundation::{
     BoxModelStream, ChatMessage as FoundationChatMessage, Effect, EffectExecutor, EffectOutcome,
     EventConsumer, FeedbackEvent, FeedbackSink, GateClassification, GateConfig, GateReport,
-    GateRunner, GateVerdict, MessageRole, ModelCallRequest, ModelCallResponse, ModelCaller,
-    ModelInputBlock, ModelInputImage, ModelInputMessage, ModelStreamEvent, PromptAssembler,
-    PromptSpec, ShellGateCommand, TokenUsage, model_call_failure_to_stream,
-    model_call_response_to_stream, validate_model_input_images, validate_model_input_messages,
+    GateRunner, GateVerdict, GenerationSettings, KnowledgeQuery, MessageRole, ModelCallRequest,
+    ModelCallResponse, ModelCaller, ModelInputBlock, ModelInputImage, ModelInputMessage,
+    ModelStreamEvent, PromptAssembler, PromptSpec, ShellGateCommand, TokenUsage,
+    model_call_failure_to_stream, model_call_response_to_stream, validate_model_input_images,
+    validate_model_input_messages,
 };
 pub use groups::{
     AssignmentStrategy, CoordinationMode, Group, GroupConfig, GroupContextBidder, GroupEvent,
@@ -318,6 +321,11 @@ pub use operating_frequency::{
     OperatingFrequencyScheduler,
 };
 pub use phase::{FailureKind, PhaseKind, PlanPhase, is_monotonic_progression, valid_transitions};
+pub use plan_mutation::{
+    MutablePlanV1, MutableTaskV1, MutationAuthorKind, MutationAuthorV1, MutationEvidenceV1,
+    PlanMutationErrorV1, PlanMutationOpV1, PlanMutationResultV1, PlanMutationV1, apply_mutation,
+    canonical_fingerprint,
+};
 pub use policy_manifest::{
     BUILTIN_ROLE_POLICY_MANIFEST_PATH, BUILTIN_ROLE_POLICY_MANIFEST_TOML,
     CURRENT_POLICY_MANIFEST_SCHEMA_VERSION, CapabilityDeclaration, ContextPolicyRef,
@@ -349,7 +357,10 @@ pub use query::{Budget, Query};
 pub use recipe::{Recipe, RecipeEdge, RecipeNode, ScoreOp};
 pub use recipe_store::RecipeStore;
 pub use roko_primitives::HdcVector;
-pub use runtime_event::{RuntimeEvent, ToolCallSummary, WorkflowOutcome};
+pub use runtime_event::{
+    RuntimeEvent, RuntimeEventDelivery, RuntimeEventMode, RuntimeEventProjector,
+    RuntimeEventPublishDisposition, RuntimeEventPublisher, ToolCallSummary, WorkflowOutcome,
+};
 pub use score::Score;
 pub use signal::{ArtifactKind, ArtifactLineage, ArtifactRef, Signal, SignalBuilder};
 pub use signal_kinds::*;
@@ -369,10 +380,10 @@ pub use dashboard_snapshot::{
     TrendBuckets,
 };
 pub use job::{
-    CreateJobRequest, FileJobStore, JobError, JobEvaluation, JobFilter, JobGateResult,
-    JobPriority, JobProgressEntry, JobStats, JobStatus, JobSubmission, JobType,
-    LegacyMigrationDiagnostic, MalformedJobFile, MarketplaceJob, PrdSummary,
-    TaskSummary as JobTaskSummary,
+    CreateJobRequest, FileJobStore, JobError, JobEvaluation, JobExecutionMode, JobExecutionService,
+    JobFilter, JobGateResult, JobPriority, JobProgressEntry, JobStats, JobStatus, JobSubmission,
+    JobTransitionReceipt, JobType, LegacyMigrationDiagnostic, MalformedJobFile, MarketplaceJob,
+    PrdSummary, TaskSummary as JobTaskSummary,
 };
 pub use lens_registry::{LensConfig, LensRegistration, LensRegistry, parse_scope};
 pub use namespace::{
@@ -396,8 +407,8 @@ pub use tool::{
     ProfileBandit, RewardConfig, ToolCall, ToolCategory, ToolConcurrency, ToolContext, ToolDef,
     ToolError, ToolExecutionEnvelope, ToolExecutionRecord, ToolFormat, ToolFormatProfile,
     ToolHandler, ToolLifecycleStatus, ToolMetrics, ToolOutcome, ToolPermission, ToolRegistry,
-    ToolRelevanceScorer, ToolResult, ToolSchema, ToolSource, ToolTrace, ToolTraceEvent,
-    TraceBuilder, TraceFinishGuard, TraceId, TraceSink, TraceStep, TranscriptEvent,
+    ToolRelevanceScorer, ToolResult, ToolResultContent, ToolSchema, ToolSource, ToolTrace,
+    ToolTraceEvent, TraceBuilder, TraceFinishGuard, TraceId, TraceSink, TraceStep, TranscriptEvent,
     TranscriptEventMeta, TranscriptRecord, VecToolRegistry, classify_tool_error, compute_reward,
     galileo_tsq, profile_for_model,
 };

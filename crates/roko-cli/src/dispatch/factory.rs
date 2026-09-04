@@ -28,9 +28,7 @@ use crate::dispatch_v2::{
 
 use super::plugin_mcp::CliPluginMcpBridge;
 
-use super::{
-    Dispatcher, PromptAssembler, PromptCache, ResolvedAgentRuntime, WarmPool,
-};
+use super::{Dispatcher, PromptAssembler, PromptCache, ResolvedAgentRuntime, WarmPool};
 
 /// Shared, reusable components for agent dispatch.
 ///

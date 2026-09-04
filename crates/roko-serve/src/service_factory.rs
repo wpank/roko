@@ -272,19 +272,10 @@ impl ServiceFactory {
             Arc::new(MemoryFeedbackSink::default())
         };
 
-        let gateway_knowledge_store = Arc::clone(&knowledge_store);
-        let gateway_knowledge_query = Arc::new(move |topic: &str, limit: usize| {
-            let entries = gateway_knowledge_store
-                .query(topic, limit)
-                .map_err(|err| RokoError::invalid(format!("query knowledge store: {err}")))?;
-            entries
-                .into_iter()
-                .map(|entry| {
-                    serde_json::to_value(entry)
-                        .map_err(|err| RokoError::invalid(format!("serialize knowledge: {err}")))
-                })
-                .collect()
-        });
+        // knowledge_store implements KnowledgeQuery via the concrete impl
+        // in roko-neuro (KnowledgeStore -> KnowledgeQuery).
+        let gateway_knowledge_query: Arc<dyn roko_core::KnowledgeQuery> =
+            knowledge_store.clone() as Arc<dyn roko_core::KnowledgeQuery>;
         let cost_table = roko_agent::CostTable::from_config_with_defaults(&workspace_config.models);
         let provider_health_registry = Arc::new(ProviderHealthRegistry::load_or_new(
             &config.roko_dir.join("learn").join("provider-health.json"),
@@ -607,6 +598,7 @@ mod tests {
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
         config.models.insert(

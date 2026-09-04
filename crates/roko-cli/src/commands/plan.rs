@@ -1,5 +1,4 @@
 //! plan command handlers.
-#![allow(unused_imports)]
 
 use std::io::IsTerminal as _;
 
@@ -326,10 +325,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 });
                 println!("{}", serde_json::to_string_pretty(&payload)?);
             } else if !cli.quiet {
-                eprintln!(
-                    "Created plan '{plan_id}' at {}",
-                    plan_dir.display()
-                );
+                eprintln!("Created plan '{plan_id}' at {}", plan_dir.display());
                 crate::commands::util::print_next_step_hint(&format!(
                     "Next: edit {tasks} and run with `roko plan run {}`",
                     plan_dir.display(),
@@ -951,6 +947,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     },
                     max_turn_usd: f64::from(roko_config.budget.max_turn_usd),
                     max_task_retry_usd: f64::from(roko_config.budget.max_task_retry_usd),
+                    max_daily_usd: f64::from(roko_config.budget.max_daily_usd),
                     budget_override: {
                         let (_, bypass) = resolve_budget_ceiling(
                             budget_override,
@@ -967,7 +964,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     no_budget,
                     clippy_enabled: roko_config.gates.clippy_enabled,
                     skip_tests: roko_config.gates.skip_tests,
-                    safety_layer: Some(roko_agent::SafetyLayer::from_config(&roko_config)),
+                    safety_layer: roko_agent::SafetyLayer::from_config(&roko_config),
                     roko_config: Some(std::sync::Arc::new(roko_config.clone())),
                     extension_chain: Some(extension_chain),
                     cascade_router: Some(cascade_router),
@@ -1037,8 +1034,11 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
 
                 // Optionally spawn the approval TUI.
                 let mut approval_tui_handle = None;
-                let mut tui_cmd_rx: Option<
-                    tokio::sync::mpsc::Receiver<roko_cli::runner::TuiCommand>,
+                let mut exec_cmd_rx: Option<
+                    tokio::sync::mpsc::Receiver<roko_cli::execution_control::ExecutionCommand>,
+                > = None;
+                let mut exec_ack_tx: Option<
+                    tokio::sync::mpsc::Sender<roko_cli::execution_control::CommandAck>,
                 > = None;
                 if approval {
                     if !std::io::stdout().is_terminal() {
@@ -1060,9 +1060,12 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
 
                     let state_hub_for_tui = state_hub.clone();
                     let workdir_for_tui = wd.clone();
-                    // Create in-process TUI→runner command channel.
-                    let (tui_cmd_tx, tui_cmd_rx_slot) = tokio::sync::mpsc::channel(32);
-                    tui_cmd_rx = Some(tui_cmd_rx_slot);
+                    // Create in-process TUI→runner execution command channel (#233).
+                    let (cmd_sender, cmd_rx, ack_tx, ack_rx) =
+                        roko_cli::execution_control::ExecutionCommandSender::channel("plan-run");
+                    let ack_receiver = roko_cli::execution_control::CommandAckReceiver::new(ack_rx);
+                    exec_cmd_rx = Some(cmd_rx);
+                    exec_ack_tx = Some(ack_tx);
                     let handle = std::thread::Builder::new()
                         .name("roko-plan-approval-tui".to_string())
                         .spawn(move || {
@@ -1072,7 +1075,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                                 &state_hub_for_tui,
                             )
                             .without_mouse_capture()
-                            .with_tui_command_tx(tui_cmd_tx);
+                            .with_execution_command_sender(cmd_sender, ack_receiver);
                             app.run()
                         })
                         .context("spawn approval TUI thread")?;
@@ -1123,7 +1126,8 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     &run_config,
                     &state_hub,
                     cancel,
-                    tui_cmd_rx,
+                    exec_cmd_rx,
+                    exec_ack_tx,
                 )
                 .await;
                 if let Err(error) = &v2_result {
@@ -2768,9 +2772,7 @@ fn warn_graph_unsupported_flags(
         );
     }
     if batch_size.is_some() {
-        eprintln!(
-            "warning: --batch-size is not supported with --engine graph and will be ignored"
-        );
+        eprintln!("warning: --batch-size is not supported with --engine graph and will be ignored");
     }
 }
 
@@ -2966,10 +2968,9 @@ async fn cmd_plan_run_engine(
     );
     let task_dispatcher: Arc<dyn TaskDispatcher> = graph_task_dispatcher.clone();
     let state_hub_sender = roko_cli::state_hub::shared_state_hub().sender();
-    let graph_telemetry: Arc<dyn roko_core::TelemetryEventSink> =
-        Arc::new(roko_cli::runner::event_loop::StateHubTelemetrySink::new(
-            state_hub_sender.clone(),
-        ));
+    let graph_telemetry: Arc<dyn roko_core::TelemetryEventSink> = Arc::new(
+        roko_cli::runner::event_loop::StateHubTelemetrySink::new(state_hub_sender.clone()),
+    );
 
     // Wire graph engine execution into the TUI dashboard event stream.
     let graph_tui_bridge = roko_cli::runner::graph_tui_bridge::GraphTuiBridge::new(
@@ -3010,7 +3011,11 @@ async fn cmd_plan_run_engine(
             );
             graph_tui_bridge.log_event(
                 "graph.plan_blocked",
-                &format!("plan '{}' blocked: prerequisites {}", plan.id, unsatisfied.join(", ")),
+                &format!(
+                    "plan '{}' blocked: prerequisites {}",
+                    plan.id,
+                    unsatisfied.join(", ")
+                ),
             );
             plan_outcomes.insert(plan.id.clone(), false);
             all_succeeded = false;
@@ -3060,7 +3065,10 @@ async fn cmd_plan_run_engine(
         let graph = match plan_to_graph(&plan.id, &plan_dir_str, &tasks, max_parallel) {
             Ok(g) => g,
             Err(e) => {
-                graph_tui_bridge.error(&format!("failed to convert plan '{}' to graph: {e}", plan.id));
+                graph_tui_bridge.error(&format!(
+                    "failed to convert plan '{}' to graph: {e}",
+                    plan.id
+                ));
                 eprintln!(
                     "  error: failed to convert plan '{}' to graph: {e}",
                     plan.id

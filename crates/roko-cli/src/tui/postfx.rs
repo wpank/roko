@@ -705,6 +705,89 @@ pub fn bloom(area: Rect, buf: &mut Buffer, threshold: u8, radius: u16, intensity
     }
 }
 
+/// Bloom variant that uses pre-allocated buffers instead of per-frame allocation.
+///
+/// #366: The caller provides three `f64` planes (pre-zeroed) of length
+/// `area.width * area.height`. This avoids three `Vec::new` allocations
+/// per frame when bloom is enabled.
+pub fn bloom_with_buffers(
+    area: Rect,
+    buf: &mut Buffer,
+    threshold: u8,
+    radius: u16,
+    intensity: f64,
+    bloom_r: &mut [f64],
+    bloom_g: &mut [f64],
+    bloom_b: &mut [f64],
+) {
+    if area.width == 0 || area.height == 0 || intensity <= 0.0 {
+        return;
+    }
+
+    let w = area.width as usize;
+    let h = area.height as usize;
+    let needed = w * h;
+    if bloom_r.len() < needed || bloom_g.len() < needed || bloom_b.len() < needed {
+        // Fallback to allocating variant if buffers are undersized.
+        bloom(area, buf, threshold, radius, intensity);
+        return;
+    }
+
+    // Collect bloom source contributions.
+    for dy in 0..h {
+        for dx in 0..w {
+            let x = area.x + dx as u16;
+            let y = area.y + dy as u16;
+            if let Some(cell) = buf.cell((x, y)) {
+                if let Some((r, g, b)) = cell_fg_rgb(cell) {
+                    if luminance(r, g, b) > threshold {
+                        let r_start = (dy as i32 - radius as i32).max(0) as usize;
+                        let r_end = ((dy as i32 + radius as i32 + 1) as usize).min(h);
+                        let c_start = (dx as i32 - radius as i32).max(0) as usize;
+                        let c_end = ((dx as i32 + radius as i32 + 1) as usize).min(w);
+
+                        let kernel_area = ((r_end - r_start) * (c_end - c_start)).max(1) as f64;
+                        let contrib = intensity / kernel_area;
+
+                        for ny in r_start..r_end {
+                            for nx in c_start..c_end {
+                                let idx = ny * w + nx;
+                                bloom_r[idx] += r as f64 * contrib;
+                                bloom_g[idx] += g as f64 * contrib;
+                                bloom_b[idx] += b as f64 * contrib;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Apply bloom via screen blend.
+    for dy in 0..h {
+        for dx in 0..w {
+            let idx = dy * w + dx;
+            let br = bloom_r[idx];
+            let bg = bloom_g[idx];
+            let bb = bloom_b[idx];
+            if br <= 0.0 && bg <= 0.0 && bb <= 0.0 {
+                continue;
+            }
+
+            let x = area.x + dx as u16;
+            let y = area.y + dy as u16;
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                if let Some((cr, cg, cb)) = cell_fg_rgb(cell) {
+                    let nr = screen_blend(cr, br.min(255.0) as u8);
+                    let ng = screen_blend(cg, bg.min(255.0) as u8);
+                    let nb = screen_blend(cb, bb.min(255.0) as u8);
+                    cell.set_fg(Color::Rgb(nr, ng, nb));
+                }
+            }
+        }
+    }
+}
+
 /// Radial vignette: darken cells near the edges of the area.
 ///
 /// `intensity` controls how dark the corners become (0.0..1.0).
@@ -1019,9 +1102,7 @@ pub fn noise_floor(area: Rect, buf: &mut Buffer, density: f64, frame_seed: u64) 
 
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {
-            let hash = splitmix64(
-                frame_seed ^ ((x as u64) << 16) ^ ((y as u64) << 32),
-            );
+            let hash = splitmix64(frame_seed ^ ((x as u64) << 16) ^ ((y as u64) << 32));
             if unit_from_hash(hash) > density {
                 continue;
             }
@@ -1178,7 +1259,10 @@ mod tests {
         // Row 0 should be slightly dimmed, row 1 untouched
         let fg0 = buf[(0, 0)].fg;
         let fg1 = buf[(0, 1)].fg;
-        assert_ne!(fg0, fg1, "scanline row should be dimmer than non-scanline row");
+        assert_ne!(
+            fg0, fg1,
+            "scanline row should be dimmer than non-scanline row"
+        );
     }
 
     #[test]

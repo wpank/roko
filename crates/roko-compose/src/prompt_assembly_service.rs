@@ -8,7 +8,7 @@ use roko_core::foundation::{PromptAssembler, PromptSpec};
 use roko_core::{AgentRole, Result};
 use roko_learn::episode_logger::{Episode, EpisodeLogger};
 use roko_learn::playbook::{PlaybookStore, QueryContext};
-use roko_neuro::{KnowledgeEntry, KnowledgeKind, KnowledgeTier, NeuroStore};
+use roko_neuro::{KnowledgeEntry, KnowledgeKind, KnowledgeTier};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -28,21 +28,30 @@ const SOURCE_SCAN_MAX_FILES: usize = 500;
 
 type ModelContextWindowResolver = dyn Fn(AgentRole) -> usize + Send + Sync;
 
-// TODO(converge): roko_neuro::NeuroStore currently has a `Sized` supertrait,
-// so it cannot be stored directly as `dyn NeuroStore`. Keep this object-safe
-// adapter local until roko-neuro exposes an object-safe query trait.
-trait PromptKnowledgeStore {
+/// Local adapter that bridges `roko_core::KnowledgeQuery` (returns
+/// `serde_json::Value`) to the typed `KnowledgeEntry` interface needed by
+/// prompt assembly.
+trait PromptKnowledgeStore: Send + Sync {
     fn query(&self, topic: &str, limit: usize) -> Vec<KnowledgeEntry>;
 }
 
+/// Blanket impl: any `KnowledgeQuery` can serve as a `PromptKnowledgeStore`
+/// by deserializing the JSON values back into `KnowledgeEntry`.
 impl<T> PromptKnowledgeStore for T
 where
-    T: NeuroStore + Send + Sync,
+    T: roko_core::KnowledgeQuery,
 {
     fn query(&self, topic: &str, limit: usize) -> Vec<KnowledgeEntry> {
-        NeuroStore::query(self, topic, limit).unwrap_or_default()
+        self.query_knowledge(topic, limit)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|v| serde_json::from_value(v).ok())
+            .collect()
     }
 }
+
+// Note: The blanket impl `NeuroStore -> KnowledgeQuery` lives in roko-neuro
+// (next to the NeuroStore trait definition) to satisfy the orphan rule.
 
 /// Service that assembles system prompts via the 9-layer `SystemPromptBuilder`.
 ///
@@ -118,7 +127,7 @@ impl PromptAssemblyService {
     #[must_use]
     pub fn with_knowledge_store<T>(mut self, store: Arc<T>) -> Self
     where
-        T: NeuroStore + Send + Sync + 'static,
+        T: roko_core::KnowledgeQuery + 'static,
     {
         self.knowledge_store = Some(store);
         self
@@ -1040,6 +1049,7 @@ mod tests {
                 cost_usd: 0.01,
                 latency_ms: 1500,
                 success: true,
+                error_class: None,
             })
             .await
             .unwrap();

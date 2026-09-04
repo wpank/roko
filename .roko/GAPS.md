@@ -1016,7 +1016,7 @@ These findings from the audits are not currently tracked as named entries in GAP
 | 8 `#[deprecated]` items with zero callers | Low | Safe to remove outright | cli-audit/23-deprecated-legacy.md |
 | Budget enforcement disabled | Low | `max_plan_usd = 0.0` and `max_turn_usd = 0.0` in default config | cli-audit/21-config-schema.md |
 | `chain` feature never enabled on roko-std | Low | 17 chain tool handlers are compiled out in all default builds | cli-audit/19-feature-flags.md |
-| ~50+ undocumented environment variables | Low | Operator knobs like `ROKO_BUDGET_USD`, `ROKO_SKIP_TESTS`, `ROKO__*` hierarchical overrides | cli-audit/20-environment-variables.md |
+| ~50+ undocumented environment variables | Low | **Mostly resolved**: `env_registry.rs` covers 105+ vars, `roko config env list [--json]` wired, shared parsers and alias deprecation helpers added. Remaining: consumer call-site migration to shared parsers, generated `docs/v2/ENVIRONMENT.md`, and CI source-comparison check. | cli-audit/20-environment-variables.md |
 | ~15 undocumented CLI subcommands/verbs | Low | `roko job match`, `roko do`, hidden deprecated commands, knowledge export/import/backfill-hdc, plan pause/resume/cancel/retry/status/queue | cli-audit/00-main-structure.md |
 
 #### From Engine audit (`tmp/engine-audit/SUMMARY.md`)
@@ -1072,3 +1072,19 @@ Several findings appear independently in multiple audits, indicating high-confid
 - **Scaffold template breakage**: CLI audit identifies 6/9 broken; Engine audit identifies 13 broken templates (wider scope including non-CLI templates)
 - **Graph engine parity**: Engine audit provides the comprehensive gap analysis; CLI audit confirms `--engine graph` silently drops 8 flags; UX parity audit surfaces the lack of Graph-to-TUI event integration
 - **Silent flag handling**: CLI audit finds `--json` ignored by 15+ commands, `--role` hardcoded, `config set --global` discarded; Engine audit finds `--no-replan` and `--skip-validate` dead, 3 model-override names, `--engine graph` drops 8 flags
+
+### 6. Non-plan runtime services migration (#245)
+
+**Status**: Consumer-side adapters landed; builder blocked on #243.
+
+| Item | Status | Subsystem |
+|---|---|---|
+| `runtime_services.rs` in roko-execution with `ExecutionOverrides`, `NonPlanServiceRequest`, validation, and cost/shutdown contracts | Done | roko-execution |
+| `WorkflowServiceAdapter` in run.rs (Lane A) validates against profile matrix then delegates to `ServiceFactory::build` | Done | roko-cli |
+| `ChatSessionServiceAdapter` in chat_session.rs (Lane D1) validates `ChatLight` profile | Done | roko-cli |
+| `AcpSessionServiceAdapter` in runner.rs (Lane D2) validates ACP workflow against profile matrix | Done | roko-acp |
+| Actual `RuntimeServicesBuilder::build()` replacing `ServiceFactory::build` per-call construction | Blocked on #243 | roko-execution |
+| Replace `ChatFeedbackRuntime` per-session construction with builder handle | Blocked on #243 | roko-cli |
+| Replace `SessionManager::provider_health_registry`/`provider_rate_limiter` with builder handle | Blocked on #243 | roko-acp |
+| Conformance tests proving mandatory services active per profile | Partial (unit tests in runtime_services.rs) | roko-execution |
+| Delete duplicate `ServiceFactory::build` calls after full migration | Blocked on #243 | roko-cli, roko-acp |

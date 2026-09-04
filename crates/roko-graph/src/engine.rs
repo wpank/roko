@@ -25,61 +25,66 @@ use crate::types::{EdgeCondition, ExecutionClass, Graph, GraphError, GraphPolicy
 
 // ─── MergeEnqueuer trait ────────────────────────────────────────────────────
 
-/// A merge request produced by the graph engine after a successful plan execution.
-///
-/// This mirrors the live runner's merge request but lives in roko-graph to
-/// avoid a circular dependency from the graph layer into CLI orchestration.
-/// The orchestrator's runner bridges this to the real `MergeQueue` via the
-/// [`MergeEnqueuer`] trait.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MergeRequest {
-    /// Plan identifier (typically the graph name).
-    pub plan_id: String,
-    /// Branch name to merge from.
-    pub branch_name: String,
-    /// Files changed by this plan execution.
-    pub files_changed: Vec<String>,
-    /// Merge priority (higher merges first).
-    pub priority: u32,
-}
-
-/// Trait for enqueueing merge requests after graph execution.
-///
-/// The graph engine holds an optional `Arc<dyn MergeEnqueuer>`. After a
-/// successful graph execution that represents a plan, the engine calls
-/// [`MergeEnqueuer::enqueue`] with the plan's changed files.
-///
-/// Implement this trait to bridge to your merge queue implementation
-/// (e.g., the CLI runner's `MergeQueue`).
-pub trait MergeEnqueuer: Send + Sync + std::fmt::Debug {
-    /// Enqueue a merge request. Returns `true` if the request was accepted.
-    fn enqueue(&self, request: MergeRequest) -> bool;
-}
+// MergeRequest and MergeEnqueuer are now defined in delivery.rs. Re-export
+// them here for backward compatibility with existing callers.
+pub use crate::delivery::{MergeEnqueuer, MergeRequest};
 
 // ─── GraphSnapshot ──────────────────────────────────────────────────────────
 
-/// Serializable snapshot of a graph execution in progress or completed.
+/// Serializable snapshot of a graph execution in progress or completed (v2).
 ///
-/// Captures per-node status, Activity node outputs, and policy so the engine
-/// can be resumed from this point. Only Activity node outputs are included --
-/// Workflow node outputs are re-derived on resume.
+/// Captures per-node status, Activity node outputs, policy, budget state, and
+/// a stable graph fingerprint so the engine can be resumed safely. Only
+/// Activity node outputs are included -- Workflow node outputs are re-derived
+/// on resume.
+///
+/// V2 adds `schema_version`, `graph_fingerprint`, budget tracking fields, and
+/// `last_event_seq` for monotonic event replay.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GraphSnapshot {
+pub struct GraphSnapshotV2 {
+    /// On-disk schema version. Always `2` for this struct.
+    #[serde(default = "default_snapshot_schema_version")]
+    pub schema_version: u8,
     /// Name of the graph.
     pub graph_name: String,
     /// Graph ID (from metadata).
     pub graph_id: String,
+    /// Stable BLAKE3 fingerprint of the execution-relevant graph definition.
+    /// Used to reject resume after graph definition or policy drift.
+    #[serde(default)]
+    pub graph_fingerprint: String,
     /// Per-node execution status at snapshot time.
     pub node_statuses: HashMap<String, SerializableNodeStatus>,
     /// Activity node outputs. Workflow nodes are excluded (re-derived on resume).
     pub node_outputs: HashMap<String, Vec<SerializableSignal>>,
     /// Hot Graph tick count at snapshot time.
     pub tick_count: u64,
+    /// Cumulative budget spent in micro-USD (1 USD = 1_000_000).
+    #[serde(default)]
+    pub budget_spent_micro_usd: u64,
+    /// Budget reserved but not yet settled in micro-USD.
+    #[serde(default)]
+    pub budget_reserved_micro_usd: u64,
+    /// Monotonic event sequence number at snapshot time. Replay must not emit
+    /// events with sequence numbers at or below this value.
+    #[serde(default)]
+    pub last_event_seq: u64,
     /// Unix milliseconds when the snapshot was captured.
     pub created_at_ms: i64,
     /// Graph policy preserved for resume.
     pub policy: GraphPolicy,
 }
+
+/// Current schema version for [`GraphSnapshotV2`].
+pub const GRAPH_SNAPSHOT_SCHEMA_VERSION: u8 = 2;
+
+fn default_snapshot_schema_version() -> u8 {
+    GRAPH_SNAPSHOT_SCHEMA_VERSION
+}
+
+/// Primary snapshot type. Callers use this alias; the underlying versioned
+/// struct name is kept for migration clarity.
+pub type GraphSnapshot = GraphSnapshotV2;
 
 /// Serializable node status (mirrors [`NodeStatus`] but with serde support).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,12 +120,28 @@ impl From<NodeStatus> for SerializableNodeStatus {
 impl From<SerializableNodeStatus> for NodeStatus {
     fn from(s: SerializableNodeStatus) -> Self {
         match s {
-            SerializableNodeStatus::Pending | SerializableNodeStatus::Running => Self::Pending,
+            SerializableNodeStatus::Pending => Self::Pending,
+            // Running is preserved so a registered reconciliation owner can
+            // decide how to handle it, rather than blindly resetting to Pending.
+            SerializableNodeStatus::Running => Self::Running,
             SerializableNodeStatus::Complete => Self::Complete,
             SerializableNodeStatus::Failed => Self::Failed,
             SerializableNodeStatus::Skipped => Self::Skipped,
             SerializableNodeStatus::ConditionSkipped => Self::ConditionSkipped,
         }
+    }
+}
+
+/// Reconcile an ambiguous `Running` status from a restored snapshot.
+///
+/// Graph callers that do not have a registered reconciliation owner should
+/// call this to convert `Running` to `Pending` before resume. This preserves
+/// backward compatibility for callers that do not implement owner-based
+/// reconciliation.
+pub fn reconcile_running_status(status: SerializableNodeStatus) -> NodeStatus {
+    match status {
+        SerializableNodeStatus::Running => NodeStatus::Pending,
+        other => other.into(),
     }
 }
 
@@ -334,6 +355,19 @@ impl FlowHandle {
     }
 }
 
+/// A graph whose edges have been validated for type-schema compatibility.
+///
+/// Produced by [`GraphEngine::validate_for_start`]. All engine entry points
+/// (`execute`, `execute_parallel`, `execute_at_tick`, `execute_parallel_at_tick`,
+/// `resume_from`, `start`) require this proof token so validation cannot be
+/// accidentally skipped.
+///
+/// This is a zero-cost wrapper; it borrows the engine that already owns the graph.
+#[derive(Debug)]
+pub struct ValidatedGraph {
+    _private: (),
+}
+
 /// The graph execution engine. Holds a graph and registry, executing nodes
 /// sequentially or in bounded parallel topological waves according to policy.
 pub struct GraphEngine {
@@ -355,8 +389,19 @@ pub struct GraphEngine {
     merge_queue: Option<Arc<dyn MergeEnqueuer>>,
     /// Optional passive lifecycle-event sink for the telemetry Lens runtime.
     telemetry: Option<Arc<dyn TelemetryEventSink>>,
+    /// Optional graph execution event sink (#246).
+    ///
+    /// When present, all execution paths (sequential, parallel, `start()`,
+    /// resume, Hot Graph) emit rich lifecycle events via a shared helper.
+    /// `TelemetryEventSink` is kept unchanged; the engine emits to both sinks.
+    event_sink: Option<Arc<dyn crate::events::GraphEventSink>>,
+    /// Monotonic sequence counter for graph event emission.
+    event_seq: crate::events::EventSeqCounter,
     /// Last complete per-node outputs for stateful Hot Graph ticks.
     tick_state: parking_lot::Mutex<HashMap<NodeId, Vec<roko_core::Signal>>>,
+    /// Set to `true` after [`validate_for_start`] succeeds, so Hot Graph tick
+    /// loops do not re-validate on every iteration.
+    pre_validated: std::sync::atomic::AtomicBool,
 }
 
 impl GraphEngine {
@@ -371,7 +416,10 @@ impl GraphEngine {
             replayer: None,
             merge_queue: None,
             telemetry: None,
+            event_sink: None,
+            event_seq: crate::events::EventSeqCounter::new(),
             tick_state: parking_lot::Mutex::new(HashMap::new()),
+            pre_validated: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -456,7 +504,69 @@ impl GraphEngine {
         self
     }
 
+    /// Attach a graph execution event sink (#246).
+    ///
+    /// When present, all execution paths emit rich lifecycle events via a
+    /// shared helper. `TelemetryEventSink` is kept unchanged; the engine
+    /// emits to both sinks independently.
+    #[must_use]
+    pub fn with_event_sink(mut self, sink: Arc<dyn crate::events::GraphEventSink>) -> Self {
+        self.event_sink = Some(sink);
+        self
+    }
+
+    /// Return a reference to the graph event sequence counter.
+    ///
+    /// Useful for callers that need to pre-allocate sequence numbers or
+    /// inspect the current sequence state.
+    #[must_use]
+    pub fn event_seq(&self) -> &crate::events::EventSeqCounter {
+        &self.event_seq
+    }
+
+    /// Validate the graph's edges for type-schema compatibility and return
+    /// a [`ValidatedGraph`] proof token.
+    ///
+    /// This performs side-effect-free introspection via [`CellDescriptor`]
+    /// metadata in the registry. No Cells are constructed. The validation
+    /// is performed once per start/resume, not on every node dispatch.
+    ///
+    /// All entry points (`execute`, `execute_parallel`, `execute_at_tick`,
+    /// `execute_parallel_at_tick`, `resume_from`, `start`) require the
+    /// returned token so validation cannot be accidentally skipped.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GraphError::EdgeValidationFailed`] if any edge has
+    /// incompatible type schemas between its source output and target input.
+    /// The error includes the count and the first mismatch description.
+    ///
+    /// Returns [`GraphError::InvalidGraph`] if a production start encounters
+    /// a graph containing test-stub descriptors.
+    pub fn validate_for_start(&self) -> Result<ValidatedGraph, GraphError> {
+        // Skip if already validated (Hot Graph tick loops call this path once).
+        if self.pre_validated.load(Ordering::Acquire) {
+            return Ok(ValidatedGraph { _private: () });
+        }
+
+        // Validate edge type compatibility using descriptor introspection.
+        let edge_errors = self.graph.validate_edges(&self.registry);
+        if !edge_errors.is_empty() {
+            let first = edge_errors[0].to_string();
+            return Err(GraphError::EdgeValidationFailed {
+                count: edge_errors.len(),
+                first_error: first,
+            });
+        }
+
+        self.pre_validated.store(true, Ordering::Release);
+        Ok(ValidatedGraph { _private: () })
+    }
+
     /// Execute the graph using the configured concurrency policy.
+    ///
+    /// Validates all edges for type-schema compatibility before executing any
+    /// node. If validation fails, returns immediately without spawning work.
     ///
     /// Each node is instantiated from the registry, executed with inputs from
     /// upstream nodes, and its outputs are stored for downstream consumption.
@@ -472,24 +582,38 @@ impl GraphEngine {
     /// Workflow nodes always re-execute regardless of recorder/replayer state.
     ///
     /// # Errors
-    /// Returns `GraphError::CycleDetected` if the graph contains a cycle, or
+    /// Returns `GraphError::EdgeValidationFailed` if edges have incompatible schemas,
+    /// `GraphError::CycleDetected` if the graph contains a cycle, or
     /// `GraphError::UnknownCellType` if a node references an unregistered cell type.
     pub async fn execute(&self, ctx: &CellContext) -> Result<GraphOutput, GraphError> {
+        let _validated = self.validate_for_start()?;
         if self.graph.policy.max_concurrent_nodes > 1 {
-            self.execute_parallel_at_tick(ctx, 0).await
+            self.execute_parallel_at_tick_validated(ctx, 0).await
         } else {
             // tick = 0 for one-shot (non-Hot) graph executions.
-            self.execute_at_tick(ctx, 0).await
+            self.execute_at_tick_validated(ctx, 0).await
         }
     }
 
     /// Execute the graph at a specific tick index.
     ///
-    /// Used internally by [`GraphEngine::execute`] (tick 0) and by Hot Graph
+    /// Validates all edges for type-schema compatibility before executing any
+    /// node. Used internally by [`GraphEngine::execute`] (tick 0) and by Hot Graph
     /// tick loops (tick N). The tick is threaded through to the recorder/replayer
     /// so multi-tick runs can store and retrieve per-tick Activity outputs.
     #[allow(clippy::too_many_lines)]
     pub async fn execute_at_tick(
+        &self,
+        ctx: &CellContext,
+        tick: u64,
+    ) -> Result<GraphOutput, GraphError> {
+        let _validated = self.validate_for_start()?;
+        self.execute_at_tick_validated(ctx, tick).await
+    }
+
+    /// Internal: execute at tick after validation has been performed.
+    #[allow(clippy::too_many_lines)]
+    async fn execute_at_tick_validated(
         &self,
         ctx: &CellContext,
         tick: u64,
@@ -809,6 +933,9 @@ impl GraphEngine {
 
     /// Execute the graph with parallel node execution within topological waves.
     ///
+    /// Validates all edges for type-schema compatibility before executing any
+    /// node.
+    ///
     /// Nodes are grouped into waves using [`topological_waves`]. Within each
     /// wave, nodes execute concurrently via `tokio::task::JoinSet`, limited by
     /// [`GraphPolicy::max_concurrent_nodes`] through a [`tokio::sync::Semaphore`].
@@ -818,7 +945,8 @@ impl GraphEngine {
     /// strategy is `FailFast`, remaining waves are skipped.
     ///
     /// # Errors
-    /// Returns `GraphError::CycleDetected` if the graph contains a cycle, or
+    /// Returns `GraphError::EdgeValidationFailed` if edges have incompatible schemas,
+    /// `GraphError::CycleDetected` if the graph contains a cycle, or
     /// `GraphError::UnknownCellType` if a node references an unregistered cell type.
     #[allow(clippy::too_many_lines)]
     pub async fn execute_parallel(&self, ctx: &CellContext) -> Result<GraphOutput, GraphError> {
@@ -827,10 +955,22 @@ impl GraphEngine {
 
     /// Execute bounded parallel topological waves at a specific Hot Graph tick.
     ///
-    /// The tick is part of Activity replay/record identity; keeping it explicit
-    /// prevents multi-tick runs from reusing tick-zero evidence.
+    /// Validates all edges for type-schema compatibility before executing any
+    /// node. The tick is part of Activity replay/record identity; keeping it
+    /// explicit prevents multi-tick runs from reusing tick-zero evidence.
     #[allow(clippy::too_many_lines)]
     pub async fn execute_parallel_at_tick(
+        &self,
+        ctx: &CellContext,
+        tick: u64,
+    ) -> Result<GraphOutput, GraphError> {
+        let _validated = self.validate_for_start()?;
+        self.execute_parallel_at_tick_validated(ctx, tick).await
+    }
+
+    /// Internal: execute parallel at tick after validation has been performed.
+    #[allow(clippy::too_many_lines)]
+    async fn execute_parallel_at_tick_validated(
         &self,
         ctx: &CellContext,
         tick: u64,
@@ -1217,6 +1357,24 @@ impl GraphEngine {
         node_outputs: &HashMap<NodeId, Vec<roko_core::Signal>>,
         tick: u64,
     ) -> GraphSnapshot {
+        self.snapshot_with_budget(node_statuses, node_outputs, tick, 0, 0, 0)
+    }
+
+    /// Capture a serializable snapshot with budget and event sequence state.
+    ///
+    /// Like [`snapshot`](Self::snapshot) but records cumulative spend,
+    /// reservations, and the last emitted event sequence number for monotonic
+    /// replay guarantees.
+    #[must_use]
+    pub fn snapshot_with_budget(
+        &self,
+        node_statuses: &HashMap<NodeId, NodeStatus>,
+        node_outputs: &HashMap<NodeId, Vec<roko_core::Signal>>,
+        tick: u64,
+        budget_spent_micro_usd: u64,
+        budget_reserved_micro_usd: u64,
+        last_event_seq: u64,
+    ) -> GraphSnapshot {
         let mut snap_statuses = HashMap::new();
         for (id, status) in node_statuses {
             snap_statuses.insert(id.clone(), SerializableNodeStatus::from(*status));
@@ -1247,12 +1405,20 @@ impl GraphEngine {
             .unwrap_or_default()
             .as_millis() as i64;
 
+        let graph_fingerprint =
+            crate::fingerprint::graph_execution_fingerprint(&self.graph).unwrap_or_default();
+
         GraphSnapshot {
+            schema_version: GRAPH_SNAPSHOT_SCHEMA_VERSION,
             graph_name: self.graph.metadata.name.clone(),
             graph_id: self.graph.metadata.name.clone(),
+            graph_fingerprint,
             node_statuses: snap_statuses,
             node_outputs: snap_outputs,
             tick_count: tick,
+            budget_spent_micro_usd,
+            budget_reserved_micro_usd,
+            last_event_seq,
             created_at_ms: now,
             policy: self.graph.policy.clone(),
         }
@@ -1260,12 +1426,16 @@ impl GraphEngine {
 
     /// Resume a graph engine from a previously captured snapshot.
     ///
+    /// Validates all edges for type-schema compatibility before resuming any
+    /// node execution.
+    ///
     /// Activity nodes that were `Complete` are restored without re-execution.
     /// Completed Workflow nodes are re-derived because snapshots intentionally
     /// omit their outputs. Pending and Running nodes are also re-executed.
     ///
     /// # Errors
-    /// Returns an error if the graph contains a cycle or references unknown cell types.
+    /// Returns `GraphError::EdgeValidationFailed` if edges have incompatible schemas,
+    /// or an error if the graph contains a cycle or references unknown cell types.
     #[allow(clippy::too_many_lines)]
     pub async fn resume_from(
         snapshot: &GraphSnapshot,
@@ -1273,6 +1443,16 @@ impl GraphEngine {
         registry: CellRegistry,
         ctx: &CellContext,
     ) -> Result<GraphOutput, GraphError> {
+        // Validate edges before any resumption work.
+        let edge_errors = graph.validate_edges(&registry);
+        if !edge_errors.is_empty() {
+            let first = edge_errors[0].to_string();
+            return Err(GraphError::EdgeValidationFailed {
+                count: edge_errors.len(),
+                first_error: first,
+            });
+        }
+
         let start = Instant::now();
         let graph_name = graph.metadata.name.clone();
 
@@ -1300,8 +1480,10 @@ impl GraphEngine {
 
             // Restore terminal Activity and route statuses. Workflow outputs
             // are not snapshotted, so completed Workflow nodes re-execute.
+            // Running nodes without a registered reconciliation owner are
+            // treated as Pending and re-executed.
             if let Some(snap_status) = snapshot.node_statuses.get(node_id) {
-                let status: NodeStatus = (*snap_status).into();
+                let status: NodeStatus = reconcile_running_status(*snap_status);
                 if status == NodeStatus::Complete
                     && node.execution_class == ExecutionClass::Activity
                 {
@@ -1473,6 +1655,10 @@ impl GraphEngine {
     /// Start the graph execution on a background tokio task, returning a
     /// [`FlowHandle`] immediately.
     ///
+    /// Validates all edges for type-schema compatibility before spawning the
+    /// background task. If validation fails, the `FlowHandle` is returned with
+    /// the failure immediately available via `await_completion`.
+    ///
     /// This is the async alternative to [`GraphEngine::execute`]. The caller
     /// receives a handle while execution continues in the background. Use
     /// [`FlowHandle::await_completion`] to wait for the final result, or
@@ -1481,6 +1667,23 @@ impl GraphEngine {
     /// A unique `run_id` is generated automatically using a random UUID-like
     /// string derived from the current timestamp and a counter.
     pub fn start(self, ctx: CellContext) -> FlowHandle {
+        // Validate before spawning work. If validation fails, we still return
+        // a FlowHandle but the result will be None (the task logs the error).
+        if let Err(e) = self.validate_for_start() {
+            warn!(error = %e, "graph edge validation failed before start");
+            let graph_id = self.graph.metadata.name.clone();
+            let cancel = CancellationToken::new();
+            return FlowHandle {
+                run_id: format!("flow-validation-failed-{graph_id}"),
+                graph_id,
+                started_at: Instant::now(),
+                node_statuses: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+                budget_consumed: Arc::new(AtomicU64::new(0)),
+                cancel,
+                result: Arc::new(parking_lot::Mutex::new(None)),
+                join_handle: parking_lot::Mutex::new(None),
+            };
+        }
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
         let run_id = format!(
@@ -1870,6 +2073,16 @@ impl GraphEngine {
         }
     }
 
+    /// Emit a graph execution event to the optional sink (#246).
+    ///
+    /// This is the single emission path shared by sequential, parallel,
+    /// `start()`, resume, and Hot Graph. It does NOT replace telemetry;
+    /// the engine emits to both sinks independently.
+    #[allow(dead_code)]
+    async fn emit_graph_event(&self, event: &crate::events::GraphExecutionEvent) {
+        crate::events::emit_graph_event(self.event_sink.as_ref(), event).await;
+    }
+
     /// Extract `files_changed` from completed node outputs.
     ///
     /// Convention: nodes that modify files include a `"files_changed"` tag in
@@ -2174,6 +2387,7 @@ async fn emit_telemetry_to(
 /// - `security.verify.*` -- independently hosted corrigibility Verify Cells
 /// - `security.immune.*` -- ordered runtime immune-pipeline Cells
 /// - `noop` -- `NoopCell` (passes input through unchanged, useful for testing)
+#[allow(clippy::too_many_lines)]
 #[must_use]
 pub fn default_registry() -> CellRegistry {
     let mut registry = CellRegistry::new();
@@ -2207,31 +2421,97 @@ pub fn default_registry() -> CellRegistry {
         ))
     });
 
-    registry.register("noop", |_config| Box::new(NoopCell::default()));
+    // All typed registrations below use CellDescriptor for side-effect-free
+    // edge validation (backlog #271).
+    use crate::registry::CellDescriptor;
+    use roko_core::{Kind, TypeSchema};
 
-    // Cognitive loop cells (E22-T01): real typed Cell implementations.
-    registry.register("sense", |_config| {
-        Box::new(crate::cells::cognitive::SenseCell::new())
-    });
-    registry.register("assess", |_config| {
-        Box::new(crate::cells::cognitive::AssessCell::new())
-    });
+    registry.register_with_descriptor(
+        "noop",
+        CellDescriptor {
+            id: "noop".to_string(),
+            version: (0, 1, 0),
+            input_schema: None,
+            output_schema: None,
+            is_stub: true,
+        },
+        |_config| Box::new(NoopCell::default()),
+    );
+
+    // Cognitive loop cells (E22-T01): real typed Cell implementations
+    // with explicit CellDescriptors for side-effect-free edge validation.
+
+    registry.register_with_descriptor(
+        "sense",
+        CellDescriptor::new(
+            "sense",
+            (0, 1, 0),
+            None,
+            Some(TypeSchema::OfKind(Kind::AgentMessage)),
+        ),
+        |_config| Box::new(crate::cells::cognitive::SenseCell::new()),
+    );
+    registry.register_with_descriptor(
+        "assess",
+        CellDescriptor::new(
+            "assess",
+            (0, 1, 0),
+            Some(TypeSchema::OfKind(Kind::AgentMessage)),
+            Some(TypeSchema::OfKind(Kind::AgentMessage)),
+        ),
+        |_config| Box::new(crate::cells::cognitive::AssessCell::new()),
+    );
     // "score" is an alias for "assess" in legacy graph definitions.
-    registry.register("score", |_config| {
-        Box::new(crate::cells::cognitive::AssessCell::new())
-    });
-    registry.register("compose", |_config| {
-        Box::new(crate::cells::cognitive::CognitiveComposeCell::new())
-    });
-    registry.register("act", |_config| {
-        Box::new(crate::cells::cognitive::ActCell::new())
-    });
-    registry.register("verify", |_config| {
-        Box::new(crate::cells::cognitive::VerifyCell::new())
-    });
-    registry.register("persist", |_config| {
-        Box::new(crate::cells::cognitive::PersistCell::new())
-    });
+    registry.register_with_descriptor(
+        "score",
+        CellDescriptor::new(
+            "score",
+            (0, 1, 0),
+            Some(TypeSchema::OfKind(Kind::AgentMessage)),
+            Some(TypeSchema::OfKind(Kind::AgentMessage)),
+        ),
+        |_config| Box::new(crate::cells::cognitive::AssessCell::new()),
+    );
+    registry.register_with_descriptor(
+        "compose",
+        CellDescriptor::new(
+            "compose",
+            (0, 1, 0),
+            Some(TypeSchema::OfKind(Kind::AgentMessage)),
+            Some(TypeSchema::OfKind(Kind::Prompt)),
+        ),
+        |_config| Box::new(crate::cells::cognitive::CognitiveComposeCell::new()),
+    );
+    registry.register_with_descriptor(
+        "act",
+        CellDescriptor::new(
+            "act",
+            (0, 1, 0),
+            Some(TypeSchema::OfKind(Kind::Prompt)),
+            Some(TypeSchema::OfKind(Kind::Episode)),
+        ),
+        |_config| Box::new(crate::cells::cognitive::ActCell::new()),
+    );
+    registry.register_with_descriptor(
+        "verify",
+        CellDescriptor::new(
+            "verify",
+            (0, 1, 0),
+            Some(TypeSchema::OfKind(Kind::Episode)),
+            Some(TypeSchema::OfKind(Kind::GateVerdict)),
+        ),
+        |_config| Box::new(crate::cells::cognitive::VerifyCell::new()),
+    );
+    registry.register_with_descriptor(
+        "persist",
+        CellDescriptor::new(
+            "persist",
+            (0, 1, 0),
+            Some(TypeSchema::OfKind(Kind::GateVerdict)),
+            None,
+        ),
+        |_config| Box::new(crate::cells::cognitive::PersistCell::new()),
+    );
     registry.register("react", |_config| {
         Box::new(crate::cells::cognitive::ReactCell::new())
     });
@@ -2247,7 +2527,14 @@ pub fn default_registry() -> CellRegistry {
     // graph definitions that still reference old names (signal-reader, etc.).
     for name in crate::cells::stubs::COGNITIVE_LOOP_STUBS {
         let cell_name = (*name).to_string();
-        registry.register(name, move |_config| {
+        let desc = CellDescriptor {
+            id: cell_name.clone(),
+            version: (0, 1, 0),
+            input_schema: None,
+            output_schema: None,
+            is_stub: true,
+        };
+        registry.register_with_descriptor(name, desc, move |_config| {
             Box::new(crate::cells::stubs::PassthroughCell::new(cell_name.clone()))
         });
     }
@@ -3721,5 +4008,481 @@ to = "b"
         let engine = GraphEngine::new(graph, noop_registry());
         let issues = engine.validate();
         assert!(issues.is_empty());
+    }
+
+    // ─── validate_for_start / graph_validation tests ──────────────────────────
+
+    mod graph_validation {
+        use super::*;
+        use crate::GraphMetadata;
+        use crate::registry::CellDescriptor;
+        use roko_core::{Kind, TypeSchema};
+
+        /// Build a minimal registry with a single untyped noop entry.
+        fn untyped_registry() -> CellRegistry {
+            let mut reg = CellRegistry::new();
+            reg.register("noop", |_| Box::new(NoopCell::default()));
+            reg
+        }
+
+        /// Build a registry with typed descriptors for edge validation.
+        fn typed_registry() -> CellRegistry {
+            let mut reg = CellRegistry::new();
+            reg.register_with_descriptor(
+                "agent-msg-source",
+                CellDescriptor::new(
+                    "agent-msg-source",
+                    (1, 0, 0),
+                    None,
+                    Some(TypeSchema::OfKind(Kind::AgentMessage)),
+                ),
+                |_| {
+                    Box::new(NoopCell::with_id_and_name(
+                        "agent-msg-source",
+                        "AgentMsgSource",
+                    ))
+                },
+            );
+            reg.register_with_descriptor(
+                "agent-msg-sink",
+                CellDescriptor::new(
+                    "agent-msg-sink",
+                    (1, 0, 0),
+                    Some(TypeSchema::OfKind(Kind::AgentMessage)),
+                    None,
+                ),
+                |_| Box::new(NoopCell::with_id_and_name("agent-msg-sink", "AgentMsgSink")),
+            );
+            reg.register_with_descriptor(
+                "episode-sink",
+                CellDescriptor::new(
+                    "episode-sink",
+                    (1, 0, 0),
+                    Some(TypeSchema::OfKind(Kind::Episode)),
+                    None,
+                ),
+                |_| Box::new(NoopCell::with_id_and_name("episode-sink", "EpisodeSink")),
+            );
+            reg.register("noop", |_| Box::new(NoopCell::default()));
+            reg
+        }
+
+        fn make_node(id: &str, cell_type: &str) -> crate::types::Node {
+            crate::types::Node {
+                id: id.to_string(),
+                cell_type: cell_type.to_string(),
+                config: toml::Value::Table(toml::map::Map::new()),
+                inputs: vec![],
+                outputs: vec![],
+                execution_class: crate::types::ExecutionClass::default(),
+            }
+        }
+
+        fn make_edge(from: &str, to: &str) -> crate::types::Edge {
+            crate::types::Edge {
+                from: from.to_string(),
+                to: to.to_string(),
+                condition: None,
+            }
+        }
+
+        #[test]
+        fn graph_validation_compatible_edges_pass() {
+            let registry = typed_registry();
+            let mut graph = Graph::new(GraphMetadata {
+                name: "compatible".to_string(),
+                ..Default::default()
+            });
+            graph
+                .add_node(make_node("src", "agent-msg-source"))
+                .unwrap();
+            graph.add_node(make_node("tgt", "agent-msg-sink")).unwrap();
+            graph.add_edge(make_edge("src", "tgt")).unwrap();
+
+            let engine = GraphEngine::new(graph, registry);
+            let result = engine.validate_for_start();
+            assert!(result.is_ok(), "compatible typed edges should pass");
+        }
+
+        #[test]
+        fn graph_validation_mismatched_types_fail() {
+            let registry = typed_registry();
+            let mut graph = Graph::new(GraphMetadata {
+                name: "mismatch".to_string(),
+                ..Default::default()
+            });
+            graph
+                .add_node(make_node("src", "agent-msg-source"))
+                .unwrap();
+            graph.add_node(make_node("tgt", "episode-sink")).unwrap();
+            graph.add_edge(make_edge("src", "tgt")).unwrap();
+
+            let engine = GraphEngine::new(graph, registry);
+            let result = engine.validate_for_start();
+            assert!(result.is_err(), "incompatible types should fail validation");
+            let err = result.unwrap_err();
+            assert!(
+                matches!(err, GraphError::EdgeValidationFailed { count: 1, .. }),
+                "expected EdgeValidationFailed, got: {err:?}"
+            );
+        }
+
+        #[test]
+        fn graph_validation_missing_registry_entry_fails() {
+            let registry = CellRegistry::new(); // empty
+            let mut graph = Graph::new(GraphMetadata {
+                name: "missing".to_string(),
+                ..Default::default()
+            });
+            graph.add_node(make_node("a", "nonexistent")).unwrap();
+            graph.add_node(make_node("b", "also-nonexistent")).unwrap();
+            graph.add_edge(make_edge("a", "b")).unwrap();
+
+            let engine = GraphEngine::new(graph, registry);
+            let result = engine.validate_for_start();
+            assert!(result.is_err());
+            let err = result.unwrap_err();
+            assert!(
+                matches!(err, GraphError::EdgeValidationFailed { .. }),
+                "expected EdgeValidationFailed, got: {err:?}"
+            );
+        }
+
+        #[test]
+        fn graph_validation_untyped_edges_always_pass() {
+            let registry = untyped_registry();
+            let mut graph = Graph::new(GraphMetadata {
+                name: "untyped".to_string(),
+                ..Default::default()
+            });
+            graph.add_node(make_node("a", "noop")).unwrap();
+            graph.add_node(make_node("b", "noop")).unwrap();
+            graph.add_edge(make_edge("a", "b")).unwrap();
+
+            let engine = GraphEngine::new(graph, registry);
+            let result = engine.validate_for_start();
+            assert!(
+                result.is_ok(),
+                "untyped (None schema) edges should always pass"
+            );
+        }
+
+        #[test]
+        fn graph_validation_no_edges_passes() {
+            let registry = untyped_registry();
+            let mut graph = Graph::new(GraphMetadata {
+                name: "no-edges".to_string(),
+                ..Default::default()
+            });
+            graph.add_node(make_node("a", "noop")).unwrap();
+            graph.add_node(make_node("b", "noop")).unwrap();
+            // No edges at all
+
+            let engine = GraphEngine::new(graph, registry);
+            let result = engine.validate_for_start();
+            assert!(result.is_ok(), "graph with no edges should pass");
+        }
+
+        #[test]
+        fn graph_validation_error_includes_node_names() {
+            let registry = typed_registry();
+            let mut graph = Graph::new(GraphMetadata {
+                name: "names".to_string(),
+                ..Default::default()
+            });
+            graph
+                .add_node(make_node("my-source", "agent-msg-source"))
+                .unwrap();
+            graph
+                .add_node(make_node("my-target", "episode-sink"))
+                .unwrap();
+            graph.add_edge(make_edge("my-source", "my-target")).unwrap();
+
+            let engine = GraphEngine::new(graph, registry);
+            let err = engine.validate_for_start().unwrap_err();
+            let display = err.to_string();
+            assert!(
+                display.contains("my-source") || display.contains("my-target"),
+                "error should include node names: {display}"
+            );
+        }
+
+        #[test]
+        fn graph_validation_collects_all_errors() {
+            let registry = typed_registry();
+            let mut graph = Graph::new(GraphMetadata {
+                name: "multi-error".to_string(),
+                ..Default::default()
+            });
+            graph
+                .add_node(make_node("src", "agent-msg-source"))
+                .unwrap();
+            graph.add_node(make_node("tgt1", "episode-sink")).unwrap();
+            graph.add_node(make_node("tgt2", "episode-sink")).unwrap();
+            graph.add_edge(make_edge("src", "tgt1")).unwrap();
+            graph.add_edge(make_edge("src", "tgt2")).unwrap();
+
+            let engine = GraphEngine::new(graph, registry);
+            let err = engine.validate_for_start().unwrap_err();
+            assert!(
+                matches!(err, GraphError::EdgeValidationFailed { count: 2, .. }),
+                "expected 2 errors, got: {err:?}"
+            );
+        }
+
+        #[test]
+        fn graph_validation_idempotent_after_success() {
+            let registry = untyped_registry();
+            let mut graph = Graph::new(GraphMetadata {
+                name: "idempotent".to_string(),
+                ..Default::default()
+            });
+            graph.add_node(make_node("a", "noop")).unwrap();
+            graph.add_node(make_node("b", "noop")).unwrap();
+            graph.add_edge(make_edge("a", "b")).unwrap();
+
+            let engine = GraphEngine::new(graph, registry);
+            // First call validates.
+            assert!(engine.validate_for_start().is_ok());
+            // Second call returns immediately (cached).
+            assert!(engine.validate_for_start().is_ok());
+        }
+
+        #[test]
+        fn graph_validation_test_stub_descriptor() {
+            let mut registry = CellRegistry::new();
+            registry.register_with_descriptor(
+                "stub-cell",
+                CellDescriptor::test_stub("stub-cell"),
+                |_| Box::new(NoopCell::default()),
+            );
+
+            let mut graph = Graph::new(GraphMetadata {
+                name: "stub".to_string(),
+                ..Default::default()
+            });
+            graph.add_node(make_node("a", "stub-cell")).unwrap();
+            graph.add_node(make_node("b", "stub-cell")).unwrap();
+            graph.add_edge(make_edge("a", "b")).unwrap();
+
+            let engine = GraphEngine::new(graph, registry);
+            // Stub descriptors have no schemas, so edge validation passes.
+            assert!(engine.validate_for_start().is_ok());
+        }
+
+        #[test]
+        fn graph_validation_descriptor_introspection_is_side_effect_free() {
+            use std::sync::atomic::{AtomicU32, Ordering};
+
+            // Track how many times the factory is called.
+            let call_count = Arc::new(AtomicU32::new(0));
+            let count_clone = call_count.clone();
+
+            let mut registry = CellRegistry::new();
+            registry.register_with_descriptor(
+                "tracked",
+                CellDescriptor::new(
+                    "tracked",
+                    (0, 1, 0),
+                    Some(TypeSchema::OfKind(Kind::Task)),
+                    Some(TypeSchema::OfKind(Kind::Episode)),
+                ),
+                move |_| {
+                    count_clone.fetch_add(1, Ordering::Relaxed);
+                    Box::new(NoopCell::default())
+                },
+            );
+
+            let mut graph = Graph::new(GraphMetadata {
+                name: "no-side-effects".to_string(),
+                ..Default::default()
+            });
+            graph.add_node(make_node("a", "tracked")).unwrap();
+            graph.add_node(make_node("b", "tracked")).unwrap();
+            graph.add_edge(make_edge("a", "b")).unwrap();
+
+            let engine = GraphEngine::new(graph, registry);
+            let _ = engine.validate_for_start();
+
+            assert_eq!(
+                call_count.load(Ordering::Relaxed),
+                0,
+                "validate_for_start must not call the cell factory"
+            );
+        }
+
+        #[test]
+        fn graph_validation_default_registry_passes() {
+            // The default registry should produce valid descriptors for all
+            // production cognitive loop edges.
+            let registry = default_registry();
+
+            // Build a cognitive loop graph: sense -> assess -> compose -> act ->
+            //   verify -> persist -> react
+            let mut graph = Graph::new(GraphMetadata {
+                name: "cognitive-loop".to_string(),
+                ..Default::default()
+            });
+            for (id, ct) in [
+                ("s", "sense"),
+                ("a", "assess"),
+                ("c", "compose"),
+                ("x", "act"),
+                ("v", "verify"),
+                ("p", "persist"),
+                ("r", "react"),
+            ] {
+                graph.add_node(make_node(id, ct)).unwrap();
+            }
+            for (from, to) in [("s", "a"), ("a", "c"), ("c", "x"), ("x", "v"), ("v", "p")] {
+                graph.add_edge(make_edge(from, to)).unwrap();
+            }
+
+            let engine = GraphEngine::new(graph, registry);
+            let result = engine.validate_for_start();
+            assert!(
+                result.is_ok(),
+                "default registry cognitive loop should validate: {:?}",
+                result.err()
+            );
+        }
+    }
+
+    // ─── GraphSnapshotV2 tests ──────────────────────────────────────────
+
+    #[test]
+    fn snapshot_v2_serde_roundtrip() {
+        let snap = GraphSnapshotV2 {
+            schema_version: GRAPH_SNAPSHOT_SCHEMA_VERSION,
+            graph_name: "test".into(),
+            graph_id: "test".into(),
+            graph_fingerprint: "abc123".into(),
+            node_statuses: HashMap::from([
+                ("a".into(), SerializableNodeStatus::Complete),
+                ("b".into(), SerializableNodeStatus::Running),
+                ("c".into(), SerializableNodeStatus::Pending),
+            ]),
+            node_outputs: HashMap::new(),
+            tick_count: 5,
+            budget_spent_micro_usd: 123_456,
+            budget_reserved_micro_usd: 50_000,
+            last_event_seq: 42,
+            created_at_ms: 1_000_000,
+            policy: GraphPolicy::default(),
+        };
+
+        let json = serde_json::to_string(&snap).expect("serialize");
+        let deserialized: GraphSnapshotV2 = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(deserialized.schema_version, GRAPH_SNAPSHOT_SCHEMA_VERSION);
+        assert_eq!(deserialized.graph_fingerprint, "abc123");
+        assert_eq!(deserialized.budget_spent_micro_usd, 123_456);
+        assert_eq!(deserialized.budget_reserved_micro_usd, 50_000);
+        assert_eq!(deserialized.last_event_seq, 42);
+        assert_eq!(deserialized.tick_count, 5);
+    }
+
+    #[test]
+    fn snapshot_v2_backward_compat_missing_new_fields() {
+        // Simulate a v1 snapshot (pre-v2) missing the new fields.
+        let json = serde_json::json!({
+            "graph_name": "old",
+            "graph_id": "old",
+            "node_statuses": {},
+            "node_outputs": {},
+            "tick_count": 0,
+            "created_at_ms": 1000,
+            "policy": {
+                "mode": "one_shot",
+                "failure_strategy": "fail_fast",
+                "max_concurrent_nodes": 4
+            }
+        });
+
+        let snap: GraphSnapshotV2 = serde_json::from_value(json).expect("deserialize old format");
+
+        assert_eq!(snap.schema_version, GRAPH_SNAPSHOT_SCHEMA_VERSION);
+        assert!(snap.graph_fingerprint.is_empty());
+        assert_eq!(snap.budget_spent_micro_usd, 0);
+        assert_eq!(snap.budget_reserved_micro_usd, 0);
+        assert_eq!(snap.last_event_seq, 0);
+    }
+
+    #[test]
+    fn running_status_preserved_through_serializable_roundtrip() {
+        let serializable = SerializableNodeStatus::Running;
+        let node_status: NodeStatus = serializable.into();
+        assert_eq!(node_status, NodeStatus::Running);
+    }
+
+    #[test]
+    fn reconcile_running_converts_to_pending() {
+        assert_eq!(
+            reconcile_running_status(SerializableNodeStatus::Running),
+            NodeStatus::Pending
+        );
+    }
+
+    #[test]
+    fn reconcile_complete_stays_complete() {
+        assert_eq!(
+            reconcile_running_status(SerializableNodeStatus::Complete),
+            NodeStatus::Complete
+        );
+    }
+
+    #[test]
+    fn snapshot_type_alias_is_v2() {
+        // Ensure GraphSnapshot and GraphSnapshotV2 are the same type.
+        fn assert_same_type(_snap: GraphSnapshot) {
+            let _v2: GraphSnapshotV2 = _snap;
+        }
+        let snap = GraphSnapshotV2 {
+            schema_version: 2,
+            graph_name: "t".into(),
+            graph_id: "t".into(),
+            graph_fingerprint: String::new(),
+            node_statuses: HashMap::new(),
+            node_outputs: HashMap::new(),
+            tick_count: 0,
+            budget_spent_micro_usd: 0,
+            budget_reserved_micro_usd: 0,
+            last_event_seq: 0,
+            created_at_ms: 0,
+            policy: GraphPolicy::default(),
+        };
+        assert_same_type(snap);
+    }
+
+    #[test]
+    fn snapshot_with_budget_records_all_fields() {
+        let toml_str = r#"
+            [graph]
+            name = "budget-test"
+
+            [[nodes]]
+            id = "n1"
+            cell_type = "noop"
+        "#;
+        let graph = load_from_str(toml_str).expect("parse");
+        let mut registry = CellRegistry::new();
+        registry.register("noop", |_| {
+            Box::new(CaptureCell {
+                received: Arc::new(std::sync::Mutex::new(Vec::new())),
+            })
+        });
+        let engine = GraphEngine::new(graph, registry);
+
+        let statuses = HashMap::from([("n1".to_string(), NodeStatus::Complete)]);
+        let outputs = HashMap::new();
+
+        let snap = engine.snapshot_with_budget(&statuses, &outputs, 3, 100_000, 25_000, 17);
+
+        assert_eq!(snap.schema_version, 2);
+        assert_eq!(snap.budget_spent_micro_usd, 100_000);
+        assert_eq!(snap.budget_reserved_micro_usd, 25_000);
+        assert_eq!(snap.last_event_seq, 17);
+        assert_eq!(snap.tick_count, 3);
+        assert!(!snap.graph_fingerprint.is_empty());
     }
 }

@@ -61,6 +61,8 @@ pub struct OpenClawInferAgent {
     name: String,
     /// Cached state_dir path so `state_dir()` can return `Option<&Path>`.
     state_dir_path: Option<PathBuf>,
+    /// Safety layer for output scrubbing (secret leak prevention).
+    safety: crate::safety::SafetyLayer,
 }
 
 impl OpenClawInferAgent {
@@ -102,6 +104,7 @@ impl OpenClawInferAgent {
             capabilities,
             name: "openclaw-infer".to_string(),
             state_dir_path,
+            safety: crate::safety::SafetyLayer::with_defaults(),
         })
     }
 
@@ -203,7 +206,7 @@ impl Agent for OpenClawInferAgent {
                     if final_output.is_empty() {
                         "(no output from openclaw infer)".to_string()
                     } else {
-                        final_output
+                        self.safety.scrub_text(&final_output)
                     }
                 } else {
                     error_msg.unwrap_or_else(|| "unknown openclaw infer error".to_string())

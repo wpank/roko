@@ -1,10 +1,10 @@
 //! `roko init` template rendering.
-#![allow(dead_code)]
 
 use anyhow::{Context, Result};
 use std::ffi::OsStr;
 
 use roko_cli::config::command_on_path;
+use roko_core::config::GateRungConfig;
 use roko_core::config::schema::RokoConfig;
 
 /// Render the default `roko.toml` template used by `roko init`.
@@ -21,6 +21,7 @@ pub(crate) fn render_init_template(cloud: bool) -> Result<String> {
     if cloud {
         config.server.bind = "0.0.0.0".to_string();
     }
+    config.gates.custom_rungs = profile_gate_rungs(profile.as_deref());
 
     let mut rendered = config
         .to_toml_pretty()
@@ -58,7 +59,9 @@ pub(crate) fn render_init_template(cloud: bool) -> Result<String> {
     out.push_str("tool_format = \"anthropic_blocks\"\n");
     out.push_str("max_tools = 32\n");
 
-    append_verification_gates(&mut out, profile.as_deref());
+    if profile.is_none() {
+        append_no_profile_gate_hint(&mut out);
+    }
 
     if cloud {
         out.push_str("\n# Auto-register webhooks after deploy\n");
@@ -99,50 +102,63 @@ fn detect_init_profile() -> Option<String> {
     None
 }
 
-fn append_verification_gates(out: &mut String, profile: Option<&str>) {
-    out.push_str("\n# -- Verification gates --\n");
+/// Build custom gate rungs for a detected project profile.
+///
+/// These are set on `config.gates.custom_rungs` before serialization so the
+/// `[gates]` table and its `[[gates.rungs]]` entries appear as one canonical
+/// block in the generated `roko.toml`.
+fn profile_gate_rungs(profile: Option<&str>) -> Vec<GateRungConfig> {
     match profile {
-        Some("rust") => {
-            out.push_str("# Rust projects use cargo for compile, test, and lint checks.\n");
-            append_shell_gate(out, "cargo", &["check"], 600_000);
-            append_shell_gate(out, "cargo", &["test"], 600_000);
-            append_shell_gate(out, "cargo", &["clippy"], 600_000);
-        }
-        Some("typescript") => {
-            out.push_str("# TypeScript projects use npx tsc and npm test.\n");
-            append_shell_gate(out, "npx", &["tsc", "--noEmit"], 600_000);
-            append_shell_gate(out, "npm", &["test"], 600_000);
-        }
-        _ => {
-            out.push_str(
-                "# No default gates were written because no supported project profile was supplied.\n",
-            );
-            out.push_str("# Supported profiles: rust, typescript.\n");
-            out.push_str("# Add [[gate]] entries manually to run your own validation commands.\n");
-            out.push_str(
-                "# Or rerun `roko init --profile rust` / `roko init --profile typescript`.\n",
-            );
-        }
+        Some("rust") => vec![
+            GateRungConfig {
+                name: "compile".to_string(),
+                command: "cargo check --workspace".to_string(),
+                timeout_secs: 120,
+                required: true,
+                parallel_with: Vec::new(),
+            },
+            GateRungConfig {
+                name: "test".to_string(),
+                command: "cargo test --workspace".to_string(),
+                timeout_secs: 300,
+                required: true,
+                parallel_with: Vec::new(),
+            },
+            GateRungConfig {
+                name: "lint".to_string(),
+                command: "cargo clippy --workspace --no-deps -- -D warnings".to_string(),
+                timeout_secs: 120,
+                required: true,
+                parallel_with: Vec::new(),
+            },
+        ],
+        Some("typescript") => vec![
+            GateRungConfig {
+                name: "compile".to_string(),
+                command: "npx tsc --noEmit".to_string(),
+                timeout_secs: 120,
+                required: true,
+                parallel_with: Vec::new(),
+            },
+            GateRungConfig {
+                name: "test".to_string(),
+                command: "npm test".to_string(),
+                timeout_secs: 300,
+                required: true,
+                parallel_with: Vec::new(),
+            },
+        ],
+        _ => Vec::new(),
     }
 }
 
-fn append_shell_gate(out: &mut String, program: &str, args: &[&str], timeout_ms: u64) {
-    out.push_str("\n[[gate]]\n");
-    out.push_str("kind = \"shell\"\n");
-    out.push_str("program = \"");
-    out.push_str(program);
-    out.push_str("\"\n");
-    out.push_str("args = [");
-    for (index, arg) in args.iter().enumerate() {
-        if index > 0 {
-            out.push_str(", ");
-        }
-        out.push('"');
-        out.push_str(arg);
-        out.push('"');
-    }
-    out.push_str("]\n");
-    out.push_str("timeout_ms = ");
-    out.push_str(&timeout_ms.to_string());
-    out.push('\n');
+fn append_no_profile_gate_hint(out: &mut String) {
+    out.push_str(
+        "\n# No default gate rungs were written because no supported project profile was supplied.\n",
+    );
+    out.push_str("# Supported profiles: rust, typescript.\n");
+    out.push_str(
+        "# Add [[gates.rungs]] entries under the [gates] table for custom validation commands.\n",
+    );
+    out.push_str("# Or rerun `roko init --profile rust` / `roko init --profile typescript`.\n");
 }

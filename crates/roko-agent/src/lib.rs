@@ -178,10 +178,7 @@ pub use session::{
     AgentInvocationSession, InvocationState, ResumeValidationError, ReuseScope, WarmReusePolicy,
     WarmReuseRequest, fingerprint_text, validate_resume_request,
 };
-pub use streaming::{
-    ClaudeCliParser, OpenAiSseParser, StreamAccumulator, StreamChunk, StreamJsonParser,
-    UnifiedStreamEvent,
-};
+pub use streaming::{ClaudeCliParser, OpenAiSseParser, StreamJsonParser, UnifiedStreamEvent};
 pub use task_runner::{
     AgentEvent, Anomaly, AnomalyDetector, BudgetAction, BudgetGuardrail, ConductorAction,
     ConductorBandit, CostTable, EventBus, ModelPricing, TaskResult, TaskRunner, TaskRunnerError,

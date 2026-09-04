@@ -25,10 +25,7 @@ pub fn render_approval(
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(Span::styled(
-            " Approval Required ",
-            theme.section_header(),
-        ))
+        .title(Span::styled(" Approval Required ", theme.section_header()))
         .title_alignment(Alignment::Center)
         .border_style(theme.danger());
 
@@ -48,10 +45,7 @@ pub fn render_approval(
     // Render the command in a code-block style.
     let code_style = theme.code_block();
     for line in command.lines() {
-        lines.push(Line::from(Span::styled(
-            format!("  {line}"),
-            code_style,
-        )));
+        lines.push(Line::from(Span::styled(format!("  {line}"), code_style)));
     }
 
     lines.push(Line::from(""));

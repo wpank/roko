@@ -143,6 +143,7 @@ fn phase0_cascade_router_observation_roundtrip() {
         previous_model: None,
         plan_context_tokens: None,
         tier_thresholds: None,
+        cfactor: None,
     };
     let result = router.route(&ctx);
     assert!(

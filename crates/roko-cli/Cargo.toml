@@ -59,8 +59,11 @@ roko-conductor = { path = "../roko-conductor" }
 roko-plugin = { path = "../roko-plugin" }
 roko-runtime = { path = "../roko-runtime" }
 roko-serve = { path = "../roko-serve" }
-roko-index = { path = "../roko-index" }
+# SQLite is the canonical index persistence backend (backlog #362).
+# rkyv remains library-only; tree-sitter is disabled/experimental.
+roko-index = { path = "../roko-index", features = ["sqlite"] }
 roko-graph = { path = "../roko-graph" }
+roko-execution = { path = "../roko-execution" }
 roko-chain = { path = "../roko-chain" }
 roko-acp = { path = "../roko-acp", optional = true }
 roko-mcp-github = { path = "../roko-mcp-github" }

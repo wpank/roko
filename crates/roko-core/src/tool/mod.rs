@@ -80,7 +80,7 @@ pub mod transcript;
 
 pub use aliases::{ALIASES, ToolAlias};
 pub use bandit::{ArmEntry, BanditKey, EpsilonGreedyBandit, FormatBandit, ProfileBandit};
-pub use call::{Artifact, ToolCall, ToolError, ToolResult};
+pub use call::{Artifact, ToolCall, ToolError, ToolResult, ToolResultContent};
 pub use def::{ToolCategory, ToolConcurrency, ToolDef, ToolPermission, ToolSchema, ToolSource};
 pub use execution_record::{ToolExecutionEnvelope, ToolExecutionRecord};
 pub use format::{ToolFormat, ToolFormatProfile, profile_for_model};

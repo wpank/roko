@@ -74,7 +74,7 @@ mod tests {
         let fast = async { ToolResult::text("hello") };
         let out = with_timeout(Duration::from_millis(500), fast).await;
         match out {
-            ToolResult::Ok { content, .. } => assert_eq!(content, "hello"),
+            ToolResult::Ok { .. } => assert_eq!(out.text_content(), "hello"),
             other => panic!("expected Ok, got {other:?}"),
         }
     }

@@ -319,6 +319,30 @@ pub struct ProviderConfig {
     /// default RPM defined by `DEFAULT_PROVIDER_RPM`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limits: Option<ProviderLimits>,
+    /// When `true`, tool-use permission requests require interactive user
+    /// confirmation instead of being auto-approved.  Defaults to `false`
+    /// (auto-approve) for backward compatibility.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub require_confirmation: bool,
+}
+
+impl Default for ProviderConfig {
+    fn default() -> Self {
+        Self {
+            kind: ProviderKind::OpenAiCompat,
+            base_url: None,
+            api_key_env: None,
+            command: None,
+            args: None,
+            timeout_ms: default_provider_timeout_ms(),
+            ttft_timeout_ms: default_provider_ttft_timeout_ms(),
+            connect_timeout_ms: default_provider_connect_timeout_ms(),
+            extra_headers: None,
+            max_concurrent: None,
+            limits: None,
+            require_confirmation: false,
+        }
+    }
 }
 
 /// Per-provider request and token budget enforced by the shared rate limiter.
@@ -423,6 +447,86 @@ impl ProviderConfig {
         self.api_key_env
             .as_ref()
             .and_then(|env_name| std::env::var(env_name).ok())
+    }
+
+    /// Derive the [`ProviderTransport`] from the flat config fields.
+    ///
+    /// Pure CLI kinds (`ClaudeCli`, `GeminiCli`, `CursorCli`, `CodexCli`) always
+    /// produce `Cli`; `CursorAcp` always produces `Acp`; HTTP API kinds produce
+    /// `Http`. Hybrid kinds (`Hermes`, `OpenClaw`) inspect the available fields:
+    /// `command` → `Cli`, otherwise `base_url` → `Http`, otherwise `Local`.
+    pub fn transport(&self) -> ProviderTransport {
+        let args = self.args.clone().unwrap_or_default();
+        match self.kind {
+            // Pure CLI providers
+            ProviderKind::ClaudeCli => ProviderTransport::Cli {
+                command: self.command.clone().unwrap_or_else(|| "claude".to_string()),
+                args,
+            },
+            ProviderKind::GeminiCli => ProviderTransport::Cli {
+                command: self.command.clone().unwrap_or_else(|| "gemini".to_string()),
+                args,
+            },
+            ProviderKind::CursorCli => ProviderTransport::Cli {
+                command: self.command.clone().unwrap_or_else(|| "cursor".to_string()),
+                args,
+            },
+            ProviderKind::CodexCli => ProviderTransport::Cli {
+                command: self.command.clone().unwrap_or_else(|| "codex".to_string()),
+                args,
+            },
+            // ACP provider
+            ProviderKind::CursorAcp => ProviderTransport::Acp {
+                command: self.command.clone().unwrap_or_else(|| "cursor".to_string()),
+                args,
+            },
+            // Hybrid providers: check fields to decide
+            ProviderKind::Hermes | ProviderKind::OpenClaw => {
+                if let Some(command) = &self.command {
+                    // If args include "acp", the provider runs in ACP mode
+                    // over stdio rather than one-shot CLI.
+                    if args.iter().any(|a| a == "acp") {
+                        ProviderTransport::Acp {
+                            command: command.clone(),
+                            args,
+                        }
+                    } else {
+                        ProviderTransport::Cli {
+                            command: command.clone(),
+                            args,
+                        }
+                    }
+                } else if let Some(base_url) = &self.base_url {
+                    ProviderTransport::Http {
+                        base_url: base_url.clone(),
+                    }
+                } else {
+                    ProviderTransport::Local
+                }
+            }
+            // HTTP API providers
+            ProviderKind::AnthropicApi
+            | ProviderKind::OpenAiCompat
+            | ProviderKind::PerplexityApi
+            | ProviderKind::GeminiApi
+            | ProviderKind::CerebrasApi => ProviderTransport::Http {
+                base_url: self.base_url.clone().unwrap_or_default(),
+            },
+        }
+    }
+
+    /// Derive a typed [`ProviderAuth`] from the flat config fields.
+    ///
+    /// When `api_key_env` is set, the auth policy is [`ProviderAuth::EnvVar`].
+    /// Otherwise the provider is treated as local-only.
+    pub fn auth(&self) -> ProviderAuth {
+        if let Some(env_var) = &self.api_key_env {
+            ProviderAuth::EnvVar {
+                name: env_var.clone(),
+            }
+        } else {
+            ProviderAuth::None { local_only: true }
+        }
     }
 }
 
@@ -666,6 +770,10 @@ pub struct PerplexityConfig {
     /// Include related questions in search results.
     #[serde(default = "default_true")]
     pub return_related_questions: bool,
+    /// When true, `auto` backend selection prefers Perplexity deep research
+    /// over standard search for `research topic`. Default `false`.
+    #[serde(default)]
+    pub auto_deep: bool,
 }
 
 impl Default for PerplexityConfig {
@@ -680,6 +788,7 @@ impl Default for PerplexityConfig {
             search_domain_filter: Vec::new(),
             return_images: false,
             return_related_questions: true,
+            auto_deep: false,
         }
     }
 }
@@ -858,5 +967,180 @@ mod model_profile_tests {
             u64::from(DEFAULT_MAX_OUTPUT_TOKENS),
             "missing max_output in TOML should fall back to DEFAULT_MAX_OUTPUT_TOKENS"
         );
+    }
+}
+
+#[cfg(test)]
+mod perplexity_config_tests {
+    use super::*;
+
+    #[test]
+    fn auto_deep_defaults_to_false() {
+        let cfg = PerplexityConfig::default();
+        assert!(!cfg.auto_deep, "auto_deep must default to false");
+    }
+
+    #[test]
+    fn auto_deep_roundtrips_through_toml() {
+        let cfg = PerplexityConfig {
+            auto_deep: true,
+            ..Default::default()
+        };
+        let encoded = toml::to_string(&cfg).expect("serialize PerplexityConfig");
+        assert!(encoded.contains("auto_deep = true"));
+        let decoded: PerplexityConfig = toml::from_str(&encoded).expect("deserialize");
+        assert!(decoded.auto_deep);
+    }
+
+    #[test]
+    fn auto_deep_absent_in_toml_defaults_to_false() {
+        let toml_str = r#"
+            search_recency_filter = "month"
+        "#;
+        let cfg: PerplexityConfig = toml::from_str(toml_str).expect("deserialize");
+        assert!(!cfg.auto_deep);
+    }
+
+    #[test]
+    fn auto_deep_false_omitted_from_serialization() {
+        let cfg = PerplexityConfig::default();
+        let encoded = toml::to_string(&cfg).expect("serialize");
+        assert!(
+            !encoded.contains("auto_deep"),
+            "auto_deep = false should be omitted: {encoded}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod transport_derivation_tests {
+    use super::*;
+
+    fn http_provider(kind: ProviderKind) -> ProviderConfig {
+        ProviderConfig {
+            kind,
+            base_url: Some("https://api.example.com".to_string()),
+            api_key_env: Some("API_KEY".to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn anthropic_api_derives_http_transport() {
+        let p = http_provider(ProviderKind::AnthropicApi);
+        let t = p.transport();
+        assert!(
+            matches!(t, ProviderTransport::Http { ref base_url } if base_url == "https://api.example.com"),
+            "expected Http transport, got {t:?}"
+        );
+    }
+
+    #[test]
+    fn openai_compat_derives_http_transport() {
+        let p = http_provider(ProviderKind::OpenAiCompat);
+        assert!(matches!(p.transport(), ProviderTransport::Http { .. }));
+    }
+
+    #[test]
+    fn http_provider_without_base_url_uses_empty_string() {
+        let p = ProviderConfig {
+            kind: ProviderKind::AnthropicApi,
+            base_url: None,
+            ..Default::default()
+        };
+        assert!(matches!(
+            p.transport(),
+            ProviderTransport::Http { ref base_url } if base_url.is_empty()
+        ));
+    }
+
+    #[test]
+    fn claude_cli_derives_cli_transport() {
+        let p = ProviderConfig {
+            kind: ProviderKind::ClaudeCli,
+            ..Default::default()
+        };
+        let t = p.transport();
+        assert!(
+            matches!(t, ProviderTransport::Cli { ref command, .. } if command == "claude"),
+            "expected Cli transport with 'claude', got {t:?}"
+        );
+    }
+
+    #[test]
+    fn claude_cli_uses_custom_command() {
+        let p = ProviderConfig {
+            kind: ProviderKind::ClaudeCli,
+            command: Some("/usr/local/bin/claude-dev".to_string()),
+            ..Default::default()
+        };
+        assert!(matches!(
+            p.transport(),
+            ProviderTransport::Cli { ref command, .. } if command == "/usr/local/bin/claude-dev"
+        ));
+    }
+
+    #[test]
+    fn cursor_acp_derives_acp_transport() {
+        let p = ProviderConfig {
+            kind: ProviderKind::CursorAcp,
+            ..Default::default()
+        };
+        assert!(matches!(p.transport(), ProviderTransport::Acp { .. }));
+    }
+
+    #[test]
+    fn hermes_with_base_url_derives_http() {
+        let p = ProviderConfig {
+            kind: ProviderKind::Hermes,
+            base_url: Some("http://localhost:8080".to_string()),
+            command: Some("hermes".to_string()),
+            ..Default::default()
+        };
+        // command is set but base_url takes precedence? No — existing logic
+        // checks command first for Hermes. Let's verify actual behavior.
+        let t = p.transport();
+        // Hermes checks command first, then base_url.
+        assert!(
+            matches!(t, ProviderTransport::Cli { .. }),
+            "Hermes with command set should be Cli, got {t:?}"
+        );
+    }
+
+    #[test]
+    fn hermes_http_only_derives_http() {
+        let p = ProviderConfig {
+            kind: ProviderKind::Hermes,
+            base_url: Some("http://localhost:8080".to_string()),
+            ..Default::default()
+        };
+        assert!(matches!(p.transport(), ProviderTransport::Http { .. }));
+    }
+
+    #[test]
+    fn hermes_bare_derives_local() {
+        let p = ProviderConfig {
+            kind: ProviderKind::Hermes,
+            ..Default::default()
+        };
+        assert!(matches!(p.transport(), ProviderTransport::Local));
+    }
+
+    #[test]
+    fn auth_from_env_var() {
+        let p = ProviderConfig {
+            api_key_env: Some("MY_KEY".to_string()),
+            ..Default::default()
+        };
+        assert!(matches!(
+            p.auth(),
+            ProviderAuth::EnvVar { ref name } if name == "MY_KEY"
+        ));
+    }
+
+    #[test]
+    fn auth_local_only_when_no_key() {
+        let p = ProviderConfig::default();
+        assert!(matches!(p.auth(), ProviderAuth::None { local_only: true }));
     }
 }

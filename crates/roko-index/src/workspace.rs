@@ -210,9 +210,9 @@ impl IndexQuery {
                 },
                 hdc: None,
             },
-            other => bail!(
-                "unknown search strategy: {other} (expected keyword, structural, or hybrid)"
-            ),
+            other => {
+                bail!("unknown search strategy: {other} (expected keyword, structural, or hybrid)")
+            }
         };
 
         // For keyword and hybrid strategies, apply kind/file filters as a
@@ -1101,6 +1101,30 @@ impl WorkspaceIndex {
     /// Workspace root used for path resolution.
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// All indexed symbols, in no particular order.
+    pub fn all_symbols(&self) -> Vec<SymbolInfo> {
+        self.symbols_by_id.values().cloned().collect()
+    }
+
+    /// All indexed edges as (from, to, kind) triples.
+    pub fn all_edges(&self) -> Vec<(SymbolId, SymbolId, EdgeKind)> {
+        self.graph
+            .all_edges()
+            .into_iter()
+            .map(|e| (e.from_id, e.to_id, e.kind))
+            .collect()
+    }
+
+    /// All indexed source files with their paths and content.
+    pub fn all_source_files(&self) -> Vec<&SourceFile> {
+        self.files_by_path.values().collect()
+    }
+
+    /// All computed PageRank scores as (symbol_id, score) pairs.
+    pub fn all_pagerank_scores(&self) -> &HashMap<SymbolId, f64> {
+        &self.pagerank_scores
     }
 
     fn from_source_files_with_root(root: PathBuf, files: Vec<SourceFile>) -> Self {
@@ -2122,7 +2146,8 @@ mod tests {
             };
             let err = query.execute(&index).unwrap_err();
             assert!(
-                err.to_string().contains("HDC search is not a stable CLI strategy"),
+                err.to_string()
+                    .contains("HDC search is not a stable CLI strategy"),
                 "unexpected error: {err}",
             );
         }
@@ -2139,7 +2164,8 @@ mod tests {
             };
             let err = query.execute(&index).unwrap_err();
             assert!(
-                err.to_string().contains("--limit must be greater than zero"),
+                err.to_string()
+                    .contains("--limit must be greater than zero"),
                 "unexpected error: {err}",
             );
         }

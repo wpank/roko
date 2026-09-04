@@ -50,6 +50,7 @@ fn default_ctx() -> RoutingContext {
         previous_model: None,
         plan_context_tokens: None,
         tier_thresholds: None,
+        cfactor: None,
     }
 }
 

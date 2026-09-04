@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use roko_core::obs::lens::{LensRegistry, default_registry};
 use roko_core::obs::telemetry_observe::{PeriodicObserver, TelemetryObservation, TelemetryObserve};
+use roko_learn::costs_log::CostsLog;
 use roko_runtime::cancel::CancelToken;
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
@@ -21,6 +22,12 @@ use tokio::time::MissedTickBehavior;
 use crate::state::AppState;
 
 const DEFAULT_OBSERVATION_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Default cost-spike threshold in USD per minute.
+///
+/// When the 15-minute rolling cost rate exceeds this value, a warning is
+/// logged. $1/min = $60/hr is a conservative ceiling for most workloads.
+const DEFAULT_COST_SPIKE_THRESHOLD: f64 = 1.0;
 
 trait TelemetryObservationSink: Send + Sync {
     fn emit(&self, observations: &[TelemetryObservation]) -> io::Result<()>;
@@ -71,6 +78,7 @@ pub(crate) fn start_periodic_telemetry_observer(state: &AppState) -> JoinHandle<
     let registry = Arc::new(default_registry(state.metrics_sink()));
     let max_mb = state.load_roko_config().resources.log_rotation_max_mb;
     let path = state.layout.telemetry_observations_path();
+    let costs_path = state.layout.learn_dir().join("costs.jsonl");
     tracing::debug!(
         path = %path.display(),
         interval_secs = DEFAULT_OBSERVATION_INTERVAL.as_secs(),
@@ -84,6 +92,7 @@ pub(crate) fn start_periodic_telemetry_observer(state: &AppState) -> JoinHandle<
         sink,
         state.cancel.clone(),
         DEFAULT_OBSERVATION_INTERVAL,
+        Some(costs_path),
     )
 }
 
@@ -92,6 +101,7 @@ fn spawn_periodic_observer(
     sink: Arc<dyn TelemetryObservationSink>,
     cancel: CancelToken,
     observation_interval: Duration,
+    costs_path: Option<PathBuf>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         // A zero interval is never used by production, but clamping makes the
@@ -100,6 +110,7 @@ fn spawn_periodic_observer(
         let mut ticker = tokio::time::interval(observation_interval);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
         let observer = PeriodicObserver::new();
+        let costs_log = costs_path.map(CostsLog::at);
 
         loop {
             tokio::select! {
@@ -117,6 +128,23 @@ fn spawn_periodic_observer(
                 }
                 Err(error) => {
                     tracing::warn!(%error, "periodic telemetry observation task failed");
+                }
+            }
+
+            // Cost spike detection: check the 15-minute rolling cost rate.
+            if let Some(ref log) = costs_log {
+                match log.is_cost_spike(DEFAULT_COST_SPIKE_THRESHOLD).await {
+                    Ok(true) => {
+                        tracing::warn!(
+                            threshold_usd_per_min = DEFAULT_COST_SPIKE_THRESHOLD,
+                            "cost spike detected: 15-minute rolling cost rate exceeds threshold"
+                        );
+                    }
+                    Ok(false) => {}
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        tracing::debug!(%error, "cost spike check failed");
+                    }
                 }
             }
         }
@@ -173,6 +201,7 @@ mod tests {
             Arc::clone(&sink) as Arc<dyn TelemetryObservationSink>,
             cancel.clone(),
             Duration::from_secs(3_600),
+            None,
         );
 
         tokio::time::timeout(Duration::from_secs(2), emitted)
@@ -218,6 +247,7 @@ mod tests {
             Arc::clone(&sink) as Arc<dyn TelemetryObservationSink>,
             cancel.clone(),
             Duration::from_secs(3_600),
+            None,
         );
 
         tokio::time::timeout(Duration::from_secs(2), emitted)

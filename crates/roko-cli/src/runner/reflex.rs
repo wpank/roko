@@ -156,7 +156,7 @@ pub(super) async fn execute_action(
         Err(error) => ToolResult::err(error),
     };
     match result {
-        ToolResult::Ok { content, .. } => (true, content),
+        ToolResult::Ok { .. } => (true, result.text_content()),
         ToolResult::Err(error) => (false, error.to_string()),
     }
 }

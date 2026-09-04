@@ -1478,7 +1478,8 @@ pub fn format_dashboard_event(
         | DashboardEvent::GateOutputLine { .. }
         | DashboardEvent::AffectUpdated { .. }
         | DashboardEvent::AgentTopologyUpdated { .. }
-        | DashboardEvent::CriticalPathEtaUpdated { .. } => return None,
+        | DashboardEvent::CriticalPathEtaUpdated { .. }
+        | DashboardEvent::CostAnomaly { .. } => return None,
     };
 
     let line = if pfx.is_empty() {

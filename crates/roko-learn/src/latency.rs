@@ -169,6 +169,12 @@ impl LatencyRegistry {
             .cloned()
     }
 
+    /// Return a snapshot of all tracked latency stats.
+    #[must_use]
+    pub fn all_stats(&self) -> Vec<LatencyStats> {
+        self.stats.lock().values().cloned().collect()
+    }
+
     /// Return aggregate latency stats pooled across all models for `provider`.
     #[must_use]
     pub fn get_all_for_provider(&self, provider: &str) -> LatencyStats {

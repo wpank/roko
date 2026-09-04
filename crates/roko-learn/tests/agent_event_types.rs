@@ -1,9 +1,9 @@
 //! Compile coverage for `AgentEvent` variants.
 
+use roko_agent::Usage;
 use roko_agent::chat_types::FinishReason;
-use roko_agent::{StreamChunk, Usage};
 use roko_learn::anomaly::Anomaly;
-use roko_learn::events::AgentEvent;
+use roko_learn::events::{AgentEvent, StreamChunk};
 use roko_learn::provider_health::ErrorClass;
 
 #[test]
@@ -24,6 +24,7 @@ fn agent_event_types_construct_all_variants() {
             model: "glm-5.1".into(),
             provider: "zai".into(),
             timestamp_ms: 1_700_000_000_000,
+            is_model_override: false,
         },
         AgentEvent::ToolCallExecuted {
             tool_name: "read_file".into(),
@@ -79,7 +80,10 @@ fn agent_event_types_construct_all_variants() {
             source_episode_count: 2,
         },
         AgentEvent::StreamChunk {
-            chunk: StreamChunk::Done(FinishReason::Stop),
+            chunk: StreamChunk {
+                delta: String::new(),
+                is_final: true,
+            },
         },
     ];
 
@@ -87,7 +91,7 @@ fn agent_event_types_construct_all_variants() {
     assert!(matches!(
         events.last(),
         Some(AgentEvent::StreamChunk {
-            chunk: StreamChunk::Done(FinishReason::Stop),
+            chunk: StreamChunk { is_final: true, .. },
         })
     ));
 }

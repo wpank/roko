@@ -549,6 +549,111 @@ fn similar_strings(a: &str, b: &str) -> bool {
     total > 3 && (overlap as f64 / total as f64) > 0.5
 }
 
+/// Explicit execution route for ACP workflow callers.
+///
+/// Serializes as lowercase strings for ACP protocol compatibility.
+/// Maps 1:1 to the CLI `WorkflowExecutionRoute` enum; kept as a separate
+/// type because ACP does not depend on `roko-cli`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AcpWorkflowRoute {
+    /// Default production route — selects WorkflowEngine.
+    #[default]
+    LegacyDefault,
+    /// Graph-based canary path (#257).
+    GraphCanary,
+    /// Replay-only comparison path (#259).
+    ReplayOnly,
+    /// Explicit legacy fallback with observable warning (#277).
+    LiveFallback,
+}
+
+impl std::fmt::Display for AcpWorkflowRoute {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::LegacyDefault => f.write_str("legacy_default"),
+            Self::GraphCanary => f.write_str("graph_canary"),
+            Self::ReplayOnly => f.write_str("replay_only"),
+            Self::LiveFallback => f.write_str("live_fallback"),
+        }
+    }
+}
+
+impl std::str::FromStr for AcpWorkflowRoute {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "legacy_default" | "legacy-default" => Ok(Self::LegacyDefault),
+            "graph_canary" | "graph-canary" | "graph" => Ok(Self::GraphCanary),
+            "replay_only" | "replay-only" | "replay" => Ok(Self::ReplayOnly),
+            "live_fallback" | "live-fallback" | "fallback" => Ok(Self::LiveFallback),
+            other => Err(format!(
+                "unknown ACP workflow route `{other}`; expected one of: \
+                 legacy_default, graph_canary, replay_only, live_fallback"
+            )),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// #245: Non-plan service migration adapter (Lane D2)
+// ---------------------------------------------------------------------------
+
+/// Thin adapter that validates an ACP workflow request against the
+/// [`roko_execution::profiles::ProfileMatrix`] before delegating to the
+/// existing `ServiceFactory::build` path.
+///
+/// When #243 lands, this adapter will be replaced by a direct call to
+/// `RuntimeServicesBuilder::build()`. Until then it serves as the
+/// consumer-side contract: ACP session params are translated into
+/// `ExecutionOverrides` and validated against the `Workflow` profile
+/// (ACP workflow calls use the same service bundle as CLI workflows).
+///
+/// **Spec constraint (Lane D2):** this adapter does not edit
+/// `commands/plan.rs`, `runner/event_loop.rs`, or any plan-path type.
+pub struct AcpSessionServiceAdapter;
+
+impl AcpSessionServiceAdapter {
+    /// Validate that an ACP workflow request satisfies the profile matrix
+    /// and return a handle for cost settlement correlation.
+    ///
+    /// The caller must still call `ServiceFactory::build` directly —
+    /// this adapter only validates the profile matrix and provides the
+    /// correlation handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the profile matrix validation fails.
+    pub fn validate_workflow(
+        session_id: &str,
+        workdir: &std::path::Path,
+        model_key: Option<String>,
+        mcp_config: Option<std::path::PathBuf>,
+    ) -> anyhow::Result<roko_execution::NonPlanServiceHandle> {
+        use roko_execution::profiles::RuntimeProfile;
+
+        let exec_overrides = roko_execution::overrides_for_acp(session_id, model_key, mcp_config);
+        let request = roko_execution::NonPlanServiceRequest::new(
+            RuntimeProfile::Workflow,
+            workdir.to_path_buf(),
+            exec_overrides,
+        );
+        let handle = roko_execution::validate_service_request(&request)
+            .map_err(|e| anyhow::anyhow!("ACP session service validation: {e}"))?;
+
+        tracing::debug!(
+            session_id = %session_id,
+            instance_id = %handle.instance_id(),
+            profile = %handle.profile(),
+            required = ?handle.required_bundles(),
+            "validated ACP session service request"
+        );
+
+        Ok(handle)
+    }
+}
+
 /// Execute a prompt via WorkflowEngine, bridging events to ACP protocol.
 ///
 /// This is an alternative to [`run_workflow_pipeline`] that uses the shared
@@ -559,6 +664,9 @@ pub struct WorkflowEngineOptions {
     pub input_messages: Vec<roko_core::foundation::ModelInputMessage>,
     pub mcp_config: Option<std::path::PathBuf>,
     pub provenance_card: Option<String>,
+    /// Execution route — defaults to `LegacyDefault` (WorkflowEngine).
+    #[allow(dead_code)]
+    pub route: AcpWorkflowRoute,
 }
 
 pub async fn run_with_workflow_engine(
@@ -569,6 +677,30 @@ pub async fn run_with_workflow_engine(
     options: WorkflowEngineOptions,
     event_sender: mpsc::Sender<CognitiveEvent>,
 ) -> anyhow::Result<WorkflowRunReport> {
+    // Route check: GraphCanary and ReplayOnly are not yet implemented.
+    match options.route {
+        AcpWorkflowRoute::LegacyDefault => {}
+        AcpWorkflowRoute::LiveFallback => {
+            warn!(
+                route = %options.route,
+                "legacy compatibility: explicit LiveFallback route selected; \
+                 this path will be removed by #277"
+            );
+        }
+        AcpWorkflowRoute::GraphCanary => {
+            return Err(anyhow::anyhow!(
+                "AcpWorkflowRoute::GraphCanary is not yet implemented; \
+                 awaiting #257 graph template wiring"
+            ));
+        }
+        AcpWorkflowRoute::ReplayOnly => {
+            return Err(anyhow::anyhow!(
+                "AcpWorkflowRoute::ReplayOnly is not yet implemented; \
+                 awaiting #259 shadow fixture wiring"
+            ));
+        }
+    }
+
     let runtime_run_id = Arc::new(Mutex::new(None));
     let roko_config = roko_core::config::loader::load_config_with_options(
         workdir,
@@ -882,6 +1014,32 @@ impl CoreEventConsumer for AcpWorkflowEventConsumer {
             | CoreRuntimeEvent::TaskStarted { .. }
             | CoreRuntimeEvent::TaskCompleted { .. }
             | CoreRuntimeEvent::PipelinePhase { .. } => {}
+            // v2 events -- no ACP cognitive mapping yet.
+            CoreRuntimeEvent::WaveStarted { .. }
+            | CoreRuntimeEvent::WaveCompleted { .. }
+            | CoreRuntimeEvent::TaskRetrying { .. }
+            | CoreRuntimeEvent::TaskSkipped { .. }
+            | CoreRuntimeEvent::AgentProgress { .. }
+            | CoreRuntimeEvent::UsageRecorded { .. }
+            | CoreRuntimeEvent::GateRungStarted { .. }
+            | CoreRuntimeEvent::GateRungOutput { .. }
+            | CoreRuntimeEvent::GateRungCompleted { .. }
+            | CoreRuntimeEvent::ApprovalRequested { .. }
+            | CoreRuntimeEvent::ApprovalResolved { .. }
+            | CoreRuntimeEvent::ControlApplied { .. }
+            | CoreRuntimeEvent::BudgetUpdated { .. }
+            | CoreRuntimeEvent::WorkspaceAcquired { .. }
+            | CoreRuntimeEvent::WorkspaceReleased { .. }
+            | CoreRuntimeEvent::MergeQueued { .. }
+            | CoreRuntimeEvent::MergeCompleted { .. }
+            | CoreRuntimeEvent::PublishCompleted { .. }
+            | CoreRuntimeEvent::FeedbackSinkSettled { .. }
+            | CoreRuntimeEvent::FeedbackSinkFailed { .. }
+            | CoreRuntimeEvent::PredictionPublished { .. }
+            | CoreRuntimeEvent::ActualRecorded { .. }
+            | CoreRuntimeEvent::CorrectionApplied { .. }
+            | CoreRuntimeEvent::SequenceGap { .. }
+            | CoreRuntimeEvent::Extension { .. } => {}
         }
     }
 }

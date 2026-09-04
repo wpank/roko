@@ -3823,6 +3823,7 @@ checksum = "86f0f8fee8c926415c58d6ae43a08523a26faccb2323f5e6b644fe7dd4ef6b82"
 dependencies = [
  "console 0.16.4",
  "once_cell",
+ "serde",
  "similar",
  "tempfile",
 ]
@@ -6258,6 +6259,7 @@ dependencies = [
  "roko-compose",
  "roko-core",
  "roko-dreams",
+ "roko-execution",
  "roko-gate",
  "roko-learn",
  "roko-neuro",
@@ -6317,6 +6319,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "futures",
+ "http-body-util",
  "parking_lot",
  "reqwest 0.12.28",
  "roko-agent",
@@ -6418,6 +6421,7 @@ dependencies = [
  "roko-core",
  "roko-daimon",
  "roko-dreams",
+ "roko-execution",
  "roko-fs",
  "roko-gate",
  "roko-graph",
@@ -6465,6 +6469,7 @@ dependencies = [
  "roko-core",
  "roko-daimon",
  "roko-dreams",
+ "roko-graph",
  "roko-learn",
  "roko-neuro",
  "roko-primitives",
@@ -6526,6 +6531,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber 0.3.23",
+ "uuid",
 ]
 
 [[package]]
@@ -6588,6 +6594,50 @@ dependencies = [
 ]
 
 [[package]]
+name = "roko-eval"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "roko-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+]
+
+[[package]]
+name = "roko-execution"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "blake3",
+ "indexmap 2.14.0",
+ "insta",
+ "parking_lot",
+ "roko-agent",
+ "roko-compose",
+ "roko-conductor",
+ "roko-core",
+ "roko-daimon",
+ "roko-fs",
+ "roko-gate",
+ "roko-graph",
+ "roko-learn",
+ "roko-neuro",
+ "roko-plugin",
+ "roko-runtime",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "roko-fs"
 version = "0.1.0"
 dependencies = [
@@ -6614,6 +6664,7 @@ name = "roko-gate"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "futures",
  "libc",
  "roko-agent",
  "roko-core",
@@ -6660,6 +6711,7 @@ name = "roko-graph"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "futures",
  "indexmap 2.14.0",
  "parking_lot",
  "petgraph",
@@ -6796,8 +6848,10 @@ dependencies = [
  "roko-mcp-stdio",
  "serde",
  "serde_json",
+ "tokio",
  "tracing",
  "tracing-subscriber 0.3.23",
+ "wiremock",
 ]
 
 [[package]]

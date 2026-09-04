@@ -1,0 +1,1 @@
+{"graph_id":"cancel-resume-budget","run_id":"fixture-run-003","node_id":"A","tick":0,"signals":[{"kind":"Task","body":{"text":"Task A completed successfully"},"metadata":{"provider":"fixture-provider","model":"fixture-model","input_tokens":1000,"output_tokens":600,"cost_micro_usd":380}}]}

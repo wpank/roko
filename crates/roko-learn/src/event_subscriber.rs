@@ -38,10 +38,13 @@ struct ActiveTurn {
     model: String,
     provider: String,
     tool_calls: Vec<ToolCallMeta>,
+    /// `true` when the operator forced a specific model via CLI flags.
+    /// Override dispatches are excluded from LinUCB bandit updates (UX34).
+    is_model_override: bool,
 }
 
 impl ActiveTurn {
-    fn from_started(task_id: &str, model: &str, provider: &str) -> Self {
+    fn from_started(task_id: &str, model: &str, provider: &str, is_model_override: bool) -> Self {
         let mut parts = task_id.splitn(3, ':');
         let first = parts.next().unwrap_or_default();
         let second = parts.next();
@@ -62,6 +65,7 @@ impl ActiveTurn {
             model: model.to_string(),
             provider: provider.to_string(),
             tool_calls: Vec::new(),
+            is_model_override,
         }
     }
 }
@@ -75,6 +79,8 @@ struct PendingEfficiency {
     event: AgentEfficiencyEvent,
     /// Model slug, needed to call `router.record_confidence_outcome`.
     model: String,
+    /// Whether this dispatch was a manual model override (UX34 / P4-9).
+    is_model_override: bool,
 }
 
 /// Consume `AgentEvent`s and update the learning subsystems that depend on them.
@@ -123,9 +129,15 @@ pub async fn run_learning_subscriber(
                 ref task_id,
                 ref model,
                 ref provider,
+                is_model_override,
                 ..
             } => {
-                active_turn = Some(ActiveTurn::from_started(task_id, model, provider));
+                active_turn = Some(ActiveTurn::from_started(
+                    task_id,
+                    model,
+                    provider,
+                    is_model_override,
+                ));
                 // Feed to calibration policy for predict-publish-correct loop (LEARN-09).
                 let _ = calibration_policy.process_event(&event);
             }
@@ -233,10 +245,21 @@ pub async fn run_learning_subscriber(
                     timestamp: Utc::now().to_rfc3339(),
                 };
 
+                let is_override = turn_ctx.is_model_override;
                 match gate_passed {
                     Some(passed) => {
                         // ACP inline path: gate result is known with TurnCompleted.
+                        // UX34 / P4-9: Override dispatches only update confidence
+                        // stats, not the LinUCB bandit, to prevent user-selected
+                        // models from corrupting learned routing weights.
                         let _ = router.record_confidence_outcome(&model_key, passed);
+                        if is_override {
+                            tracing::debug!(
+                                model = %model_key,
+                                passed,
+                                "skipping LinUCB update for model override dispatch (UX34)"
+                            );
+                        }
                         if let Err(err) =
                             append_efficiency_event(&efficiency_path, &efficiency_event).await
                         {
@@ -263,6 +286,7 @@ pub async fn run_learning_subscriber(
                             PendingEfficiency {
                                 event: efficiency_event,
                                 model: model_key,
+                                is_model_override: is_override,
                             },
                         );
                     }
@@ -328,7 +352,16 @@ pub async fn run_learning_subscriber(
                     } else {
                         "gate_failed".to_string()
                     };
+                    // UX34 / P4-9: Override dispatches only update confidence
+                    // stats, not LinUCB, matching the inline ACP path.
                     let _ = router.record_confidence_outcome(&pending.model, passed);
+                    if pending.is_model_override {
+                        tracing::debug!(
+                            model = %pending.model,
+                            passed,
+                            "skipping LinUCB update for model override dispatch (UX34)"
+                        );
+                    }
                     if let Err(err) =
                         append_efficiency_event(&efficiency_path, &pending.event).await
                     {
@@ -540,6 +573,7 @@ mod tests {
             model: "glm-5.1".into(),
             provider: "zai".into(),
             timestamp_ms: 1_700_000_000_000,
+            is_model_override: false,
         })
         .expect("turn started");
         tx.send(AgentEvent::ToolCallExecuted {
@@ -617,6 +651,7 @@ mod tests {
             model: "glm-5.1".into(),
             provider: "zai".into(),
             timestamp_ms: 1_700_000_000_000,
+            is_model_override: false,
         })
         .expect("turn started");
         tx.send(AgentEvent::ToolCallExecuted {
@@ -666,6 +701,7 @@ mod tests {
                 model: "overconfident-model".into(),
                 provider: "test-provider".into(),
                 timestamp_ms: 1_700_000_000_000 + i,
+                is_model_override: false,
             })
             .expect("send turn started");
             tx.send(AgentEvent::TurnCompleted {
@@ -754,6 +790,7 @@ mod tests {
             model: "glm-5.1".into(),
             provider: "zai".into(),
             timestamp_ms: 1_700_000_000_000,
+            is_model_override: false,
         })
         .expect("turn started");
         tx.send(AgentEvent::TurnCompleted {

@@ -660,9 +660,8 @@ fn load_effective_roko_config(
             .unwrap_or_default()
     };
 
-    if let Err(e) = roko_core::config::loader::merge_global_into(&mut config) {
-        tracing::warn!(error = %e, "global config merge failed");
-    }
+    roko_core::config::loader::merge_global_into(&mut config)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     config.apply_process_env();
     Ok(config)
 }
@@ -795,12 +794,13 @@ fn build_runner_config(
         max_plan_usd: f64::from(roko_config.budget.max_plan_usd),
         max_turn_usd: f64::from(roko_config.budget.max_turn_usd),
         max_task_retry_usd: f64::from(roko_config.budget.max_task_retry_usd),
+        max_daily_usd: f64::from(roko_config.budget.max_daily_usd),
         budget_override: false,
         budget_ceiling_override: None,
         no_budget: false,
         clippy_enabled: roko_config.gates.clippy_enabled,
         skip_tests: roko_config.gates.skip_tests,
-        safety_layer: Some(roko_agent::SafetyLayer::from_config(&roko_config)),
+        safety_layer: roko_agent::SafetyLayer::from_config(&roko_config),
         roko_config: Some(Arc::new(roko_config)),
         extension_chain: Some(extension_chain),
         cascade_router: Some(cascade_router),

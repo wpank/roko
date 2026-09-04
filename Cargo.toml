@@ -11,6 +11,8 @@ members = [
     "crates/roko-std",
     # Concrete Gate impls (ShellGate, CompileGate, ...)
     "crates/roko-gate",
+    # Unified evaluation framework: EvidenceCollector, Criterion, Profile traits.
+    "crates/roko-eval",
     # Filesystem-backed Substrate (.roko/signals.jsonl)
     "crates/roko-fs",
     # Composer impls (PromptComposer, SectionScorer)
@@ -82,6 +84,11 @@ members = [
 
     # Graph execution engine — DAG-based cell orchestration with fan-out/fan-in.
     "crates/roko-graph",
+
+    # Profile-driven runtime service builder — shared layer-3 facade that
+    # gives every execution surface (CLI, serve, ACP) explicit safety,
+    # budget, routing, and feedback guarantees.
+    "crates/roko-execution",
 ]
 default-members = [
     # Ordinary root builds target the main CLI plus the MCP servers we ship.

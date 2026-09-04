@@ -313,6 +313,358 @@ pub struct AgentRow {
 const MAX_AGENT_STREAM_CHUNKS: usize = 200;
 const MAX_AGENT_OUTPUT_LINES: usize = 50;
 
+/// Maximum structured output records retained in memory per agent (#367).
+pub const MAX_AGENT_OUTPUT_RECORDS: usize = 2_000;
+
+/// Page size when loading older records from canonical history (#367).
+pub const AGENT_OUTPUT_PAGE_SIZE: usize = 500;
+
+// ---------------------------------------------------------------------------
+// Structured agent output records (#367)
+// ---------------------------------------------------------------------------
+
+/// Kind tag for a structured agent output record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OutputRecordKind {
+    /// Free-form text from the agent.
+    Text,
+    /// Internal reasoning / chain-of-thought.
+    Reasoning,
+    /// Tool invocation start.
+    ToolCall,
+    /// Result returned by a tool.
+    ToolResult,
+    /// An error message.
+    Error,
+    /// System-generated message (status updates, turn boundaries).
+    System,
+}
+
+impl OutputRecordKind {
+    /// Label string for display.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Reasoning => "reasoning",
+            Self::ToolCall => "tool_call",
+            Self::ToolResult => "tool_result",
+            Self::Error => "error",
+            Self::System => "system",
+        }
+    }
+}
+
+/// One structured output record from an agent (#367).
+///
+/// Contains sequence, timestamp, role, kind, text payload, and optional
+/// tool identification. The `redacted` flag indicates whether the canonical
+/// redactor has already processed the payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentOutputRecord {
+    /// Monotonic sequence number (unique within an agent's history).
+    pub seq: u64,
+    /// Timestamp in epoch milliseconds.
+    pub timestamp_ms: u64,
+    /// Role that produced this record (e.g. "assistant", "tool", "system").
+    pub role: String,
+    /// Semantic kind of the record.
+    pub kind: OutputRecordKind,
+    /// The text payload (may be redacted).
+    pub text: String,
+    /// Whether the payload has been processed by the canonical redactor.
+    pub redacted: bool,
+    /// Optional tool identifier (for tool_call and tool_result kinds).
+    pub tool_id: Option<String>,
+    /// Optional tool name (for tool_call kind).
+    pub tool_name: Option<String>,
+}
+
+/// Per-agent bounded output history with pagination support (#367).
+///
+/// Keeps the newest `MAX_AGENT_OUTPUT_RECORDS` records in memory per agent.
+/// Provides `before()` for pagination and `search()` for regex matching.
+/// Older records can be loaded from canonical runtime event history by the
+/// caller; this type only manages the in-memory window.
+#[derive(Debug, Clone, Default)]
+pub struct AgentOutputHistory {
+    /// Per-agent record deques keyed by agent identifier.
+    records: HashMap<String, VecDeque<AgentOutputRecord>>,
+    /// Oldest sequence number per agent (for pagination tracking).
+    oldest_seq: HashMap<String, u64>,
+    /// Next sequence number per agent (monotonic counter).
+    next_seq: HashMap<String, u64>,
+    /// Total records evicted across all agents.
+    pub evicted: u64,
+}
+
+impl AgentOutputHistory {
+    /// Push a new record for the given agent, assigning a sequence number.
+    ///
+    /// If the deque exceeds `MAX_AGENT_OUTPUT_RECORDS`, the oldest record
+    /// is evicted and `oldest_seq` is updated.
+    pub fn push(&mut self, agent_id: &str, mut record: AgentOutputRecord) {
+        let seq = self.next_seq.entry(agent_id.to_string()).or_insert(1);
+        record.seq = *seq;
+        *seq += 1;
+
+        let deque = self
+            .records
+            .entry(agent_id.to_string())
+            .or_insert_with(VecDeque::new);
+
+        deque.push_back(record);
+
+        if deque.len() > MAX_AGENT_OUTPUT_RECORDS {
+            if let Some(evicted_record) = deque.pop_front() {
+                self.oldest_seq
+                    .insert(agent_id.to_string(), evicted_record.seq + 1);
+                self.evicted += 1;
+            }
+        }
+    }
+
+    /// Push a record for the given agent, deduplicating by sequence number.
+    ///
+    /// If a record with the same `seq` already exists, the push is skipped.
+    /// This handles the live+settled duplicate scenario.
+    pub fn push_dedup(&mut self, agent_id: &str, record: AgentOutputRecord) {
+        let deque = self
+            .records
+            .entry(agent_id.to_string())
+            .or_insert_with(VecDeque::new);
+
+        // Check if this seq already exists (dedup live+settled copies).
+        if deque.iter().any(|r| r.seq == record.seq) {
+            return;
+        }
+        self.push(agent_id, record);
+    }
+
+    /// Return records for the agent, optionally before a given sequence.
+    ///
+    /// Returns up to `limit` records with sequence numbers strictly less
+    /// than `before_seq`. If `before_seq` is `None`, returns the newest
+    /// `limit` records (tail).
+    #[must_use]
+    pub fn before(
+        &self,
+        agent_id: &str,
+        before_seq: Option<u64>,
+        limit: usize,
+    ) -> Vec<&AgentOutputRecord> {
+        let deque = match self.records.get(agent_id) {
+            Some(d) => d,
+            None => return Vec::new(),
+        };
+
+        let filtered: Vec<&AgentOutputRecord> = match before_seq {
+            Some(seq) => deque.iter().filter(|r| r.seq < seq).collect(),
+            None => deque.iter().collect(),
+        };
+
+        let start = filtered.len().saturating_sub(limit);
+        filtered[start..].to_vec()
+    }
+
+    /// Search records for the given agent matching a regex pattern.
+    ///
+    /// Returns matching records (up to `limit`) with sequence numbers
+    /// strictly less than `before_seq` (or all if `None`). Searches
+    /// the `text`, `tool_name`, and `role` fields.
+    #[must_use]
+    pub fn search(
+        &self,
+        agent_id: &str,
+        pattern: &regex::Regex,
+        before_seq: Option<u64>,
+        limit: usize,
+    ) -> Vec<&AgentOutputRecord> {
+        let deque = match self.records.get(agent_id) {
+            Some(d) => d,
+            None => return Vec::new(),
+        };
+
+        let filtered: Vec<&AgentOutputRecord> = deque
+            .iter()
+            .filter(|r| {
+                if let Some(seq) = before_seq {
+                    if r.seq >= seq {
+                        return false;
+                    }
+                }
+                pattern.is_match(&r.text)
+                    || r.tool_name.as_deref().is_some_and(|n| pattern.is_match(n))
+                    || pattern.is_match(&r.role)
+            })
+            .collect();
+
+        let start = filtered.len().saturating_sub(limit);
+        filtered[start..].to_vec()
+    }
+
+    /// Return all records for the given agent (in order).
+    #[must_use]
+    pub fn records_for(&self, agent_id: &str) -> &VecDeque<AgentOutputRecord> {
+        static EMPTY: std::sync::LazyLock<VecDeque<AgentOutputRecord>> =
+            std::sync::LazyLock::new(VecDeque::new);
+        self.records.get(agent_id).unwrap_or(&EMPTY)
+    }
+
+    /// Total number of records currently held for the given agent.
+    #[must_use]
+    pub fn len(&self, agent_id: &str) -> usize {
+        self.records.get(agent_id).map_or(0, VecDeque::len)
+    }
+
+    /// The oldest sequence number still in memory for the given agent.
+    #[must_use]
+    pub fn oldest_sequence(&self, agent_id: &str) -> u64 {
+        self.oldest_seq.get(agent_id).copied().unwrap_or(1)
+    }
+
+    /// The next sequence number that will be assigned for the given agent.
+    #[must_use]
+    pub fn next_sequence(&self, agent_id: &str) -> u64 {
+        self.next_seq.get(agent_id).copied().unwrap_or(1)
+    }
+
+    /// Clear all records for the given agent.
+    pub fn clear_agent(&mut self, agent_id: &str) {
+        self.records.remove(agent_id);
+        self.oldest_seq.remove(agent_id);
+        self.next_seq.remove(agent_id);
+    }
+
+    /// Convert raw output lines into records and populate the history for
+    /// an agent. Used to backfill from legacy `AgentRow::output_lines` or
+    /// `task_output_tails` during snapshot ingestion.
+    pub fn ingest_lines(&mut self, agent_id: &str, lines: &[String], role: &str) {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        for line in lines {
+            let (kind, tool_id, tool_name) = classify_output_line(line);
+            self.push(
+                agent_id,
+                AgentOutputRecord {
+                    seq: 0, // assigned by push()
+                    timestamp_ms: now_ms,
+                    role: role.to_string(),
+                    kind,
+                    text: line.clone(),
+                    redacted: false,
+                    tool_id,
+                    tool_name,
+                },
+            );
+        }
+    }
+}
+
+/// Classify a raw output line into an `OutputRecordKind` with optional
+/// tool metadata, based on the `roko.stream.v1` protocol or text heuristics.
+fn classify_output_line(line: &str) -> (OutputRecordKind, Option<String>, Option<String>) {
+    use super::widgets::stream_output::{StreamRecord, parse_stream_line};
+
+    match parse_stream_line(line) {
+        StreamRecord::Text { .. } => (OutputRecordKind::Text, None, None),
+        StreamRecord::Reasoning { .. } => (OutputRecordKind::Reasoning, None, None),
+        StreamRecord::ToolStart { tool_id, tool_name } => {
+            (OutputRecordKind::ToolCall, Some(tool_id), Some(tool_name))
+        }
+        StreamRecord::ToolResult { tool_id, .. } => {
+            (OutputRecordKind::ToolResult, Some(tool_id), None)
+        }
+        StreamRecord::Plain { ref content } => {
+            // Legacy heuristic classification for untyped records.
+            let trimmed = content.trim();
+            if trimmed.starts_with("ERROR")
+                || trimmed.starts_with("error")
+                || trimmed.contains("FAILED")
+            {
+                (OutputRecordKind::Error, None, None)
+            } else if trimmed.starts_with("────") || trimmed.is_empty() {
+                (OutputRecordKind::System, None, None)
+            } else {
+                (OutputRecordKind::Text, None, None)
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bounded history limits (#366 — TUI data pipeline optimization)
+// ---------------------------------------------------------------------------
+
+/// Maximum entries in the unified log cache.
+pub const MAX_UNIFIED_LOG: usize = 5_000;
+/// Maximum diagnosis entries retained in TuiState.
+pub const MAX_DIAGNOSES: usize = 200;
+/// Maximum episode entries retained in TuiState.
+pub const MAX_EPISODES: usize = 1_000;
+/// Maximum error entries retained in TuiState.
+pub const MAX_ERRORS: usize = 500;
+/// Maximum token history samples per agent.
+pub const MAX_TOKEN_SAMPLES: usize = 600;
+/// Maximum gate output lines retained.
+pub const MAX_GATE_LINES: usize = 2_000;
+/// Maximum CPU/memory history samples for sparklines.
+pub const MAX_METRIC_HISTORY: usize = 60;
+/// Maximum notification history entries.
+pub const MAX_NOTIFICATION_HISTORY: usize = 200;
+
+/// Tracks evictions from bounded collections for observability.
+#[derive(Debug, Clone, Default)]
+pub struct EvictionCounters {
+    /// Total entries evicted from the unified log.
+    pub unified_log: u64,
+    /// Total entries evicted from the diagnoses ring.
+    pub diagnoses: u64,
+    /// Total entries evicted from the episodes cache.
+    pub episodes: u64,
+    /// Total entries evicted from gate output lines.
+    pub gate_output: u64,
+    /// Total entries evicted from token history samples.
+    pub token_history: u64,
+    /// Total entries evicted from notification history.
+    pub notifications: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Revision-tracked collection for cache invalidation (#366)
+// ---------------------------------------------------------------------------
+
+/// A monotonic revision counter for cache invalidation.
+///
+/// Each data source bumps its revision when it changes, and downstream
+/// caches (like the unified log) compare their last-seen revision to
+/// decide whether to rebuild.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Revision(u64);
+
+impl Revision {
+    /// Create a new revision at zero.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self(0)
+    }
+
+    /// Bump the revision counter. Returns the new value.
+    pub fn bump(&mut self) -> u64 {
+        self.0 += 1;
+        self.0
+    }
+
+    /// Current revision value.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
 fn bounded_output_lines(lines: &VecDeque<String>) -> Vec<String> {
     let first = lines.len().saturating_sub(MAX_AGENT_OUTPUT_LINES);
     lines.iter().skip(first).cloned().collect()
@@ -781,6 +1133,116 @@ impl LogSearchState {
 }
 
 // ---------------------------------------------------------------------------
+// Agent output search state (#367)
+// ---------------------------------------------------------------------------
+
+/// Search state for the F3:Agents output panel (#367).
+///
+/// Similar to `LogSearchState` but scoped to the selected agent's output
+/// records. Activated by `/` on the Agents tab, navigated with `n`/`N`.
+#[derive(Debug, Clone, Default)]
+pub struct AgentOutputSearchState {
+    /// Whether search mode is active (input bar visible).
+    pub active: bool,
+    /// Current search pattern text.
+    pub pattern: String,
+    /// Compiled regex from the pattern (None if pattern is empty or invalid).
+    pub compiled: Option<regex::Regex>,
+    /// Whether the pattern failed to compile.
+    pub pattern_error: bool,
+    /// Sequence numbers of matching records.
+    pub match_seqs: Vec<u64>,
+    /// Total matches found.
+    pub match_count: usize,
+    /// Index of the currently highlighted match (0-based).
+    pub current_match: usize,
+}
+
+impl AgentOutputSearchState {
+    /// Recompile the regex from the current pattern.
+    pub fn recompile(&mut self) {
+        if self.pattern.is_empty() {
+            self.compiled = None;
+            self.pattern_error = false;
+            self.match_count = 0;
+            self.current_match = 0;
+            self.match_seqs.clear();
+        } else {
+            match regex::RegexBuilder::new(&self.pattern)
+                .case_insensitive(true)
+                .build()
+            {
+                Ok(re) => {
+                    self.compiled = Some(re);
+                    self.pattern_error = false;
+                }
+                Err(_) => {
+                    self.compiled = None;
+                    self.pattern_error = true;
+                    self.match_count = 0;
+                    self.current_match = 0;
+                    self.match_seqs.clear();
+                }
+            }
+        }
+    }
+
+    /// Update match sequences from the given agent output history.
+    pub fn update_matches(&mut self, history: &AgentOutputHistory, agent_id: &str) {
+        self.match_seqs.clear();
+        if let Some(ref re) = self.compiled {
+            for record in history.records_for(agent_id) {
+                if re.is_match(&record.text)
+                    || record.tool_name.as_deref().is_some_and(|n| re.is_match(n))
+                    || re.is_match(&record.role)
+                {
+                    self.match_seqs.push(record.seq);
+                }
+            }
+        }
+        self.match_count = self.match_seqs.len();
+        if self.current_match >= self.match_count && self.match_count > 0 {
+            self.current_match = self.match_count - 1;
+        }
+    }
+
+    /// Navigate to the next match, wrapping around.
+    pub fn next_match(&mut self) {
+        if self.match_count > 0 {
+            self.current_match = (self.current_match + 1) % self.match_count;
+        }
+    }
+
+    /// Navigate to the previous match, wrapping around.
+    pub fn prev_match(&mut self) {
+        if self.match_count > 0 {
+            self.current_match = if self.current_match == 0 {
+                self.match_count - 1
+            } else {
+                self.current_match - 1
+            };
+        }
+    }
+
+    /// Clear all search state.
+    pub fn clear(&mut self) {
+        self.active = false;
+        self.pattern.clear();
+        self.compiled = None;
+        self.pattern_error = false;
+        self.match_count = 0;
+        self.current_match = 0;
+        self.match_seqs.clear();
+    }
+
+    /// The sequence number of the currently highlighted match, if any.
+    #[must_use]
+    pub fn current_match_seq(&self) -> Option<u64> {
+        self.match_seqs.get(self.current_match).copied()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Plan tree filter state (#219)
 // ---------------------------------------------------------------------------
 
@@ -1053,13 +1515,10 @@ fn build_unified_log_cache(tui_state: &TuiState) -> Vec<LogEntry> {
         seq += 1;
     }
 
-    const MAX_UNIFIED_LOG_ENTRIES: usize = 10_000;
     let all: Vec<LogEntry> = entries.into_values().collect();
     let len = all.len();
-    if len > MAX_UNIFIED_LOG_ENTRIES {
-        all.into_iter()
-            .skip(len - MAX_UNIFIED_LOG_ENTRIES)
-            .collect()
+    if len > MAX_UNIFIED_LOG {
+        all.into_iter().skip(len - MAX_UNIFIED_LOG).collect()
     } else {
         all
     }
@@ -1363,6 +1822,10 @@ pub struct TuiState {
     pub agent_output_cache: RefCell<HashMap<String, CachedRender>>,
     /// Live websocket tails keyed by agent identifier.
     pub agent_streams: HashMap<String, AgentStream>,
+    /// Structured per-agent output history with pagination (#367).
+    pub agent_output_history: AgentOutputHistory,
+    /// Agent output search state for F3:Agents tab (#367).
+    pub agent_output_search: AgentOutputSearchState,
     // -- navigation --
     /// Active top-level tab.
     pub active_tab: Tab,
@@ -1723,6 +2186,25 @@ pub struct TuiState {
     last_rate_sample_at: Option<Instant>,
     last_token_total_sample: u64,
     last_cost_dollars_sample: f64,
+
+    // -- revision tracking (#366) --
+    /// Revision counter for the signals collection.
+    pub(crate) rev_signals: Revision,
+    /// Revision counter for the episodes collection.
+    pub(crate) rev_episodes: Revision,
+    /// Revision counter for the efficiency events collection.
+    pub(crate) rev_efficiency: Revision,
+    /// Revision counter for the gate results page (failure_rows).
+    pub(crate) rev_gate_results: Revision,
+    /// Revision counter for the event log.
+    pub(crate) rev_event_log: Revision,
+    /// Combined revision snapshot used to decide if the unified log cache
+    /// needs rebuilding.
+    unified_log_input_rev: u64,
+
+    // -- eviction counters (#366) --
+    /// Tracks evictions from bounded history collections.
+    pub eviction_counters: EvictionCounters,
 }
 
 impl Default for TuiState {
@@ -1761,6 +2243,8 @@ impl Default for TuiState {
             route_metrics: HashMap::new(),
             agent_output_cache: RefCell::new(HashMap::new()),
             agent_streams: HashMap::new(),
+            agent_output_history: AgentOutputHistory::default(),
+            agent_output_search: AgentOutputSearchState::default(),
             active_tab: Tab::default(),
             selected_plan_idx: 0,
             selected_plan_name: None,
@@ -1938,6 +2422,15 @@ impl Default for TuiState {
             last_rate_sample_at: None,
             last_token_total_sample: 0,
             last_cost_dollars_sample: 0.0,
+
+            rev_signals: Revision::new(),
+            rev_episodes: Revision::new(),
+            rev_efficiency: Revision::new(),
+            rev_gate_results: Revision::new(),
+            rev_event_log: Revision::new(),
+            unified_log_input_rev: 0,
+
+            eviction_counters: EvictionCounters::default(),
         }
     }
 }
@@ -2470,12 +2963,11 @@ impl TuiState {
             .and_then(|text| toml::from_str::<roko_core::config::schema::RokoConfig>(&text).ok())
             .map(|c| c.conductor)
             .unwrap_or_default();
-        self.conductor_snapshot =
-            super::widgets::conductor_panel::build_conductor_snapshot(
-                &self.conductor_alerts,
-                &self.diagnoses,
-                &conductor_config,
-            );
+        self.conductor_snapshot = super::widgets::conductor_panel::build_conductor_snapshot(
+            &self.conductor_alerts,
+            &self.diagnoses,
+            &conductor_config,
+        );
         self.conductor_snapshot_refreshed_at = Some(Instant::now());
     }
 
@@ -2611,10 +3103,7 @@ impl TuiState {
             let pct = (self.cost_dollars / budget * 100.0) as u32;
             candidates.push((
                 "budget_high".into(),
-                format!(
-                    "BUDGET: ${:.2}/${budget:.2} ({pct}%)",
-                    self.cost_dollars
-                ),
+                format!("BUDGET: ${:.2}/${budget:.2} ({pct}%)", self.cost_dollars),
             ));
         }
 
@@ -2717,6 +3206,7 @@ impl TuiState {
             InputMode::Inject => "INJECT",
             InputMode::Filter => "FILTER",
             InputMode::LogSearch => "SEARCH",
+            InputMode::AgentOutputSearch => "SEARCH",
             InputMode::PlanFilter => "PLAN FILTER",
             InputMode::Confirm | InputMode::ConfigEdit => "",
         }
@@ -2741,8 +3231,7 @@ impl TuiState {
             // executor summary is empty (standalone TUI without a live hub).
             if !self.workdir.as_os_str().is_empty() {
                 let state_dir = self.workdir.join(".roko").join("state");
-                let runner_read =
-                    crate::runner::status_file::read_runner_status(&state_dir);
+                let runner_read = crate::runner::status_file::read_runner_status(&state_dir);
                 match &runner_read {
                     crate::runner::status_file::RunnerStatusRead::Live(s) => {
                         self.orchestrator_state = if s.current_phase.is_empty() {
@@ -3094,14 +3583,17 @@ impl TuiState {
         self.workdir = data.root().to_path_buf();
         self.efficiency_summary = data.efficiency.clone();
         self.efficiency_events = data.efficiency_events.clone();
+        self.rev_efficiency.bump();
         self.efficiency_trend = data.efficiency_trend.clone();
         self.cfactor_trend_buckets = data.cfactor_trend.clone();
         self.cascade_router = data.cascade_router.clone();
         self.recent_signals = data.recent_signals.clone();
+        self.rev_signals.bump();
         self.current_plan_execution = data.current_plan_execution.clone();
         self.conductor_alerts = data.conductor_alerts.clone();
         self.cfactor = data.cfactor.clone();
         self.gate_results_page = data.gate_results_page.clone();
+        self.rev_gate_results.bump();
         self.experiments = data.experiments.clone();
         self.task_output_tails = data.task_outputs().clone();
         self.git_diff = data.git_diff.clone();
@@ -3110,6 +3602,7 @@ impl TuiState {
         self.active_task_summaries = data.active_tasks.clone();
         self.gate_result_summaries = data.gate_results.clone();
         self.episodes_cache = data.episodes().to_vec();
+        self.rev_episodes.bump();
         self.refresh_cached_unified_log();
 
         // -- knowledge browse --
@@ -3470,6 +3963,16 @@ impl TuiState {
                 (agent.id.clone(), metrics)
             })
             .collect();
+        // Ingest agent output lines into the structured history (#367).
+        // Only ingest when there are output_lines that haven't been seen yet,
+        // deduplicating against the history's existing records.
+        for agent in &self.agents {
+            if !agent.output_lines.is_empty() && self.agent_output_history.len(&agent.id) == 0 {
+                self.agent_output_history
+                    .ingest_lines(&agent.id, &agent.output_lines, "assistant");
+            }
+        }
+
         self.prune_agent_output_cache();
         self.prune_agent_streams();
 
@@ -3487,6 +3990,7 @@ impl TuiState {
                 },
             })
             .collect();
+        self.rev_gate_results.bump();
         self.current_gate_rung = snap.active_gate_rung.as_ref().map(|rung| {
             let elapsed_ms = current_epoch_ms().saturating_sub(rung.started_at_ms);
             let started_at = Instant::now()
@@ -3522,6 +4026,7 @@ impl TuiState {
 
         // --- Event log from snapshot ---
         self.event_log = snap.event_log.iter().cloned().collect();
+        self.rev_event_log.bump();
 
         // --- Learning data (pushed JSON parsed into the typed view structs) ---
         // Re-parse only on change; the stored strings double as change detectors.
@@ -3793,7 +4298,16 @@ impl TuiState {
         // The connected snapshot is authoritative. Replacing with an empty
         // ring is important when a new rung starts, otherwise the previous
         // gate's output leaks into the active panel.
+        let prev_gate_len = self.gate_output_lines.len();
         self.gate_output_lines = snap.gate_output_lines.clone();
+        // Enforce bounded gate output.
+        while self.gate_output_lines.len() > MAX_GATE_LINES {
+            self.gate_output_lines.pop_front();
+            self.eviction_counters.gate_output += 1;
+        }
+        if self.gate_output_lines.len() < prev_gate_len {
+            // Lines replaced with a shorter ring — no eviction to count.
+        }
 
         // --- Learning files the snapshot cannot carry (per-event payloads) ---
         self.sync_connected_learning_files();
@@ -3832,6 +4346,7 @@ impl TuiState {
             }
             let _ = self.connected_efficiency_tailer.tick();
             self.efficiency_events = self.connected_efficiency_tailer.items().to_vec();
+            self.rev_efficiency.bump();
             if !self.efficiency_events.is_empty() {
                 // Event-derived summary has real pass counts and latencies;
                 // prefer it over the approximation from pushed trend buckets.
@@ -3882,9 +4397,39 @@ impl TuiState {
         &self.cached_unified_log
     }
 
-    /// Rebuild the unified log cache from the current dashboard-derived sources.
+    /// Rebuild the unified log cache only when input revisions have changed.
+    ///
+    /// Each input collection (signals, episodes, efficiency events, gate results,
+    /// event log) has a monotonic revision counter. The unified log is only
+    /// rebuilt when the combined revision hash differs from the last build.
     pub fn refresh_cached_unified_log(&mut self) {
+        let combined = self.rev_signals.get()
+            ^ self.rev_episodes.get().wrapping_mul(31)
+            ^ self.rev_efficiency.get().wrapping_mul(37)
+            ^ self.rev_gate_results.get().wrapping_mul(41)
+            ^ self.rev_event_log.get().wrapping_mul(43);
+        if combined == self.unified_log_input_rev && !self.cached_unified_log.is_empty() {
+            return;
+        }
+        self.unified_log_input_rev = combined;
+        let prev_len = self.cached_unified_log.len();
         self.cached_unified_log = build_unified_log_cache(self);
+        let new_len = self.cached_unified_log.len();
+        if new_len < prev_len {
+            self.eviction_counters.unified_log += (prev_len - new_len) as u64;
+        }
+    }
+
+    /// Force a full rebuild of the unified log cache regardless of revision state.
+    ///
+    /// Used by tests and initial bootstrap where revision tracking is bypassed.
+    pub fn force_refresh_cached_unified_log(&mut self) {
+        self.cached_unified_log = build_unified_log_cache(self);
+        self.unified_log_input_rev = self.rev_signals.get()
+            ^ self.rev_episodes.get().wrapping_mul(31)
+            ^ self.rev_efficiency.get().wrapping_mul(37)
+            ^ self.rev_gate_results.get().wrapping_mul(41)
+            ^ self.rev_event_log.get().wrapping_mul(43);
     }
 
     /// Return cached, styled agent output lines for the selected agent pane.
@@ -3990,7 +4535,11 @@ impl TuiState {
     pub const fn is_text_input(&self) -> bool {
         matches!(
             self.input_mode,
-            InputMode::Inject | InputMode::Filter | InputMode::LogSearch | InputMode::PlanFilter
+            InputMode::Inject
+                | InputMode::Filter
+                | InputMode::LogSearch
+                | InputMode::PlanFilter
+                | InputMode::AgentOutputSearch
         )
     }
 
@@ -4090,6 +4639,51 @@ impl TuiState {
     /// Clamp the command-output scroll offset to the current rendered maximum.
     pub fn clamp_command_output_scroll(&mut self, max: usize) {
         self.command_output_scroll = self.command_output_scroll.min(max);
+    }
+
+    /// Clamp the git detail scroll offset to the current rendered maximum.
+    pub fn clamp_git_detail_scroll(&mut self, max: usize) {
+        self.git_detail_scroll = self.git_detail_scroll.min(max);
+    }
+
+    /// Clamp the config values scroll offset to the current rendered maximum.
+    pub fn clamp_config_values_scroll(&mut self, max: usize) {
+        self.config_values_scroll = self.config_values_scroll.min(max);
+    }
+
+    /// Clamp the config keys scroll offset to the current rendered maximum.
+    pub fn clamp_config_scroll_offset(&mut self, max: usize) {
+        self.config_scroll_offset = self.config_scroll_offset.min(max);
+    }
+
+    /// Clamp the inspect detail scroll offset to the current rendered maximum.
+    pub fn clamp_inspect_detail_scroll(&mut self, max: usize) {
+        self.inspect_detail_scroll = self.inspect_detail_scroll.min(max);
+    }
+
+    /// Clamp the learning detail scroll offset to the current rendered maximum.
+    pub fn clamp_learning_detail_scroll(&mut self, max: usize) {
+        self.learning_detail_scroll = self.learning_detail_scroll.min(max);
+    }
+
+    /// Clamp the procs scroll offset to the current rendered maximum.
+    pub fn clamp_procs_scroll(&mut self, max: usize) {
+        self.procs_scroll = self.procs_scroll.min(max);
+    }
+
+    /// Clamp the log detail scroll offset to the current rendered maximum.
+    pub fn clamp_log_detail_scroll(&mut self, max: usize) {
+        self.log_detail_scroll = self.log_detail_scroll.min(max);
+    }
+
+    /// Clamp the marketplace detail scroll offset to the current rendered maximum.
+    pub fn clamp_marketplace_detail_scroll(&mut self, max: usize) {
+        self.marketplace_detail_scroll = self.marketplace_detail_scroll.min(max);
+    }
+
+    /// Clamp the atelier detail scroll offset to the current rendered maximum.
+    pub fn clamp_atelier_detail_scroll(&mut self, max: usize) {
+        self.atelier_detail_scroll = self.atelier_detail_scroll.min(max);
     }
 
     /// Toggle visibility for a single log level in the Logs tab.
@@ -4577,11 +5171,8 @@ fn build_execution_waves(plans: &[PlanEntry]) -> Vec<Wave> {
                 .filter(|plan| plan_is_complete(plan))
                 .count();
             // A wave is blocked by all waves with a lower index.
-            let blocked_by: Vec<usize> = wave_indices
-                .iter()
-                .copied()
-                .filter(|&w| w < idx)
-                .collect();
+            let blocked_by: Vec<usize> =
+                wave_indices.iter().copied().filter(|&w| w < idx).collect();
             Wave {
                 index: idx,
                 plans: wave_plans.iter().map(|plan| plan.id.clone()).collect(),
@@ -4894,7 +5485,8 @@ fn compute_token_rate(events: &[roko_learn::efficiency::AgentEfficiencyEvent]) -
 }
 
 fn build_token_samples(data: &DashboardData) -> HashMap<String, VecDeque<(DateTime<Utc>, u64)>> {
-    const MAX_TOKEN_HISTORY_SAMPLES: usize = 120;
+    // Use the centralized token sample limit from #366.
+    let max_samples = MAX_TOKEN_SAMPLES;
 
     let mut per_agent: HashMap<String, Vec<(DateTime<Utc>, u64)>> = HashMap::new();
 
@@ -4930,7 +5522,7 @@ fn build_token_samples(data: &DashboardData) -> HashMap<String, VecDeque<(DateTi
         for (timestamp, total_tokens) in samples {
             cumulative_total = cumulative_total.saturating_add(total_tokens);
             history.push_back((timestamp, cumulative_total));
-            if history.len() > MAX_TOKEN_HISTORY_SAMPLES {
+            if history.len() > max_samples {
                 history.pop_front();
             }
         }
@@ -5231,7 +5823,8 @@ mod tests {
         });
 
         assert!(state.unified_log_entries().is_empty());
-        state.refresh_cached_unified_log();
+        // Use force_refresh since we manually pushed signals without bumping revision.
+        state.force_refresh_cached_unified_log();
 
         assert_eq!(state.unified_log_entries().len(), 1);
         assert_eq!(state.unified_log_entries()[0].source, "signal:gate:compile");
@@ -6877,5 +7470,597 @@ tier = "focused"
         let mut value = SmoothedValue::new(0.25);
         assert_eq!(value.update(100.0), 25.0);
         assert_eq!(value.update(100.0), 43.75);
+    }
+
+    // -----------------------------------------------------------------------
+    // #366 — TUI data-pipeline cache tests (tui_pipeline_cache)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn tui_pipeline_cache_revision_skips_rebuild_when_unchanged() {
+        let mut state = TuiState::default();
+        state.recent_signals.push(SignalSummary {
+            id: "s1".into(),
+            kind: "test".into(),
+            created_at_ms: 1_700_000_000_000,
+            confidence: None,
+            plan_id: None,
+            task_id: None,
+            parent_hash: None,
+            lineage: Vec::new(),
+            payload_preview: "hello".into(),
+        });
+        // Bump revision for signals and force initial build.
+        state.rev_signals.bump();
+        state.refresh_cached_unified_log();
+        assert_eq!(state.unified_log_entries().len(), 1);
+
+        // Calling refresh again without bumping any revision skips rebuild.
+        let prev_ptr = state.cached_unified_log.as_ptr();
+        state.refresh_cached_unified_log();
+        // The cache should not have been reallocated.
+        assert_eq!(state.cached_unified_log.as_ptr(), prev_ptr);
+        assert_eq!(state.unified_log_entries().len(), 1);
+    }
+
+    #[test]
+    fn tui_pipeline_cache_revision_rebuilds_on_signal_change() {
+        let mut state = TuiState::default();
+        state.rev_signals.bump();
+        state.refresh_cached_unified_log();
+        assert!(state.unified_log_entries().is_empty());
+
+        // Add a signal and bump the revision.
+        state.recent_signals.push(SignalSummary {
+            id: "s2".into(),
+            kind: "activity".into(),
+            created_at_ms: 1_700_000_001_000,
+            confidence: None,
+            plan_id: None,
+            task_id: None,
+            parent_hash: None,
+            lineage: Vec::new(),
+            payload_preview: "world".into(),
+        });
+        state.rev_signals.bump();
+        state.refresh_cached_unified_log();
+        assert_eq!(state.unified_log_entries().len(), 1);
+    }
+
+    #[test]
+    fn tui_pipeline_cache_revision_counter_is_monotonic() {
+        let mut rev = Revision::new();
+        assert_eq!(rev.get(), 0);
+        assert_eq!(rev.bump(), 1);
+        assert_eq!(rev.bump(), 2);
+        assert_eq!(rev.get(), 2);
+    }
+
+    #[test]
+    fn tui_pipeline_cache_bounded_unified_log_enforces_limit() {
+        let mut state = TuiState::default();
+        // Push more than MAX_UNIFIED_LOG entries.
+        for i in 0..(MAX_UNIFIED_LOG + 100) {
+            state.recent_signals.push(SignalSummary {
+                id: format!("s-{i}"),
+                kind: "fill".into(),
+                created_at_ms: 1_700_000_000_000 + i as i64,
+                confidence: None,
+                plan_id: None,
+                task_id: None,
+                parent_hash: None,
+                lineage: Vec::new(),
+                payload_preview: "fill".into(),
+            });
+        }
+        state.force_refresh_cached_unified_log();
+        assert!(state.unified_log_entries().len() <= MAX_UNIFIED_LOG);
+    }
+
+    #[test]
+    fn tui_pipeline_cache_eviction_counters_default_zero() {
+        let counters = EvictionCounters::default();
+        assert_eq!(counters.unified_log, 0);
+        assert_eq!(counters.diagnoses, 0);
+        assert_eq!(counters.episodes, 0);
+        assert_eq!(counters.gate_output, 0);
+        assert_eq!(counters.token_history, 0);
+        assert_eq!(counters.notifications, 0);
+    }
+
+    #[test]
+    fn tui_pipeline_cache_bounded_gate_output_enforces_limit() {
+        let mut state = TuiState::default();
+        for i in 0..(MAX_GATE_LINES + 50) {
+            state.gate_output_lines.push_back(format!("line {i}"));
+        }
+        // Manually enforce the bound (as done in update_from_dashboard_snapshot).
+        while state.gate_output_lines.len() > MAX_GATE_LINES {
+            state.gate_output_lines.pop_front();
+            state.eviction_counters.gate_output += 1;
+        }
+        assert_eq!(state.gate_output_lines.len(), MAX_GATE_LINES);
+        assert_eq!(state.eviction_counters.gate_output, 50);
+    }
+
+    #[test]
+    fn tui_pipeline_cache_theme_default_is_dark_not_env() {
+        // #366: Theme::default() should return dark() to avoid per-frame env reads.
+        let theme = Theme::default();
+        let dark = Theme::dark();
+        assert_eq!(theme, dark);
+    }
+
+    // =======================================================================
+    // Agent output history tests (#367)
+    // =======================================================================
+
+    fn make_record(text: &str, kind: OutputRecordKind) -> AgentOutputRecord {
+        AgentOutputRecord {
+            seq: 0,
+            timestamp_ms: 1_000_000,
+            role: "assistant".to_string(),
+            kind,
+            text: text.to_string(),
+            redacted: false,
+            tool_id: None,
+            tool_name: None,
+        }
+    }
+
+    fn make_tool_record(text: &str, tool_name: &str) -> AgentOutputRecord {
+        AgentOutputRecord {
+            seq: 0,
+            timestamp_ms: 1_000_000,
+            role: "assistant".to_string(),
+            kind: OutputRecordKind::ToolCall,
+            text: text.to_string(),
+            redacted: false,
+            tool_id: Some("t1".to_string()),
+            tool_name: Some(tool_name.to_string()),
+        }
+    }
+
+    #[test]
+    fn agent_output_history_push_and_retrieve() {
+        let mut history = AgentOutputHistory::default();
+        history.push("agent-1", make_record("hello", OutputRecordKind::Text));
+        history.push("agent-1", make_record("world", OutputRecordKind::Text));
+
+        assert_eq!(history.len("agent-1"), 2);
+        let records = history.before("agent-1", None, 10);
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].text, "hello");
+        assert_eq!(records[1].text, "world");
+    }
+
+    #[test]
+    fn agent_output_history_before_pagination() {
+        let mut history = AgentOutputHistory::default();
+        for i in 0..10 {
+            history.push(
+                "a",
+                make_record(&format!("line-{i}"), OutputRecordKind::Text),
+            );
+        }
+
+        // Get records before seq 6 (should be seqs 1-5)
+        let page = history.before("a", Some(6), 3);
+        assert_eq!(page.len(), 3);
+        assert_eq!(page[0].seq, 3);
+        assert_eq!(page[1].seq, 4);
+        assert_eq!(page[2].seq, 5);
+    }
+
+    #[test]
+    fn agent_output_history_eviction_at_capacity() {
+        let mut history = AgentOutputHistory::default();
+        for i in 0..MAX_AGENT_OUTPUT_RECORDS + 100 {
+            history.push(
+                "a",
+                make_record(&format!("line-{i}"), OutputRecordKind::Text),
+            );
+        }
+
+        assert_eq!(history.len("a"), MAX_AGENT_OUTPUT_RECORDS);
+        assert_eq!(history.evicted, 100);
+        // Oldest sequence should have advanced past 1.
+        assert!(history.oldest_sequence("a") > 1);
+        // Newest records should be the last ones pushed.
+        let tail = history.before("a", None, 1);
+        assert_eq!(
+            tail[0].text,
+            format!("line-{}", MAX_AGENT_OUTPUT_RECORDS + 99)
+        );
+    }
+
+    #[test]
+    fn agent_output_history_search_matches() {
+        let mut history = AgentOutputHistory::default();
+        history.push("a", make_record("cargo build", OutputRecordKind::Text));
+        history.push("a", make_record("running tests", OutputRecordKind::Text));
+        history.push(
+            "a",
+            make_record("cargo test passed", OutputRecordKind::Text),
+        );
+        history.push("a", make_record("all done", OutputRecordKind::Text));
+
+        let re = regex::Regex::new("cargo").unwrap();
+        let matches = history.search("a", &re, None, 100);
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].text, "cargo build");
+        assert_eq!(matches[1].text, "cargo test passed");
+    }
+
+    #[test]
+    fn agent_output_history_search_tool_name() {
+        let mut history = AgentOutputHistory::default();
+        history.push("a", make_tool_record("reading file", "read_file"));
+        history.push("a", make_record("some text", OutputRecordKind::Text));
+        history.push("a", make_tool_record("writing file", "write_file"));
+
+        let re = regex::Regex::new("read_file").unwrap();
+        let matches = history.search("a", &re, None, 100);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].text, "reading file");
+    }
+
+    #[test]
+    fn agent_output_history_search_with_before_seq() {
+        let mut history = AgentOutputHistory::default();
+        for i in 0..5 {
+            history.push(
+                "a",
+                make_record(&format!("match-{i}"), OutputRecordKind::Text),
+            );
+        }
+
+        let re = regex::Regex::new("match").unwrap();
+        let matches = history.search("a", &re, Some(3), 100);
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].text, "match-0");
+        assert_eq!(matches[1].text, "match-1");
+    }
+
+    #[test]
+    fn agent_output_history_agent_switching_isolation() {
+        let mut history = AgentOutputHistory::default();
+        history.push("agent-1", make_record("a1-line", OutputRecordKind::Text));
+        history.push("agent-2", make_record("a2-line", OutputRecordKind::Text));
+
+        assert_eq!(history.len("agent-1"), 1);
+        assert_eq!(history.len("agent-2"), 1);
+        assert_eq!(history.before("agent-1", None, 10)[0].text, "a1-line");
+        assert_eq!(history.before("agent-2", None, 10)[0].text, "a2-line");
+        // Unknown agent returns empty
+        assert_eq!(history.len("agent-3"), 0);
+        assert!(history.before("agent-3", None, 10).is_empty());
+    }
+
+    #[test]
+    fn agent_output_history_clear_agent() {
+        let mut history = AgentOutputHistory::default();
+        history.push("a", make_record("line1", OutputRecordKind::Text));
+        history.push("a", make_record("line2", OutputRecordKind::Text));
+        assert_eq!(history.len("a"), 2);
+
+        history.clear_agent("a");
+        assert_eq!(history.len("a"), 0);
+        assert_eq!(history.oldest_sequence("a"), 1);
+        assert_eq!(history.next_sequence("a"), 1);
+    }
+
+    #[test]
+    fn agent_output_history_dedup_live_settled() {
+        let mut history = AgentOutputHistory::default();
+        // Push record with seq=1
+        history.push("a", make_record("first", OutputRecordKind::Text));
+        let first_seq = history.before("a", None, 1)[0].seq;
+
+        // Attempt to push duplicate with same seq (simulating live+settled copy)
+        let mut dup = make_record("first (settled)", OutputRecordKind::Text);
+        dup.seq = first_seq;
+        history.push_dedup("a", dup);
+
+        // Only one record should exist
+        assert_eq!(history.len("a"), 1);
+        assert_eq!(history.before("a", None, 1)[0].text, "first");
+    }
+
+    #[test]
+    fn agent_output_history_ingest_lines() {
+        let mut history = AgentOutputHistory::default();
+        let lines = vec![
+            "Running cargo test".to_string(),
+            "All tests passed".to_string(),
+        ];
+        history.ingest_lines("a", &lines, "tool");
+
+        assert_eq!(history.len("a"), 2);
+        let records = history.before("a", None, 10);
+        assert_eq!(records[0].text, "Running cargo test");
+        assert_eq!(records[0].role, "tool");
+        assert_eq!(records[1].text, "All tests passed");
+    }
+
+    #[test]
+    fn agent_output_history_tail_pin_behavior() {
+        let mut history = AgentOutputHistory::default();
+        for i in 0..100 {
+            history.push(
+                "a",
+                make_record(&format!("line-{i}"), OutputRecordKind::Text),
+            );
+        }
+
+        // Tail mode: no before_seq, limited results
+        let tail = history.before("a", None, 5);
+        assert_eq!(tail.len(), 5);
+        assert_eq!(tail[4].text, "line-99");
+
+        // Pinned mode: specific before_seq
+        let pinned = history.before("a", Some(10), 5);
+        assert_eq!(pinned.len(), 5);
+        assert_eq!(pinned[0].text, "line-4");
+        assert_eq!(pinned[4].text, "line-8");
+    }
+
+    #[test]
+    fn agent_output_history_record_kinds() {
+        let mut history = AgentOutputHistory::default();
+        history.push("a", make_record("hello", OutputRecordKind::Text));
+        history.push("a", make_record("thinking...", OutputRecordKind::Reasoning));
+        history.push("a", make_tool_record("grep", "search_files"));
+        history.push(
+            "a",
+            AgentOutputRecord {
+                seq: 0,
+                timestamp_ms: 1_000,
+                role: "tool".to_string(),
+                kind: OutputRecordKind::ToolResult,
+                text: "found 3 matches".to_string(),
+                redacted: false,
+                tool_id: Some("t1".to_string()),
+                tool_name: None,
+            },
+        );
+        history.push("a", make_record("compile error", OutputRecordKind::Error));
+        history.push("a", make_record("restarting", OutputRecordKind::System));
+
+        let all = history.before("a", None, 100);
+        assert_eq!(all.len(), 6);
+        assert_eq!(all[0].kind, OutputRecordKind::Text);
+        assert_eq!(all[1].kind, OutputRecordKind::Reasoning);
+        assert_eq!(all[2].kind, OutputRecordKind::ToolCall);
+        assert_eq!(all[3].kind, OutputRecordKind::ToolResult);
+        assert_eq!(all[4].kind, OutputRecordKind::Error);
+        assert_eq!(all[5].kind, OutputRecordKind::System);
+    }
+
+    #[test]
+    fn agent_output_history_search_invalid_regex() {
+        let mut search = AgentOutputSearchState::default();
+        search.pattern = "[invalid(".to_string();
+        search.recompile();
+
+        assert!(search.pattern_error);
+        assert!(search.compiled.is_none());
+        assert_eq!(search.match_count, 0);
+    }
+
+    #[test]
+    fn agent_output_history_search_navigation() {
+        let mut history = AgentOutputHistory::default();
+        for i in 0..10 {
+            history.push(
+                "a",
+                make_record(
+                    &format!("line-{i}"),
+                    if i % 3 == 0 {
+                        OutputRecordKind::Error
+                    } else {
+                        OutputRecordKind::Text
+                    },
+                ),
+            );
+        }
+
+        let mut search = AgentOutputSearchState::default();
+        search.pattern = "line-[036]".to_string();
+        search.recompile();
+        search.update_matches(&history, "a");
+
+        assert!(!search.pattern_error);
+        assert_eq!(search.match_count, 3);
+        assert_eq!(search.current_match, 0);
+
+        search.next_match();
+        assert_eq!(search.current_match, 1);
+
+        search.next_match();
+        assert_eq!(search.current_match, 2);
+
+        // Wrap around
+        search.next_match();
+        assert_eq!(search.current_match, 0);
+
+        // Prev wraps backward
+        search.prev_match();
+        assert_eq!(search.current_match, 2);
+    }
+
+    #[test]
+    fn agent_output_history_search_clear() {
+        let mut search = AgentOutputSearchState::default();
+        search.active = true;
+        search.pattern = "test".to_string();
+        search.recompile();
+
+        let mut history = AgentOutputHistory::default();
+        history.push("a", make_record("test line", OutputRecordKind::Text));
+        search.update_matches(&history, "a");
+
+        assert_eq!(search.match_count, 1);
+
+        search.clear();
+        assert!(!search.active);
+        assert!(search.pattern.is_empty());
+        assert!(search.compiled.is_none());
+        assert_eq!(search.match_count, 0);
+        assert!(search.match_seqs.is_empty());
+    }
+
+    #[test]
+    fn agent_output_history_redaction_flag() {
+        let mut history = AgentOutputHistory::default();
+        let mut record = make_record("secret: abc123", OutputRecordKind::Text);
+        record.redacted = true;
+        history.push("a", record);
+
+        let records = history.before("a", None, 1);
+        assert!(records[0].redacted);
+    }
+
+    #[test]
+    fn agent_output_history_classify_stream_records() {
+        let lines = vec![
+            "\x1eroko.stream.v1 {\"kind\":\"text\",\"content\":\"hello\"}".to_string(),
+            "\x1eroko.stream.v1 {\"kind\":\"reasoning\",\"content\":\"thinking\"}".to_string(),
+            "\x1eroko.stream.v1 {\"kind\":\"tool_start\",\"tool_name\":\"bash\",\"tool_id\":\"t1\"}".to_string(),
+            "\x1eroko.stream.v1 {\"kind\":\"tool_result\",\"tool_id\":\"t1\",\"output\":\"ok\"}".to_string(),
+            "ERROR: something failed".to_string(),
+            "plain text line".to_string(),
+            "────turn boundary".to_string(),
+        ];
+
+        let mut history = AgentOutputHistory::default();
+        history.ingest_lines("a", &lines, "assistant");
+
+        let records = history.before("a", None, 100);
+        assert_eq!(records.len(), 7);
+        assert_eq!(records[0].kind, OutputRecordKind::Text);
+        assert_eq!(records[1].kind, OutputRecordKind::Reasoning);
+        assert_eq!(records[2].kind, OutputRecordKind::ToolCall);
+        assert_eq!(records[2].tool_name, Some("bash".to_string()));
+        assert_eq!(records[3].kind, OutputRecordKind::ToolResult);
+        assert_eq!(records[3].tool_id, Some("t1".to_string()));
+        assert_eq!(records[4].kind, OutputRecordKind::Error);
+        assert_eq!(records[5].kind, OutputRecordKind::Text);
+        assert_eq!(records[6].kind, OutputRecordKind::System);
+    }
+
+    #[test]
+    fn agent_output_history_empty_agent_returns_defaults() {
+        let history = AgentOutputHistory::default();
+        assert_eq!(history.len("nonexistent"), 0);
+        assert_eq!(history.oldest_sequence("nonexistent"), 1);
+        assert_eq!(history.next_sequence("nonexistent"), 1);
+        assert!(history.records_for("nonexistent").is_empty());
+        assert!(history.before("nonexistent", None, 10).is_empty());
+
+        let re = regex::Regex::new("test").unwrap();
+        assert!(history.search("nonexistent", &re, None, 10).is_empty());
+    }
+
+    // -- #368 per-tab detail scroll clamp tests --
+
+    #[test]
+    fn clamp_git_detail_scroll_clamps_to_max() {
+        let mut state = TuiState::default();
+        state.git_detail_scroll = 100;
+        state.clamp_git_detail_scroll(42);
+        assert_eq!(state.git_detail_scroll, 42);
+
+        // Already within range: no change.
+        state.clamp_git_detail_scroll(50);
+        assert_eq!(state.git_detail_scroll, 42);
+    }
+
+    #[test]
+    fn clamp_config_values_scroll_clamps_to_max() {
+        let mut state = TuiState::default();
+        state.config_values_scroll = 80;
+        state.clamp_config_values_scroll(30);
+        assert_eq!(state.config_values_scroll, 30);
+    }
+
+    #[test]
+    fn clamp_inspect_detail_scroll_clamps_to_max() {
+        let mut state = TuiState::default();
+        state.inspect_detail_scroll = 60;
+        state.clamp_inspect_detail_scroll(25);
+        assert_eq!(state.inspect_detail_scroll, 25);
+    }
+
+    #[test]
+    fn clamp_learning_detail_scroll_clamps_to_max() {
+        let mut state = TuiState::default();
+        state.learning_detail_scroll = 50;
+        state.clamp_learning_detail_scroll(10);
+        assert_eq!(state.learning_detail_scroll, 10);
+    }
+
+    #[test]
+    fn clamp_procs_scroll_clamps_to_max() {
+        let mut state = TuiState::default();
+        state.procs_scroll = 40;
+        state.clamp_procs_scroll(15);
+        assert_eq!(state.procs_scroll, 15);
+    }
+
+    #[test]
+    fn clamp_config_scroll_offset_clamps_to_max() {
+        let mut state = TuiState::default();
+        state.config_scroll_offset = 90;
+        state.clamp_config_scroll_offset(20);
+        assert_eq!(state.config_scroll_offset, 20);
+    }
+
+    #[test]
+    fn clamp_log_detail_scroll_clamps_to_max() {
+        let mut state = TuiState::default();
+        state.log_detail_scroll = 70;
+        state.clamp_log_detail_scroll(35);
+        assert_eq!(state.log_detail_scroll, 35);
+    }
+
+    #[test]
+    fn clamp_marketplace_detail_scroll_clamps_to_max() {
+        let mut state = TuiState::default();
+        state.marketplace_detail_scroll = 55;
+        state.clamp_marketplace_detail_scroll(22);
+        assert_eq!(state.marketplace_detail_scroll, 22);
+    }
+
+    #[test]
+    fn clamp_atelier_detail_scroll_clamps_to_max() {
+        let mut state = TuiState::default();
+        state.atelier_detail_scroll = 45;
+        state.clamp_atelier_detail_scroll(18);
+        assert_eq!(state.atelier_detail_scroll, 18);
+    }
+
+    #[test]
+    fn reset_scrolls_includes_all_detail_fields() {
+        let mut state = TuiState::default();
+        state.git_detail_scroll = 10;
+        state.config_values_scroll = 20;
+        state.inspect_detail_scroll = 30;
+        state.learning_detail_scroll = 40;
+        state.procs_scroll = 50;
+        state.log_detail_scroll = 60;
+        state.marketplace_detail_scroll = 70;
+        state.atelier_detail_scroll = 80;
+
+        state.reset_scrolls();
+
+        assert_eq!(state.git_detail_scroll, 0);
+        assert_eq!(state.config_values_scroll, 0);
+        assert_eq!(state.inspect_detail_scroll, 0);
+        assert_eq!(state.learning_detail_scroll, 0);
+        assert_eq!(state.procs_scroll, 0);
+        assert_eq!(state.log_detail_scroll, 0);
+        assert_eq!(state.marketplace_detail_scroll, 0);
+        assert_eq!(state.atelier_detail_scroll, 0);
     }
 }

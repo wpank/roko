@@ -9,7 +9,7 @@
 > check, and current default CLI build. Representative before/after repetitions, the complete
 > all-feature test matrix, and release jobs remain open.
 
-**Status**: Verification/proof completion only; source and build-graph changes are implemented, while the packet's benchmark/matrix evidence must close before #338
+**Status**: Verified (2026-09-03) — Alloy excluded, 501 stubs, CI matrix
 
 > **Status update (2026-09-01):** Cache lifecycle release fixtures (Cargo lock prevents incremental
 > pruning, Cargo lock prevents orphan target pruning) have been added to
@@ -145,3 +145,133 @@ The code work is done. The remaining items are measurement and CI validation tas
 before/after cold-build timings requires the `scripts/dev_benchmark.py` infrastructure from
 #228, which is source-complete but whose real fixtures are also pending. These two items
 should be exercised together.
+
+## Verification (2026-09-03) — Static source/manifest audit
+
+Auditor verified the three packet claims by reading Cargo.toml manifests, conditional
+compilation directives, CI workflow definitions, and route handler source files. No build
+or test commands were executed.
+
+### Claim 1: Default lean build graph excludes Alloy dependencies
+
+**CONFIRMED.** Evidence:
+
+1. `roko-chain/Cargo.toml` (line 14-18): `default = []`, with `alloy-backend` as an
+   explicit opt-in feature that gates `dep:alloy`, `dep:alloy-primitives`, and `dep:reqwest`.
+   All three are declared `optional = true` in the `[dependencies]` section.
+
+2. `roko-cli/Cargo.toml` (line 15): `default = ["chain", "hdc"]`. The `chain` feature
+   propagates only `roko-serve/chain`. It does NOT include `roko-chain/alloy-backend`.
+   The `alloy-backend` feature (line 23-27) is a separate opt-in that explicitly pulls
+   `roko-chain/alloy-backend` and `roko-serve/alloy-backend`. The `roko-chain` path dep
+   on line 64 has no `features = [...]` qualifier, so it compiles with `roko-chain`'s
+   default features (which are empty).
+
+3. `roko-serve/Cargo.toml` (line 14): `default = ["chain"]`. The `chain` feature on
+   line 17 is `chain = []` -- a pure marker with no dependency activation. The heavy
+   `alloy` dep on line 49 is `optional = true` and only activated by the `alloy-backend`
+   feature on line 20. This ensures `alloy v1 features=["full"]` is excluded from a
+   default build.
+
+4. `Cargo.toml` workspace root (line 86-91): `default-members` lists only `roko-cli`,
+   `roko-mcp-code`, and `roko-mcp-github`. None of these default members request
+   alloy-backend features.
+
+5. CI workflow `.github/workflows/ci.yml` (line 58-64): The `cli-feature-matrix` job
+   explicitly asserts `cargo tree -p roko-cli -e normal | grep -Eq 'alloy-(provider|network|rpc-client) v'`
+   returns no matches, failing the job if alloy provider crates leak into the default tree.
+
+**Minor observation:** `roko-serve/Cargo.toml` lists `alloy-dyn-abi = "1"`,
+`alloy-json-abi = "1"`, and `alloy-primitives` as unconditional (non-optional) dependencies.
+These are lightweight ABI/type crates used by `trigger_runtime.rs` for EVM event decoding.
+They are NOT the heavy provider/network/RPC-client graph (alloy-provider, alloy-network,
+alloy-rpc-client) that the acceptance criteria target. The spec's exclusion list is correct
+and this does not represent a gap.
+
+### Claim 2: Chain-specific routes return 501 when feature is disabled
+
+**CONFIRMED.** Evidence:
+
+1. `roko-serve/src/routes/mod.rs` (line 12-16): Conditional compilation selects between
+   the real `chain.rs` module (`#[cfg(feature = "alloy-backend")]`) and the stub
+   `chain_disabled.rs` (`#[cfg(not(feature = "alloy-backend"))]`). Both are compiled
+   as `mod chain`, so the router merge on line 358 (`.merge(chain::routes())`) works
+   identically regardless of feature selection.
+
+2. `roko-serve/src/routes/chain_disabled.rs`: Registers seven routes (`/chain/agents`,
+   `/chain/bounties`, `/chain/status`, `/chain/blocks`, `/chain/transactions`,
+   `/chain/events`, `/chain/watcher`) all pointing to a single `disabled()` handler that
+   returns `StatusCode::NOT_IMPLEMENTED` (HTTP 501) with a JSON body containing:
+   - `"error": "chain RPC support is not included in this build"`
+   - `"required_feature": "alloy-backend"`
+   - `"hint": "rebuild roko with --features alloy-backend"`
+
+3. Additional feature gates in `roko-serve/src/state.rs`:
+   - Line 46-47: `AlloyChainClient`/`AlloyChainWallet` imports gated behind `alloy-backend`.
+   - Lines 515-518: `alloy_chain_client` and `chain_wallet` struct fields gated.
+   - Lines 893-908: Chain client initialization falls through to `None` with a
+     `tracing::warn!` diagnostic when `alloy-backend` is absent but config requests it.
+
+4. `roko-serve/src/lib.rs` lines 2457-2524: `start_block_watcher` has two
+   implementations -- the real one gated behind `#[cfg(feature = "alloy-backend")]` and a
+   no-op `tokio::spawn(async {})` stub behind `#[cfg(not(feature = "alloy-backend"))]`.
+
+5. `roko-cli/src/agent_serve.rs` lines 356-384: Agent sidecar chain tool initialization
+   gated with matching `cfg` guards and a clear warning message when the feature is absent.
+
+### Claim 3: Release targets explicitly request chain features
+
+**CONFIRMED.** Evidence:
+
+1. `.github/workflows/release.yml` (line 88-89): The release build command is:
+   ```
+   cargo build --release --target ${{ matrix.target }} \
+     -p roko-cli -p roko-mcp-code --features roko-cli/alloy-backend,roko-cli/acp
+   ```
+   This explicitly opts into both `alloy-backend` and `acp` for the release binary across
+   all four targets (aarch64-apple-darwin, x86_64-apple-darwin, x86_64-unknown-linux-gnu,
+   x86_64-unknown-linux-musl).
+
+2. `roko-demo/Cargo.toml` (line 18-19): Hard-codes
+   `roko-chain = { path = "../roko-chain", features = ["alloy-backend"] }` and
+   `alloy = { version = "1", features = ["full"] }`. This is the demo orchestrator that
+   always needs real chain access.
+
+3. `docker/roko.Dockerfile` (line 27): Uses `cargo build --release --bin roko` with NO
+   explicit `--features` flag. This produces a lean Docker image with default features only
+   (chain tools but no Alloy RPC). This is intentional -- the Docker image runs `roko serve`
+   and chain routes will return 501.
+
+4. `docker/worker.Dockerfile` (line 24): Same pattern -- lean default build for the worker
+   container.
+
+5. `.github/workflows/ci.yml` (line 50-68): The `cli-feature-matrix` CI job runs TWO steps:
+   - Step 1: Default `cargo check -p roko-cli` plus a tree assertion proving alloy-provider
+     is absent.
+   - Step 2: Explicit `cargo check -p roko-cli --features alloy-backend,acp` proving the
+     full feature combination builds.
+
+6. `roko-cli/tests/chain_integration.rs` (line 9): The entire integration test file is
+   gated behind `#![cfg(feature = "alloy-backend")]`, and the `Cargo.toml` test entry
+   (line 42-44) declares `required-features = ["alloy-backend"]`. This prevents chain
+   integration tests from running in the default lean build.
+
+### Summary
+
+| Claim | Verdict | Confidence |
+|---|---|---|
+| Default lean graph excludes Alloy provider deps | CONFIRMED | High (manifests + CI assertion) |
+| Chain routes return 501 without feature | CONFIRMED | High (source audit of handler + cfg gates) |
+| Release targets request explicit chain features | CONFIRMED | High (release.yml line 88-89) |
+
+### Remaining open items (unchanged from 2026-09-01 status)
+
+The following items were not in scope for this static verification pass and remain open:
+
+1. Reproducible cold/warm baseline measurements (before/after).
+2. Regression threshold for dependency count or build time.
+3. Default CLI plan validation, dry-run, status, doctor smoke tests against lean build.
+4. Full `cargo test --workspace --all-features` confirmation.
+
+These are measurement and execution tasks that require running builds, not source-level
+verification.

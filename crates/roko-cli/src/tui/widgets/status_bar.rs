@@ -83,18 +83,14 @@ pub fn render_status_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
             };
             spans.push(Span::styled(
                 format!(" \u{25c6} {label}"),
-                Style::default()
-                    .fg(Theme::BONE_DIM)
-                    .bg(Theme::BG_SECONDARY),
+                Style::default().fg(Theme::BONE_DIM).bg(Theme::BG_SECONDARY),
             ));
         }
     }
 
     spans.push(Span::styled(
         " \u{2502} ",
-        Style::default()
-            .fg(Theme::ROSE_DIM)
-            .bg(Theme::BG_SECONDARY),
+        Style::default().fg(Theme::ROSE_DIM).bg(Theme::BG_SECONDARY),
     ));
 
     // ── 2. Heartbeat + pause indicator + elapsed time ─────────────────
@@ -141,9 +137,7 @@ pub fn render_status_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
     if state.token_rate >= 1.0 {
         spans.push(Span::styled(
             format!(" \u{25c6} {:.0}/min", state.token_rate),
-            Style::default()
-                .fg(Theme::ROSE_DIM)
-                .bg(Theme::BG_SECONDARY),
+            Style::default().fg(Theme::ROSE_DIM).bg(Theme::BG_SECONDARY),
         ));
     }
 
@@ -195,9 +189,7 @@ pub fn render_status_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         } else {
             Theme::ROSE_EMBER
         };
-        Style::default()
-            .fg(ember_fg)
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(ember_fg).add_modifier(Modifier::BOLD)
     } else if all_done {
         Theme::success_style()
     } else {
@@ -240,10 +232,7 @@ pub fn render_status_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         let aggregate_budget = state.aggregate_plan_budget();
         if state.cost_dollars > 0.001 || aggregate_budget > 0.0 {
             let cost = if aggregate_budget > 0.0 {
-                format!(
-                    " ${:.2}/${aggregate_budget:.2}",
-                    state.cost_dollars,
-                )
+                format!(" ${:.2}/${aggregate_budget:.2}", state.cost_dollars,)
             } else {
                 format!(" ${:.2}", state.cost_dollars)
             };
@@ -286,10 +275,7 @@ pub fn render_status_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
             format!("{dot}{live_agents}"),
             Style::default().fg(Theme::SAGE).bg(Theme::BG_SECONDARY),
         ));
-        spans.push(Span::styled(
-            " ",
-            Style::default().bg(Theme::BG_SECONDARY),
-        ));
+        spans.push(Span::styled(" ", Style::default().bg(Theme::BG_SECONDARY)));
     }
 
     // ── 4b. Current time ──────────────────────────────────────────────
@@ -297,7 +283,9 @@ pub fn render_status_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         let now = chrono::Local::now();
         spans.push(Span::styled(
             now.format("%H:%M:%S").to_string(),
-            Style::default().fg(Theme::TEXT_GHOST).bg(Theme::BG_SECONDARY),
+            Style::default()
+                .fg(Theme::TEXT_GHOST)
+                .bg(Theme::BG_SECONDARY),
         ));
         spans.push(Span::styled(
             " \u{2502} ",
@@ -399,6 +387,7 @@ fn input_mode_key_hints(mode: InputMode) -> String {
         InputMode::ConfigEdit => &["Enter:save", "Esc:cancel"],
         InputMode::LogSearch => &["Enter:search", "Esc:cancel"],
         InputMode::PlanFilter => &["Enter:filter", "Esc:cancel"],
+        InputMode::AgentOutputSearch => &["Enter:search", "Esc:cancel", "n/N:next/prev"],
     };
     hints.join("  ")
 }
@@ -581,10 +570,7 @@ mod tests {
             hints.contains("Enter:detail"),
             "Expected Enter:detail in: {hints}"
         );
-        assert!(
-            hints.contains("/:filter"),
-            "Expected /:filter in: {hints}"
-        );
+        assert!(hints.contains("/:filter"), "Expected /:filter in: {hints}");
     }
 
     #[test]
@@ -599,10 +585,7 @@ mod tests {
     #[test]
     fn config_tab_shows_nav_and_toggle_hints() {
         let hints = key_hints_for_tab(Tab::Config, false);
-        assert!(
-            hints.contains("j/k:nav"),
-            "Expected j/k:nav in: {hints}"
-        );
+        assert!(hints.contains("j/k:nav"), "Expected j/k:nav in: {hints}");
         assert!(
             hints.contains("Enter:toggle"),
             "Expected Enter:toggle in: {hints}"
@@ -669,7 +652,10 @@ mod tests {
             .draw(|frame| render_status_bar(frame, frame.area(), &state))
             .unwrap();
         let text = rendered_text(&terminal);
-        assert!(text.contains("5/10"), "Expected progress count, got: {text}");
+        assert!(
+            text.contains("5/10"),
+            "Expected progress count, got: {text}"
+        );
         assert!(text.contains("50%"), "Expected percentage, got: {text}");
     }
 }

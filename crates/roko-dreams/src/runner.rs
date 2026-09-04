@@ -170,6 +170,8 @@ impl DreamAgentConfig {
 
     fn agent_options(&self, workdir: &Path, extra_args: Vec<String>, name: String) -> AgentOptions {
         AgentOptions {
+            safety_layer: None,
+            temperament: None,
             command: Some(self.command.clone()),
             timeout_ms: Some(self.timeout_ms),
             system_prompt: None,
@@ -192,6 +194,7 @@ impl DreamAgentConfig {
             pre_discovered_local_tools: None,
             local_tool_mcp_servers: None,
             rate_limiter: None,
+            gemini_safety_settings: Vec::new(),
         }
     }
 }
@@ -1604,6 +1607,8 @@ impl Agent for DreamReviewAgent {
                     routing_hints: Vec::new(),
                     cache_policy: CachePolicy::Default,
                     tools: Vec::new(),
+                    generation_settings: None,
+                    mcp_config: None,
                 };
 
                 match model_caller.call(request).await {

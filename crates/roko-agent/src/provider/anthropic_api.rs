@@ -39,6 +39,7 @@
 //! Then add a model entry pointing to it (with `tool_format = "anthropic_blocks"`).
 //! Run `cargo test -p roko-agent -- anthropic` to verify the adapter before enabling.
 
+pub mod stream;
 pub mod tool_loop;
 
 use crate::Agent;
@@ -48,7 +49,7 @@ use roko_core::agent::ProviderKind;
 #[cfg(test)]
 use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
 use roko_core::config::schema::{ModelProfile, ProviderConfig};
-use roko_core::defaults::{DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_REQUEST_TIMEOUT_MS};
+use roko_core::defaults::DEFAULT_MAX_OUTPUT_TOKENS;
 use serde_json::Value;
 
 /// Adapter for the Anthropic Messages API.
@@ -84,10 +85,7 @@ impl ProviderAdapter for AnthropicApiAdapter {
         let api_key = provider.resolve_api_key().ok_or_else(|| {
             AgentCreationError::MissingApiKey(provider.api_key_env.clone().unwrap_or_default())
         })?;
-        let timeout_ms = options
-            .timeout_ms
-            .or(provider.timeout_ms)
-            .unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS);
+        let timeout_ms = options.effective_timeout_ms(provider.timeout_ms);
         let max_tokens = model
             .max_output
             .and_then(|value| u32::try_from(value).ok())
@@ -116,28 +114,32 @@ impl ProviderAdapter for AnthropicApiAdapter {
         Ok(Box::new(agent))
     }
 
+    fn supports_local_tool_runtime(&self) -> bool {
+        true
+    }
+
     fn classify_error(&self, status: u16, body: &Value) -> ProviderError {
-        match status {
-            429 => ProviderError::RateLimit {
-                retry_after_ms: body
-                    .pointer("/retry_after")
-                    .and_then(|value| value.as_u64())
-                    .map(|seconds| seconds * 1000),
-            },
-            401 | 403 => ProviderError::AuthFailure,
-            404 => ProviderError::ModelNotFound,
-            408 => ProviderError::Timeout,
-            // Anthropic uses 529 for API overload — treat like rate-limit
-            // so the retry policy applies exponential backoff.
-            529 => ProviderError::RateLimit {
-                retry_after_ms: body
-                    .pointer("/retry_after")
-                    .and_then(|value| value.as_u64())
-                    .map(|seconds| seconds * 1000),
-            },
-            500..=599 => ProviderError::ServerError(status),
-            _ => ProviderError::Other(format!("HTTP {}", status)),
+        // Anthropic-specific: content policy via error type or stop_reason.
+        if body
+            .pointer("/error/type")
+            .and_then(Value::as_str)
+            .is_some_and(|t| t == "content_policy_violation")
+        {
+            return ProviderError::ContentPolicy;
         }
+        if body
+            .pointer("/stop_reason")
+            .and_then(Value::as_str)
+            .is_some_and(|r| r == "content_filter")
+        {
+            return ProviderError::ContentPolicy;
+        }
+
+        super::error_classify::classify_http_status(
+            status,
+            body,
+            super::error_classify::RetryAfterSource::BodyRetryAfter,
+        )
     }
 }
 
@@ -348,6 +350,7 @@ mod tests {
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         let options = AgentOptions {
             timeout_ms: Some(2_500),
@@ -441,6 +444,7 @@ mod tests {
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         let options = AgentOptions {
             timeout_ms: Some(2_500),

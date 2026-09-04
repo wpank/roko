@@ -1,0 +1,71 @@
+# Cancel, resume, and budget boundary.
+# A -> B -> C linear chain.
+# A completes, B cancelled, C budget-blocked.
+
+[graph]
+name = "cancel-resume-budget"
+description = "Cancel mid-flight, resume without replay, budget boundary"
+version = "1.0.0"
+
+[graph.policy]
+mode = "one_shot"
+failure_strategy = "fail_fast"
+max_concurrent_nodes = 1
+
+[graph.labels]
+source = "fixture"
+fixture_id = "cancel_resume_budget"
+plan_id = "cancel-resume-budget"
+
+[[nodes]]
+id = "A"
+cell_type = "task-executor"
+execution_class = "activity"
+[nodes.config]
+plan_id = "cancel-resume-budget"
+plan_dir = "fixtures/engine_convergence/cancel_resume_budget"
+title = "First task"
+role = "implementer"
+tier = "mechanical"
+timeout_secs = 300
+max_retries = 2
+sequence = 0
+files = ["src/first.rs"]
+
+[[nodes]]
+id = "B"
+cell_type = "task-executor"
+execution_class = "activity"
+[nodes.config]
+plan_id = "cancel-resume-budget"
+plan_dir = "fixtures/engine_convergence/cancel_resume_budget"
+title = "Second task (will be cancelled)"
+role = "implementer"
+tier = "focused"
+timeout_secs = 300
+max_retries = 2
+sequence = 1
+files = ["src/second.rs"]
+
+[[nodes]]
+id = "C"
+cell_type = "task-executor"
+execution_class = "activity"
+[nodes.config]
+plan_id = "cancel-resume-budget"
+plan_dir = "fixtures/engine_convergence/cancel_resume_budget"
+title = "Third task (budget blocked)"
+role = "implementer"
+tier = "focused"
+timeout_secs = 300
+max_retries = 2
+sequence = 2
+files = ["src/third.rs"]
+
+[[edges]]
+from = "A"
+to = "B"
+
+[[edges]]
+from = "B"
+to = "C"

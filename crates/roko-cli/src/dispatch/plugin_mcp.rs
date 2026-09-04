@@ -357,11 +357,21 @@ fn mcp_tool_result(result: ToolResult) -> Value {
             content,
             is_structured,
             ..
-        } => json!({
-            "content": [{ "type": "text", "text": content }],
-            "isError": false,
-            "structuredContent": is_structured.then(|| serde_json::from_str::<Value>(&content).ok()).flatten()
-        }),
+        } => {
+            let text = content
+                .iter()
+                .filter_map(|c| match c {
+                    roko_core::tool::ToolResultContent::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("");
+            json!({
+                "content": [{ "type": "text", "text": text }],
+                "isError": false,
+                "structuredContent": is_structured.then(|| serde_json::from_str::<Value>(&text).ok()).flatten()
+            })
+        }
         ToolResult::Err(error) => json!({
             "content": [{ "type": "text", "text": error.to_string() }],
             "isError": true
@@ -450,7 +460,10 @@ mod tests {
             nonce: "nonce".to_string(),
             worktree: PathBuf::from("/tmp"),
             immune_root: PathBuf::from("/tmp/canonical"),
-            contract: AgentContract::permissive("test"),
+            contract: AgentContract {
+                role: "test".into(),
+                ..AgentContract::default()
+            },
             expires_at_ms: now_ms().saturating_add(60_000),
         };
         let token = sign_claims(&claims, &key).expect("sign claims");
@@ -468,7 +481,10 @@ mod tests {
             .session_config(
                 Path::new("."),
                 Path::new("."),
-                &AgentContract::permissive("test"),
+                &AgentContract {
+                    role: "test".into(),
+                    ..AgentContract::default()
+                },
             )
             .expect("permitted tool");
         let client = reqwest::Client::new();
@@ -536,7 +552,10 @@ mod tests {
             .session_config(
                 &attempt_one,
                 workspace.path(),
-                &AgentContract::permissive("test"),
+                &AgentContract {
+                    role: "test".into(),
+                    ..AgentContract::default()
+                },
             )
             .unwrap();
         let denied: Value = client
@@ -566,7 +585,10 @@ mod tests {
             .session_config(
                 &attempt_two,
                 workspace.path(),
-                &AgentContract::permissive("test"),
+                &AgentContract {
+                    role: "test".into(),
+                    ..AgentContract::default()
+                },
             )
             .unwrap();
         let blocked: Value = client

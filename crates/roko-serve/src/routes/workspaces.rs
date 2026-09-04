@@ -674,6 +674,7 @@ mod tests {
                 extra_headers: Some(headers),
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
 

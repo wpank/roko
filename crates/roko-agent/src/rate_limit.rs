@@ -645,6 +645,7 @@ mod tests {
                     tpm: 40_000,
                     ..Default::default()
                 }),
+                require_confirmation: false,
             },
         );
         let limiter = ProviderRateLimiter::from_provider_configs(60, configs.iter());
@@ -678,6 +679,7 @@ mod tests {
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
         configs.insert(
@@ -698,6 +700,7 @@ mod tests {
                 connect_timeout_ms: None,
                 extra_headers: None,
                 max_concurrent: None,
+                require_confirmation: false,
             },
         );
         let limiter = ProviderRateLimiter::from_provider_configs(75, configs.iter());

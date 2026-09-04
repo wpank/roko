@@ -15,6 +15,8 @@ pub mod budget;
 pub mod cache;
 pub mod chain;
 pub mod compat;
+pub mod env_registry;
+pub mod execution;
 pub mod gates;
 pub mod graduation;
 pub mod hot_reload;
@@ -60,19 +62,19 @@ pub use schema::{
     AgentBudget, AgentConfig, AgentDefinition, AgentMode, AgentThresholds, ApiKeyEntry,
     BudgetConfig, CURRENT_SCHEMA_VERSION, ChainConfig, ColdStorageConfig, CompileFailRepeatConfig,
     ConductorConfig, ContextWindowPressureConfig, CoreRunnerConfig, CostOverrunConfig,
-    DataLlmConfig, DeployConfig, DomainProfile, EnforcementMode, GateMode, GateProfileConfig,
-    GateRungConfig, GatesConfig, GeminiConfig, GhostTurnConfig, GithubWebhookConfig,
-    GraduationConfig, GraduationPolicy, IterationLoopConfig, JwksProvider, LearningConfig,
-    ModelProfile, PerplexityConfig, PipelineBandConfig, PipelineConfig, PipelineReviewerMode,
-    PrdConfig, ProjectConfig, ProviderConfig, ProviderRouting, RelayConfig, ResourcesConfig,
-    ReviewLoopConfig, RewardWeights, RokoConfig, RoleOverride, RoutingAlgorithm, RoutingConfig,
-    RoutingOverrides, RoutingRewardWeightsConfig, SafetySetting, SchedulerConfig,
-    SchedulerCronConfig, ServeAuthConfig, ServeConfig, ServeDeployConfig, ServeDeployWebhookConfig,
-    ServerConfig, SpecDriftConfig, StateHubConfig, StuckPatternConfig, SubscriptionConfig,
-    SubscriptionFilterConfig, SubscriptionTrigger, TestFailureBudgetConfig, TimeOverrunConfig,
-    ToolProfileConfig, ToolsConfig, TracingConfig, TuiConfig, ValidationConfig, WatcherConfig,
-    WatcherPathConfig, WatcherThresholds, WebhooksConfig, WorktreeCountConfig, builtin_profiles,
-    resolve_profile,
+    DaimonConfig, DataLlmConfig, DeployConfig, DomainProfile, DreamScheduleConfig, EnforcementMode,
+    GateMode, GateProfileConfig, GateRungConfig, GatesConfig, GeminiConfig, GhostTurnConfig,
+    GithubWebhookConfig, GraduationConfig, GraduationPolicy, IterationLoopConfig, JwksProvider,
+    LearningConfig, ModelProfile, PerplexityConfig, PipelineBandConfig, PipelineConfig,
+    PipelineReviewerMode, PrdConfig, ProjectConfig, ProviderConfig, ProviderRouting, RelayConfig,
+    RepoConfig, ResourcesConfig, ReviewLoopConfig, RewardWeights, RokoConfig, RoleOverride,
+    RoutingAlgorithm, RoutingConfig, RoutingOverrides, RoutingRewardWeightsConfig, SafetySetting,
+    SchedulerConfig, SchedulerCronConfig, ServeAuthConfig, ServeConfig, ServeDeployConfig,
+    ServeDeployWebhookConfig, ServerConfig, SpecDriftConfig, StateHubConfig, StrategySpaceConfig,
+    StuckPatternConfig, SubscriptionConfig, SubscriptionFilterConfig, SubscriptionTrigger,
+    TestFailureBudgetConfig, TimeOverrunConfig, ToolProfileConfig, ToolsConfig, TracingConfig,
+    TuiConfig, ValidationConfig, WatcherConfig, WatcherPathConfig, WatcherThresholds,
+    WebhooksConfig, WorktreeCountConfig, builtin_profiles, resolve_profile,
 };
 pub use serve::GitHubConfig;
 
@@ -147,6 +149,22 @@ pub enum LoadConfigError {
         path: std::path::PathBuf,
         /// Migration failure details.
         message: String,
+    },
+    /// Reading the global config file (`~/.roko/config.toml`) failed.
+    #[error("read global config {path}: {source}")]
+    GlobalConfigRead {
+        /// Global config file path.
+        path: std::path::PathBuf,
+        /// Underlying I/O error.
+        source: std::io::Error,
+    },
+    /// Parsing the global config file (`~/.roko/config.toml`) failed.
+    #[error("parse global config {path}: {detail}")]
+    GlobalConfigParse {
+        /// Global config file path.
+        path: std::path::PathBuf,
+        /// Parse error detail.
+        detail: String,
     },
 }
 
@@ -349,6 +367,7 @@ mod load_config_tests {
                 extra_headers: None,
                 max_concurrent: Some(8),
                 limits: None,
+                require_confirmation: false,
             },
         );
         config.models.insert(
@@ -378,9 +397,11 @@ mod load_config_tests {
             .expect("find workspace root");
         let roko_toml = project_root.join("roko.toml");
         if roko_toml.exists() {
-            let validated =
-                loader::load_config_validated_with_options(project_root, &loader::LoadOptions::default())
-                    .expect("project roko.toml must load through unified loader");
+            let validated = loader::load_config_validated_with_options(
+                project_root,
+                &loader::LoadOptions::default(),
+            )
+            .expect("project roko.toml must load through unified loader");
             let config = validated.config();
             assert!(
                 !config.providers.is_empty(),

@@ -1,12 +1,15 @@
 //! `roko doctor` bootstrap diagnostics for self-hosted workspaces.
 
 use crate::auth_detect::{AuthMethod, detect_auth_from_config};
-use crate::config::{ConfigLayer, ConfigPaths, resolve_paths};
+use crate::config::{ConfigPaths, resolve_paths};
 use crate::{Config, load_resolved_config};
 use anyhow::{Context as _, Result};
 use reqwest::Url;
 use roko_core::agent::ProviderKind;
 use roko_core::config::provider::{ProviderConfig, ProviderNetworkPolicy};
+use roko_execution::diagnostics::{
+    DiagnosticCheckId, DiagnosticFinding, DiagnosticRequest, DiagnosticService, DiagnosticSeverity,
+};
 use roko_fs::RokoLayout;
 use serde::Serialize;
 use std::fmt::Write as _;
@@ -15,6 +18,35 @@ use std::time::{Duration, Instant};
 
 const DEFAULT_HEALTH_PATH: &str = "/api/health";
 const DOCTOR_HTTP_TIMEOUT_SECS: u64 = 2;
+
+/// Convert a shared [`DiagnosticFinding`] to a doctor-format [`DoctorCheck`].
+fn finding_to_doctor_check(finding: &DiagnosticFinding) -> DoctorCheck {
+    let status = match finding.severity {
+        DiagnosticSeverity::Info => DoctorStatus::Ok,
+        DiagnosticSeverity::Warning => DoctorStatus::Warn,
+        DiagnosticSeverity::Error => DoctorStatus::Fail,
+    };
+    DoctorCheck {
+        id: format!("shared_{}", finding.code),
+        status,
+        message: finding.message.clone(),
+        detail: if finding.evidence.is_empty() {
+            None
+        } else {
+            Some(
+                finding
+                    .evidence
+                    .iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )
+        },
+        path: finding.evidence.get("path").cloned(),
+        url: None,
+        fix: finding.remediation.as_ref().and_then(|r| r.command.clone()),
+    }
+}
 
 /// Inputs for `roko doctor`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -179,6 +211,20 @@ pub async fn run_doctor(options: &DoctorOptions) -> Result<DoctorReport> {
     let loaded_config = load_active_config(&workdir, options.config_override.as_deref())?;
 
     let mut checks = Vec::new();
+
+    // ── Shared diagnostic service checks (#279) ─────────────────────────
+    // Run all 11 shared checks via the consolidated DiagnosticService.
+    let shared_report = DiagnosticService::run(&DiagnosticRequest {
+        workdir: workdir.clone(),
+        selected: DiagnosticCheckId::ALL.iter().copied().collect(),
+        profile: None,
+        allow_repairs: false,
+    });
+    for finding in &shared_report.findings {
+        checks.push(finding_to_doctor_check(finding));
+    }
+
+    // ── Doctor-only checks (not in the shared service) ──────────────────
     checks.push(check_workdir(&workdir));
     checks.push(check_config_presence(
         &workdir,
@@ -328,6 +374,17 @@ pub async fn run_disk_doctor(workdir: &Path, config_override: Option<&Path>) -> 
     report
 }
 
+/// Check whether raw TOML text contains a given top-level key.
+fn toml_has_key(text: &str, key: &str) -> bool {
+    let value: toml::Value = match toml::from_str(text) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    value
+        .as_table()
+        .is_some_and(|table| table.contains_key(key))
+}
+
 fn load_active_config(workdir: &Path, config_override: Option<&Path>) -> Result<LoadedConfig> {
     if let Some(path) = config_override {
         if !path.is_file() {
@@ -343,8 +400,10 @@ fn load_active_config(workdir: &Path, config_override: Option<&Path>) -> Result<
             });
         }
 
-        let layer = ConfigLayer::from_file(path)?;
         let resolved = Config::from_file(path)?;
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("read config {}", path.display()))?;
+        let has_serve = toml_has_key(&text, "serve");
         return Ok(LoadedConfig {
             paths: ConfigPaths {
                 global: crate::config::global_config_path(),
@@ -353,18 +412,18 @@ fn load_active_config(workdir: &Path, config_override: Option<&Path>) -> Result<
             },
             resolved: Some(resolved),
             active_path: Some(path.to_path_buf()),
-            explicit_serve: layer.serve.is_some(),
+            explicit_serve: has_serve,
         });
     }
 
     let paths = resolve_paths(workdir);
     let mut explicit_serve = false;
+    let mut found_any_config = false;
     let active_path = if let Some(env_path) = &paths.env_override {
         match std::fs::read_to_string(env_path) {
             Ok(text) => {
-                let layer = ConfigLayer::parse_toml(&text)
-                    .with_context(|| format!("parse config {}", env_path.display()))?;
-                explicit_serve = layer.serve.is_some();
+                explicit_serve = toml_has_key(&text, "serve");
+                found_any_config = true;
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => {
@@ -375,16 +434,13 @@ fn load_active_config(workdir: &Path, config_override: Option<&Path>) -> Result<
         }
         Some(env_path.clone())
     } else {
-        let mut merged = ConfigLayer::default();
         let mut active_path = None;
 
         if let Some(ref global_path) = paths.global {
             match std::fs::read_to_string(global_path) {
                 Ok(text) => {
-                    let layer = ConfigLayer::parse_toml(&text)
-                        .with_context(|| format!("parse config {}", global_path.display()))?;
-                    explicit_serve |= layer.serve.is_some();
-                    merged = merged.merge(layer);
+                    explicit_serve |= toml_has_key(&text, "serve");
+                    found_any_config = true;
                     active_path = Some(global_path.clone());
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -395,13 +451,14 @@ fn load_active_config(workdir: &Path, config_override: Option<&Path>) -> Result<
             }
         }
         if let Some(project_path) = &paths.project {
-            let layer = ConfigLayer::from_file(project_path)?;
-            explicit_serve |= layer.serve.is_some();
-            merged = merged.merge(layer);
+            if let Ok(text) = std::fs::read_to_string(project_path) {
+                explicit_serve |= toml_has_key(&text, "serve");
+                found_any_config = true;
+            }
             active_path = Some(project_path.clone());
         }
 
-        if merged.is_empty() { None } else { active_path }
+        if !found_any_config { None } else { active_path }
     };
 
     let resolved = if paths
@@ -3598,6 +3655,7 @@ mod tests {
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         }
     }
 
@@ -3781,9 +3839,7 @@ mod tests {
     #[test]
     fn disk_report_advisory_large_jsonl_exits_one() {
         let mut report = clean_disk_report();
-        report
-            .large_jsonl_files
-            .push("/tmp/big.jsonl".to_string());
+        report.large_jsonl_files.push("/tmp/big.jsonl".to_string());
         assert_eq!(report.exit_code(), 1);
     }
 

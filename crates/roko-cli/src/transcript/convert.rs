@@ -164,9 +164,7 @@ impl BlockBuilder {
                 let delta_output = self.tool_output_deltas.remove(call_id);
 
                 let (result_text, error_text) = match result {
-                    roko_core::tool::ToolResult::Ok { content, .. } => {
-                        (Some(content.clone()), None)
-                    }
+                    roko_core::tool::ToolResult::Ok { .. } => (Some(result.text_content()), None),
                     roko_core::tool::ToolResult::Err(err) => (None, Some(err.to_string())),
                 };
 

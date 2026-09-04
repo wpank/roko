@@ -284,7 +284,7 @@ impl ScrubAuditAdapter {
     pub async fn record_result(&self, call: &ToolCall, result: &ToolResult) -> std::io::Result<()> {
         let ts_ms = chrono::Utc::now().timestamp_millis();
         let (ok, raw_content) = match result {
-            ToolResult::Ok { content, .. } => (true, content.clone()),
+            ToolResult::Ok { .. } => (true, result.text_content()),
             ToolResult::Err(e) => (false, format!("{e}")),
         };
         let content_bounded = truncate_str(&raw_content, MAX_ARGUMENTS_BYTES);

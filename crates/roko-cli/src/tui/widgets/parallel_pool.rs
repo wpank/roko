@@ -42,10 +42,9 @@ pub(crate) fn render_parallel_pool(
     }
 
     if agents.is_empty() {
-        let empty =
-            Paragraph::new("No agents running \u{2014} agents spawn when plans execute")
-                .style(theme.muted())
-                .alignment(Alignment::Center);
+        let empty = Paragraph::new("No agents running \u{2014} agents spawn when plans execute")
+            .style(theme.muted())
+            .alignment(Alignment::Center);
         frame.render_widget(empty, inner);
         return;
     }
@@ -200,15 +199,9 @@ fn render_context_bar(agent: &AgentRow, theme: &Theme) -> Line<'static> {
 /// Compact token usage: `12k/4k` (input/output).
 fn render_compact_usage(input_tokens: u64, output_tokens: u64, theme: &Theme) -> Line<'static> {
     Line::from(vec![
-        Span::styled(
-            fmt_k(input_tokens),
-            Style::default().fg(theme.foreground),
-        ),
+        Span::styled(fmt_k(input_tokens), Style::default().fg(theme.foreground)),
         Span::styled("/", Style::default().fg(theme.muted)),
-        Span::styled(
-            fmt_k(output_tokens),
-            Style::default().fg(theme.foreground),
-        ),
+        Span::styled(fmt_k(output_tokens), Style::default().fg(theme.foreground)),
     ])
 }
 
@@ -238,9 +231,5 @@ fn shorten_model_name(model: &str) -> String {
     } else {
         s.to_string()
     };
-    if s.len() > 12 {
-        s[..12].to_string()
-    } else {
-        s
-    }
+    if s.len() > 12 { s[..12].to_string() } else { s }
 }

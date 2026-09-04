@@ -68,6 +68,7 @@ fn zai_provider_config(base_url: impl Into<String>) -> ProviderConfig {
         extra_headers: None,
         max_concurrent: None,
         limits: None,
+        require_confirmation: false,
     }
 }
 
@@ -123,6 +124,7 @@ fn ollama_provider_config(base_url: impl Into<String>) -> ProviderConfig {
         extra_headers: None,
         max_concurrent: None,
         limits: None,
+        require_confirmation: false,
     }
 }
 

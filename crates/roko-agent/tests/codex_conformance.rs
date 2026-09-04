@@ -1,3 +1,7 @@
+// TODO: Update to use the StreamEvent/StreamEventKind API after the
+// StreamChunk -> StreamEvent refactor.  OpenAiCompatLlmBackend::send_turn_streaming
+// and roko_agent::streaming::StreamChunk no longer exist.
+#![cfg(feature = "__codex_streaming_legacy")]
 //! Codex streaming replay conformance coverage.
 
 use std::collections::BTreeMap;

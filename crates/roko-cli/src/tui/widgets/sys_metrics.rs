@@ -185,10 +185,7 @@ pub fn render_sys_metrics(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
                 Style::default().fg(Theme::DREAM),
             ),
             Span::styled(" ", Style::default()),
-            Span::styled(
-                format!("\u{2191}{up:>5}"),
-                Style::default().fg(Theme::SAGE),
-            ),
+            Span::styled(format!("\u{2191}{up:>5}"), Style::default().fg(Theme::SAGE)),
         ];
         lines.push(Line::from(spans));
     }
@@ -210,10 +207,7 @@ pub fn render_sys_metrics(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         };
         let mut spans = vec![
             Span::styled("DSK ", theme.label()),
-            Span::styled(
-                format!("{free:>6} free"),
-                Style::default().fg(free_color),
-            ),
+            Span::styled(format!("{free:>6} free"), Style::default().fg(free_color)),
         ];
         if disk_free_frac < 0.1 {
             spans.push(Span::styled(" !", Style::default().fg(Theme::EMBER)));

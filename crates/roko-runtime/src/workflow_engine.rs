@@ -199,7 +199,7 @@ impl WorkflowEngine {
                 if let PipelineOutput::Done { outcome } = cancel_output {
                     self.emit(RuntimeEvent::WorkflowCompleted {
                         run_id: run_id.clone(),
-                        outcome: runtime_workflow_outcome(&outcome),
+                        outcome: outcome.clone(),
                     });
                     if let Err(err) = self
                         .record_workflow_feedback(&run_id, &outcome, &driver, started_at)
@@ -304,7 +304,7 @@ impl WorkflowEngine {
                 PipelineOutput::Done { outcome } => {
                     self.emit(RuntimeEvent::WorkflowCompleted {
                         run_id: run_id.clone(),
-                        outcome: runtime_workflow_outcome(outcome),
+                        outcome: outcome.clone(),
                     });
 
                     if let Err(err) = self
@@ -327,7 +327,7 @@ impl WorkflowEngine {
                     };
                     self.emit(RuntimeEvent::WorkflowCompleted {
                         run_id: run_id.clone(),
-                        outcome: runtime_workflow_outcome(&outcome),
+                        outcome: outcome.clone(),
                     });
 
                     if let Err(err) = self
@@ -407,7 +407,7 @@ impl WorkflowEngine {
             );
             self.emit(RuntimeEvent::WorkflowCompleted {
                 run_id: run_id.clone(),
-                outcome: runtime_workflow_outcome(&outcome),
+                outcome: outcome.clone(),
             });
 
             return Ok(self.build_run_report(
@@ -491,7 +491,7 @@ impl WorkflowEngine {
                 PipelineOutput::Done { outcome } => {
                     self.emit(RuntimeEvent::WorkflowCompleted {
                         run_id: run_id.clone(),
-                        outcome: runtime_workflow_outcome(outcome),
+                        outcome: outcome.clone(),
                     });
 
                     if let Err(err) = self
@@ -515,7 +515,7 @@ impl WorkflowEngine {
                     };
                     self.emit(RuntimeEvent::WorkflowCompleted {
                         run_id: run_id.clone(),
-                        outcome: runtime_workflow_outcome(&outcome),
+                        outcome: outcome.clone(),
                     });
 
                     if let Err(err) = self
@@ -650,13 +650,13 @@ fn collect_run_events(run_id: &str, event_start_seq: u64) -> Vec<RuntimeEventEnv
         .replay_from(event_start_seq)
         .into_iter()
         .filter(|envelope| envelope.payload.run_id() == run_id)
-        .map(|envelope| RuntimeEventEnvelope {
-            run_id: run_id.to_string(),
-            seq: envelope.seq,
-            ts: event_timestamp(envelope.ts_millis),
-            schema_version: 1,
-            source: event_source(&envelope.payload).to_string(),
-            payload: envelope.payload,
+        .map(|envelope| {
+            RuntimeEventEnvelope::new(
+                run_id,
+                envelope.seq,
+                event_source(&envelope.payload),
+                envelope.payload,
+            )
         })
         .collect()
 }
@@ -777,6 +777,7 @@ fn summarize_text(text: &str, max_chars: usize) -> String {
         .map_or_else(|| text.to_string(), |(idx, _)| text[..idx].to_string())
 }
 
+#[allow(dead_code)]
 fn event_timestamp(ts_millis: u64) -> DateTime<Utc> {
     let ts_millis = i64::try_from(ts_millis).unwrap_or(i64::MAX);
     DateTime::<Utc>::from_timestamp_millis(ts_millis).unwrap_or_else(Utc::now)
@@ -811,24 +812,34 @@ fn event_source(event: &RuntimeEvent) -> &'static str {
         | RuntimeEvent::TaskStarted { .. }
         | RuntimeEvent::TaskCompleted { .. }
         | RuntimeEvent::PipelinePhase { .. } => "effect_driver",
-    }
-}
-
-fn runtime_workflow_outcome(
-    outcome: &WorkflowOutcome,
-) -> roko_core::runtime_event::WorkflowOutcome {
-    // TODO(converge): Remove this adapter once PipelineStateV2 uses
-    // roko_core::runtime_event::WorkflowOutcome directly.
-    match outcome {
-        WorkflowOutcome::Success { commit_hash } => {
-            roko_core::runtime_event::WorkflowOutcome::Success {
-                commit_hash: commit_hash.clone(),
-            }
-        }
-        WorkflowOutcome::Halted { reason } => roko_core::runtime_event::WorkflowOutcome::Halted {
-            reason: reason.clone(),
-        },
-        WorkflowOutcome::Cancelled => roko_core::runtime_event::WorkflowOutcome::Cancelled,
+        // v2 events -- the source label is generic because these events
+        // originate from various higher-layer producers that own the
+        // envelope source field.
+        RuntimeEvent::WaveStarted { .. }
+        | RuntimeEvent::WaveCompleted { .. }
+        | RuntimeEvent::TaskRetrying { .. }
+        | RuntimeEvent::TaskSkipped { .. }
+        | RuntimeEvent::AgentProgress { .. }
+        | RuntimeEvent::UsageRecorded { .. }
+        | RuntimeEvent::GateRungStarted { .. }
+        | RuntimeEvent::GateRungOutput { .. }
+        | RuntimeEvent::GateRungCompleted { .. }
+        | RuntimeEvent::ApprovalRequested { .. }
+        | RuntimeEvent::ApprovalResolved { .. }
+        | RuntimeEvent::ControlApplied { .. }
+        | RuntimeEvent::BudgetUpdated { .. }
+        | RuntimeEvent::WorkspaceAcquired { .. }
+        | RuntimeEvent::WorkspaceReleased { .. }
+        | RuntimeEvent::MergeQueued { .. }
+        | RuntimeEvent::MergeCompleted { .. }
+        | RuntimeEvent::PublishCompleted { .. }
+        | RuntimeEvent::FeedbackSinkSettled { .. }
+        | RuntimeEvent::FeedbackSinkFailed { .. }
+        | RuntimeEvent::PredictionPublished { .. }
+        | RuntimeEvent::ActualRecorded { .. }
+        | RuntimeEvent::CorrectionApplied { .. }
+        | RuntimeEvent::SequenceGap { .. }
+        | RuntimeEvent::Extension { .. } => "v2_event",
     }
 }
 

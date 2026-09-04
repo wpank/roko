@@ -58,10 +58,7 @@ default_effort = "high"
             }),
             turn_budget_usd: Some(5.5),
             temperament: None,
-            capability_requirements: Some(vec![
-                "tools".to_string(),
-                "thinking".to_string(),
-            ]),
+            capability_requirements: Some(vec!["tools".to_string(), "thinking".to_string(),]),
             default_effort: Some("high".to_string()),
         }
     );

@@ -1,4 +1,4 @@
-//! Knowledge store helpers extracted from the legacy orchestrator.
+//! Knowledge store helpers (originally extracted from the legacy orchestrator).
 //!
 //! Free functions that query or write to the neuro knowledge store, build
 //! strategy-fragment context, record lifecycle transitions, and apply

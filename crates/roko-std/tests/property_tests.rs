@@ -52,7 +52,8 @@ proptest! {
             match result {
                 ToolResult::Ok { content: actual, .. } => {
                     // Content should contain the file text.
-                    assert!(actual.contains(&content));
+                    let text: String = actual.iter().filter_map(|c| c.as_text()).collect();
+                    assert!(text.contains(&content));
                 }
                 ToolResult::Err(e) => {
                     // Only path-sandbox errors should occur, not panics.
@@ -89,7 +90,8 @@ proptest! {
             let read_result = read_handler.execute(rc, &ctx).await;
             match read_result {
                 ToolResult::Ok { content: actual, .. } => {
-                    assert!(actual.contains(&content));
+                    let text: String = actual.iter().filter_map(|c| c.as_text()).collect();
+                    assert!(text.contains(&content));
                 }
                 ToolResult::Err(e) => {
                     panic!("read after write failed: {e}");

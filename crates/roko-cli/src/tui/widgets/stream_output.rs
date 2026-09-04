@@ -53,18 +53,30 @@ pub fn parse_stream_line(line: &str) -> StreamRecord {
     // Fast path: reject lines that don't start with the record separator.
     let rest = match line.strip_prefix(RECORD_SEP) {
         Some(r) => r,
-        None => return StreamRecord::Plain { content: line.to_owned() },
+        None => {
+            return StreamRecord::Plain {
+                content: line.to_owned(),
+            };
+        }
     };
 
     let json_str = match rest.strip_prefix(STREAM_PREFIX) {
         Some(j) => j,
-        None => return StreamRecord::Plain { content: line.to_owned() },
+        None => {
+            return StreamRecord::Plain {
+                content: line.to_owned(),
+            };
+        }
     };
 
     // Parse the JSON payload.
     let value: serde_json::Value = match serde_json::from_str(json_str) {
         Ok(v) => v,
-        Err(_) => return StreamRecord::Plain { content: line.to_owned() },
+        Err(_) => {
+            return StreamRecord::Plain {
+                content: line.to_owned(),
+            };
+        }
     };
 
     let kind = value.get("kind").and_then(|v| v.as_str()).unwrap_or("");
@@ -109,7 +121,9 @@ pub fn parse_stream_line(line: &str) -> StreamRecord {
                 .to_owned(),
         },
         // Unknown kind — treat as plain text so nothing is silently dropped.
-        _ => StreamRecord::Plain { content: line.to_owned() },
+        _ => StreamRecord::Plain {
+            content: line.to_owned(),
+        },
     }
 }
 
@@ -163,10 +177,7 @@ pub fn render_output_lines<'a>(lines: &[String], theme: &Theme) -> Vec<Line<'a>>
                 )));
             }
             StreamRecord::Text { content } => {
-                styled.push(Line::from(Span::styled(
-                    content,
-                    theme.text(),
-                )));
+                styled.push(Line::from(Span::styled(content, theme.text())));
             }
             StreamRecord::Plain { content } => {
                 styled.push(Line::from(Span::raw(content)));
@@ -246,8 +257,7 @@ pub fn render_stream_output(
     // -- Empty state --
     if lines.is_empty() {
         f.render_widget(
-            Paragraph::new(" Waiting for agent output...")
-                .style(theme.muted()),
+            Paragraph::new(" Waiting for agent output...").style(theme.muted()),
             inner,
         );
         return;
@@ -308,14 +318,24 @@ mod tests {
     #[test]
     fn parse_plain_line() {
         let rec = parse_stream_line("hello world");
-        assert_eq!(rec, StreamRecord::Plain { content: "hello world".to_owned() });
+        assert_eq!(
+            rec,
+            StreamRecord::Plain {
+                content: "hello world".to_owned()
+            }
+        );
     }
 
     #[test]
     fn parse_text_record() {
         let line = "\x1eroko.stream.v1 {\"kind\":\"text\",\"content\":\"hello\"}";
         let rec = parse_stream_line(line);
-        assert_eq!(rec, StreamRecord::Text { content: "hello".to_owned() });
+        assert_eq!(
+            rec,
+            StreamRecord::Text {
+                content: "hello".to_owned()
+            }
+        );
     }
 
     #[test]
@@ -324,14 +344,15 @@ mod tests {
         let rec = parse_stream_line(line);
         assert_eq!(
             rec,
-            StreamRecord::Reasoning { content: "thinking...".to_owned() }
+            StreamRecord::Reasoning {
+                content: "thinking...".to_owned()
+            }
         );
     }
 
     #[test]
     fn parse_tool_start_record() {
-        let line =
-            "\x1eroko.stream.v1 {\"kind\":\"tool_start\",\"tool_name\":\"read_file\",\"tool_id\":\"t1\"}";
+        let line = "\x1eroko.stream.v1 {\"kind\":\"tool_start\",\"tool_name\":\"read_file\",\"tool_id\":\"t1\"}";
         let rec = parse_stream_line(line);
         assert_eq!(
             rec,
@@ -344,8 +365,7 @@ mod tests {
 
     #[test]
     fn parse_tool_result_record() {
-        let line =
-            "\x1eroko.stream.v1 {\"kind\":\"tool_result\",\"tool_id\":\"t1\",\"output\":\"line1\\nline2\"}";
+        let line = "\x1eroko.stream.v1 {\"kind\":\"tool_result\",\"tool_id\":\"t1\",\"output\":\"line1\\nline2\"}";
         let rec = parse_stream_line(line);
         assert_eq!(
             rec,
@@ -394,13 +414,14 @@ mod tests {
     #[test]
     fn tool_result_truncation() {
         let theme = Theme::dark();
-        let long_output = (0..10).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
-        let lines = vec![
-            format!(
-                "\x1eroko.stream.v1 {{\"kind\":\"tool_result\",\"tool_id\":\"t3\",\"output\":{}}}",
-                serde_json::to_string(&long_output).unwrap()
-            ),
-        ];
+        let long_output = (0..10)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let lines = vec![format!(
+            "\x1eroko.stream.v1 {{\"kind\":\"tool_result\",\"tool_id\":\"t3\",\"output\":{}}}",
+            serde_json::to_string(&long_output).unwrap()
+        )];
         let rendered = render_output_lines(&lines, &theme);
         // 3 visible lines + 1 "... N more" line
         assert_eq!(rendered.len(), TOOL_RESULT_MAX_LINES + 1);
@@ -422,9 +443,8 @@ mod tests {
     #[test]
     fn reasoning_uses_italic() {
         let theme = Theme::dark();
-        let lines = vec![
-            "\x1eroko.stream.v1 {\"kind\":\"reasoning\",\"content\":\"step 1\"}".to_owned(),
-        ];
+        let lines =
+            vec!["\x1eroko.stream.v1 {\"kind\":\"reasoning\",\"content\":\"step 1\"}".to_owned()];
         let rendered = render_output_lines(&lines, &theme);
         let span = &rendered[0].spans[0];
         assert!(span.style.add_modifier.contains(Modifier::ITALIC));
@@ -434,6 +454,11 @@ mod tests {
     fn empty_content_fields_handled() {
         let line = "\x1eroko.stream.v1 {\"kind\":\"text\"}";
         let rec = parse_stream_line(line);
-        assert_eq!(rec, StreamRecord::Text { content: String::new() });
+        assert_eq!(
+            rec,
+            StreamRecord::Text {
+                content: String::new()
+            }
+        );
     }
 }

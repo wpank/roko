@@ -261,6 +261,7 @@ impl EffectDriver {
                         cost_usd: response.usage.cost_usd,
                         latency_ms,
                         success: true,
+                        error_class: None,
                     })
                     .await;
 
@@ -303,6 +304,7 @@ impl EffectDriver {
                         cost_usd: 0.0,
                         latency_ms,
                         success: false,
+                        error_class: Some("unknown".to_string()),
                     })
                     .await;
 
@@ -639,6 +641,8 @@ fn model_call_request(parts: ModelCallRequestParts<'_>) -> ModelCallRequest {
         routing_hints: Vec::new(),
         cache_policy: modulated_cache_policy(parts.modulation),
         tools: Vec::new(),
+        generation_settings: None,
+        mcp_config: None,
     }
 }
 

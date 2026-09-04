@@ -92,6 +92,18 @@ pub struct AgentConfig {
     /// auto-discovers by walking up from the working directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_config: Option<PathBuf>,
+
+    /// Default agent ID used by `roko agent chat` when `--agent` is not
+    /// supplied. When `None`, the CLI resolves deterministically: the only
+    /// registered healthy agent is chosen, or an actionable error is returned
+    /// when zero or multiple agents exist.
+    ///
+    /// ```toml
+    /// [agent]
+    /// default_agent_id = "my-agent"
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_agent_id: Option<String>,
 }
 
 /// Agent execution mode controlling lifecycle.
@@ -146,6 +158,7 @@ impl Default for AgentConfig {
             mode: AgentMode::default(),
             extensions: Vec::new(),
             mcp_config: None,
+            default_agent_id: None,
         }
     }
 }

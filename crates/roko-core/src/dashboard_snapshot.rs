@@ -72,7 +72,7 @@ pub const fn inbox_routing(category: InboxCategory) -> InboxRouting {
 /// These map 1:1 to the interesting subset of `ServerEvent` variants from
 /// `roko-serve`. The conversion happens at the call-site so that `roko-core`
 /// stays free of server dependencies.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DashboardEvent {
     /// A plan execution started.
@@ -402,6 +402,13 @@ pub enum DashboardEvent {
         /// Remaining minutes on the critical path. `None` clears the value.
         eta_minutes: Option<u32>,
     },
+    /// A cost anomaly (spike) was detected by the anomaly detector.
+    CostAnomaly {
+        /// Z-score of the cost observation relative to the EWMA baseline.
+        z_score: f64,
+        /// The cost observation that triggered the anomaly, in USD.
+        cost_usd: f64,
+    },
     /// An error occurred.
     Error { message: String },
 }
@@ -602,7 +609,7 @@ pub enum DiagnosisSeverity {
 }
 
 /// A summarized conductor diagnosis surfaced to the dashboard and HTTP API.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DiagnosisSummary {
     /// Stable identifier for deduplication.
     #[serde(default)]
@@ -1828,6 +1835,15 @@ impl DashboardSnapshot {
             }
             DashboardEvent::CriticalPathEtaUpdated { eta_minutes, .. } => {
                 self.critical_path_eta_minutes = *eta_minutes;
+            }
+            DashboardEvent::CostAnomaly { z_score, cost_usd } => {
+                self.push_event_log(
+                    ts,
+                    "cost_anomaly".to_string(),
+                    String::new(),
+                    String::new(),
+                    format!("Cost spike detected: ${cost_usd:.4} (z={z_score:.2})"),
+                );
             }
         }
     }

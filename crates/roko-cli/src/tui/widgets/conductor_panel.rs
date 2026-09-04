@@ -256,7 +256,7 @@ pub fn render_conductor_panel(
     } else {
         Layout::vertical([
             Constraint::Percentage(60), // watchers
-            Constraint::Length(0),       // no interventions
+            Constraint::Length(0),      // no interventions
             Constraint::Percentage(40), // thresholds
         ])
         .split(inner)
@@ -294,9 +294,7 @@ fn render_watcher_grid(
     let healthy_count = watchers.iter().filter(|w| !w.fired).count();
     let fired_count = total - healthy_count;
 
-    let title = format!(
-        " Watchers ({healthy_count}/{total} healthy) "
-    );
+    let title = format!(" Watchers ({healthy_count}/{total} healthy) ");
     let title_color = if fired_count > 0 {
         theme.warning
     } else {
@@ -327,9 +325,7 @@ fn render_watcher_grid(
             };
             (
                 "\u{25cf} ", // filled circle
-                Style::default()
-                    .fg(sev_color)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(sev_color).add_modifier(Modifier::BOLD),
             )
         } else {
             (
@@ -374,8 +370,7 @@ fn render_watcher_grid(
 
             if !compact {
                 if let Some(ref msg) = watcher.last_message {
-                    let remaining = (inner.width as usize)
-                        .saturating_sub(name_w + 14);
+                    let remaining = (inner.width as usize).saturating_sub(name_w + 14);
                     let truncated = if msg.len() > remaining {
                         format!("{:.width$}..", msg, width = remaining.saturating_sub(2))
                     } else {
@@ -388,22 +383,14 @@ fn render_watcher_grid(
                 }
             }
         } else {
-            spans.push(Span::styled(
-                " ok",
-                Style::default().fg(Theme::TEXT_GHOST),
-            ));
+            spans.push(Span::styled(" ok", Style::default().fg(Theme::TEXT_GHOST)));
         }
 
         lines.push(Line::from(spans));
     }
 
     if lines.is_empty() {
-        empty_state::render_pane_empty_compact(
-            frame,
-            inner,
-            "No watcher data",
-            theme,
-        );
+        empty_state::render_pane_empty_compact(frame, inner, "No watcher data", theme);
         return;
     }
 
@@ -461,10 +448,7 @@ fn render_interventions(
                     .add_modifier(Modifier::BOLD),
             )
         } else {
-            Span::styled(
-                "\u{25b6} ",
-                Style::default().fg(theme.warning),
-            )
+            Span::styled("\u{25b6} ", Style::default().fg(theme.warning))
         };
         let plan_label = if cb.plan_id.len() > 20 {
             format!("{:.20}", cb.plan_id)
@@ -507,7 +491,11 @@ fn render_interventions(
 
         let subject_w = (inner.width as usize).saturating_sub(12).min(40);
         let subject = if diag.subject.len() > subject_w {
-            format!("{:.width$}..", diag.subject, width = subject_w.saturating_sub(2))
+            format!(
+                "{:.width$}..",
+                diag.subject,
+                width = subject_w.saturating_sub(2)
+            )
         } else {
             diag.subject.clone()
         };
@@ -516,9 +504,7 @@ fn render_interventions(
             Span::styled(" ", Style::default()),
             Span::styled(
                 sev_icon,
-                Style::default()
-                    .fg(sev_color)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(sev_color).add_modifier(Modifier::BOLD),
             ),
             Span::styled(subject, Style::default().fg(theme.foreground)),
         ];
@@ -551,28 +537,24 @@ fn render_interventions(
 
         let msg_w = (inner.width as usize).saturating_sub(4);
         let msg = if alert.message.len() > msg_w {
-            format!("{:.width$}..", alert.message, width = msg_w.saturating_sub(2))
+            format!(
+                "{:.width$}..",
+                alert.message,
+                width = msg_w.saturating_sub(2)
+            )
         } else {
             alert.message.clone()
         };
 
         lines.push(Line::from(vec![
             Span::styled(" ", Style::default()),
-            Span::styled(
-                "\u{25aa} ",
-                Style::default().fg(sev_color),
-            ),
+            Span::styled("\u{25aa} ", Style::default().fg(sev_color)),
             Span::styled(msg, Style::default().fg(Theme::TEXT_DIM)),
         ]));
     }
 
     if lines.is_empty() {
-        empty_state::render_pane_empty_compact(
-            frame,
-            inner,
-            "No interventions",
-            theme,
-        );
+        empty_state::render_pane_empty_compact(frame, inner, "No interventions", theme);
         return;
     }
 
@@ -690,10 +672,7 @@ fn render_thresholds(
         }
     }
 
-    frame.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: false }),
-        inner,
-    );
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 // ---------------------------------------------------------------------------
@@ -778,9 +757,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_conductor_panel(
-                    frame, area, &snapshot, &[], &[], false, &theme,
-                );
+                render_conductor_panel(frame, area, &snapshot, &[], &[], false, &theme);
             })
             .unwrap();
     }
@@ -804,15 +781,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_conductor_panel(
-                    frame,
-                    area,
-                    &snapshot,
-                    &diagnoses,
-                    &[],
-                    true,
-                    &theme,
-                );
+                render_conductor_panel(frame, area, &snapshot, &diagnoses, &[], true, &theme);
             })
             .unwrap();
     }
@@ -827,9 +796,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_conductor_panel(
-                    frame, area, &snapshot, &[], &[], false, &theme,
-                );
+                render_conductor_panel(frame, area, &snapshot, &[], &[], false, &theme);
             })
             .unwrap();
     }
@@ -844,9 +811,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_conductor_panel(
-                    frame, area, &snapshot, &[], &[], false, &theme,
-                );
+                render_conductor_panel(frame, area, &snapshot, &[], &[], false, &theme);
             })
             .unwrap();
     }

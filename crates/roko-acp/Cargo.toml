@@ -20,6 +20,7 @@ async-trait = { workspace = true }
 reqwest = { workspace = true }
 notify = { version = "6", default-features = false, features = ["macos_fsevent"] }
 roko-core = { path = "../roko-core" }
+roko-execution = { path = "../roko-execution" }
 roko-runtime = { path = "../roko-runtime" }
 roko-agent = { path = "../roko-agent" }
 roko-gate = { path = "../roko-gate" }

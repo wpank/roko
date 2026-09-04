@@ -5,7 +5,6 @@ use crate::provider::{
 };
 use roko_core::agent::ProviderKind;
 use roko_core::config::schema::{ModelProfile, ProviderConfig};
-use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
 use serde_json::Value;
 use std::path::PathBuf;
 
@@ -39,10 +38,7 @@ impl ProviderAdapter for CursorCliAdapter {
             .clone()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-        let timeout_ms = options
-            .timeout_ms
-            .or(provider.timeout_ms)
-            .unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS);
+        let timeout_ms = options.effective_timeout_ms(provider.timeout_ms);
 
         let mut agent = CursorCliAgent::new(command, working_dir).with_timeout_ms(timeout_ms);
 
@@ -60,46 +56,22 @@ impl ProviderAdapter for CursorCliAdapter {
             agent =
                 agent.with_mcp_servers(servers.iter().map(|server| server.to_acp_json()).collect());
         }
+        if let Some(prompt) = &options.system_prompt {
+            agent = agent.with_system_prompt(prompt.clone());
+        }
+        for (key, value) in &options.env {
+            agent = agent.with_env_var(key.clone(), value.clone());
+        }
 
         Ok(Box::new(agent))
     }
 
+    fn supports_per_call_local_mcp(&self, _provider: &ProviderConfig) -> bool {
+        true
+    }
+
     fn classify_error(&self, status: u16, body: &Value) -> ProviderError {
-        let stderr = body
-            .as_str()
-            .or_else(|| body.pointer("/error").and_then(Value::as_str))
-            .or_else(|| body.pointer("/message").and_then(Value::as_str))
-            .unwrap_or("");
-        let lower = stderr.to_ascii_lowercase();
-
-        if lower.contains("rate limit") {
-            return ProviderError::RateLimit {
-                retry_after_ms: None,
-            };
-        }
-        if lower.contains("unauthorized") || lower.contains("permission denied") {
-            return ProviderError::AuthFailure;
-        }
-        if lower.contains("timed out") || lower.contains("timeout") {
-            return ProviderError::Timeout;
-        }
-
-        match status {
-            429 => ProviderError::RateLimit {
-                retry_after_ms: None,
-            },
-            401 | 403 => ProviderError::AuthFailure,
-            404 => ProviderError::ModelNotFound,
-            408 => ProviderError::Timeout,
-            500..=599 => ProviderError::ServerError(status),
-            _ => {
-                if stderr.is_empty() {
-                    ProviderError::Other(format!("CLI exit status {status}"))
-                } else {
-                    ProviderError::Other(stderr.to_string())
-                }
-            }
-        }
+        super::error_classify::classify_cli_error(status, body, "CLI")
     }
 }
 
@@ -182,6 +154,7 @@ for line in sys.stdin:
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         let options = AgentOptions {
             timeout_ms: Some(10_000),
@@ -221,6 +194,7 @@ for line in sys.stdin:
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         let options = AgentOptions {
             name: "default-cmd".to_string(),

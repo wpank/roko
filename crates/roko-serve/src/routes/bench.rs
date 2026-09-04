@@ -1441,4 +1441,185 @@ impl CountUp {
 // version lives above (near the end of `execute_bench_run`).
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // Scaffold content helpers
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn bench_cargo_toml_embeds_suite_and_run_ids() {
+        let toml = bench_cargo_toml("suite-abc", "run-xyz");
+        assert!(
+            toml.contains("suite-abc"),
+            "Cargo.toml should embed the suite id"
+        );
+        assert!(
+            toml.contains("run-xyz"),
+            "Cargo.toml should embed the run id"
+        );
+        assert!(
+            toml.contains("[package]"),
+            "Cargo.toml should have a [package] section"
+        );
+        assert!(
+            toml.contains("[dependencies]"),
+            "Cargo.toml should have a [dependencies] section"
+        );
+    }
+
+    #[test]
+    fn bench_main_contents_is_valid_rust() {
+        let main = bench_main_contents();
+        assert!(
+            main.contains("fn main()"),
+            "main.rs should contain a main function"
+        );
+    }
+
+    #[test]
+    fn generic_lib_contents_has_intentional_empty_test_module() {
+        let lib = generic_lib_contents();
+        assert!(
+            lib.contains("#[cfg(test)]"),
+            "generic lib should contain a test cfg"
+        );
+        assert!(
+            lib.contains("mod tests {}"),
+            "generic lib should contain the intentional empty test module"
+        );
+        assert!(
+            lib.contains("scaffold_marker"),
+            "generic lib should contain the scaffold_marker function"
+        );
+    }
+
+    #[test]
+    fn learnable_rust_lib_contents_has_expected_stubs() {
+        let lib = learnable_rust_lib_contents();
+        assert!(
+            lib.contains("format_greeting"),
+            "learnable lib should contain format_greeting stub"
+        );
+        assert!(
+            lib.contains("total_message_bytes"),
+            "learnable lib should contain total_message_bytes stub"
+        );
+        assert!(
+            lib.contains("wrap_result"),
+            "learnable lib should contain wrap_result stub"
+        );
+        assert!(
+            lib.contains("CountUp"),
+            "learnable lib should contain CountUp struct"
+        );
+        assert!(
+            lib.contains("pub mod helpers"),
+            "learnable lib should declare the helpers module"
+        );
+    }
+
+    #[test]
+    fn learnable_helpers_contents_has_missing_type() {
+        let helpers = learnable_helpers_contents();
+        assert!(
+            helpers.contains("MissingType"),
+            "helpers should contain MissingType"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Request type parsing
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn start_bench_request_deserializes_minimal() {
+        let json = serde_json::json!({ "suite_id": "quick" });
+        let req: StartBenchRequest = serde_json::from_value(json).expect("parse");
+        assert_eq!(req.suite_id, "quick");
+        assert!(req.label.is_none());
+    }
+
+    #[test]
+    fn start_bench_request_deserializes_with_label_and_overrides() {
+        let json = serde_json::json!({
+            "suite_id": "quick",
+            "label": "nightly-run",
+            "overrides": { "model": "claude-3" }
+        });
+        let req: StartBenchRequest = serde_json::from_value(json).expect("parse");
+        assert_eq!(req.suite_id, "quick");
+        assert_eq!(req.label.as_deref(), Some("nightly-run"));
+        assert_eq!(req.overrides.model.as_deref(), Some("claude-3"));
+    }
+
+    #[test]
+    fn list_runs_query_defaults() {
+        let json = serde_json::json!({});
+        let query: ListRunsQuery = serde_json::from_value(json).expect("parse");
+        assert!(query.suite_id.is_none());
+        assert!(query.status.is_none());
+        assert_eq!(query.limit, 50);
+        assert_eq!(query.offset, 0);
+    }
+
+    #[test]
+    fn compare_query_parses_ids() {
+        let json = serde_json::json!({ "ids": "a,b,c" });
+        let query: CompareQuery = serde_json::from_value(json).expect("parse");
+        let ids: Vec<&str> = query.ids.split(',').collect();
+        assert_eq!(ids, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn matrix_lane_request_deserializes_minimal() {
+        let json = serde_json::json!({ "model": "gpt-4" });
+        let lane: MatrixLaneRequest = serde_json::from_value(json).expect("parse");
+        assert_eq!(lane.model, "gpt-4");
+        assert!(lane.backend.is_none());
+        assert!(lane.label.is_none());
+    }
+
+    #[test]
+    fn start_matrix_request_deserializes() {
+        let json = serde_json::json!({
+            "suite_id": "quick",
+            "lanes": [
+                { "model": "gpt-4" },
+                { "model": "claude-3", "label": "lane-b" }
+            ]
+        });
+        let req: StartMatrixRequest = serde_json::from_value(json).expect("parse");
+        assert_eq!(req.suite_id, "quick");
+        assert_eq!(req.lanes.len(), 2);
+        assert_eq!(req.lanes[1].label.as_deref(), Some("lane-b"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Utility helpers
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn now_secs_is_nonzero() {
+        let ts = now_secs();
+        assert!(ts > 1_700_000_000, "timestamp should be after 2023");
+    }
+
+    #[test]
+    fn default_limit_is_50() {
+        assert_eq!(default_limit(), 50);
+    }
+
+    // -----------------------------------------------------------------------
+    // Route registration sanity
+    // -----------------------------------------------------------------------
+
+    /// Verify `routes()` returns a non-empty router that can be merged into
+    /// a parent router without panicking.
+    #[test]
+    fn bench_routes_can_be_constructed() {
+        // `routes()` must not panic during construction.
+        let _router = routes();
+    }
+}

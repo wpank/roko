@@ -25,7 +25,6 @@ use crate::tool_loop::backends::create_openai_compat_backend;
 use crate::translate::{StrictOpenAiTranslator, Translator};
 use roko_core::agent::ProviderKind;
 use roko_core::config::schema::{ModelProfile, ProviderConfig};
-use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
 use serde_json::Value;
 
 /// Adapter for the Cerebras Inference API.
@@ -47,10 +46,7 @@ impl ProviderAdapter for CerebrasAdapter {
         model: &ModelProfile,
         options: &AgentOptions,
     ) -> Result<Box<dyn Agent>, AgentCreationError> {
-        let timeout = options
-            .timeout_ms
-            .or(provider.timeout_ms)
-            .unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS);
+        let timeout = options.effective_timeout_ms(provider.timeout_ms);
         let agent_name = if options.name.is_empty() {
             format!("cerebras:{}", model.slug)
         } else {
@@ -107,34 +103,16 @@ Call one tool at a time. After each tool result, decide your next action.\n\n";
         OpenAiCompatAdapter.create_agent(provider, model, options)
     }
 
+    fn supports_local_tool_runtime(&self) -> bool {
+        true
+    }
+
     fn classify_error(&self, status: u16, body: &Value) -> ProviderError {
-        match status {
-            401 | 403 => ProviderError::AuthFailure,
-            429 => {
-                let retry_after_ms = body
-                    .get("error")
-                    .and_then(|e| e.get("retry_after"))
-                    .and_then(|v| v.as_f64())
-                    .map(|secs| (secs * 1000.0) as u64);
-                ProviderError::RateLimit { retry_after_ms }
-            }
-            404 => ProviderError::ModelNotFound,
-            408 | 504 => ProviderError::Timeout,
-            400 => {
-                let msg = body
-                    .get("error")
-                    .and_then(|e| e.get("message"))
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("");
-                if msg.contains("context") || msg.contains("token") {
-                    ProviderError::ContextOverflow
-                } else {
-                    ProviderError::Other(msg.to_string())
-                }
-            }
-            500..=599 => ProviderError::ServerError(status),
-            _ => ProviderError::Other(format!("HTTP {status}")),
-        }
+        super::error_classify::classify_http_status(
+            status,
+            body,
+            super::error_classify::RetryAfterSource::ErrorRetryAfter,
+        )
     }
 }
 

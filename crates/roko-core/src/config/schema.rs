@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 pub use super::agent::*;
 pub use super::budget::*;
 pub use super::chain::*;
+pub use super::execution::{DaimonConfig, DreamScheduleConfig, RepoConfig, StrategySpaceConfig};
 pub use super::gates::*;
 pub use super::graduation::*;
 pub use super::learning::*;
@@ -173,6 +174,15 @@ pub struct RokoConfig {
     /// Disk budget, thresholds, and GC policy for resource-aware execution.
     #[serde(default)]
     pub resources: ResourcesConfig,
+    /// Automatic dream-cycle scheduling for daemon mode.
+    #[serde(default)]
+    pub dreams: DreamScheduleConfig,
+    /// Daimon affect-engine configuration.
+    #[serde(default)]
+    pub daimon: DaimonConfig,
+    /// Per-repository configuration blocks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repos: Vec<RepoConfig>,
 }
 
 /// Composition strategy for allocating prompt token budget across candidate sections.
@@ -443,6 +453,9 @@ impl Default for RokoConfig {
             cold_storage: ColdStorageConfig::default(),
             prompt: PromptConfig::default(),
             resources: ResourcesConfig::default(),
+            dreams: DreamScheduleConfig::default(),
+            daimon: DaimonConfig::default(),
+            repos: Vec::new(),
         }
     }
 }
@@ -513,6 +526,7 @@ fn synthesize_standard_providers_with_env(
                     extra_headers: None,
                     max_concurrent: None,
                     limits: None,
+                    require_confirmation: false,
                 },
             );
         }
@@ -1912,7 +1926,12 @@ const fn default_agent_enabled() -> bool {
 
 // ---- utility functions ---------------------------------------------------
 
-fn parse_bool_env(s: &str) -> bool {
+/// Parse a boolean environment variable value.
+///
+/// Accepts `1/true/yes/on` (case-insensitive) as truthy.
+/// Everything else (including empty string) is falsy.
+/// This is the canonical boolean parser for all env var reads.
+pub fn parse_bool_env(s: &str) -> bool {
     matches!(
         s.trim().to_ascii_lowercase().as_str(),
         "1" | "true" | "yes" | "on"
@@ -2939,6 +2958,7 @@ max_output = 16384
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         assert_eq!(cfg.resolve_api_key().as_deref(), Some(expected.as_str()));
     }
@@ -2961,6 +2981,7 @@ max_output = 16384
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         assert_eq!(cfg.resolve_api_key(), None);
     }
@@ -2992,6 +3013,7 @@ max_output = 16384
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
         cfg.models.insert(
@@ -3081,6 +3103,7 @@ max_output = 16384
                 extra_headers: Some(headers),
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
         config.resolve_file_secrets();
@@ -3128,6 +3151,7 @@ max_output = 16384
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         assert!(!cfg.is_provider_available_with_env(&p, |_| None));
         cfg.agent.env = Some(vec![("OPENAI_API_KEY".into(), "sk-test".into())]);
@@ -3155,6 +3179,7 @@ max_output = 16384
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
         cfg.models.insert(
@@ -3195,6 +3220,7 @@ max_output = 16384
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         assert!(
             !cfg.is_provider_available(&provider),
@@ -3218,6 +3244,7 @@ max_output = 16384
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         assert!(
             cfg.is_provider_available(&provider),
@@ -3240,6 +3267,7 @@ max_output = 16384
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         assert!(
             !cfg.is_provider_available(&provider),
@@ -3262,6 +3290,7 @@ max_output = 16384
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         assert!(
             !cfg.is_provider_available(&provider),
@@ -3285,6 +3314,7 @@ max_output = 16384
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         assert!(
             cfg.is_provider_available(&provider),
@@ -3307,6 +3337,7 @@ max_output = 16384
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         assert!(
             !cfg.is_provider_available(&provider),
@@ -3329,6 +3360,7 @@ max_output = 16384
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         assert!(
             cfg.is_provider_available(&provider),
@@ -3352,6 +3384,7 @@ max_output = 16384
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         // Whether this passes depends on whether hermes is installed;
         // just verify it doesn't panic.
@@ -3381,6 +3414,7 @@ max_output = 16384
                 extra_headers: Some(headers),
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
 

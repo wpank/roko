@@ -126,8 +126,9 @@ pub(crate) fn handle_agent_event(
             let mut dashboard_output = visible.to_string();
             if visible_was_truncated {
                 let omitted_lines = output[visible.len()..].lines().count();
-                dashboard_output
-                    .push_str(&format!("\n[output truncated: {omitted_lines} lines omitted]\n"));
+                dashboard_output.push_str(&format!(
+                    "\n[output truncated: {omitted_lines} lines omitted]\n"
+                ));
             } else if !dashboard_output.ends_with('\n') {
                 dashboard_output.push('\n');
             }

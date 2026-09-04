@@ -16,6 +16,9 @@ pub struct UsageObservation {
     #[serde(alias = "cache_create_tokens")]
     pub cache_creation_tokens: Option<u64>,
     pub cache_read_tokens: Option<u64>,
+    /// Reasoning/thinking tokens (subset of output_tokens for OpenAI o-series;
+    /// extracted from thinking blocks for Anthropic).
+    pub reasoning_tokens: Option<u64>,
     pub cost_usd: Option<f64>,
     #[serde(default)]
     pub source: UsageSource,
@@ -42,6 +45,11 @@ impl From<Usage> for UsageObservation {
             output_tokens: Some(u64::from(usage.output_tokens)),
             cache_creation_tokens: Some(u64::from(usage.cache_create_tokens)),
             cache_read_tokens: Some(u64::from(usage.cache_read_tokens)),
+            reasoning_tokens: if usage.reasoning_tokens > 0 {
+                Some(u64::from(usage.reasoning_tokens))
+            } else {
+                None
+            },
             cost_usd: Some(f64::from(usage.cost_usd)),
             source: UsageSource::Unknown,
             model: None,
@@ -62,7 +70,7 @@ impl From<UsageObservation> for Usage {
             output_tokens: clamp_u32(observation.output_tokens),
             cache_read_tokens: clamp_u32(observation.cache_read_tokens),
             cache_create_tokens: clamp_u32(observation.cache_creation_tokens),
-            reasoning_tokens: 0,
+            reasoning_tokens: clamp_u32(observation.reasoning_tokens),
             cost_usd: observation.cost_usd.map_or(0.0, |value| value as f32),
             wall_ms: observation.wall_ms,
         }

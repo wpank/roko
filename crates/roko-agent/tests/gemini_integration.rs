@@ -191,6 +191,7 @@ fn gemini_provider(base_url: impl Into<String>) -> ProviderConfig {
         extra_headers: None,
         max_concurrent: None,
         limits: None,
+        require_confirmation: false,
     }
 }
 

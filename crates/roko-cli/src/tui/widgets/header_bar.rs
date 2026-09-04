@@ -50,8 +50,7 @@ impl HealthStatus {
                 .iter()
                 .any(|a| matches!(a.status, super::super::state::AgentStatus::Failed));
             let high_cpu = state.sys.cpu_pct > 90.0;
-            let low_disk =
-                state.sys.disk_free_bytes > 0 && state.sys.disk_free_bytes < (1 << 30);
+            let low_disk = state.sys.disk_free_bytes > 0 && state.sys.disk_free_bytes < (1 << 30);
             if provider_unhealthy || high_cpu || low_disk {
                 return Self::Degraded;
             }
@@ -664,7 +663,8 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         let is_active = *tab == current_tab;
         if is_active {
             // Breathing glow on the active tab: subtle brightness pulse.
-            let glow = super::super::theme::brighten(*color, state.atmosphere.breathing_brightness());
+            let glow =
+                super::super::theme::brighten(*color, state.atmosphere.breathing_brightness());
             // Active tab: inverted key + section_header label with underline
             fkey_spans.push(Span::styled(
                 key.to_string(),
@@ -698,10 +698,7 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
                 let badge_color = tab_badge_color(*tab);
                 fkey_spans.push(Span::styled(
                     format!("({badge})"),
-                    theme
-                        .value()
-                        .fg(badge_color)
-                        .bg(Theme::BG_SECONDARY),
+                    theme.value().fg(badge_color).bg(Theme::BG_SECONDARY),
                 ));
             }
         }
@@ -792,10 +789,7 @@ pub fn render_breadcrumb_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState
     let sub_views = super::super::views::SubView::for_tab(tab);
     if sub_views.len() > 1 {
         let active_idx = state.sub_tab_for(tab);
-        let active_sv = sub_views
-            .get(active_idx)
-            .copied()
-            .unwrap_or(sub_views[0]);
+        let active_sv = sub_views.get(active_idx).copied().unwrap_or(sub_views[0]);
         spans.push(Span::styled(" \u{203a} ", sep_style));
         spans.push(Span::styled(active_sv.label().to_string(), sub_style));
     }

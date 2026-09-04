@@ -155,6 +155,21 @@ pub enum RokoError {
     /// Rate limit exceeded.
     #[error("rate limit: {0}")]
     RateLimited(String),
+
+    /// Gateway pipeline error with preserved category and retry semantics.
+    ///
+    /// Maps losslessly from [`crate::foundation::GatewayError`] so callers
+    /// can inspect the failure category and decide whether to retry.
+    #[error("gateway error ({category}): {message}")]
+    Gateway {
+        /// Failure category: `"provider"`, `"budget"`, `"rate_limit"`,
+        /// `"cache"`, `"cancelled"`, or `"convergence"`.
+        category: &'static str,
+        /// Whether retrying this error could succeed.
+        retryable: bool,
+        /// Human-readable error detail.
+        message: String,
+    },
 }
 
 impl RokoError {
@@ -268,6 +283,16 @@ impl RokoError {
         Self::Planning(err.to_string())
     }
 
+    /// Construct a gateway error with category and retry semantics.
+    #[must_use]
+    pub fn gateway(category: &'static str, retryable: bool, message: impl Into<String>) -> Self {
+        Self::Gateway {
+            category,
+            retryable,
+            message: message.into(),
+        }
+    }
+
     /// Returns a stable discriminant suitable for metrics and retry tables.
     #[must_use]
     pub const fn kind(&self) -> ErrorKind {
@@ -293,6 +318,7 @@ impl RokoError {
             Self::Cancelled(_) => ErrorKind::Cancelled,
             Self::PermissionDenied(_) => ErrorKind::PermissionDenied,
             Self::RateLimited(_) => ErrorKind::RateLimited,
+            Self::Gateway { .. } => ErrorKind::Gateway,
         }
     }
 
@@ -304,9 +330,15 @@ impl RokoError {
     ///   `PermissionDenied`, `BudgetExceeded`, `BodyEncode`, `BodyDecode`,
     ///   `Json`, `Config`, `Planning`, `Verify`, `Tool`, `Cancelled` -- retry
     ///   will not succeed without caller intervention.
+    /// - **Gateway**: uses the per-instance `retryable` field set during
+    ///   `GatewayError` conversion (provider/rate-limit/cache errors are
+    ///   retryable; budget/cancelled/convergence errors are not).
     #[must_use]
     pub const fn is_transient(&self) -> bool {
-        self.kind().is_transient()
+        match self {
+            Self::Gateway { retryable, .. } => *retryable,
+            _ => self.kind().is_transient(),
+        }
     }
 
     /// Returns the recommended retry policy for this error, or `None` if the
@@ -384,6 +416,8 @@ pub enum ErrorKind {
     PermissionDenied,
     /// See [`RokoError::RateLimited`].
     RateLimited,
+    /// See [`RokoError::Gateway`].
+    Gateway,
 }
 
 impl ErrorKind {
@@ -412,6 +446,7 @@ impl ErrorKind {
             Self::Cancelled => "cancelled",
             Self::PermissionDenied => "permission_denied",
             Self::RateLimited => "rate_limited",
+            Self::Gateway => "gateway",
         }
     }
 
@@ -428,6 +463,10 @@ impl ErrorKind {
             | Self::Chain
             | Self::Store
             | Self::Agent => true,
+
+            // Mixed -- gateway errors carry per-instance retryability;
+            // at the kind level we default to transient.
+            Self::Gateway => true,
 
             // Permanent -- caller must change input or give up.
             Self::NotFound
@@ -496,7 +535,8 @@ impl ErrorKind {
             | Self::Transport
             | Self::Chain
             | Self::Store
-            | Self::Agent => "warn",
+            | Self::Agent
+            | Self::Gateway => "warn",
             // Permanent -- something is wrong and needs attention.
             Self::NotFound
             | Self::Rejected
@@ -583,6 +623,7 @@ mod tests {
                 ErrorKind::Cancelled => RokoError::cancelled("user ctrl-c"),
                 ErrorKind::PermissionDenied => RokoError::permission_denied("no fs write"),
                 ErrorKind::RateLimited => RokoError::rate_limited("429"),
+                ErrorKind::Gateway => RokoError::gateway("provider", true, "model down"),
             }
         }
 
@@ -608,6 +649,7 @@ mod tests {
             ErrorKind::Cancelled,
             ErrorKind::PermissionDenied,
             ErrorKind::RateLimited,
+            ErrorKind::Gateway,
         ];
 
         for kind in all {
@@ -639,6 +681,7 @@ mod tests {
         assert_eq!(ErrorKind::Cancelled.as_str(), "cancelled");
         assert_eq!(ErrorKind::PermissionDenied.as_str(), "permission_denied");
         assert_eq!(ErrorKind::RateLimited.as_str(), "rate_limited");
+        assert_eq!(ErrorKind::Gateway.as_str(), "gateway");
     }
 
     #[test]
@@ -789,6 +832,7 @@ mod tests {
             ErrorKind::Chain,
             ErrorKind::Store,
             ErrorKind::Agent,
+            ErrorKind::Gateway,
         ];
         for kind in transient {
             assert!(
@@ -878,5 +922,80 @@ mod tests {
         assert_eq!(RokoError::timeout("x", 1).log_level(), "warn");
         assert_eq!(RokoError::cancelled("ctrl-c").log_level(), "info");
         assert_eq!(RokoError::invalid("bad").log_level(), "error");
+    }
+
+    #[test]
+    fn gateway_retryable_instance_overrides_kind() {
+        // Transient gateway error (provider failure).
+        let transient = RokoError::gateway("provider", true, "model down");
+        assert!(transient.is_transient());
+        assert_eq!(transient.kind(), ErrorKind::Gateway);
+
+        // Permanent gateway error (budget exceeded).
+        let permanent = RokoError::gateway("budget", false, "budget exceeded: max 1.0 USD");
+        assert!(!permanent.is_transient());
+        assert_eq!(permanent.kind(), ErrorKind::Gateway);
+    }
+
+    #[test]
+    fn gateway_error_display_includes_category() {
+        let err = RokoError::gateway("provider", true, "model timeout");
+        let msg = format!("{err}");
+        assert!(msg.contains("provider"), "display missing category: {msg}");
+        assert!(
+            msg.contains("model timeout"),
+            "display missing message: {msg}"
+        );
+    }
+
+    #[test]
+    fn gateway_error_from_all_variants() {
+        use crate::foundation::GatewayError;
+
+        let cases: Vec<(GatewayError, &str, bool)> = vec![
+            (GatewayError::ProviderError("down".into()), "provider", true),
+            (
+                GatewayError::BudgetExceeded {
+                    detail: "max".into(),
+                },
+                "budget",
+                false,
+            ),
+            (
+                GatewayError::RateLimited {
+                    retry_after_ms: Some(1000),
+                },
+                "rate_limit",
+                true,
+            ),
+            (GatewayError::CacheError("corrupt".into()), "cache", true),
+            (GatewayError::Cancelled, "cancelled", false),
+            (
+                GatewayError::ConvergenceDetected { consecutive: 3 },
+                "convergence",
+                false,
+            ),
+        ];
+
+        for (gw_err, expected_category, expected_retryable) in cases {
+            let roko_err: RokoError = gw_err.into();
+            match &roko_err {
+                RokoError::Gateway {
+                    category,
+                    retryable,
+                    ..
+                } => {
+                    assert_eq!(
+                        *category, expected_category,
+                        "category mismatch for {expected_category}"
+                    );
+                    assert_eq!(
+                        *retryable, expected_retryable,
+                        "retryable mismatch for {expected_category}"
+                    );
+                }
+                other => panic!("expected Gateway variant, got: {other:?}"),
+            }
+        }
     }
 }

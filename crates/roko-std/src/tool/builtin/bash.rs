@@ -158,7 +158,8 @@ mod tests {
 
         let result = handler.execute(call, &ctx).await;
         match result {
-            ToolResult::Ok { content, .. } => {
+            ToolResult::Ok { .. } => {
+                let content = result.text_content();
                 // Secrets must NOT appear.
                 assert!(
                     !content.contains("sk-secret-openai-test-key"),

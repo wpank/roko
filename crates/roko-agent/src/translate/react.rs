@@ -100,9 +100,9 @@ impl Translator for ReActTranslator {
         let mut block = String::new();
         for (_, res) in results {
             match res {
-                ToolResult::Ok { content, .. } => {
+                ToolResult::Ok { .. } => {
                     block.push_str("Observation: ");
-                    block.push_str(content);
+                    block.push_str(&res.text_content());
                     block.push_str("\n\n");
                 }
                 ToolResult::Err(e) => {

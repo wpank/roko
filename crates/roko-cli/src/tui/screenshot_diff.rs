@@ -216,7 +216,7 @@ fn compare_png(baseline: &Path, candidate: &Path) -> Result<ScreenshotDiff> {
         total_cells,
         diff_percentage: (diff_count as f64) / (total_cells as f64) * 100.0,
         regions: Vec::new(), // TODO(#152): region extraction from decoded pixels
-        dimensions: (0, 0), // TODO(#152): actual image dimensions
+        dimensions: (0, 0),  // TODO(#152): actual image dimensions
     })
 }
 
@@ -307,9 +307,8 @@ fn extract_regions(diff_map: &[Vec<bool>], rows: usize, cols: usize) -> Vec<Diff
 /// Strip ANSI escape sequences and split into a character grid.
 fn strip_to_grid(text: &str) -> Vec<Vec<char>> {
     static ANSI_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let re = ANSI_RE.get_or_init(|| {
-        regex::Regex::new(r"\x1b\[[0-9;]*[A-Za-z]").expect("valid ANSI regex")
-    });
+    let re = ANSI_RE
+        .get_or_init(|| regex::Regex::new(r"\x1b\[[0-9;]*[A-Za-z]").expect("valid ANSI regex"));
 
     text.lines()
         .map(|line| {

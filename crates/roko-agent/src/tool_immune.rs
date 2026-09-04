@@ -206,7 +206,8 @@ fn detect_tool_result_anomaly_from_payload(
         return anomaly;
     };
 
-    if *is_structured && serde_json::from_str::<serde_json::Value>(content).is_err() {
+    let text_content = result.text_content();
+    if *is_structured && serde_json::from_str::<serde_json::Value>(&text_content).is_err() {
         observe("invalid_structured_result", 0.9);
     }
     if artifacts.iter().any(|artifact| {
@@ -216,7 +217,7 @@ fn detect_tool_result_anomaly_from_payload(
     }) {
         observe("malformed_result_artifact", 0.9);
     }
-    if untrusted_source && contains_prompt_control_language(content) {
+    if untrusted_source && contains_prompt_control_language(&text_content) {
         // Medium severity selects the bounded RateLimitAgent response while
         // still quarantining and withholding this result.
         observe("untrusted_prompt_control_language", 0.75);
@@ -1012,7 +1013,7 @@ mod tests {
     #[test]
     fn malformed_structured_result_is_high_severity_evidence() {
         let malformed = ToolResult::Ok {
-            content: "{not-json".to_string(),
+            content: vec![roko_core::tool::ToolResultContent::text("{not-json")],
             is_structured: true,
             artifacts: Vec::new(),
         };

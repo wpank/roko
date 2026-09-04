@@ -31,7 +31,10 @@ use std::time::Instant;
 use parking_lot::{Mutex, RwLock};
 
 type ModelRouter = dyn Fn(Option<&str>) -> String + Send + Sync;
-type KnowledgeStoreQuery = dyn Fn(&str, usize) -> Result<Vec<serde_json::Value>> + Send + Sync;
+/// Re-export: callers that previously supplied a closure adapter can now
+/// implement `roko_core::KnowledgeQuery` directly or wrap a closure with
+/// `ClosureKnowledgeQuery`.
+use roko_core::foundation::KnowledgeQuery;
 
 /// Records explicit model override outcomes when no routing context is available.
 pub trait ForceBackendOverrideRecorder: Send + Sync {
@@ -93,14 +96,12 @@ pub struct ModelCallService {
     feedback_sink: Option<Arc<dyn FeedbackSink>>,
     /// Optional durable gateway event writer.
     gateway_event_writer: Option<Arc<GatewayEventWriter>>,
-    /// Optional knowledge store query adapter for knowledge-informed routing.
+    /// Optional knowledge store for knowledge-informed model routing.
     ///
-    /// TODO(converge): Replace this erased adapter with
-    /// `Arc<dyn roko_neuro::NeuroStore + Send + Sync>` once `roko-agent` has a
-    /// normal `roko-neuro` dependency and `NeuroStore` is object-safe. In this
-    /// worktree `NeuroStore: Sized`, and this batch's scope forbids Cargo.toml
-    /// changes, so direct trait-object storage cannot compile here.
-    knowledge_store: Option<Arc<KnowledgeStoreQuery>>,
+    /// Uses the canonical `roko_core::KnowledgeQuery` trait object, which any
+    /// `NeuroStore` backend can implement via the blanket impl in
+    /// `roko-compose`.
+    knowledge_store: Option<Arc<dyn KnowledgeQuery>>,
     /// Optional model router used when requests omit an explicit model.
     model_router: Option<Arc<ModelRouter>>,
     /// Optional cascade router callback for recording forced model observations.
@@ -247,15 +248,12 @@ impl ModelCallService {
         self
     }
 
-    /// Attach a knowledge store query adapter for knowledge-informed model routing.
+    /// Attach a knowledge store for knowledge-informed model routing.
     ///
-    /// The adapter should return serialized neuro `KnowledgeEntry` values.
+    /// Accepts any `KnowledgeQuery` implementation. `NeuroStore` backends
+    /// satisfy this via the blanket impl in `roko-compose`.
     #[must_use]
-    #[allow(clippy::type_complexity)]
-    pub fn with_knowledge_store(
-        mut self,
-        store: Arc<dyn Fn(&str, usize) -> Result<Vec<serde_json::Value>> + Send + Sync>,
-    ) -> Self {
+    pub fn with_knowledge_store(mut self, store: Arc<dyn KnowledgeQuery>) -> Self {
         self.knowledge_store = Some(store);
         self
     }
@@ -493,13 +491,29 @@ impl ModelCallService {
                 .filter(|effort| !effort.trim().is_empty()),
             ..AgentOptions::default()
         };
-        options.mcp_config = self
+        options.mcp_config = req
             .mcp_config
             .clone()
+            .or_else(|| self.mcp_config.clone())
             .or_else(|| self.config_agent_mcp_config());
         options.pre_discovered_local_tools = self.local_tool_runtime.clone();
         if !req.tools.is_empty() {
             options.pre_discovered_mcp_tools = Some(Arc::new(req.tools.clone()));
+        }
+        // Thread per-request generation settings into extra_args so callers
+        // that use build_agent_options directly get the full override chain.
+        if let Some(ref gen_settings) = req.generation_settings {
+            if let Some(temperature) = gen_settings.temperature {
+                options
+                    .extra_args
+                    .push(format!("--temperature={temperature}"));
+            }
+            if let Some(top_p) = gen_settings.top_p {
+                options.extra_args.push(format!("--top-p={top_p}"));
+            }
+            for stop in &gen_settings.stop_sequences {
+                options.extra_args.push(format!("--stop={stop}"));
+            }
         }
         options
     }
@@ -658,6 +672,7 @@ impl ModelCallService {
         usage: &TokenUsage,
         latency_ms: u64,
         success: bool,
+        error_class: Option<&str>,
     ) -> Result<()> {
         let Some(sink) = &self.feedback_sink else {
             tracing::debug!("feedback sink not configured for model call service; skipping");
@@ -679,6 +694,7 @@ impl ModelCallService {
             cost_usd: usage.cost_usd,
             latency_ms,
             success,
+            error_class: error_class.map(ToOwned::to_owned),
         })
         .await
     }
@@ -1048,7 +1064,7 @@ impl ModelCallService {
             task_hint.unwrap_or("general")
         );
 
-        let entries = match store(&query, 10) {
+        let entries = match store.query_knowledge(&query, 10) {
             Ok(entries) => entries,
             Err(err) => {
                 tracing::debug!(error = %err, "knowledge store query failed for routing");
@@ -2253,6 +2269,7 @@ impl ModelCaller for ModelCallService {
                         &cached.usage,
                         latency_ms,
                         true,
+                        None,
                     )
                     .await?;
                     self.emit_call_metrics(
@@ -2390,12 +2407,27 @@ impl ModelCaller for ModelCallService {
         if let Some(max_tokens) = thinking_cap.thinking_budget {
             set_max_tokens_option(&mut options, max_tokens);
         }
-        // TODO(converge): Thread per-request generation settings through
-        // AgentOptions/provider adapters. The Anthropic and OpenAI-compatible
-        // adapters derive max tokens from ModelProfile::max_output and do not
-        // parse "max_tokens=..." or "temperature=..." extra_args.
-        // TODO(converge): Thread req-level MCP config here in S05 once
-        // ModelCallRequest carries it.
+        // Thread per-request generation settings through AgentOptions.
+        if let Some(ref gen_settings) = req.generation_settings {
+            if let Some(max_tokens) = gen_settings.max_tokens {
+                set_max_tokens_option(&mut options, max_tokens);
+            }
+            if let Some(temperature) = gen_settings.temperature {
+                options
+                    .extra_args
+                    .push(format!("--temperature={temperature}"));
+            }
+            if let Some(top_p) = gen_settings.top_p {
+                options.extra_args.push(format!("--top-p={top_p}"));
+            }
+            for stop in &gen_settings.stop_sequences {
+                options.extra_args.push(format!("--stop={stop}"));
+            }
+        }
+        // Thread per-request MCP config, overriding the service-level default.
+        if let Some(ref mcp) = req.mcp_config {
+            options.mcp_config = Some(mcp.clone());
+        }
 
         let fallback_models = self
             .fallback_models_for_request(&model)
@@ -2451,6 +2483,7 @@ impl ModelCaller for ModelCallService {
                     &usage,
                     latency_ms,
                     false,
+                    Some(provider_error_kind(&message)),
                 )
                 .await?;
                 let prov = provider.as_deref().unwrap_or("unknown");
@@ -2506,6 +2539,7 @@ impl ModelCaller for ModelCallService {
                 &usage,
                 latency_ms,
                 false,
+                Some("convergence_failure"),
             )
             .await?;
             let convergence_err = RokoError::from(error);
@@ -2566,6 +2600,7 @@ impl ModelCaller for ModelCallService {
             &usage,
             output.latency_ms,
             true,
+            None,
         )
         .await?;
         self.emit_call_metrics(
@@ -2647,6 +2682,8 @@ mod tests {
             routing_hints: Vec::new(),
             cache_policy: roko_core::foundation::CachePolicy::Default,
             tools: Vec::new(),
+            generation_settings: None,
+            mcp_config: None,
         }
     }
 
@@ -2911,6 +2948,8 @@ mod tests {
             routing_hints: Vec::new(),
             cache_policy: roko_core::foundation::CachePolicy::Default,
             tools: Vec::new(),
+            generation_settings: None,
+            mcp_config: None,
         };
         assert_eq!(svc.resolve_model(&req), "claude-sonnet-4-20250514");
     }
@@ -2935,6 +2974,8 @@ mod tests {
             routing_hints: Vec::new(),
             cache_policy: roko_core::foundation::CachePolicy::Default,
             tools: Vec::new(),
+            generation_settings: None,
+            mcp_config: None,
         };
         assert_eq!(svc.resolve_model(&req), "claude-opus-4-20250514");
     }
@@ -2962,6 +3003,8 @@ mod tests {
             routing_hints: Vec::new(),
             cache_policy: roko_core::foundation::CachePolicy::Default,
             tools: Vec::new(),
+            generation_settings: None,
+            mcp_config: None,
         };
 
         assert_eq!(svc.resolve_model(&req), "router-selected-model");
@@ -3037,6 +3080,8 @@ mod tests {
             routing_hints: Vec::new(),
             cache_policy: roko_core::foundation::CachePolicy::Default,
             tools: Vec::new(),
+            generation_settings: None,
+            mcp_config: None,
         };
         let model = svc.resolve_model(&req);
         let config = svc.config_for_model(&model);
@@ -3073,6 +3118,8 @@ mod tests {
             routing_hints: Vec::new(),
             cache_policy: roko_core::foundation::CachePolicy::Default,
             tools: Vec::new(),
+            generation_settings: None,
+            mcp_config: None,
         };
 
         assert_eq!(svc.resolve_model(&req), "claude");
@@ -3103,12 +3150,129 @@ mod tests {
         assert_eq!(tools.as_ref(), &vec![tool]);
     }
 
+    /// MCP config precedence: explicit `with_mcp_config` > `AgentConfig.mcp_config` > None.
+    ///
+    /// Uses temporary paths and injected configuration; no process-global env,
+    /// network, or MCP server mutation.
     #[test]
-    #[ignore = "blocked until roko_core::config::AgentConfig exposes mcp_config"]
     fn mcp_config_falls_back_to_roko_config() {
-        // TODO(converge): Enable this once the roko-core AgentConfig schema has
-        // `mcp_config: Option<PathBuf>`. The S05 write scope only allows edits
-        // to this file, so the config-backed fallback cannot be compiled here.
+        use roko_core::config::schema::RokoConfig;
+
+        // ── Row 1: explicit override wins over AgentConfig ──────────────
+        let mut config_with_agent_mcp = RokoConfig::default();
+        config_with_agent_mcp.agent.mcp_config =
+            Some(PathBuf::from("/workspace/.mcp/agent-level.json"));
+
+        let svc = ModelCallService::new("claude".into())
+            .with_config(config_with_agent_mcp.clone())
+            .with_mcp_config("/explicit/override.json");
+
+        let req = user_request("claude", "hello");
+        let options = svc.build_agent_options(&req, None);
+        assert_eq!(
+            options.mcp_config,
+            Some(PathBuf::from("/explicit/override.json")),
+            "explicit with_mcp_config must win over AgentConfig.mcp_config"
+        );
+
+        // ── Row 2: AgentConfig.mcp_config used when no explicit override ─
+        let svc_no_explicit =
+            ModelCallService::new("claude".into()).with_config(config_with_agent_mcp);
+
+        let options = svc_no_explicit.build_agent_options(&req, None);
+        assert_eq!(
+            options.mcp_config,
+            Some(PathBuf::from("/workspace/.mcp/agent-level.json")),
+            "AgentConfig.mcp_config must be used when no explicit override is set"
+        );
+
+        // ── Row 3: no config at all → None ──────────────────────────────
+        let svc_bare = ModelCallService::new("claude".into());
+        let options = svc_bare.build_agent_options(&req, None);
+        assert_eq!(
+            options.mcp_config, None,
+            "no explicit or AgentConfig mcp_config → None"
+        );
+
+        // ── Row 4: relative path is preserved as-is ─────────────────────
+        let mut config_rel = RokoConfig::default();
+        config_rel.agent.mcp_config = Some(PathBuf::from(".mcp/relative.json"));
+
+        let svc_rel = ModelCallService::new("claude".into()).with_config(config_rel);
+        let options = svc_rel.build_agent_options(&req, None);
+        assert_eq!(
+            options.mcp_config,
+            Some(PathBuf::from(".mcp/relative.json")),
+            "relative path from AgentConfig must be threaded without silent resolution"
+        );
+
+        // ── Row 5: non-existent explicit path is threaded, not swallowed ─
+        let svc_missing =
+            ModelCallService::new("claude".into()).with_mcp_config("/does/not/exist/mcp.json");
+        let options = svc_missing.build_agent_options(&req, None);
+        assert_eq!(
+            options.mcp_config,
+            Some(PathBuf::from("/does/not/exist/mcp.json")),
+            "missing explicit path must surface (fail closed), not silently fall through"
+        );
+
+        // ── Row 6: resolved path metadata is redactable ─────────────────
+        let debug_repr = format!("{:?}", options.mcp_config);
+        assert!(
+            debug_repr.contains("/does/not/exist/mcp.json"),
+            "debug output contains canonical path metadata"
+        );
+        // The path itself is all we thread — no file contents, env values,
+        // or credentials are exposed in the AgentOptions.
+        assert!(
+            !debug_repr.contains("sk-") && !debug_repr.contains("ANTHROPIC_API_KEY"),
+            "resolved path metadata must not leak credentials"
+        );
+    }
+
+    /// Per-request `generation_settings` and `mcp_config` are threaded through
+    /// `build_agent_options` into `AgentOptions`.
+    #[test]
+    fn per_request_generation_settings_and_mcp_config_threaded() {
+        use roko_core::foundation::GenerationSettings;
+
+        let svc = ModelCallService::new("claude".into()).with_mcp_config("/service/default.json");
+
+        // Per-request overrides should take precedence.
+        let req = ModelCallRequest {
+            generation_settings: Some(GenerationSettings {
+                max_tokens: Some(4096),
+                temperature: Some(0.7),
+                top_p: Some(0.9),
+                stop_sequences: vec!["DONE".into()],
+            }),
+            mcp_config: Some(PathBuf::from("/per-request/override.json")),
+            ..user_request("claude", "hello")
+        };
+
+        let options = svc.build_agent_options(&req, None);
+
+        // MCP config: per-request wins over service-level.
+        assert_eq!(
+            options.mcp_config,
+            Some(PathBuf::from("/per-request/override.json")),
+            "per-request mcp_config must override service-level default"
+        );
+
+        // Generation settings should be threaded as extra_args.
+        let args_joined = options.extra_args.join(" ");
+        assert!(
+            args_joined.contains("--temperature=0.7"),
+            "temperature not threaded: {args_joined}"
+        );
+        assert!(
+            args_joined.contains("--top-p=0.9"),
+            "top_p not threaded: {args_joined}"
+        );
+        assert!(
+            args_joined.contains("--stop=DONE"),
+            "stop sequence not threaded: {args_joined}"
+        );
     }
 
     #[test]
@@ -3134,6 +3298,8 @@ mod tests {
             routing_hints: Vec::new(),
             cache_policy: roko_core::foundation::CachePolicy::Default,
             tools: Vec::new(),
+            generation_settings: None,
+            mcp_config: None,
         };
 
         let estimate = svc.cost_predict(&req);
@@ -3177,6 +3343,8 @@ mod tests {
             routing_hints: Vec::new(),
             cache_policy: roko_core::foundation::CachePolicy::Default,
             tools: Vec::new(),
+            generation_settings: None,
+            mcp_config: None,
         };
 
         let estimate = svc.cost_predict(&req);
@@ -3630,6 +3798,7 @@ mod tests {
                     tpm: 40_000,
                     ..Default::default()
                 }),
+                require_confirmation: false,
             },
         );
         config.models.insert(
@@ -3692,6 +3861,7 @@ mod tests {
                     tpm: 100_000,
                     ..Default::default()
                 }),
+                require_confirmation: false,
             },
         );
 
@@ -3794,6 +3964,8 @@ mod tests {
             routing_hints: Vec::new(),
             cache_policy: roko_core::foundation::CachePolicy::Default,
             tools: Vec::new(),
+            generation_settings: None,
+            mcp_config: None,
         };
 
         let estimate = svc.cost_predict(&req);

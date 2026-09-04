@@ -186,7 +186,10 @@ pub fn format_diff_lines<'a>(
             .count();
         if file_count > 0 {
             stats_spans.push(Span::styled(
-                format!("  ({file_count} file{})", if file_count == 1 { "" } else { "s" }),
+                format!(
+                    "  ({file_count} file{})",
+                    if file_count == 1 { "" } else { "s" }
+                ),
                 Style::default().fg(Theme::TEXT_DIM),
             ));
         }
@@ -194,69 +197,69 @@ pub fn format_diff_lines<'a>(
     }
 
     result.extend(raw_lines.iter().enumerate().map(|(i, line)| {
-            // Update line counters from hunk headers.
-            if line.starts_with("@@") {
-                let (o, n) = parse_hunk_header(line);
-                old_ln = Some(o);
-                new_ln = Some(n);
-            }
+        // Update line counters from hunk headers.
+        if line.starts_with("@@") {
+            let (o, n) = parse_hunk_header(line);
+            old_ln = Some(o);
+            new_ln = Some(n);
+        }
 
-            let mut spans: Vec<Span<'a>> = Vec::new();
+        let mut spans: Vec<Span<'a>> = Vec::new();
 
-            // Gutter: line numbers.
-            if opts.line_numbers {
-                let gutter_text = format_gutter(line, &mut old_ln, &mut new_ln, gutter_w);
-                spans.push(Span::styled(gutter_text, gutter_style(line, theme)));
-            }
+        // Gutter: line numbers.
+        if opts.line_numbers {
+            let gutter_text = format_gutter(line, &mut old_ln, &mut new_ln, gutter_w);
+            spans.push(Span::styled(gutter_text, gutter_style(line, theme)));
+        }
 
-            // Content spans.
-            if line.starts_with("diff --git") {
-                // File header: extract filename with section_header style + separator.
-                let filename = extract_filename(line);
-                let sep_len = content_w.saturating_sub(filename.len() + 2);
-                let separator = "\u{2500}".repeat(sep_len.min(60));
-                spans.push(Span::styled(
-                    format!(" {filename} "),
-                    theme.section_header(),
-                ));
-                spans.push(Span::styled(
-                    separator,
-                    Style::default().fg(Theme::TEXT_PHANTOM),
-                ));
-            } else if line.starts_with("index ") {
-                spans.push(Span::styled(
-                    truncate_line(line, content_w),
-                    Style::default().fg(Theme::TEXT_PHANTOM),
-                ));
-            } else if opts.word_highlight && is_changed_line(line) {
-                // Try word-level highlighting.
-                if let Some(partner_idx) = word_pairs.iter().find_map(|&(a, b)| {
-                    if a == i {
-                        Some(b)
-                    } else if b == i {
-                        Some(a)
-                    } else {
-                        None
-                    }
-                }) {
-                    let partner = raw_lines[partner_idx];
-                    let word_spans = word_highlight_spans(line, partner, content_w, theme);
-                    spans.extend(word_spans);
+        // Content spans.
+        if line.starts_with("diff --git") {
+            // File header: extract filename with section_header style + separator.
+            let filename = extract_filename(line);
+            let sep_len = content_w.saturating_sub(filename.len() + 2);
+            let separator = "\u{2500}".repeat(sep_len.min(60));
+            spans.push(Span::styled(
+                format!(" {filename} "),
+                theme.section_header(),
+            ));
+            spans.push(Span::styled(
+                separator,
+                Style::default().fg(Theme::TEXT_PHANTOM),
+            ));
+        } else if line.starts_with("index ") {
+            spans.push(Span::styled(
+                truncate_line(line, content_w),
+                Style::default().fg(Theme::TEXT_PHANTOM),
+            ));
+        } else if opts.word_highlight && is_changed_line(line) {
+            // Try word-level highlighting.
+            if let Some(partner_idx) = word_pairs.iter().find_map(|&(a, b)| {
+                if a == i {
+                    Some(b)
+                } else if b == i {
+                    Some(a)
                 } else {
-                    spans.push(Span::styled(
-                        truncate_line(line, content_w),
-                        diff_line_style(line, theme),
-                    ));
+                    None
                 }
+            }) {
+                let partner = raw_lines[partner_idx];
+                let word_spans = word_highlight_spans(line, partner, content_w, theme);
+                spans.extend(word_spans);
             } else {
                 spans.push(Span::styled(
                     truncate_line(line, content_w),
                     diff_line_style(line, theme),
                 ));
             }
+        } else {
+            spans.push(Span::styled(
+                truncate_line(line, content_w),
+                diff_line_style(line, theme),
+            ));
+        }
 
-            Line::from(spans)
-        }));
+        Line::from(spans)
+    }));
 
     result
 }
@@ -497,11 +500,7 @@ fn word_highlight_spans<'a>(
 
     // Strip the leading +/- for comparison.
     let line_content = if line.len() > 1 { &line[1..] } else { "" };
-    let partner_content = if partner.len() > 1 {
-        &partner[1..]
-    } else {
-        ""
-    };
+    let partner_content = if partner.len() > 1 { &partner[1..] } else { "" };
 
     // Find common prefix and suffix lengths.
     let prefix_len = line_content

@@ -1431,10 +1431,7 @@ impl PromptAssembler {
         // score result used by selection.
         let section_effectiveness = self.resolve_section_effectiveness(&ctx.workdir);
         let group_context = load_group_context(&ctx.workdir, &ctx.role, task, ctx);
-        let has_mcp = task
-            .mcp_servers
-            .as_ref()
-            .is_some_and(|s| !s.is_empty());
+        let has_mcp = task.mcp_servers.as_ref().is_some_and(|s| !s.is_empty());
         let mut spec = RoleSystemPromptSpec::new(role, task_context, tools_csv)
             .with_cache_markers()
             .with_pheromones(&group_context);

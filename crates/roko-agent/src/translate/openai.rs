@@ -113,7 +113,7 @@ impl Translator for OpenAiTranslator {
             .iter()
             .map(|(call, res)| {
                 let content = match res {
-                    ToolResult::Ok { content, .. } => content.clone(),
+                    ToolResult::Ok { .. } => res.text_content(),
                     ToolResult::Err(e) => format!("error: {e}"),
                 };
                 serde_json::json!({
@@ -316,11 +316,19 @@ pub(crate) fn parse_usage_observation(response: &serde_json::Value) -> UsageObse
         .pointer("/prompt_tokens_details/cached_tokens")
         .or_else(|| usage.get("cached_tokens"))
         .and_then(serde_json::Value::as_u64);
+    let cache_creation_tokens = usage
+        .get("cache_creation_tokens")
+        .and_then(serde_json::Value::as_u64);
+    let reasoning_tokens = usage
+        .pointer("/completion_tokens_details/reasoning_tokens")
+        .and_then(serde_json::Value::as_u64);
 
     UsageObservation {
         input_tokens,
         output_tokens,
         cache_read_tokens,
+        cache_creation_tokens,
+        reasoning_tokens,
         source: UsageSource::ProviderReported,
         model,
         ..Default::default()

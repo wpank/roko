@@ -9,9 +9,9 @@
 //!
 //! The only authoritative writer for `.roko/mcp-config.json` is
 //! `PlanRunner::resolve_mcp_config_path` in `roko-cli/src/runner/event_loop.rs`
-//! (the runner-v2 runtime path). The legacy writer (`write_mcp_config`) has been
-//! removed to prevent it from clobbering the runner's output with an incompatible
-//! JSON shape.
+//! (the runner-v2 runtime path). The legacy C4 writer (`write_mcp_config`) has
+//! been removed to prevent it from clobbering the runner's output with an
+//! incompatible JSON shape.
 
 use std::path::Path;
 

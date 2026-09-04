@@ -8,6 +8,65 @@ use super::effects_config::EffectsConfig;
 use super::postfx;
 use super::state::TuiState;
 
+// ---------------------------------------------------------------------------
+// Reusable frame-sized buffers (#366)
+// ---------------------------------------------------------------------------
+
+/// Pre-allocated bloom accumulation buffers that resize only on terminal resize.
+///
+/// The bloom pass needs three `f64` scratch planes (R, G, B) of `width * height`
+/// cells.  Previously these were allocated on every frame; now they are retained
+/// between frames and re-zeroed only when bloom is active.
+#[derive(Debug, Default)]
+pub struct PostFxBuffers {
+    /// Bloom R-channel accumulation plane.
+    bloom_r: Vec<f64>,
+    /// Bloom G-channel accumulation plane.
+    bloom_g: Vec<f64>,
+    /// Bloom B-channel accumulation plane.
+    bloom_b: Vec<f64>,
+    /// Width * Height that the buffers are currently sized for.
+    capacity: usize,
+}
+
+impl PostFxBuffers {
+    /// Ensure the buffers can hold `width * height` cells.
+    ///
+    /// Only reallocates when the terminal size actually changed.
+    pub fn resize_if_needed(&mut self, width: u16, height: u16) {
+        let needed = width as usize * height as usize;
+        if needed <= self.capacity {
+            return;
+        }
+        self.bloom_r.resize(needed, 0.0);
+        self.bloom_g.resize(needed, 0.0);
+        self.bloom_b.resize(needed, 0.0);
+        self.capacity = needed;
+    }
+
+    /// Zero the bloom planes for a new frame.
+    fn zero(&mut self, len: usize) {
+        let len = len.min(self.capacity);
+        self.bloom_r[..len].fill(0.0);
+        self.bloom_g[..len].fill(0.0);
+        self.bloom_b[..len].fill(0.0);
+    }
+
+    /// Provide mutable references to the three bloom planes.
+    pub fn bloom_planes(&mut self, len: usize) -> (&mut [f64], &mut [f64], &mut [f64]) {
+        self.zero(len);
+        (
+            &mut self.bloom_r[..len],
+            &mut self.bloom_g[..len],
+            &mut self.bloom_b[..len],
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline
+// ---------------------------------------------------------------------------
+
 /// Apply the full post-processing pipeline for the given tab.
 ///
 /// `tab_idx`: 0 = Dashboard, 1 = Plans, 2 = Agents, etc.
@@ -15,6 +74,7 @@ use super::state::TuiState;
 /// `elapsed`: seconds since TUI start (drives animations).
 /// `frame`: frame counter (used as seed for per-frame effects).
 /// `fx`: effects configuration.
+/// `pfx_bufs`: reusable scratch buffers (resized only on terminal resize).
 pub fn apply_pipeline(
     tab_idx: usize,
     area: Rect,
@@ -23,6 +83,7 @@ pub fn apply_pipeline(
     frame: u64,
     fx: &EffectsConfig,
     state: &TuiState,
+    pfx_bufs: &mut PostFxBuffers,
 ) {
     // `screen_postfx` is the master switch. Operators need one reliable way
     // to recover a clean, readable frame even when the selected preset has
@@ -40,7 +101,11 @@ pub fn apply_pipeline(
     }
 
     if fx.bloom_enabled {
-        postfx::bloom(area, buf, 220, 1, fx.bloom_intensity);
+        // #366: Use pre-allocated bloom buffers instead of per-frame Vec allocs.
+        pfx_bufs.resize_if_needed(area.width, area.height);
+        let len = area.width as usize * area.height as usize;
+        let (br, bg, bb) = pfx_bufs.bloom_planes(len);
+        postfx::bloom_with_buffers(area, buf, 220, 1, fx.bloom_intensity, br, bg, bb);
     }
 
     if fx.shadows_enabled {

@@ -77,11 +77,15 @@ impl ControlCommand {
 }
 
 // ---------------------------------------------------------------------------
-// TuiCommand — in-process channel commands from the TUI to the runner
+// TuiCommand — DEPRECATED: use `execution_control::ExecutionCommand` (#233)
 // ---------------------------------------------------------------------------
 
-/// Commands sent from the interactive TUI to the runner event loop via an
-/// in-process channel (as opposed to [`ControlCommand`] which uses file IPC).
+/// **Deprecated**: use [`crate::execution_control::ExecutionCommand`] instead.
+///
+/// This enum is retained only for backward-compatible type signatures.
+/// All production callers have migrated to `ExecutionCommand`; this enum
+/// will be removed in a future cleanup pass.
+#[deprecated(note = "use execution_control::ExecutionCommand instead (#233)")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TuiCommand {
     /// Pause the runner: finish the current agent turn, then stop dispatching.
@@ -176,12 +180,19 @@ pub enum RunnerFailureKind {
     Permanent,
     Resource,
     Structural,
+    /// The request exceeded the model's context window. Retryable with a
+    /// reduced context budget (the runner shrinks `plan_context_tokens` by 25%
+    /// before re-dispatching).
+    ContextOverflow,
     Unknown,
 }
 
 impl RunnerFailureKind {
     pub const fn is_retryable(self) -> bool {
-        matches!(self, Self::Transient | Self::Structural | Self::Unknown)
+        matches!(
+            self,
+            Self::Transient | Self::Structural | Self::ContextOverflow | Self::Unknown
+        )
     }
 
     pub const fn retry_cooldown_secs(self) -> u64 {
@@ -190,6 +201,7 @@ impl RunnerFailureKind {
             Self::Permanent => 0,
             Self::Resource => 0,
             Self::Structural => 5,
+            Self::ContextOverflow => 1,
             Self::Unknown => 1,
         }
     }
@@ -220,6 +232,17 @@ impl RunnerFailureKind {
             || lower.contains("flaky")
         {
             return Self::Transient;
+        }
+        if lower.contains("context overflow")
+            || lower.contains("context_overflow")
+            || lower.contains("context window")
+            || lower.contains("context length exceeded")
+            || lower.contains("maximum context length")
+            || lower.contains("token limit")
+            || lower.contains("prompt is too long")
+            || lower.contains("request too large")
+        {
+            return Self::ContextOverflow;
         }
         if lower.contains("verify script")
             || lower.contains("acceptance contract")
@@ -2416,6 +2439,11 @@ pub struct RunConfig {
     /// sum of all previous attempts for a task exceeds this value, the retry
     /// is suppressed and the task is marked failed.
     pub max_task_retry_usd: f64,
+    /// Maximum USD spend per calendar day across all plan runs (0 = unlimited).
+    /// From `[budget].max_daily_usd`. Checked against the costs log before
+    /// each dispatch. When the day's total exceeds this ceiling, new
+    /// dispatches are blocked (or warned when `budget_override` is active).
+    pub max_daily_usd: f64,
     /// When `true`, allows execution to continue past `BudgetAction::Block` with
     /// a warning. Derived from `--budget-override` / `--no-budget` CLI flags.
     /// Default: `false`.
@@ -2475,8 +2503,9 @@ pub struct RunConfig {
     /// Populated when running under `roko serve`.
     pub metrics: Option<std::sync::Arc<roko_core::obs::metrics::MetricRegistry>>,
     /// Safety layer for pre- and post-dispatch checks around CLI dispatch.
-    /// When `None`, safety checks are skipped (tests, bare smoke runs).
-    pub safety_layer: Option<SafetyLayer>,
+    /// Always present — `SafetyLayer::with_defaults()` provides a hardened
+    /// fail-closed baseline. Safety checks are never skipped.
+    pub safety_layer: SafetyLayer,
     /// Filesystem-backed observability sinks (traces + tool metrics).
     /// When `None`, the runner constructs sinks from `workdir` at startup.
     /// Set explicitly to share sinks across runs or inject test doubles.
@@ -2649,6 +2678,7 @@ impl RunConfig {
             max_plan_usd: f64::from(roko_config.budget.max_plan_usd),
             max_turn_usd: f64::from(roko_config.budget.max_turn_usd),
             max_task_retry_usd: f64::from(roko_config.budget.max_task_retry_usd),
+            max_daily_usd: f64::from(roko_config.budget.max_daily_usd),
             budget_override: false,
             budget_ceiling_override: None,
             no_budget: false,
@@ -2672,7 +2702,7 @@ impl RunConfig {
             projection: None,
             http_event_sink: None,
             metrics: Some(metrics),
-            safety_layer: Some(safety_layer),
+            safety_layer,
             obs_sinks: None,
             conductor: Some(Arc::new(conductor)),
             conductor_ring: Some(conductor_ring),
@@ -2711,6 +2741,7 @@ impl Default for RunConfig {
             max_plan_usd: 0.0,
             max_turn_usd: 0.0,
             max_task_retry_usd: 0.0,
+            max_daily_usd: 0.0,
             budget_override: false,
             budget_ceiling_override: None,
             no_budget: false,
@@ -2729,7 +2760,7 @@ impl Default for RunConfig {
             batch_size: None,
             warm_cache: true,
             metrics: None,
-            safety_layer: None,
+            safety_layer: SafetyLayer::with_defaults(),
             obs_sinks: None,
             conductor: None,
             conductor_ring: None,
@@ -3195,6 +3226,21 @@ mod tests {
         assert_eq!(
             event_loop::health_check_timeout(&config),
             defaults.health_check()
+        );
+    }
+
+    // ─── #60: RunConfig.safety_layer non-optionality regression ─────
+
+    #[test]
+    fn run_config_default_has_active_safety_layer() {
+        let config = RunConfig::default();
+        // Compile-time proof: safety_layer is SafetyLayer, not Option<SafetyLayer>.
+        let _safety: &SafetyLayer = &config.safety_layer;
+        // The default layer should have Restrict sandbox level (not permissive).
+        assert_eq!(
+            config.safety_layer.sandbox_level,
+            roko_agent::safety::SandboxLevel::Restrict,
+            "default RunConfig must have a restrictive sandbox level"
         );
     }
 }

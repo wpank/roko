@@ -32,6 +32,7 @@ use roko_core::foundation::{
 use roko_core::{Body, Context, Kind, OperatingFrequency, Signal};
 use roko_learn::cascade_router::CascadeRouter;
 use roko_learn::feedback_service::FeedbackService;
+use serde_yaml_ng as serde_yaml;
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command as TokioCommand;
@@ -442,12 +443,10 @@ impl ChatAgentSession {
     ///
     /// Non-CLI providers are rejected until the API chat path is wired.
     fn is_cli_provider(&self) -> bool {
-        let kind = &self.model_selection.provider_kind;
-        kind == ProviderKind::ClaudeCli.label() || kind == ProviderKind::CodexCli.label()
+        self.model_selection.provider_kind == ProviderKind::ClaudeCli.label()
     }
 
     /// Build the typed error used when an unsupported provider is requested.
-    #[allow(dead_code)]
     fn api_provider_not_implemented_error(&self) -> SessionError {
         let provider = self.model_selection.provider_kind.clone();
         let model = self.model.clone();
@@ -482,7 +481,7 @@ impl ChatAgentSession {
     fn resolve_api_key(&self) -> std::result::Result<String, SessionError> {
         if matches!(
             self.api_provider_kind(),
-            ProviderKind::ClaudeCli | ProviderKind::CodexCli | ProviderKind::CursorAcp
+            ProviderKind::ClaudeCli | ProviderKind::CursorAcp
         ) {
             return Ok(String::new());
         }
@@ -512,7 +511,6 @@ impl ChatAgentSession {
     /// the provider.  Maps the well-known error categories (auth, rate-limit,
     /// network) to typed variants so callers can distinguish them without
     /// parsing error messages.
-    #[allow(dead_code)]
     fn classify_http_error(&self, status: u16, body: &str) -> SessionError {
         let provider = self.model_selection.provider_kind.clone();
         match status {
@@ -554,7 +552,6 @@ impl ChatAgentSession {
             "cursor_cli" => ProviderKind::CursorCli,
             "hermes" => ProviderKind::Hermes,
             "openclaw" => ProviderKind::OpenClaw,
-            "codex_cli" | "codex" => ProviderKind::CodexCli,
             _ => ProviderKind::OpenAiCompat,
         }
     }
@@ -624,6 +621,7 @@ impl ChatAgentSession {
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             });
 
         let model_key = self.model_call_model_key();
@@ -666,6 +664,8 @@ impl ChatAgentSession {
             routing_hints: Vec::new(),
             cache_policy: CachePolicy::Bypass,
             tools: Vec::new(),
+            generation_settings: None,
+            mcp_config: None,
         }
     }
 
@@ -1820,7 +1820,7 @@ fn is_skipped_dir_name(name: &str) -> bool {
     SKIP_DIR_NAMES.contains(&name)
 }
 
-/// Discover MCP config file using the same resolution order as the runner.
+/// Discover MCP config file using the standard resolution order.
 ///
 /// Priority:
 /// 1. Explicit path in `config.agent.mcp_config`
@@ -1890,6 +1890,61 @@ where
     }
 
     String::from_utf8_lossy(&bytes).into_owned()
+}
+
+// ---------------------------------------------------------------------------
+// #245: Non-plan service migration adapter (Lane D1)
+// ---------------------------------------------------------------------------
+
+/// Thin adapter that validates a chat session request against the
+/// [`roko_execution::profiles::ProfileMatrix`] before the session is
+/// constructed.
+///
+/// When #243 lands, this adapter will be replaced by a direct call to
+/// `RuntimeServicesBuilder::build()`. Until then it serves as the
+/// consumer-side contract: callers translate their CLI/ACP params into
+/// `ExecutionOverrides` and validate against the `ChatLight` profile.
+///
+/// **Spec constraint (Lane D1):** this adapter does not edit
+/// `commands/plan.rs`, `runner/event_loop.rs`, or any plan-path type.
+pub struct ChatSessionServiceAdapter;
+
+impl ChatSessionServiceAdapter {
+    /// Validate that the chat session satisfies the `ChatLight` profile
+    /// and return a handle for cost settlement correlation.
+    ///
+    /// The caller must still construct `ChatAgentSession` and
+    /// `ChatFeedbackRuntime` as before — this adapter only validates
+    /// the profile matrix and provides the correlation handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the profile matrix validation fails.
+    pub fn validate(
+        workdir: &Path,
+        model: Option<String>,
+        provider: Option<String>,
+    ) -> anyhow::Result<roko_execution::NonPlanServiceHandle> {
+        use roko_execution::profiles::RuntimeProfile;
+
+        let exec_overrides = roko_execution::overrides_for_chat(model, provider);
+        let request = roko_execution::NonPlanServiceRequest::new(
+            RuntimeProfile::ChatLight,
+            workdir.to_path_buf(),
+            exec_overrides,
+        );
+        let handle = roko_execution::validate_service_request(&request)
+            .map_err(|e| anyhow::anyhow!("chat session service validation: {e}"))?;
+
+        tracing::debug!(
+            instance_id = %handle.instance_id(),
+            profile = %handle.profile(),
+            required = ?handle.required_bundles(),
+            "validated chat session service request"
+        );
+
+        Ok(handle)
+    }
 }
 
 #[cfg(test)]

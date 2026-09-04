@@ -54,7 +54,14 @@ pub fn render_task_detail_modal(
         TaskRowStatus::Blocked => ("\u{25a0} blocked", theme.warning()),
         TaskRowStatus::Pending => ("\u{25cb} pending", theme.muted()),
     };
-    push_label_value(&mut lines, "Status", badge, theme.label(), status_style.add_modifier(Modifier::BOLD), theme);
+    push_label_value(
+        &mut lines,
+        "Status",
+        badge,
+        theme.label(),
+        status_style.add_modifier(Modifier::BOLD),
+        theme,
+    );
     push_label_value(
         &mut lines,
         "Elapsed",
@@ -78,9 +85,30 @@ pub fn render_task_detail_modal(
     } else {
         theme.value()
     };
-    push_label_value(&mut lines, "Agent", &agent_str, theme.label(), agent_style, theme);
-    push_label_value(&mut lines, "Model", "\u{2014}", theme.label(), theme.muted(), theme);
-    push_label_value(&mut lines, "Attempt", "\u{2014}", theme.label(), theme.muted(), theme);
+    push_label_value(
+        &mut lines,
+        "Agent",
+        &agent_str,
+        theme.label(),
+        agent_style,
+        theme,
+    );
+    push_label_value(
+        &mut lines,
+        "Model",
+        "\u{2014}",
+        theme.label(),
+        theme.muted(),
+        theme,
+    );
+    push_label_value(
+        &mut lines,
+        "Attempt",
+        "\u{2014}",
+        theme.label(),
+        theme.muted(),
+        theme,
+    );
     lines.push(Line::from(""));
 
     // ── Acceptance Criteria ──────────────────────────────────────────
@@ -99,28 +127,64 @@ pub fn render_task_detail_modal(
 
     // ── Files ────────────────────────────────────────────────────────
     push_section_header(&mut lines, "Files", sep_width, theme);
-    lines.push(Line::from(Span::styled(
-        "  \u{2014}",
-        theme.muted(),
-    )));
+    lines.push(Line::from(Span::styled("  \u{2014}", theme.muted())));
     lines.push(Line::from(""));
 
     // ── Dependencies ─────────────────────────────────────────────────
     push_section_header(&mut lines, "Dependencies", sep_width, theme);
-    lines.push(Line::from(Span::styled(
-        "  \u{2014}",
-        theme.muted(),
-    )));
+    lines.push(Line::from(Span::styled("  \u{2014}", theme.muted())));
     lines.push(Line::from(""));
 
     // ── Routing Context ──────────────────────────────────────────────
     push_section_header(&mut lines, "Routing Context", sep_width, theme);
-    push_label_value(&mut lines, "  Category", "\u{2014}", theme.label(), theme.muted(), theme);
-    push_label_value(&mut lines, "  Reasoning", "\u{2014}", theme.label(), theme.muted(), theme);
-    push_label_value(&mut lines, "  Speed", "\u{2014}", theme.label(), theme.muted(), theme);
-    push_label_value(&mut lines, "  Quality", "\u{2014}", theme.label(), theme.muted(), theme);
-    push_label_value(&mut lines, "  Context", "\u{2014}", theme.label(), theme.muted(), theme);
-    push_label_value(&mut lines, "  Band", "\u{2014}", theme.label(), theme.muted(), theme);
+    push_label_value(
+        &mut lines,
+        "  Category",
+        "\u{2014}",
+        theme.label(),
+        theme.muted(),
+        theme,
+    );
+    push_label_value(
+        &mut lines,
+        "  Reasoning",
+        "\u{2014}",
+        theme.label(),
+        theme.muted(),
+        theme,
+    );
+    push_label_value(
+        &mut lines,
+        "  Speed",
+        "\u{2014}",
+        theme.label(),
+        theme.muted(),
+        theme,
+    );
+    push_label_value(
+        &mut lines,
+        "  Quality",
+        "\u{2014}",
+        theme.label(),
+        theme.muted(),
+        theme,
+    );
+    push_label_value(
+        &mut lines,
+        "  Context",
+        "\u{2014}",
+        theme.label(),
+        theme.muted(),
+        theme,
+    );
+    push_label_value(
+        &mut lines,
+        "  Band",
+        "\u{2014}",
+        theme.label(),
+        theme.muted(),
+        theme,
+    );
     lines.push(Line::from(""));
 
     // ── Gate Results ─────────────────────────────────────────────────

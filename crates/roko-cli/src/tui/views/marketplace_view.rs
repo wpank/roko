@@ -126,10 +126,7 @@ fn render_job_list(
 
     let block = Block::bordered()
         .title(Line::from(vec![
-            Span::styled(
-                format!(" Jobs ({}) ", jobs.len()),
-                theme.section_header(),
-            ),
+            Span::styled(format!(" Jobs ({}) ", jobs.len()), theme.section_header()),
             Span::styled(format!(" {pending}P "), theme.badge_pending()),
             Span::raw(" "),
             Span::styled(format!(" {active}A "), theme.badge_running()),
@@ -405,10 +402,7 @@ fn render_job_detail(
     if tui_state.job_assign_editing {
         // Show the assign-agent inline prompt
         let assign_block = Block::bordered()
-            .title(Span::styled(
-                " Assign to agent: ",
-                theme.section_header(),
-            ))
+            .title(Span::styled(" Assign to agent: ", theme.section_header()))
             .border_style(theme.warning());
         let assign_inner = assign_block.inner(sections[hints_section]);
         frame.render_widget(assign_block, sections[hints_section]);
@@ -564,10 +558,7 @@ fn render_create_job(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, th
                 "─".repeat(sep_w),
                 Style::default().fg(Theme::SEPARATOR),
             )),
-            Line::from(Span::styled(
-                "Create a job from the CLI:",
-                theme.label(),
-            )),
+            Line::from(Span::styled("Create a job from the CLI:", theme.label())),
             Line::from(Span::styled(
                 "  roko serve                               # start the server",
                 theme.code_block(),

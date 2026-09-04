@@ -370,6 +370,14 @@ fn start_hot_engine(
     let graph_name = graph.metadata.name.clone();
 
     let mut engine = GraphEngine::new(graph, registry);
+
+    // Validate edge type compatibility before spawning work.
+    if let Err(error) = engine.validate_for_start() {
+        *failure.lock() = Some(HotGraphFailure {
+            message: format!("Hot Graph edge validation failed: {error}"),
+        });
+    }
+
     let mut checkpoint_state = checkpoint;
     if let Some(state) = checkpoint_state.as_mut() {
         let restored: HashMap<_, _> = std::mem::take(&mut state.manifest.tick_state)

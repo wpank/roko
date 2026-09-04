@@ -1,4 +1,4 @@
-//! Learning and efficiency helpers extracted from the legacy orchestrator.
+//! Learning and efficiency helpers (originally extracted from the legacy orchestrator).
 //!
 //! Free functions for turn-level learning feedback, efficiency signals,
 //! skill/playbook loading, experiment overrides, and episode distillation.
@@ -102,11 +102,15 @@ pub(crate) struct TurnLearningFeedback {
     pub success: bool,
 }
 
+/// Optional callback for emitting dashboard events from the learning pipeline.
+pub(crate) type DashboardEventSink = Option<Box<dyn Fn(roko_core::DashboardEvent) + Send + Sync>>;
+
 pub(crate) fn publish_turn_learning_feedback(
     event_bus: &LearningEventBus,
     latency_registry: &LatencyRegistry,
     anomaly_detector: &mut AnomalyDetector,
     feedback: TurnLearningFeedback,
+    dashboard_sink: &DashboardEventSink,
 ) {
     let mut rx = event_bus.subscribe();
     event_bus.publish(AgentEvent::TurnStarted {
@@ -114,6 +118,7 @@ pub(crate) fn publish_turn_learning_feedback(
         model: feedback.model.clone(),
         provider: feedback.provider.clone(),
         timestamp_ms: feedback.timestamp_ms,
+        is_model_override: false,
     });
     event_bus.publish(AgentEvent::TurnCompleted {
         turn: 1,
@@ -133,7 +138,13 @@ pub(crate) fn publish_turn_learning_feedback(
         tokens: u64::from(feedback.usage.total_tokens()),
     });
 
-    drain_turn_learning_events(&mut rx, latency_registry, anomaly_detector, &feedback);
+    drain_turn_learning_events(
+        &mut rx,
+        latency_registry,
+        anomaly_detector,
+        &feedback,
+        dashboard_sink,
+    );
 }
 
 fn drain_turn_learning_events(
@@ -141,6 +152,7 @@ fn drain_turn_learning_events(
     latency_registry: &LatencyRegistry,
     anomaly_detector: &mut AnomalyDetector,
     feedback: &TurnLearningFeedback,
+    dashboard_sink: &DashboardEventSink,
 ) {
     loop {
         match rx.try_recv() {
@@ -179,6 +191,14 @@ fn drain_turn_learning_events(
                         ?anomaly,
                         "learning anomaly detected from cost"
                     );
+                    if let roko_learn::anomaly::Anomaly::CostSpike { z_score } = anomaly {
+                        if let Some(sink) = dashboard_sink {
+                            sink(roko_core::DashboardEvent::CostAnomaly {
+                                z_score,
+                                cost_usd: feedback.cost_usd,
+                            });
+                        }
+                    }
                 } else {
                     tracing::info!(
                         model = %feedback.model,

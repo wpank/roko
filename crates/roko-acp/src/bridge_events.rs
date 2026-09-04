@@ -19,7 +19,25 @@ use roko_agent::dispatcher::{HandlerResolver, ToolDispatcher};
 use roko_agent::mcp::{McpClient, StdioTransport as McpStdioTransport, mcp_to_tool_def};
 use roko_agent::rate_limit::{ProviderRateLimitSnapshot, ProviderRateLimiter};
 use roko_agent::safety::{DispatchSafetyContext, SafetyLayer, ViolationSeverity};
-use roko_agent::streaming::StreamChunk;
+/// Streaming chunk from a tool-loop provider session.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(crate) enum StreamChunk {
+    /// Plain content delta from the agent.
+    ContentDelta(String),
+    /// Reasoning delta emitted by the backend.
+    ReasoningDelta(String),
+    /// Tool-call delta emitted by the backend.
+    ToolCallDelta { id: String, json_fragment: String },
+    /// Tool progress update.
+    ToolProgress { id: String, progress: f64 },
+    /// Usage payload emitted by the backend.
+    Usage(serde_json::Value),
+    /// Stream-local error message.
+    Error(String),
+    /// Stream completed with the given finish reason.
+    Done(String),
+}
 use roko_agent::tool_loop::backends::create_openai_compat_backend_with_limiter;
 use roko_agent::tool_loop::{StopReason as ToolLoopStopReason, ToolLoop};
 use roko_agent::translate::{OpenAiTranslator, StrictOpenAiTranslator, Translator};
@@ -64,7 +82,7 @@ use tokio::{
 };
 use tracing::{debug, error, info, warn};
 
-use crate::builtin_tools::{acp_builtin_tools, tool_permission_request};
+use crate::builtin_tools::{acp_builtin_tools, filter_tools_by_ceiling, tool_permission_request};
 use crate::event_forward::AcpEventForwarder;
 use crate::knowledge::{DispatchKnowledge, append_context, query_dispatch_knowledge};
 use crate::runner::run_with_workflow_engine;
@@ -761,6 +779,7 @@ fn acp_routing_context(mode: &str, prompt: &str, effort: &str, workdir: &Path) -
         previous_model: None,
         plan_context_tokens: None,
         tier_thresholds: None,
+        cfactor: None,
     }
 }
 
@@ -1270,7 +1289,7 @@ where
     let mut request_transport = transport.clone();
     let request_future = request_transport.send_request("session/request_permission", params);
     tokio::pin!(request_future);
-    let timeout = tokio::time::sleep(std::time::Duration::from_secs(300));
+    let timeout = tokio::time::sleep(std::time::Duration::from_secs(30));
     tokio::pin!(timeout);
 
     loop {
@@ -1406,7 +1425,7 @@ where
                 warn!(
                     session_id = %session.session_id,
                     action = ?action,
-                    "permission request timed out after 5 minutes; defaulting to Reject"
+                    "permission request timed out after 30 seconds; defaulting to Reject"
                 );
                 return PermissionDecision::Reject;
             }
@@ -2102,6 +2121,7 @@ where
                     input_messages: input_messages.clone(),
                     mcp_config: mcp_config_path,
                     provenance_card,
+                    route: crate::runner::AcpWorkflowRoute::LegacyDefault,
                 },
                 event_sender,
             )
@@ -2503,7 +2523,11 @@ async fn run_anthropic_cognitive_task(
         .with_immune_root(workdir)
         .with_provider_outcome_recorder(provider_health)
         .with_rate_limiter(rate_limiter);
-    let tools = tools_enabled.then(acp_builtin_tools).unwrap_or_default();
+    let tools = if tools_enabled {
+        filter_tools_by_ceiling(acp_builtin_tools(), &tool_capabilities)
+    } else {
+        Vec::new()
+    };
     let request = model_call_request_from_acp_messages(model_key, messages, tools)
         .map_err(BridgeEventsError::UnsupportedPromptContent)?;
     stream_model_call_to_cognitive_events(session_id, &caller, request, cancel_token, event_sender)
@@ -2587,7 +2611,7 @@ async fn run_anthropic_tool_loop(
     let mut tools = Vec::new();
     let mut handlers: HashMap<String, Arc<dyn ToolHandler>> = HashMap::new();
     if tools_enabled {
-        tools = acp_builtin_tools();
+        tools = filter_tools_by_ceiling(acp_builtin_tools(), &tool_capabilities);
         for tool in &tools {
             handlers.insert(
                 tool.name.clone(),
@@ -2634,7 +2658,7 @@ async fn run_anthropic_tool_loop(
         .with_max_iterations(DEFAULT_MAX_TOOL_ITERATIONS)
         .with_context_token_limit(context_limit);
 
-    let (chunk_sender, chunk_receiver) = mpsc::channel(256);
+    let (chunk_sender, chunk_receiver) = mpsc::channel::<roko_agent::tool_loop::StreamEvent>(256);
     let forwarder = tokio::spawn(forward_tool_loop_stream_chunks(
         chunk_receiver,
         event_sender.clone(),
@@ -3081,7 +3105,11 @@ async fn run_openai_compat_cognitive_task(
     if let Some(mcp_path) = resolved_mcp_path {
         caller = caller.with_mcp_config(mcp_path);
     }
-    let tools = tools_enabled.then(acp_builtin_tools).unwrap_or_default();
+    let tools = if tools_enabled {
+        filter_tools_by_ceiling(acp_builtin_tools(), &tool_capabilities)
+    } else {
+        Vec::new()
+    };
     let request = model_call_request_from_acp_messages(model_key, messages, tools)
         .map_err(BridgeEventsError::UnsupportedPromptContent)?;
     stream_model_call_to_cognitive_events(session_id, &caller, request, cancel_token, event_sender)
@@ -3218,7 +3246,7 @@ async fn run_openai_compat_mcp_tool_loop(
         .with_max_iterations(DEFAULT_MAX_TOOL_ITERATIONS)
         .with_context_token_limit(context_limit);
 
-    let (chunk_sender, chunk_receiver) = mpsc::channel(256);
+    let (chunk_sender, chunk_receiver) = mpsc::channel::<roko_agent::tool_loop::StreamEvent>(256);
     let forwarder = tokio::spawn(forward_tool_loop_stream_chunks(
         chunk_receiver,
         event_sender.clone(),
@@ -3344,8 +3372,10 @@ async fn run_openai_compat_builtin_tool_loop(
         return Ok(false);
     };
 
-    // Build builtin tool definitions and handler map.
-    let tools = acp_builtin_tools();
+    // Build builtin tool definitions and handler map, filtered by the
+    // session's capability ceiling so restricted modes (e.g. research)
+    // cannot invoke write or exec tools.
+    let tools = filter_tools_by_ceiling(acp_builtin_tools(), &tool_capabilities);
     if tools.is_empty() {
         return Ok(false);
     }
@@ -3383,7 +3413,7 @@ async fn run_openai_compat_builtin_tool_loop(
         .with_max_iterations(DEFAULT_MAX_TOOL_ITERATIONS)
         .with_context_token_limit(context_limit);
 
-    let (chunk_sender, chunk_receiver) = mpsc::channel(256);
+    let (chunk_sender, chunk_receiver) = mpsc::channel::<roko_agent::tool_loop::StreamEvent>(256);
     let forwarder = tokio::spawn(forward_tool_loop_stream_chunks(
         chunk_receiver,
         event_sender.clone(),
@@ -3472,23 +3502,19 @@ async fn run_openai_compat_builtin_tool_loop(
 }
 
 async fn forward_tool_loop_stream_chunks(
-    mut receiver: mpsc::Receiver<StreamChunk>,
+    mut receiver: mpsc::Receiver<roko_agent::tool_loop::StreamEvent>,
     event_sender: mpsc::Sender<CognitiveEvent>,
 ) {
-    while let Some(chunk) = receiver.recv().await {
-        match chunk {
-            StreamChunk::ContentDelta(text) if !text.is_empty() => {
+    use roko_agent::tool_loop::StreamEventKind;
+    while let Some(event) = receiver.recv().await {
+        match event.kind {
+            StreamEventKind::TextDelta(text) if !text.is_empty() => {
                 send_cognitive_event(&event_sender, CognitiveEvent::TokenChunk(text)).await;
             }
-            StreamChunk::ReasoningDelta(text) if !text.is_empty() => {
+            StreamEventKind::ReasoningDelta(text) if !text.is_empty() => {
                 send_cognitive_event(&event_sender, CognitiveEvent::ThinkingChunk(text)).await;
             }
-            StreamChunk::Error(error) => {
-                warn!(error = %error, "ACP MCP tool-loop stream error");
-            }
-            StreamChunk::ToolCallDelta { .. } | StreamChunk::Usage(_) | StreamChunk::Done(_) => {}
-            StreamChunk::ContentDelta(_) | StreamChunk::ReasoningDelta(_) => {}
-            StreamChunk::ToolProgress { .. } => {}
+            _ => {}
         }
     }
 }
@@ -3991,7 +4017,7 @@ fn mcp_result_text(result: &roko_agent::mcp::McpToolResult) -> String {
 
 fn tool_result_for_editor(result: &ToolResult) -> (ToolCallStatus, String) {
     match result {
-        ToolResult::Ok { content, .. } => (ToolCallStatus::Completed, content.clone()),
+        ToolResult::Ok { .. } => (ToolCallStatus::Completed, result.text_content()),
         ToolResult::Err(error) => (ToolCallStatus::Failed, format!("error: {error}")),
     }
 }
@@ -4778,6 +4804,7 @@ Use the Workflow dropdown in the status bar to select, or:
                     mcp_config: None,
                     provenance_card,
                     input_messages: Vec::new(),
+                    route: crate::runner::AcpWorkflowRoute::LegacyDefault,
                 },
                 event_sender,
             )
@@ -4828,6 +4855,7 @@ Use the Workflow dropdown in the status bar to select, or:
                     mcp_config: None,
                     provenance_card,
                     input_messages: Vec::new(),
+                    route: crate::runner::AcpWorkflowRoute::LegacyDefault,
                 },
                 event_sender,
             )
@@ -6631,6 +6659,7 @@ mod tests {
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
 

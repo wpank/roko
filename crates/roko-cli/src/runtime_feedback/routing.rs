@@ -148,6 +148,7 @@ fn build_fallback_routing_context(model: &str) -> RoutingContext {
         previous_model: Some(model.to_string()),
         plan_context_tokens: None,
         tier_thresholds: None,
+        cfactor: None,
     }
 }
 
@@ -198,6 +199,7 @@ mod tests {
             previous_model: Some("claude-sonnet-4-6".into()),
             plan_context_tokens: None,
             tier_thresholds: None,
+            cfactor: None,
         }
     }
 

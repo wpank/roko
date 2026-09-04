@@ -21,7 +21,6 @@ use roko_core::agent::ProviderKind;
 #[cfg(test)]
 use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
 use roko_core::config::schema::{ModelProfile, ProviderConfig};
-use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -46,7 +45,7 @@ fn gemini_tool_loop_agent(
     let (registry, tools, resolver) = tool_registry_for_options(model, options)?;
     let dispatcher = build_tool_dispatcher(registry, resolver);
     let translator: Arc<dyn Translator> = Arc::new(OpenAiTranslator);
-    let timeout_ms = options.timeout_ms.unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS);
+    let timeout_ms = options.effective_timeout_ms(None);
     let mut extra_body_params = serde_json::Map::new();
     if let Some(cached_content) = options.cached_content.as_deref() {
         extra_body_params.insert(
@@ -205,6 +204,10 @@ impl ProviderAdapter for GeminiAdapter {
         }
     }
 
+    fn supports_local_tool_runtime(&self) -> bool {
+        true
+    }
+
     fn classify_error(&self, status: u16, body: &Value) -> ProviderError {
         match status {
             429 => ProviderError::RateLimit {
@@ -250,6 +253,7 @@ mod tests {
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         }
     }
 

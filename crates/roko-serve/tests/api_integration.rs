@@ -738,7 +738,7 @@ async fn orchestrator_events_reach_websocket_via_bridge() {
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Publish a DashboardEvent directly to StateHub (simulating the runner).
+    // Publish a DashboardEvent directly to StateHub (simulating the runner-v2 event loop).
     let sender = state.state_hub.sender();
     sender.publish(roko_core::DashboardEvent::GateResult {
         plan_id: "test-plan-1".to_string(),

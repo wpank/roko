@@ -6,13 +6,13 @@
 //! All tests use in-process fakes and no credentials.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use futures::stream::{self, BoxStream};
 use futures::StreamExt;
+use futures::stream::{self, BoxStream};
 use roko_core::foundation::MessageRole;
 use roko_gateway::{
     GatewayConfig, GatewayError, GatewayResult, InferenceChunk, InferenceRequest,
@@ -170,7 +170,13 @@ fn test_request(model: &str, text: &str) -> InferenceRequest {
 
 fn test_gateway(providers: Vec<Arc<dyn ProviderBackend>>) -> Arc<roko_gateway::InferenceGateway> {
     let router = Arc::new(CascadeRouter::new(vec!["test-model".to_string()]));
-    let config = GatewayConfig::new(router, providers, CostTable { models: HashMap::new() });
+    let config = GatewayConfig::new(
+        router,
+        providers,
+        CostTable {
+            models: HashMap::new(),
+        },
+    );
     Arc::new(roko_gateway::InferenceGateway::new(config))
 }
 
@@ -182,11 +188,19 @@ async fn pipeline_traverses_all_nine_stages() {
     let handle = gateway.create_handle("agent-1", 1_000_000);
 
     let response = handle.infer(test_request("test-model", "ping")).await;
-    assert!(response.is_ok(), "request should succeed: {:?}", response.err());
+    assert!(
+        response.is_ok(),
+        "request should succeed: {:?}",
+        response.err()
+    );
     let response = response.unwrap();
     assert_eq!(response.text, "hello");
     assert_eq!(response.stop_reason, StopReason::EndTurn);
-    assert_eq!(provider.calls(), 1, "provider should be called exactly once");
+    assert_eq!(
+        provider.calls(),
+        1,
+        "provider should be called exactly once"
+    );
 
     // Verify all 9 stages were traversed.
     let trace = gateway.last_trace(""); // Default session
@@ -242,7 +256,11 @@ async fn streaming_produces_content_then_done_chunk() {
 
     // The gateway's complete-then-two-chunk stream contract: first chunk has
     // the text delta, second chunk has usage and done=true.
-    assert!(chunks.len() >= 2, "expected at least 2 chunks, got {}", chunks.len());
+    assert!(
+        chunks.len() >= 2,
+        "expected at least 2 chunks, got {}",
+        chunks.len()
+    );
     let last = chunks.last().unwrap();
     assert!(last.done, "last chunk should have done=true");
     assert!(last.usage.is_some(), "last chunk should carry usage");
@@ -255,9 +273,14 @@ async fn all_providers_failing_returns_error() {
     let _loop_handle = gateway.spawn_gateway_loop().expect("spawn loop");
     let handle = gateway.create_handle("agent-fail", 1_000_000);
 
-    let result = handle.infer(test_request("test-model", "should fail")).await;
+    let result = handle
+        .infer(test_request("test-model", "should fail"))
+        .await;
     assert!(result.is_err(), "should fail when all providers fail");
-    assert!(failing.calls() >= 1, "failing provider should have been called");
+    assert!(
+        failing.calls() >= 1,
+        "failing provider should have been called"
+    );
 }
 
 #[tokio::test]
@@ -305,5 +328,8 @@ async fn gateway_loop_cannot_be_started_twice() {
     let gateway = test_gateway(vec![provider]);
     let _first = gateway.spawn_gateway_loop().expect("first spawn");
     let second = gateway.spawn_gateway_loop();
-    assert!(second.is_err(), "second spawn should fail with AlreadyStarted");
+    assert!(
+        second.is_err(),
+        "second spawn should fail with AlreadyStarted"
+    );
 }

@@ -453,6 +453,70 @@ pub fn slash_command_allowed_tools(command: &str) -> Option<Vec<String>> {
     }
 }
 
+/// Return a [`ToolPermission`] ceiling for a known slash command.
+///
+/// When `Some`, the ceiling restricts which builtin tools the model may use
+/// during a session triggered by the given command. Tools whose required
+/// permissions exceed the ceiling are excluded from the tool set.
+///
+/// Returns `None` for implementation commands (do, run, express, full, agent-chat)
+/// and unknown commands, which should have the full tool set.
+#[must_use]
+pub fn command_tool_ceiling(command: &str) -> Option<ToolPermission> {
+    match command {
+        // Read-only + network: research and search commands.
+        "research" | "search" => Some(ToolPermission {
+            read: true,
+            write: false,
+            exec: false,
+            git: false,
+            network: true,
+        }),
+        // Read-only: status/diagnostic/inspection commands.
+        "status" | "doctor" | "config" | "models" | "learn" | "knowledge" | "explain"
+        | "replay" | "prd-list" | "prd-status" | "plan-list" | "plan-show" | "agents"
+        | "learn-router" | "learn-episodes" | "knowledge-stats" | "index" | "analyze" => {
+            Some(ToolPermission {
+                read: true,
+                write: false,
+                exec: false,
+                git: false,
+                network: false,
+            })
+        }
+        // Read + write: PRD/plan editing commands.
+        "enhance-prd" | "prd-draft" | "prd-plan" | "prd-consolidate" | "plan-generate"
+        | "plan-regenerate" => Some(ToolPermission {
+            read: true,
+            write: true,
+            exec: false,
+            git: false,
+            network: false,
+        }),
+        // Full access: implementation commands and unknown commands.
+        _ => None,
+    }
+}
+
+/// Filter a tool list to those whose required permissions fit within a ceiling.
+///
+/// A tool is kept if every permission it requires is also granted by the ceiling.
+/// This means a read-only tool (requiring only `read`) passes a read-only ceiling,
+/// but a write tool (requiring `write`) is excluded unless the ceiling allows writes.
+#[must_use]
+pub fn filter_tools_by_ceiling(tools: Vec<ToolDef>, ceiling: &ToolPermission) -> Vec<ToolDef> {
+    tools
+        .into_iter()
+        .filter(|tool| {
+            let perm = derive_tool_permissions(&tool.name);
+            (!perm.write || ceiling.write)
+                && (!perm.exec || ceiling.exec)
+                && (!perm.network || ceiling.network)
+                && (!perm.git || ceiling.git)
+        })
+        .collect()
+}
+
 /// Build a short human-readable title for the tool call.
 fn format_tool_title(name: &str, args: &serde_json::Value) -> String {
     match name {
@@ -1141,5 +1205,128 @@ mod tests {
         assert!(caps.exec);
         assert!(!caps.git, "builtin tools should not grant git access");
         assert!(caps.network);
+    }
+
+    // ── command_tool_ceiling ──────────────────────────────────────────────
+
+    #[test]
+    fn research_ceiling_is_read_network_only() {
+        let ceiling = command_tool_ceiling("research").expect("research should have a ceiling");
+        assert!(ceiling.read);
+        assert!(!ceiling.write);
+        assert!(!ceiling.exec);
+        assert!(!ceiling.git);
+        assert!(ceiling.network);
+    }
+
+    #[test]
+    fn search_ceiling_is_read_network_only() {
+        let ceiling = command_tool_ceiling("search").expect("search should have a ceiling");
+        assert!(ceiling.read);
+        assert!(!ceiling.write);
+        assert!(!ceiling.exec);
+        assert!(ceiling.network);
+    }
+
+    #[test]
+    fn status_ceiling_is_read_only() {
+        let ceiling = command_tool_ceiling("status").expect("status should have a ceiling");
+        assert!(ceiling.read);
+        assert!(!ceiling.write);
+        assert!(!ceiling.exec);
+        assert!(!ceiling.network);
+    }
+
+    #[test]
+    fn prd_draft_ceiling_is_read_write() {
+        let ceiling = command_tool_ceiling("prd-draft").expect("prd-draft should have a ceiling");
+        assert!(ceiling.read);
+        assert!(ceiling.write);
+        assert!(!ceiling.exec);
+        assert!(!ceiling.network);
+    }
+
+    #[test]
+    fn implementation_commands_have_no_ceiling() {
+        assert!(command_tool_ceiling("do").is_none());
+        assert!(command_tool_ceiling("run").is_none());
+        assert!(command_tool_ceiling("express").is_none());
+        assert!(command_tool_ceiling("full").is_none());
+        assert!(command_tool_ceiling("agent-chat").is_none());
+    }
+
+    #[test]
+    fn unknown_commands_have_no_ceiling() {
+        assert!(command_tool_ceiling("unknown-custom").is_none());
+    }
+
+    // ── filter_tools_by_ceiling ──────────────────────────────────────────
+
+    #[test]
+    fn research_ceiling_excludes_write_exec_tools() {
+        let tools = acp_builtin_tools();
+        let ceiling = command_tool_ceiling("research").unwrap();
+        let filtered = filter_tools_by_ceiling(tools, &ceiling);
+
+        let names: Vec<&str> = filtered.iter().map(|t| t.name.as_str()).collect();
+        assert!(
+            names.contains(&"read_file"),
+            "read_file should pass research ceiling"
+        );
+        assert!(names.contains(&"glob"), "glob should pass research ceiling");
+        assert!(names.contains(&"grep"), "grep should pass research ceiling");
+        assert!(names.contains(&"ls"), "ls should pass research ceiling");
+        assert!(
+            names.contains(&"web_fetch"),
+            "web_fetch should pass research ceiling"
+        );
+        assert!(
+            !names.contains(&"write_file"),
+            "write_file should be excluded by research ceiling"
+        );
+        assert!(
+            !names.contains(&"edit_file"),
+            "edit_file should be excluded by research ceiling"
+        );
+        assert!(
+            !names.contains(&"bash"),
+            "bash should be excluded by research ceiling"
+        );
+    }
+
+    #[test]
+    fn status_ceiling_excludes_write_exec_network_tools() {
+        let tools = acp_builtin_tools();
+        let ceiling = command_tool_ceiling("status").unwrap();
+        let filtered = filter_tools_by_ceiling(tools, &ceiling);
+
+        let names: Vec<&str> = filtered.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"read_file"));
+        assert!(names.contains(&"glob"));
+        assert!(names.contains(&"grep"));
+        assert!(names.contains(&"ls"));
+        assert!(!names.contains(&"write_file"));
+        assert!(!names.contains(&"edit_file"));
+        assert!(!names.contains(&"bash"));
+        assert!(
+            !names.contains(&"web_fetch"),
+            "web_fetch should be excluded by status ceiling (no network)"
+        );
+    }
+
+    #[test]
+    fn no_ceiling_keeps_all_tools() {
+        let tools = acp_builtin_tools();
+        let original_len = tools.len();
+        // Full-access ceiling: all flags true.
+        let ceiling = ToolPermission {
+            read: true,
+            write: true,
+            exec: true,
+            git: true,
+            network: true,
+        };
+        let filtered = filter_tools_by_ceiling(tools, &ceiling);
+        assert_eq!(filtered.len(), original_len);
     }
 }

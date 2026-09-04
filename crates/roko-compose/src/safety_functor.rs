@@ -173,7 +173,10 @@ mod tests {
     #[tokio::test]
     async fn capability_filter_is_deny_by_default_and_always_active() {
         let safety = SafetyFunctor::new(
-            AgentContract::permissive("tester"),
+            AgentContract {
+                role: "tester".into(),
+                ..AgentContract::default()
+            },
             CapabilitySet::from([Capability::ReadFs]),
         );
         let read = Signal::builder(Kind::Task)
@@ -200,7 +203,10 @@ mod tests {
 
     #[tokio::test]
     async fn post_filter_enforces_contract_taint_and_tool_allowlist() {
-        let mut contract = AgentContract::permissive("reader");
+        let mut contract = AgentContract {
+            role: "reader".into(),
+            ..AgentContract::default()
+        };
         contract.allowed_tools = Some(vec!["read_file".into()]);
         contract.max_taint_level = CamelTaintLevel::External;
         let safety = SafetyFunctor::new(contract, CapabilitySet::all());

@@ -30,7 +30,6 @@ use crate::provider::{
 };
 use roko_core::agent::ProviderKind;
 use roko_core::config::schema::{ModelProfile, ProviderConfig};
-use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
 use serde_json::Value;
 use std::path::PathBuf;
 
@@ -79,10 +78,7 @@ impl ProviderAdapter for GeminiCliAdapter {
             .clone()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-        let timeout_ms = options
-            .timeout_ms
-            .or(provider.timeout_ms)
-            .unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS);
+        let timeout_ms = options.effective_timeout_ms(provider.timeout_ms);
 
         // Build the argument list for `gemini -m <slug> -p`.
         // -m selects the model; -p signals non-interactive prompt mode (reads stdin).
@@ -103,7 +99,7 @@ impl ProviderAdapter for GeminiCliAdapter {
         let mut agent = ExecAgent::new(
             command,
             extra_args,
-            crate::safety::SafetyLayer::with_defaults(),
+            crate::safety::SafetyLayer::with_defaults().with_role("implementer"),
         )
         .with_timeout_ms(timeout_ms)
         .with_name(name)
@@ -116,61 +112,15 @@ impl ProviderAdapter for GeminiCliAdapter {
         for (key, value) in &options.env {
             agent = agent.with_env_var(key.clone(), value.clone());
         }
+        if let Some(prompt) = &options.system_prompt {
+            agent = agent.with_stdin_prefix(prompt.clone());
+        }
 
         Ok(Box::new(agent))
     }
 
     fn classify_error(&self, status: u16, body: &Value) -> ProviderError {
-        // For a CLI subprocess, body typically carries stderr text.
-        let stderr = body
-            .as_str()
-            .or_else(|| body.pointer("/error").and_then(Value::as_str))
-            .or_else(|| body.pointer("/message").and_then(Value::as_str))
-            .unwrap_or("");
-        let lower = stderr.to_ascii_lowercase();
-
-        if lower.contains("rate limit") || lower.contains("quota") {
-            return ProviderError::RateLimit {
-                retry_after_ms: None,
-            };
-        }
-        if lower.contains("unauthorized")
-            || lower.contains("permission denied")
-            || lower.contains("unauthenticated")
-            || lower.contains("sign in")
-            || lower.contains("not logged in")
-        {
-            return ProviderError::AuthFailure;
-        }
-        if lower.contains("timed out") || lower.contains("timeout") {
-            return ProviderError::Timeout;
-        }
-        if lower.contains("context window")
-            || lower.contains("context length")
-            || lower.contains("token limit")
-        {
-            return ProviderError::ContextOverflow;
-        }
-        if lower.contains("model not found") || lower.contains("unknown model") {
-            return ProviderError::ModelNotFound;
-        }
-
-        match status {
-            429 => ProviderError::RateLimit {
-                retry_after_ms: None,
-            },
-            401 | 403 => ProviderError::AuthFailure,
-            404 => ProviderError::ModelNotFound,
-            408 => ProviderError::Timeout,
-            500..=599 => ProviderError::ServerError(status),
-            _ => {
-                if stderr.is_empty() {
-                    ProviderError::Other(format!("gemini CLI exit status {status}"))
-                } else {
-                    ProviderError::Other(stderr.to_string())
-                }
-            }
-        }
+        super::error_classify::classify_cli_error(status, body, "gemini CLI")
     }
 }
 
@@ -192,6 +142,7 @@ mod tests {
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         }
     }
 

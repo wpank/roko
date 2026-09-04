@@ -36,19 +36,41 @@ fn write_and_query_roundtrip() {
     let store = KnowledgeStore::new(tmp.path().join("knowledge.jsonl"));
 
     store
-        .add(insight("i-1", "Rust tests run in parallel", 0.9, &["rust", "testing"]))
+        .add(insight(
+            "i-1",
+            "Rust tests run in parallel",
+            0.9,
+            &["rust", "testing"],
+        ))
         .expect("add");
     store
-        .add(insight("i-2", "Cargo clippy catches common mistakes", 0.8, &["rust", "clippy"]))
+        .add(insight(
+            "i-2",
+            "Cargo clippy catches common mistakes",
+            0.8,
+            &["rust", "clippy"],
+        ))
         .expect("add");
     store
-        .add(insight("i-3", "Pin futures before polling", 0.7, &["rust", "async"]))
+        .add(insight(
+            "i-3",
+            "Pin futures before polling",
+            0.7,
+            &["rust", "async"],
+        ))
         .expect("add");
 
     let results = store.query("rust", 10).expect("query");
-    assert!(!results.is_empty(), "query should return results for 'rust'");
+    assert!(
+        !results.is_empty(),
+        "query should return results for 'rust'"
+    );
     // All three entries have the 'rust' tag.
-    assert!(results.len() >= 2, "expected at least 2 results, got {}", results.len());
+    assert!(
+        results.len() >= 2,
+        "expected at least 2 results, got {}",
+        results.len()
+    );
 }
 
 #[test]
@@ -196,7 +218,12 @@ fn export_to_same_path_as_live_store_is_rejected() {
     let store = KnowledgeStore::new(&store_path);
 
     store
-        .add(insight("self-1", "should not export to self", 0.9, &["test"]))
+        .add(insight(
+            "self-1",
+            "should not export to self",
+            0.9,
+            &["test"],
+        ))
         .expect("add");
 
     let result = store.export(&store_path, &ExportFilter::default());
@@ -213,7 +240,12 @@ fn import_from_same_path_as_live_store_is_rejected() {
     let store = KnowledgeStore::new(&store_path);
 
     store
-        .add(insight("self-2", "should not import from self", 0.9, &["test"]))
+        .add(insight(
+            "self-2",
+            "should not import from self",
+            0.9,
+            &["test"],
+        ))
         .expect("add");
 
     let result = store.import(&store_path, &ImportOptions::default());

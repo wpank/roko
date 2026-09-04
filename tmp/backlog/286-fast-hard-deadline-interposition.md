@@ -17,7 +17,90 @@
 > dispatching→agent→gate single-owner verification. The five verification checklist items now
 > have focused unit tests.
 
-**Status**: Verification only; the source implementation is present and the final kill-point matrix remains the terminal evidence
+**Status**: Verified (2026-09-03) — deadline interposition, kill escalation, ownership
+
+> **Verification notes (2026-09-03):**
+>
+> **1. Dispatch deadline interposition across worktree/routing/hook/startup phases:**
+> CONFIRMED. The `DispatchDeadline` struct (deadlines.rs:199) carries the non-resetting
+> hard-run instant into every awaited dispatch operation. The interposition points are:
+>
+> - **Worktree preparation:** `ensure_attempt_workdir_controlled` (event_loop.rs:2150)
+>   converts `DispatchDeadline` to a `tokio::time::Instant` and passes it to
+>   `ensure_for_attempt_controlled` (worktree.rs:851), which races the worktree lock
+>   acquisition against `cancel.cancelled()` and `await_optional_deadline(deadline)`.
+>   Both `WorktreeOperationError::Cancelled` and `::Deadline` map to
+>   `DispatchInterruption` (event_loop.rs:2179-2180).
+>
+> - **Disk budget, playbook matching, signal scoring, episode queries, pre-inference hooks:**
+>   All wrapped in `await_dispatch_step` (event_loop.rs:10587) which races the future
+>   against `cancel.cancelled()` and `tokio::time::sleep(remaining)`. Seven call sites
+>   confirmed at lines 11338, 11403, 11507, 12293, 12316, 12380, 12542.
+>
+> - **Pre-launch re-check:** Immediately before the paid provider boundary
+>   (event_loop.rs:12845-12867), the code explicitly re-checks
+>   `dispatch_deadline.remaining(monotonic_now()).is_none()` and settles via
+>   `settle_dispatch_interruption` if expired.
+>
+> - **CLI startup:** `checkpoint_dispatch_stage` records `DispatchStage::CliStartup`
+>   (event_loop.rs:12947-12952). `startup_control` (event_loop.rs:10620) converts
+>   the dispatch deadline into `AgentStartupControl` with a bounded deadline. If
+>   `startup_control` returns `None` while a dispatch deadline exists, the path
+>   immediately settles (event_loop.rs:12973-12983). The controlled spawn uses
+>   `spawn_agent_controlled` with the startup control.
+>
+> - **Bridge startup:** `checkpoint_dispatch_stage` records `DispatchStage::BridgeStartup`
+>   (event_loop.rs:13298-13303). Same `startup_control` pattern
+>   (event_loop.rs:13318-13334). `spawn_shared_agent_bridge_controlled`
+>   (factory.rs:389) races the oneshot `started_rx` against `cancel.cancelled()` and
+>   `tokio::time::sleep_until(deadline)` (factory.rs:449-454).
+>
+> **2. Process cleanup on timeout:**
+> CONFIRMED. Two cleanup mechanisms:
+>
+> - **CLI agent startup:** `interrupt_startup_child` (agent_stream.rs:102) calls
+>   `kill_tree(child, control.cleanup_grace)` which implements a 3-step escalation:
+>   close stdin, SIGTERM the process group, SIGKILL if still alive (kill.rs:33-86).
+>   After kill_tree, `try_wait` confirms process death and `unregister_pid` cleans up
+>   the global PID registry. `AgentStartupError::Interrupted` carries `cleanup_error`
+>   and `unconfirmed` (the child handle) if cleanup failed, so the event loop can
+>   retain the handle for a later cancellation retry via
+>   `restore_cancellation_failure` (event_loop.rs:13089-13121).
+>
+> - **Bridge agent startup:** `handle.abort()` followed by `(&mut handle).await`
+>   (factory.rs:456-457) terminates the spawned tokio task.
+>
+> - **Dispatch settlement:** `settle_dispatch_interruption` (event_loop.rs:10660)
+>   calls `cancel_exact_attempt` with the `Dispatching` phase owner, which claims
+>   cancellation, replaces the resource, handles `CleanupFailed` recovery, and
+>   calls `task_capacity.wake()` to release the capacity permit.
+>
+> **3. No provider duplication on timeout:**
+> CONFIRMED. Three mechanisms prevent duplicate provider launches:
+>
+> - **Ownership registry:** `AttemptOwnership::insert` returns `Err(Occupied)` if the
+>   same attempt key already exists (attempt_ownership.rs:1412-1437). This prevents
+>   a second provider launch during preparation.
+>
+> - **Phase transition:** `transition_claim` from `Dispatching` to `Agent` makes the
+>   old `Dispatching` phase ineligible for further events
+>   (attempt_ownership.rs:1602-1643). A restart replay cannot steal an active slot
+>   (attempt_ownership.rs:1686-1719).
+>
+> - **Single-owner lifecycle:** The full `Dispatching(Preparation) -> CliStartup ->
+>   BridgeStartup -> Agent -> AwaitingGate -> Gate` path maintains exactly one
+>   eligible phase per step (attempt_ownership.rs:1722-1810, 1999-2052).
+>
+> **Test coverage:** The kill-point matrix has 30+ focused unit tests across
+> `deadlines::tests` (items 1, 3, 5) and `attempt_ownership::tests` (items 2, 4).
+> Key test names: `dispatch_deadline_remaining_returns_none_when_expired`,
+> `hard_run_deadline_prevents_provider_launch_when_preparation_consumes_budget`,
+> `dispatching_claim_blocks_duplicate_launch_during_preparation`,
+> `dispatching_claim_releases_resource_on_cancellation`,
+> `transition_from_dispatching_to_agent_prevents_duplicate_launch`,
+> `full_lifecycle_dispatching_through_gate_has_exactly_one_owner_at_each_step`,
+> `hard_run_deadline_leaves_deterministic_settlement_headroom`,
+> `fast_mode_policy_clamps_without_weakening_gate_effects`
 **Priority**: P1 — a slow awaited dispatch-preparation or provider-startup path can outlive the
 FAST execution budget before the event loop gets another chance to settle the run
 **Size**: M (2–3 days)

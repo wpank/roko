@@ -299,7 +299,9 @@ fn map_load_config_error(err: LoadConfigError) -> ApiError {
         | LoadConfigError::AmbiguousModelSlug { .. }
         | LoadConfigError::UnresolvedModel { .. }
         | LoadConfigError::InvariantViolation { .. }
-        | LoadConfigError::Migration { .. } => ApiError::bad_request(err.to_string()),
+        | LoadConfigError::Migration { .. }
+        | LoadConfigError::GlobalConfigRead { .. }
+        | LoadConfigError::GlobalConfigParse { .. } => ApiError::bad_request(err.to_string()),
     }
 }
 
@@ -870,6 +872,7 @@ default_model = "first"
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
         config.models.insert(

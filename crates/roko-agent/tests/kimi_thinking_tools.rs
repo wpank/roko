@@ -1,11 +1,12 @@
 #![allow(missing_docs)]
 
-use std::collections::VecDeque;
+mod common;
+
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use roko_agent::dispatcher::ToolDispatcher;
-use roko_agent::http::{HttpPostError, HttpPoster};
+use roko_agent::http::HttpPoster;
 use roko_agent::tool_loop::{LlmBackend, LlmError, StopReason, ToolLoop};
 use roko_agent::translate::{
     BackendResponse, OpenAiTranslator, RenderedTools, SessionState, Translator,
@@ -17,60 +18,7 @@ use roko_std::tool::registry::StaticToolRegistry;
 use serde_json::Value;
 use tempfile::tempdir;
 
-#[derive(Debug, Clone)]
-struct RecordedRequest {
-    url: String,
-    headers: Vec<(String, String)>,
-    body: Value,
-    timeout_ms: u64,
-}
-
-#[derive(Debug)]
-struct MockHttpPoster {
-    responses: Mutex<VecDeque<String>>,
-    requests: Mutex<Vec<RecordedRequest>>,
-}
-
-impl MockHttpPoster {
-    fn new(responses: Vec<String>) -> Arc<Self> {
-        Arc::new(Self {
-            responses: Mutex::new(responses.into_iter().collect()),
-            requests: Mutex::new(Vec::new()),
-        })
-    }
-
-    fn requests(&self) -> Vec<RecordedRequest> {
-        self.requests.lock().expect("requests lock").clone()
-    }
-}
-
-#[async_trait]
-impl HttpPoster for MockHttpPoster {
-    async fn post_json(
-        &self,
-        url: &str,
-        headers: &[(String, String)],
-        body: &[u8],
-        timeout_ms: u64,
-    ) -> Result<String, HttpPostError> {
-        let body: Value = serde_json::from_slice(body).expect("request body must be json");
-        self.requests
-            .lock()
-            .expect("requests lock")
-            .push(RecordedRequest {
-                url: url.to_string(),
-                headers: headers.to_vec(),
-                body,
-                timeout_ms,
-            });
-
-        self.responses
-            .lock()
-            .expect("responses lock")
-            .pop_front()
-            .ok_or_else(|| HttpPostError::transport("no mock response queued"))
-    }
-}
+use common::MockHttpPoster;
 
 #[derive(Debug)]
 struct KimiHttpBackend {
@@ -212,7 +160,7 @@ async fn kimi_thinking_with_tools() {
     })
     .to_string();
 
-    let poster = MockHttpPoster::new(vec![first_response, second_response]);
+    let poster = MockHttpPoster::from_bodies(vec![first_response, second_response]);
     let (backend, reasoning) =
         KimiHttpBackend::new(poster.clone(), "https://api.moonshot.ai/v1", "kimi-k2.5");
 

@@ -162,7 +162,12 @@ fn render_with_entries(
     let event_count = tui_state.event_log.len();
 
     let (tail_label, tail_style) = if view_state.auto_tail {
-        ("TAIL", Style::default().fg(Theme::SAGE).add_modifier(Modifier::BOLD))
+        (
+            "TAIL",
+            Style::default()
+                .fg(Theme::SAGE)
+                .add_modifier(Modifier::BOLD),
+        )
     } else {
         ("SCROLL", Style::default().fg(Theme::BONE_DIM))
     };
@@ -185,12 +190,11 @@ fn render_with_entries(
         status_spans.extend([
             Span::styled(
                 format!("[{current_1}"),
-                Style::default().fg(Theme::BONE_BRIGHT).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Theme::BONE_BRIGHT)
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                format!("/{total}]"),
-                theme.muted(),
-            ),
+            Span::styled(format!("/{total}]"), theme.muted()),
             Span::styled("  ", theme.muted()),
         ]);
     }
@@ -214,7 +218,9 @@ fn render_with_entries(
             Span::styled("  ", theme.muted()),
             Span::styled(
                 format!("[{}]", grouping.label()),
-                Style::default().fg(Theme::DREAM).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Theme::DREAM)
+                    .add_modifier(Modifier::BOLD),
             ),
         ]);
     }
@@ -228,7 +234,10 @@ fn render_with_entries(
             Span::styled("  ", theme.muted()),
             Span::styled(format!("\u{25a0}{gate_count}"), theme.warning()),
             Span::styled("  ", theme.muted()),
-            Span::styled(format!("\u{25b8}{event_count}"), Style::default().fg(Theme::SAGE)),
+            Span::styled(
+                format!("\u{25b8}{event_count}"),
+                Style::default().fg(Theme::SAGE),
+            ),
         ]);
     }
     if sections[0].width >= 160 {
@@ -282,13 +291,9 @@ fn render_with_entries(
 
     // Build lines based on grouping mode.
     let lines = match grouping {
-        LogGrouping::Chronological => build_chronological_lines(
-            &filtered_entries,
-            view_state,
-            tui_state,
-            inner.width,
-            theme,
-        ),
+        LogGrouping::Chronological => {
+            build_chronological_lines(&filtered_entries, view_state, tui_state, inner.width, theme)
+        }
         LogGrouping::ByPlan => build_grouped_lines(
             &filtered_entries,
             view_state,
@@ -344,9 +349,7 @@ fn build_chronological_lines<'a>(
         (view_state.scroll as usize).min(filtered_entries.len().saturating_sub(1))
     };
 
-    let highlight_style = Style::default()
-        .fg(Theme::TEXT_STRONG)
-        .bg(Theme::DREAM);
+    let highlight_style = Style::default().fg(Theme::TEXT_STRONG).bg(Theme::DREAM);
     let current_match_hl_style = Style::default()
         .fg(Theme::BONE_BRIGHT)
         .bg(Theme::DREAM_BRIGHT)
@@ -444,10 +447,7 @@ fn build_entry_line<'a>(
     };
     let badge_style = style_with_bg(level_badge_style(entry.level, theme), row_bg);
     let src_style = style_with_bg(source_style(&entry.source, theme), row_bg);
-    let message_style = style_with_bg(
-        level_message_style(entry.level, theme),
-        row_bg,
-    );
+    let message_style = style_with_bg(level_message_style(entry.level, theme), row_bg);
     let ts_style = style_with_bg(theme.label(), row_bg);
     let icon_style = style_with_bg(source_style(&entry.source, theme), row_bg);
 
@@ -506,7 +506,12 @@ fn group_key(entry: &LogEntry, by: GroupBy) -> String {
                     .to_string()
             } else if entry.source.contains(':') {
                 // Fall back to the source prefix as group.
-                entry.source.split(':').next().unwrap_or("other").to_string()
+                entry
+                    .source
+                    .split(':')
+                    .next()
+                    .unwrap_or("other")
+                    .to_string()
             } else {
                 "ungrouped".to_string()
             }
@@ -542,9 +547,7 @@ fn build_grouped_lines<'a>(
         _ => 28,
     };
     let show_timestamp = width >= 58;
-    let highlight_style = Style::default()
-        .fg(Theme::TEXT_STRONG)
-        .bg(Theme::DREAM);
+    let highlight_style = Style::default().fg(Theme::TEXT_STRONG).bg(Theme::DREAM);
     let current_match_hl_style = Style::default()
         .fg(Theme::BONE_BRIGHT)
         .bg(Theme::DREAM_BRIGHT)
@@ -569,14 +572,8 @@ fn build_grouped_lines<'a>(
             .filter(|(_, e)| matches!(e.level, LogEntryLevel::Error))
             .count();
         let mut header_spans = vec![
-            Span::styled(
-                format!("{arrow} {group_name}"),
-                theme.section_header(),
-            ),
-            Span::styled(
-                format!(" ({} entries", group_entries.len()),
-                theme.muted(),
-            ),
+            Span::styled(format!("{arrow} {group_name}"), theme.section_header()),
+            Span::styled(format!(" ({} entries", group_entries.len()), theme.muted()),
         ];
         if err_count > 0 {
             header_spans.push(Span::styled(
@@ -793,8 +790,7 @@ fn wrapped_row_offsets(lines: &[Line<'_>], width: u16) -> Vec<usize> {
 /// - DEBUG: TEXT_DIM (ghost)
 fn level_message_style(level: LogEntryLevel, theme: &Theme) -> Style {
     match level {
-        LogEntryLevel::Debug => Style::default()
-            .fg(Theme::TEXT_DIM),
+        LogEntryLevel::Debug => Style::default().fg(Theme::TEXT_DIM),
         LogEntryLevel::Info => theme.muted(),
         LogEntryLevel::Warn => Style::default().fg(Theme::WARNING),
         LogEntryLevel::Error => Style::default()
@@ -866,10 +862,7 @@ fn source_icon(source: &str) -> &'static str {
     }
 }
 
-fn style_with_bg(
-    style: Style,
-    bg: Option<ratatui::style::Color>,
-) -> Style {
+fn style_with_bg(style: Style, bg: Option<ratatui::style::Color>) -> Style {
     if let Some(bg) = bg {
         style.bg(bg)
     } else {
@@ -1092,7 +1085,10 @@ mod tests {
             "FAILED task=do-thing model=claude-3 plan=my-plan some error output".into(),
         );
         let lines = build_detail_expansion(&entry, 120, &theme);
-        assert!(lines.len() >= 5, "detail expansion should have multiple lines");
+        assert!(
+            lines.len() >= 5,
+            "detail expansion should have multiple lines"
+        );
         // Check that IDs were extracted.
         let text: String = lines
             .iter()

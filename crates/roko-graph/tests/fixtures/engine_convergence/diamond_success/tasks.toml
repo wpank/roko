@@ -1,0 +1,41 @@
+# Diamond DAG: A -> {B, C} -> D
+# All tasks succeed. B and C execute in parallel after A.
+
+[meta]
+plan = "diamond-success"
+max_parallel = 2
+
+[[task]]
+id = "A"
+title = "Root task"
+role = "implementer"
+status = "pending"
+tier = "mechanical"
+files = ["src/root.rs"]
+
+[[task]]
+id = "B"
+title = "Left branch"
+role = "implementer"
+status = "pending"
+tier = "mechanical"
+depends_on = ["A"]
+files = ["src/left.rs"]
+
+[[task]]
+id = "C"
+title = "Right branch"
+role = "implementer"
+status = "pending"
+tier = "mechanical"
+depends_on = ["A"]
+files = ["src/right.rs"]
+
+[[task]]
+id = "D"
+title = "Join task"
+role = "implementer"
+status = "pending"
+tier = "focused"
+depends_on = ["B", "C"]
+files = ["src/join.rs"]

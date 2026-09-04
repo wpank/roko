@@ -197,6 +197,7 @@ impl Usage {
         input_per_m: Option<f64>,
         output_per_m: Option<f64>,
         cache_read_per_m: Option<f64>,
+        cache_write_per_m: Option<f64>,
     ) {
         if self.cost_usd.abs() > f32::EPSILON {
             return; // already set (e.g. Claude CLI reports cost natively)
@@ -205,10 +206,12 @@ impl Usage {
             return; // no pricing data — leave at 0.0 so display shows "—"
         };
         let cache_r = cache_read_per_m.unwrap_or(inp * 0.1);
+        let cache_w = cache_write_per_m.unwrap_or(inp * 1.25);
 
         let cost = (self.input_tokens as f64 * inp / 1_000_000.0)
             + (self.output_tokens as f64 * out / 1_000_000.0)
-            + (self.cache_read_tokens as f64 * cache_r / 1_000_000.0);
+            + (self.cache_read_tokens as f64 * cache_r / 1_000_000.0)
+            + (self.cache_create_tokens as f64 * cache_w / 1_000_000.0);
 
         self.cost_usd = cost as f32;
     }
@@ -448,7 +451,7 @@ mod tests {
         };
 
         // gpt-5.4-mini pricing: $0.40/M input, $1.60/M output, $0.10/M cache read
-        usage.fill_cost_from_pricing(Some(0.40), Some(1.60), Some(0.10));
+        usage.fill_cost_from_pricing(Some(0.40), Some(1.60), Some(0.10), None);
 
         // Expected: (10000 * 0.40 / 1M) + (2000 * 1.60 / 1M) + (500 * 0.10 / 1M)
         //         = 0.004 + 0.0032 + 0.00005 = 0.00725
@@ -472,7 +475,7 @@ mod tests {
             wall_ms: 100,
         };
 
-        usage.fill_cost_from_pricing(Some(0.40), Some(1.60), None);
+        usage.fill_cost_from_pricing(Some(0.40), Some(1.60), None, None);
 
         // Should remain at the original value
         assert!(
@@ -495,15 +498,15 @@ mod tests {
         };
 
         // Both None -> no-op, cost stays 0.0 so display shows "—"
-        usage.fill_cost_from_pricing(None, None, None);
+        usage.fill_cost_from_pricing(None, None, None, None);
         assert!(usage.cost_usd.abs() < f32::EPSILON);
 
         // Only input -> still no-op (need both)
-        usage.fill_cost_from_pricing(Some(0.40), None, None);
+        usage.fill_cost_from_pricing(Some(0.40), None, None, None);
         assert!(usage.cost_usd.abs() < f32::EPSILON);
 
         // Only output -> still no-op
-        usage.fill_cost_from_pricing(None, Some(1.60), None);
+        usage.fill_cost_from_pricing(None, Some(1.60), None, None);
         assert!(usage.cost_usd.abs() < f32::EPSILON);
     }
 
@@ -520,7 +523,7 @@ mod tests {
         };
 
         // cache_read_per_m = None -> defaults to input_per_m * 0.1 = 0.04
-        usage.fill_cost_from_pricing(Some(0.40), Some(1.60), None);
+        usage.fill_cost_from_pricing(Some(0.40), Some(1.60), None, None);
 
         let expected: f32 = 0.04; // 1M * 0.04 / 1M
         assert!(

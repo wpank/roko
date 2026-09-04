@@ -23,7 +23,7 @@ fn compat_base_url(base_url: &str) -> String {
 }
 
 fn resolved_timeout_ms(options: &AgentOptions) -> u64 {
-    options.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS)
+    options.effective_timeout_ms(None)
 }
 
 fn resolved_max_tokens(model: &ModelProfile) -> u32 {

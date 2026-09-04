@@ -5,6 +5,9 @@
 //! `.mcp.json` config discovery, and a dynamic registry that composes
 //! static built-in tools with MCP-discovered tools.
 
+/// Separator between MCP server name and tool name in qualified tool identifiers.
+pub const MCP_TOOL_SEPARATOR: &str = ".";
+
 pub mod bridge;
 pub mod client;
 pub mod config;
@@ -16,7 +19,8 @@ pub mod to_tool_def;
 
 pub use bridge::{
     McpBridgeError, McpLifecycleState, McpRuntime, McpRuntimeClient, McpRuntimeTransport,
-    discover_mcp_runtime, discover_mcp_tools,
+    McpTestReport, McpTestStageResult, McpTestStatus, discover_mcp_runtime, discover_mcp_tools,
+    test_mcp_server,
 };
 pub use client::{
     MCP_PROTOCOL_VERSION, McpClient, McpRequest, McpResponse, McpToolAnnotations, McpToolDef,

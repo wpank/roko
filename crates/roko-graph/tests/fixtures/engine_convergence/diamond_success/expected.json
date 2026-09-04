@@ -1,0 +1,150 @@
+{
+  "schema_version": 1,
+  "fixture_id": "diamond_success",
+  "graph_fingerprint": "COMPUTE_AT_LOAD",
+  "request_fingerprints": [
+    "req-A",
+    "req-B",
+    "req-C",
+    "req-D"
+  ],
+  "prompt_fingerprints": [
+    "prompt-A",
+    "prompt-B",
+    "prompt-C",
+    "prompt-D"
+  ],
+  "tasks": [
+    {
+      "task_id": "A",
+      "dependencies": [],
+      "status": "completed",
+      "attempts": 1,
+      "provider": "fixture-provider",
+      "model": "fixture-model",
+      "role": "implementer",
+      "effort": "mechanical",
+      "workspace_fingerprint": "ws-fixture-0001",
+      "input_tokens": 1200,
+      "output_tokens": 800,
+      "cost_micro_usd": 450
+    },
+    {
+      "task_id": "B",
+      "dependencies": ["A"],
+      "status": "completed",
+      "attempts": 1,
+      "provider": "fixture-provider",
+      "model": "fixture-model",
+      "role": "implementer",
+      "effort": "mechanical",
+      "workspace_fingerprint": "ws-fixture-0002",
+      "input_tokens": 1500,
+      "output_tokens": 900,
+      "cost_micro_usd": 520
+    },
+    {
+      "task_id": "C",
+      "dependencies": ["A"],
+      "status": "completed",
+      "attempts": 1,
+      "provider": "fixture-provider",
+      "model": "fixture-model",
+      "role": "implementer",
+      "effort": "mechanical",
+      "workspace_fingerprint": "ws-fixture-0003",
+      "input_tokens": 1400,
+      "output_tokens": 850,
+      "cost_micro_usd": 490
+    },
+    {
+      "task_id": "D",
+      "dependencies": ["B", "C"],
+      "status": "completed",
+      "attempts": 1,
+      "provider": "fixture-provider",
+      "model": "fixture-model",
+      "role": "implementer",
+      "effort": "focused",
+      "workspace_fingerprint": "ws-fixture-0004",
+      "input_tokens": 2000,
+      "output_tokens": 1200,
+      "cost_micro_usd": 700
+    }
+  ],
+  "events": [
+    {
+      "sequence": 0,
+      "event_type": "plan.started",
+      "source": "runner",
+      "payload": {}
+    },
+    {
+      "sequence": 1,
+      "event_type": "task.dispatched",
+      "source": "runner",
+      "payload": { "task_id": "A" }
+    },
+    {
+      "sequence": 2,
+      "event_type": "task.completed",
+      "source": "runner",
+      "payload": { "task_id": "A" }
+    },
+    {
+      "sequence": 3,
+      "event_type": "task.dispatched",
+      "source": "runner",
+      "payload": { "task_id": "B" }
+    },
+    {
+      "sequence": 4,
+      "event_type": "task.dispatched",
+      "source": "runner",
+      "payload": { "task_id": "C" }
+    },
+    {
+      "sequence": 5,
+      "event_type": "task.completed",
+      "source": "runner",
+      "payload": { "task_id": "B" }
+    },
+    {
+      "sequence": 6,
+      "event_type": "task.completed",
+      "source": "runner",
+      "payload": { "task_id": "C" }
+    },
+    {
+      "sequence": 7,
+      "event_type": "task.dispatched",
+      "source": "runner",
+      "payload": { "task_id": "D" }
+    },
+    {
+      "sequence": 8,
+      "event_type": "task.completed",
+      "source": "runner",
+      "payload": { "task_id": "D" }
+    },
+    {
+      "sequence": 9,
+      "event_type": "plan.completed",
+      "source": "runner",
+      "payload": {}
+    }
+  ],
+  "receipts": [],
+  "final": {
+    "plan_status": "completed",
+    "completed_task_ids": ["A", "B", "C", "D"],
+    "skipped_task_ids": [],
+    "failed_task_ids": [],
+    "total_input_tokens": 6100,
+    "total_output_tokens": 3750,
+    "total_cost_micro_usd": 2160,
+    "merge_state": "not_attempted",
+    "publication_state": "not_attempted",
+    "terminal_event_id": "evt-9"
+  }
+}

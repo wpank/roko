@@ -14,7 +14,29 @@ use std::time::Instant;
 
 use anyhow::{Context as _, Result as AnyhowResult};
 use roko_agent::AgentRuntimeEvent;
-use roko_agent::StreamChunk;
+/// Streaming chunk from a provider session, used for agent event bridging.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(crate) enum StreamChunk {
+    /// Plain content delta from the agent.
+    ContentDelta(String),
+    /// Reasoning delta emitted by the backend.
+    ReasoningDelta(String),
+    /// Tool-call delta emitted by the backend.
+    ToolCallDelta {
+        id_delta: Option<String>,
+        name_delta: Option<String>,
+        args_delta: Option<String>,
+    },
+    /// Tool progress update.
+    ToolProgress { tool: String, status: String },
+    /// Usage payload emitted by the backend.
+    Usage(roko_core::Usage),
+    /// Stream-local error message.
+    Error(String),
+    /// Stream completed with the given finish reason.
+    Done(String),
+}
 use roko_agent::model_call_service::ProviderOutcomeRecorder;
 use roko_agent::process::ResourceLimits;
 use roko_agent::provider::{AgentOptions, LocalToolMcpServer, ProviderSemaphores};
@@ -1559,12 +1581,14 @@ impl AgentDispatcherV2 {
             })
             .await;
 
-        // Set up streaming channel: chunks flow from agent -> forwarder -> event_tx.
-        let (chunk_tx, mut chunk_rx) =
-            mpsc::channel::<StreamChunk>(roko_core::defaults::DEFAULT_CHANNEL_BUFFER);
+        // Set up streaming channel: StreamEvents flow from agent -> forwarder -> event_tx.
+        let (chunk_tx, mut chunk_rx) = mpsc::channel::<roko_agent::tool_loop::StreamEvent>(
+            roko_core::defaults::DEFAULT_CHANNEL_BUFFER,
+        );
         let forwarder_tx = event_tx.clone();
         let forwarder = tokio::spawn(async move {
-            while let Some(chunk) = chunk_rx.recv().await {
+            while let Some(stream_event) = chunk_rx.recv().await {
+                let chunk = stream_chunk_from_event(stream_event);
                 let event = agent_event_from_chunk(chunk);
                 if forwarder_tx.send(event).await.is_err() {
                     break;
@@ -1866,6 +1890,7 @@ async fn record_agent_dispatch_feedback(
             latency_ms,
             success: result.success,
             provider_success: Some(result.success),
+            error_class: None,
         })
         .await
     {
@@ -1977,6 +2002,7 @@ fn fill_cost_from_profile(result: &mut AgentResult, target: &ProviderDispatchSpe
             profile.cost_input_per_m,
             profile.cost_output_per_m,
             profile.cost_cache_read_per_m,
+            profile.cost_cache_write_per_m,
         );
     }
     if result.usage.cost_usd.abs() <= f32::EPSILON
@@ -1987,6 +2013,7 @@ fn fill_cost_from_profile(result: &mut AgentResult, target: &ProviderDispatchSpe
             Some(pricing.input_per_m),
             Some(pricing.output_per_m),
             Some(pricing.cache_read_per_m),
+            Some(pricing.cache_write_per_m),
         );
     }
 }
@@ -2050,6 +2077,32 @@ fn dispatch_events_from_result(
         exit_code: Some(if result.success { 0 } else { 1 }),
     });
     events
+}
+
+/// Convert a [`roko_agent::tool_loop::StreamEvent`] into a local [`StreamChunk`].
+fn stream_chunk_from_event(event: roko_agent::tool_loop::StreamEvent) -> StreamChunk {
+    use roko_agent::tool_loop::StreamEventKind;
+    match event.kind {
+        StreamEventKind::TextDelta(text) => StreamChunk::ContentDelta(text),
+        StreamEventKind::ReasoningDelta(text) => StreamChunk::ReasoningDelta(text),
+        StreamEventKind::ToolCallStart { id, name } => StreamChunk::ToolCallDelta {
+            id_delta: Some(id),
+            name_delta: Some(name),
+            args_delta: None,
+        },
+        StreamEventKind::ToolCallDelta { id, json_fragment } => StreamChunk::ToolCallDelta {
+            id_delta: Some(id),
+            name_delta: None,
+            args_delta: Some(json_fragment),
+        },
+        StreamEventKind::ToolCallEnd { id, name, .. } => StreamChunk::ToolCallDelta {
+            id_delta: Some(id),
+            name_delta: Some(name),
+            args_delta: None,
+        },
+        StreamEventKind::Usage(usage) => StreamChunk::Usage(usage),
+        StreamEventKind::Done { finish_reason } => StreamChunk::Done(finish_reason),
+    }
 }
 
 /// Convert a [`StreamChunk`] into the corresponding [`AgentRuntimeEvent`].
@@ -2889,6 +2942,7 @@ mod tests {
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         assert!(matches!(
             classify_runtime("gemini", ProviderKind::GeminiCli, Some(&gemini)),
@@ -2913,6 +2967,7 @@ mod tests {
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         assert!(matches!(
             classify_runtime("openclaw", ProviderKind::OpenClaw, Some(&openclaw)),
@@ -2941,6 +2996,7 @@ mod tests {
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             }),
             model_profile: None,
             runtime: ProviderRuntime::AgentResultBridge {
@@ -3007,6 +3063,7 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"dispatch-ok"}}'
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
         config.models.insert(

@@ -19,11 +19,7 @@ struct FakeDispatcher;
 
 #[async_trait]
 impl AgentDispatcher for FakeDispatcher {
-    async fn dispatch(
-        &self,
-        _input: &Signal,
-        _ctx: &RokoContext,
-    ) -> roko_agent::AgentResult {
+    async fn dispatch(&self, _input: &Signal, _ctx: &RokoContext) -> roko_agent::AgentResult {
         let output = Signal::builder(Kind::AgentOutput)
             .body(Body::text("dream review: all patterns consolidated"))
             .build();
@@ -52,11 +48,7 @@ async fn dream_cycle_produces_report_from_episodes() {
 
     // Write several episodes so the cycle has data to process.
     for i in 0..5 {
-        let ep = make_episode(
-            &format!("agent-{i}"),
-            &format!("task-{i}"),
-            i % 2 == 0,
-        );
+        let ep = make_episode(&format!("agent-{i}"), &format!("task-{i}"), i % 2 == 0);
         logger.append(&ep).await.expect("append episode");
     }
 
@@ -116,7 +108,10 @@ fn add_consolidated_requires_three_source_episodes() {
         ..Default::default()
     };
     let result = store.add_consolidated(entry);
-    assert!(result.is_err(), "should reject fewer than 3 source episodes");
+    assert!(
+        result.is_err(),
+        "should reject fewer than 3 source episodes"
+    );
 
     // Exactly three source episodes should succeed.
     let entry = roko_neuro::KnowledgeEntry {
@@ -124,11 +119,7 @@ fn add_consolidated_requires_three_source_episodes() {
         kind: roko_neuro::KnowledgeKind::Insight,
         content: "properly merged insight".to_string(),
         confidence: 0.9,
-        source_episodes: vec![
-            "ep-1".to_string(),
-            "ep-2".to_string(),
-            "ep-3".to_string(),
-        ],
+        source_episodes: vec!["ep-1".to_string(), "ep-2".to_string(), "ep-3".to_string()],
         tags: vec!["rust".to_string()],
         ..Default::default()
     };
@@ -143,11 +134,7 @@ fn add_consolidated_requires_three_source_episodes() {
         kind: roko_neuro::KnowledgeKind::Insight,
         content: "duplicate".to_string(),
         confidence: 0.9,
-        source_episodes: vec![
-            "ep-4".to_string(),
-            "ep-5".to_string(),
-            "ep-6".to_string(),
-        ],
+        source_episodes: vec!["ep-4".to_string(), "ep-5".to_string(), "ep-6".to_string()],
         tags: vec!["rust".to_string()],
         ..Default::default()
     };

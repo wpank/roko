@@ -103,8 +103,8 @@ fn render_wave_tree(
     }
 
     // Filter state for F2 left panel (uses the same plan_tree_filter as F1).
-    let filter_active = tui_state.plan_tree_filter.active
-        && !tui_state.plan_tree_filter.pattern.is_empty();
+    let filter_active =
+        tui_state.plan_tree_filter.active && !tui_state.plan_tree_filter.pattern.is_empty();
     let filtered_suffix = if filter_active {
         let filtered_count = tui_state
             .plan_summaries
@@ -124,7 +124,9 @@ fn render_wave_tree(
     };
 
     let title = if focused {
-        format!(" Plans ({completed}/{total_plans}{health_suffix}{filtered_suffix}) [/:filter Enter:detail] ")
+        format!(
+            " Plans ({completed}/{total_plans}{health_suffix}{filtered_suffix}) [/:filter Enter:detail] "
+        )
     } else {
         format!(" Plans ({completed}/{total_plans}{health_suffix}{filtered_suffix}) ")
     };
@@ -880,25 +882,26 @@ fn render_plan_summary(
 
             Line::from(vec![
                 Span::styled(" tasks: ", theme.label()),
-                Span::styled(
-                    format!("{tasks_done}/{tasks_total} done"),
-                    theme.value(),
-                ),
+                Span::styled(format!("{tasks_done}/{tasks_total} done"), theme.value()),
                 Span::styled(
                     format!("  impl {impl_done}/{}", impl_tasks.len()),
-                    Style::default().fg(if !impl_tasks.is_empty() && impl_done == impl_tasks.len() {
-                        theme.success
-                    } else {
-                        theme.foreground
-                    }),
+                    Style::default().fg(
+                        if !impl_tasks.is_empty() && impl_done == impl_tasks.len() {
+                            theme.success
+                        } else {
+                            theme.foreground
+                        },
+                    ),
                 ),
                 Span::styled(
                     format!("  verify {verify_done}/{}", verify_tasks.len()),
-                    Style::default().fg(if !verify_tasks.is_empty() && verify_done == verify_tasks.len() {
-                        theme.success
-                    } else {
-                        theme.foreground
-                    }),
+                    Style::default().fg(
+                        if !verify_tasks.is_empty() && verify_done == verify_tasks.len() {
+                            theme.success
+                        } else {
+                            theme.foreground
+                        },
+                    ),
                 ),
                 Span::styled(
                     format!("  {} failed", plan.tasks_failed),
@@ -961,7 +964,12 @@ fn render_plan_summary(
     ]));
     if let Some(err) = last_error {
         header_lines.push(Line::from(vec![
-            Span::styled(" error: ", Style::default().fg(theme.danger).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                " error: ",
+                Style::default()
+                    .fg(theme.danger)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(
                 truncate(err, area.width.saturating_sub(10) as usize),
                 Style::default()
@@ -985,8 +993,13 @@ fn render_plan_summary(
         .iter()
         .filter(|a| a.current_plan == plan.id || a.current_plan == plan.name)
         .collect();
-    let agents_height = if plan_agents.is_empty() { 2 } else { (plan_agents.len() as u16).min(4) + 2 };
-    let has_git_info = plan.branch.is_some() || plan.worktree_path.is_some() || plan.last_commit.is_some();
+    let agents_height = if plan_agents.is_empty() {
+        2
+    } else {
+        (plan_agents.len() as u16).min(4) + 2
+    };
+    let has_git_info =
+        plan.branch.is_some() || plan.worktree_path.is_some() || plan.last_commit.is_some();
     let git_height = if has_git_info { 4 } else { 0 };
 
     let sections = Layout::vertical([
@@ -1056,7 +1069,9 @@ fn render_plan_tasks(
     let available_rows = visible_height.saturating_sub(header_lines);
 
     // Compute scroll offset to keep selected task visible.
-    let selected = view_state.secondary_selected.min(task_count.saturating_sub(1));
+    let selected = view_state
+        .secondary_selected
+        .min(task_count.saturating_sub(1));
     let scroll_offset = if task_count > available_rows {
         selected
             .saturating_sub(available_rows / 2)
@@ -1071,20 +1086,25 @@ fn render_plan_tasks(
 
     // Column header
     let fourth_label = if has_deps { "deps" } else { "agent" };
-    lines.push(Line::from(vec![
-        Span::styled(
-            format!(" {:<3}  {:<title_w$} {:<8} {:<10} {:>8}",
-                " ",
-                "task",
-                "status",
-                fourth_label,
-                "cost",
-                title_w = content_w.saturating_sub(38).max(8)),
-            theme.section_header(),
+    lines.push(Line::from(vec![Span::styled(
+        format!(
+            " {:<3}  {:<title_w$} {:<8} {:<10} {:>8}",
+            " ",
+            "task",
+            "status",
+            fourth_label,
+            "cost",
+            title_w = content_w.saturating_sub(38).max(8)
         ),
-    ]));
+        theme.section_header(),
+    )]));
 
-    for (i, task) in tasks.iter().enumerate().skip(scroll_offset).take(available_rows) {
+    for (i, task) in tasks
+        .iter()
+        .enumerate()
+        .skip(scroll_offset)
+        .take(available_rows)
+    {
         let (icon, icon_color) = task_status_icon(task, theme);
         let task_title = if task.name.is_empty() {
             task.id.as_str()
@@ -1126,10 +1146,7 @@ fn render_plan_tasks(
 
         let title_budget = content_w.saturating_sub(38).max(8);
         let spans = vec![
-            Span::styled(
-                format!(" {icon} "),
-                Style::default().fg(icon_color).bg(bg),
-            ),
+            Span::styled(format!(" {icon} "), Style::default().fg(icon_color).bg(bg)),
             Span::styled(
                 format!(
                     "{:<width$}",
@@ -1151,7 +1168,8 @@ fn render_plan_tasks(
                     TaskStatus::Failed | TaskStatus::Blocked => theme.badge_failed(),
                     TaskStatus::Active => theme.badge_running(),
                     TaskStatus::Pending => theme.badge_pending(),
-                }.bg(bg),
+                }
+                .bg(bg),
             ),
             Span::styled(
                 format!(" {:<10}", fourth_col.0),
@@ -1203,7 +1221,14 @@ fn render_plan_tasks(
 
     // Scrollbar for task list
     if task_count > available_rows {
-        render_scrollbar(frame, inner, task_count, available_rows, scroll_offset, theme);
+        render_scrollbar(
+            frame,
+            inner,
+            task_count,
+            available_rows,
+            scroll_offset,
+            theme,
+        );
     }
 }
 
@@ -1235,18 +1260,12 @@ fn render_plan_agents(
                 AgentStatus::Idle => theme.badge_pending(),
             };
             Row::new(vec![
-                Cell::from(Span::styled(
-                    truncate(&agent.id, 16),
-                    theme.value(),
-                )),
+                Cell::from(Span::styled(truncate(&agent.id, 16), theme.value())),
                 Cell::from(Span::styled(
                     truncate(&agent.role, 12),
                     Style::default().fg(theme.accent),
                 )),
-                Cell::from(Span::styled(
-                    truncate(&agent.model, 20),
-                    theme.metadata(),
-                )),
+                Cell::from(Span::styled(truncate(&agent.model, 20), theme.metadata())),
                 Cell::from(Span::styled(
                     format!(" {} ", agent.status.label()),
                     badge_style,
@@ -1262,19 +1281,12 @@ fn render_plan_agents(
         Constraint::Length(8),
     ];
     let table = Table::new(rows, widths)
-        .header(
-            Row::new([" agent", "role", "model", "status"]).style(theme.section_header()),
-        )
+        .header(Row::new([" agent", "role", "model", "status"]).style(theme.section_header()))
         .column_spacing(1);
     frame.render_widget(table, inner);
 }
 
-fn render_plan_git_info(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    plan: &PlanEntry,
-    theme: &Theme,
-) {
+fn render_plan_git_info(frame: &mut Frame<'_>, area: Rect, plan: &PlanEntry, theme: &Theme) {
     let block = Block::default()
         .borders(Borders::TOP)
         .title(Span::styled(" Source Control ", theme.section_header()))
@@ -1318,21 +1330,12 @@ fn render_plan_git_info(
         lines.push(Line::from(vec![
             Span::styled(" Changes:  ", theme.label()),
             Span::styled(format!("{files} files"), theme.value()),
-            Span::styled(
-                format!("  +{ins}"),
-                Style::default().fg(theme.success),
-            ),
-            Span::styled(
-                format!("  -{del}"),
-                Style::default().fg(theme.danger),
-            ),
+            Span::styled(format!("  +{ins}"), Style::default().fg(theme.success)),
+            Span::styled(format!("  -{del}"), Style::default().fg(theme.danger)),
         ]));
     }
 
-    frame.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: false }),
-        inner,
-    );
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 fn render_plan_gates(
@@ -1346,9 +1349,7 @@ fn render_plan_gates(
     let title_text = if plan_gates.is_empty() {
         " Verify Results ".to_string()
     } else {
-        format!(
-            " Verify Results ({passed_count}\u{2713} {failed_count}\u{2717}) "
-        )
+        format!(" Verify Results ({passed_count}\u{2713} {failed_count}\u{2717}) ")
     };
     let block = Block::default()
         .borders(Borders::TOP)
@@ -1376,12 +1377,13 @@ fn render_plan_gates(
                 Cell::from(Span::styled(format!(" {icon}"), Style::default().fg(color))),
                 Cell::from(Span::styled(
                     truncate(&gate.gate_name, 14),
-                    if gate.passed { theme.value() } else { Style::default().fg(theme.danger) },
+                    if gate.passed {
+                        theme.value()
+                    } else {
+                        Style::default().fg(theme.danger)
+                    },
                 )),
-                Cell::from(Span::styled(
-                    truncate(&gate.summary, 36),
-                    theme.value(),
-                )),
+                Cell::from(Span::styled(truncate(&gate.summary, 36), theme.value())),
                 Cell::from(Span::styled(
                     format_duration_ms(gate.duration_ms),
                     theme.metadata(),
@@ -1397,9 +1399,7 @@ fn render_plan_gates(
         Constraint::Length(8),
     ];
     let table = Table::new(rows, widths)
-        .header(
-            Row::new([" ", "gate", "summary", "time"]).style(theme.section_header()),
-        )
+        .header(Row::new([" ", "gate", "summary", "time"]).style(theme.section_header()))
         .column_spacing(1);
     frame.render_widget(table, inner);
 }

@@ -94,6 +94,7 @@ pub mod relay;
 pub mod retention;
 pub mod routes;
 pub mod runtime;
+pub mod runtime_event_bridge;
 pub mod sanitize;
 pub mod scheduler;
 pub mod service_factory;

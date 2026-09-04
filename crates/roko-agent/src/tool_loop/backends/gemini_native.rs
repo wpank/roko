@@ -1,5 +1,7 @@
 //! Gemini native `generateContent` backend for the shared tool loop.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use roko_core::config::schema::ModelProfile;
 use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
@@ -11,7 +13,7 @@ use crate::gemini::native::{
 };
 use crate::gemini::types::{
     Content, GeminiTool, GenerateContentRequest, GenerateContentResponse, GenerationConfig,
-    InlineDataPart, Part,
+    InlineDataPart, Part, SafetySettingRequest,
 };
 use crate::gemini::wire::{
     generate_content_endpoint, generate_content_headers, send_generate_content_request,
@@ -20,6 +22,7 @@ use crate::gemini::wire::{
 #[cfg(test)]
 use crate::http::HttpPostError;
 use crate::http::{HttpPoster, ReqwestPoster};
+use crate::model_call_service::{ProviderOutcomeRecorder, provider_error_kind};
 use crate::multimodal::wire_messages_contain_images;
 use crate::provider::{AgentOptions, ProviderError};
 use crate::safety::SafetyLayer;
@@ -28,6 +31,7 @@ use crate::translate::{
     BackendResponse, GeminiTranslator, RenderedTools, SessionState, Translator,
     convert_images_for_gemini,
 };
+use crate::usage::Usage;
 use roko_core::tool::ToolContext;
 
 const DEFAULT_TIMEOUT_MS: u64 = DEFAULT_REQUEST_TIMEOUT_MS;
@@ -45,6 +49,10 @@ pub struct GeminiNativeBackend {
     /// Whether to preserve image blocks as Gemini `inlineData` parts.
     /// Derived from `model.supports_vision`.
     supports_vision: bool,
+    /// Gemini per-category safety thresholds forwarded from config.
+    safety_settings: Vec<SafetySettingRequest>,
+    /// Optional circuit-breaker outcome recorder.
+    outcome_recorder: Option<Arc<dyn ProviderOutcomeRecorder>>,
 }
 
 impl GeminiNativeBackend {
@@ -66,12 +74,42 @@ impl GeminiNativeBackend {
                 .clone()
                 .or_else(|| model.thinking_level.clone()),
             cached_content: options.cached_content.clone(),
-            timeout_ms: options.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS),
+            timeout_ms: options.effective_timeout_ms(None),
             safety,
             supports_vision,
+            safety_settings: options.gemini_safety_settings.clone(),
             model,
             poster: Box::new(ReqwestPoster::new()),
+            outcome_recorder: None,
         }
+    }
+
+    /// Attach a circuit-breaker outcome recorder.
+    #[must_use]
+    pub fn with_outcome_recorder(mut self, recorder: Arc<dyn ProviderOutcomeRecorder>) -> Self {
+        self.outcome_recorder = Some(recorder);
+        self
+    }
+
+    /// Record a failure into the circuit-breaker outcome recorder.
+    fn record_failure(&self, error: &LlmError) {
+        let Some(recorder) = &self.outcome_recorder else {
+            return;
+        };
+        let kind = match error {
+            LlmError::Provider(ProviderError::RateLimit { .. }) => "rate_limit",
+            LlmError::Provider(ProviderError::AuthFailure) => "auth_failure",
+            LlmError::Provider(ProviderError::Timeout) | LlmError::Timeout(_) => "timeout",
+            LlmError::Provider(ProviderError::ServerError(_)) => "server_error",
+            LlmError::Provider(ProviderError::ContentPolicy) => "content_policy",
+            LlmError::Provider(ProviderError::ContextOverflow) => "context_overflow",
+            LlmError::Provider(ProviderError::ModelNotFound) => "model_not_found",
+            LlmError::Provider(ProviderError::Other(message))
+            | LlmError::Backend(message)
+            | LlmError::Network(message) => provider_error_kind(message),
+            LlmError::RetriesExhausted => "retries_exhausted",
+        };
+        recorder.record_provider_failure(&self.model.provider, kind);
     }
 
     #[cfg(test)]
@@ -212,7 +250,7 @@ impl GeminiNativeBackend {
             Self::system_instruction(messages),
             Self::translate_tools(tools)?,
             self.generation_config(),
-            None,
+            (!self.safety_settings.is_empty()).then_some(self.safety_settings.clone()),
             self.cached_content.clone(),
         ))
     }
@@ -229,7 +267,7 @@ impl LlmBackend for GeminiNativeBackend {
         let request = self.build_request(messages, tools)?;
         let body = serialize_generate_content_request(&request)
             .map_err(|err| LlmError::Backend(format!("serialize request: {err}")))?;
-        let raw = send_generate_content_request(
+        let raw = match send_generate_content_request(
             &*self.poster,
             &generate_content_endpoint(&self.base_url, &self.model.slug),
             &generate_content_headers(&self.api_key),
@@ -237,23 +275,38 @@ impl LlmBackend for GeminiNativeBackend {
             self.timeout_ms,
         )
         .await
-        .map_err(|err| {
-            if let Some(status) = err.status
-                && (status == 429 || status == 529)
-            {
-                let retry_ms = err.retry_after_secs.map(|s| s * 1000);
-                return LlmError::Provider(ProviderError::RateLimit {
-                    retry_after_ms: retry_ms,
-                });
+        {
+            Ok(raw) => raw,
+            Err(err) => {
+                let mapped = if let Some(status) = err.status
+                    && (status == 429 || status == 529)
+                {
+                    let retry_ms = err.retry_after_secs.map(|s| s * 1000);
+                    LlmError::Provider(ProviderError::RateLimit {
+                        retry_after_ms: retry_ms,
+                    })
+                } else {
+                    LlmError::Network(err.to_string())
+                };
+                self.record_failure(&mapped);
+                return Err(mapped);
             }
-            LlmError::Network(err.to_string())
-        })?;
+        };
 
-        let json: Value = serde_json::from_str(&raw)
-            .map_err(|err| LlmError::Backend(format!("parse response: {err}")))?;
+        let json: Value = match serde_json::from_str(&raw) {
+            Ok(json) => json,
+            Err(err) => {
+                let mapped = LlmError::Backend(format!("parse response: {err}"));
+                self.record_failure(&mapped);
+                return Err(mapped);
+            }
+        };
 
-        serde_json::from_value::<GenerateContentResponse>(json.clone())
-            .map_err(|err| LlmError::Backend(format!("validate response: {err}")))?;
+        if let Err(err) = serde_json::from_value::<GenerateContentResponse>(json.clone()) {
+            let mapped = LlmError::Backend(format!("validate response: {err}"));
+            self.record_failure(&mapped);
+            return Err(mapped);
+        }
 
         let response = BackendResponse::Json(json);
         let calls = GeminiTranslator
@@ -269,6 +322,9 @@ impl LlmBackend for GeminiNativeBackend {
             }
         }
 
+        if let Some(recorder) = &self.outcome_recorder {
+            recorder.record_provider_success(&self.model.provider);
+        }
         Ok(response)
     }
 
@@ -323,6 +379,11 @@ impl LlmBackend for GeminiNativeBackend {
             let mut response = response;
             let mut pending = String::new();
             let mut sent_done = false;
+            // Accumulate usageMetadata across SSE chunks. Gemini may report
+            // usage on any chunk (often the final one with a finishReason).
+            let mut acc_input: u64 = 0;
+            let mut acc_output: u64 = 0;
+            let mut acc_cache_read: Option<u64> = None;
 
             loop {
                 match response.chunk().await {
@@ -346,6 +407,8 @@ impl LlmBackend for GeminiNativeBackend {
                             };
 
                             if data == "[DONE]" {
+                                emit_accumulated_usage(acc_input, acc_output, acc_cache_read, &tx)
+                                    .await;
                                 if !sent_done {
                                     sent_done = true;
                                     let _ = tx
@@ -360,6 +423,25 @@ impl LlmBackend for GeminiNativeBackend {
                             let Ok(chunk_json) = serde_json::from_str::<Value>(data) else {
                                 continue;
                             };
+
+                            // Extract usageMetadata from this chunk.
+                            if let Some(usage) = chunk_json.get("usageMetadata") {
+                                if let Some(pt) =
+                                    usage.get("promptTokenCount").and_then(Value::as_u64)
+                                {
+                                    acc_input = pt;
+                                }
+                                if let Some(ct) =
+                                    usage.get("candidatesTokenCount").and_then(Value::as_u64)
+                                {
+                                    acc_output = ct;
+                                }
+                                if let Some(cache) =
+                                    usage.get("cachedContentTokenCount").and_then(Value::as_u64)
+                                {
+                                    acc_cache_read = Some(cache);
+                                }
+                            }
 
                             // Check for finish reason.
                             if let Some(finish) = chunk_json
@@ -376,6 +458,8 @@ impl LlmBackend for GeminiNativeBackend {
                                 // before emitting Done.
                                 emit_gemini_content_events(&chunk_json, &tx).await;
 
+                                emit_accumulated_usage(acc_input, acc_output, acc_cache_read, &tx)
+                                    .await;
                                 if !sent_done {
                                     sent_done = true;
                                     let _ = tx
@@ -393,6 +477,7 @@ impl LlmBackend for GeminiNativeBackend {
                     }
                     Ok(None) => {
                         // Stream ended.
+                        emit_accumulated_usage(acc_input, acc_output, acc_cache_read, &tx).await;
                         if !sent_done {
                             let _ = tx
                                 .send(Ok(StreamEvent::now(StreamEventKind::Done {
@@ -477,6 +562,33 @@ async fn emit_gemini_content_events(
                 .await;
         }
     }
+}
+
+/// Emit a `StreamEventKind::Usage` event from accumulated SSE usageMetadata.
+///
+/// Gemini SSE chunks may contain `usageMetadata` with `promptTokenCount` and
+/// `candidatesTokenCount`. This function emits a Usage event only when at least
+/// one token count is non-zero, ensuring the tool loop can track usage from
+/// streaming responses.
+async fn emit_accumulated_usage(
+    input: u64,
+    output: u64,
+    cache_read: Option<u64>,
+    tx: &tokio::sync::mpsc::Sender<Result<StreamEvent, LlmError>>,
+) {
+    if input == 0 && output == 0 {
+        return;
+    }
+    let usage = Usage {
+        input_tokens: input as u32,
+        output_tokens: output as u32,
+        cache_read_tokens: cache_read.unwrap_or(0) as u32,
+        cache_create_tokens: 0,
+        ..Default::default()
+    };
+    let _ = tx
+        .send(Ok(StreamEvent::now(StreamEventKind::Usage(usage))))
+        .await;
 }
 
 #[cfg(test)]

@@ -530,6 +530,15 @@ fn runtime_index_flush_boundary(event: &RuntimeEvent) -> bool {
             | RuntimeEvent::GatePassed { .. }
             | RuntimeEvent::GateFailed { .. }
             | RuntimeEvent::InferenceFailed { .. }
+            // v2 terminal/lifecycle events that warrant immediate flush
+            | RuntimeEvent::WaveCompleted { .. }
+            | RuntimeEvent::GateRungCompleted { .. }
+            | RuntimeEvent::ApprovalResolved { .. }
+            | RuntimeEvent::MergeCompleted { .. }
+            | RuntimeEvent::PublishCompleted { .. }
+            | RuntimeEvent::FeedbackSinkSettled { .. }
+            | RuntimeEvent::FeedbackSinkFailed { .. }
+            | RuntimeEvent::SequenceGap { .. }
     )
 }
 

@@ -1,0 +1,2 @@
+{"graph_id":"gate-replan-cap","run_id":"fixture-run-002","node_id":"T1","tick":0,"signals":[{"kind":"Task","body":{"text":"T1 implementation completed"},"metadata":{"provider":"fixture-provider","model":"fixture-model","input_tokens":2500,"output_tokens":1800,"cost_micro_usd":950}}]}
+{"graph_id":"gate-replan-cap","run_id":"fixture-run-002","node_id":"T1-fix","tick":0,"signals":[{"kind":"Task","body":{"text":"T1-fix replan task completed"},"metadata":{"provider":"fixture-provider","model":"fixture-model","input_tokens":1800,"output_tokens":1200,"cost_micro_usd":680}}]}

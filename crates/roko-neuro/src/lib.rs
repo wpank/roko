@@ -1480,6 +1480,23 @@ pub trait NeuroStore: Sized {
     }
 }
 
+/// `KnowledgeStore` implements `KnowledgeQuery` by serializing its entries
+/// to JSON values.
+impl roko_core::KnowledgeQuery for knowledge_store::KnowledgeStore {
+    fn query_knowledge(
+        &self,
+        topic: &str,
+        limit: usize,
+    ) -> roko_core::Result<Vec<serde_json::Value>> {
+        let entries = NeuroStore::query(self, topic, limit)
+            .map_err(|e| roko_core::RokoError::Store(e.to_string()))?;
+        Ok(entries
+            .into_iter()
+            .filter_map(|e| serde_json::to_value(e).ok())
+            .collect())
+    }
+}
+
 /// Evidence-based admission control for durable knowledge.
 pub mod admission;
 pub mod context;
@@ -1492,6 +1509,8 @@ mod hdc;
 pub mod knowledge_store;
 /// Runtime knowledge lifecycle ingestion and promotion facade.
 pub mod lifecycle;
+/// Transactional knowledge sync envelope and cursor protocol.
+pub mod sync_protocol;
 /// Temporal knowledge topology -- Allen interval algebra over knowledge states.
 pub mod temporal;
 /// Tier progression from raw episodes to playbooks.
@@ -1527,6 +1546,11 @@ pub use lifecycle::{
     BatchDistillationReport, DEFAULT_KNOWLEDGE_LIFECYCLE_FILE, DistillationResult,
     KnowledgeLifecycleConfig, KnowledgeLifecycleRecord, RuntimeAdmissionPath,
     RuntimeEpisodeObservation, RuntimeKnowledgeLifecycle,
+};
+pub use sync_protocol::{
+    MeshLayout, PeerCursorV1, ReceiveResult, SendResult, SyncEntryV1, SyncEnvelopeV1,
+    compute_envelope_checksum, load_peer_cursor, receive_sync, send_sync, validate_peer_name,
+    verify_envelope_checksum,
 };
 pub use temporal::{
     AllenRelation, KnowledgeEpoch, TemporalIndex, TemporalInterval, TemporalRelation,

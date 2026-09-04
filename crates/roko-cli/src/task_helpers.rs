@@ -1,4 +1,4 @@
-//! Task-level helpers extracted from the legacy orchestrator.
+//! Task-level helpers (originally extracted from the legacy orchestrator).
 //!
 //! This module contains:
 //! - Crate derivation from file paths (`crate_name_for_path`, `crate_root_for_path`)

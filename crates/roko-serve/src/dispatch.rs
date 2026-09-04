@@ -1986,6 +1986,9 @@ fn build_agent(
             pre_discovered_local_tools: None,
             local_tool_mcp_servers: None,
             rate_limiter: None,
+            safety_layer: None,
+            temperament: None,
+            gemini_safety_settings: Vec::new(),
         },
     )
     .with_context(|| format!("create agent for template '{}'", template.name))
@@ -2070,6 +2073,7 @@ async fn record_template_dispatch_feedback(
             latency_ms,
             success: learning_success,
             provider_success: Some(result.success),
+            error_class: None,
         })
         .await
     {
@@ -2521,6 +2525,7 @@ async fn publish_dispatch_learning_feedback(
         model: template.model.clone(),
         provider,
         timestamp_ms: signal.created_at_ms,
+        is_model_override: false,
     });
     event_bus.publish(AgentEvent::TurnCompleted {
         turn: turns.min(u64::from(u32::MAX)) as u32,
@@ -3226,6 +3231,7 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"template-ok"}}'
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
         config.models.insert(
@@ -3338,6 +3344,7 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"template-ok"}}'
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
         config.models.insert(

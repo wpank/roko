@@ -193,13 +193,21 @@ pub enum McpError {
 
 // ── StdioTransport ──────────────────────────────────────────────────────
 
+/// Maximum stderr bytes captured in diagnostic mode.
+const DIAGNOSTIC_STDERR_LIMIT: usize = 4096;
+
+/// Grace period for shutdown before killing the child process.
+const SHUTDOWN_GRACE_SECS: u64 = 2;
+
 /// Transport that spawns a child process and communicates over stdin/stdout
 /// using newline-delimited JSON-RPC.
 pub struct StdioTransport {
     stdin: Mutex<BufWriter<ChildStdin>>,
     stdout: Mutex<BufReader<ChildStdout>>,
-    /// Keep child handle alive so the process is not dropped.
-    _child: Mutex<Child>,
+    /// Child handle kept alive so the process is not dropped.
+    child: Mutex<Child>,
+    /// Stderr reader, present only in diagnostic mode.
+    stderr_reader: Mutex<Option<BufReader<tokio::process::ChildStderr>>>,
 }
 
 impl StdioTransport {
@@ -243,8 +251,140 @@ impl StdioTransport {
         Ok(Self {
             stdin: Mutex::new(BufWriter::new(stdin)),
             stdout: Mutex::new(BufReader::new(stdout)),
-            _child: Mutex::new(child),
+            child: Mutex::new(child),
+            stderr_reader: Mutex::new(None),
         })
+    }
+
+    /// Spawn a child MCP server in diagnostic mode.
+    ///
+    /// Unlike [`spawn_with_env`](Self::spawn_with_env), stderr is piped and
+    /// captured (up to 4 KiB) rather than inherited. Use
+    /// [`drain_stderr`](Self::drain_stderr) to retrieve the redacted summary
+    /// and [`shutdown`](Self::shutdown) for clean termination.
+    pub fn spawn_diagnostic(
+        command: &str,
+        args: &[String],
+        env: &HashMap<String, String>,
+    ) -> Result<Self, McpError> {
+        let resolved_env = resolve_env(env);
+        let mut child = tokio::process::Command::new(command)
+            .args(args)
+            .envs(resolved_env)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| McpError::Transport(format!("failed to spawn {command}: {e}")))?;
+
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| McpError::Transport("child stdin not available".into()))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| McpError::Transport("child stdout not available".into()))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| McpError::Transport("child stderr not available".into()))?;
+
+        Ok(Self {
+            stdin: Mutex::new(BufWriter::new(stdin)),
+            stdout: Mutex::new(BufReader::new(stdout)),
+            child: Mutex::new(child),
+            stderr_reader: Mutex::new(Some(BufReader::new(stderr))),
+        })
+    }
+
+    /// Drain and return up to [`DIAGNOSTIC_STDERR_LIMIT`] bytes of stderr.
+    ///
+    /// The result is redacted using `env_values` (configured server env) so
+    /// secrets are never included. Returns `None` when not in diagnostic mode
+    /// or when no stderr was produced.
+    pub async fn drain_stderr(&self, env_values: &[String]) -> Option<String> {
+        let mut guard = self.stderr_reader.lock().await;
+        let reader = guard.as_mut()?;
+
+        let mut buf = vec![0u8; DIAGNOSTIC_STDERR_LIMIT];
+        let mut total = 0;
+
+        // Non-blocking best-effort drain: read whatever is available now.
+        loop {
+            if total >= DIAGNOSTIC_STDERR_LIMIT {
+                break;
+            }
+            match tokio::time::timeout(
+                Duration::from_millis(100),
+                reader.read_line(&mut String::new()),
+            )
+            .await
+            {
+                Ok(Ok(0)) | Err(_) => break,
+                Ok(Ok(_)) => {}
+                Ok(Err(_)) => break,
+            }
+        }
+
+        // Re-read from scratch using a simpler approach: read_buf with a cap.
+        drop(guard);
+        let mut guard = self.stderr_reader.lock().await;
+        let reader = guard.as_mut()?;
+
+        total = 0;
+        loop {
+            if total >= DIAGNOSTIC_STDERR_LIMIT {
+                break;
+            }
+            let remaining = DIAGNOSTIC_STDERR_LIMIT - total;
+            match tokio::time::timeout(
+                Duration::from_millis(50),
+                tokio::io::AsyncReadExt::read(reader, &mut buf[total..total + remaining]),
+            )
+            .await
+            {
+                Ok(Ok(0)) => break,
+                Ok(Ok(n)) => total += n,
+                Ok(Err(_)) | Err(_) => break,
+            }
+        }
+
+        if total == 0 {
+            return None;
+        }
+
+        let raw = String::from_utf8_lossy(&buf[..total]).to_string();
+        Some(redact_stderr(&raw, env_values))
+    }
+
+    /// Cleanly shut down the child process.
+    ///
+    /// 1. Drops (closes) the stdin pipe to signal EOF.
+    /// 2. Waits up to [`SHUTDOWN_GRACE_SECS`] for the child to exit.
+    /// 3. Kills and reaps the child if it does not exit in time.
+    ///
+    /// This method is idempotent.
+    pub async fn shutdown(&self) {
+        // Close stdin by dropping the writer.
+        {
+            let mut stdin = self.stdin.lock().await;
+            // Replace with a closed pipe to signal EOF. We cannot literally
+            // drop the Mutex guard's inner value, but we can shut down the
+            // underlying write half.
+            let _ = stdin.shutdown().await;
+        }
+
+        let mut child = self.child.lock().await;
+        // Give the process a brief grace period.
+        match tokio::time::timeout(Duration::from_secs(SHUTDOWN_GRACE_SECS), child.wait()).await {
+            Ok(Ok(_)) => {} // exited cleanly
+            _ => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+            }
+        }
     }
 }
 
@@ -408,6 +548,22 @@ impl<T: Transport> McpClient<T> {
         let tool_result: McpToolResult = serde_json::from_value(result)?;
         Ok(tool_result)
     }
+}
+
+/// Strip known secret values from captured stderr output.
+///
+/// Each value in `env_values` that is non-empty and longer than 3 characters
+/// is replaced with `[REDACTED]` so that tokens/keys configured in
+/// [`McpServerConfig::env`] are never exposed in diagnostic output.
+fn redact_stderr(raw: &str, env_values: &[String]) -> String {
+    let mut result = raw.to_string();
+    for value in env_values {
+        // Skip trivially short values to avoid replacing common substrings.
+        if value.len() > 3 {
+            result = result.replace(value.as_str(), "[REDACTED]");
+        }
+    }
+    result
 }
 
 fn resolve_env(env: &HashMap<String, String>) -> HashMap<String, String> {
@@ -819,5 +975,55 @@ mod tests {
     fn mcp_response_timeout_error_message_format() {
         let err = McpError::Transport("MCP server response timed out after 30s".into());
         assert!(err.to_string().contains("response timed out after 30s"));
+    }
+
+    // ── redact_stderr tests ─────────────────────────────────────────────
+
+    #[test]
+    fn redact_stderr_replaces_secret_values() {
+        let raw = "error: auth failed with token ghp_abc123def456 for user";
+        let env_values = vec!["ghp_abc123def456".to_string()];
+        let result = super::redact_stderr(raw, &env_values);
+        assert_eq!(result, "error: auth failed with token [REDACTED] for user");
+        assert!(!result.contains("ghp_abc123def456"));
+    }
+
+    #[test]
+    fn redact_stderr_skips_short_values() {
+        let raw = "error: bad key=abc in config";
+        let env_values = vec!["abc".to_string()];
+        let result = super::redact_stderr(raw, &env_values);
+        // "abc" is only 3 chars, so it should NOT be redacted.
+        assert_eq!(result, raw);
+    }
+
+    #[test]
+    fn redact_stderr_handles_empty_input() {
+        assert_eq!(super::redact_stderr("", &[]), "");
+        assert_eq!(super::redact_stderr("", &["secret1234".to_string()]), "");
+    }
+
+    #[test]
+    fn redact_stderr_handles_multiple_occurrences() {
+        let raw = "token=xoxb-1234 and again xoxb-1234 here";
+        let env_values = vec!["xoxb-1234".to_string()];
+        let result = super::redact_stderr(raw, &env_values);
+        assert_eq!(result, "token=[REDACTED] and again [REDACTED] here");
+    }
+
+    #[test]
+    fn redact_stderr_handles_multiple_secrets() {
+        let raw = "key=sk_live_abc123 token=ghp_xyz789";
+        let env_values = vec!["sk_live_abc123".to_string(), "ghp_xyz789".to_string()];
+        let result = super::redact_stderr(raw, &env_values);
+        assert_eq!(result, "key=[REDACTED] token=[REDACTED]");
+    }
+
+    #[test]
+    fn redact_stderr_preserves_non_secret_content() {
+        let raw = "info: server started on port 3000\nwarning: slow query";
+        let env_values = vec!["unrelated_secret_value_12345".to_string()];
+        let result = super::redact_stderr(raw, &env_values);
+        assert_eq!(result, raw);
     }
 }

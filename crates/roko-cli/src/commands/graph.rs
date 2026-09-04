@@ -8,7 +8,8 @@ use anyhow::{Result, anyhow};
 use clap::Subcommand;
 
 use roko_core::trigger::{TriggerEvent, TriggerSource};
-use roko_core::{Body, Kind, Provenance, Signal, TelemetryEventSink};
+use roko_core::{Body, CapabilitySet, Kind, Provenance, Signal, TelemetryEventSink};
+use roko_graph::profile::{AuthoredGraphProfile, validate_cell_capabilities};
 use roko_graph::{CellContext, GraphEngine, GraphOutput, default_registry, loader};
 use roko_runtime::{LensExecutor, LensQueueConfig, QueuedLensExecutor, SharedStateHub};
 
@@ -24,10 +25,19 @@ pub enum GraphCmd {
     #[command(after_help = "\
 Examples:
   roko graph run examples/graphs/linear-gates.toml
-  roko graph run my-pipeline.toml")]
+  roko graph run my-pipeline.toml
+  roko graph run my-pipeline.toml --json
+  roko graph run my-pipeline.toml --quiet")]
     Run {
         /// Path to a graph TOML file.
         path: PathBuf,
+        /// Emit canonical JSON events and a final JSON summary instead of
+        /// human-readable output.
+        #[arg(long)]
+        json: bool,
+        /// Suppress human-readable progress output. Errors are still printed.
+        #[arg(long, short = 'q')]
+        quiet: bool,
     },
     /// Validate a graph definition (check for cycles, unknown cell types, unresolved refs).
     #[command(after_help = "\
@@ -51,31 +61,97 @@ Examples:
 /// Dispatch a `roko graph` subcommand.
 pub async fn cmd_graph(cmd: GraphCmd) -> Result<i32> {
     match cmd {
-        GraphCmd::Run { path } => cmd_graph_run(&path).await,
+        GraphCmd::Run { path, json, quiet } => cmd_graph_run(&path, json, quiet).await,
         GraphCmd::Validate { path } => cmd_graph_validate(&path),
         GraphCmd::Show { path } => cmd_graph_show(&path),
     }
 }
 
-/// Execute a graph: load the TOML, build the engine with the default registry,
-/// run all nodes sequentially, and print the results.
-async fn cmd_graph_run(path: &Path) -> Result<i32> {
-    let telemetry_hub = SharedStateHub::new_in_process();
-    let output = execute_graph(path, &telemetry_hub, None, None).await?;
+/// Execute a graph: load the TOML, build the runtime profile, validate
+/// capabilities, build the engine with the default registry, run all nodes,
+/// and print the results.
+async fn cmd_graph_run(path: &Path, json: bool, quiet: bool) -> Result<i32> {
+    // Load the graph to inspect its policy and metadata before building the
+    // profile.
+    let graph = loader::load_from_file(path)
+        .map_err(|e| anyhow!("failed to load graph '{}': {}", path.display(), e))?;
 
-    // Print the summary
-    println!("{}", output.summary());
-    let projections = telemetry_hub.projections();
-    if !projections.is_empty() {
-        println!("Telemetry projections:");
-        for (id, projection) in projections {
-            println!("  {id} v{}: {}", projection.version, projection.data);
+    // Build the AuthoredGraph runtime profile with capability validation.
+    // For the standalone CLI command, the workspace grant defaults to the
+    // baseline set (ReadFs + Bus). A real workspace config would supply a
+    // broader grant; this keeps the standalone command safe by default.
+    let workspace_grant = CapabilitySet::from([
+        roko_core::Capability::ReadFs,
+        roko_core::Capability::Bus,
+        roko_core::Capability::Shell,
+    ]);
+
+    let profile = AuthoredGraphProfile::builder(&graph.metadata.name)
+        .graph_policy(&graph.policy)
+        .workspace_grant(workspace_grant)
+        .json_output(json)
+        .quiet(quiet)
+        .build()
+        .map_err(|e| anyhow!("profile validation failed: {e}"))?;
+
+    // Pre-start cell capability validation
+    let cell_denials = validate_cell_capabilities(&graph, &profile);
+    if !cell_denials.is_empty() {
+        let detail = cell_denials
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(anyhow!(
+            "graph cell capability check failed ({} denial(s)): {detail}",
+            cell_denials.len()
+        ));
+    }
+
+    let telemetry_hub = SharedStateHub::new_in_process();
+    let output = execute_graph(path, &telemetry_hub, None, Some(profile.effective())).await?;
+
+    if json {
+        // JSON output: emit a canonical JSON summary
+        let summary = serde_json::json!({
+            "graph": output.graph_name,
+            "success": output.success,
+            "profile": profile.kind().to_string(),
+            "node_count": output.node_results.len(),
+            "total_duration_ms": output.total_duration.as_millis() as u64,
+            "nodes": output.node_results.iter().map(|nr| {
+                serde_json::json!({
+                    "node_id": nr.node_id,
+                    "status": nr.status.to_string(),
+                    "output_count": nr.output_count,
+                    "duration_ms": nr.duration.as_millis() as u64,
+                    "is_stub": nr.is_stub,
+                })
+            }).collect::<Vec<_>>(),
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&summary).unwrap_or_default()
+        );
+    } else if !quiet {
+        // Human-readable output
+        println!("{}", output.summary());
+        let projections = telemetry_hub.projections();
+        if !projections.is_empty() {
+            println!("Telemetry projections:");
+            for (id, projection) in projections {
+                println!("  {id} v{}: {}", projection.version, projection.data);
+            }
         }
     }
 
     if output.success {
         Ok(EXIT_SUCCESS)
     } else {
+        if quiet && !json {
+            // In quiet mode, still print errors
+            eprintln!("graph '{}' execution failed", output.graph_name);
+        }
         Ok(EXIT_FAILURE)
     }
 }
@@ -171,6 +247,9 @@ fn trigger_input_signal(event: &TriggerEvent) -> Signal {
 }
 
 /// Validate a graph definition without executing it.
+///
+/// This command is side-effect free: it loads and validates only.
+/// No runtime services are started.
 fn cmd_graph_validate(path: &Path) -> Result<i32> {
     let graph = loader::load_from_file(path)
         .map_err(|e| anyhow!("failed to load graph '{}': {}", path.display(), e))?;
@@ -192,6 +271,9 @@ fn cmd_graph_validate(path: &Path) -> Result<i32> {
 }
 
 /// Show a summary of nodes and edges in a graph.
+///
+/// This command is side-effect free: it loads and displays only.
+/// No runtime services are started.
 fn cmd_graph_show(path: &Path) -> Result<i32> {
     let graph = loader::load_from_file(path)
         .map_err(|e| anyhow!("failed to load graph '{}': {}", path.display(), e))?;
@@ -203,6 +285,17 @@ fn cmd_graph_show(path: &Path) -> Result<i32> {
     }
     if let Some(ver) = &graph.metadata.version {
         println!("Version: {ver}");
+    }
+
+    // Show declared capabilities
+    if !graph.policy.capabilities.is_empty() {
+        let caps: Vec<_> = graph
+            .policy
+            .capabilities
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        println!("Capabilities: {}", caps.join(", "));
     }
     println!();
 
@@ -301,5 +394,110 @@ cell_type = "noop"
         .expect("execute graph");
         assert!(output.success);
         assert_eq!(output.node_results[0].output_count, 1);
+    }
+
+    #[tokio::test]
+    async fn graph_run_with_json_flag_produces_json_output() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let graph_path = directory.path().join("json-test.toml");
+        std::fs::write(
+            &graph_path,
+            r#"
+[graph]
+name = "json-test"
+
+[[nodes]]
+id = "root"
+cell_type = "noop"
+"#,
+        )
+        .expect("write graph");
+
+        // Verify the run succeeds with --json flag
+        let result = cmd_graph_run(&graph_path, true, false).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), EXIT_SUCCESS);
+    }
+
+    #[tokio::test]
+    async fn graph_run_with_quiet_flag_succeeds() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let graph_path = directory.path().join("quiet-test.toml");
+        std::fs::write(
+            &graph_path,
+            r#"
+[graph]
+name = "quiet-test"
+
+[[nodes]]
+id = "root"
+cell_type = "noop"
+"#,
+        )
+        .expect("write graph");
+
+        let result = cmd_graph_run(&graph_path, false, true).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), EXIT_SUCCESS);
+    }
+
+    #[test]
+    fn graph_policy_capabilities_round_trip_through_toml() {
+        let toml_str = r#"
+[graph]
+name = "cap-test"
+
+[graph.policy]
+capabilities = ["llm", "shell"]
+
+[[nodes]]
+id = "root"
+cell_type = "noop"
+"#;
+        let graph = loader::load_from_str(toml_str).unwrap();
+        assert_eq!(graph.policy.capabilities.len(), 2);
+        assert!(
+            graph
+                .policy
+                .capabilities
+                .contains(&roko_core::Capability::Llm)
+        );
+        assert!(
+            graph
+                .policy
+                .capabilities
+                .contains(&roko_core::Capability::Shell)
+        );
+    }
+
+    #[test]
+    fn graph_policy_missing_capabilities_defaults_to_empty() {
+        let toml_str = r#"
+[graph]
+name = "no-caps"
+
+[[nodes]]
+id = "root"
+cell_type = "noop"
+"#;
+        let graph = loader::load_from_str(toml_str).unwrap();
+        assert!(graph.policy.capabilities.is_empty());
+    }
+
+    #[test]
+    fn graph_show_renders_capabilities() {
+        let toml_str = r#"
+[graph]
+name = "show-caps"
+
+[graph.policy]
+capabilities = ["read_fs", "bus", "llm"]
+
+[[nodes]]
+id = "root"
+cell_type = "noop"
+"#;
+        let graph = loader::load_from_str(toml_str).unwrap();
+        assert_eq!(graph.policy.capabilities.len(), 3);
     }
 }

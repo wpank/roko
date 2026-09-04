@@ -10,8 +10,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::super::state::TuiState;
-use crate::tui::theme::gradient_progress;
 use crate::tui::Theme;
+use crate::tui::theme::gradient_progress;
 
 // ---------------------------------------------------------------------------
 // Gradient bar characters (descending density)
@@ -98,10 +98,7 @@ fn push_gradient_bar(spans: &mut Vec<Span<'static>>, width: usize, fraction: f64
         };
         // Only show partial if there is actual progress at this cell
         if partial > 0.01 {
-            spans.push(Span::styled(
-                String::from(ch),
-                Style::default().fg(edge_c),
-            ));
+            spans.push(Span::styled(String::from(ch), Style::default().fg(edge_c)));
         } else {
             spans.push(Span::styled(
                 String::from(GRAD_1Q),
@@ -132,7 +129,8 @@ fn push_gradient_bar(spans: &mut Vec<Span<'static>>, width: usize, fraction: f64
 ///
 /// Falls back to single-line ribbon when height == 1.
 pub fn render_wave_progress(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
-    let theme = Theme::from_env();
+    // #366: Use the cached dark theme instead of calling from_env() per draw.
+    let theme = Theme::dark();
 
     if state.execution_waves.is_empty() {
         let placeholder = Line::from(Span::styled("No execution waves", theme.label()));
@@ -217,10 +215,7 @@ fn render_multiline(
             .fg(counts_color)
             .add_modifier(Modifier::BOLD),
     ));
-    title_spans.push(Span::styled(
-        format!(" ({overall_pct}%)"),
-        theme.label(),
-    ));
+    title_spans.push(Span::styled(format!(" ({overall_pct}%)"), theme.label()));
     // Estimated remaining time
     if overall_pct > 0 && overall_pct < 100 && elapsed_secs > 1.0 {
         let rate = total_done as f64 / elapsed_secs;
@@ -256,10 +251,7 @@ fn render_multiline(
         spans.push(Span::styled(" ", Style::default()));
 
         // Wave label
-        spans.push(Span::styled(
-            format!("W{}", wave.index),
-            theme.label(),
-        ));
+        spans.push(Span::styled(format!("W{}", wave.index), theme.label()));
         spans.push(Span::styled(" ", Style::default()));
 
         // Task counts: done/total
@@ -272,7 +264,9 @@ fn render_multiline(
         };
         spans.push(Span::styled(
             format!("{}/{}", wave.done, wave.total),
-            Style::default().fg(count_color).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(count_color)
+                .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(" ", Style::default()));
 

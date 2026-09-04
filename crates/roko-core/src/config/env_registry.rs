@@ -255,9 +255,7 @@ pub fn print_env_list(json: bool) {
         .iter()
         .filter(|s| s.stability == Stability::Deprecated)
         .count();
-    println!(
-        "{total} registered variables ({secret_count} secret, {deprecated_count} deprecated)"
-    );
+    println!("{total} registered variables ({secret_count} secret, {deprecated_count} deprecated)");
 }
 
 // ---------------------------------------------------------------------------
@@ -1661,6 +1659,300 @@ fn test_only() -> Vec<EnvVarSpec> {
 }
 
 // ---------------------------------------------------------------------------
+// Shared parsers (Lane B)
+// ---------------------------------------------------------------------------
+
+/// Parse a boolean env var value using the canonical vocabulary.
+///
+/// Truthy: `1`, `true`, `yes`, `on` (case-insensitive).
+/// Falsy: everything else including empty string and absent.
+///
+/// Re-exports [`crate::config::schema::parse_bool_env`] for convenience.
+pub fn parse_bool_env(s: &str) -> bool {
+    crate::config::schema::parse_bool_env(s)
+}
+
+/// Read a boolean env var by name. Returns `None` when absent,
+/// `Some(bool)` when present.
+pub fn read_bool_env(name: &str) -> Option<bool> {
+    std::env::var(name).ok().map(|v| parse_bool_env(&v))
+}
+
+/// Parse a string as an unsigned integer, returning an error message on failure.
+pub fn parse_uint_env(s: &str) -> Result<u64, String> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return Err("empty value".to_string());
+    }
+    trimmed
+        .parse::<u64>()
+        .map_err(|e| format!("invalid unsigned integer '{trimmed}': {e}"))
+}
+
+/// Read an unsigned integer env var by name.
+pub fn read_uint_env(name: &str) -> Option<Result<u64, String>> {
+    std::env::var(name).ok().map(|v| parse_uint_env(&v))
+}
+
+/// Parse a string as a valid URL, returning an error message on failure.
+pub fn parse_url_env(s: &str) -> Result<String, String> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return Err("empty URL".to_string());
+    }
+    // Basic validation: must start with a scheme.
+    if trimmed.starts_with("http://")
+        || trimmed.starts_with("https://")
+        || trimmed.starts_with("ws://")
+        || trimmed.starts_with("wss://")
+    {
+        Ok(trimmed.to_string())
+    } else {
+        Err(format!(
+            "invalid URL '{trimmed}': missing http(s):// or ws(s):// scheme"
+        ))
+    }
+}
+
+/// Parse a string as a duration in seconds.
+pub fn parse_duration_secs_env(s: &str) -> Result<u64, String> {
+    parse_uint_env(s)
+}
+
+/// Parse a comma-separated list env var into a `Vec<String>`.
+/// Empty items are removed; whitespace around items is trimmed.
+pub fn parse_list_env(s: &str) -> Vec<String> {
+    s.split(',')
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty())
+        .collect()
+}
+
+/// Parse an enum-style env var: returns the lowercase-trimmed value for
+/// caller-side matching.
+pub fn parse_enum_env(s: &str) -> Result<String, String> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return Err("empty enum value".to_string());
+    }
+    Ok(trimmed.to_ascii_lowercase())
+}
+
+// ---------------------------------------------------------------------------
+// Alias resolution (Lane C)
+// ---------------------------------------------------------------------------
+
+/// Result of resolving an env var that may have a deprecated alias.
+#[derive(Debug, Clone)]
+pub struct ResolvedEnvVar {
+    /// The value that should be used.
+    pub value: String,
+    /// The actual variable name that supplied the value.
+    pub source_name: &'static str,
+    /// If a deprecated alias was read, this contains a warning message.
+    pub deprecation_warning: Option<String>,
+}
+
+/// Resolve an env var with a single deprecated alias fallback.
+///
+/// Precedence: `canonical` > `deprecated_alias`.
+/// When both are set, the canonical value wins and a warning names both.
+/// When only the deprecated alias is set, its value is used with a deprecation
+/// warning.
+pub fn resolve_with_fallback(
+    canonical: &'static str,
+    deprecated_alias: &'static str,
+) -> Option<ResolvedEnvVar> {
+    let canonical_val = std::env::var(canonical)
+        .ok()
+        .filter(|v| !v.trim().is_empty());
+    let alias_val = std::env::var(deprecated_alias)
+        .ok()
+        .filter(|v| !v.trim().is_empty());
+
+    match (canonical_val, alias_val) {
+        (Some(val), Some(_)) => {
+            // Both set: canonical wins, warn about conflict.
+            Some(ResolvedEnvVar {
+                value: val,
+                source_name: canonical,
+                deprecation_warning: Some(format!(
+                    "both {canonical} and {deprecated_alias} are set; \
+                     using {canonical} (migrate to {canonical} and remove {deprecated_alias})"
+                )),
+            })
+        }
+        (Some(val), None) => {
+            // Only canonical set: no warning.
+            Some(ResolvedEnvVar {
+                value: val,
+                source_name: canonical,
+                deprecation_warning: None,
+            })
+        }
+        (None, Some(val)) => {
+            // Only deprecated alias set: use it but warn.
+            Some(ResolvedEnvVar {
+                value: val,
+                source_name: deprecated_alias,
+                deprecation_warning: Some(format!(
+                    "{deprecated_alias} is deprecated; migrate to {canonical}"
+                )),
+            })
+        }
+        (None, None) => None,
+    }
+}
+
+/// Resolve the serve URL: `ROKO_SERVE_URL` > `ROKO_SERVER_URL` > default.
+pub fn resolve_serve_url() -> ResolvedEnvVar {
+    resolve_with_fallback("ROKO_SERVE_URL", "ROKO_SERVER_URL").unwrap_or(ResolvedEnvVar {
+        value: "http://localhost:6677".to_string(),
+        source_name: "ROKO_SERVE_URL",
+        deprecation_warning: None,
+    })
+}
+
+/// Resolve the MCP scripts directory: `ROKO_MCP_SCRIPTS_DIR` > `ROKO_SCRIPTS_DIR`.
+/// Returns `None` when neither is set.
+pub fn resolve_mcp_scripts_dir() -> Option<ResolvedEnvVar> {
+    resolve_with_fallback("ROKO_MCP_SCRIPTS_DIR", "ROKO_SCRIPTS_DIR")
+}
+
+/// Resolve the application log filter.
+///
+/// Precedence: `ROKO_LOG` > `ROKO_VERBOSE` (deprecated bool alias for debug) >
+/// `ROKO_DEBUG` (deprecated bool alias for debug) > `RUST_LOG` > default.
+///
+/// When `ROKO_VERBOSE` or `ROKO_DEBUG` are set without `ROKO_LOG`, they are
+/// treated as `ROKO_LOG=debug` equivalents with a deprecation warning.
+/// An explicit `ROKO_LOG` always wins.
+pub fn resolve_log_filter() -> ResolvedEnvVar {
+    // Explicit ROKO_LOG always wins.
+    if let Ok(val) = std::env::var("ROKO_LOG") {
+        let trimmed = val.trim().to_string();
+        if !trimmed.is_empty() {
+            // Check if deprecated aliases are also set and warn.
+            let verbose_set = std::env::var("ROKO_VERBOSE").is_ok();
+            let debug_set = std::env::var("ROKO_DEBUG").is_ok();
+            let warning = if verbose_set || debug_set {
+                let mut aliases = Vec::new();
+                if verbose_set {
+                    aliases.push("ROKO_VERBOSE");
+                }
+                if debug_set {
+                    aliases.push("ROKO_DEBUG");
+                }
+                Some(format!(
+                    "ROKO_LOG is set; ignoring deprecated {} (migrate to ROKO_LOG)",
+                    aliases.join(" and ")
+                ))
+            } else {
+                None
+            };
+            return ResolvedEnvVar {
+                value: trimmed,
+                source_name: "ROKO_LOG",
+                deprecation_warning: warning,
+            };
+        }
+    }
+
+    // ROKO_VERBOSE -> debug (deprecated).
+    if let Ok(val) = std::env::var("ROKO_VERBOSE")
+        && parse_bool_env(&val)
+    {
+        return ResolvedEnvVar {
+            value: "debug".to_string(),
+            source_name: "ROKO_VERBOSE",
+            deprecation_warning: Some(
+                "ROKO_VERBOSE is deprecated; use ROKO_LOG=debug instead".to_string(),
+            ),
+        };
+    }
+
+    // ROKO_DEBUG -> debug (deprecated).
+    if let Ok(val) = std::env::var("ROKO_DEBUG")
+        && parse_bool_env(&val)
+    {
+        return ResolvedEnvVar {
+            value: "debug".to_string(),
+            source_name: "ROKO_DEBUG",
+            deprecation_warning: Some(
+                "ROKO_DEBUG is deprecated; use ROKO_LOG=debug instead".to_string(),
+            ),
+        };
+    }
+
+    // RUST_LOG compatibility fallback.
+    if let Ok(val) = std::env::var("RUST_LOG") {
+        let trimmed = val.trim().to_string();
+        if !trimmed.is_empty() {
+            return ResolvedEnvVar {
+                value: trimmed,
+                source_name: "RUST_LOG",
+                deprecation_warning: None,
+            };
+        }
+    }
+
+    // Default.
+    ResolvedEnvVar {
+        value: "roko=info".to_string(),
+        source_name: "ROKO_LOG",
+        deprecation_warning: None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Registry lookup helpers
+// ---------------------------------------------------------------------------
+
+/// Look up a spec by exact variable name.
+pub fn lookup_spec(name: &str) -> Option<EnvVarSpec> {
+    env_registry().into_iter().find(|s| s.name == name)
+}
+
+/// Check whether a variable name is registered (exact match).
+pub fn is_registered(name: &str) -> bool {
+    env_registry().iter().any(|s| s.name == name)
+}
+
+/// Return all registered variable names in registry order.
+pub fn registry_names() -> Vec<&'static str> {
+    env_registry().iter().map(|s| s.name).collect()
+}
+
+/// Return only the operator-facing (non-internal) variable specs.
+///
+/// Excludes `TestOnly`, `DemoOnly`, and `BuildTime` stability classes.
+pub fn operator_facing_registry() -> Vec<EnvVarSpec> {
+    env_registry()
+        .into_iter()
+        .filter(|s| {
+            !matches!(
+                s.stability,
+                Stability::TestOnly | Stability::DemoOnly | Stability::BuildTime
+            )
+        })
+        .collect()
+}
+
+/// Emit a deprecation warning to stderr if `spec` is deprecated.
+pub fn warn_if_deprecated(spec: &EnvVarSpec) {
+    if spec.stability == Stability::Deprecated {
+        let replacement_msg = spec
+            .replacement
+            .map(|r| format!("; use {r} instead"))
+            .unwrap_or_default();
+        eprintln!(
+            "warning: env var {} is deprecated{replacement_msg}",
+            spec.name
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1750,8 +2042,7 @@ mod tests {
     fn json_output_is_valid() {
         let registry = env_registry();
         let json = serde_json::to_string_pretty(&registry).expect("serialize to JSON");
-        let parsed: Vec<serde_json::Value> =
-            serde_json::from_str(&json).expect("parse JSON back");
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(&json).expect("parse JSON back");
         assert_eq!(parsed.len(), registry.len());
     }
 
@@ -1780,5 +2071,284 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── Shared parser tests ──────────────────────────────────────────
+
+    #[test]
+    fn parse_uint_env_valid() {
+        assert_eq!(parse_uint_env("42"), Ok(42));
+        assert_eq!(parse_uint_env("  0  "), Ok(0));
+        assert_eq!(parse_uint_env("999999"), Ok(999_999));
+    }
+
+    #[test]
+    fn parse_uint_env_invalid() {
+        assert!(parse_uint_env("").is_err());
+        assert!(parse_uint_env("abc").is_err());
+        assert!(parse_uint_env("-1").is_err());
+        assert!(parse_uint_env("3.14").is_err());
+    }
+
+    #[test]
+    fn parse_url_env_valid() {
+        assert!(parse_url_env("http://localhost:6677").is_ok());
+        assert!(parse_url_env("https://api.example.com/v1").is_ok());
+        assert!(parse_url_env("ws://127.0.0.1:8080").is_ok());
+        assert!(parse_url_env("wss://secure.example.com").is_ok());
+    }
+
+    #[test]
+    fn parse_url_env_invalid() {
+        assert!(parse_url_env("").is_err());
+        assert!(parse_url_env("not-a-url").is_err());
+        assert!(parse_url_env("ftp://files.example.com").is_err());
+    }
+
+    #[test]
+    fn parse_list_env_splits_and_trims() {
+        let items = parse_list_env("foo, bar , baz");
+        assert_eq!(items, vec!["foo", "bar", "baz"]);
+    }
+
+    #[test]
+    fn parse_list_env_filters_empty() {
+        let items = parse_list_env(",, foo,,bar ,,");
+        assert_eq!(items, vec!["foo", "bar"]);
+    }
+
+    #[test]
+    fn parse_list_env_empty_string() {
+        let items = parse_list_env("");
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn parse_enum_env_lowercases() {
+        assert_eq!(parse_enum_env("Full"), Ok("full".to_string()));
+        assert_eq!(parse_enum_env("  NONE  "), Ok("none".to_string()));
+    }
+
+    #[test]
+    fn parse_enum_env_rejects_empty() {
+        assert!(parse_enum_env("").is_err());
+        assert!(parse_enum_env("   ").is_err());
+    }
+
+    // ── Lookup helper tests ──────────────────────────────────────────
+
+    #[test]
+    fn lookup_spec_finds_known_var() {
+        let spec = lookup_spec("ROKO_MODEL");
+        assert!(spec.is_some(), "ROKO_MODEL should be in the registry");
+        assert_eq!(spec.unwrap().owner, "CLI overrides");
+    }
+
+    #[test]
+    fn lookup_spec_returns_none_for_unknown() {
+        assert!(lookup_spec("TOTALLY_UNKNOWN_VAR_12345").is_none());
+    }
+
+    #[test]
+    fn is_registered_works() {
+        assert!(is_registered("ANTHROPIC_API_KEY"));
+        assert!(!is_registered("TOTALLY_UNKNOWN_VAR_12345"));
+    }
+
+    #[test]
+    fn operator_facing_excludes_internal() {
+        let operator = operator_facing_registry();
+        for spec in &operator {
+            assert!(
+                !matches!(
+                    spec.stability,
+                    Stability::TestOnly | Stability::DemoOnly | Stability::BuildTime
+                ),
+                "{} should not appear in operator-facing registry",
+                spec.name
+            );
+        }
+        // Verify it's a strict subset.
+        assert!(operator.len() < env_registry().len());
+    }
+
+    #[test]
+    fn registry_names_returns_all() {
+        let names = registry_names();
+        assert!(names.contains(&"ROKO_MODEL"));
+        assert!(names.contains(&"ANTHROPIC_API_KEY"));
+        assert_eq!(names.len(), env_registry().len());
+    }
+
+    // ── Required inventory coverage ──────────────────────────────────
+
+    #[test]
+    fn spec_required_vars_are_registered() {
+        // Verify every variable explicitly named in the #339 spec is present.
+        let names: HashSet<&str> = registry_names().into_iter().collect();
+        let required = [
+            // CLI/log/UI
+            "ROKO_MODEL",
+            "ROKO_EFFORT",
+            "ROKO_ROLE",
+            "ROKO_QUIET",
+            "ROKO_LOG_FORMAT",
+            "ROKO_LOG",
+            "RUST_LOG",
+            "ROKO_TIMING",
+            "ROKO_LOG_RAW",
+            "ROKO_VERBOSE",
+            "ROKO_DEBUG",
+            "NO_COLOR",
+            "CLICOLOR",
+            "CLICOLOR_FORCE",
+            "ROKO_REDUCED_MOTION",
+            "ROKO_HIGH_CONTRAST",
+            "ROKO_VIEWPORT_HEIGHT",
+            // Config/runtime
+            "ROKO_CONFIG",
+            "ROKO__*",
+            "ROKO_PROVIDER",
+            "ROKO_MODEL_SLUG",
+            "ROKO_BACKEND",
+            "ROKO_CONTEXT_LIMIT_K",
+            "ROKO_MAX_AGENTS",
+            "ROKO_BUDGET_USD",
+            "ROKO_PARALLEL",
+            "ROKO_EXPRESS",
+            "ROKO_SKIP_TESTS",
+            "ROKO_CLIPPY",
+            "ROKO_GATE_MODE",
+            "ROKO_COMPILE_CONCURRENCY",
+            // Providers
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "OPENAI_API_BASE",
+            "OPENAI_BASE_URL",
+            "ZAI_MODEL",
+            // GitHub/Slack
+            "GITHUB_TOKEN",
+            "GH_TOKEN",
+            "SLACK_BOT_TOKEN",
+            "SLACK_TOKEN",
+            "SLACK_SIGNING_SECRET",
+            // Server/deploy
+            "PORT",
+            "ROKO_SERVER_AUTH_TOKEN",
+            "ROKO_SERVE_URL",
+            "ROKO_SERVER_URL",
+            "ROKO_API_KEY",
+            "ROKO_SPA_DIR",
+            "ROKO_TEMPLATE_JSON",
+            "ROKO_CONTROL_PLANE_URL",
+            "ROKO_DEPLOYMENT_ID",
+            "ROKO_WORKER_CALLBACK_TOKEN",
+            "RAILWAY_PUBLIC_DOMAIN",
+            "FLY_APP_NAME",
+            "ROKO_MIRAGE_URL",
+            "ROKO_AGENT_RELAY_URL",
+            "NUNCHI_DASHBOARD_URL",
+            // Runner/agent/ACP
+            "ROKO_SKIP_PREFLIGHT",
+            "ROKO_TASK_VERIFY_ONLY",
+            "ROKO_ACP_PROGRESS",
+            "ROKO_MCP_CONFIG",
+            "ROKO_WORKSPACE_ROOT",
+            "ROKO_ATTEST_SIGNING_KEY_HEX",
+            "ROKO_ACP_CASCADE_SELECT",
+            "ROKO_ACP_LEGACY",
+            "ROKO_EXTENSION_REGISTRY_URL",
+            "ROKO_EXTENSION_REGISTRY_PUBLISH_TOKEN",
+            "ROKO_EXTENSION_REGISTRY_SIGNING_KEY",
+            "ROKO_FAST_MODE",
+            "ROKO_FAST_MAX_AGENT_TURNS",
+            "ROKO_FAST_PLAN_DEADLINE_SECS",
+            "ROKO_FAST_SETTLEMENT_HEADROOM_SECS",
+            "ROKO_FAST_STARTUP_DEADLINE_SECS",
+            "ROKO_EVIDENCE_BUNDLE",
+            "ROKO_EXPLICIT_CARGO_CLEAN",
+            // Internal/demo
+            "ROKO_DISPATCHER",
+            "ROKO_MOCK_STATE_PATH",
+            "ROKO_DEMO_CACHE",
+            // MCP scripts
+            "ROKO_MCP_SCRIPTS_TIMEOUT_SECS",
+            "ROKO_MCP_SCRIPTS_ENV_ALLOWLIST",
+            "ROKO_SCRIPTS_DIR",
+            "ROKO_MCP_SCRIPTS_DIR",
+            // Build
+            "ROKO_BUILD_FRONTEND",
+            "SKIP_FRONTEND_BUILD",
+            // System
+            "HOME",
+            "PATH",
+            "EDITOR",
+            "CI",
+            "SHELL",
+        ];
+        for name in &required {
+            assert!(
+                names.contains(name),
+                "spec-required variable {name} is missing from the registry"
+            );
+        }
+    }
+
+    // ── Deprecated alias coverage ────────────────────────────────────
+
+    #[test]
+    fn deprecated_alias_families_are_registered() {
+        let registry = env_registry();
+        let deprecated: Vec<&str> = registry
+            .iter()
+            .filter(|s| s.stability == Stability::Deprecated)
+            .map(|s| s.name)
+            .collect();
+
+        // The three alias families from the spec:
+        assert!(
+            deprecated.contains(&"ROKO_SERVER_URL"),
+            "ROKO_SERVER_URL should be deprecated"
+        );
+        assert!(
+            deprecated.contains(&"ROKO_VERBOSE"),
+            "ROKO_VERBOSE should be deprecated"
+        );
+        assert!(
+            deprecated.contains(&"ROKO_DEBUG"),
+            "ROKO_DEBUG should be deprecated"
+        );
+        assert!(
+            deprecated.contains(&"ROKO_SCRIPTS_DIR"),
+            "ROKO_SCRIPTS_DIR should be deprecated"
+        );
+        assert!(
+            deprecated.contains(&"ROKO_ACP_LEGACY"),
+            "ROKO_ACP_LEGACY should be deprecated"
+        );
+    }
+
+    #[test]
+    fn deprecated_serve_url_has_replacement() {
+        let spec = lookup_spec("ROKO_SERVER_URL").unwrap();
+        assert_eq!(spec.replacement, Some("ROKO_SERVE_URL"));
+    }
+
+    #[test]
+    fn deprecated_scripts_dir_has_replacement() {
+        let spec = lookup_spec("ROKO_SCRIPTS_DIR").unwrap();
+        assert_eq!(spec.replacement, Some("ROKO_MCP_SCRIPTS_DIR"));
+    }
+
+    #[test]
+    fn deprecated_verbose_has_replacement() {
+        let spec = lookup_spec("ROKO_VERBOSE").unwrap();
+        assert_eq!(spec.replacement, Some("ROKO_LOG=debug"));
+    }
+
+    #[test]
+    fn deprecated_debug_has_replacement() {
+        let spec = lookup_spec("ROKO_DEBUG").unwrap();
+        assert_eq!(spec.replacement, Some("ROKO_LOG=debug"));
     }
 }

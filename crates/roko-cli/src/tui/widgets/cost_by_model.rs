@@ -197,11 +197,19 @@ pub fn render_cost_by_model_table(
     match tui_state.cost_sort_mode {
         CostSortMode::Name => sorted.sort_by(|a, b| a.0.cmp(&b.0)),
         CostSortMode::Cost => {
-            sorted.sort_by(|a, b| b.1.total_cost_usd.partial_cmp(&a.1.total_cost_usd).unwrap_or(std::cmp::Ordering::Equal));
+            sorted.sort_by(|a, b| {
+                b.1.total_cost_usd
+                    .partial_cmp(&a.1.total_cost_usd)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
         }
         CostSortMode::Tasks => sorted.sort_by(|a, b| b.1.tasks.cmp(&a.1.tasks)),
         CostSortMode::PassRate => {
-            sorted.sort_by(|a, b| b.1.pass_pct().partial_cmp(&a.1.pass_pct()).unwrap_or(std::cmp::Ordering::Equal));
+            sorted.sort_by(|a, b| {
+                b.1.pass_pct()
+                    .partial_cmp(&a.1.pass_pct())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
         }
     }
 
@@ -315,8 +323,7 @@ pub fn render_cost_by_model_table(
             theme.muted()
         };
 
-        let is_most_expensive =
-            most_expensive_model.as_deref() == Some(model.as_str());
+        let is_most_expensive = most_expensive_model.as_deref() == Some(model.as_str());
         let model_display = truncate_model(model, 24);
         let provider_display = truncate_model(&entry.provider, 12);
 
@@ -343,15 +350,8 @@ pub fn render_cost_by_model_table(
             // Single-value proportional bar
             let filled = (cost_frac * bar_col_width as f64).round() as usize;
             let empty = bar_col_width.saturating_sub(filled);
-            let bar_str = format!(
-                "{}{}",
-                "\u{2588}".repeat(filled),
-                "\u{2500}".repeat(empty),
-            );
-            Cell::from(Span::styled(
-                bar_str,
-                cost_gradient_style(cost_frac, theme),
-            ))
+            let bar_str = format!("{}{}", "\u{2588}".repeat(filled), "\u{2500}".repeat(empty),);
+            Cell::from(Span::styled(bar_str, cost_gradient_style(cost_frac, theme)))
         };
 
         // Model name: bold if most expensive.
@@ -375,10 +375,7 @@ pub fn render_cost_by_model_table(
                 provider_display,
                 Style::default().fg(theme.muted),
             )),
-            Cell::from(Span::styled(
-                format!("{:>5}", entry.tasks),
-                theme.value(),
-            )),
+            Cell::from(Span::styled(format!("{:>5}", entry.tasks), theme.value())),
             Cell::from(Span::styled(format!("{pass_pct:>5.1}%"), pass_style)),
             Cell::from(Span::styled(
                 format_duration(entry.avg_duration_ms()),
@@ -407,38 +404,40 @@ pub fn render_cost_by_model_table(
 
     // Separator line above TOTAL row.
     let sep_line = "\u{2500}".repeat(6);
-    all_rows.push(Row::new(vec![
-        Cell::from(Span::styled(
-            sep_line.clone(),
-            Style::default().fg(Theme::TEXT_PHANTOM),
-        )),
-        Cell::from(Span::styled("", Style::default())),
-        Cell::from(Span::styled(
-            sep_line.clone(),
-            Style::default().fg(Theme::TEXT_PHANTOM),
-        )),
-        Cell::from(Span::styled(
-            sep_line.clone(),
-            Style::default().fg(Theme::TEXT_PHANTOM),
-        )),
-        Cell::from(Span::styled(
-            sep_line.clone(),
-            Style::default().fg(Theme::TEXT_PHANTOM),
-        )),
-        Cell::from(Span::styled(
-            sep_line.clone(),
-            Style::default().fg(Theme::TEXT_PHANTOM),
-        )),
-        Cell::from(Span::styled(
-            sep_line.clone(),
-            Style::default().fg(Theme::TEXT_PHANTOM),
-        )),
-        Cell::from(Span::styled(
-            sep_line,
-            Style::default().fg(Theme::TEXT_PHANTOM),
-        )),
-    ])
-    .height(1));
+    all_rows.push(
+        Row::new(vec![
+            Cell::from(Span::styled(
+                sep_line.clone(),
+                Style::default().fg(Theme::TEXT_PHANTOM),
+            )),
+            Cell::from(Span::styled("", Style::default())),
+            Cell::from(Span::styled(
+                sep_line.clone(),
+                Style::default().fg(Theme::TEXT_PHANTOM),
+            )),
+            Cell::from(Span::styled(
+                sep_line.clone(),
+                Style::default().fg(Theme::TEXT_PHANTOM),
+            )),
+            Cell::from(Span::styled(
+                sep_line.clone(),
+                Style::default().fg(Theme::TEXT_PHANTOM),
+            )),
+            Cell::from(Span::styled(
+                sep_line.clone(),
+                Style::default().fg(Theme::TEXT_PHANTOM),
+            )),
+            Cell::from(Span::styled(
+                sep_line.clone(),
+                Style::default().fg(Theme::TEXT_PHANTOM),
+            )),
+            Cell::from(Span::styled(
+                sep_line,
+                Style::default().fg(Theme::TEXT_PHANTOM),
+            )),
+        ])
+        .height(1),
+    );
 
     // Add a totals row.
     let total_tasks: u64 = sorted.iter().map(|(_, e)| e.tasks).sum();
@@ -479,10 +478,7 @@ pub fn render_cost_by_model_table(
                     .add_modifier(Modifier::BOLD),
             )),
             Cell::from(Span::styled("", Style::default())),
-            Cell::from(Span::styled(
-                format!("{total_tasks:>5}"),
-                theme.value(),
-            )),
+            Cell::from(Span::styled(format!("{total_tasks:>5}"), theme.value())),
             Cell::from(Span::styled(
                 format!("{overall_pass_pct:>5.1}%"),
                 total_pass_style,
@@ -495,10 +491,7 @@ pub fn render_cost_by_model_table(
                 format_cost(total_cost),
                 theme.value().fg(theme.accent),
             )),
-            Cell::from(Span::styled(
-                format_cost(overall_cpt),
-                theme.value(),
-            )),
+            Cell::from(Span::styled(format_cost(overall_cpt), theme.value())),
             Cell::from(Span::styled(
                 "\u{2588}".repeat(bar_col_width),
                 Style::default()

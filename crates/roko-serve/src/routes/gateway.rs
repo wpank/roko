@@ -829,6 +829,8 @@ fn model_call_request(
         routing_hints: Vec::new(),
         cache_policy: CachePolicy::Default,
         tools: Vec::new(),
+        generation_settings: None,
+        mcp_config: None,
     }
 }
 
@@ -1011,6 +1013,7 @@ async fn select_model_via_router(state: &AppState, hints: &RoutingHints) -> Stri
         previous_model: None,
         plan_context_tokens: None,
         tier_thresholds: None,
+        cfactor: None,
     };
 
     // D1: use cached CascadeRouter — fast path reads, slow path loads once.
@@ -1108,6 +1111,7 @@ mod tests {
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         }
     }
 
@@ -1130,6 +1134,7 @@ mod tests {
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
 

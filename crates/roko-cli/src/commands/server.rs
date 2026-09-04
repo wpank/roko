@@ -1,5 +1,4 @@
 //! server command handlers.
-#![allow(unused_imports)]
 
 use crate::*;
 
@@ -617,8 +616,7 @@ destination = "{volume_destination}"
         volume_source = config.volume_source,
         volume_destination = config.volume_destination,
     );
-    std::fs::write(&path, content)
-        .with_context(|| format!("write {}", path.display()))?;
+    std::fs::write(&path, content).with_context(|| format!("write {}", path.display()))?;
     Ok(path)
 }
 
@@ -943,4 +941,3 @@ pub(crate) fn run_command_output(workdir: &Path, program: &str, args: &[&str]) -
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
-

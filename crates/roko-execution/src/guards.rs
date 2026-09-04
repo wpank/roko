@@ -47,24 +47,18 @@ impl CostLedger {
 
     /// Record a cost in USD (as f64 encoded in bits).
     pub fn record(&self, usd: f64) {
-        let bits = usd.to_bits();
+        let _bits = usd.to_bits();
         // Relaxed is fine: we only need eventual visibility, not ordering.
-        let old = self
-            .total_usd
-            .load(std::sync::atomic::Ordering::Relaxed);
+        let old = self.total_usd.load(std::sync::atomic::Ordering::Relaxed);
         let old_f64 = f64::from_bits(old);
         let new = old_f64 + usd;
         self.total_usd
             .store(new.to_bits(), std::sync::atomic::Ordering::Relaxed);
-        drop(bits); // suppress unused
     }
 
     /// Read the current total cost.
     pub fn total_usd(&self) -> f64 {
-        f64::from_bits(
-            self.total_usd
-                .load(std::sync::atomic::Ordering::Relaxed),
-        )
+        f64::from_bits(self.total_usd.load(std::sync::atomic::Ordering::Relaxed))
     }
 
     /// Check whether the total exceeds a ceiling.
@@ -81,6 +75,7 @@ impl Default for CostLedger {
 
 /// Serializable summary of the guards bundle for diagnostics.
 #[derive(Debug, Serialize, Deserialize)]
+#[allow(missing_docs)]
 pub struct GuardsBundleSummary {
     pub has_process_supervisor: bool,
     pub has_budget_ceiling: bool,
@@ -94,7 +89,7 @@ impl GuardsBundle {
         Self {
             cancel: CancellationToken::new(),
             process_supervisor: None,
-            rate_limiter: Arc::new(ProviderRateLimiter::default()),
+            rate_limiter: Arc::new(ProviderRateLimiter::new(60)),
             cost_ledger: Arc::new(CostLedger::new()),
             budget_ceiling_usd: None,
         }

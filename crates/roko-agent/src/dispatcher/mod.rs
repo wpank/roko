@@ -340,10 +340,8 @@ impl ToolDispatcher {
     #[must_use]
     pub fn new(registry: Arc<dyn ToolRegistry>, resolver: Arc<dyn HandlerResolver>) -> Self {
         let safety = SafetyLayer::with_defaults();
-        let chain = production_safety_chain::ProductionSafetyChain::build(
-            &safety,
-            registry.as_ref(),
-        );
+        let chain =
+            production_safety_chain::ProductionSafetyChain::build(&safety, registry.as_ref());
         Self {
             registry,
             resolver,
@@ -394,12 +392,10 @@ impl ToolDispatcher {
     /// existing registry.
     #[must_use]
     pub fn with_safety(mut self, layer: SafetyLayer) -> Self {
-        self.production_safety_chain = Some(
-            production_safety_chain::ProductionSafetyChain::build(
-                &layer,
-                self.registry.as_ref(),
-            ),
-        );
+        self.production_safety_chain = Some(production_safety_chain::ProductionSafetyChain::build(
+            &layer,
+            self.registry.as_ref(),
+        ));
         self.safety = layer;
         self
     }
@@ -1017,17 +1013,26 @@ impl ToolDispatcher {
                 content,
                 artifacts,
                 is_structured,
-            } => (
-                "succeeded",
-                json!({
-                    "content_bytes": content.len(),
-                    "artifacts": artifacts.len(),
-                    "is_structured": is_structured,
-                    "timeout_ms": timeout_ms,
-                    "correlation": &ctx.correlation,
-                    "execution_owner": execution_owner,
-                }),
-            ),
+            } => {
+                let content_bytes: usize = content
+                    .iter()
+                    .map(|c| match c {
+                        roko_core::tool::ToolResultContent::Text { text } => text.len(),
+                        roko_core::tool::ToolResultContent::Image { data, .. } => data.len(),
+                    })
+                    .sum();
+                (
+                    "succeeded",
+                    json!({
+                        "content_bytes": content_bytes,
+                        "artifacts": artifacts.len(),
+                        "is_structured": is_structured,
+                        "timeout_ms": timeout_ms,
+                        "correlation": &ctx.correlation,
+                        "execution_owner": execution_owner,
+                    }),
+                )
+            }
             ToolResult::Err(err) => (
                 "failed",
                 json!({
@@ -1047,10 +1052,16 @@ impl ToolDispatcher {
         let (content_bytes, artifact_count) = match result {
             ToolResult::Ok {
                 content, artifacts, ..
-            } => (
-                content.len(),
-                u32::try_from(artifacts.len()).unwrap_or(u32::MAX),
-            ),
+            } => {
+                let bytes: usize = content
+                    .iter()
+                    .map(|c| match c {
+                        roko_core::tool::ToolResultContent::Text { text } => text.len(),
+                        roko_core::tool::ToolResultContent::Image { data, .. } => data.len(),
+                    })
+                    .sum();
+                (bytes, u32::try_from(artifacts.len()).unwrap_or(u32::MAX))
+            }
             ToolResult::Err(_) => (0, 0),
         };
         let trace_event = roko_core::tool::ToolTraceEvent::HandlerFinished {
@@ -1108,20 +1119,14 @@ impl ToolDispatcher {
     fn bounded_audit_fallback(&self, prefix: Vec<u8>, budget: usize) -> Value {
         let scrubbed = self.safety.scrub_text(&String::from_utf8_lossy(&prefix));
         let bounded = truncate_result(ToolResult::text(scrubbed), budget);
-        let ToolResult::Ok { content, .. } = bounded else {
-            unreachable!("text truncation preserves a successful result")
-        };
-        json!({ "detail": content })
+        json!({ "detail": bounded.text_content() })
     }
 
     fn sanitize_audit_label(&self, label: &str) -> String {
         const MAX_AUDIT_LABEL_BYTES: usize = 256;
         let scrubbed = self.safety.scrub_text(label);
         let bounded = truncate_result(ToolResult::text(scrubbed), MAX_AUDIT_LABEL_BYTES);
-        let ToolResult::Ok { content, .. } = bounded else {
-            unreachable!("text truncation preserves a successful result")
-        };
-        content
+        bounded.text_content()
     }
 }
 
@@ -1270,7 +1275,17 @@ fn apply_production_result_filter(
             is_structured,
             artifacts,
         } => {
-            let filtered = chain.filter_result(&content, tool_name);
+            let filtered: Vec<roko_core::tool::ToolResultContent> = content
+                .into_iter()
+                .map(|block| match block {
+                    roko_core::tool::ToolResultContent::Text { text } => {
+                        roko_core::tool::ToolResultContent::Text {
+                            text: chain.filter_result(&text, tool_name),
+                        }
+                    }
+                    other => other,
+                })
+                .collect();
             ToolResult::Ok {
                 content: filtered,
                 is_structured,
@@ -1335,11 +1350,28 @@ fn scrub_artifact_body(safety: &SafetyLayer, body: Body) -> Body {
     }
 }
 
-fn scrub_result_content(safety: &SafetyLayer, content: String, is_structured: bool) -> String {
-    if is_structured && let Ok(value) = serde_json::from_str::<Value>(&content) {
-        return scrub_json_value(safety, value).to_string();
-    }
-    safety.scrub_text(&content)
+fn scrub_result_content(
+    safety: &SafetyLayer,
+    content: Vec<roko_core::tool::ToolResultContent>,
+    is_structured: bool,
+) -> Vec<roko_core::tool::ToolResultContent> {
+    content
+        .into_iter()
+        .map(|block| match block {
+            roko_core::tool::ToolResultContent::Text { text } => {
+                let scrubbed =
+                    if is_structured && let Ok(value) = serde_json::from_str::<Value>(&text) {
+                        scrub_json_value(safety, value).to_string()
+                    } else {
+                        safety.scrub_text(&text)
+                    };
+                roko_core::tool::ToolResultContent::Text { text: scrubbed }
+            }
+            // Image blocks are opaque binary — scrubbing text patterns in
+            // base64 would corrupt the payload.
+            other => other,
+        })
+        .collect()
 }
 
 fn scrub_json_value(safety: &SafetyLayer, value: Value) -> Value {
@@ -2306,9 +2338,8 @@ mod tests {
             ),
             true,
         );
-        let ToolResult::Ok { content, .. } = result else {
-            panic!("expected structured result")
-        };
+        assert!(matches!(result, ToolResult::Ok { .. }));
+        let content = result.text_content();
         assert!(!content.contains("hunter2"));
         assert!(!content.contains("other-secret"));
         assert!(content.contains("REDACTED"));
@@ -2399,7 +2430,7 @@ mod tests {
             )
         }));
         assert!(results.iter().any(|(_, result)| {
-            matches!(result, ToolResult::Ok { content, .. } if content == "sibling succeeded")
+            matches!(result, ToolResult::Ok { .. } if result.text_content() == "sibling succeeded")
         }));
 
         let signals = audit.snapshot();
@@ -2580,7 +2611,11 @@ mod tests {
         let signals = audit_sink.snapshot();
         let audits = hook_audits(&signals);
         // Stage 5 (hallucination) allows, stage 6 (taint) rejects.
-        assert_eq!(audits.len(), 2, "taint rejection must short-circuit after stage 5");
+        assert_eq!(
+            audits.len(),
+            2,
+            "taint rejection must short-circuit after stage 5"
+        );
         assert_eq!(audits[0]["status"], "allow");
         assert_eq!(
             audits[0]["details"]["hook"],
@@ -2969,7 +3004,7 @@ mod tests {
         let call = ToolCall::new("c", "echo", serde_json::json!({"x": 1}));
         let res = d.dispatch(call, &ToolContext::testing("/tmp")).await;
         match res {
-            ToolResult::Ok { content, .. } => assert!(content.contains("\"x\"")),
+            ToolResult::Ok { .. } => assert!(res.text_content().contains("\"x\"")),
             other => panic!("expected Ok, got {other:?}"),
         }
     }
@@ -3062,10 +3097,11 @@ mod tests {
         let call = ToolCall::new("c", "huge", serde_json::json!({}));
         let res = d.dispatch(call, &ToolContext::testing("/tmp")).await;
         match res {
-            ToolResult::Ok { content, .. } => {
-                assert!(content.contains("[truncated]"));
+            ToolResult::Ok { .. } => {
+                let text = res.text_content();
+                assert!(text.contains("[truncated]"));
                 assert!(
-                    content.len() < 5_000,
+                    text.len() < 5_000,
                     "content should be shorter than the handler output"
                 );
             }
@@ -3097,11 +3133,12 @@ mod tests {
         let call = ToolCall::new("c", "mb", serde_json::json!({}));
         let res = d.dispatch(call, &ToolContext::testing("/tmp")).await;
         match res {
-            ToolResult::Ok { content, .. } => {
+            ToolResult::Ok { .. } => {
+                let text = res.text_content();
                 // Must be valid UTF-8.
-                let _ = std::str::from_utf8(content.as_bytes())
+                let _ = std::str::from_utf8(text.as_bytes())
                     .expect("truncated multibyte content must be valid UTF-8");
-                assert!(content.contains("[truncated]"));
+                assert!(text.contains("[truncated]"));
             }
             other => panic!("expected Ok, got {other:?}"),
         }
@@ -3265,7 +3302,7 @@ mod tests {
         let observations: Vec<usize> = out
             .iter()
             .map(|(_, r)| match r {
-                ToolResult::Ok { content, .. } => content.parse().expect("observation is usize"),
+                ToolResult::Ok { .. } => r.text_content().parse().expect("observation is usize"),
                 ToolResult::Err(e) => panic!("handler failed: {e}"),
             })
             .collect();

@@ -469,10 +469,12 @@ mod tests {
         assert!(denied_caps.contains(&Capability::Llm));
         assert!(denied_caps.contains(&Capability::Network));
         assert!(denied_caps.contains(&Capability::Shell));
-        assert!(error
-            .denials
-            .iter()
-            .all(|d| d.reason == DenialReason::WorkspaceNotGranted));
+        assert!(
+            error
+                .denials
+                .iter()
+                .all(|d| d.reason == DenialReason::WorkspaceNotGranted)
+        );
     }
 
     #[test]
@@ -512,7 +514,10 @@ mod tests {
 
     #[test]
     fn runtime_profile_kind_display() {
-        assert_eq!(RuntimeProfileKind::AuthoredGraph.to_string(), "authored-graph");
+        assert_eq!(
+            RuntimeProfileKind::AuthoredGraph.to_string(),
+            "authored-graph"
+        );
         assert_eq!(RuntimeProfileKind::FullPlan.to_string(), "full-plan");
     }
 
@@ -522,9 +527,11 @@ mod tests {
             capability: Capability::Llm,
             reason: DenialReason::WorkspaceNotGranted,
         };
-        assert!(denial
-            .to_string()
-            .contains("declared by graph but not granted by workspace"));
+        assert!(
+            denial
+                .to_string()
+                .contains("declared by graph but not granted by workspace")
+        );
     }
 
     #[test]
@@ -533,9 +540,11 @@ mod tests {
             capability: Capability::Shell,
             reason: DenialReason::NotDeclaredByGraph,
         };
-        assert!(denial
-            .to_string()
-            .contains("requires explicit graph declaration"));
+        assert!(
+            denial
+                .to_string()
+                .contains("requires explicit graph declaration")
+        );
     }
 
     #[test]
@@ -570,7 +579,10 @@ mod tests {
     fn gate_cells_require_shell_and_read_fs() {
         for cell_type in &["gate.compile", "gate.test", "gate.clippy"] {
             let required = cell_type_required_capabilities(cell_type);
-            assert!(required.contains(&Capability::Shell), "{cell_type} needs Shell");
+            assert!(
+                required.contains(&Capability::Shell),
+                "{cell_type} needs Shell"
+            );
             assert!(
                 required.contains(&Capability::ReadFs),
                 "{cell_type} needs ReadFs"

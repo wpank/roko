@@ -336,19 +336,18 @@ pub struct ChatLaunchConfig {
 ///
 /// Precedence: explicit `--agent` > config `[agent].default_agent_id` >
 /// the only registered healthy agent > actionable error.
-fn resolve_chat_agent(
-    explicit: Option<&str>,
-    workdir: &Path,
-) -> Result<String> {
+fn resolve_chat_agent(explicit: Option<&str>, workdir: &Path) -> Result<String> {
     // 1. Explicit --agent flag.
     if let Some(agent) = explicit.filter(|s| !s.trim().is_empty()) {
         return Ok(agent.to_string());
     }
 
     // 2. Config default_agent_id.
-    let core_config = roko_core::config::loader::load_config_unified(workdir)
-        .unwrap_or_default();
-    if let Some(configured) = core_config.agent.default_agent_id.as_deref()
+    let core_config = roko_core::config::loader::load_config_unified(workdir).unwrap_or_default();
+    if let Some(configured) = core_config
+        .agent
+        .default_agent_id
+        .as_deref()
         .filter(|s| !s.trim().is_empty())
     {
         // Validate the configured agent exists.
@@ -371,10 +370,7 @@ fn resolve_chat_agent(
 
     // 3. The only registered healthy agent.
     let entries = load_agent_entries(workdir);
-    let healthy: Vec<&AgentEntry> = entries
-        .iter()
-        .filter(|e| is_process_alive(e.pid))
-        .collect();
+    let healthy: Vec<&AgentEntry> = entries.iter().filter(|e| is_process_alive(e.pid)).collect();
     match healthy.len() {
         0 => bail!(
             "no agent specified and no healthy agents found; use --agent <id> \
@@ -408,8 +404,7 @@ pub fn resolve_chat_launch(
 
     // Resolve model conflicts with global config.
     if let Some(ref local_model) = model {
-        let core = roko_core::config::loader::load_config_unified(workdir)
-            .unwrap_or_default();
+        let core = roko_core::config::loader::load_config_unified(workdir).unwrap_or_default();
         let global_model = &core.agent.default_model;
         if !global_model.is_empty() && global_model != local_model {
             // Different explicit values -- pre-dispatch conflict.
@@ -934,18 +929,10 @@ async fn run_chat_with_launch(launch: ChatLaunchConfig) -> Result<()> {
 
         match launch.ui_mode {
             ChatUiMode::InlineTui => {
-                roko_cli::chat_inline::run_chat_inline(
-                    &launch.target,
-                    &launch.serve_url,
-                )
-                .await?;
+                roko_cli::chat_inline::run_chat_inline(&launch.target, &launch.serve_url).await?;
             }
             ChatUiMode::LineRepl => {
-                roko_cli::chat::run_chat_repl(
-                    &launch.target,
-                    &launch.serve_url,
-                )
-                .await?;
+                roko_cli::chat::run_chat_repl(&launch.target, &launch.serve_url).await?;
             }
         }
     }
@@ -1051,14 +1038,8 @@ pub async fn run(cmd: AgentCmd) -> Result<()> {
             text,
         } => {
             let workdir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            let launch = resolve_chat_launch(
-                agent.as_deref(),
-                provider,
-                model,
-                text,
-                serve_url,
-                &workdir,
-            )?;
+            let launch =
+                resolve_chat_launch(agent.as_deref(), provider, model, text, serve_url, &workdir)?;
             run_chat_with_launch(launch).await
         }
     }
@@ -1895,8 +1876,7 @@ mod tests {
     fn capability_readiness_serializable() {
         let readiness = CapabilityReadiness::for_runtime(true);
         let json = serde_json::to_string(&readiness).expect("serialize");
-        let parsed: CapabilityReadiness =
-            serde_json::from_str(&json).expect("deserialize");
+        let parsed: CapabilityReadiness = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(readiness.messaging, parsed.messaging);
         assert_eq!(readiness.relay, parsed.relay);
     }
@@ -1964,7 +1944,10 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("--wallet-key"), "error: {msg}");
         // Must not leak the wallet key value.
-        assert!(!msg.contains("SECRET_KEY_VALUE"), "leaked wallet key: {msg}");
+        assert!(
+            !msg.contains("SECRET_KEY_VALUE"),
+            "leaked wallet key: {msg}"
+        );
     }
 
     #[test]
@@ -2049,7 +2032,10 @@ mod tests {
 
         let err = resolve_chat_agent(None, dir.path()).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("2 healthy agents"), "expected ambiguity, got: {msg}");
+        assert!(
+            msg.contains("2 healthy agents"),
+            "expected ambiguity, got: {msg}"
+        );
         assert!(msg.contains("agent-a"), "expected names, got: {msg}");
         assert!(msg.contains("agent-b"), "expected names, got: {msg}");
     }
@@ -2126,10 +2112,10 @@ mod tests {
     fn chat_agent_field_is_optional() {
         // Verify that the clap definition no longer has a default_value.
         // When --agent is not passed, the field should be None.
-        use clap::CommandFactory;
+        use clap::Subcommand;
 
         // Build the AgentCmd parser from clap metadata.
-        let app = AgentCmd::command();
+        let app = AgentCmd::augment_subcommands(clap::Command::new("agent"));
         let chat_cmd = app.find_subcommand("chat").expect("chat subcommand");
         let agent_arg = chat_cmd
             .get_arguments()

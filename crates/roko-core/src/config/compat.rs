@@ -11,11 +11,11 @@ use serde::Deserialize;
 
 use super::schema::{
     AgentConfig, BudgetConfig, CURRENT_SCHEMA_VERSION, ChainConfig, ColdStorageConfig,
-    ConductorConfig, CoreRunnerConfig, DeployConfig, FeedAgentsConfig, GatesConfig, GeminiConfig,
-    GitHubConfig, GithubWebhookConfig, LearningConfig, PerplexityConfig, PipelineConfig, PrdConfig,
-    ProjectConfig, RelayConfig, ResourcesConfig, RokoConfig, RoleOverride, RoutingConfig,
-    SchedulerConfig, ServeConfig, ServerConfig, StateHubConfig, ToolsConfig, TuiConfig,
-    ValidationConfig, WatcherConfig, WebhooksConfig,
+    ConductorConfig, CoreRunnerConfig, DaimonConfig, DeployConfig, DreamScheduleConfig,
+    FeedAgentsConfig, GatesConfig, GeminiConfig, GitHubConfig, GithubWebhookConfig, LearningConfig,
+    PerplexityConfig, PipelineConfig, PrdConfig, ProjectConfig, RelayConfig, ResourcesConfig,
+    RokoConfig, RoleOverride, RoutingConfig, SchedulerConfig, ServeConfig, ServerConfig,
+    StateHubConfig, ToolsConfig, TuiConfig, ValidationConfig, WatcherConfig, WebhooksConfig,
 };
 
 /// Subset of Mori's `ConfigState` that we recognize.
@@ -130,6 +130,9 @@ fn convert(m: &MoriConfig) -> RokoConfig {
         graduation: crate::config::graduation::GraduationConfig::default(),
         cold_storage: ColdStorageConfig::default(),
         prompt: crate::config::schema::PromptConfig::default(),
+        dreams: DreamScheduleConfig::default(),
+        daimon: DaimonConfig::default(),
+        repos: Vec::new(),
     }
 }
 
@@ -192,6 +195,7 @@ fn convert_agent(m: &MoriConfig) -> AgentConfig {
         extensions: Vec::new(),
         defaults: Default::default(),
         mcp_config: None,
+        default_agent_id: None,
     }
 }
 
@@ -209,6 +213,7 @@ fn convert_gates(m: &MoriConfig) -> GatesConfig {
         compile_concurrency: d.compile_concurrency,
         domain_gates: HashMap::new(),
         custom_rungs: Vec::new(),
+        max_rung: None,
     }
 }
 

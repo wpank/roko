@@ -55,6 +55,8 @@ pub struct HermesOneShotConfig {
     pub timeout: Duration,
     /// Optional OS-enforced limits for the one-shot subprocess.
     pub resource_limits: Option<ResourceLimits>,
+    /// Optional system prompt prepended to every prompt.
+    pub system_prompt: Option<String>,
 }
 
 impl Default for HermesOneShotConfig {
@@ -71,6 +73,7 @@ impl Default for HermesOneShotConfig {
             model_override: None,
             timeout: Duration::from_secs(120),
             resource_limits: None,
+            system_prompt: None,
         }
     }
 }
@@ -264,7 +267,7 @@ impl Agent for HermesOneShotAgent {
     async fn run(&self, input: &Signal, _ctx: &Context) -> AgentResult {
         let started = Instant::now();
 
-        let prompt = match input.body.as_text() {
+        let raw_prompt = match input.body.as_text() {
             Ok(s) => s.to_string(),
             Err(e) => {
                 let output = input
@@ -278,6 +281,12 @@ impl Agent for HermesOneShotAgent {
                     .build();
                 return AgentResult::fail(output);
             }
+        };
+        let prompt = match &self.config.system_prompt {
+            Some(sp) => {
+                format!("[SYSTEM INSTRUCTIONS]\n{sp}\n[END SYSTEM INSTRUCTIONS]\n\n{raw_prompt}")
+            }
+            None => raw_prompt,
         };
 
         let argv = self.build_argv(&prompt);

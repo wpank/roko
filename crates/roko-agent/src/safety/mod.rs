@@ -927,7 +927,17 @@ impl SafetyLayer {
                 is_structured,
                 artifacts,
             } => {
-                let cleaned = scrub::scrub_secrets(&content, &self.scrub_policy);
+                let cleaned: Vec<roko_core::tool::ToolResultContent> = content
+                    .into_iter()
+                    .map(|block| match block {
+                        roko_core::tool::ToolResultContent::Text { text } => {
+                            roko_core::tool::ToolResultContent::Text {
+                                text: scrub::scrub_secrets(&text, &self.scrub_policy),
+                            }
+                        }
+                        other => other,
+                    })
+                    .collect();
                 ToolResult::Ok {
                     content: cleaned,
                     is_structured,
@@ -1543,10 +1553,18 @@ mod tests {
     fn with_defaults_denies_all_tools() {
         let layer = SafetyLayer::with_defaults();
         let ctx = test_ctx();
-        let call = ToolCall::new("test-id", "read_file", serde_json::json!({"path": "/tmp/x"}));
+        // Use a tool name that is unknown to the sandbox (no filesystem
+        // path in its arguments) so the sandbox check passes and the
+        // AllowExplicit policy with an empty list is the gate that
+        // actually rejects the call.
+        let call = ToolCall::new(
+            "test-id",
+            "custom_tool",
+            serde_json::json!({"query": "test"}),
+        );
         let err = layer
             .check_pre_execution(&call, &ctx)
-            .expect_err("with_defaults should deny read_file");
+            .expect_err("with_defaults should deny custom_tool");
         assert!(
             matches!(err, ToolError::PermissionDenied(_)),
             "expected PermissionDenied, got: {err:?}"
@@ -1561,8 +1579,7 @@ mod tests {
 
     #[test]
     fn with_contract_grants_tool_access() {
-        let layer =
-            SafetyLayer::with_defaults().with_contract(AgentContract::permissive("test"));
+        let layer = SafetyLayer::with_defaults().with_contract(AgentContract::permissive("test"));
         assert_eq!(layer.tool_permission_list, vec!["*".to_string()]);
     }
 
@@ -1659,12 +1676,8 @@ mod tests {
             "key is sk-ant-api03-abcdefghij1234567890abcdefghij1234567890abcdefghij1234567890abcdefghij1234-AAAAAA",
         );
         let scrubbed = layer.scrub_output(result);
-        match scrubbed {
-            ToolResult::Ok { content, .. } => {
-                assert!(!content.contains("sk-ant-api03"));
-            }
-            _ => panic!("expected Ok variant"),
-        }
+        assert!(matches!(scrubbed, ToolResult::Ok { .. }));
+        assert!(!scrubbed.text_content().contains("sk-ant-api03"));
     }
 
     #[test]
@@ -2022,7 +2035,7 @@ mod tests {
             "custom-role".to_string(),
             roko_core::config::agent::RoleOverride {
                 budget: Some(roko_core::config::agent::AgentBudget {
-                    max_cost_usd_per_turn: Some(1.0),
+                    max_cost_usd_cents_per_turn: Some(100),
                     ..Default::default()
                 }),
                 tools: None,
@@ -2032,7 +2045,10 @@ mod tests {
         let layer = SafetyLayer::from_config(&config);
         let contract = layer.contract_for_role("custom-role");
         assert!(
-            contract.allowed_tools.as_ref().is_some_and(|t| t.is_empty()),
+            contract
+                .allowed_tools
+                .as_ref()
+                .is_some_and(|t| t.is_empty()),
             "budget-only role must keep deny-all allowed_tools, got: {:?}",
             contract.allowed_tools
         );

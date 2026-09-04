@@ -199,12 +199,11 @@ pub struct BudgetAmounts {
 /// Every variant carries [`CommonFields`] via the shared `common` field.
 /// Node/dispatch/gate/cell variants additionally carry [`NodeFields`].
 /// Wave variants carry [`WaveFields`].
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::large_enum_variant, missing_docs)]
 pub enum GraphExecutionEvent {
     // ── Graph lifecycle ──────────────────────────────────────────────────
-
     /// Graph execution has started.
     GraphStarted {
         #[serde(flatten)]
@@ -235,7 +234,6 @@ pub enum GraphExecutionEvent {
     },
 
     // ── Wave lifecycle ───────────────────────────────────────────────────
-
     /// A topological wave has started executing.
     WaveStarted {
         #[serde(flatten)]
@@ -254,7 +252,6 @@ pub enum GraphExecutionEvent {
     },
 
     // ── Node lifecycle ───────────────────────────────────────────────────
-
     /// A node has started executing.
     NodeStarted {
         #[serde(flatten)]
@@ -315,7 +312,6 @@ pub enum GraphExecutionEvent {
     },
 
     // ── Dispatch (agent/tool) lifecycle ───────────────────────────────────
-
     /// An agent dispatch has started.
     AgentStarted {
         #[serde(flatten)]
@@ -398,7 +394,6 @@ pub enum GraphExecutionEvent {
     },
 
     // ── Gate/cell detail ─────────────────────────────────────────────────
-
     /// A gate rung has started evaluating.
     GateRungStarted {
         #[serde(flatten)]
@@ -459,7 +454,6 @@ pub enum GraphExecutionEvent {
     },
 
     // ── Accounting ───────────────────────────────────────────────────────
-
     /// Budget state has been updated.
     BudgetUpdated {
         #[serde(flatten)]
@@ -469,7 +463,6 @@ pub enum GraphExecutionEvent {
     },
 
     // ── Completion delivery (#254) ──────────────────────────────────────
-
     /// A completion delivery lifecycle has started.
     DeliveryStarted {
         #[serde(flatten)]
@@ -528,7 +521,6 @@ pub enum GraphExecutionEvent {
     },
 
     // ── Feedback settlement (#253) ─────────────────────────────────────
-
     /// A feedback sink has been successfully settled for a task attempt.
     FeedbackSinkSettled {
         #[serde(flatten)]
@@ -561,7 +553,6 @@ pub enum GraphExecutionEvent {
     },
 
     // ── Delivery/replay ──────────────────────────────────────────────────
-
     /// Replay of a previous run has started.
     ReplayStarted {
         #[serde(flatten)]
@@ -764,8 +755,7 @@ impl EventSeqCounter {
 
     /// Fetch and increment the sequence number.
     pub fn next(&self) -> u64 {
-        self.next
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -777,11 +767,7 @@ impl Default for EventSeqCounter {
 
 /// Helper to construct [`CommonFields`] with auto-incrementing seq.
 #[must_use]
-pub fn make_common(
-    run_id: &str,
-    graph_id: &str,
-    seq_counter: &EventSeqCounter,
-) -> CommonFields {
+pub fn make_common(run_id: &str, graph_id: &str, seq_counter: &EventSeqCounter) -> CommonFields {
     CommonFields {
         schema_version: GRAPH_EVENT_SCHEMA_VERSION,
         run_id: run_id.to_string(),
@@ -837,6 +823,7 @@ pub fn make_terminal_stats(elapsed: Duration, completed: u32, total: u32) -> Ter
 /// This is the single emission path shared by sequential, parallel, `start()`,
 /// resume, and Hot Graph execution. It does NOT replace `TelemetryEventSink`;
 /// the engine emits to both sinks independently.
+#[allow(dead_code)]
 pub(crate) async fn emit_graph_event(
     sink: Option<&Arc<dyn GraphEventSink>>,
     event: &GraphExecutionEvent,
@@ -1320,7 +1307,7 @@ mod tests {
             },
             GraphExecutionEvent::CellProgress {
                 common: common.clone(),
-                node,
+                node: node.clone(),
                 message: "m".into(),
                 completed: 0,
                 total: 0,
@@ -1623,8 +1610,7 @@ mod tests {
 
         for event in &events {
             let json = serde_json::to_string(event).expect("serialize");
-            let deser: GraphExecutionEvent =
-                serde_json::from_str(&json).expect("deserialize");
+            let deser: GraphExecutionEvent = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(
                 event.variant_name(),
                 deser.variant_name(),

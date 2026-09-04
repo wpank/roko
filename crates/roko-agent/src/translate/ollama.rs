@@ -148,7 +148,7 @@ impl Translator for OllamaTranslator {
             .iter()
             .map(|(call, res)| {
                 let content = match res {
-                    ToolResult::Ok { content, .. } => content.clone(),
+                    ToolResult::Ok { .. } => res.text_content(),
                     ToolResult::Err(e) => format!("error: {e}"),
                 };
                 serde_json::json!({

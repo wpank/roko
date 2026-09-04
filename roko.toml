@@ -228,7 +228,7 @@ kind = "claude_cli"
 
 [providers.codex_cli]
 command = "codex"
-kind = "claude_cli"
+kind = "codex_cli"
 
 [providers.moonshot]
 api_key_env = "MOONSHOT_API_KEY"

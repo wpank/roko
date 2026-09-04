@@ -204,11 +204,7 @@ pub struct WorkflowGraphController {
 impl WorkflowGraphController {
     /// Create a new controller for the given template.
     #[must_use]
-    pub fn new(
-        run_id: String,
-        template: WorkflowTemplateDescriptor,
-        workflow_id: String,
-    ) -> Self {
+    pub fn new(run_id: String, template: WorkflowTemplateDescriptor, workflow_id: String) -> Self {
         Self {
             run_id,
             template,
@@ -260,6 +256,7 @@ impl WorkflowGraphController {
     ///
     /// Returns the next [`ControllerAction`] the host should execute.
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn step(&mut self, input: PhaseInput) -> ControllerAction {
         if self.is_terminated() {
             return ControllerAction::Terminal(
@@ -531,11 +528,7 @@ mod tests {
     use crate::workflow::templates::WorkflowTemplateDescriptor;
 
     fn make_controller(template: WorkflowTemplateDescriptor) -> WorkflowGraphController {
-        WorkflowGraphController::new(
-            "run-001".to_string(),
-            template,
-            "wf-001".to_string(),
-        )
+        WorkflowGraphController::new("run-001".to_string(), template, "wf-001".to_string())
     }
 
     // ── Happy path: mechanical (no review) ─────────────────────────────

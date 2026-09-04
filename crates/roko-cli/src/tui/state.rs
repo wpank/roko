@@ -546,18 +546,20 @@ impl AgentOutputHistory {
             .as_millis() as u64;
 
         for line in lines {
-            let (kind, tool_id, tool_name) =
-                classify_output_line(line);
-            self.push(agent_id, AgentOutputRecord {
-                seq: 0, // assigned by push()
-                timestamp_ms: now_ms,
-                role: role.to_string(),
-                kind,
-                text: line.clone(),
-                redacted: false,
-                tool_id,
-                tool_name,
-            });
+            let (kind, tool_id, tool_name) = classify_output_line(line);
+            self.push(
+                agent_id,
+                AgentOutputRecord {
+                    seq: 0, // assigned by push()
+                    timestamp_ms: now_ms,
+                    role: role.to_string(),
+                    kind,
+                    text: line.clone(),
+                    redacted: false,
+                    tool_id,
+                    tool_name,
+                },
+            );
         }
     }
 }
@@ -1191,10 +1193,7 @@ impl AgentOutputSearchState {
         if let Some(ref re) = self.compiled {
             for record in history.records_for(agent_id) {
                 if re.is_match(&record.text)
-                    || record
-                        .tool_name
-                        .as_deref()
-                        .is_some_and(|n| re.is_match(n))
+                    || record.tool_name.as_deref().is_some_and(|n| re.is_match(n))
                     || re.is_match(&record.role)
                 {
                     self.match_seqs.push(record.seq);
@@ -1519,9 +1518,7 @@ fn build_unified_log_cache(tui_state: &TuiState) -> Vec<LogEntry> {
     let all: Vec<LogEntry> = entries.into_values().collect();
     let len = all.len();
     if len > MAX_UNIFIED_LOG {
-        all.into_iter()
-            .skip(len - MAX_UNIFIED_LOG)
-            .collect()
+        all.into_iter().skip(len - MAX_UNIFIED_LOG).collect()
     } else {
         all
     }
@@ -2966,12 +2963,11 @@ impl TuiState {
             .and_then(|text| toml::from_str::<roko_core::config::schema::RokoConfig>(&text).ok())
             .map(|c| c.conductor)
             .unwrap_or_default();
-        self.conductor_snapshot =
-            super::widgets::conductor_panel::build_conductor_snapshot(
-                &self.conductor_alerts,
-                &self.diagnoses,
-                &conductor_config,
-            );
+        self.conductor_snapshot = super::widgets::conductor_panel::build_conductor_snapshot(
+            &self.conductor_alerts,
+            &self.diagnoses,
+            &conductor_config,
+        );
         self.conductor_snapshot_refreshed_at = Some(Instant::now());
     }
 
@@ -3107,10 +3103,7 @@ impl TuiState {
             let pct = (self.cost_dollars / budget * 100.0) as u32;
             candidates.push((
                 "budget_high".into(),
-                format!(
-                    "BUDGET: ${:.2}/${budget:.2} ({pct}%)",
-                    self.cost_dollars
-                ),
+                format!("BUDGET: ${:.2}/${budget:.2} ({pct}%)", self.cost_dollars),
             ));
         }
 
@@ -3238,8 +3231,7 @@ impl TuiState {
             // executor summary is empty (standalone TUI without a live hub).
             if !self.workdir.as_os_str().is_empty() {
                 let state_dir = self.workdir.join(".roko").join("state");
-                let runner_read =
-                    crate::runner::status_file::read_runner_status(&state_dir);
+                let runner_read = crate::runner::status_file::read_runner_status(&state_dir);
                 match &runner_read {
                     crate::runner::status_file::RunnerStatusRead::Live(s) => {
                         self.orchestrator_state = if s.current_phase.is_empty() {
@@ -3975,9 +3967,7 @@ impl TuiState {
         // Only ingest when there are output_lines that haven't been seen yet,
         // deduplicating against the history's existing records.
         for agent in &self.agents {
-            if !agent.output_lines.is_empty()
-                && self.agent_output_history.len(&agent.id) == 0
-            {
+            if !agent.output_lines.is_empty() && self.agent_output_history.len(&agent.id) == 0 {
                 self.agent_output_history
                     .ingest_lines(&agent.id, &agent.output_lines, "assistant");
             }
@@ -5181,11 +5171,8 @@ fn build_execution_waves(plans: &[PlanEntry]) -> Vec<Wave> {
                 .filter(|plan| plan_is_complete(plan))
                 .count();
             // A wave is blocked by all waves with a lower index.
-            let blocked_by: Vec<usize> = wave_indices
-                .iter()
-                .copied()
-                .filter(|&w| w < idx)
-                .collect();
+            let blocked_by: Vec<usize> =
+                wave_indices.iter().copied().filter(|&w| w < idx).collect();
             Wave {
                 index: idx,
                 plans: wave_plans.iter().map(|plan| plan.id.clone()).collect(),
@@ -7651,7 +7638,10 @@ tier = "focused"
     fn agent_output_history_before_pagination() {
         let mut history = AgentOutputHistory::default();
         for i in 0..10 {
-            history.push("a", make_record(&format!("line-{i}"), OutputRecordKind::Text));
+            history.push(
+                "a",
+                make_record(&format!("line-{i}"), OutputRecordKind::Text),
+            );
         }
 
         // Get records before seq 6 (should be seqs 1-5)
@@ -7689,7 +7679,10 @@ tier = "focused"
         let mut history = AgentOutputHistory::default();
         history.push("a", make_record("cargo build", OutputRecordKind::Text));
         history.push("a", make_record("running tests", OutputRecordKind::Text));
-        history.push("a", make_record("cargo test passed", OutputRecordKind::Text));
+        history.push(
+            "a",
+            make_record("cargo test passed", OutputRecordKind::Text),
+        );
         history.push("a", make_record("all done", OutputRecordKind::Text));
 
         let re = regex::Regex::new("cargo").unwrap();

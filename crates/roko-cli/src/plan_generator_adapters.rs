@@ -42,9 +42,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result};
 use roko_core::io::atomic_write_str;
 
-use crate::plan_generator::{
-    PlanGeneratorAdapter, PlanGeneratorOutcome, adapter_keys,
-};
+use crate::plan_generator::{PlanGeneratorAdapter, PlanGeneratorOutcome, adapter_keys};
 use crate::workspace_paths;
 
 // ---------------------------------------------------------------------------
@@ -92,11 +90,7 @@ impl PlanGeneratorAdapter for PrdDefaultAdapter {
         &self.adapter_key
     }
 
-    fn persist(
-        &self,
-        outcome: &PlanGeneratorOutcome,
-        workdir: &Path,
-    ) -> Result<PathBuf> {
+    fn persist(&self, outcome: &PlanGeneratorOutcome, workdir: &Path) -> Result<PathBuf> {
         let plans_root = workspace_paths::plans_dir(workdir);
         let plan_dir = plans_root.join(&outcome.slug);
         std::fs::create_dir_all(&plan_dir)
@@ -151,11 +145,7 @@ impl PlanGeneratorAdapter for PlanGenerateAdapter {
         adapter_keys::PLAN_GENERATE
     }
 
-    fn persist(
-        &self,
-        outcome: &PlanGeneratorOutcome,
-        workdir: &Path,
-    ) -> Result<PathBuf> {
+    fn persist(&self, outcome: &PlanGeneratorOutcome, workdir: &Path) -> Result<PathBuf> {
         let plans_root = workspace_paths::plans_dir(workdir);
         let plan_dir = plans_root.join(&outcome.slug);
         std::fs::create_dir_all(&plan_dir)
@@ -213,11 +203,7 @@ impl PlanGeneratorAdapter for DoAdapter {
         &self.adapter_key
     }
 
-    fn persist(
-        &self,
-        outcome: &PlanGeneratorOutcome,
-        workdir: &Path,
-    ) -> Result<PathBuf> {
+    fn persist(&self, outcome: &PlanGeneratorOutcome, workdir: &Path) -> Result<PathBuf> {
         let plans_root = workspace_paths::plans_dir(workdir);
         let plan_dir = plans_root.join(&outcome.slug);
         std::fs::create_dir_all(&plan_dir)
@@ -272,10 +258,10 @@ impl DirectLight {
     #[must_use]
     pub fn from_config(config: &roko_core::config::schema::RokoConfig) -> Self {
         Self {
-            model: config.agent.model.clone(),
+            model: Some(config.agent.default_model.clone()),
             role: "implementer".to_string(),
             allowed_tools: None,
-            effort: config.agent.effort.to_string(),
+            effort: config.agent.default_effort.to_string(),
         }
     }
 
@@ -318,11 +304,7 @@ impl PlanGeneratorAdapter for CliServeRuntimeAdapter {
         adapter_keys::CLI_SERVE_RUNTIME
     }
 
-    fn persist(
-        &self,
-        outcome: &PlanGeneratorOutcome,
-        workdir: &Path,
-    ) -> Result<PathBuf> {
+    fn persist(&self, outcome: &PlanGeneratorOutcome, workdir: &Path) -> Result<PathBuf> {
         // Same persistence as PrdDefaultAdapter — plans go to workspace plans dir.
         let plans_root = workspace_paths::plans_dir(workdir);
         let plan_dir = plans_root.join(&outcome.slug);
@@ -362,11 +344,7 @@ impl PlanGeneratorAdapter for ServeRuntimeAdapter {
         adapter_keys::SERVE_RUNTIME
     }
 
-    fn persist(
-        &self,
-        outcome: &PlanGeneratorOutcome,
-        workdir: &Path,
-    ) -> Result<PathBuf> {
+    fn persist(&self, outcome: &PlanGeneratorOutcome, workdir: &Path) -> Result<PathBuf> {
         let plans_root = workspace_paths::plans_dir(workdir);
         let plan_dir = plans_root.join(&outcome.slug);
         std::fs::create_dir_all(&plan_dir)
@@ -405,11 +383,7 @@ impl PlanGeneratorAdapter for ServeHttpAdapter {
         adapter_keys::SERVE_HTTP
     }
 
-    fn persist(
-        &self,
-        outcome: &PlanGeneratorOutcome,
-        workdir: &Path,
-    ) -> Result<PathBuf> {
+    fn persist(&self, outcome: &PlanGeneratorOutcome, workdir: &Path) -> Result<PathBuf> {
         let plans_root = workspace_paths::plans_dir(workdir);
         let plan_dir = plans_root.join(&outcome.slug);
         std::fs::create_dir_all(&plan_dir)
@@ -501,9 +475,7 @@ impl AgentServerDispatchProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plan_generator::{
-        PlanGeneratorOutcome, ValidationEvidence, adapter_keys,
-    };
+    use crate::plan_generator::{PlanGeneratorOutcome, ValidationEvidence, adapter_keys};
     use roko_learn::runtime_feedback::GenerationOutcome;
 
     fn test_outcome(slug: &str, adapter_key: &str) -> PlanGeneratorOutcome {
@@ -639,13 +611,18 @@ mod tests {
     #[test]
     fn plan_generator_adapters_all_non_replan_adapters_covered() {
         // Verify we have adapters for all non-gate_replan keys.
+        let prd_default = PrdDefaultAdapter::new_default();
+        let prd_model = PrdDefaultAdapter::new_model();
+        let prd_replan = PrdDefaultAdapter::new_replan();
+        let do_standard = DoAdapter::new_standard();
+        let do_complex = DoAdapter::new_complex();
         let covered_keys: Vec<&str> = vec![
-            PrdDefaultAdapter::new_default().adapter_key(),
-            PrdDefaultAdapter::new_model().adapter_key(),
-            PrdDefaultAdapter::new_replan().adapter_key(),
+            prd_default.adapter_key(),
+            prd_model.adapter_key(),
+            prd_replan.adapter_key(),
             PlanGenerateAdapter.adapter_key(),
-            DoAdapter::new_standard().adapter_key(),
-            DoAdapter::new_complex().adapter_key(),
+            do_standard.adapter_key(),
+            do_complex.adapter_key(),
             CliServeRuntimeAdapter.adapter_key(),
             ServeRuntimeAdapter.adapter_key(),
             ServeHttpAdapter.adapter_key(),
@@ -664,7 +641,7 @@ mod tests {
         let config = roko_core::config::schema::RokoConfig::default();
         let dl = DirectLight::from_config(&config);
         assert_eq!(dl.role, "implementer");
-        assert_eq!(dl.effort, config.agent.effort.to_string());
+        assert_eq!(dl.effort, config.agent.default_effort.to_string());
     }
 
     #[test]

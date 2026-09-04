@@ -608,12 +608,7 @@ mod tests {
     #[test]
     fn for_run_provider_propagates() {
         let flags = default_flags();
-        let r = ResolvedExecutionOverrides::for_run(
-            &flags,
-            Some("anthropic".into()),
-            false,
-            None,
-        );
+        let r = ResolvedExecutionOverrides::for_run(&flags, Some("anthropic".into()), false, None);
         assert_eq!(r.provider.as_deref(), Some("anthropic"));
     }
 

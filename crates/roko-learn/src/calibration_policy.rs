@@ -191,6 +191,7 @@ mod tests {
             model: model.to_string(),
             provider: "test".to_string(),
             timestamp_ms: 0,
+            is_model_override: false,
         }
     }
 

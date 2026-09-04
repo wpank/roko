@@ -180,12 +180,19 @@ pub enum RunnerFailureKind {
     Permanent,
     Resource,
     Structural,
+    /// The request exceeded the model's context window. Retryable with a
+    /// reduced context budget (the runner shrinks `plan_context_tokens` by 25%
+    /// before re-dispatching).
+    ContextOverflow,
     Unknown,
 }
 
 impl RunnerFailureKind {
     pub const fn is_retryable(self) -> bool {
-        matches!(self, Self::Transient | Self::Structural | Self::Unknown)
+        matches!(
+            self,
+            Self::Transient | Self::Structural | Self::ContextOverflow | Self::Unknown
+        )
     }
 
     pub const fn retry_cooldown_secs(self) -> u64 {
@@ -194,6 +201,7 @@ impl RunnerFailureKind {
             Self::Permanent => 0,
             Self::Resource => 0,
             Self::Structural => 5,
+            Self::ContextOverflow => 1,
             Self::Unknown => 1,
         }
     }
@@ -224,6 +232,17 @@ impl RunnerFailureKind {
             || lower.contains("flaky")
         {
             return Self::Transient;
+        }
+        if lower.contains("context overflow")
+            || lower.contains("context_overflow")
+            || lower.contains("context window")
+            || lower.contains("context length exceeded")
+            || lower.contains("maximum context length")
+            || lower.contains("token limit")
+            || lower.contains("prompt is too long")
+            || lower.contains("request too large")
+        {
+            return Self::ContextOverflow;
         }
         if lower.contains("verify script")
             || lower.contains("acceptance contract")
@@ -2420,6 +2439,11 @@ pub struct RunConfig {
     /// sum of all previous attempts for a task exceeds this value, the retry
     /// is suppressed and the task is marked failed.
     pub max_task_retry_usd: f64,
+    /// Maximum USD spend per calendar day across all plan runs (0 = unlimited).
+    /// From `[budget].max_daily_usd`. Checked against the costs log before
+    /// each dispatch. When the day's total exceeds this ceiling, new
+    /// dispatches are blocked (or warned when `budget_override` is active).
+    pub max_daily_usd: f64,
     /// When `true`, allows execution to continue past `BudgetAction::Block` with
     /// a warning. Derived from `--budget-override` / `--no-budget` CLI flags.
     /// Default: `false`.
@@ -2654,6 +2678,7 @@ impl RunConfig {
             max_plan_usd: f64::from(roko_config.budget.max_plan_usd),
             max_turn_usd: f64::from(roko_config.budget.max_turn_usd),
             max_task_retry_usd: f64::from(roko_config.budget.max_task_retry_usd),
+            max_daily_usd: f64::from(roko_config.budget.max_daily_usd),
             budget_override: false,
             budget_ceiling_override: None,
             no_budget: false,
@@ -2716,6 +2741,7 @@ impl Default for RunConfig {
             max_plan_usd: 0.0,
             max_turn_usd: 0.0,
             max_task_retry_usd: 0.0,
+            max_daily_usd: 0.0,
             budget_override: false,
             budget_ceiling_override: None,
             no_budget: false,

@@ -260,8 +260,7 @@ mod tests {
                 title: "Implement agent lifecycle model".into(),
                 content: "## Plan\nDesign the agent lifecycle model.".into(),
             },
-            workspace_map: "crates/roko-core/src/lib.rs\ncrates/roko-core/src/lifecycle.rs"
-                .into(),
+            workspace_map: "crates/roko-core/src/lib.rs\ncrates/roko-core/src/lifecycle.rs".into(),
             cross_plan_context: "plan-041: done\nplan-040: done".into(),
             prd2_extract: "## PRD2\nGompertz: lambda(t) = ae^(bt).".into(),
             iteration: 2,

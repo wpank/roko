@@ -306,13 +306,11 @@ pub fn compare_snapshot_results(
 
     // Read both manifests to discover matching tab files.
     let baseline_manifest: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(&baseline.manifest_path)
-            .context("read baseline manifest")?,
+        &std::fs::read_to_string(&baseline.manifest_path).context("read baseline manifest")?,
     )
     .context("parse baseline manifest")?;
     let candidate_manifest: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(&candidate.manifest_path)
-            .context("read candidate manifest")?,
+        &std::fs::read_to_string(&candidate.manifest_path).context("read candidate manifest")?,
     )
     .context("parse candidate manifest")?;
 
@@ -469,10 +467,12 @@ mod tests {
         let thresholds = AssessmentThresholds::percentage(5.0);
         let result = assess(diff, &thresholds, "a", "b");
         assert!(!result.passed());
-        assert!(result.failure_reasons.iter().any(|r| matches!(
-            r,
-            FailureReason::DiffPercentage { .. }
-        )));
+        assert!(
+            result
+                .failure_reasons
+                .iter()
+                .any(|r| matches!(r, FailureReason::DiffPercentage { .. }))
+        );
     }
 
     #[test]
@@ -483,10 +483,11 @@ mod tests {
 
         let fail = assess(diff, &AssessmentThresholds::max_cells(4), "a", "b");
         assert!(!fail.passed());
-        assert!(fail.failure_reasons.iter().any(|r| matches!(
-            r,
-            FailureReason::DiffCount { .. }
-        )));
+        assert!(
+            fail.failure_reasons
+                .iter()
+                .any(|r| matches!(r, FailureReason::DiffCount { .. }))
+        );
     }
 
     #[test]
@@ -499,10 +500,12 @@ mod tests {
         };
         let result = assess(diff, &thresholds, "a", "b");
         assert!(!result.passed());
-        assert!(result.failure_reasons.iter().any(|r| matches!(
-            r,
-            FailureReason::RegionCount { .. }
-        )));
+        assert!(
+            result
+                .failure_reasons
+                .iter()
+                .any(|r| matches!(r, FailureReason::RegionCount { .. }))
+        );
     }
 
     #[test]
@@ -512,8 +515,7 @@ mod tests {
         let b = dir.path().join("b.txt");
         std::fs::write(&a, "same content").unwrap();
         std::fs::write(&b, "same content").unwrap();
-        let result =
-            compare_and_assess(&a, &b, &AssessmentThresholds::exact()).unwrap();
+        let result = compare_and_assess(&a, &b, &AssessmentThresholds::exact()).unwrap();
         assert!(result.passed());
     }
 

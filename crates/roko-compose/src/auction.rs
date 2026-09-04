@@ -898,7 +898,10 @@ mod tests {
         )));
         let dreams = Arc::new(DreamsFunctor);
         let safety = Arc::new(SafetyFunctor::new(
-            AgentContract::permissive("test"),
+            AgentContract {
+                role: "test".into(),
+                ..AgentContract::default()
+            },
             CapabilitySet::from([Capability::ReadFs]),
         ));
         let arbitrator = CrossCutArbitrator::new(memory, daimon, dreams, safety);

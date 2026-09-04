@@ -51,16 +51,13 @@ pub fn build_report(
         Some(WorkflowTermination::GateExhausted { last_failure }) => {
             (false, format!("Gate exhausted: {last_failure}"))
         }
-        Some(WorkflowTermination::ReviewExhausted { findings }) => {
-            (false, format!("Review exhausted ({} findings)", findings.len()))
-        }
+        Some(WorkflowTermination::ReviewExhausted { findings }) => (
+            false,
+            format!("Review exhausted ({} findings)", findings.len()),
+        ),
         Some(WorkflowTermination::Cancelled) => (false, "Cancelled".to_string()),
-        Some(WorkflowTermination::Failed { reason }) => {
-            (false, format!("Failed: {reason}"))
-        }
-        Some(WorkflowTermination::Skipped { reason }) => {
-            (false, format!("Skipped: {reason}"))
-        }
+        Some(WorkflowTermination::Failed { reason }) => (false, format!("Failed: {reason}")),
+        Some(WorkflowTermination::Skipped { reason }) => (false, format!("Skipped: {reason}")),
         None => (false, agent_output.clone()),
     };
 

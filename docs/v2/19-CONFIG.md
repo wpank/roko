@@ -641,10 +641,17 @@ Per-complexity overrides: `[routing.weights.mechanical]`, `[routing.weights.focu
 
 | Field | Type | Default | Description |
 |---|---|---|---|
+| `mode` | enum | `full` | Verification breadth: `none`, `structural`, `focused`, `full` |
 | `clippy_enabled` | bool | `true` | Run clippy gate |
 | `skip_tests` | bool | `false` | Skip test gate |
 | `max_iterations` | u32 | `3` | Max retry iterations on gate failure |
+| `cargo_fix_enabled` | bool | `true` | Attempt `cargo fix --allow-dirty` before agent retry |
+| `impact_timeout_ms` | u64 | `5000` | Timeout for changed-target analysis |
+| `compile_concurrency` | usize | `1` | Per-repository Cargo command ownership limit |
 | `domain_gates` | HashMap | `{}` | Per-domain custom gate lists |
+| `rungs` | Vec\<GateRungConfig\> | `[]` | Custom gate rungs (alias: `custom_rungs`) |
+
+Custom rungs replace the built-in compile/lint/test defaults. Each rung is a `{ name, command, timeout_secs, required, parallel_with }` table. Legacy `[[gate]]` syntax is migrated to `[[gates.rungs]]` by `roko config migrate`.
 
 ### 8.10 `[pipeline]` -- execution pipeline per complexity
 
@@ -659,14 +666,17 @@ Per-complexity overrides: `[routing.weights.mechanical]`, `[routing.weights.focu
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `max_plan_usd` | f32 | `0.0` | Max cost per plan execution; zero is unlimited |
-| `max_task_usd` | f32 | `0.0` | Base task ceiling; zero is unlimited |
-| `max_turn_usd` | f32 | `0.0` | Max cost per agent turn; zero is unlimited |
+| `max_plan_usd` | f32 | `0.0` | Max cost per plan execution; **zero means unlimited** |
+| `max_task_usd` | f32 | `0.0` | Base task ceiling; **zero means unlimited** |
+| `max_turn_usd` | f32 | `0.0` | Max cost per agent turn; **zero means unlimited** |
+| `max_task_retry_usd` | f32 | `0.0` | Max cumulative cost across retry attempts for one task; **zero means unlimited** |
 | `prompt_token_budget` | usize | `10_000` | Max prompt tokens |
 | `tier_multipliers.mechanical` | f32 | `0.2` | Mechanical/Haiku task multiplier |
 | `tier_multipliers.standard` | f32 | `1.0` | Standard/Sonnet task multiplier |
 | `tier_multipliers.complex` | f32 | `3.0` | Complex/Opus task multiplier |
 | `tier_multipliers.expert` | f32 | `5.0` | Explicit expert/architectural task multiplier |
+
+> **`0.0` = unlimited semantics.** The library contract is that a ceiling of `0.0` means "no cap". The runner does not enforce any spend limit for that dimension. Negative, `NaN`, and `Inf` values are rejected by pre-flight validation. The checked-in `roko.toml` sets `max_plan_usd = 10.0` and `max_turn_usd = 0.50` as explicit operator policy; these are *not* library defaults.
 
 ### 8.12 `[conductor]` -- orchestration control
 
@@ -715,20 +725,114 @@ set -- operator and author intent always take precedence.
 | `freeze_threshold` | f64 | `0.05` | Balance below which signal freezes |
 | `freeze_before_delete` | bool | `true` | Freeze before garbage collection |
 
-### 8.15 Additional Sections
+### 8.15 `[runner]` -- CoreRunnerConfig
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `plan_timeout_secs` | u64 | `3600` | Wall-clock timeout for the entire plan execution |
+| `dangerously_skip_permissions` | bool | `false` | Skip agent permission prompts (rejected in shared config) |
+| `sandbox_level` | enum | `restrict` | Sandbox enforcement: `none`, `observe`, `restrict`, `isolate`, `quarantine` |
+| `dispatch_max_retries` | u32 | `5` | Max dispatch retry attempts for transient errors |
+| `warm_pool_size` | usize | `2` | Pre-spawned warm agent slots per role |
+| `warm_pool_idle_timeout_secs` | u64 | `300` | Idle timeout before a warm agent slot is reclaimed |
+
+**Restart required.** Runner configuration is read at plan start; changes take effect on the next plan execution.
+
+### 8.16 `[resources]` -- ResourcesConfig
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `min_free_disk_mb` | u64 | `2048` | Minimum free disk space (MB) to start a plan run |
+| `warn_disk_mb` | u64 | `5120` | Warning threshold (MB); execution continues |
+| `max_plan_disk_mb` | u64 | `0` | Max disk growth per plan (MB); zero is unlimited |
+| `gc_on_plan_start` | bool | `true` | Run filesystem GC before plan execution |
+| `gc_on_plan_end` | bool | `true` | Run filesystem GC after plan completion |
+| `gc_on_failure` | bool | `true` | Run filesystem GC after plan failure |
+| `target_cleanup_enabled` | bool | `true` | Auto-remove stale Rust `target/` directories |
+| `target_max_age_days` | u64 | `3` | Max age before a target directory is cleaned |
+| `log_rotation_max_mb` | u64 | `100` | Max size of JSONL logs before rotation |
+| `worktree_cleanup_on_complete` | bool | `true` | Clean up worktrees on successful plan completion |
+| `worktree_cleanup_on_failure` | bool | `true` | Clean up worktrees on plan failure |
+| `worktree_max_age_secs` | u64 | `86400` | Max worktree age before forced cleanup |
+| `auto_cleanup_on_complete` | bool | `true` | Run full cleanup pass on plan completion |
+
+**Restart required** for disk thresholds; GC policy changes are picked up on the next plan run.
+
+### 8.17 `[prompt]` -- PromptConfig
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `composition_strategy` | enum | `auto` | Prompt budget allocation: `auto`, `density_greedy`, `weighted_sum`, `vcg` |
+| `vcg_warmup_observations` | u32 | `10` | Minimum bidder observations before `auto` enables VCG allocation |
+
+**Hot-reloadable.** Changes take effect on the next prompt composition.
+
+### 8.18 `[validation]` -- ValidationConfig
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `strict_validation` | bool | `false` | When true, dangling provider references become hard errors |
+
+**Restart required.** Validation mode is evaluated at config load time.
+
+### 8.19 `[feed_agents]` -- FeedAgentsConfig
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `false` | Whether the 10 built-in feed agents are spawned at serve startup |
+
+**Restart required.** Feed agents are spawned once during `roko serve` initialization.
+
+### 8.20 `[[groups]]` -- GroupDefinition
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `name` | String | required | Group name |
+| `description` | String | `""` | Human-readable description |
+| `coordination` | String | required | Coordination strategy (e.g. `"consensus"`, `"leader"`) |
+| `members` | Vec\<String\> | `[]` | Initial member agent names |
+| `leader` | Option\<String\> | `None` | Designated group leader |
+| `assignment_strategy` | Option\<String\> | `None` | Task assignment Cell or algorithm |
+| `public` | bool | `false` | Whether the group is publicly discoverable |
+| `max_members` | Option\<usize\> | `None` | Maximum group size |
+| `knowledge_policy` | Option\<String\> | `None` | Knowledge sharing policy |
+| `pheromone_decay_rate` | Option\<f64\> | `None` | Pheromone signal decay rate |
+
+**Restart required.** Groups are reconciled into the serve runtime at startup.
+
+### 8.21 Additional Sections
 
 | Section | Key Fields | Notes |
 |---|---|---|
-| `[chain]` | `rpc_url`, `chain_id`, `wallet_key`, `agent_registry`, `bounty_market` | Blockchain integration |
-| `[relay]` | `url`, `workspace_name`, `heartbeat_interval_secs` | Relay connection |
-| `[energy]` | `pool_usd`, `per_task_cap_usd`, `metabolism_rate` | Cognitive energy model |
-| `[attention]` | `max_tokens_per_layer`, `utilization_target`, `auction_enabled` | Context budget |
-| `[tui]` | `refresh_rate_ms` | Terminal UI |
-| `[deploy]` | `backend`, `railway_api_token`, `project_id`, `worker_image` | Cloud deployment |
+| `[chain]` | `enabled`, `profile`, `auto_deploy_contracts` | Blockchain integration |
+| `[relay]` | `heartbeat_interval_secs` | Relay connection |
+| `[cold_storage]` | `enabled`, `max_age_days`, `batch_size`, `interval_secs` | Signal archival |
+| `[tui]` | `refresh_rate_ms`, `effects.preset` | Terminal UI |
+| `[deploy]` | `backend`, `worker_image` | Cloud deployment |
 | `[prd]` | `auto_plan` | PRD lifecycle |
 | `[tools]` | `allow`, `deny`, `profiles.<name>` | Tool permissions |
+| `[dreams]` | `auto_dream`, `idle_threshold_mins`, `scheduled_cron` | Dream scheduling |
+| `[daimon]` | `strategy_space.domain`, `strategy_space.dimensions` | Affect engine |
 | `[[subscriptions]]` | `template`, `trigger`, `concurrency_limit`, `cooldown_secs` | Event subscriptions |
 | `[[scheduler.cron]]` | `name`, `expression`, `signal_kind` | Scheduled events |
+| `[[repos]]` | `name`, `path`, `branch`, `subscriptions` | Per-repository config |
+| `[webhooks.github]` | `secret` | GitHub webhook verification |
+| `[github]` | `auto_pr`, `default_branch`, `merge_method` | GitHub integration |
+| `[gemini]` | `thinking_level`, `safety_settings`, `use_free_tier` | Gemini provider settings |
+| `[perplexity]` | `search_recency_filter`, `academic_mode` | Perplexity search tuning |
+| `[timeouts]` | `llm_call_secs`, `gate_*_secs`, `plan_total_secs` | Per-subsystem timeouts |
+
+### 8.22 Hot-reload vs restart classification
+
+The following table summarizes which config sections take effect without a process restart and which require re-launching `roko serve` or starting a new plan run.
+
+| Reload behavior | Sections |
+|---|---|
+| **Hot-reloadable** (takes effect on next operation) | `budget`, `tools`, `learning`, `gates`, `pipeline`, `conductor`, `routing`, `prompt` |
+| **Restart required** (read once at startup or plan start) | `agent`, `providers`, `models`, `serve`, `server`, `scheduler`, `watcher`, `profiles`, `runner`, `resources`, `validation`, `feed_agents`, `groups`, `agents`, `deploy`, `chain`, `relay`, `cold_storage`, `dreams`, `daimon`, `repos`, `webhooks`, `github`, `gemini`, `perplexity`, `timeouts` |
+| **Detected by `roko doctor`** | `conductor.context_pressure_enabled` (deprecated; parseable for compatibility but runtime-dead) |
+
+> **Environment variable reference.** The canonical inventory of `ROKO_*` and `ROKO__SECTION__FIELD` environment overrides is maintained by #339 in `docs/v2/ENVIRONMENT.md`. This chapter documents TOML sections only.
 
 ---
 

@@ -74,6 +74,7 @@ pub mod claude_cli;
 pub mod codex_cli;
 pub mod cursor_acp;
 pub mod cursor_cli;
+pub mod error_classify;
 pub mod gemini_cli;
 pub mod hermes;
 pub mod openai_compat;
@@ -83,7 +84,7 @@ pub mod pre_flight;
 
 pub use anthropic_api::AnthropicApiAdapter;
 pub use cerebras::CerebrasAdapter;
-pub use claude_cli::ClaudeCliAdapter;
+pub use claude_cli::{ClaudeCliAdapter, CodexCliAdapter};
 pub use cursor_acp::CursorAcpAdapter;
 pub use cursor_cli::CursorCliAdapter;
 pub use gemini_cli::GeminiCliAdapter;
@@ -98,6 +99,7 @@ use crate::perplexity::{PerplexityAdapter, SearchOptions};
 static ANTHROPIC_API_ADAPTER: AnthropicApiAdapter = AnthropicApiAdapter;
 static CEREBRAS_ADAPTER: CerebrasAdapter = CerebrasAdapter;
 static CLAUDE_CLI_ADAPTER: ClaudeCliAdapter = ClaudeCliAdapter;
+static CODEX_CLI_ADAPTER: CodexCliAdapter = CodexCliAdapter;
 static CURSOR_ACP_ADAPTER: CursorAcpAdapter = CursorAcpAdapter;
 static CURSOR_CLI_ADAPTER: CursorCliAdapter = CursorCliAdapter;
 static GEMINI_CLI_ADAPTER: GeminiCliAdapter = GeminiCliAdapter;
@@ -182,6 +184,7 @@ pub fn adapter_for_kind(kind: ProviderKind) -> &'static dyn ProviderAdapter {
         ProviderKind::CerebrasApi => &CEREBRAS_ADAPTER,
         ProviderKind::Hermes => &HERMES_ADAPTER,
         ProviderKind::OpenClaw => &OPENCLAW_ADAPTER,
+        ProviderKind::CodexCli => &CODEX_CLI_ADAPTER,
     }
 }
 
@@ -217,8 +220,16 @@ pub fn create_agent_for_model(
             options.effective_immune_root(),
         ));
     }
-    let safety_layer = safety_layer_for_options(config, &options);
-    let effective_temperament = config.agent.temperament_for_role(&safety_layer.role);
+    let safety_layer = options
+        .safety_layer
+        .clone()
+        .unwrap_or_else(|| safety_layer_for_options(config, &options));
+    let effective_temperament = options
+        .temperament
+        .unwrap_or_else(|| config.agent.temperament_for_role(&safety_layer.role));
+    // Populate canonical fields so adapters can read them directly.
+    options.safety_layer = Some(safety_layer.clone());
+    options.temperament = Some(effective_temperament);
     let resolved = resolve_model(config, model_key);
     let profile = resolved
         .profile
@@ -276,7 +287,7 @@ pub fn create_agent_for_model(
                 options.extra_args.clone(),
                 safety_layer,
             )
-            .with_timeout_ms(options.timeout_ms.unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS));
+            .with_timeout_ms(options.effective_timeout_ms(None));
             if !options.name.is_empty() {
                 agent = agent.with_name(options.name.clone());
             }
@@ -314,11 +325,13 @@ pub fn create_agent_for_model(
         ));
     }
 
+    let adapter = adapter_for_kind(provider_config.kind);
+
     if options
         .pre_discovered_local_tools
         .as_ref()
         .is_some_and(|runtime| !runtime.tools().is_empty())
-        && !provider_supports_local_tool_runtime(provider_config.kind)
+        && !adapter.supports_local_tool_runtime()
     {
         return Err(AgentCreationError::LocalToolsUnsupported(
             provider_config.kind,
@@ -328,7 +341,7 @@ pub fn create_agent_for_model(
         .local_tool_mcp_servers
         .as_ref()
         .is_some_and(|servers| !servers.is_empty())
-        && !provider_supports_per_call_local_mcp(&provider_config)
+        && !adapter.supports_per_call_local_mcp(&provider_config)
     {
         return Err(AgentCreationError::LocalToolsUnsupported(
             provider_config.kind,
@@ -340,7 +353,11 @@ pub fn create_agent_for_model(
         options.provider_semaphores = Some(Arc::new(ProviderSemaphores::new(&providers)));
     }
 
-    let adapter = adapter_for_kind(provider_config.kind);
+    // Forward Gemini safety settings from config so they reach the native API body.
+    if provider_config.kind == ProviderKind::GeminiApi && options.gemini_safety_settings.is_empty()
+    {
+        options.gemini_safety_settings = config.gemini.safety_settings.clone();
+    }
     let agent = with_temperament(Some(effective_temperament), || {
         with_safety_layer(Some(safety_layer), || {
             adapter.create_agent(&provider_config, &profile, &options)
@@ -361,36 +378,12 @@ pub fn create_agent_for_model(
     ))
 }
 
-/// Whether this provider's in-process loop consumes `LocalToolRuntime`.
-///
-/// Opaque CLI/ACP harnesses must use an explicit transport bridge instead of
-/// receiving a runtime they cannot execute. Keeping this list fail-closed
-/// prevents a newly added adapter from silently advertising definition-only
-/// plugin tools.
-const fn provider_supports_local_tool_runtime(kind: ProviderKind) -> bool {
-    matches!(
-        kind,
-        ProviderKind::OpenAiCompat
-            | ProviderKind::AnthropicApi
-            | ProviderKind::PerplexityApi
-            | ProviderKind::GeminiApi
-            | ProviderKind::CerebrasApi
-    )
-}
-
-fn provider_supports_per_call_local_mcp(provider: &ProviderConfig) -> bool {
-    provider.kind == ProviderKind::CursorCli
-        || (provider.kind == ProviderKind::Hermes
-            && provider.base_url.is_none()
-            && provider
-                .args
-                .as_ref()
-                .is_some_and(|args| args.iter().any(|argument| argument == "acp")))
-}
-
 fn safety_layer_for_options(config: &RokoConfig, options: &AgentOptions) -> SafetyLayer {
-    let mut safety_layer =
-        current_safety_layer().unwrap_or_else(|| SafetyLayer::from_config(config));
+    let mut safety_layer = options
+        .safety_layer
+        .clone()
+        .or_else(current_safety_layer)
+        .unwrap_or_else(|| SafetyLayer::from_config(config));
     if let Some(contract) = options.agent_contract.clone() {
         safety_layer = safety_layer.with_contract(contract);
     }
@@ -645,6 +638,21 @@ pub trait ProviderAdapter: Send + Sync {
     /// Classify an error response into a canonical error type.
     /// Used by health tracking to decide retry vs cooldown vs skip.
     fn classify_error(&self, status: u16, body: &Value) -> ProviderError;
+
+    /// Whether this adapter's in-process loop can consume `LocalToolRuntime`.
+    ///
+    /// Opaque CLI/ACP harnesses must use an explicit transport bridge instead
+    /// of receiving a runtime they cannot execute. Defaults to `false` so that
+    /// newly added adapters fail closed rather than silently advertising
+    /// definition-only plugin tools.
+    fn supports_local_tool_runtime(&self) -> bool {
+        false
+    }
+
+    /// Whether this adapter supports per-call local MCP server injection.
+    fn supports_per_call_local_mcp(&self, _provider: &ProviderConfig) -> bool {
+        false
+    }
 }
 
 pub(crate) fn configured_resource_limits(
@@ -719,6 +727,16 @@ impl LocalToolRuntime {
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Default)]
 pub struct AgentOptions {
+    /// Resolved safety layer for this agent construction.
+    ///
+    /// When set, `create_agent_for_model` uses this instead of looking up a
+    /// thread-local. Prefer setting this field over calling `with_safety_layer`.
+    pub safety_layer: Option<SafetyLayer>,
+    /// Resolved temperament for this agent construction.
+    ///
+    /// When set, `create_agent_for_model` uses this instead of looking up a
+    /// thread-local. Prefer setting this field over calling `with_temperament`.
+    pub temperament: Option<Temperament>,
     pub command: Option<String>,
     pub timeout_ms: Option<u64>,
     pub system_prompt: Option<String>,
@@ -807,6 +825,9 @@ pub struct AgentOptions {
     /// Anthropic API, Gemini) should call `acquire(provider_id)` before each I/O request
     /// to enforce configured RPM/TPM budgets from `[providers.<name>].limits` in roko.toml.
     pub rate_limiter: Option<Arc<ProviderRateLimiter>>,
+    /// Gemini-specific per-category safety thresholds from `[gemini].safety_settings`.
+    /// Forwarded verbatim as `safetySettings` in `GenerateContentRequest`.
+    pub gemini_safety_settings: Vec<roko_core::config::schema::SafetySetting>,
 }
 
 /// Authenticated per-call MCP endpoint for an ACP provider subprocess.
@@ -867,6 +888,14 @@ impl AgentOptions {
     #[must_use]
     pub fn effective_immune_root(&self) -> Option<&Path> {
         self.immune_root.as_deref().or(self.working_dir.as_deref())
+    }
+
+    /// Resolve timeout: agent option > provider default > global default.
+    #[must_use]
+    pub fn effective_timeout_ms(&self, provider_default: Option<u64>) -> u64 {
+        self.timeout_ms
+            .or(provider_default)
+            .unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS)
     }
 
     /// Append Perplexity search options as a structured `extra_args` payload.
@@ -1128,24 +1157,27 @@ mod tests {
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         let cursor = provider(ProviderKind::CursorCli);
-        assert!(provider_supports_per_call_local_mcp(&cursor));
+        assert!(adapter_for_kind(ProviderKind::CursorCli).supports_per_call_local_mcp(&cursor));
 
         let hermes_acp = ProviderConfig {
             command: Some("hermes".to_string()),
             args: Some(vec!["acp".to_string()]),
             ..provider(ProviderKind::Hermes)
         };
-        assert!(provider_supports_per_call_local_mcp(&hermes_acp));
+        assert!(adapter_for_kind(ProviderKind::Hermes).supports_per_call_local_mcp(&hermes_acp));
 
         let hermes_oneshot = ProviderConfig {
             command: Some("hermes".to_string()),
             ..provider(ProviderKind::Hermes)
         };
-        assert!(!provider_supports_per_call_local_mcp(&hermes_oneshot));
+        assert!(
+            !adapter_for_kind(ProviderKind::Hermes).supports_per_call_local_mcp(&hermes_oneshot)
+        );
         let openclaw = provider(ProviderKind::OpenClaw);
-        assert!(!provider_supports_per_call_local_mcp(&openclaw));
+        assert!(!adapter_for_kind(ProviderKind::OpenClaw).supports_per_call_local_mcp(&openclaw));
     }
 
     fn write_script(path: &std::path::Path, body: &str) {
@@ -1239,6 +1271,7 @@ mod tests {
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
         config.models.insert(
@@ -1294,6 +1327,7 @@ mod tests {
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
         config.models.insert(
@@ -1857,6 +1891,7 @@ mod tests {
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
         config.models.insert(
@@ -1937,6 +1972,7 @@ mod tests {
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
         config.models.insert(
@@ -2019,6 +2055,7 @@ mod tests {
                 extra_headers: None,
                 max_concurrent: Some(3),
                 limits: None,
+                require_confirmation: false,
             },
         );
 
@@ -2152,6 +2189,7 @@ mod tests {
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         let model = ModelProfile {
             provider: "hermes".to_string(),
@@ -2193,6 +2231,7 @@ mod tests {
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         let model = ModelProfile {
             provider: "openclaw".to_string(),

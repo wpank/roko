@@ -210,9 +210,9 @@ impl IndexQuery {
                 },
                 hdc: None,
             },
-            other => bail!(
-                "unknown search strategy: {other} (expected keyword, structural, or hybrid)"
-            ),
+            other => {
+                bail!("unknown search strategy: {other} (expected keyword, structural, or hybrid)")
+            }
         };
 
         // For keyword and hybrid strategies, apply kind/file filters as a
@@ -2146,7 +2146,8 @@ mod tests {
             };
             let err = query.execute(&index).unwrap_err();
             assert!(
-                err.to_string().contains("HDC search is not a stable CLI strategy"),
+                err.to_string()
+                    .contains("HDC search is not a stable CLI strategy"),
                 "unexpected error: {err}",
             );
         }
@@ -2163,7 +2164,8 @@ mod tests {
             };
             let err = query.execute(&index).unwrap_err();
             assert!(
-                err.to_string().contains("--limit must be greater than zero"),
+                err.to_string()
+                    .contains("--limit must be greater than zero"),
                 "unexpected error: {err}",
             );
         }

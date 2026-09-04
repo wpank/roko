@@ -5,14 +5,10 @@
 //! degrades to an empty section list with a visible warning rather than
 //! failing the aggregate.
 
+use crate::prompt::{AttentionBidder, CacheLayer, Placement, PromptSection, SectionPriority};
 use async_trait::async_trait;
 use roko_core::error::Result;
 use roko_core::{Body, Kind, Signal};
-use tracing::warn;
-
-use crate::prompt::{
-    AttentionBidder, CacheLayer, Placement, PromptSection, SectionPriority,
-};
 
 use super::signals::{ComposeRequest, ComposeScope, KnowledgeSections, cell_ids};
 
@@ -115,11 +111,9 @@ impl<P: KnowledgeProvider> roko_graph::Cell for KnowledgeCell<P> {
 
         let payload = KnowledgeSections::new(scope, sections);
         let body = Body::from_json(&payload).map_err(|e| {
-            roko_core::error::RokoError::Internal(format!(
-                "knowledge cell serialization: {e}"
-            ))
+            roko_core::error::RokoError::Store(format!("knowledge cell serialization: {e}"))
         })?;
-        let signal = Signal::builder(Kind::Context).body(body).build();
+        let signal = Signal::builder(Kind::ContextPack).body(body).build();
         Ok(vec![signal])
     }
 }
@@ -135,7 +129,7 @@ fn extract_compose_request(input: &[Signal]) -> Result<ComposeRequest> {
             return Ok(req);
         }
     }
-    Err(roko_core::error::RokoError::Internal(
+    Err(roko_core::error::RokoError::Store(
         "KnowledgeCell: no ComposeRequest found in input signals".into(),
     ))
 }
@@ -144,13 +138,14 @@ fn extract_compose_request(input: &[Signal]) -> Result<ComposeRequest> {
 mod tests {
     use super::*;
     use roko_core::AgentRole;
+    use roko_graph::Cell;
 
     #[tokio::test]
     async fn noop_provider_produces_empty_sections() {
         let cell = KnowledgeCell::default();
         let req = ComposeRequest::new("r1", "p1", "t1", AgentRole::Implementer);
         let body = Body::from_json(&req).unwrap();
-        let signal = Signal::builder(Kind::Context).body(body).build();
+        let signal = Signal::builder(Kind::ContextPack).body(body).build();
 
         let result = cell
             .execute(vec![signal], &roko_graph::CellContext::new())
@@ -179,7 +174,7 @@ mod tests {
         let cell = KnowledgeCell::new(TestProvider);
         let req = ComposeRequest::new("r1", "p1", "t1", AgentRole::Implementer);
         let body = Body::from_json(&req).unwrap();
-        let signal = Signal::builder(Kind::Context).body(body).build();
+        let signal = Signal::builder(Kind::ContextPack).body(body).build();
 
         let result = cell
             .execute(vec![signal], &roko_graph::CellContext::new())
@@ -194,7 +189,7 @@ mod tests {
     #[tokio::test]
     async fn missing_request_errors() {
         let cell = KnowledgeCell::default();
-        let empty_signal = Signal::builder(Kind::Context)
+        let empty_signal = Signal::builder(Kind::ContextPack)
             .body(Body::text("not a request"))
             .build();
         let result = cell

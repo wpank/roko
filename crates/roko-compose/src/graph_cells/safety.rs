@@ -13,9 +13,7 @@ use async_trait::async_trait;
 use roko_core::error::Result;
 use roko_core::{Body, Kind, Signal};
 
-use crate::prompt::{
-    AttentionBidder, CacheLayer, Placement, PromptSection, SectionPriority,
-};
+use crate::prompt::{CacheLayer, Placement, PromptSection, SectionPriority};
 
 use super::signals::{ComposeRequest, ComposeScope, SafetySections, cell_ids};
 
@@ -114,11 +112,9 @@ impl<P: SafetyContextProvider> roko_graph::Cell for SafetyCell<P> {
 
         let payload = SafetySections::new(scope, sections);
         let body = Body::from_json(&payload).map_err(|e| {
-            roko_core::error::RokoError::Internal(format!(
-                "safety cell serialization: {e}"
-            ))
+            roko_core::error::RokoError::Store(format!("safety cell serialization: {e}"))
         })?;
-        let signal = Signal::builder(Kind::Context).body(body).build();
+        let signal = Signal::builder(Kind::ContextPack).body(body).build();
         Ok(vec![signal])
     }
 }
@@ -129,7 +125,7 @@ fn extract_compose_request(input: &[Signal]) -> Result<ComposeRequest> {
             return Ok(req);
         }
     }
-    Err(roko_core::error::RokoError::Internal(
+    Err(roko_core::error::RokoError::Store(
         "SafetyCell: no ComposeRequest found in input signals".into(),
     ))
 }
@@ -138,13 +134,14 @@ fn extract_compose_request(input: &[Signal]) -> Result<ComposeRequest> {
 mod tests {
     use super::*;
     use roko_core::AgentRole;
+    use roko_graph::Cell;
 
     #[tokio::test]
     async fn noop_produces_empty() {
         let cell = SafetyCell::default();
         let req = ComposeRequest::new("r1", "p1", "t1", AgentRole::Implementer);
         let body = Body::from_json(&req).unwrap();
-        let signal = Signal::builder(Kind::Context).body(body).build();
+        let signal = Signal::builder(Kind::ContextPack).body(body).build();
 
         let result = cell
             .execute(vec![signal], &roko_graph::CellContext::new())
@@ -173,7 +170,7 @@ mod tests {
         let cell = SafetyCell::new(TestProvider);
         let req = ComposeRequest::new("r1", "p1", "t1", AgentRole::Implementer);
         let body = Body::from_json(&req).unwrap();
-        let signal = Signal::builder(Kind::Context).body(body).build();
+        let signal = Signal::builder(Kind::ContextPack).body(body).build();
 
         let result = cell
             .execute(vec![signal], &roko_graph::CellContext::new())

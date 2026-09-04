@@ -406,12 +406,8 @@ impl From<GatewayError> for RokoError {
             GatewayError::RateLimited { .. } => {
                 RokoError::gateway("rate_limit", true, error.to_string())
             }
-            GatewayError::CacheError(_) => {
-                RokoError::gateway("cache", true, error.to_string())
-            }
-            GatewayError::Cancelled => {
-                RokoError::gateway("cancelled", false, error.to_string())
-            }
+            GatewayError::CacheError(_) => RokoError::gateway("cache", true, error.to_string()),
+            GatewayError::Cancelled => RokoError::gateway("cancelled", false, error.to_string()),
             GatewayError::ConvergenceDetected { .. } => {
                 RokoError::gateway("convergence", false, error.to_string())
             }
@@ -597,6 +593,10 @@ pub enum FeedbackEvent {
         cost_usd: f64,
         latency_ms: u64,
         success: bool,
+        /// Classified error kind (e.g. `"rate_limit"`, `"timeout"`,
+        /// `"auth_failure"`). `None` on success.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error_class: Option<String>,
     },
     /// Feedback from a gate execution.
     GateResult {

@@ -146,10 +146,12 @@ fn classify_json(parsed: ReviewJson) -> ReviewVerdict {
         "revise" | "revision" | "changes_requested" => {
             if parsed.findings.is_empty() {
                 ReviewVerdict::Revise {
-                    findings: vec![parsed
-                        .reason
-                        .or(parsed.summary)
-                        .unwrap_or_else(|| "Revisions requested".to_string())],
+                    findings: vec![
+                        parsed
+                            .reason
+                            .or(parsed.summary)
+                            .unwrap_or_else(|| "Revisions requested".to_string()),
+                    ],
                 }
             } else {
                 ReviewVerdict::Revise {
@@ -203,9 +205,7 @@ fn parse_legacy_text(s: &str) -> ReviewVerdict {
 
     // Check for approval (must be unambiguous).
     let approval_keywords = ["approved", "lgtm", "looks good", "ship it"];
-    let has_approval = approval_keywords
-        .iter()
-        .any(|kw| lower.contains(kw));
+    let has_approval = approval_keywords.iter().any(|kw| lower.contains(kw));
 
     // Reject "approved" if there's also a qualification.
     let has_qualification = lower.contains("but ")
@@ -246,15 +246,13 @@ fn extract_findings(s: &str) -> Vec<String> {
         // Match patterns like "1.", "- ", "* ".
         let is_list = trimmed.starts_with("- ")
             || trimmed.starts_with("* ")
-            || trimmed
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_digit())
-                && trimmed.contains(". ");
+            || trimmed.chars().next().is_some_and(|c| c.is_ascii_digit()) && trimmed.contains(". ");
 
         if is_list {
             let content = trimmed
-                .trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == '-' || c == '*')
+                .trim_start_matches(|c: char| {
+                    c.is_ascii_digit() || c == '.' || c == '-' || c == '*'
+                })
                 .trim();
             if !content.is_empty() {
                 findings.push(content.to_string());

@@ -136,12 +136,11 @@ mod tests {
         let store = sample_store();
         let result = tool.expand("ptr-abc123", &store);
         assert!(result.is_ok());
-        match result {
-            ToolResult::Ok { content, .. } => {
-                assert!(content.contains("full content of a large tool result"));
-            }
-            ToolResult::Err(_) => panic!("expected Ok"),
-        }
+        assert!(
+            result
+                .text_content()
+                .contains("full content of a large tool result")
+        );
     }
 
     #[test]
@@ -150,12 +149,7 @@ mod tests {
         let store = sample_store();
         let result = tool.expand("ptr-def456", &store);
         assert!(result.is_ok());
-        match result {
-            ToolResult::Ok { content, .. } => {
-                assert!(content.contains(r#""key": "value""#));
-            }
-            ToolResult::Err(_) => panic!("expected Ok"),
-        }
+        assert!(result.text_content().contains(r#""key": "value""#));
     }
 
     #[test]
@@ -164,12 +158,7 @@ mod tests {
         let store = sample_store();
         let result = tool.expand("ptr-empty", &store);
         assert!(result.is_ok());
-        match result {
-            ToolResult::Ok { content, .. } => {
-                assert!(content.is_empty());
-            }
-            ToolResult::Err(_) => panic!("expected Ok"),
-        }
+        assert!(result.text_content().is_empty());
     }
 
     #[test]

@@ -36,7 +36,9 @@ use tokio::sync::{mpsc, oneshot, watch};
 use super::approval_ipc::ApprovalRequest;
 use super::dashboard::{DashboardData, DashboardScaffold, Theme};
 use super::effects_config::EffectsConfig;
-use super::event::{Event, EventHandler, FrameStats, RenderDirty, TickPolicyInputs, next_tick_policy};
+use super::event::{
+    Event, EventHandler, FrameStats, RenderDirty, TickPolicyInputs, next_tick_policy,
+};
 use super::fs_watch::{self, FsRefresh, FsWatchHandle};
 use super::git_watch::{self, GitRefresh, GitWatchHandle};
 use super::input::{self, ConfirmAction, FocusZone, InputMode, TuiAction};
@@ -668,8 +670,8 @@ pub async fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut Ap
         // -- Draw only when dirty; record stats --
         if app.render_dirty.is_dirty() {
             let draw_reasons = app.render_dirty;
-            let input_pending =
-                app.render_dirty.contains(RenderDirty::INPUT) && app.frame_stats.last_input_at.is_some();
+            let input_pending = app.render_dirty.contains(RenderDirty::INPUT)
+                && app.frame_stats.last_input_at.is_some();
             let draw_start = Instant::now();
             terminal.draw(|f| app.draw(f))?;
             let draw_elapsed = draw_start.elapsed();
@@ -1215,8 +1217,8 @@ impl App {
             }
             if self.render_dirty.is_dirty() {
                 let draw_reasons = self.render_dirty;
-                let input_pending =
-                    self.render_dirty.contains(RenderDirty::INPUT) && self.frame_stats.last_input_at.is_some();
+                let input_pending = self.render_dirty.contains(RenderDirty::INPUT)
+                    && self.frame_stats.last_input_at.is_some();
                 let draw_start = Instant::now();
                 terminal
                     .draw(|frame| self.draw(frame))
@@ -1307,11 +1309,7 @@ impl App {
         }
 
         // Breadcrumb trail: Tab > SubView > Focus
-        super::widgets::header_bar::render_breadcrumb_bar(
-            frame,
-            main_layout[3],
-            &self.tui_state,
-        );
+        super::widgets::header_bar::render_breadcrumb_bar(frame, main_layout[3], &self.tui_state);
 
         if subview_height > 0 {
             self.render_subview_bar(frame, main_layout[4], &theme);
@@ -1462,8 +1460,7 @@ impl App {
                 }
                 // Start a subtle fade-in transition when switching tabs.
                 if previous_tab != tab && self.fx_config.screen_postfx {
-                    self.tab_transition =
-                        Some((Instant::now(), Duration::from_millis(200)));
+                    self.tab_transition = Some((Instant::now(), Duration::from_millis(200)));
                 }
             }
             TuiAction::FocusNext => {
@@ -1666,16 +1663,10 @@ impl App {
                             *selected_index = selected_index.saturating_sub(1);
                             *scroll_offset = scroll_offset.saturating_sub(1);
                         }
-                        ModalState::QueueOverview {
-                            selected_index,
-                            ..
-                        } => {
+                        ModalState::QueueOverview { selected_index, .. } => {
                             *selected_index = selected_index.saturating_sub(1);
                         }
-                        ModalState::TaskPicker {
-                            selected_index,
-                            ..
-                        } => {
+                        ModalState::TaskPicker { selected_index, .. } => {
                             *selected_index = selected_index.saturating_sub(1);
                         }
                         _ => {}
@@ -1698,16 +1689,10 @@ impl App {
                             *selected_index = selected_index.saturating_add(1);
                             *scroll_offset = scroll_offset.saturating_add(1);
                         }
-                        ModalState::QueueOverview {
-                            selected_index,
-                            ..
-                        } => {
+                        ModalState::QueueOverview { selected_index, .. } => {
                             *selected_index = selected_index.saturating_add(1);
                         }
-                        ModalState::TaskPicker {
-                            selected_index,
-                            ..
-                        } => {
+                        ModalState::TaskPicker { selected_index, .. } => {
                             *selected_index = selected_index.saturating_add(1);
                         }
                         _ => {}
@@ -1751,14 +1736,23 @@ impl App {
                 }
                 // Create subdirectories matching `roko init`
                 for sub in &[
-                    "state", "learn", "jobs", "prd", "prd/published", "prd/drafts",
-                    "task-outputs", "research", "subscriptions", "templates",
+                    "state",
+                    "learn",
+                    "jobs",
+                    "prd",
+                    "prd/published",
+                    "prd/drafts",
+                    "task-outputs",
+                    "research",
+                    "subscriptions",
+                    "templates",
                 ] {
                     let _ = std::fs::create_dir_all(roko_dir.join(sub));
                 }
                 // Create default roko.toml if absent
                 if !roko_toml.exists() {
-                    let default_toml = "[agent]\neffort = \"standard\"\n\n[learning]\nenabled = true\n";
+                    let default_toml =
+                        "[agent]\neffort = \"standard\"\n\n[learning]\nenabled = true\n";
                     if let Err(err) = std::fs::write(&roko_toml, default_toml) {
                         tracing::warn!(error = %err, "failed to write roko.toml");
                     }
@@ -1767,8 +1761,7 @@ impl App {
                 self.tui_state.workdir = self.workdir.clone();
                 self.tui_state.refresh_mcp_config_view();
                 // Transition to the confirmation screen
-                self.tui_state.active_modal =
-                    Some(ModalState::Welcome { initialized: true });
+                self.tui_state.active_modal = Some(ModalState::Welcome { initialized: true });
                 tracing::info!(workdir = %self.workdir.display(), "workspace initialized from TUI welcome modal");
             }
             TuiAction::WelcomeDismiss => {
@@ -1949,25 +1942,29 @@ impl App {
                             // Track the pending command so we can commit state on ack.
                             self.pending_exec_commands.insert(cmd_id, kind);
                             // State changes on Completed ack; show pending.
-                            self.notifications.push_back(super::modals::Notification::info(
-                                if requested_pause { "Pause requested" } else { "Resume requested" },
-                            ));
+                            self.notifications
+                                .push_back(super::modals::Notification::info(if requested_pause {
+                                    "Pause requested"
+                                } else {
+                                    "Resume requested"
+                                }));
                         }
                         Err(crate::execution_control::CommandSendError::Full(_)) => {
-                            self.notifications.push_back(super::modals::Notification::warn(
-                                "command queue full",
-                            ));
+                            self.notifications
+                                .push_back(super::modals::Notification::warn("command queue full"));
                         }
                         Err(crate::execution_control::CommandSendError::Disconnected(_)) => {
-                            self.notifications.push_back(super::modals::Notification::warn(
-                                "executor disconnected",
-                            ));
+                            self.notifications
+                                .push_back(super::modals::Notification::warn(
+                                    "executor disconnected",
+                                ));
                         }
                     }
                 } else {
-                    self.notifications.push_back(super::modals::Notification::warn(
-                        "Pause is available only during a connected plan run",
-                    ));
+                    self.notifications
+                        .push_back(super::modals::Notification::warn(
+                            "Pause is available only during a connected plan run",
+                        ));
                 }
             }
             TuiAction::SwitchAgentTab(idx) => {
@@ -2221,17 +2218,19 @@ impl App {
                 ) {
                     self.tui_state.active_modal = None;
                 } else {
-                    self.tui_state.active_modal =
-                        Some(ModalState::NotificationHistory {
-                            scroll_offset: 0,
-                            selected_index: 0,
-                            filter: super::modals::LevelFilter::default(),
-                        });
+                    self.tui_state.active_modal = Some(ModalState::NotificationHistory {
+                        scroll_offset: 0,
+                        selected_index: 0,
+                        filter: super::modals::LevelFilter::default(),
+                    });
                 }
             }
             TuiAction::NotifFilterToggle(key) => {
-                if let Some(ModalState::NotificationHistory { filter, selected_index, .. }) =
-                    self.tui_state.active_modal.as_mut()
+                if let Some(ModalState::NotificationHistory {
+                    filter,
+                    selected_index,
+                    ..
+                }) = self.tui_state.active_modal.as_mut()
                 {
                     filter.toggle(key);
                     // Reset selection when filters change.
@@ -2317,9 +2316,9 @@ impl App {
                         .rev()
                         .filter(|e| filter.accepts(e.level))
                         .collect();
-                    filtered.get(*selected_index).map(|entry| {
-                        (entry.related_task.clone(), entry.related_run.clone())
-                    })
+                    filtered
+                        .get(*selected_index)
+                        .map(|entry| (entry.related_task.clone(), entry.related_run.clone()))
                 } else {
                     None
                 };
@@ -2336,24 +2335,22 @@ impl App {
                                 scroll_offset: 0,
                             });
                         } else {
-                            self.notifications.push_back(super::modals::Notification::warn(
-                                format!("Task {task_id} not found (may be stale)"),
-                            ));
+                            self.notifications
+                                .push_back(super::modals::Notification::warn(format!(
+                                    "Task {task_id} not found (may be stale)"
+                                )));
                         }
                     } else if let Some(run_id) = related_run {
-                        if let Some(idx) = self
-                            .tui_state
-                            .plans
-                            .iter()
-                            .position(|p| p.id == run_id)
+                        if let Some(idx) = self.tui_state.plans.iter().position(|p| p.id == run_id)
                         {
                             self.tui_state.active_modal = Some(ModalState::PlanDetail {
                                 plan_id: self.tui_state.plans[idx].id.clone(),
                             });
                         } else {
-                            self.notifications.push_back(super::modals::Notification::warn(
-                                format!("Run {run_id} not found (may be stale)"),
-                            ));
+                            self.notifications
+                                .push_back(super::modals::Notification::warn(format!(
+                                    "Run {run_id} not found (may be stale)"
+                                )));
                         }
                     }
                 }
@@ -2739,7 +2736,12 @@ impl App {
             TuiAction::NextAgentOutputMatch => {
                 self.tui_state.agent_output_search.next_match();
                 // Scroll to the current match if we have one
-                if self.tui_state.agent_output_search.current_match_seq().is_some() {
+                if self
+                    .tui_state
+                    .agent_output_search
+                    .current_match_seq()
+                    .is_some()
+                {
                     // Pin the scroll (switch from tail to pinned mode)
                     if self.tui_state.agent_scroll.is_none() {
                         self.tui_state.agent_scroll = Some(0);
@@ -2748,7 +2750,12 @@ impl App {
             }
             TuiAction::PrevAgentOutputMatch => {
                 self.tui_state.agent_output_search.prev_match();
-                if self.tui_state.agent_output_search.current_match_seq().is_some() {
+                if self
+                    .tui_state
+                    .agent_output_search
+                    .current_match_seq()
+                    .is_some()
+                {
                     if self.tui_state.agent_scroll.is_none() {
                         self.tui_state.agent_scroll = Some(0);
                     }
@@ -2762,9 +2769,10 @@ impl App {
                         let plan_id = plan.id.clone();
                         self.open_confirm_modal(ConfirmAction::SoftRetryPlan(plan_id));
                     } else {
-                        self.notifications.push_back(super::modals::Notification::info(
-                            "No failed tasks to retry",
-                        ));
+                        self.notifications
+                            .push_back(super::modals::Notification::info(
+                                "No failed tasks to retry",
+                            ));
                     }
                 }
             }
@@ -2954,9 +2962,11 @@ impl App {
                 Some(plan_id.clone()),
                 None,
             ),
-            ConfirmAction::ReverifyPlan(plan_id) => {
-                (ExecutionCommandKind::ReverifyGates, Some(plan_id.clone()), None)
-            }
+            ConfirmAction::ReverifyPlan(plan_id) => (
+                ExecutionCommandKind::ReverifyGates,
+                Some(plan_id.clone()),
+                None,
+            ),
             ConfirmAction::ForceAdvance(plan_id) => {
                 let task_id = self
                     .tui_state
@@ -2969,7 +2979,11 @@ impl App {
                             .map(|t| t.id.clone())
                     })
                     .unwrap_or_default();
-                (ExecutionCommandKind::Skip, Some(plan_id.clone()), Some(task_id))
+                (
+                    ExecutionCommandKind::Skip,
+                    Some(plan_id.clone()),
+                    Some(task_id),
+                )
             }
             ConfirmAction::ResetSelectedPlan(plan_id) => {
                 (ExecutionCommandKind::Cancel, Some(plan_id.clone()), None)
@@ -3100,8 +3114,9 @@ impl App {
             super::hit_test::FocusZone::AgentOutput => FocusZone::AgentOutput,
             super::hit_test::FocusZone::CommandOutput => FocusZone::CommandOutput,
             super::hit_test::FocusZone::RightContent => FocusZone::RightPanel,
-            super::hit_test::FocusZone::HeaderTab(_)
-            | super::hit_test::FocusZone::DetailTab(_) => FocusZone::RightPanel,
+            super::hit_test::FocusZone::HeaderTab(_) | super::hit_test::FocusZone::DetailTab(_) => {
+                FocusZone::RightPanel
+            }
             super::hit_test::FocusZone::LeftPane => match self.tui_state.active_tab {
                 Tab::Git => FocusZone::GitBranches,
                 Tab::Logs => FocusZone::LogList,
@@ -3210,8 +3225,7 @@ impl App {
             ScrollTarget::LogList => self.scroll_logs_by(delta),
             ScrollTarget::AgentRoster => {
                 let max = self.tui_state.agents.len().saturating_sub(1);
-                let next =
-                    (self.tui_state.selected_agent as i32 + delta).clamp(0, max as i32);
+                let next = (self.tui_state.selected_agent as i32 + delta).clamp(0, max as i32);
                 self.tui_state.selected_agent = next as usize;
             }
             ScrollTarget::MarketplaceJobs => {
@@ -3656,8 +3670,10 @@ impl App {
             Tab::Plans => {
                 let plan_count = self.tui_state.plans.len();
                 if plan_count > 0 {
-                    self.tui_state.selected_plan_idx =
-                        self.tui_state.selected_plan_idx.min(plan_count.saturating_sub(1));
+                    self.tui_state.selected_plan_idx = self
+                        .tui_state
+                        .selected_plan_idx
+                        .min(plan_count.saturating_sub(1));
                 }
             }
             Tab::Config => {
@@ -4166,9 +4182,10 @@ impl App {
 
     fn save_config_changes(&mut self) {
         if self.tui_state.config_pending.is_empty() {
-            self.notifications.push_back(super::modals::Notification::info(
-                "No pending changes to save",
-            ));
+            self.notifications
+                .push_back(super::modals::Notification::info(
+                    "No pending changes to save",
+                ));
             return;
         }
 
@@ -4179,9 +4196,10 @@ impl App {
                 self.tui_state.invalidate_config_cache();
                 self.fx_config = EffectsConfig::load_from_root(&self.workdir);
                 self.pending_refresh = true;
-                self.notifications.push_back(super::modals::Notification::info(
-                    "Config saved and reloaded",
-                ));
+                self.notifications
+                    .push_back(super::modals::Notification::info(
+                        "Config saved and reloaded",
+                    ));
             }
             Err(error) => {
                 self.notifications
@@ -5058,10 +5076,9 @@ fn collect_sys_metrics_bg(
 
         // Network: sum bytes-since-last-refresh across all interfaces,
         // then divide by sample interval to get bytes/sec.
-        let (net_rx_delta, net_tx_delta) =
-            networks.iter().fold((0u64, 0u64), |(rx, tx), nic| {
-                (rx + nic.1.received(), tx + nic.1.transmitted())
-            });
+        let (net_rx_delta, net_tx_delta) = networks.iter().fold((0u64, 0u64), |(rx, tx), nic| {
+            (rx + nic.1.received(), tx + nic.1.transmitted())
+        });
         let net_down_bps = net_rx_delta / SAMPLE_SECS;
         let net_up_bps = net_tx_delta / SAMPLE_SECS;
 
@@ -5077,10 +5094,7 @@ fn collect_sys_metrics_bg(
             .process(own_pid)
             .map(|p| {
                 let du = p.disk_usage();
-                (
-                    du.read_bytes / SAMPLE_SECS,
-                    du.written_bytes / SAMPLE_SECS,
-                )
+                (du.read_bytes / SAMPLE_SECS, du.written_bytes / SAMPLE_SECS)
             })
             .unwrap_or((0, 0));
 
@@ -5401,8 +5415,7 @@ mod tests {
         let (sender, mut cmd_rx, _ack_tx, ack_rx) =
             crate::execution_control::ExecutionCommandSender::channel("test-run");
         let ack_receiver = crate::execution_control::CommandAckReceiver::new(ack_rx);
-        let mut app = App::new(dir.path())
-            .with_execution_command_sender(sender, ack_receiver);
+        let mut app = App::new(dir.path()).with_execution_command_sender(sender, ack_receiver);
 
         // First toggle: should send Pause
         app.dispatch_action(TuiAction::TogglePause);
@@ -5414,7 +5427,9 @@ mod tests {
         assert_eq!(received.run_id, "test-run");
         // Pause request notification shown
         assert!(
-            app.notifications.iter().any(|n| n.message.contains("Pause requested"))
+            app.notifications
+                .iter()
+                .any(|n| n.message.contains("Pause requested"))
         );
 
         // Second toggle: should send Resume

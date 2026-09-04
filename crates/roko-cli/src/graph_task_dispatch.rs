@@ -682,10 +682,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         };
 
         // ── Provider invocation ──────────────────────────────────────────
-        let dispatch_result = self
-            .factory
-            .run_shared_agent_bridge(request)
-            .await;
+        let dispatch_result = self.factory.run_shared_agent_bridge(request).await;
 
         let wall_duration = started_at.elapsed();
 
@@ -805,7 +802,9 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 };
 
                 // Record terminal receipt before propagating the error.
-                let _ = recorder.record_terminal(&attempt_id, &dispatch_outcome).await;
+                let _ = recorder
+                    .record_terminal(&attempt_id, &dispatch_outcome)
+                    .await;
 
                 // Send terminal event.
                 let _ = event_tx
@@ -1065,6 +1064,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-1","model":"claude-sonnet-4-6
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
         config.models.insert(
@@ -1217,6 +1217,7 @@ exit 1
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
         config.models.insert(
@@ -1331,9 +1332,9 @@ printf '%s\n' '{"type":"result","session_id":"sess-s1","model":"claude-sonnet-4-
         }
 
         // Must have at least AttemptStarted and AttemptTerminal.
-        let started = events.iter().any(|e| {
-            matches!(e, GraphTaskEvent::AttemptStarted { .. })
-        });
+        let started = events
+            .iter()
+            .any(|e| matches!(e, GraphTaskEvent::AttemptStarted { .. }));
         let terminal = events.iter().any(|e| {
             matches!(
                 e,
@@ -1348,7 +1349,13 @@ printf '%s\n' '{"type":"result","session_id":"sess-s1","model":"claude-sonnet-4-
 
         // Must have usage event with cost.
         let usage = events.iter().any(|e| {
-            matches!(e, GraphTaskEvent::Usage { cost_usd: Some(_), .. })
+            matches!(
+                e,
+                GraphTaskEvent::Usage {
+                    cost_usd: Some(_),
+                    ..
+                }
+            )
         });
         assert!(usage, "must emit Usage event with actual cost");
     }
@@ -1356,19 +1363,14 @@ printf '%s\n' '{"type":"result","session_id":"sess-s1","model":"claude-sonnet-4-
     #[tokio::test]
     async fn streaming_dispatch_rejects_missing_lease_path() {
         let temp = tempdir().expect("tempdir");
-        let (dispatcher, task) = make_streaming_dispatcher(
-            &temp,
-            "#!/bin/sh\nexit 0\n",
-        )
-        .await;
+        let (dispatcher, task) = make_streaming_dispatcher(&temp, "#!/bin/sh\nexit 0\n").await;
 
         let spec = make_spec(&task);
         let lease = TaskLease {
             path: temp.path().join("nonexistent-lease"),
             fingerprint: "fp".to_string(),
         };
-        let (event_tx, _event_rx) =
-            tokio::sync::mpsc::channel(streaming_event_channel_capacity());
+        let (event_tx, _event_rx) = tokio::sync::mpsc::channel(streaming_event_channel_capacity());
         let recorder = NoopAttemptRecorder;
 
         let error = dispatcher
@@ -1390,19 +1392,14 @@ printf '%s\n' '{"type":"result","session_id":"sess-s1","model":"claude-sonnet-4-
     async fn streaming_dispatch_rejects_mismatched_workdir() {
         let temp = tempdir().expect("tempdir");
         let other_dir = tempdir().expect("other tempdir");
-        let (dispatcher, task) = make_streaming_dispatcher(
-            &temp,
-            "#!/bin/sh\nexit 0\n",
-        )
-        .await;
+        let (dispatcher, task) = make_streaming_dispatcher(&temp, "#!/bin/sh\nexit 0\n").await;
 
         let spec = make_spec(&task);
         let lease = TaskLease {
             path: other_dir.path().to_path_buf(),
             fingerprint: "fp".to_string(),
         };
-        let (event_tx, _event_rx) =
-            tokio::sync::mpsc::channel(streaming_event_channel_capacity());
+        let (event_tx, _event_rx) = tokio::sync::mpsc::channel(streaming_event_channel_capacity());
         let recorder = NoopAttemptRecorder;
 
         let error = dispatcher
@@ -1506,11 +1503,7 @@ exit 1
         }
 
         let temp = tempdir().expect("tempdir");
-        let (dispatcher, task) = make_streaming_dispatcher(
-            &temp,
-            "#!/bin/sh\nexit 0\n",
-        )
-        .await;
+        let (dispatcher, task) = make_streaming_dispatcher(&temp, "#!/bin/sh\nexit 0\n").await;
         let spec = make_spec(&task);
 
         let recorder = TerminalRecorder {
@@ -1553,11 +1546,7 @@ exit 1
         }
 
         let temp = tempdir().expect("tempdir");
-        let (dispatcher, task) = make_streaming_dispatcher(
-            &temp,
-            "#!/bin/sh\nexit 0\n",
-        )
-        .await;
+        let (dispatcher, task) = make_streaming_dispatcher(&temp, "#!/bin/sh\nexit 0\n").await;
         let spec = make_spec(&task);
 
         let result = dispatcher
@@ -1573,11 +1562,7 @@ exit 1
     #[tokio::test]
     async fn reconcile_returns_allocate_new_for_no_evidence() {
         let temp = tempdir().expect("tempdir");
-        let (dispatcher, task) = make_streaming_dispatcher(
-            &temp,
-            "#!/bin/sh\nexit 0\n",
-        )
-        .await;
+        let (dispatcher, task) = make_streaming_dispatcher(&temp, "#!/bin/sh\nexit 0\n").await;
         let spec = make_spec(&task);
         let recorder = NoopAttemptRecorder;
 

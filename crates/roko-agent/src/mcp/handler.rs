@@ -18,7 +18,7 @@ use super::{McpClient, Transport};
 use crate::dispatcher::HandlerResolver;
 use crate::safety::capabilities::{Capability, check_plugin_tier};
 
-const MCP_TOOL_SEPARATOR: &str = ".";
+use super::MCP_TOOL_SEPARATOR;
 
 /// Dispatcher resolver that falls back from built-in handlers to live MCP
 /// clients for namespaced MCP tools.
@@ -406,7 +406,7 @@ mod tests {
             Arc::new(|_: &str| None),
             HashMap::from([("local".to_string(), client)]),
         ));
-        let dispatcher = ToolDispatcher::new(Arc::clone(&registry), resolver);
+        let dispatcher = ToolDispatcher::new_unguarded(Arc::clone(&registry), resolver);
 
         let result = dispatcher
             .dispatch(
@@ -553,12 +553,11 @@ mod tests {
             Arc::new(|_: &str| None),
             HashMap::from([("fs".to_string(), client)]),
         )
-        .with_server_tiers(HashMap::from([(
-            "fs".to_string(),
-            PluginTier::Sandboxed,
-        )]));
+        .with_server_tiers(HashMap::from([("fs".to_string(), PluginTier::Sandboxed)]));
 
-        let handler = resolver.resolve("fs.write_file").expect("should return DeniedToolHandler");
+        let handler = resolver
+            .resolve("fs.write_file")
+            .expect("should return DeniedToolHandler");
         assert_eq!(handler.name(), "fs.write_file");
     }
 
@@ -570,10 +569,7 @@ mod tests {
             Arc::new(|_: &str| None),
             HashMap::from([("fs".to_string(), client)]),
         )
-        .with_server_tiers(HashMap::from([(
-            "fs".to_string(),
-            PluginTier::Sandboxed,
-        )]));
+        .with_server_tiers(HashMap::from([("fs".to_string(), PluginTier::Sandboxed)]));
 
         let handler = resolver.resolve("fs.write_file").expect("handler");
         let call = ToolCall::new("tier-deny", "fs.write_file", json!({"path": "/tmp/x"}));
@@ -595,12 +591,11 @@ mod tests {
             Arc::new(|_: &str| None),
             HashMap::from([("ci".to_string(), client)]),
         )
-        .with_server_tiers(HashMap::from([(
-            "ci".to_string(),
-            PluginTier::Untrusted,
-        )]));
+        .with_server_tiers(HashMap::from([("ci".to_string(), PluginTier::Untrusted)]));
 
-        let handler = resolver.resolve("ci.run_command").expect("should return DeniedToolHandler");
+        let handler = resolver
+            .resolve("ci.run_command")
+            .expect("should return DeniedToolHandler");
         assert_eq!(handler.name(), "ci.run_command");
     }
 
@@ -612,10 +607,7 @@ mod tests {
             Arc::new(|_: &str| None),
             HashMap::from([("fs".to_string(), client)]),
         )
-        .with_server_tiers(HashMap::from([(
-            "fs".to_string(),
-            PluginTier::Trusted,
-        )]));
+        .with_server_tiers(HashMap::from([("fs".to_string(), PluginTier::Trusted)]));
 
         // Trusted tier permits writes, so this should return a real McpToolHandler.
         let handler = resolver.resolve("fs.write_file").expect("handler");
@@ -674,10 +666,7 @@ mod tests {
 
     #[test]
     fn capability_for_exec_tools() {
-        assert!(matches!(
-            capability_for_tool("bash"),
-            Capability::Exec(_)
-        ));
+        assert!(matches!(capability_for_tool("bash"), Capability::Exec(_)));
         assert!(matches!(
             capability_for_tool("run_command"),
             Capability::Exec(_)
@@ -686,10 +675,7 @@ mod tests {
             capability_for_tool("exec_script"),
             Capability::Exec(_)
         ));
-        assert!(matches!(
-            capability_for_tool("shell"),
-            Capability::Exec(_)
-        ));
+        assert!(matches!(capability_for_tool("shell"), Capability::Exec(_)));
     }
 
     #[test]

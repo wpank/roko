@@ -19,7 +19,9 @@ use super::tabs::Tab;
 use super::theme::Theme;
 
 /// Braille spinner frames for subtle loading animation.
-const SPINNER: &[char] = &['\u{2801}', '\u{2809}', '\u{2819}', '\u{281B}', '\u{281E}', '\u{2836}', '\u{2834}', '\u{2824}'];
+const SPINNER: &[char] = &[
+    '\u{2801}', '\u{2809}', '\u{2819}', '\u{281B}', '\u{281E}', '\u{2836}', '\u{2834}', '\u{2824}',
+];
 
 /// Pane-level empty state variants for individual view panes within a tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,11 +53,7 @@ fn pane_empty_content(pane: PaneEmpty) -> (&'static str, &'static str, &'static 
                 "Use \u{2191}\u{2193} to navigate the plan tree",
             ],
         ),
-        PaneEmpty::NoTasks => (
-            "\u{2610}",
-            "No tasks",
-            &["This plan has no tasks defined"],
-        ),
+        PaneEmpty::NoTasks => ("\u{2610}", "No tasks", &["This plan has no tasks defined"]),
         PaneEmpty::NoAgents => (
             "\u{2B21}",
             "No agents active",
@@ -183,12 +181,7 @@ fn empty_content(tab: Tab) -> (&'static str, &'static str, &'static [&'static st
 ///
 /// Shows an animated icon, a title, and contextual hint lines. The icon
 /// pulses between bright and dim using the atmosphere's breathing cycle.
-pub fn render_empty_state(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    tab: Tab,
-    atmosphere: &Atmosphere,
-) {
+pub fn render_empty_state(frame: &mut Frame<'_>, area: Rect, tab: Tab, atmosphere: &Atmosphere) {
     if area.width < 8 || area.height < 3 {
         return;
     }
@@ -214,10 +207,7 @@ pub fn render_empty_state(
 
     // Icon line with spinner.
     lines.push(Line::from(vec![
-        Span::styled(
-            format!("{icon} "),
-            Style::default().fg(icon_color),
-        ),
+        Span::styled(format!("{icon} "), Style::default().fg(icon_color)),
         Span::styled(
             spinner_ch.to_string(),
             Style::default().fg(Theme::TEXT_GHOST),
@@ -286,10 +276,7 @@ pub fn render_pane_empty(
 
     // Icon line with spinner.
     lines.push(Line::from(vec![
-        Span::styled(
-            format!("{icon} "),
-            Style::default().fg(Theme::ROSE_DIM),
-        ),
+        Span::styled(format!("{icon} "), Style::default().fg(Theme::ROSE_DIM)),
         Span::styled(
             spinner_ch.to_string(),
             Style::default().fg(Theme::TEXT_GHOST),
@@ -330,12 +317,7 @@ pub fn render_pane_empty(
 ///
 /// Use this in smaller panes where the full icon/spinner/title treatment
 /// would consume too much space.
-pub fn render_pane_empty_compact(
-    f: &mut Frame<'_>,
-    area: Rect,
-    message: &str,
-    _theme: &Theme,
-) {
+pub fn render_pane_empty_compact(f: &mut Frame<'_>, area: Rect, message: &str, _theme: &Theme) {
     if area.width < 4 || area.height < 1 {
         return;
     }

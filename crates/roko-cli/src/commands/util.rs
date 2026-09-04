@@ -420,8 +420,7 @@ pub(crate) async fn cmd_status(
 
     // Acquire a shared lock so read-only status can coexist with other
     // readers but will wait/fail if an exclusive writer holds the lock.
-    let _lock =
-        roko_cli::workspace_lock::acquire_workspace_lock_shared(&workdir.join(".roko"))?;
+    let _lock = roko_cli::workspace_lock::acquire_workspace_lock_shared(&workdir.join(".roko"))?;
 
     // --quick: compact 3-line health summary, no substrate I/O.
     if quick {
@@ -1209,9 +1208,7 @@ pub(crate) async fn cmd_replay(
     as_of: Option<String>,
     format: String,
 ) -> Result<i32> {
-    use roko_cli::replay::{
-        self, ReplayFormat, ReplayResult, REPLAY_EXIT_SUCCESS,
-    };
+    use roko_cli::replay::{self, REPLAY_EXIT_SUCCESS, ReplayFormat, ReplayResult};
 
     // Resolve workdir: subcommand --workdir takes precedence over global --repo.
     let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
@@ -1229,8 +1226,7 @@ pub(crate) async fn cmd_replay(
     let event_filter = replay::parse_event_filter(filter_value);
 
     // Resolve output format: global --json and --format must agree.
-    let output_format = ReplayFormat::resolve(&format, cli.json)
-        .map_err(|msg| anyhow!("{msg}"))?;
+    let output_format = ReplayFormat::resolve(&format, cli.json).map_err(|msg| anyhow!("{msg}"))?;
 
     // Validate and parse the root hash.
     let start = ContentHash::from_hex(&hash)
@@ -1361,8 +1357,11 @@ pub(crate) fn cmd_index(cli: &Cli, cmd: IndexCmd) -> Result<i32> {
             })?;
             let persist_elapsed = persist_start.elapsed();
 
-            println!("Index built in {:.2}s (SQLite persisted in {:.2}s)",
-                elapsed.as_secs_f64(), persist_elapsed.as_secs_f64());
+            println!(
+                "Index built in {:.2}s (SQLite persisted in {:.2}s)",
+                elapsed.as_secs_f64(),
+                persist_elapsed.as_secs_f64()
+            );
             println!("  DB:      {}", store.db_path().display());
             println!("  Files:   {}", stats.indexed_files);
             println!("  Symbols: {}", stats.total_symbols);
@@ -1389,9 +1388,8 @@ pub(crate) fn cmd_index(cli: &Cli, cmd: IndexCmd) -> Result<i32> {
                     // is fine — there is nothing to remove.
                     let db_path = roko_index::IndexStore::db_path_for(&target);
                     if db_path.exists() {
-                        return Err(e).with_context(|| {
-                            format!("remove old index at {}", db_path.display())
-                        });
+                        return Err(e)
+                            .with_context(|| format!("remove old index at {}", db_path.display()));
                     }
                 }
             }
@@ -1445,9 +1443,8 @@ pub(crate) fn cmd_index(cli: &Cli, cmd: IndexCmd) -> Result<i32> {
             let idx = match index_load_or_build(&target) {
                 Ok(idx) => idx,
                 Err(e) => {
-                    return Err(e).with_context(|| {
-                        format!("load or build index for {}", target.display())
-                    });
+                    return Err(e)
+                        .with_context(|| format!("load or build index for {}", target.display()));
                 }
             };
 
@@ -1491,9 +1488,8 @@ pub(crate) fn cmd_index(cli: &Cli, cmd: IndexCmd) -> Result<i32> {
             let idx = match index_load_or_build(&target) {
                 Ok(idx) => idx,
                 Err(e) => {
-                    return Err(e).with_context(|| {
-                        format!("load or build index for {}", target.display())
-                    });
+                    return Err(e)
+                        .with_context(|| format!("load or build index for {}", target.display()));
                 }
             };
             let stats = idx.stats();
@@ -1717,9 +1713,9 @@ fn resolve_node<'a>(root: &'a CompletionNode, path: &[&str]) -> Option<&'a Compl
 pub(crate) fn dynamic_completion_candidates(path: &[&str]) -> Vec<String> {
     match path {
         ["plan", "run" | "show" | "validate"] | ["plan"] => scan_dir_names("plans"),
-        ["prd", "plan" | "status"]
-        | ["prd", "draft", "edit" | "promote"]
-        | ["prd"] => scan_dir_names(".roko/prd"),
+        ["prd", "plan" | "status"] | ["prd", "draft", "edit" | "promote"] | ["prd"] => {
+            scan_dir_names(".roko/prd")
+        }
         ["agent", ..] => scan_dir_names(".roko/agents"),
         _ => Vec::new(),
     }
@@ -1888,7 +1884,9 @@ fn print_bash_completions() {
     println!();
     // Try dynamic completion via __complete (handles workspace names + arbitrary depth).
     println!(r#"    local candidates"#);
-    println!(r#"    candidates="$(roko __complete --shell bash --path "$cmd_path" --current "$cur" 2>/dev/null)""#);
+    println!(
+        r#"    candidates="$(roko __complete --shell bash --path "$cmd_path" --current "$cur" 2>/dev/null)""#
+    );
     println!(r#"    if [[ -n "$candidates" ]]; then"#);
     println!(r#"        COMPREPLY=( $(compgen -W "$candidates" -- "$cur") )"#);
     println!("        return 0");
@@ -1955,7 +1953,9 @@ fn print_zsh_completions() {
     println!("  fi");
     println!();
     // Dynamic completion via __complete.
-    println!("  candidates=(${{(f)\"$(roko __complete --shell zsh --path \"${{(j: :)cmd_path}}\" --current \"$words[CURRENT]\" 2>/dev/null)\"}})");
+    println!(
+        "  candidates=(${{(f)\"$(roko __complete --shell zsh --path \"${{(j: :)cmd_path}}\" --current \"$words[CURRENT]\" 2>/dev/null)\"}})"
+    );
     println!("  if (( $#candidates )); then");
     println!(r#"    _describe 'roko' candidates"#);
     println!("    return");
@@ -2405,11 +2405,7 @@ fn binary_on_path(name: &str) -> bool {
 /// model's profile does not satisfy them, a warning is printed to stderr.
 /// This is advisory-only: it never blocks dispatch, because the model may
 /// still work even without the exact capability flags.
-pub(crate) fn warn_capability_mismatch(
-    config: &RokoConfig,
-    model_key: &str,
-    role_label: &str,
-) {
+pub(crate) fn warn_capability_mismatch(config: &RokoConfig, model_key: &str, role_label: &str) {
     let role_override = match config.agent.roles.get(role_label) {
         Some(r) => r,
         None => return,
@@ -2425,20 +2421,18 @@ pub(crate) fn warn_capability_mismatch(
     if !role_override.capabilities_satisfied_by(profile) {
         let missing: Vec<&str> = requirements
             .iter()
-            .filter(|req| {
-                !match req.as_str() {
-                    "web_search" => profile.supports_web_search || profile.supports_search,
-                    "text_generation" => true,
-                    "code_execution" => profile.supports_code_execution,
-                    "tools" => profile.supports_tools,
-                    "thinking" => profile.supports_thinking,
-                    "vision" => profile.supports_vision,
-                    "grounding" => profile.supports_grounding,
-                    "caching" => profile.supports_caching,
-                    "citations" => profile.supports_citations,
-                    "mcp_tools" => profile.supports_mcp_tools,
-                    _ => true,
-                }
+            .filter(|req| !match req.as_str() {
+                "web_search" => profile.supports_web_search || profile.supports_search,
+                "text_generation" => true,
+                "code_execution" => profile.supports_code_execution,
+                "tools" => profile.supports_tools,
+                "thinking" => profile.supports_thinking,
+                "vision" => profile.supports_vision,
+                "grounding" => profile.supports_grounding,
+                "caching" => profile.supports_caching,
+                "citations" => profile.supports_citations,
+                "mcp_tools" => profile.supports_mcp_tools,
+                _ => true,
             })
             .map(String::as_str)
             .collect();

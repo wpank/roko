@@ -125,6 +125,9 @@ pub struct GatesConfig {
     /// Custom gate rungs. When non-empty, these replace the built-in defaults.
     #[serde(default, rename = "rungs", alias = "custom_rungs")]
     pub custom_rungs: Vec<GateRungConfig>,
+    /// Optional ceiling rung index. Rungs above this index are skipped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_rung: Option<u8>,
 }
 
 const fn default_max_iterations() -> u32 {
@@ -145,6 +148,7 @@ impl Default for GatesConfig {
             compile_concurrency: default_compile_concurrency(),
             domain_gates: HashMap::new(),
             custom_rungs: Vec::new(),
+            max_rung: None,
         }
     }
 }

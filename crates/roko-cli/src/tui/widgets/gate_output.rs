@@ -13,7 +13,9 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
+use ratatui::widgets::{
+    Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+};
 
 use crate::tui::Theme;
 use crate::tui::state::TuiState;
@@ -144,10 +146,7 @@ fn style_line<'a>(raw: &str, max_w: usize) -> Vec<Span<'a>> {
             let leading_ws: String = raw.chars().take_while(|c| c.is_whitespace()).collect();
             return vec![
                 Span::styled(leading_ws, Style::default()),
-                Span::styled(
-                    "test ".to_owned(),
-                    Style::default().fg(Theme::DREAM),
-                ),
+                Span::styled("test ".to_owned(), Style::default().fg(Theme::DREAM)),
                 Span::styled(
                     name_part.to_owned(),
                     Style::default()
@@ -193,9 +192,7 @@ fn style_line<'a>(raw: &str, max_w: usize) -> Vec<Span<'a>> {
                 ),
                 Span::styled(
                     msg.to_owned(),
-                    Style::default()
-                        .fg(Theme::EMBER)
-                        .bg(Theme::ROSE_EMBER),
+                    Style::default().fg(Theme::EMBER).bg(Theme::ROSE_EMBER),
                 ),
             ];
         }
@@ -243,10 +240,10 @@ fn rung_icon(name: &str) -> &'static str {
     match name {
         n if n.contains("compile") || n.contains("build") || n.contains("check") => "\u{2692}", // hammer and pick
         n if n.contains("lint") || n.contains("clippy") => "\u{26a0}", // warning sign
-        n if n.contains("test") => "\u{2713}", // checkmark
-        n if n.contains("symbol") => "\u{2234}", // therefore
-        n if n.contains("integration") => "\u{2687}", // die face-6
-        _ => "\u{25cf}", // filled circle
+        n if n.contains("test") => "\u{2713}",                         // checkmark
+        n if n.contains("symbol") => "\u{2234}",                       // therefore
+        n if n.contains("integration") => "\u{2687}",                  // die face-6
+        _ => "\u{25cf}",                                               // filled circle
     }
 }
 
@@ -298,10 +295,7 @@ fn verdict_summary_line<'a>(
     }
 
     let mut spans: Vec<Span<'a>> = Vec::new();
-    spans.push(Span::styled(
-        " ".to_owned(),
-        Style::default(),
-    ));
+    spans.push(Span::styled(" ".to_owned(), Style::default()));
 
     for (i, s) in relevant.iter().enumerate() {
         if i > 0 {
@@ -311,10 +305,7 @@ fn verdict_summary_line<'a>(
             ));
         }
         let (icon, icon_style) = if s.passed {
-            (
-                "\u{2713}",
-                Style::default().fg(Theme::SAGE),
-            )
+            ("\u{2713}", Style::default().fg(Theme::SAGE))
         } else {
             (
                 "\u{2717}",
@@ -335,10 +326,7 @@ fn verdict_summary_line<'a>(
         } else {
             format!("{dur_secs:.1}s")
         };
-        spans.push(Span::styled(
-            dur_str,
-            Style::default().fg(Theme::TEXT_DIM),
-        ));
+        spans.push(Span::styled(dur_str, Style::default().fg(Theme::TEXT_DIM)));
 
         if !s.summary.is_empty() {
             spans.push(Span::styled(
@@ -370,10 +358,7 @@ fn build_title<'a>(
     atmosphere: &crate::tui::atmosphere::Atmosphere,
     theme: &Theme,
 ) -> Vec<Span<'a>> {
-    let mut spans = vec![Span::styled(
-        " Gate Output",
-        theme.section_header(),
-    )];
+    let mut spans = vec![Span::styled(" Gate Output", theme.section_header())];
 
     if let Some((rung_name, started_at)) = current_gate_rung {
         let elapsed = started_at.elapsed().as_secs();
@@ -385,10 +370,7 @@ fn build_title<'a>(
             Style::default().fg(Theme::WARNING),
         ));
     } else {
-        spans.push(Span::styled(
-            format!(" {MIDDLE_DOT} idle "),
-            theme.label(),
-        ));
+        spans.push(Span::styled(format!(" {MIDDLE_DOT} idle "), theme.label()));
     }
 
     spans
@@ -437,7 +419,11 @@ pub fn render_gate_output(
     theme: &Theme,
     selected_plan_id: Option<&str>,
 ) {
-    let mut title_spans = build_title(tui_state.current_gate_rung.as_ref(), &tui_state.atmosphere, theme);
+    let mut title_spans = build_title(
+        tui_state.current_gate_rung.as_ref(),
+        &tui_state.atmosphere,
+        theme,
+    );
     let is_running = tui_state.current_gate_rung.is_some();
     let border_color = if is_running {
         Theme::WARNING
@@ -559,9 +545,11 @@ pub fn render_gate_output(
 
     // Append verdict summary after the output when the gate has completed.
     if !is_running && !tui_state.gate_result_summaries.is_empty() {
-        if let Some(verdict) =
-            verdict_summary_line(&tui_state.gate_result_summaries, selected_plan_id, inner.width as usize)
-        {
+        if let Some(verdict) = verdict_summary_line(
+            &tui_state.gate_result_summaries,
+            selected_plan_id,
+            inner.width as usize,
+        ) {
             styled_lines.push(Line::default()); // blank separator
             styled_lines.push(verdict);
         }
@@ -619,17 +607,35 @@ mod tests {
 
     #[test]
     fn classify_cargo_output() {
-        assert_eq!(classify_line("   Compiling roko-core v0.1.0"), LineKind::Success);
-        assert_eq!(classify_line("error[E0433]: failed to resolve"), LineKind::Error);
-        assert_eq!(classify_line("error: aborting due to error"), LineKind::Error);
+        assert_eq!(
+            classify_line("   Compiling roko-core v0.1.0"),
+            LineKind::Success
+        );
+        assert_eq!(
+            classify_line("error[E0433]: failed to resolve"),
+            LineKind::Error
+        );
+        assert_eq!(
+            classify_line("error: aborting due to error"),
+            LineKind::Error
+        );
         assert_eq!(classify_line("warning: unused variable"), LineKind::Warning);
-        assert_eq!(classify_line("warning[unused_imports]: unused"), LineKind::Warning);
-        assert_eq!(classify_line("note: `#[warn(unused)]` on by default"), LineKind::Note);
+        assert_eq!(
+            classify_line("warning[unused_imports]: unused"),
+            LineKind::Warning
+        );
+        assert_eq!(
+            classify_line("note: `#[warn(unused)]` on by default"),
+            LineKind::Note
+        );
         assert_eq!(classify_line("help: consider removing"), LineKind::Note);
         assert_eq!(classify_line("  --> src/main.rs:12:5"), LineKind::Location);
         assert_eq!(classify_line("test foo::bar ... ok"), LineKind::TestLine);
         assert_eq!(classify_line("running 42 tests"), LineKind::TestLine);
-        assert_eq!(classify_line("test result: ok. 42 passed"), LineKind::Success);
+        assert_eq!(
+            classify_line("test result: ok. 42 passed"),
+            LineKind::Success
+        );
         assert_eq!(classify_line("   Downloading serde"), LineKind::Dim);
         assert_eq!(classify_line(""), LineKind::Dim);
         assert_eq!(classify_line("some random output"), LineKind::Default);
@@ -638,7 +644,10 @@ mod tests {
     #[test]
     fn test_line_styling_splits_name_and_result() {
         let spans = style_line("test my_mod::my_test ... ok", 120);
-        assert!(spans.len() >= 4, "test lines should be split into multiple spans");
+        assert!(
+            spans.len() >= 4,
+            "test lines should be split into multiple spans"
+        );
         // The test name span should be bold
         let name_span = &spans[2];
         assert_eq!(name_span.content.as_ref(), "my_mod::my_test");
@@ -650,10 +659,7 @@ mod tests {
         let result_span = spans.last().unwrap();
         assert_eq!(result_span.content.as_ref(), "FAILED");
         // EMBER color for failures
-        assert_eq!(
-            result_span.style.fg,
-            Some(Theme::EMBER),
-        );
+        assert_eq!(result_span.style.fg, Some(Theme::EMBER),);
     }
 
     #[test]
@@ -681,7 +687,10 @@ mod tests {
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("compile"), "header should contain rung name");
         // Should use double-line box chars
-        assert!(text.contains('\u{2550}'), "header should use double-line border");
+        assert!(
+            text.contains('\u{2550}'),
+            "header should use double-line border"
+        );
     }
 
     #[test]
@@ -707,8 +716,14 @@ mod tests {
 
     #[test]
     fn detect_rung_transition_compile() {
-        assert_eq!(detect_rung_transition("   Compiling roko-core v0.1.0"), Some("compile"));
-        assert_eq!(detect_rung_transition("   Checking roko-core"), Some("compile"));
+        assert_eq!(
+            detect_rung_transition("   Compiling roko-core v0.1.0"),
+            Some("compile")
+        );
+        assert_eq!(
+            detect_rung_transition("   Checking roko-core"),
+            Some("compile")
+        );
     }
 
     #[test]
@@ -758,7 +773,10 @@ mod tests {
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("compile"), "should contain compile rung");
         assert!(text.contains("test"), "should contain test rung");
-        assert!(text.contains("3 failures"), "should contain failure summary");
+        assert!(
+            text.contains("3 failures"),
+            "should contain failure summary"
+        );
     }
 
     #[test]

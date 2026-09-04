@@ -45,9 +45,8 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
         LearnCmd::Inspect { subsystem } => inspect_workdir(cli, subsystem),
         LearnCmd::Tune { workdir, .. } => workdir.clone().unwrap_or_else(|| resolve_workdir(cli)),
     };
-    let _lock = roko_cli::workspace_lock::acquire_workspace_lock_shared(
-        &wd_for_lock.join(".roko"),
-    )?;
+    let _lock =
+        roko_cli::workspace_lock::acquire_workspace_lock_shared(&wd_for_lock.join(".roko"))?;
 
     match cmd {
         LearnCmd::All { workdir } => {
@@ -123,7 +122,9 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
             dry_run,
             workdir,
         } => {
-            eprintln!("warning: 'roko learn tune' is deprecated, use 'roko learn inspect {subsystem}'");
+            eprintln!(
+                "warning: 'roko learn tune' is deprecated, use 'roko learn inspect {subsystem}'"
+            );
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             if dry_run {
                 eprintln!("note: inspection is always read-only; --dry-run has no effect");
@@ -171,9 +172,7 @@ async fn cmd_learn_inspect_legacy(
         "gates" => inspect_gates(workdir, json),
         "routing" => inspect_routing(workdir, json),
         "budget" => inspect_budget(workdir, json).await,
-        other => anyhow::bail!(
-            "unknown subsystem '{other}'. Available: gates, routing, budget"
-        ),
+        other => anyhow::bail!("unknown subsystem '{other}'. Available: gates, routing, budget"),
     }
 }
 
@@ -273,8 +272,7 @@ fn inspect_routing(workdir: &std::path::Path, json: bool) -> Result<i32> {
     }
 
     let content = std::fs::read_to_string(&path)?;
-    let snapshot =
-        serde_json::from_str::<LearnCascadeRouterSnapshot>(&content).unwrap_or_default();
+    let snapshot = serde_json::from_str::<LearnCascadeRouterSnapshot>(&content).unwrap_or_default();
     let configured_slugs = roko_core::config::loader::load_config_unified(workdir)
         .ok()
         .map(|config| {
@@ -344,6 +342,7 @@ struct InspectBudgetConfigJson {
     max_task_usd: f32,
     max_turn_usd: f32,
     max_task_retry_usd: f32,
+    max_daily_usd: f32,
     prompt_token_budget: usize,
 }
 
@@ -369,7 +368,9 @@ async fn inspect_budget(workdir: &std::path::Path, json: bool) -> Result<i32> {
 
     // Parse efficiency log for spend summaries
     let eff_path = learn_efficiency_path(workdir);
-    let text = tokio::fs::read_to_string(&eff_path).await.unwrap_or_default();
+    let text = tokio::fs::read_to_string(&eff_path)
+        .await
+        .unwrap_or_default();
 
     let mut total_events = 0usize;
     let mut passed = 0usize;
@@ -408,6 +409,7 @@ async fn inspect_budget(workdir: &std::path::Path, json: bool) -> Result<i32> {
                 max_task_usd: budget.max_task_usd,
                 max_turn_usd: budget.max_turn_usd,
                 max_task_retry_usd: budget.max_task_retry_usd,
+                max_daily_usd: budget.max_daily_usd,
                 prompt_token_budget: budget.prompt_token_budget,
             },
             efficiency: InspectBudgetEfficiencyJson {
@@ -437,15 +439,13 @@ async fn inspect_budget(workdir: &std::path::Path, json: bool) -> Result<i32> {
             "  max_task_retry_usd: {}",
             fmt_limit(budget.max_task_retry_usd)
         );
+        println!("  max_daily_usd:      {}", fmt_limit(budget.max_daily_usd));
         println!("  prompt_token_budget: {}", budget.prompt_token_budget);
         println!();
         println!("Spend history ({})", eff_path.display());
         println!("  Events: {total_events} ({passed} passed, {failed} failed)");
         println!("  Total cost: ${total_cost:.4}");
-        println!(
-            "  Range: {}",
-            format_range(first_seen, last_seen)
-        );
+        println!("  Range: {}", format_range(first_seen, last_seen));
     }
 
     Ok(EXIT_SUCCESS)
@@ -1699,6 +1699,7 @@ mod tests {
                 max_task_usd: 0.0,
                 max_turn_usd: 2.5,
                 max_task_retry_usd: 0.0,
+                max_daily_usd: 0.0,
                 prompt_token_budget: 10_000,
             },
             efficiency: InspectBudgetEfficiencyJson {

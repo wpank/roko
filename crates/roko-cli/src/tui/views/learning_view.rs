@@ -15,9 +15,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Bar, BarChart, BarGroup, Block, Cell, Paragraph, Row, Table, Wrap,
-};
+use ratatui::widgets::{Bar, BarChart, BarGroup, Block, Cell, Paragraph, Row, Table, Wrap};
 
 use super::{SubView, ViewState};
 use crate::tui::dashboard::Theme;
@@ -307,7 +305,10 @@ fn render_selection_bars(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState
     let bar_chart = BarChart::default()
         .block(
             Block::bordered()
-                .title(Span::styled(" Selection Frequency ", theme.section_header()))
+                .title(Span::styled(
+                    " Selection Frequency ",
+                    theme.section_header(),
+                ))
                 .border_style(theme.muted()),
         )
         .data(BarGroup::default().bars(&bars))
@@ -336,7 +337,10 @@ fn render_history(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme
     lines.push(Line::from(""));
 
     if total_trials == 0 {
-        lines.push(Line::from(Span::styled("  No observations yet.", theme.muted())));
+        lines.push(Line::from(Span::styled(
+            "  No observations yet.",
+            theme.muted(),
+        )));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "  The router progresses through three stages as it gathers data:",
@@ -347,7 +351,9 @@ fn render_history(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme
             Span::styled("    1. ", theme.text()),
             Span::styled(
                 "Static",
-                Style::default().fg(Theme::STAGE_STATIC).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Theme::STAGE_STATIC)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled("       (0-9 obs)   Fixed model order", theme.muted()),
         ]));
@@ -355,7 +361,9 @@ fn render_history(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme
             Span::styled("    2. ", theme.text()),
             Span::styled(
                 "Confidence",
-                Style::default().fg(Theme::STAGE_CONFIDENCE).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Theme::STAGE_CONFIDENCE)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled("   (10-29 obs)  Weighted by pass rate", theme.muted()),
         ]));
@@ -363,9 +371,14 @@ fn render_history(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme
             Span::styled("    3. ", theme.text()),
             Span::styled(
                 "UCB",
-                Style::default().fg(Theme::STAGE_UCB).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Theme::STAGE_UCB)
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("          (30+ obs)   Fully adaptive routing", theme.muted()),
+            Span::styled(
+                "          (30+ obs)   Fully adaptive routing",
+                theme.muted(),
+            ),
         ]));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
@@ -498,7 +511,10 @@ fn render_efficiency(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, th
         frame.render_widget(block, area);
         let lines = vec![
             Line::from(""),
-            Line::from(Span::styled("No efficiency events recorded yet.", theme.muted())),
+            Line::from(Span::styled(
+                "No efficiency events recorded yet.",
+                theme.muted(),
+            )),
             Line::from(""),
             Line::from(Span::styled(
                 "Efficiency events track per-turn cost, latency, and gate pass rate.",
@@ -548,9 +564,7 @@ fn render_efficiency(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, th
         Cell::from(Line::from(Span::styled("Events", theme.label())).alignment(Alignment::Right)),
         Cell::from(Line::from(Span::styled("Passed", theme.label())).alignment(Alignment::Right)),
         Cell::from(Line::from(Span::styled("Pass %", theme.label())).alignment(Alignment::Right)),
-        Cell::from(
-            Line::from(Span::styled("Avg Cost", theme.label())).alignment(Alignment::Right),
-        ),
+        Cell::from(Line::from(Span::styled("Avg Cost", theme.label())).alignment(Alignment::Right)),
         Cell::from(
             Line::from(Span::styled("Avg Latency", theme.label())).alignment(Alignment::Right),
         ),

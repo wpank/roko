@@ -38,6 +38,11 @@ pub struct BudgetConfig {
     /// task is marked failed with reason "cumulative cost cap exceeded".
     #[serde(default)]
     pub max_task_retry_usd: f32,
+    /// Per-calendar-day cost ceiling in USD, enforced across all plan runs.
+    /// `0.0` means unlimited. When the day's total spend (read from the
+    /// costs log) reaches this ceiling, new dispatches are blocked.
+    #[serde(default)]
+    pub max_daily_usd: f32,
     /// Token budget for prompt composition.
     #[serde(default = "default_prompt_token_budget")]
     pub prompt_token_budget: usize,
@@ -102,6 +107,7 @@ impl Default for BudgetConfig {
             max_task_usd: 0.0,
             max_turn_usd: 0.0,
             max_task_retry_usd: 0.0,
+            max_daily_usd: 0.0,
             prompt_token_budget: default_prompt_token_budget(),
             tier_multipliers: TaskBudgetMultipliers::default(),
         }

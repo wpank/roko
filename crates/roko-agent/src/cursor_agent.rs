@@ -46,9 +46,7 @@ use crate::http::HttpPostError;
 use crate::http::{HttpPoster, ReqwestPoster};
 use crate::safety::SafetyLayer;
 use crate::streaming::parse_sse_line;
-use crate::tool_loop::{
-    LlmBackend, LlmError, StreamEvent, StreamEventKind, TurnConfig, collect_stream_to_response,
-};
+use crate::tool_loop::{LlmBackend, LlmError, StreamEvent, StreamEventKind, TurnConfig};
 use crate::translate::{BackendResponse, RenderedTools, SessionState};
 use crate::usage::{Usage, UsageObservation, UsageSource};
 use async_trait::async_trait;
@@ -103,6 +101,7 @@ impl ApiUsage {
             output_tokens: self.output_tokens.map(u64::from),
             cache_creation_tokens: None,
             cache_read_tokens: None,
+            reasoning_tokens: None,
             cost_usd: None,
             source: UsageSource::ProviderReported,
             model,
@@ -170,6 +169,7 @@ pub struct CursorAgent {
     extra_headers: Vec<(String, String)>,
     safety: SafetyLayer,
     poster: Arc<dyn HttpPoster>,
+    system_prompt: Option<String>,
 }
 
 impl std::fmt::Debug for CursorAgent {
@@ -200,6 +200,7 @@ impl CursorAgent {
             extra_headers: Vec::new(),
             safety,
             poster: Arc::new(ReqwestPoster::new()),
+            system_prompt: None,
         }
     }
 
@@ -252,6 +253,13 @@ impl CursorAgent {
         let mut extra_headers: Vec<(String, String)> = extra_headers.into_iter().collect();
         extra_headers.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
         self.extra_headers = extra_headers;
+        self
+    }
+
+    /// Set an optional system prompt included in every request.
+    #[must_use]
+    pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
+        self.system_prompt = Some(prompt.into());
         self
     }
 
@@ -308,6 +316,12 @@ impl CursorAgent {
             "tools": tools,
         });
         if let Some(body_obj) = body.as_object_mut() {
+            if let Some(sp) = &self.system_prompt {
+                // Prepend system message for chat-completion path.
+                if let Some(msgs) = body_obj.get_mut("messages").and_then(Value::as_array_mut) {
+                    msgs.insert(0, serde_json::json!({"role": "system", "content": sp}));
+                }
+            }
             if let Some(session_id) = &session.session_id {
                 body_obj.insert("session_id".to_string(), Value::String(session_id.clone()));
             }
@@ -364,8 +378,7 @@ impl CursorAgent {
         }
 
         if let Some(chunk) = parse_sse_line(line) {
-            let event: StreamEvent = chunk.into();
-            let _ = tx.send(Ok(event)).await;
+            let _ = tx.send(Ok(chunk)).await;
             return;
         }
 
@@ -424,6 +437,7 @@ impl CursorAgent {
             output_tokens: None,
             cache_creation_tokens: None,
             cache_read_tokens: None,
+            reasoning_tokens: None,
             cost_usd: None,
             source: UsageSource::Unknown,
             model: Some(self.model.clone()),
@@ -487,15 +501,18 @@ impl Agent for CursorAgent {
             },
         };
 
-        let req = PromptRequest {
-            protocol: &self.protocol_version,
-            model: &self.model,
-            prompt: RequestPrompt {
-                role: "user",
-                content: &prompt_text,
+        let mut req_json = serde_json::json!({
+            "protocol": &self.protocol_version,
+            "model": &self.model,
+            "prompt": {
+                "role": "user",
+                "content": &prompt_text,
             },
-        };
-        let body = match serde_json::to_string(&req) {
+        });
+        if let Some(sp) = &self.system_prompt {
+            req_json["system_prompt"] = Value::String(sp.clone());
+        }
+        let body = match serde_json::to_string(&req_json) {
             Ok(s) => s,
             Err(e) => {
                 return self.fail(input, &format!("serialize request failed: {e}"), started);
@@ -684,22 +701,19 @@ impl LlmBackend for CursorAgent {
             return Err(LlmError::Network(message));
         }
 
-        let (tx, rx) =
-            tokio::sync::mpsc::channel::<Result<StreamEvent, LlmError>>(256);
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<StreamEvent, LlmError>>(256);
 
         tokio::spawn(async move {
             let mut response = response;
             let mut pending = Vec::new();
-            let mut sent_done = false;
+            let sent_done = false;
 
             loop {
                 let chunk = match response.chunk().await {
                     Ok(c) => c,
                     Err(err) => {
                         let _ = tx
-                            .send(Err(LlmError::Network(format!(
-                                "read chunk failed: {err}"
-                            ))))
+                            .send(Err(LlmError::Network(format!("read chunk failed: {err}"))))
                             .await;
                         return;
                     }

@@ -17,7 +17,6 @@ use roko_core::agent::ProviderKind;
 #[cfg(test)]
 use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
 use roko_core::config::schema::{ModelProfile, ProviderConfig};
-use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
 use roko_core::tool::aliases::{canonical_names, claude_of_canonical};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -56,10 +55,7 @@ impl ProviderAdapter for ClaudeCliAdapter {
             .working_dir
             .clone()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-        let timeout_ms = options
-            .timeout_ms
-            .or(provider.timeout_ms)
-            .unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS);
+        let timeout_ms = options.effective_timeout_ms(provider.timeout_ms);
 
         let mut agent = ClaudeCliAgent::new(command, current_dir, model.slug.clone())
             .with_timeout_ms(timeout_ms)
@@ -112,51 +108,7 @@ impl ProviderAdapter for ClaudeCliAdapter {
     }
 
     fn classify_error(&self, status: u16, body: &Value) -> ProviderError {
-        // For a CLI subprocess, the body typically carries stderr text.
-        // Inspect it first; fall back to the HTTP status code for callers
-        // that pass one through.
-        let stderr = body
-            .as_str()
-            .or_else(|| body.pointer("/error").and_then(Value::as_str))
-            .or_else(|| body.pointer("/message").and_then(Value::as_str))
-            .unwrap_or("");
-        let lower = stderr.to_ascii_lowercase();
-
-        if lower.contains("rate limit") {
-            return ProviderError::RateLimit {
-                retry_after_ms: None,
-            };
-        }
-        if lower.contains("unauthorized") || lower.contains("permission denied") {
-            return ProviderError::AuthFailure;
-        }
-        if lower.contains("timed out") || lower.contains("timeout") {
-            return ProviderError::Timeout;
-        }
-        if lower.contains("context window") || lower.contains("context length") {
-            return ProviderError::ContextOverflow;
-        }
-        if lower.contains("model not found") || lower.contains("unknown model") {
-            return ProviderError::ModelNotFound;
-        }
-
-        // Fallback: honour the status code when stderr had nothing useful.
-        match status {
-            429 => ProviderError::RateLimit {
-                retry_after_ms: None,
-            },
-            401 | 403 => ProviderError::AuthFailure,
-            404 => ProviderError::ModelNotFound,
-            408 => ProviderError::Timeout,
-            500..=599 => ProviderError::ServerError(status),
-            _ => {
-                if stderr.is_empty() {
-                    ProviderError::Other(format!("CLI exit status {status}"))
-                } else {
-                    ProviderError::Other(stderr.to_string())
-                }
-            }
-        }
+        super::error_classify::classify_cli_error(status, body, "CLI")
     }
 }
 
@@ -199,10 +151,7 @@ impl ProviderAdapter for CodexCliAdapter {
             .working_dir
             .clone()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-        let timeout_ms = options
-            .timeout_ms
-            .or(provider.timeout_ms)
-            .unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS);
+        let timeout_ms = options.effective_timeout_ms(provider.timeout_ms);
 
         let mut args = vec![
             "exec".to_string(),
@@ -379,8 +328,11 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"adapter-ok"}}}}'
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         let options = AgentOptions {
+            safety_layer: None,
+            temperament: None,
             command: None,
             timeout_ms: Some(5_000),
             system_prompt: Some("system guidance".to_string()),
@@ -414,6 +366,7 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"adapter-ok"}}}}'
             pre_discovered_local_tools: None,
             local_tool_mcp_servers: None,
             rate_limiter: None,
+            gemini_safety_settings: Vec::new(),
         };
         let model = claude_model();
 
@@ -501,6 +454,7 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"worktree-ok"}}}}
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         let options = AgentOptions {
             timeout_ms: Some(10_000),
@@ -556,6 +510,7 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"late"}}'
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         let options = AgentOptions {
             timeout_ms: Some(100),

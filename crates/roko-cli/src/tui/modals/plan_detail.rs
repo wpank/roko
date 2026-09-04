@@ -129,7 +129,10 @@ fn render_plan(
     lines.push(Line::from(vec![
         Span::styled("       ", theme.muted()),
         Span::styled(progress_bar, theme.info()),
-        Span::styled(format!(" {:.0}%", pct * 100.0), theme.text().add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!(" {:.0}%", pct * 100.0),
+            theme.text().add_modifier(Modifier::BOLD),
+        ),
         Span::styled(
             format!("  ({}/{})", plan.tasks_done, plan.tasks_total),
             theme.muted(),
@@ -195,7 +198,12 @@ fn render_plan(
                 }
             })
             .collect();
-        let sample = failed_tasks.iter().take(3).copied().collect::<Vec<_>>().join(", ");
+        let sample = failed_tasks
+            .iter()
+            .take(3)
+            .copied()
+            .collect::<Vec<_>>()
+            .join(", ");
         let suffix = if failed_tasks.len() > 3 { " ..." } else { "" };
         lines.push(Line::from(vec![
             Span::styled("Fail   ", theme.danger()),
@@ -238,10 +246,7 @@ fn render_plan(
                 TaskStatus::Pending => theme.muted(),
             };
 
-            let agent_display = task
-                .agent_id
-                .as_deref()
-                .unwrap_or("-");
+            let agent_display = task.agent_id.as_deref().unwrap_or("-");
 
             let task_cost_key = format!("{}:{}", plan.id, task.id);
             let task_cost = tui_state
@@ -293,10 +298,7 @@ fn render_plan(
                     || acceptance.contains('`')
                     || acceptance.contains("# ")
                 {
-                    lines.push(Line::from(Span::styled(
-                        "    accept:",
-                        theme.muted(),
-                    )));
+                    lines.push(Line::from(Span::styled("    accept:", theme.muted())));
                     for md_line in markdown_to_lines(acceptance, theme) {
                         let mut indented = vec![Span::raw("      ".to_string())];
                         indented.extend(md_line.spans);
@@ -476,10 +478,7 @@ fn markdown_to_lines<'a>(text: &str, theme: &Theme) -> Vec<Line<'a>> {
         let trimmed = raw.trim_start();
         if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
             let bullet_text = &trimmed[2..];
-            let mut spans = vec![Span::styled(
-                "  \u{2022} ".to_string(),
-                theme.label(),
-            )];
+            let mut spans = vec![Span::styled("  \u{2022} ".to_string(), theme.label())];
             spans.extend(inline_markdown_spans(bullet_text, theme));
             lines.push(Line::from(spans));
             continue;
@@ -490,10 +489,7 @@ fn markdown_to_lines<'a>(text: &str, theme: &Theme) -> Vec<Line<'a>> {
             if dot_pos <= 3 && trimmed[..dot_pos].chars().all(|c| c.is_ascii_digit()) {
                 let prefix = &trimmed[..dot_pos + 2];
                 let rest = &trimmed[dot_pos + 2..];
-                let mut spans = vec![Span::styled(
-                    format!("  {prefix}"),
-                    theme.label(),
-                )];
+                let mut spans = vec![Span::styled(format!("  {prefix}"), theme.label())];
                 spans.extend(inline_markdown_spans(rest, theme));
                 lines.push(Line::from(spans));
                 continue;
@@ -541,10 +537,7 @@ fn inline_markdown_spans<'a>(text: &str, theme: &Theme) -> Vec<Span<'a>> {
             Some((marker, pos)) => {
                 // Push text before the marker.
                 if pos > 0 {
-                    spans.push(Span::styled(
-                        remaining[..pos].to_string(),
-                        theme.text(),
-                    ));
+                    spans.push(Span::styled(remaining[..pos].to_string(), theme.text()));
                 }
                 let after_open = &remaining[pos + marker.len()..];
                 if let Some(close) = after_open.find(marker) {
@@ -558,10 +551,7 @@ fn inline_markdown_spans<'a>(text: &str, theme: &Theme) -> Vec<Span<'a>> {
                     remaining = &after_open[close + marker.len()..];
                 } else {
                     // No closing marker — emit the rest as plain text.
-                    spans.push(Span::styled(
-                        remaining[pos..].to_string(),
-                        theme.text(),
-                    ));
+                    spans.push(Span::styled(remaining[pos..].to_string(), theme.text()));
                     break;
                 }
             }

@@ -13,7 +13,7 @@ use roko_learn::section_effect::SectionEffectivenessRegistry;
 use roko_neuro::KnowledgeEntry;
 
 /// Default maximum age before the cache is considered stale.
-const DEFAULT_MAX_AGE: Duration = Duration::from_secs(300);
+const DEFAULT_MAX_AGE: Duration = Duration::from_mins(5);
 
 /// Pre-loaded prompt context data.
 ///
@@ -136,10 +136,10 @@ fn load_playbooks(workdir: &Path) -> Vec<Playbook> {
             if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
                 continue;
             }
-            if let Ok(text) = std::fs::read_to_string(&path) {
-                if let Ok(playbook) = serde_json::from_str::<Playbook>(&text) {
-                    playbooks.push(playbook);
-                }
+            if let Ok(text) = std::fs::read_to_string(&path)
+                && let Ok(playbook) = serde_json::from_str::<Playbook>(&text)
+            {
+                playbooks.push(playbook);
             }
         }
     }

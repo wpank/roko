@@ -58,6 +58,7 @@ impl std::fmt::Display for RuntimeProfile {
 /// Used by parity tests to verify both engine paths share the same
 /// required service set.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[allow(missing_docs)]
 pub struct ProfileBundleManifest {
     pub profile: RuntimeProfile,
     pub dispatch_required: bool,
@@ -97,6 +98,110 @@ pub fn profile_bundle_manifest(profile: RuntimeProfile) -> ProfileBundleManifest
             observation_required: true,
             guards_required: true,
         },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ServiceBundleId + ProfileMatrix + BundleRequirement
+// ---------------------------------------------------------------------------
+
+/// Identifies a logical service bundle within the execution framework.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceBundleId {
+    /// Agent dispatch and provider management.
+    Dispatch,
+    /// Prompt assembly and context enrichment.
+    Prompt,
+    /// Learning feedback and model routing.
+    Feedback,
+    /// Extension runtime (triggers, feeds, plugins).
+    Extensions,
+    /// Telemetry observation and reporting.
+    Observation,
+    /// Safety guards and process supervision.
+    Guards,
+}
+
+impl std::fmt::Display for ServiceBundleId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Dispatch => write!(f, "Dispatch"),
+            Self::Prompt => write!(f, "Prompt"),
+            Self::Feedback => write!(f, "Feedback"),
+            Self::Extensions => write!(f, "Extensions"),
+            Self::Observation => write!(f, "Observation"),
+            Self::Guards => write!(f, "Guards"),
+        }
+    }
+}
+
+/// Whether a service bundle is required, optional, or forbidden for a profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BundleRequirement {
+    /// Must be present for the profile to function.
+    Required,
+    /// May be present but is not mandatory.
+    Optional,
+    /// Must not be present (incompatible with this profile).
+    Forbidden,
+}
+
+/// Matrix mapping each profile to its bundle requirements.
+pub struct ProfileMatrix {
+    entries: Vec<(RuntimeProfile, ServiceBundleId, BundleRequirement)>,
+}
+
+impl ProfileMatrix {
+    /// Return the canonical profile matrix.
+    #[must_use]
+    pub fn canonical() -> Self {
+        #[allow(clippy::enum_glob_use)]
+        use BundleRequirement::*;
+        #[allow(clippy::enum_glob_use)]
+        use RuntimeProfile::*;
+        #[allow(clippy::enum_glob_use)]
+        use ServiceBundleId::*;
+
+        let mut entries = Vec::new();
+        // FullPlan and GraphPlan require everything
+        for profile in [FullPlan, GraphPlan] {
+            for bundle in [Dispatch, Prompt, Feedback, Extensions, Observation, Guards] {
+                entries.push((profile, bundle, Required));
+            }
+        }
+        // Lighter profiles: dispatch/prompt/observation/guards required, feedback optional, extensions optional
+        for profile in [Workflow, DirectLight, AgentServer, ChatLight, AuthoredGraph] {
+            entries.push((profile, Dispatch, Required));
+            entries.push((profile, Prompt, Required));
+            entries.push((profile, Feedback, Optional));
+            entries.push((profile, Extensions, Optional));
+            entries.push((profile, Observation, Required));
+            entries.push((profile, Guards, Required));
+        }
+
+        Self { entries }
+    }
+
+    /// Return bundle IDs that are required for the given profile.
+    #[must_use]
+    pub fn required_bundles(&self, profile: RuntimeProfile) -> Vec<ServiceBundleId> {
+        self.entries
+            .iter()
+            .filter(|(p, _, r)| *p == profile && *r == BundleRequirement::Required)
+            .map(|(_, b, _)| *b)
+            .collect()
+    }
+
+    /// Return bundle IDs that are optional for the given profile.
+    #[must_use]
+    pub fn optional_bundles(&self, profile: RuntimeProfile) -> Vec<ServiceBundleId> {
+        self.entries
+            .iter()
+            .filter(|(p, _, r)| *p == profile && *r == BundleRequirement::Optional)
+            .map(|(_, b, _)| *b)
+            .collect()
     }
 }
 

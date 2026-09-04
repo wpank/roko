@@ -140,10 +140,7 @@ fn create_tool_loop_backend_with_api_key(
     options: &AgentOptions,
     poster: Box<dyn HttpPoster>,
 ) -> Result<Arc<dyn LlmBackend>, AgentCreationError> {
-    let timeout_ms = options
-        .timeout_ms
-        .or(provider.timeout_ms)
-        .unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS);
+    let timeout_ms = options.effective_timeout_ms(provider.timeout_ms);
 
     let mut backend = AnthropicMessagesBackend::new(api_key, model.slug.clone())
         .with_provider_id(model.provider.clone())
@@ -158,6 +155,9 @@ fn create_tool_loop_backend_with_api_key(
         .with_extra_headers(provider.extra_headers.clone().unwrap_or_default())
         .with_poster(poster);
 
+    if model.supports_thinking {
+        backend = backend.with_thinking_budget(default_thinking_budget(&model.slug));
+    }
     if let Some(ref env_var) = provider.api_key_env {
         backend = backend.with_api_key_env(env_var.clone());
     }
@@ -224,22 +224,26 @@ impl Translator for AnthropicTranslator {
     }
 
     fn render_results(&self, results: &[(ToolCall, ToolResult)]) -> RenderedResults {
-        let messages: Vec<Value> = results
+        // The Anthropic Messages API requires all tool results from a single
+        // model turn to be sent as one user message with multiple tool_result
+        // content blocks. Sending separate messages per result triggers an API
+        // validation error when the model issued parallel tool calls.
+        let blocks: Vec<Value> = results
             .iter()
             .map(|(call, result)| {
                 json!({
-                    "role": "user",
-                    "content": [{
-                        "type": "tool_result",
-                        "tool_use_id": call.id.clone(),
-                        "content": tool_result_content(result),
-                        "is_error": matches!(result, ToolResult::Err(_)),
-                    }]
+                    "type": "tool_result",
+                    "tool_use_id": call.id.clone(),
+                    "content": tool_result_content(result),
+                    "is_error": matches!(result, ToolResult::Err(_)),
                 })
             })
             .collect();
 
-        RenderedResults::JsonMessages(json!(messages))
+        RenderedResults::JsonMessages(json!([{
+            "role": "user",
+            "content": blocks,
+        }]))
     }
 
     fn render_assistant_message(&self, response: &BackendResponse) -> Option<Value> {
@@ -261,13 +265,42 @@ fn tool_result_content(result: &ToolResult) -> Value {
             content,
             is_structured,
             ..
-        } if *is_structured => {
-            serde_json::from_str(content).unwrap_or_else(|_| Value::String(content.clone()))
+        } => {
+            let blocks: Vec<Value> = content
+                .iter()
+                .map(|block| match block {
+                    roko_core::tool::ToolResultContent::Text { text } => {
+                        if *is_structured {
+                            serde_json::from_str(text)
+                                .unwrap_or_else(|_| Value::String(text.clone()))
+                        } else {
+                            Value::String(text.clone())
+                        }
+                    }
+                    roko_core::tool::ToolResultContent::Image { media_type, data } => {
+                        json!({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type,
+                                "data": data,
+                            }
+                        })
+                    }
+                })
+                .collect();
+            if blocks.len() == 1 {
+                blocks.into_iter().next().unwrap()
+            } else {
+                Value::Array(blocks)
+            }
         }
-        ToolResult::Ok { content, .. } => Value::String(content.clone()),
         ToolResult::Err(err) => Value::String(err.to_string()),
     }
 }
+
+/// Anthropic extended-thinking beta header value.
+const THINKING_BETA_HEADER: &str = "extended-thinking-2025-02-19";
 
 struct AnthropicMessagesBackend {
     api_key: String,
@@ -283,6 +316,9 @@ struct AnthropicMessagesBackend {
     poster: Box<dyn HttpPoster>,
     /// Environment variable name for the API key (used in error messages).
     api_key_env: Option<String>,
+    /// When `Some`, the backend includes the `thinking` block in requests
+    /// and sends the `anthropic-beta: extended-thinking-*` header.
+    thinking_budget: Option<u32>,
 }
 
 impl AnthropicMessagesBackend {
@@ -301,11 +337,17 @@ impl AnthropicMessagesBackend {
             outcome_recorder: None,
             poster: Box::new(ReqwestPoster::new()),
             api_key_env: None,
+            thinking_budget: None,
         }
     }
 
     fn with_api_key_env(mut self, env_var: impl Into<String>) -> Self {
         self.api_key_env = Some(env_var.into());
+        self
+    }
+
+    fn with_thinking_budget(mut self, budget: u32) -> Self {
+        self.thinking_budget = Some(budget);
         self
     }
 
@@ -369,6 +411,9 @@ impl AnthropicMessagesBackend {
                 DEFAULT_ANTHROPIC_VERSION.to_owned(),
             ),
         ];
+        if self.thinking_budget.is_some() {
+            headers.push(("anthropic-beta".to_owned(), THINKING_BETA_HEADER.to_owned()));
+        }
         headers.extend(self.extra_headers.iter().cloned());
         headers
     }
@@ -421,6 +466,13 @@ impl AnthropicMessagesBackend {
             "stream": true,
         });
 
+        if let Some(budget) = self.thinking_budget {
+            body["thinking"] = json!({
+                "type": "enabled",
+                "budget_tokens": budget,
+            });
+        }
+
         if !system_prompt.is_empty() {
             let mut system = Value::String(system_prompt.join("\n"));
             let _ = crate::translate::claude::inject_cache_markers_into_content(&mut system);
@@ -472,6 +524,13 @@ impl AnthropicMessagesBackend {
             "messages": anthropic_messages,
             "tools": tools,
         });
+
+        if let Some(budget) = self.thinking_budget {
+            body["thinking"] = json!({
+                "type": "enabled",
+                "budget_tokens": budget,
+            });
+        }
 
         if !system_prompt.is_empty() {
             let mut system = Value::String(system_prompt.join("\n"));
@@ -645,15 +704,11 @@ impl LlmBackend for AnthropicMessagesBackend {
             req = req.header(key.as_str(), value.as_str());
         }
 
-        let response = req
-            .body(body_bytes)
-            .send()
-            .await
-            .map_err(|e| {
-                let mapped = LlmError::Network(format!("request failed: {e}"));
-                self.record_failure(&mapped);
-                mapped
-            })?;
+        let response = req.body(body_bytes).send().await.map_err(|e| {
+            let mapped = LlmError::Network(format!("request failed: {e}"));
+            self.record_failure(&mapped);
+            mapped
+        })?;
 
         let status = response.status();
         if !status.is_success() {
@@ -692,7 +747,10 @@ impl LlmBackend for AnthropicMessagesBackend {
         let endpoint = self.endpoint();
 
         let ttft_timeout = Duration::from_millis(
-            config.ttft_timeout.as_millis().min(STREAM_TTFT_TIMEOUT_MS as u128) as u64,
+            config
+                .ttft_timeout
+                .as_millis()
+                .min(STREAM_TTFT_TIMEOUT_MS as u128) as u64,
         );
         let idle_timeout = Duration::from_millis(STREAM_IDLE_TIMEOUT_MS);
 
@@ -722,18 +780,12 @@ impl LlmBackend for AnthropicMessagesBackend {
                     }
                     Ok(Err(e)) => {
                         let _ = tx
-                            .send(Err(LlmError::Network(format!(
-                                "read SSE chunk: {e}"
-                            ))))
+                            .send(Err(LlmError::Network(format!("read SSE chunk: {e}"))))
                             .await;
                         return;
                     }
                     Err(_) => {
-                        let kind = if first_semantic_event {
-                            "TTFT"
-                        } else {
-                            "idle"
-                        };
+                        let kind = if first_semantic_event { "TTFT" } else { "idle" };
                         let _ = tx
                             .send(Err(LlmError::Timeout(format!(
                                 "{kind} timeout on {endpoint}: no data within {}ms",
@@ -866,6 +918,10 @@ fn normalize_usage(usage: &Value) -> Value {
         .get("cache_read_input_tokens")
         .and_then(Value::as_u64)
         .unwrap_or(0);
+    let cache_creation_tokens = usage
+        .get("cache_creation_input_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
 
     json!({
         "prompt_tokens": input_tokens,
@@ -874,7 +930,23 @@ fn normalize_usage(usage: &Value) -> Value {
         "prompt_tokens_details": {
             "cached_tokens": cached_tokens,
         },
+        "cache_creation_tokens": cache_creation_tokens,
     })
+}
+
+/// Default thinking budget by model-family substring.
+///
+/// Matches the heuristic in `roko-gateway::thinking_cap` so the direct
+/// Anthropic API path and the gateway path agree on defaults.
+fn default_thinking_budget(model: &str) -> u32 {
+    let model = model.to_ascii_lowercase();
+    if model.contains("opus") {
+        32_768
+    } else if model.contains("haiku") {
+        4_096
+    } else {
+        16_384
+    }
 }
 
 #[cfg(test)]
@@ -1393,8 +1465,8 @@ data: {}\n\
 
         let base_url = spawn_sse_server(sse.to_string());
 
-        let backend = AnthropicMessagesBackend::new("test-key", "claude-sonnet-4-6")
-            .with_base_url(base_url);
+        let backend =
+            AnthropicMessagesBackend::new("test-key", "claude-sonnet-4-6").with_base_url(base_url);
 
         let stream = backend
             .stream_turn(
@@ -1489,8 +1561,8 @@ data: {}\n\
 
         let base_url = spawn_sse_server(sse.to_string());
 
-        let backend = AnthropicMessagesBackend::new("test-key", "claude-sonnet-4-6")
-            .with_base_url(base_url);
+        let backend =
+            AnthropicMessagesBackend::new("test-key", "claude-sonnet-4-6").with_base_url(base_url);
 
         let stream = backend
             .stream_turn(
@@ -1581,8 +1653,8 @@ data: {\"error\":{\"type\":\"overloaded_error\",\"message\":\"API is overloaded\
 
         let base_url = spawn_sse_server(sse.to_string());
 
-        let backend = AnthropicMessagesBackend::new("test-key", "claude-sonnet-4-6")
-            .with_base_url(base_url);
+        let backend =
+            AnthropicMessagesBackend::new("test-key", "claude-sonnet-4-6").with_base_url(base_url);
 
         let stream = backend
             .stream_turn(
@@ -1647,7 +1719,10 @@ data: {\"error\":{\"type\":\"overloaded_error\",\"message\":\"API is overloaded\
             )
             .expect("build streaming body");
         let body: Value = serde_json::from_slice(&body_bytes).expect("parse body");
-        assert_eq!(body["stream"], true, "streaming body must include stream: true");
+        assert_eq!(
+            body["stream"], true,
+            "streaming body must include stream: true"
+        );
         assert_eq!(body["model"], "claude-sonnet-4-6");
     }
 
@@ -1673,8 +1748,8 @@ data: {}\n\
 
         let base_url = spawn_sse_server(sse.to_string());
 
-        let backend = AnthropicMessagesBackend::new("test-key", "claude-sonnet-4-6")
-            .with_base_url(base_url);
+        let backend =
+            AnthropicMessagesBackend::new("test-key", "claude-sonnet-4-6").with_base_url(base_url);
 
         let stream = backend
             .stream_turn(
@@ -1728,8 +1803,8 @@ data: {}\n\
 
         let base_url = spawn_sse_server(sse.to_string());
 
-        let backend = AnthropicMessagesBackend::new("test-key", "claude-sonnet-4-6")
-            .with_base_url(base_url);
+        let backend =
+            AnthropicMessagesBackend::new("test-key", "claude-sonnet-4-6").with_base_url(base_url);
 
         let stream = backend
             .stream_turn(

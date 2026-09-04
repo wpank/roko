@@ -124,7 +124,9 @@ pub fn check_credentials(workdir: &Path) -> Vec<DiagnosticFinding> {
             check_id: DiagnosticCheckId::Credentials,
             code: "credentials_none".into(),
             severity: DiagnosticSeverity::Error,
-            message: "no provider has credentials -- set an API key env var or install a CLI provider".into(),
+            message:
+                "no provider has credentials -- set an API key env var or install a CLI provider"
+                    .into(),
             remediation: Some(DiagnosticRemediation {
                 summary: "set a provider API key".into(),
                 command: Some("export ANTHROPIC_API_KEY=sk-...".into()),
@@ -585,6 +587,7 @@ pub fn check_workspace(workdir: &Path) -> Vec<DiagnosticFinding> {
 // ── schema_version ───────────────────────────────────────────────────────
 
 /// Check config and storage schema version compatibility.
+#[allow(clippy::too_many_lines)]
 pub fn check_schema_version(workdir: &Path) -> Vec<DiagnosticFinding> {
     let mut findings = Vec::new();
 
@@ -706,12 +709,7 @@ pub fn check_providers(workdir: &Path) -> Vec<DiagnosticFinding> {
             // No config; check for common env vars.
             let any = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"]
                 .iter()
-                .any(|k| {
-                    std::env::var(k)
-                        .ok()
-                        .filter(|v| !v.is_empty())
-                        .is_some()
-                });
+                .any(|k| std::env::var(k).ok().filter(|v| !v.is_empty()).is_some());
             let cli = command_exists("claude");
             if any || cli {
                 return vec![DiagnosticFinding {
@@ -761,12 +759,7 @@ pub fn check_providers(workdir: &Path) -> Vec<DiagnosticFinding> {
         // Still check for env-based providers.
         let has_key = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"]
             .iter()
-            .any(|k| {
-                std::env::var(k)
-                    .ok()
-                    .filter(|v| !v.is_empty())
-                    .is_some()
-            });
+            .any(|k| std::env::var(k).ok().filter(|v| !v.is_empty()).is_some());
         if has_key || command_exists("claude") {
             return vec![DiagnosticFinding {
                 check_id: DiagnosticCheckId::Providers,
@@ -934,13 +927,14 @@ fn global_config_path() -> Option<std::path::PathBuf> {
     if home.is_empty() {
         return None;
     }
-    Some(std::path::PathBuf::from(home).join(".roko").join("config.toml"))
+    Some(
+        std::path::PathBuf::from(home)
+            .join(".roko")
+            .join("config.toml"),
+    )
 }
 
 /// Build a `BTreeMap` from an array of key-value pairs.
 fn evidence<const N: usize>(pairs: [(&str, String); N]) -> BTreeMap<String, String> {
-    pairs
-        .into_iter()
-        .map(|(k, v)| (k.to_string(), v))
-        .collect()
+    pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect()
 }

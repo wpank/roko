@@ -25,8 +25,8 @@
 //! ```
 
 use roko_compose::graph_cells::{
-    self, AggregateCell, EpisodesCell, ExperimentCell, KnowledgeCell, ModulationCell,
-    PlaybookCell, SafetyCell, TaskContextCell, cell_ids,
+    AggregateCell, EpisodesCell, ExperimentCell, KnowledgeCell, ModulationCell, PlaybookCell,
+    SafetyCell, TaskContextCell, cell_ids,
 };
 use roko_graph::registry::{CellDescriptor, CellRegistry};
 
@@ -94,7 +94,7 @@ pub fn register_compose_cells(registry: &mut CellRegistry) {
     registry.register_with_descriptor(
         cell_ids::AGGREGATE,
         CellDescriptor::new(cell_ids::AGGREGATE, version, None, None),
-        |_config| Box::new(AggregateCell::default()),
+        |_config| Box::new(AggregateCell),
     );
 }
 

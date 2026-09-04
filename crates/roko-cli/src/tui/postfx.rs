@@ -1102,9 +1102,7 @@ pub fn noise_floor(area: Rect, buf: &mut Buffer, density: f64, frame_seed: u64) 
 
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {
-            let hash = splitmix64(
-                frame_seed ^ ((x as u64) << 16) ^ ((y as u64) << 32),
-            );
+            let hash = splitmix64(frame_seed ^ ((x as u64) << 16) ^ ((y as u64) << 32));
             if unit_from_hash(hash) > density {
                 continue;
             }
@@ -1261,7 +1259,10 @@ mod tests {
         // Row 0 should be slightly dimmed, row 1 untouched
         let fg0 = buf[(0, 0)].fg;
         let fg1 = buf[(0, 1)].fg;
-        assert_ne!(fg0, fg1, "scanline row should be dimmer than non-scanline row");
+        assert_ne!(
+            fg0, fg1,
+            "scanline row should be dimmer than non-scanline row"
+        );
     }
 
     #[test]

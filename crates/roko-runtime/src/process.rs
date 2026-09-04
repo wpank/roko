@@ -843,6 +843,14 @@ pub struct ProcessSupervisor {
     strategy: SupervisionStrategy,
 }
 
+impl std::fmt::Debug for ProcessSupervisor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProcessSupervisor")
+            .field("strategy", &self.strategy)
+            .finish_non_exhaustive()
+    }
+}
+
 impl ProcessSupervisor {
     /// Create a new supervisor with a root cancellation token.
     pub fn new(cancel: CancelToken) -> Self {

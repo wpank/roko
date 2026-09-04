@@ -30,8 +30,8 @@ pub use help::render_help_modal;
 pub use inject::render_inject;
 pub use notification::{Notification, NotificationLevel, render_notifications};
 pub use notification_history::{
-    HistoryEntry, LevelFilter, NotificationRecord, render_notification_history, redact_message,
-    MAX_HISTORY,
+    HistoryEntry, LevelFilter, MAX_HISTORY, NotificationRecord, redact_message,
+    render_notification_history,
 };
 pub use plan_detail::render_plan_detail_modal;
 pub use queue_overview::{Milestone, QueueTask, render_queue_overview};

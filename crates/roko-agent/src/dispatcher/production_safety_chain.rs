@@ -35,7 +35,7 @@ use std::sync::Arc;
 use roko_core::extension::CamelTaintLevel;
 use roko_core::tool::{ToolContext, ToolDef, ToolError, ToolRegistry};
 
-use crate::safety::hooks::{HookDecision, SafetyAuditRecord};
+use crate::safety::hooks::SafetyAuditRecord;
 use crate::safety::result_filter::ResultFilter;
 use crate::safety::{CorrigibilityHook, HallucinationDetector, SafetyLayer, TaintLevelHook};
 
@@ -242,7 +242,9 @@ mod tests {
             .await;
         assert!(result.is_err());
         let (err, audit) = result.unwrap_err();
-        assert!(matches!(err, ToolError::PermissionDenied(msg) if msg.contains(stage_id::KNOWN_TOOL_SANITY)));
+        assert!(
+            matches!(err, ToolError::PermissionDenied(msg) if msg.contains(stage_id::KNOWN_TOOL_SANITY))
+        );
         // Short-circuited at stage 5 — only one audit record.
         assert_eq!(audit.len(), 1);
     }
@@ -415,7 +417,11 @@ mod tests {
         assert!(result.is_ok());
         let (_, audit) = result.unwrap();
         assert_eq!(audit.len(), 3, "all three hooks evaluated");
-        assert!(audit.iter().all(|r| matches!(r.decision, HookDecision::Allow)));
+        assert!(
+            audit
+                .iter()
+                .all(|r| matches!(r.decision, HookDecision::Allow))
+        );
     }
 
     // ── Denial audit records never contain raw arguments ─────────────────
@@ -488,10 +494,6 @@ mod tests {
             .hook_names()
             .filter(|n| n.contains("taint"))
             .collect();
-        assert_eq!(
-            taint_hooks.len(),
-            1,
-            "exactly one taint hook in the chain"
-        );
+        assert_eq!(taint_hooks.len(), 1, "exactly one taint hook in the chain");
     }
 }

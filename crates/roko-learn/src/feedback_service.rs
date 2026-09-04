@@ -191,6 +191,7 @@ impl FeedbackService {
                     cost_usd,
                     latency_ms,
                     success,
+                    error_class,
                 } => serde_json::json!({
                     "kind": "model_call",
                     "schema": FEEDBACK_EVENT_SCHEMA,
@@ -208,6 +209,7 @@ impl FeedbackService {
                     "cost_usd": cost_usd,
                     "latency_ms": latency_ms,
                     "success": success,
+                    "error_class": error_class,
                     "ts": ts,
                 }),
                 FeedbackEvent::GateResult {
@@ -852,6 +854,7 @@ mod tests {
             cost_usd: 0.01,
             latency_ms: 2000,
             success: true,
+            error_class: None,
         })
         .await
         .unwrap();
@@ -911,6 +914,7 @@ mod tests {
             cost_usd: 0.01,
             latency_ms: 200,
             success: true,
+            error_class: None,
         })
         .await
         .unwrap();
@@ -1056,6 +1060,7 @@ mod tests {
             cost_usd: 0.01,
             latency_ms: 2000,
             success: true,
+            error_class: None,
         })
         .await
         .unwrap();
@@ -1090,6 +1095,7 @@ mod tests {
             cost_usd: 0.01,
             latency_ms: 2000,
             success: true,
+            error_class: None,
         })
         .await
         .unwrap();
@@ -1119,6 +1125,7 @@ mod tests {
             cost_usd: 0.01,
             latency_ms: 2000,
             success: true,
+            error_class: None,
         })
         .await
         .unwrap();

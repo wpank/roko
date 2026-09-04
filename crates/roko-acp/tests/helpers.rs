@@ -291,6 +291,7 @@ fn build_mock_config(base_url: &str, timeout_ms: u64) -> RokoConfig {
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         },
     );
     config.models.insert(

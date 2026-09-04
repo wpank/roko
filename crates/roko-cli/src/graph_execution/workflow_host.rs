@@ -9,8 +9,8 @@
 //! and feeds controller inputs back from the execution results.
 
 use roko_execution::workflow::{
-    ControllerAction, PhaseInput, PhaseReceipt, WorkflowGraphController,
-    WorkflowPhase, WorkflowTermination,
+    ControllerAction, PhaseInput, PhaseReceipt, WorkflowGraphController, WorkflowPhase,
+    WorkflowTermination,
 };
 use serde::{Deserialize, Serialize};
 
@@ -164,8 +164,7 @@ impl WorkflowHost {
     pub fn new(
         config: WorkflowHostConfig,
     ) -> Result<Self, roko_execution::workflow::TemplateResolutionError> {
-        let mut template =
-            roko_execution::workflow::resolve_template(&config.template_name)?;
+        let mut template = roko_execution::workflow::resolve_template(&config.template_name)?;
 
         if !config.commit_enabled {
             template = template.with_commit_disabled();
@@ -189,7 +188,10 @@ impl WorkflowHost {
     pub fn advance(&mut self, outcome: PhaseOutcome) -> ControllerAction {
         // Record a receipt for the completed phase.
         let scope = self.controller.current_scope();
-        let success = !matches!(outcome, PhaseOutcome::Error { .. } | PhaseOutcome::GateFailed { .. });
+        let success = !matches!(
+            outcome,
+            PhaseOutcome::Error { .. } | PhaseOutcome::GateFailed { .. }
+        );
         let receipt = PhaseReceipt {
             scope,
             success,
@@ -344,7 +346,9 @@ mod tests {
 
         // The gate failure receipt should be recorded.
         let receipts = &host.controller().receipts;
-        let gate_receipt = receipts.iter().find(|r| r.scope.phase == WorkflowPhase::Gate);
+        let gate_receipt = receipts
+            .iter()
+            .find(|r| r.scope.phase == WorkflowPhase::Gate);
         assert!(gate_receipt.is_some());
         assert!(!gate_receipt.unwrap().success);
     }

@@ -81,7 +81,7 @@ impl std::fmt::Display for JobStatus {
 /// A marketplace job — the canonical shared type across serve, TUI, and CLI.
 ///
 /// Mirrors the `JobRecord` persisted in `.roko/jobs/{id}.json`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct MarketplaceJob {
     /// Unique job identifier.
     #[serde(default)]
@@ -156,7 +156,7 @@ impl MarketplaceJob {
 }
 
 /// Summary of a PRD for the Atelier TUI view.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PrdSummary {
     /// URL-safe slug identifier.
     #[serde(default)]
@@ -182,7 +182,7 @@ pub struct PrdSummary {
 }
 
 /// Summary of a task for the Atelier TUI view.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TaskSummary {
     /// Task identifier.
     #[serde(default)]
@@ -332,13 +332,21 @@ pub struct LegacyMigrationDiagnostic {
 /// Error type for job store operations.
 #[derive(Debug)]
 pub enum JobError {
-    InvalidTransition { from: String, to: String },
+    InvalidTransition {
+        from: String,
+        to: String,
+    },
     NotFound(String),
     /// The job is in an active state (e.g. `in_progress`) and cannot be
     /// cancelled without executor acknowledgement (see #371).
-    ActiveCancellationDenied { id: String, status: String },
+    ActiveCancellationDenied {
+        id: String,
+        status: String,
+    },
     /// A per-job execution lease is already held by another caller (#371).
-    LeaseHeld { id: String },
+    LeaseHeld {
+        id: String,
+    },
     Io(std::io::Error),
     Serde(serde_json::Error),
 }
@@ -351,7 +359,10 @@ impl std::fmt::Display for JobError {
             }
             Self::NotFound(id) => write!(f, "job '{id}' not found"),
             Self::ActiveCancellationDenied { id, status } => {
-                write!(f, "job '{id}' is {status} and cannot be cancelled while active")
+                write!(
+                    f,
+                    "job '{id}' is {status} and cannot be cancelled while active"
+                )
             }
             Self::LeaseHeld { id } => {
                 write!(f, "job '{id}' already has an active execution lease")
@@ -632,11 +643,17 @@ impl JobExecutionService {
         // Register cancellation channel for this job.
         let (tx, rx) = tokio::sync::oneshot::channel();
         {
-            let mut cancellers = self.active_cancellers.lock().unwrap_or_else(|e| e.into_inner());
+            let mut cancellers = self
+                .active_cancellers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             cancellers.insert(resolved.clone(), tx);
         }
         {
-            let mut receivers = self.active_cancel_receivers.lock().unwrap_or_else(|e| e.into_inner());
+            let mut receivers = self
+                .active_cancel_receivers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             receivers.insert(resolved.clone(), rx);
         }
 
@@ -678,7 +695,10 @@ impl JobExecutionService {
         if prior == "in_progress" {
             // Send cancellation signal to the active executor.
             let sender = {
-                let mut cancellers = self.active_cancellers.lock().unwrap_or_else(|e| e.into_inner());
+                let mut cancellers = self
+                    .active_cancellers
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 cancellers.remove(&resolved)
             };
 
@@ -710,11 +730,17 @@ impl JobExecutionService {
 
         // Clean up cancellation channels.
         {
-            let mut cancellers = self.active_cancellers.lock().unwrap_or_else(|e| e.into_inner());
+            let mut cancellers = self
+                .active_cancellers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             cancellers.remove(&resolved);
         }
         {
-            let mut receivers = self.active_cancel_receivers.lock().unwrap_or_else(|e| e.into_inner());
+            let mut receivers = self
+                .active_cancel_receivers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             receivers.remove(&resolved);
         }
 
@@ -815,11 +841,17 @@ impl JobExecutionService {
 
         // Clean up cancellation channels.
         {
-            let mut cancellers = self.active_cancellers.lock().unwrap_or_else(|e| e.into_inner());
+            let mut cancellers = self
+                .active_cancellers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             cancellers.remove(&resolved);
         }
         {
-            let mut receivers = self.active_cancel_receivers.lock().unwrap_or_else(|e| e.into_inner());
+            let mut receivers = self
+                .active_cancel_receivers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             receivers.remove(&resolved);
         }
 
@@ -866,11 +898,17 @@ impl JobExecutionService {
 
         // Clean up cancellation channels.
         {
-            let mut cancellers = self.active_cancellers.lock().unwrap_or_else(|e| e.into_inner());
+            let mut cancellers = self
+                .active_cancellers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             cancellers.remove(&resolved);
         }
         {
-            let mut receivers = self.active_cancel_receivers.lock().unwrap_or_else(|e| e.into_inner());
+            let mut receivers = self
+                .active_cancel_receivers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             receivers.remove(&resolved);
         }
 
@@ -887,11 +925,11 @@ impl JobExecutionService {
 
     /// Take the cancellation receiver for a job so the executor can poll it.
     /// Returns `None` if no receiver is registered (e.g., already taken).
-    pub fn take_cancel_receiver(
-        &self,
-        job_id: &str,
-    ) -> Option<tokio::sync::oneshot::Receiver<()>> {
-        let mut receivers = self.active_cancel_receivers.lock().unwrap_or_else(|e| e.into_inner());
+    pub fn take_cancel_receiver(&self, job_id: &str) -> Option<tokio::sync::oneshot::Receiver<()>> {
+        let mut receivers = self
+            .active_cancel_receivers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         receivers.remove(job_id)
     }
 

@@ -225,10 +225,7 @@ impl ExecutionCommandSender {
         let run_id = run_id.into();
         let (cmd_tx, cmd_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
         let (ack_tx, ack_rx) = mpsc::channel(ACK_CHANNEL_CAPACITY);
-        let sender = Self {
-            tx: cmd_tx,
-            run_id,
-        };
+        let sender = Self { tx: cmd_tx, run_id };
         (sender, cmd_rx, ack_tx, ack_rx)
     }
 
@@ -489,11 +486,7 @@ mod tests {
             let (sender, mut cmd_rx, _ack_tx, _ack_rx) =
                 ExecutionCommandSender::channel("run-conv");
             let cmd_id = sender
-                .send_kind(
-                    ExecutionCommandKind::Cancel,
-                    Some("plan-a".into()),
-                    None,
-                )
+                .send_kind(ExecutionCommandKind::Cancel, Some("plan-a".into()), None)
                 .unwrap();
             assert!(cmd_id.starts_with("cmd-"));
             let received = cmd_rx.recv().await.unwrap();

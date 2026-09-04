@@ -119,6 +119,7 @@ pub trait TaskDispatcher: Send + Sync {
 /// and must not be dropped.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[allow(missing_docs)]
 pub enum GraphTaskEvent {
     /// Incremental assistant text (may coalesce).
     Text { text: String },
@@ -220,11 +221,7 @@ pub trait ProviderAttemptRecorder: Send + Sync {
     async fn record_start(&self, attempt_id: &str, spec: &TaskExecutionSpec) -> Result<()>;
 
     /// Record the terminal outcome of an attempt.
-    async fn record_terminal(
-        &self,
-        attempt_id: &str,
-        outcome: &TaskDispatchOutcome,
-    ) -> Result<()>;
+    async fn record_terminal(&self, attempt_id: &str, outcome: &TaskDispatchOutcome) -> Result<()>;
 
     /// Check whether a previous attempt has terminal evidence on disk.
     async fn has_terminal_evidence(&self, attempt_id: &str) -> bool;

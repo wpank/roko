@@ -2,7 +2,6 @@
 
 use crate::tool_loop::{StreamEvent, StreamEventKind};
 use crate::translate::{normalize_finish_reason, openai::parse_usage};
-use crate::usage::Usage;
 use serde_json::Value;
 
 /// Provider-neutral stream event covering both OpenAI SSE and Claude CLI protocols.
@@ -89,12 +88,22 @@ impl UnifiedStreamEvent {
         match event.kind {
             StreamEventKind::TextDelta(text) => Some(Self::ContentDelta(text)),
             StreamEventKind::ReasoningDelta(text) => Some(Self::ReasoningDelta(text)),
-            StreamEventKind::ToolCallStart { id, name } => Some(Self::ToolCall {
-                id,
-                name,
-                arguments: String::new(),
-            }),
-            StreamEventKind::ToolCallDelta { id: _, json_fragment } => {
+            StreamEventKind::ToolCallStart { id, name } => {
+                // Strip the index-key prefix if present (format: "__idx_N\0real_id").
+                let clean_id = id
+                    .find('\0')
+                    .map(|sep| id[sep + 1..].to_string())
+                    .unwrap_or(id);
+                Some(Self::ToolCall {
+                    id: clean_id,
+                    name,
+                    arguments: String::new(),
+                })
+            }
+            StreamEventKind::ToolCallDelta {
+                id: _,
+                json_fragment,
+            } => {
                 // Deltas carry partial arguments; map to an empty-named ToolCall
                 // for accumulators that need argument fragments.
                 Some(Self::ToolCall {
@@ -208,6 +217,10 @@ pub fn parse_sse_line(line: &str) -> Option<StreamEvent> {
     }
     if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
         for tc in tool_calls {
+            // The `index` field is always present in OpenAI streaming deltas
+            // and uniquely identifies each parallel tool call within a turn.
+            // The `id` field is only present on the first chunk for each call.
+            let index = tc.get("index").and_then(Value::as_u64).unwrap_or(0);
             let id = tc
                 .get("id")
                 .and_then(Value::as_str)
@@ -224,16 +237,35 @@ pub fn parse_sse_line(line: &str) -> Option<StreamEvent> {
                 .unwrap_or("")
                 .to_string();
 
-            // When both id and name are present, this is a tool call start.
+            // Use index as the stable key for linking start/delta events.
+            // The real provider id is stored separately in the accumulator.
+            let index_key = format!("__idx_{index}");
+
+            // When id or name is present, this is a tool call start.
             if !id.is_empty() || !name.is_empty() {
+                // Embed the real id after a NUL separator so the accumulator
+                // can recover it: "__idx_0\0call_abc123".
+                // If there are initial arguments in the same chunk, append
+                // them after a SOH (\x01) separator so the accumulator can
+                // seed the entry: "__idx_0\0call_abc123\x01{\"value\":".
+                let mut keyed_id = if id.is_empty() {
+                    index_key
+                } else {
+                    format!("{index_key}\0{id}")
+                };
+                if !arguments.is_empty() {
+                    keyed_id.push('\x01');
+                    keyed_id.push_str(&arguments);
+                }
                 return Some(StreamEvent::now(StreamEventKind::ToolCallStart {
-                    id,
+                    id: keyed_id,
                     name,
                 }));
             }
-            // Otherwise it's a delta with partial arguments.
+            // Otherwise it's a delta with partial arguments — use the same
+            // index key so the accumulator can find the matching start.
             return Some(StreamEvent::now(StreamEventKind::ToolCallDelta {
-                id: String::new(),
+                id: index_key,
                 json_fragment: arguments,
             }));
         }
@@ -288,11 +320,22 @@ mod tests {
             r#"data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_glm_","function":{"name":"edit_file","arguments":"{\"path\":\"note.txt\"}"}}]}}]}"#,
         );
 
-        assert!(matches!(
-            event.map(|e| e.kind),
-            Some(StreamEventKind::ToolCallStart { id, name })
-                if id == "call_glm_" && name == "edit_file"
-        ));
+        // The id embeds the index key, the real provider id after NUL,
+        // and any initial argument fragment after SOH (\x01):
+        // "__idx_1\0call_glm_\x01{\"path\":\"note.txt\"}".
+        let kind = event.map(|e| e.kind);
+        match kind {
+            Some(StreamEventKind::ToolCallStart { ref id, ref name }) => {
+                assert!(id.starts_with("__idx_1\0call_glm_"), "id={id:?}");
+                assert_eq!(name, "edit_file");
+                // Verify initial args are carried after SOH.
+                assert!(
+                    id.contains('\x01'),
+                    "initial arguments should be encoded after SOH"
+                );
+            }
+            other => panic!("expected ToolCallStart, got {other:?}"),
+        }
     }
 
     #[test]
@@ -334,5 +377,63 @@ mod tests {
     #[test]
     fn sse_parser_ignores_non_data_lines() {
         assert!(parse_sse_line("event: message").is_none());
+    }
+
+    #[test]
+    fn sse_parser_tool_call_start_embeds_index_and_real_id() {
+        // First chunk of a tool call: has id, name, and index.
+        let event = parse_sse_line(
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_abc","function":{"name":"read_file","arguments":""}}]}}]}"#,
+        );
+        match event.map(|e| e.kind) {
+            Some(StreamEventKind::ToolCallStart { id, name }) => {
+                assert!(
+                    id.starts_with("__idx_0\0"),
+                    "id should embed index key: {id}"
+                );
+                assert!(id.ends_with("call_abc"), "id should embed real id: {id}");
+                assert_eq!(name, "read_file");
+            }
+            other => panic!("expected ToolCallStart, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sse_parser_tool_call_delta_uses_index_key() {
+        // Subsequent chunk: no id, no name — just index and arguments.
+        let event = parse_sse_line(
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":"}}]}}]}"#,
+        );
+        match event.map(|e| e.kind) {
+            Some(StreamEventKind::ToolCallDelta { id, json_fragment }) => {
+                assert_eq!(id, "__idx_0", "delta should use index-based key");
+                assert_eq!(json_fragment, r#"{"path":"#);
+            }
+            other => panic!("expected ToolCallDelta, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sse_parser_parallel_tool_calls_use_distinct_index_keys() {
+        // Two parallel tool calls use different indices.
+        let event0 = parse_sse_line(
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"name":"read","arguments":""}}]}}]}"#,
+        ).unwrap();
+        let event1 = parse_sse_line(
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_b","function":{"name":"write","arguments":""}}]}}]}"#,
+        ).unwrap();
+
+        let id0 = match event0.kind {
+            StreamEventKind::ToolCallStart { id, .. } => id,
+            _ => panic!(),
+        };
+        let id1 = match event1.kind {
+            StreamEventKind::ToolCallStart { id, .. } => id,
+            _ => panic!(),
+        };
+
+        assert_ne!(id0, id1, "parallel tool calls must have distinct keys");
+        assert!(id0.starts_with("__idx_0"));
+        assert!(id1.starts_with("__idx_1"));
     }
 }

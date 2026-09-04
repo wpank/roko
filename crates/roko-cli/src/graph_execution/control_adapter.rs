@@ -21,8 +21,7 @@ use crate::execution_control::{
 };
 
 use roko_graph::control::{
-    ControlCommandKind, ControlEffect, ControlReceiptV1, ExecutionControlService,
-    ReceiptStatus,
+    ControlCommandKind, ControlEffect, ControlReceiptV1, ExecutionControlService, ReceiptStatus,
 };
 
 // ---------------------------------------------------------------------------
@@ -46,10 +45,7 @@ pub struct GraphControlAdapter {
 impl GraphControlAdapter {
     /// Create a new adapter backed by the given control service and ack
     /// channel.
-    pub fn new(
-        service: ExecutionControlService,
-        ack_tx: mpsc::Sender<CommandAck>,
-    ) -> Self {
+    pub fn new(service: ExecutionControlService, ack_tx: mpsc::Sender<CommandAck>) -> Self {
         Self { service, ack_tx }
     }
 
@@ -61,10 +57,7 @@ impl GraphControlAdapter {
 
     /// Process a single `ExecutionCommand` and return the scheduling effect.
     /// Also sends a `CommandAck` through the ack channel.
-    pub async fn process(
-        &self,
-        cmd: &ExecutionCommand,
-    ) -> GraphControlAdapterEffect {
+    pub async fn process(&self, cmd: &ExecutionCommand) -> GraphControlAdapterEffect {
         let kind = map_command_kind(&cmd.kind);
         let effect = self.service.process_command(
             &cmd.command_id,
@@ -240,9 +233,7 @@ pub enum GraphControlAdapterEffect {
         task_id: Option<String>,
     },
     /// Reset failed/pending nodes.
-    Repair {
-        preserve_completed: bool,
-    },
+    Repair { preserve_completed: bool },
     /// Re-run gate checks without a provider call.
     ReverifyGates {
         plan_id: Option<String>,
@@ -256,19 +247,14 @@ pub enum GraphControlAdapterEffect {
     /// Reset eligible graph state.
     Reset,
     /// An approval was resolved.
-    ApprovalResolved {
-        approval_id: String,
-        approved: bool,
-    },
+    ApprovalResolved { approval_id: String, approved: bool },
     /// Cancel with finalization receipt.
     Cancel {
         plan_id: Option<String>,
         finalization_receipt: ControlReceiptV1,
     },
     /// The command was rejected.
-    Rejected {
-        reason: String,
-    },
+    Rejected { reason: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -281,19 +267,15 @@ fn map_command_kind(kind: &ExecutionCommandKind) -> ControlCommandKind {
         ExecutionCommandKind::Pause => ControlCommandKind::Pause,
         ExecutionCommandKind::Resume => ControlCommandKind::Resume,
         ExecutionCommandKind::SoftRetry => ControlCommandKind::SoftRetry,
-        ExecutionCommandKind::Repair { preserve_completed } => {
-            ControlCommandKind::Repair {
-                preserve_completed: *preserve_completed,
-            }
-        }
+        ExecutionCommandKind::Repair { preserve_completed } => ControlCommandKind::Repair {
+            preserve_completed: *preserve_completed,
+        },
         ExecutionCommandKind::ReverifyGates => ControlCommandKind::ReverifyGates,
         ExecutionCommandKind::Skip => ControlCommandKind::Skip,
         ExecutionCommandKind::Cancel => ControlCommandKind::Cancel,
-        ExecutionCommandKind::Approve { approval_id } => {
-            ControlCommandKind::Approve {
-                approval_id: approval_id.clone(),
-            }
-        }
+        ExecutionCommandKind::Approve { approval_id } => ControlCommandKind::Approve {
+            approval_id: approval_id.clone(),
+        },
         ExecutionCommandKind::RejectApproval {
             approval_id,
             reason,
@@ -391,10 +373,7 @@ mod tests {
         let effect = adapter.process(&received).await;
         assert!(matches!(
             effect,
-            GraphControlAdapterEffect::ApprovalResolved {
-                approved: true,
-                ..
-            }
+            GraphControlAdapterEffect::ApprovalResolved { approved: true, .. }
         ));
 
         let acks = ack_receiver.drain();
@@ -451,10 +430,7 @@ mod tests {
             },
         };
         let effect = adapter.process(&cmd).await;
-        assert!(matches!(
-            effect,
-            GraphControlAdapterEffect::Rejected { .. }
-        ));
+        assert!(matches!(effect, GraphControlAdapterEffect::Rejected { .. }));
 
         let acks = ack_receiver.drain();
         assert_eq!(acks.len(), 1);
@@ -580,8 +556,7 @@ mod tests {
 
         let mut effects = Vec::new();
         for kind in kinds {
-            let cmd =
-                sender.build_command(kind, Some("p".into()), Some("t".into()), None);
+            let cmd = sender.build_command(kind, Some("p".into()), Some("t".into()), None);
             sender.try_send(cmd).unwrap();
             let received = cmd_rx.recv().await.unwrap();
             effects.push(adapter.process(&received).await);
@@ -602,17 +577,11 @@ mod tests {
             effects[4],
             GraphControlAdapterEffect::ReverifyGates { .. }
         ));
-        assert!(matches!(
-            effects[5],
-            GraphControlAdapterEffect::Skip { .. }
-        ));
+        assert!(matches!(effects[5], GraphControlAdapterEffect::Skip { .. }));
         assert_eq!(effects[6], GraphControlAdapterEffect::Reset);
         assert!(matches!(
             effects[7],
-            GraphControlAdapterEffect::ApprovalResolved {
-                approved: true,
-                ..
-            }
+            GraphControlAdapterEffect::ApprovalResolved { approved: true, .. }
         ));
         // ap-missing-ok was never registered, so the reject-approval
         // command itself gets rejected by the service.

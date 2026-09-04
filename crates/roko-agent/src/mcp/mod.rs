@@ -5,6 +5,9 @@
 //! `.mcp.json` config discovery, and a dynamic registry that composes
 //! static built-in tools with MCP-discovered tools.
 
+/// Separator between MCP server name and tool name in qualified tool identifiers.
+pub const MCP_TOOL_SEPARATOR: &str = ".";
+
 pub mod bridge;
 pub mod client;
 pub mod config;

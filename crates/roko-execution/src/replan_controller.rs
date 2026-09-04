@@ -20,9 +20,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use roko_core::plan_mutation::{
-    MutationAuthorKind, MutationAuthorV1, MutationEvidenceV1, MutablePlanV1, MutableTaskV1,
-    PlanMutationErrorV1, PlanMutationOpV1, PlanMutationResultV1, PlanMutationV1, apply_mutation,
-    canonical_fingerprint,
+    MutablePlanV1, MutableTaskV1, MutationAuthorKind, MutationAuthorV1, MutationEvidenceV1,
+    PlanMutationErrorV1, PlanMutationOpV1, PlanMutationV1, apply_mutation, canonical_fingerprint,
 };
 use roko_gate::{FailureClass, GateFailureAction, GateFailureClassification};
 use serde::{Deserialize, Serialize};
@@ -166,6 +165,7 @@ pub struct ReplanReceiptV1 {
 /// Events emitted by the replan controller for observability.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[allow(missing_docs)]
 pub enum ReplanEvent {
     /// A replan was requested.
     Requested {
@@ -229,7 +229,10 @@ impl ReplanController {
         let action = &request.gate_classification.recommended_action;
 
         // ExternalEnvironment and RoleToolPermission reject without mutation.
-        if matches!(primary, FailureClass::ExternalEnvironment | FailureClass::RoleToolPermission) {
+        if matches!(
+            primary,
+            FailureClass::ExternalEnvironment | FailureClass::RoleToolPermission
+        ) {
             return ReplanDecision::Reject {
                 reason: format!(
                     "failure class {:?} is not eligible for structural replan; \
@@ -240,7 +243,10 @@ impl ReplanController {
         }
 
         // Blocked/NeedsHuman actions reject.
-        if matches!(action, GateFailureAction::Blocked | GateFailureAction::NeedsHuman) {
+        if matches!(
+            action,
+            GateFailureAction::Blocked | GateFailureAction::NeedsHuman
+        ) {
             return ReplanDecision::Reject {
                 reason: format!(
                     "recommended action {:?} is not eligible for structural replan",
@@ -275,10 +281,10 @@ impl ReplanController {
             }
 
             // RemoveInvalidDependency needs explicit evidence.
-            if matches!(strategy, ReplanStrategy::RemoveInvalidDependency) {
-                if extract_invalid_dependency(&request.gate_classification).is_none() {
-                    continue;
-                }
+            if matches!(strategy, ReplanStrategy::RemoveInvalidDependency)
+                && extract_invalid_dependency(&request.gate_classification).is_none()
+            {
+                continue;
             }
 
             // Build the mutation for this strategy.
@@ -295,7 +301,6 @@ impl ReplanController {
                         reason = %reason,
                         "strategy skipped during construction"
                     );
-                    continue;
                 }
             }
         }
@@ -408,12 +413,12 @@ fn extract_invalid_dependency(classification: &GateFailureClassification) -> Opt
     }
     // Check compile errors for E0433 (failed to resolve) referencing a task dep.
     for err in &classification.compile_errors {
-        if err.code.as_deref() == Some("E0433") {
-            if let Some(file) = &err.file {
-                // Use the file path as a hint -- not a dep name directly.
-                // The controller requires explicit evidence.
-                let _ = file;
-            }
+        if err.code.as_deref() == Some("E0433")
+            && let Some(file) = &err.file
+        {
+            // Use the file path as a hint -- not a dep name directly.
+            // The controller requires explicit evidence.
+            let _ = file;
         }
     }
     None
@@ -448,21 +453,11 @@ fn build_mutation(
     }];
 
     let operations = match strategy {
-        ReplanStrategy::ChangeApproach => {
-            build_change_approach_ops(request)?
-        }
-        ReplanStrategy::SplitTask => {
-            build_split_task_ops(request)?
-        }
-        ReplanStrategy::AddPrerequisite => {
-            build_add_prerequisite_ops(request)?
-        }
-        ReplanStrategy::MergeSiblingTasks => {
-            build_merge_sibling_ops(request)?
-        }
-        ReplanStrategy::RemoveInvalidDependency => {
-            build_remove_invalid_dep_ops(request)?
-        }
+        ReplanStrategy::ChangeApproach => build_change_approach_ops(request)?,
+        ReplanStrategy::SplitTask => build_split_task_ops(request)?,
+        ReplanStrategy::AddPrerequisite => build_add_prerequisite_ops(request)?,
+        ReplanStrategy::MergeSiblingTasks => build_merge_sibling_ops(request)?,
+        ReplanStrategy::RemoveInvalidDependency => build_remove_invalid_dep_ops(request)?,
     };
 
     Ok(PlanMutationV1 {
@@ -483,10 +478,7 @@ fn build_change_approach_ops(request: &ReplanRequest) -> Result<Vec<PlanMutation
     let mut metadata = BTreeMap::new();
     metadata.insert(
         "replan_approach".to_string(),
-        format!(
-            "Changed approach after gate failure: {}",
-            summary
-        ),
+        format!("Changed approach after gate failure: {}", summary),
     );
     // Clear automatic model hints by not including them.
 
@@ -573,9 +565,7 @@ fn build_add_prerequisite_ops(request: &ReplanRequest) -> Result<Vec<PlanMutatio
             summary
         ),
         dependencies: BTreeSet::new(),
-        metadata: BTreeMap::from([
-            ("prerequisite_for".to_string(), task_id.clone()),
-        ]),
+        metadata: BTreeMap::from([("prerequisite_for".to_string(), task_id.clone())]),
         completed: false,
     };
 
@@ -590,7 +580,7 @@ fn build_add_prerequisite_ops(request: &ReplanRequest) -> Result<Vec<PlanMutatio
 
 /// MergeSiblingTasks: merge the failed task with the next pending sibling
 /// that has identical incoming dependencies.
-fn build_merge_sibling_ops(request: &ReplanRequest) -> Result<Vec<PlanMutationOpV1>, String> {
+fn build_merge_sibling_ops(_request: &ReplanRequest) -> Result<Vec<PlanMutationOpV1>, String> {
     // This strategy needs plan context at apply-time. We build a placeholder
     // that the caller fills in. However, per the contract, we construct the
     // mutation entirely from the request -- which means the plan must be
@@ -605,13 +595,10 @@ fn build_merge_sibling_ops(request: &ReplanRequest) -> Result<Vec<PlanMutationOp
 }
 
 /// RemoveInvalidDependency: remove a specific dependency named by gate evidence.
-fn build_remove_invalid_dep_ops(
-    request: &ReplanRequest,
-) -> Result<Vec<PlanMutationOpV1>, String> {
-    let dep_name = extract_invalid_dependency(&request.gate_classification)
-        .ok_or_else(|| {
-            "no explicit invalid-dependency evidence in gate classification".to_string()
-        })?;
+fn build_remove_invalid_dep_ops(request: &ReplanRequest) -> Result<Vec<PlanMutationOpV1>, String> {
+    let dep_name = extract_invalid_dependency(&request.gate_classification).ok_or_else(|| {
+        "no explicit invalid-dependency evidence in gate classification".to_string()
+    })?;
 
     Ok(vec![PlanMutationOpV1::RemoveDependency {
         task_id: request.failed_task_id.clone(),
@@ -630,10 +617,7 @@ impl ReplanController {
     /// the mutation accordingly. Call this instead of `decide` when the plan
     /// is available and `decide` returns `Reject` with a merge-context error.
     #[must_use]
-    pub fn decide_with_plan(
-        request: &ReplanRequest,
-        plan: &MutablePlanV1,
-    ) -> ReplanDecision {
+    pub fn decide_with_plan(request: &ReplanRequest, plan: &MutablePlanV1) -> ReplanDecision {
         // First try the normal path.
         let decision = Self::decide(request);
 
@@ -687,7 +671,7 @@ impl ReplanController {
             })
             .map(|t| t.id.as_str())
             .collect();
-        candidates.sort(); // Lexicographic for determinism.
+        candidates.sort_unstable(); // Lexicographic for determinism.
 
         let Some(sibling_id) = candidates.first() else {
             return decision;
@@ -704,17 +688,13 @@ impl ReplanController {
                  Original: {}\n\
                  Merged with: {}\n\n\
                  Failure: {}",
-                failed_task.description,
-                sibling.description,
-                request.gate_classification.summary,
+                failed_task.description, sibling.description, request.gate_classification.summary,
             ),
             dependencies: failed_task.dependencies.clone(),
-            metadata: BTreeMap::from([
-                (
-                    "merged_from".to_string(),
-                    format!("{},{}", request.failed_task_id, sibling_id),
-                ),
-            ]),
+            metadata: BTreeMap::from([(
+                "merged_from".to_string(),
+                format!("{},{}", request.failed_task_id, sibling_id),
+            )]),
             completed: false,
         };
 

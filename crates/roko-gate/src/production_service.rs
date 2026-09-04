@@ -38,6 +38,7 @@ use crate::shell::ShellGate;
 /// Consumers (the graph cell, TUI, telemetry) receive these through the
 /// [`ProgressSink`] callback.
 #[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum GatePipelineProgress {
     /// A rung is about to start.
     RungStarted {
@@ -225,7 +226,7 @@ impl ProductionGateService {
         signal: &Signal,
         ctx: &Context,
         complexity: PlanComplexity,
-        adaptive: &Option<Arc<Mutex<AdaptiveThresholds>>>,
+        adaptive: Option<&Arc<Mutex<AdaptiveThresholds>>>,
         progress: &Arc<dyn ProgressSink>,
     ) -> Vec<ProductionGateRungVerdict> {
         let selected_labels =
@@ -242,73 +243,75 @@ impl ProductionGateService {
             }
 
             // Max-rung cap: skip rungs above the configured ceiling.
-            if let Some(cap) = max_rung_index {
-                if rung.as_index() > cap {
-                    let rv = ProductionGateRungVerdict {
+            if let Some(cap) = max_rung_index
+                && rung.as_index() > cap
+            {
+                let rv = ProductionGateRungVerdict {
+                    rung: *rung,
+                    gate_name: label.to_string(),
+                    state: RungState::Skipped,
+                    failure_classification: None,
+                    diagnostic: format!(
+                        "max_rung cap: rung {} exceeds configured max {}",
+                        rung.as_index(),
+                        cap
+                    ),
+                    evidence: EvidenceRef::default(),
+                    duration: Duration::ZERO,
+                    test_counts: None,
+                    input_fingerprint: request.workspace_fingerprint.clone(),
+                    skip_reason: Some(format!("max_rung: {} > {}", rung.as_index(), cap)),
+                };
+                progress
+                    .send(GatePipelineProgress::RungCompleted {
                         rung: *rung,
-                        gate_name: label.to_string(),
-                        state: RungState::Skipped,
-                        failure_classification: None,
-                        diagnostic: format!(
-                            "max_rung cap: rung {} exceeds configured max {}",
-                            rung.as_index(),
-                            cap
-                        ),
-                        evidence: EvidenceRef::default(),
-                        duration: Duration::ZERO,
-                        test_counts: None,
-                        input_fingerprint: request.workspace_fingerprint.clone(),
-                        skip_reason: Some(format!(
-                            "max_rung: {} > {}",
-                            rung.as_index(),
-                            cap
-                        )),
-                    };
-                    progress
-                        .send(GatePipelineProgress::RungCompleted {
-                            rung: *rung,
-                            verdict: rv.clone(),
-                        })
-                        .await;
-                    rung_verdicts.push(rv);
-                    continue;
-                }
+                        verdict: rv.clone(),
+                    })
+                    .await;
+                rung_verdicts.push(rv);
+                continue;
             }
 
             // Check adaptive skip (never skip rung 0 / Compile).
-            if let Some(adaptive) = adaptive {
+            let adaptive_skip = if let Some(adaptive) = adaptive {
                 if rung.as_index() > 0 {
-                    if let Ok(thresholds) = adaptive.lock() {
-                        if thresholds.should_skip_rung(rung.as_index()) {
-                            let rv = ProductionGateRungVerdict {
-                                rung: *rung,
-                                gate_name: label.to_string(),
-                                state: RungState::Skipped,
-                                failure_classification: None,
-                                diagnostic: format!(
-                                    "adaptive skip: high pass rate for rung {}",
-                                    rung.as_index()
-                                ),
-                                evidence: EvidenceRef::default(),
-                                duration: Duration::ZERO,
-                                test_counts: None,
-                                input_fingerprint: request.workspace_fingerprint.clone(),
-                                skip_reason: Some(format!(
-                                    "adaptive: high pass rate for rung {}",
-                                    rung.as_index()
-                                )),
-                            };
-                            progress
-                                .send(GatePipelineProgress::RungCompleted {
-                                    rung: *rung,
-                                    verdict: rv.clone(),
-                                })
-                                .await;
-                            rung_verdicts.push(rv);
-                            continue;
-                        }
-                    }
+                    adaptive
+                        .lock()
+                        .ok()
+                        .is_some_and(|t| t.should_skip_rung(rung.as_index()))
+                } else {
+                    false
                 }
+            } else {
+                false
+            };
+            if adaptive_skip {
+                let rv = ProductionGateRungVerdict {
+                    rung: *rung,
+                    gate_name: label.to_string(),
+                    state: RungState::Skipped,
+                    failure_classification: None,
+                    diagnostic: format!(
+                        "adaptive skip: high pass rate for rung {}",
+                        rung.as_index()
+                    ),
+                    evidence: EvidenceRef::default(),
+                    duration: Duration::ZERO,
+                    test_counts: None,
+                    input_fingerprint: request.workspace_fingerprint.clone(),
+                    skip_reason: Some(format!(
+                        "adaptive: high pass rate for rung {}",
+                        rung.as_index()
+                    )),
+                };
+                progress
+                    .send(GatePipelineProgress::RungCompleted {
+                        rung: *rung,
+                        verdict: rv.clone(),
+                    })
+                    .await;
+                rung_verdicts.push(rv);
+                continue;
             }
 
             // Emit rung-start event.
@@ -335,12 +338,11 @@ impl ProductionGateService {
                     Self::verdict_to_rung_verdict(*rung, verdict, &request.workspace_fingerprint);
 
                 // Record adaptive observation for non-skipped verdicts.
-                if let Some(adaptive) = adaptive {
-                    if let Ok(mut thresholds) = adaptive.lock() {
-                        if !rv.skipped() {
-                            thresholds.observe(rung.as_index(), rv.passed());
-                        }
-                    }
+                if let Some(adaptive) = adaptive
+                    && let Ok(mut thresholds) = adaptive.lock()
+                    && !rv.skipped()
+                {
+                    thresholds.observe(rung.as_index(), rv.passed());
                 }
 
                 progress
@@ -411,8 +413,7 @@ impl ProductionGateService {
             let ctx = Context::now().with_attr("workdir", request.workspace.to_string_lossy());
 
             let verdict = shell.verify(&signal, &ctx).await;
-            let rv =
-                Self::verdict_to_rung_verdict(rung, &verdict, &request.workspace_fingerprint);
+            let rv = Self::verdict_to_rung_verdict(rung, &verdict, &request.workspace_fingerprint);
 
             progress
                 .send(GatePipelineProgress::RungCompleted {
@@ -514,7 +515,7 @@ impl ProductionGateRunner for ProductionGateService {
                     &signal,
                     &ctx,
                     complexity,
-                    &adaptive,
+                    adaptive.as_ref(),
                     &progress_sink,
                 ).await;
 

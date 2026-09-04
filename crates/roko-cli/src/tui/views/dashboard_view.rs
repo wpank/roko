@@ -82,11 +82,8 @@ fn render_idle_dashboard(
 ) {
     // Idle layout: summary card (top) + full-width sub-tab area (bottom).
     let summary_h = 8u16.min(area.height.saturating_sub(4));
-    let sections = Layout::vertical([
-        Constraint::Length(summary_h),
-        Constraint::Min(0),
-    ])
-    .split(area);
+    let sections =
+        Layout::vertical([Constraint::Length(summary_h), Constraint::Min(0)]).split(area);
 
     render_idle_summary_card(frame, sections[0], tui_state, theme);
     render_right_panel(frame, sections[1], data, tui_state, view_state, theme);
@@ -132,10 +129,7 @@ fn render_idle_summary_card(
 
         let mut status_spans = vec![
             Span::styled(" tasks: ", theme.muted()),
-            Span::styled(
-                format!("{total_done}/{total_tasks}"),
-                theme.info(),
-            ),
+            Span::styled(format!("{total_done}/{total_tasks}"), theme.info()),
         ];
         if total_failed > 0 {
             status_spans.push(Span::styled(
@@ -154,10 +148,7 @@ fn render_idle_summary_card(
             Span::styled(format!("${cost:.2}"), cost_style),
         ];
         if budget > 0.0 {
-            cost_spans.push(Span::styled(
-                format!(" / ${budget:.2}"),
-                theme.muted(),
-            ));
+            cost_spans.push(Span::styled(format!(" / ${budget:.2}"), theme.muted()));
         }
         lines.push(Line::from(cost_spans));
 
@@ -187,10 +178,7 @@ fn render_idle_summary_card(
         )));
     }
 
-    frame.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: false }),
-        inner,
-    );
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 // ===========================================================================
@@ -277,12 +265,7 @@ fn render_left_panel(
 /// | > t-017: Wire gate pipeline       |
 /// +-----------------------------------+
 /// ```
-fn render_progress_card(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    tui_state: &TuiState,
-    theme: &Theme,
-) {
+fn render_progress_card(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme: &Theme) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(Span::styled(" Progress ", Theme::unfocused_title_style()))
@@ -378,10 +361,7 @@ fn render_progress_card(
         }
     }
 
-    frame.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: false }),
-        inner,
-    );
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 /// Find the current task label from the task checklist or execution snapshot.
@@ -553,7 +533,11 @@ fn render_sub_tab_bar(
         spans.push(Span::styled(" ", Style::default().bg(bg)));
     }
 
-    let hint = if compact_sub { "" } else { " Tab:panel  ?:help " };
+    let hint = if compact_sub {
+        ""
+    } else {
+        " Tab:panel  ?:help "
+    };
     let used: usize = spans.iter().map(|span| span.content.chars().count()).sum();
     let gap = (area.width as usize).saturating_sub(used + hint.len());
     spans.push(Span::styled(" ".repeat(gap), Style::default().bg(bg)));
@@ -624,13 +608,7 @@ fn render_sub_agents(
             .min(pool_agents.len().saturating_sub(1))
     };
 
-    widgets::parallel_pool::render_parallel_pool(
-        frame,
-        sections[0],
-        &pool_agents,
-        selected,
-        theme,
-    );
+    widgets::parallel_pool::render_parallel_pool(frame, sections[0], &pool_agents, selected, theme);
     if route_height > 0 {
         // Filter route metrics to agents visible in the filtered set.
         let filtered_route_ids: HashSet<&str> =
@@ -866,12 +844,7 @@ fn render_agent_routes_table(
         .collect();
 
     if rows.is_empty() {
-        empty_state::render_pane_empty_compact(
-            frame,
-            inner,
-            "No route metrics yet",
-            theme,
-        );
+        empty_state::render_pane_empty_compact(frame, inner, "No route metrics yet", theme);
         return;
     }
 
@@ -1034,8 +1007,7 @@ fn render_sub_gate(
     }
     let live_failures_owned: Vec<roko_core::FailureEntry> =
         filtered_recent_failures.into_iter().cloned().collect();
-    let fallback_failures_owned: Vec<GateFailureRow> =
-        failures.into_iter().cloned().collect();
+    let fallback_failures_owned: Vec<GateFailureRow> = failures.into_iter().cloned().collect();
     render_recent_gate_failures(
         frame,
         sections[2],
@@ -1407,12 +1379,7 @@ fn render_sub_processes(
     process_rows.sort_by(|a, b| a.role.cmp(&b.role).then_with(|| a.pid.cmp(&b.pid)));
 
     if process_rows.is_empty() {
-        empty_state::render_pane_empty_compact(
-            frame,
-            inner,
-            "No processes running",
-            theme,
-        );
+        empty_state::render_pane_empty_compact(frame, inner, "No processes running", theme);
         return;
     }
 
@@ -1562,12 +1529,7 @@ fn render_diagnosis_panel(
 
     let rows = diagnosis_rows(diagnoses, inner.width, theme);
     if rows.is_empty() {
-        empty_state::render_pane_empty_compact(
-            frame,
-            inner,
-            "No diagnoses",
-            theme,
-        );
+        empty_state::render_pane_empty_compact(frame, inner, "No diagnoses", theme);
         return;
     }
 
@@ -1753,12 +1715,7 @@ fn render_concluded_experiments_panel(
 
     let rows = concluded_experiment_rows(tui_state);
     if rows.is_empty() {
-        empty_state::render_pane_empty_compact(
-            frame,
-            inner,
-            "No concluded experiments yet",
-            theme,
-        );
+        empty_state::render_pane_empty_compact(frame, inner, "No concluded experiments yet", theme);
         return;
     }
 

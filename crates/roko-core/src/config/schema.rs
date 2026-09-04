@@ -526,6 +526,7 @@ fn synthesize_standard_providers_with_env(
                     extra_headers: None,
                     max_concurrent: None,
                     limits: None,
+                    require_confirmation: false,
                 },
             );
         }
@@ -2957,6 +2958,7 @@ max_output = 16384
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         assert_eq!(cfg.resolve_api_key().as_deref(), Some(expected.as_str()));
     }
@@ -2979,6 +2981,7 @@ max_output = 16384
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         assert_eq!(cfg.resolve_api_key(), None);
     }
@@ -3010,6 +3013,7 @@ max_output = 16384
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
         cfg.models.insert(
@@ -3099,6 +3103,7 @@ max_output = 16384
                 extra_headers: Some(headers),
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
         config.resolve_file_secrets();
@@ -3146,6 +3151,7 @@ max_output = 16384
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         assert!(!cfg.is_provider_available_with_env(&p, |_| None));
         cfg.agent.env = Some(vec![("OPENAI_API_KEY".into(), "sk-test".into())]);
@@ -3173,6 +3179,7 @@ max_output = 16384
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
         cfg.models.insert(
@@ -3213,6 +3220,7 @@ max_output = 16384
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         assert!(
             !cfg.is_provider_available(&provider),
@@ -3236,6 +3244,7 @@ max_output = 16384
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         assert!(
             cfg.is_provider_available(&provider),
@@ -3258,6 +3267,7 @@ max_output = 16384
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         assert!(
             !cfg.is_provider_available(&provider),
@@ -3280,6 +3290,7 @@ max_output = 16384
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         assert!(
             !cfg.is_provider_available(&provider),
@@ -3303,6 +3314,7 @@ max_output = 16384
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         assert!(
             cfg.is_provider_available(&provider),
@@ -3325,6 +3337,7 @@ max_output = 16384
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         assert!(
             !cfg.is_provider_available(&provider),
@@ -3347,6 +3360,7 @@ max_output = 16384
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         assert!(
             cfg.is_provider_available(&provider),
@@ -3370,6 +3384,7 @@ max_output = 16384
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         // Whether this passes depends on whether hermes is installed;
         // just verify it doesn't panic.
@@ -3399,6 +3414,7 @@ max_output = 16384
                 extra_headers: Some(headers),
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
 

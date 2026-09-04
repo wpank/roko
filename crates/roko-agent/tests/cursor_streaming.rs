@@ -1,3 +1,7 @@
+// TODO: Update to use the StreamEvent/StreamEventKind API after the
+// StreamChunk -> StreamEvent refactor.  CursorAgent::send_turn_streaming and
+// roko_agent::streaming::StreamChunk no longer exist.
+#![cfg(feature = "__cursor_streaming_legacy")]
 #![allow(missing_docs)]
 
 use std::collections::BTreeMap;

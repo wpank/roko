@@ -137,6 +137,7 @@ pub struct ExecutionOverrides {
 
 /// Builder error type.
 #[derive(Debug, thiserror::Error)]
+#[allow(missing_docs)]
 pub enum BuilderError {
     /// A required bundle could not be constructed.
     #[error("failed to construct {bundle} for profile {profile}: {reason}")]
@@ -362,17 +363,14 @@ mod tests {
             ..Default::default()
         };
 
-        let full_services = RuntimeServicesBuilder::new(
-            RuntimeProfile::FullPlan,
-            overrides.clone(),
-        )
-        .build(workdir.path())
-        .unwrap();
-
-        let graph_services =
-            RuntimeServicesBuilder::new(RuntimeProfile::GraphPlan, overrides)
+        let full_services =
+            RuntimeServicesBuilder::new(RuntimeProfile::FullPlan, overrides.clone())
                 .build(workdir.path())
                 .unwrap();
+
+        let graph_services = RuntimeServicesBuilder::new(RuntimeProfile::GraphPlan, overrides)
+            .build(workdir.path())
+            .unwrap();
 
         // Both paths produce the same resolved metadata for equivalent requests.
         assert_eq!(

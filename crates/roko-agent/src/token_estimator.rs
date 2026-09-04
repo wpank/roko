@@ -242,8 +242,13 @@ pub fn context_window_for_slug(slug: &str) -> Option<u64> {
         return Some(200_000);
     }
 
-    // Kimi / Moonshot
-    if s.starts_with("kimi-k2") || s.starts_with("moonshot") {
+    // Kimi / Moonshot — family-level: kimi-k2, kimi-k3, …
+    if s.starts_with("kimi-") || s.starts_with("moonshot") {
+        return Some(128_000);
+    }
+
+    // GLM family (Zhipu)
+    if s.starts_with("glm-") {
         return Some(128_000);
     }
 
@@ -417,6 +422,18 @@ mod tests {
     #[test]
     fn token_context_window_unknown_slug_returns_none() {
         assert_eq!(context_window_for_slug("my-custom-model-v99"), None);
+    }
+
+    #[test]
+    fn token_context_window_future_kimi_generations() {
+        assert_eq!(context_window_for_slug("kimi-k3"), Some(128_000));
+        assert_eq!(context_window_for_slug("kimi-k4-turbo"), Some(128_000));
+    }
+
+    #[test]
+    fn token_context_window_future_glm_generations() {
+        assert_eq!(context_window_for_slug("glm-6"), Some(128_000));
+        assert_eq!(context_window_for_slug("glm-7-chat"), Some(128_000));
     }
 
     #[test]

@@ -418,10 +418,7 @@ async fn production_chain_rejects_hallucinated_tool() {
     // Note: this will be caught by the registry lookup before the hook chain,
     // but the chain itself would also reject it. The important thing is that
     // the call is denied.
-    assert!(
-        result.is_err(),
-        "hallucinated tool should be rejected"
-    );
+    assert!(result.is_err(), "hallucinated tool should be rejected");
 }
 
 // ─── Test 9: production chain result filtering annotates external output ──
@@ -460,7 +457,8 @@ async fn production_chain_annotates_external_tool_output() {
         serde_json::json!({ "url": "https://example.com" }),
     );
     let result = dispatcher.dispatch(call, &ctx_with_exec()).await;
-    if let ToolResult::Ok { content, .. } = &result {
+    if let ToolResult::Ok { .. } = &result {
+        let content = result.text_content();
         assert!(
             content.contains("[external:web_fetch]"),
             "external tool output must be annotated with provenance, got: {content}"
@@ -508,7 +506,8 @@ async fn production_chain_scrubs_secrets_from_handler_output() {
     );
     let result = dispatcher.dispatch(call, &ctx_with_exec()).await;
     match result {
-        ToolResult::Ok { content, .. } => {
+        ToolResult::Ok { .. } => {
+            let content = result.text_content();
             let api_key = format!("sk-ant-api03-{}", "A".repeat(80));
             assert!(
                 !content.contains(&api_key),

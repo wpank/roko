@@ -33,7 +33,10 @@ impl fmt::Display for DurationParseError {
             Self::Empty => write!(f, "duration string is empty"),
             Self::MissingValue => write!(f, "duration requires a positive integer before the unit"),
             Self::InvalidNumber => {
-                write!(f, "duration must start with a positive integer (no signs, decimals, or whitespace)")
+                write!(
+                    f,
+                    "duration must start with a positive integer (no signs, decimals, or whitespace)"
+                )
             }
             Self::Zero => write!(f, "duration must be greater than zero"),
             Self::MissingUnit => {
@@ -82,7 +85,9 @@ pub fn parse_duration_ms(value: &str) -> Result<u64, DurationParseError> {
 
     let (num_str, unit) = value.split_at(split);
 
-    let amount: u64 = num_str.parse().map_err(|_| DurationParseError::InvalidNumber)?;
+    let amount: u64 = num_str
+        .parse()
+        .map_err(|_| DurationParseError::InvalidNumber)?;
     if amount == 0 {
         return Err(DurationParseError::Zero);
     }
@@ -121,7 +126,10 @@ mod tests {
 
     #[test]
     fn parse_duration_returns_std_duration() {
-        assert_eq!(parse_duration("7d").unwrap(), Duration::from_millis(604_800_000));
+        assert_eq!(
+            parse_duration("7d").unwrap(),
+            Duration::from_millis(604_800_000)
+        );
         assert_eq!(parse_duration("500ms").unwrap(), Duration::from_millis(500));
     }
 
@@ -140,43 +148,88 @@ mod tests {
 
     #[test]
     fn parse_duration_rejects_missing_unit() {
-        assert_eq!(parse_duration_ms("60"), Err(DurationParseError::MissingUnit));
-        assert_eq!(parse_duration_ms("100"), Err(DurationParseError::MissingUnit));
+        assert_eq!(
+            parse_duration_ms("60"),
+            Err(DurationParseError::MissingUnit)
+        );
+        assert_eq!(
+            parse_duration_ms("100"),
+            Err(DurationParseError::MissingUnit)
+        );
     }
 
     #[test]
     fn parse_duration_rejects_unknown_unit() {
-        assert_eq!(parse_duration_ms("1fortnight"), Err(DurationParseError::UnknownUnit));
-        assert_eq!(parse_duration_ms("30seconds"), Err(DurationParseError::UnknownUnit));
-        assert_eq!(parse_duration_ms("1w"), Err(DurationParseError::UnknownUnit));
+        assert_eq!(
+            parse_duration_ms("1fortnight"),
+            Err(DurationParseError::UnknownUnit)
+        );
+        assert_eq!(
+            parse_duration_ms("30seconds"),
+            Err(DurationParseError::UnknownUnit)
+        );
+        assert_eq!(
+            parse_duration_ms("1w"),
+            Err(DurationParseError::UnknownUnit)
+        );
     }
 
     #[test]
     fn parse_duration_rejects_compound() {
         // "1d12h" — digits stop at 'd', unit becomes "d12h" which is unknown.
-        assert_eq!(parse_duration_ms("1d12h"), Err(DurationParseError::UnknownUnit));
-        assert_eq!(parse_duration_ms("2h30m"), Err(DurationParseError::UnknownUnit));
+        assert_eq!(
+            parse_duration_ms("1d12h"),
+            Err(DurationParseError::UnknownUnit)
+        );
+        assert_eq!(
+            parse_duration_ms("2h30m"),
+            Err(DurationParseError::UnknownUnit)
+        );
     }
 
     #[test]
     fn parse_duration_rejects_uppercase() {
-        assert_eq!(parse_duration_ms("1D"), Err(DurationParseError::UnknownUnit));
-        assert_eq!(parse_duration_ms("1H"), Err(DurationParseError::UnknownUnit));
-        assert_eq!(parse_duration_ms("1S"), Err(DurationParseError::UnknownUnit));
-        assert_eq!(parse_duration_ms("1MS"), Err(DurationParseError::UnknownUnit));
+        assert_eq!(
+            parse_duration_ms("1D"),
+            Err(DurationParseError::UnknownUnit)
+        );
+        assert_eq!(
+            parse_duration_ms("1H"),
+            Err(DurationParseError::UnknownUnit)
+        );
+        assert_eq!(
+            parse_duration_ms("1S"),
+            Err(DurationParseError::UnknownUnit)
+        );
+        assert_eq!(
+            parse_duration_ms("1MS"),
+            Err(DurationParseError::UnknownUnit)
+        );
     }
 
     #[test]
     fn parse_duration_rejects_signs_and_decimals() {
-        assert_eq!(parse_duration_ms("-1s"), Err(DurationParseError::MissingValue));
-        assert_eq!(parse_duration_ms("+1s"), Err(DurationParseError::MissingValue));
-        assert_eq!(parse_duration_ms("1.5s"), Err(DurationParseError::UnknownUnit));
+        assert_eq!(
+            parse_duration_ms("-1s"),
+            Err(DurationParseError::MissingValue)
+        );
+        assert_eq!(
+            parse_duration_ms("+1s"),
+            Err(DurationParseError::MissingValue)
+        );
+        assert_eq!(
+            parse_duration_ms("1.5s"),
+            Err(DurationParseError::UnknownUnit)
+        );
     }
 
     #[test]
     fn parse_duration_rejects_embedded_whitespace() {
         // Space between value and unit: digits stop at ' ', unit becomes " s".
-        assert_eq!(parse_duration_ms("1 s"), Err(DurationParseError::UnknownUnit));
+        assert_eq!(
+            parse_duration_ms("1 s"),
+            Err(DurationParseError::UnknownUnit)
+        );
     }
 
     #[test]
@@ -195,6 +248,9 @@ mod tests {
     #[test]
     fn parse_duration_rejects_trailing_text() {
         // "30dfoo" — unit becomes "dfoo" which is unknown.
-        assert_eq!(parse_duration_ms("30dfoo"), Err(DurationParseError::UnknownUnit));
+        assert_eq!(
+            parse_duration_ms("30dfoo"),
+            Err(DurationParseError::UnknownUnit)
+        );
     }
 }

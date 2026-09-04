@@ -284,11 +284,7 @@ fn legacy_vv_path(workdir: &Path) -> PathBuf {
 
 /// Check whether a legacy version-vectors.json exists for this peer.
 /// If so, migrate to PeerCursorV1 with `requires_full_resend = true`.
-fn migrate_legacy_cursor(
-    workdir: &Path,
-    peer: &str,
-    cursor_path: &Path,
-) -> Option<PeerCursorV1> {
+fn migrate_legacy_cursor(workdir: &Path, peer: &str, cursor_path: &Path) -> Option<PeerCursorV1> {
     let vv_path = legacy_vv_path(workdir);
     if !vv_path.exists() {
         return None;
@@ -432,8 +428,7 @@ pub fn send_sync(
     fs::create_dir_all(&outbox_dir)
         .with_context(|| format!("create outbox dir {}", outbox_dir.display()))?;
     let outbox_path = outbox_dir.join(format!("{transfer_id}.json"));
-    let envelope_bytes =
-        serde_json::to_vec_pretty(&envelope).context("serialize sync envelope")?;
+    let envelope_bytes = serde_json::to_vec_pretty(&envelope).context("serialize sync envelope")?;
     roko_fs::atomic_write_bytes(&outbox_path, &envelope_bytes)
         .with_context(|| format!("atomic write envelope to {}", outbox_path.display()))?;
 
@@ -499,13 +494,8 @@ pub fn receive_sync(
     let mut results = Vec::new();
 
     for envelope_path in &envelope_paths {
-        let result = receive_single_envelope(
-            peer,
-            envelope_path,
-            &cursor_path,
-            &archive_dir,
-            store,
-        )?;
+        let result =
+            receive_single_envelope(peer, envelope_path, &cursor_path, &archive_dir, store)?;
         results.push(result);
     }
 
@@ -555,33 +545,36 @@ fn receive_single_envelope(
             );
         }
 
-        ensure!(
-            envelope.entries.first().unwrap().sequence == envelope.first_sequence,
-            "first entry sequence {} does not match envelope first_sequence {}",
-            envelope.entries.first().unwrap().sequence,
-            envelope.first_sequence
-        );
-        ensure!(
-            envelope.entries.last().unwrap().sequence == envelope.last_sequence,
-            "last entry sequence {} does not match envelope last_sequence {}",
-            envelope.entries.last().unwrap().sequence,
-            envelope.last_sequence
-        );
+        if let Some(first_entry) = envelope.entries.first() {
+            ensure!(
+                first_entry.sequence == envelope.first_sequence,
+                "first entry sequence {} does not match envelope first_sequence {}",
+                first_entry.sequence,
+                envelope.first_sequence
+            );
+        }
+        if let Some(last_entry) = envelope.entries.last() {
+            ensure!(
+                last_entry.sequence == envelope.last_sequence,
+                "last entry sequence {} does not match envelope last_sequence {}",
+                last_entry.sequence,
+                envelope.last_sequence
+            );
+        }
     }
 
     // Check for duplicate transfer (idempotent replay).
     let existing_cursor = load_peer_cursor(cursor_path);
-    if let Some(ref cursor) = existing_cursor {
-        if cursor.last_transfer_id == envelope.transfer_id
-            && cursor.last_transfer_checksum == envelope.checksum
-        {
-            // Already committed this exact transfer -- idempotent success.
-            return Ok(ReceiveResult {
-                imported: 0,
-                duplicates: envelope.entries.len(),
-                transfer_id: envelope.transfer_id.clone(),
-            });
-        }
+    if let Some(ref cursor) = existing_cursor
+        && cursor.last_transfer_id == envelope.transfer_id
+        && cursor.last_transfer_checksum == envelope.checksum
+    {
+        // Already committed this exact transfer -- idempotent success.
+        return Ok(ReceiveResult {
+            imported: 0,
+            duplicates: envelope.entries.len(),
+            transfer_id: envelope.transfer_id.clone(),
+        });
     }
 
     // Stage imports: deduplicate by entry ID against the existing store.
@@ -609,10 +602,7 @@ fn receive_single_envelope(
     // Atomically publish to store.
     if !to_import.is_empty() {
         store.ingest(to_import).with_context(|| {
-            format!(
-                "import mesh entries from transfer {}",
-                envelope.transfer_id
-            )
+            format!("import mesh entries from transfer {}", envelope.transfer_id)
         })?;
     }
 
@@ -629,11 +619,7 @@ fn receive_single_envelope(
     // Move envelope to archive.
     fs::create_dir_all(archive_dir)
         .with_context(|| format!("create archive dir {}", archive_dir.display()))?;
-    let archive_path = archive_dir.join(
-        envelope_path
-            .file_name()
-            .unwrap_or_default(),
-    );
+    let archive_path = archive_dir.join(envelope_path.file_name().unwrap_or_default());
     fs::rename(envelope_path, &archive_path).with_context(|| {
         format!(
             "archive envelope from {} to {}",
@@ -847,8 +833,7 @@ mod tests {
         ];
         store.ingest(entries).unwrap();
 
-        let result =
-            send_sync(&workdir, "peer-b", "ws-local", &store, 100).unwrap();
+        let result = send_sync(&workdir, "peer-b", "ws-local", &store, 100).unwrap();
         assert!(result.is_some());
         let result = result.unwrap();
         assert_eq!(result.sent, 2);
@@ -881,8 +866,9 @@ mod tests {
                 make_test_entry("e2", "more knowledge"),
             ])
             .unwrap();
-        let send_result =
-            send_sync(&workdir_send, "peer-recv", "ws-send", &store_send, 100).unwrap().unwrap();
+        let send_result = send_sync(&workdir_send, "peer-recv", "ws-send", &store_send, 100)
+            .unwrap()
+            .unwrap();
 
         // Copy envelope to receiver's inbox.
         let recv_layout = MeshLayout::new(&workdir_recv);
@@ -928,8 +914,9 @@ mod tests {
         store_send
             .ingest(vec![make_test_entry("e1", "knowledge")])
             .unwrap();
-        let send_result =
-            send_sync(&workdir_send, "peer-recv", "ws-send", &store_send, 100).unwrap().unwrap();
+        let send_result = send_sync(&workdir_send, "peer-recv", "ws-send", &store_send, 100)
+            .unwrap()
+            .unwrap();
 
         // Copy to receiver inbox.
         let recv_layout = MeshLayout::new(&workdir_recv);
@@ -976,8 +963,9 @@ mod tests {
                 make_test_entry("e2", "new"),
             ])
             .unwrap();
-        let send_result =
-            send_sync(&workdir_send, "peer-recv", "ws-send", &store_send, 100).unwrap().unwrap();
+        let send_result = send_sync(&workdir_send, "peer-recv", "ws-send", &store_send, 100)
+            .unwrap()
+            .unwrap();
 
         // Copy to receiver inbox.
         let recv_layout = MeshLayout::new(&workdir_recv);
@@ -1028,13 +1016,10 @@ mod tests {
     fn knowledge_sync_protocol_failed_send_leaves_prior_state() {
         let (_tmp, workdir) = setup_workdir();
         let store = KnowledgeStore::for_workdir(&workdir);
-        store
-            .ingest(vec![make_test_entry("e1", "data")])
-            .unwrap();
+        store.ingest(vec![make_test_entry("e1", "data")]).unwrap();
 
         // First send succeeds.
-        let result1 =
-            send_sync(&workdir, "peer-b", "ws-local", &store, 100).unwrap();
+        let result1 = send_sync(&workdir, "peer-b", "ws-local", &store, 100).unwrap();
         assert!(result1.is_some());
 
         // Entries haven't changed, so a second send produces no delta.
@@ -1044,8 +1029,7 @@ mod tests {
         // entries, the sequences are > last_committed, so we do get a new
         // envelope. This is correct behavior: the receiver deduplicates by
         // entry ID.
-        let result2 =
-            send_sync(&workdir, "peer-b", "ws-local", &store, 100).unwrap();
+        let result2 = send_sync(&workdir, "peer-b", "ws-local", &store, 100).unwrap();
         // Whether result2 is Some or None, the store is intact.
         let entries = store.read_all().unwrap();
         assert_eq!(entries.len(), 1);
@@ -1081,8 +1065,7 @@ mod tests {
             .unwrap();
 
         // Send to old-peer -- should trigger full resend via legacy migration.
-        let result =
-            send_sync(&workdir, "old-peer", "ws-local", &store, 100).unwrap();
+        let result = send_sync(&workdir, "old-peer", "ws-local", &store, 100).unwrap();
         assert!(result.is_some());
         let result = result.unwrap();
         // Full resend: all entries included.
@@ -1101,8 +1084,7 @@ mod tests {
             ])
             .unwrap();
 
-        let result =
-            send_sync(&workdir, "peer-b", "ws-local", &store, 2).unwrap();
+        let result = send_sync(&workdir, "peer-b", "ws-local", &store, 2).unwrap();
         assert!(result.is_some());
         let result = result.unwrap();
         assert_eq!(result.sent, 2);
@@ -1113,8 +1095,7 @@ mod tests {
         let (_tmp, workdir) = setup_workdir();
         let store = KnowledgeStore::for_workdir(&workdir);
 
-        let result =
-            send_sync(&workdir, "peer-b", "ws-local", &store, 100).unwrap();
+        let result = send_sync(&workdir, "peer-b", "ws-local", &store, 100).unwrap();
         assert!(result.is_none());
     }
 
@@ -1158,7 +1139,12 @@ mod tests {
 
         let result = receive_sync(&workdir, "peer-a", &store);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("unsupported envelope version"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("unsupported envelope version")
+        );
     }
 
     #[test]
@@ -1191,6 +1177,11 @@ mod tests {
 
         let result = receive_sync(&workdir, "peer-a", &store);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("checksum mismatch"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("checksum mismatch")
+        );
     }
 }

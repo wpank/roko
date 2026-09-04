@@ -352,7 +352,7 @@ pub(crate) fn model_supports_thinking(slug: &str) -> bool {
     slug.contains("gemini-2.5-flash")
         || slug.contains("gemini-2.5-pro")
         || slug.contains("gemini-3")
-        || slug.starts_with("kimi-k2")
+        || slug.starts_with("kimi-") // family-level: kimi-k2, kimi-k3, …
         || slug.starts_with("glm")
         || slug.contains("gpt-5")
         || slug.starts_with("o1")
@@ -483,8 +483,11 @@ pub(crate) fn parse_agent_role(raw: &str) -> Option<AgentRole> {
 /// This is the canonical family classifier used by both `cascade_router` and
 /// `model_router` for slug matching, Pareto cost proxies, and static routing.
 pub fn slug_family(slug: &str) -> Option<&'static str> {
-    if slug.starts_with("kimi-k2") {
-        Some("kimi-k2")
+    if slug.starts_with("kimi-") {
+        Some("kimi") // family-level: kimi-k2, kimi-k3, …
+    // Gemini version-specific families: intentional locks because each
+    // generation has distinct pricing/latency used by pareto_cost_proxy.
+    // The catch-all "gemini" at the bottom covers unknown future versions.
     } else if slug.contains("gemini-3.1-pro-preview") {
         Some("gemini-3.1-pro-preview")
     } else if slug.contains("gemini-3.1-flash-lite-preview") {
@@ -515,6 +518,8 @@ pub fn slug_family(slug: &str) -> Option<&'static str> {
         Some("o1")
     } else if slug.starts_with("o3") {
         Some("o3")
+    } else if slug.starts_with("o4") {
+        Some("o4")
     } else if slug.starts_with("deepseek") {
         Some("deepseek")
     } else if slug.starts_with("sonar") {
@@ -568,7 +573,7 @@ pub(crate) fn pareto_cost_proxy(slug: &str, tier_map: &HashMap<String, ModelTier
         Some("haiku") => 1.0,
         Some("sonnet") => 3.0,
         Some("opus") => 9.0,
-        Some("kimi-k2") => 2.5,
+        Some("kimi") => 2.5,
         _ => match slug_to_tier(slug, tier_map) {
             ModelTier::Fast => 1.0,
             ModelTier::Premium => 9.0,
@@ -581,6 +586,9 @@ pub(crate) fn pareto_latency_proxy(slug: &str, tier_map: &HashMap<String, ModelT
     default_latency_sla(slug_to_tier(slug, tier_map)) as f64
 }
 
+/// Intentional version locks: Google's free tier is specific to these model
+/// generations.  Future Gemini versions must be verified against Google's
+/// pricing before adding here.
 pub(crate) fn is_free_tier_gemini_model(slug: &str) -> bool {
     let slug = slug.to_ascii_lowercase();
     slug.contains("gemini-2.5-flash")
@@ -620,6 +628,7 @@ pub(crate) fn infer_shadow_routing_context(
         previous_model: primary_result.output.tag("model").map(str::to_string),
         plan_context_tokens: Some((prompt.len() as u64).div_ceil(4)),
         tier_thresholds: None,
+        cfactor: None,
     }
 }
 
@@ -815,9 +824,44 @@ mod tests {
         assert_eq!(slug_family("claude-sonnet-4-6"), Some("sonnet"));
         assert_eq!(slug_family("claude-opus-4-6"), Some("opus"));
         assert_eq!(slug_family("glm-5.1"), Some("glm"));
-        assert_eq!(slug_family("kimi-k2.5"), Some("kimi-k2"));
+        assert_eq!(slug_family("kimi-k2.5"), Some("kimi"));
+        assert_eq!(slug_family("kimi-k3"), Some("kimi"));
         assert_eq!(slug_family("sonar"), Some("sonar"));
         assert_eq!(slug_family("o3"), Some("o3"));
+        assert_eq!(slug_family("o4-mini"), Some("o4"));
         assert_eq!(slug_family("my-fine-tune"), None);
+    }
+
+    #[test]
+    fn slug_family_future_generations_hit_same_family() {
+        // Kimi: future generations still classify as "kimi"
+        assert_eq!(slug_family("kimi-k3"), Some("kimi"));
+        assert_eq!(slug_family("kimi-k4-turbo"), Some("kimi"));
+
+        // GLM: future generations still classify as "glm"
+        assert_eq!(slug_family("glm-6"), Some("glm"));
+        assert_eq!(slug_family("glm-7-chat"), Some("glm"));
+
+        // Deepseek: future generations still classify
+        assert_eq!(slug_family("deepseek-v3"), Some("deepseek"));
+        assert_eq!(slug_family("deepseek-r2"), Some("deepseek"));
+
+        // O-series
+        assert_eq!(slug_family("o4-mini-high"), Some("o4"));
+    }
+
+    #[test]
+    fn model_supports_thinking_future_kimi() {
+        assert!(super::model_supports_thinking("kimi-k3"));
+        assert!(super::model_supports_thinking("kimi-k4-turbo"));
+    }
+
+    #[test]
+    fn gemini_free_tier_is_version_locked() {
+        // Free tier must NOT match unknown future Gemini generations.
+        assert!(super::is_free_tier_gemini_model("gemini-2.5-flash"));
+        assert!(super::is_free_tier_gemini_model("gemini-3-flash-preview"));
+        assert!(!super::is_free_tier_gemini_model("gemini-4-flash"));
+        assert!(!super::is_free_tier_gemini_model("gemini-5-flash"));
     }
 }

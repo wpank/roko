@@ -794,6 +794,7 @@ fn build_runner_config(
         max_plan_usd: f64::from(roko_config.budget.max_plan_usd),
         max_turn_usd: f64::from(roko_config.budget.max_turn_usd),
         max_task_retry_usd: f64::from(roko_config.budget.max_task_retry_usd),
+        max_daily_usd: f64::from(roko_config.budget.max_daily_usd),
         budget_override: false,
         budget_ceiling_override: None,
         no_budget: false,

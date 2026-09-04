@@ -421,10 +421,7 @@ fn diamond_success_plan_converts_to_graph() {
     for node_id in &["A", "B", "C", "D"] {
         let node = graph.get_node(node_id).unwrap();
         assert_eq!(node.cell_type, "task-executor");
-        assert_eq!(
-            node.execution_class,
-            roko_graph::ExecutionClass::Activity
-        );
+        assert_eq!(node.execution_class, roko_graph::ExecutionClass::Activity);
     }
 }
 
@@ -618,7 +615,12 @@ fn activities_jsonl_loads_for_all_fixtures() {
 
 #[test]
 fn all_fixture_directories_contain_required_files() {
-    let required_files = ["tasks.toml", "graph.toml", "expected.json", "activities.jsonl"];
+    let required_files = [
+        "tasks.toml",
+        "graph.toml",
+        "expected.json",
+        "activities.jsonl",
+    ];
 
     for fixture in &["diamond_success", "gate_replan_cap", "cancel_resume_budget"] {
         let dir = fixtures_dir().join(fixture);
@@ -640,10 +642,10 @@ fn all_fixture_directories_contain_required_files() {
 fn graph_fingerprint_is_deterministic_for_fixture() {
     for fixture in &["diamond_success", "gate_replan_cap", "cancel_resume_budget"] {
         let graph = load_graph_toml(fixture);
-        let fp1 = roko_graph::graph_execution_fingerprint(&graph)
-            .expect("fingerprint must succeed");
-        let fp2 = roko_graph::graph_execution_fingerprint(&graph)
-            .expect("fingerprint must succeed");
+        let fp1 =
+            roko_graph::graph_execution_fingerprint(&graph).expect("fingerprint must succeed");
+        let fp2 =
+            roko_graph::graph_execution_fingerprint(&graph).expect("fingerprint must succeed");
         assert_eq!(
             fp1, fp2,
             "fixture {fixture}: fingerprint must be deterministic"

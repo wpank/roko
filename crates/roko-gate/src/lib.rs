@@ -104,6 +104,8 @@ pub mod gate_pipeline;
 pub mod gate_service;
 pub mod generated;
 pub mod generated_test_gate;
+/// Graph-compatible Cell wrapper for the production gate pipeline (#250).
+pub mod graph_cell;
 /// Multi-gate joint anomaly detection via Hotelling's T-squared (GATE-08).
 pub mod hotelling;
 pub mod integration_gate;
@@ -111,15 +113,13 @@ pub mod llm_judge_gate;
 pub mod payload;
 /// PELT (Pruned Exact Linear Time) offline change point detection (P1-13).
 pub mod pelt;
-/// Graph-compatible Cell wrapper for the production gate pipeline (#250).
-pub mod graph_cell;
+pub mod process_reward;
 /// Production gate request types shared between Runner-v2 and Graph (#250).
 pub mod production_request;
 /// Production gate service trait and implementation (#250/#275).
 pub mod production_service;
 /// Production gate verdict types shared between Runner-v2 and Graph (#250).
 pub mod production_verdict;
-pub mod process_reward;
 pub mod property_test_gate;
 pub mod ratchet;
 /// Shared gate metadata, status conversion, and alias/rung resolution.

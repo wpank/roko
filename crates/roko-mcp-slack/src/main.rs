@@ -686,7 +686,7 @@ impl SlackClient {
 
         let response = self
             .client
-            .post(&self.api_url("conversations.open"))
+            .post(self.api_url("conversations.open"))
             .headers(headers)
             .form(&[("users", user_id)])
             .send()
@@ -731,7 +731,7 @@ impl SlackClient {
 
         let response = self
             .client
-            .post(&self.api_url("chat.postMessage"))
+            .post(self.api_url("chat.postMessage"))
             .headers(headers)
             .json(&body)
             .send()
@@ -761,7 +761,7 @@ impl SlackClient {
 
         let response = self
             .client
-            .post(&self.api_url("reactions.add"))
+            .post(self.api_url("reactions.add"))
             .headers(headers)
             .form(&[("channel", channel), ("timestamp", ts), ("name", emoji)])
             .send()
@@ -786,7 +786,7 @@ impl SlackClient {
 
         let mut request = self
             .client
-            .get(&self.api_url("conversations.list"))
+            .get(self.api_url("conversations.list"))
             .headers(headers);
         if let Some(limit) = limit {
             request = request.query(&[("limit", limit)]);
@@ -834,7 +834,7 @@ impl SlackClient {
 
         let response = self
             .client
-            .get(&self.api_url("users.lookupByEmail"))
+            .get(self.api_url("users.lookupByEmail"))
             .headers(headers)
             .query(&[("email", email)])
             .send()
@@ -866,7 +866,7 @@ impl SlackClient {
         loop {
             let mut request = self
                 .client
-                .get(&self.api_url("users.list"))
+                .get(self.api_url("users.list"))
                 .headers(headers.clone())
                 .query(&[("limit", "200")]);
             if let Some(cursor) = cursor.as_deref() {
@@ -944,7 +944,7 @@ impl SlackClient {
 
         let mut request = self
             .client
-            .get(&self.api_url("conversations.history"))
+            .get(self.api_url("conversations.history"))
             .headers(headers)
             .query(&[("channel", channel)]);
 
@@ -998,7 +998,7 @@ impl SlackClient {
 
         let response = self
             .client
-            .post(&self.api_url("chat.update"))
+            .post(self.api_url("chat.update"))
             .headers(headers)
             .json(&body)
             .send()
@@ -1028,7 +1028,7 @@ impl SlackClient {
         loop {
             let mut request = self
                 .client
-                .get(&self.api_url("conversations.replies"))
+                .get(self.api_url("conversations.replies"))
                 .headers(headers.clone())
                 .query(&[("channel", channel), ("ts", thread_ts), ("limit", "1000")]);
             if let Some(cursor) = cursor.as_deref() {
@@ -1316,7 +1316,9 @@ mod tests {
                 .await;
 
             let client = mock_client(&server).await;
-            let result = client.lookup_user("alice@example.com").expect("lookup_user");
+            let result = client
+                .lookup_user("alice@example.com")
+                .expect("lookup_user");
             assert_eq!(result.id, "U123");
             assert_eq!(result.matched_by, "email");
         }
@@ -1601,7 +1603,12 @@ mod tests {
             let client = mock_client(&server).await;
             let msgs = client.get_thread("C123", "1000.0").expect("get_thread");
             // Should deduplicate the parent message (ts=1000.0).
-            assert_eq!(msgs.len(), 3, "expected 3 unique messages, got {}", msgs.len());
+            assert_eq!(
+                msgs.len(),
+                3,
+                "expected 3 unique messages, got {}",
+                msgs.len()
+            );
             let tss: Vec<&str> = msgs.iter().filter_map(|m| m["ts"].as_str()).collect();
             assert_eq!(tss, vec!["1000.0", "1001.0", "1002.0"]);
         }
@@ -1665,10 +1672,7 @@ mod tests {
             let server = MockServer::start().await;
             Mock::given(method("POST"))
                 .and(path("/chat.postMessage"))
-                .respond_with(
-                    ResponseTemplate::new(200)
-                        .set_body_string("{not valid json!!!"),
-                )
+                .respond_with(ResponseTemplate::new(200).set_body_string("{not valid json!!!"))
                 .mount(&server)
                 .await;
 
@@ -1684,10 +1688,7 @@ mod tests {
             let server = MockServer::start().await;
             Mock::given(method("GET"))
                 .and(path("/conversations.list"))
-                .respond_with(
-                    ResponseTemplate::new(200)
-                        .set_body_string("<<garbage>>"),
-                )
+                .respond_with(ResponseTemplate::new(200).set_body_string("<<garbage>>"))
                 .mount(&server)
                 .await;
 
@@ -1703,10 +1704,7 @@ mod tests {
             let server = MockServer::start().await;
             Mock::given(method("GET"))
                 .and(path("/conversations.replies"))
-                .respond_with(
-                    ResponseTemplate::new(200)
-                        .set_body_string("not json"),
-                )
+                .respond_with(ResponseTemplate::new(200).set_body_string("not json"))
                 .mount(&server)
                 .await;
 
@@ -1722,9 +1720,7 @@ mod tests {
             let server = MockServer::start().await;
             Mock::given(method("POST"))
                 .and(path("/reactions.add"))
-                .respond_with(
-                    ResponseTemplate::new(200).set_body_string("{{}}"),
-                )
+                .respond_with(ResponseTemplate::new(200).set_body_string("{{}}"))
                 .mount(&server)
                 .await;
 
@@ -1740,9 +1736,7 @@ mod tests {
             let server = MockServer::start().await;
             Mock::given(method("POST"))
                 .and(path("/chat.update"))
-                .respond_with(
-                    ResponseTemplate::new(200).set_body_string("[invalid"),
-                )
+                .respond_with(ResponseTemplate::new(200).set_body_string("[invalid"))
                 .mount(&server)
                 .await;
 
@@ -1758,9 +1752,7 @@ mod tests {
             let server = MockServer::start().await;
             Mock::given(method("GET"))
                 .and(path("/users.lookupByEmail"))
-                .respond_with(
-                    ResponseTemplate::new(200).set_body_string("broken"),
-                )
+                .respond_with(ResponseTemplate::new(200).set_body_string("broken"))
                 .mount(&server)
                 .await;
 
@@ -1776,9 +1768,7 @@ mod tests {
             let server = MockServer::start().await;
             Mock::given(method("GET"))
                 .and(path("/users.list"))
-                .respond_with(
-                    ResponseTemplate::new(200).set_body_string("nope"),
-                )
+                .respond_with(ResponseTemplate::new(200).set_body_string("nope"))
                 .mount(&server)
                 .await;
 
@@ -1794,9 +1784,7 @@ mod tests {
             let server = MockServer::start().await;
             Mock::given(method("POST"))
                 .and(path("/conversations.open"))
-                .respond_with(
-                    ResponseTemplate::new(200).set_body_string("{{"),
-                )
+                .respond_with(ResponseTemplate::new(200).set_body_string("{{"))
                 .mount(&server)
                 .await;
 
@@ -1812,9 +1800,7 @@ mod tests {
             let server = MockServer::start().await;
             Mock::given(method("GET"))
                 .and(path("/conversations.history"))
-                .respond_with(
-                    ResponseTemplate::new(200).set_body_string("bad"),
-                )
+                .respond_with(ResponseTemplate::new(200).set_body_string("bad"))
                 .mount(&server)
                 .await;
 
@@ -1840,7 +1826,9 @@ mod tests {
                 .await;
 
             let client = mock_client(&server).await;
-            let resp = client.post_message("C123", "hello", None).expect("ok response");
+            let resp = client
+                .post_message("C123", "hello", None)
+                .expect("ok response");
             // The method returns the struct but channel/ts are None.
             assert!(resp.channel.is_none());
             assert!(resp.ts.is_none());
@@ -1917,9 +1905,7 @@ mod tests {
                 .await;
 
             let client = mock_client(&server).await;
-            let err = client
-                .list_channels(None)
-                .expect_err("should fail");
+            let err = client.list_channels(None).expect_err("should fail");
             assert!(err.message.contains("unknown"));
         }
 

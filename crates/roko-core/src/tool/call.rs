@@ -23,6 +23,71 @@ use thiserror::Error;
 
 use crate::Body;
 
+// ─── ToolResultContent ───────────────────────────────────────────────────
+
+/// A single content block within a [`ToolResult`].
+///
+/// Most tool results contain a single [`Text`](ToolResultContent::Text) block,
+/// but image-producing tools can return [`Image`](ToolResultContent::Image)
+/// blocks (base64-encoded). The vec of blocks in `ToolResult::Ok::content`
+/// allows mixed text+image payloads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ToolResultContent {
+    /// Plain text (or JSON) content.
+    Text {
+        /// The text payload.
+        text: String,
+    },
+    /// Base64-encoded image content.
+    Image {
+        /// IANA media type (`image/png`, `image/jpeg`, `image/webp`, …).
+        media_type: String,
+        /// Base64-encoded image data.
+        data: String,
+    },
+}
+
+impl ToolResultContent {
+    /// Create a text content block.
+    #[must_use]
+    pub fn text(text: impl Into<String>) -> Self {
+        Self::Text { text: text.into() }
+    }
+
+    /// Create an image content block.
+    #[must_use]
+    pub fn image(media_type: impl Into<String>, data: impl Into<String>) -> Self {
+        Self::Image {
+            media_type: media_type.into(),
+            data: data.into(),
+        }
+    }
+
+    /// Extract the text payload, if this is a [`Text`](Self::Text) block.
+    #[must_use]
+    pub fn as_text(&self) -> Option<&str> {
+        match self {
+            Self::Text { text } => Some(text),
+            Self::Image { .. } => None,
+        }
+    }
+}
+
+impl From<String> for ToolResultContent {
+    fn from(text: String) -> Self {
+        Self::Text { text }
+    }
+}
+
+impl From<&str> for ToolResultContent {
+    fn from(text: &str) -> Self {
+        Self::Text {
+            text: text.to_string(),
+        }
+    }
+}
+
 // ─── ToolCall ─────────────────────────────────────────────────────────────
 
 /// An inbound tool invocation, parsed from an LLM response.
@@ -113,17 +178,17 @@ impl Artifact {
 /// The result of executing a [`ToolCall`].
 ///
 /// The `Ok` variant mirrors OpenAI / Anthropic "tool result content":
-/// a text payload plus zero or more artifacts. `is_structured` signals
-/// that `content` is a JSON document (the translator may pass it through
-/// without re-wrapping).
+/// a content payload (text and/or images) plus zero or more artifacts.
+/// `is_structured` signals that the primary text content is a JSON
+/// document (the translator may pass it through without re-wrapping).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "status", deny_unknown_fields)]
 pub enum ToolResult {
-    /// Successful execution with a textual payload and optional artifacts.
+    /// Successful execution with content blocks and optional artifacts.
     Ok {
-        /// Primary text (or JSON, if `is_structured`) returned to the LLM.
-        content: String,
-        /// If `true`, `content` is a JSON document rather than plain text.
+        /// Content blocks returned to the LLM (text and/or images).
+        content: Vec<ToolResultContent>,
+        /// If `true`, the primary text content is a JSON document rather than plain text.
         is_structured: bool,
         /// Side-channel artifacts (files, images, diffs).
         artifacts: Vec<Artifact>,
@@ -137,7 +202,7 @@ impl ToolResult {
     #[must_use]
     pub fn text(content: impl Into<String>) -> Self {
         Self::Ok {
-            content: content.into(),
+            content: vec![ToolResultContent::text(content)],
             is_structured: false,
             artifacts: Vec::new(),
         }
@@ -147,7 +212,7 @@ impl ToolResult {
     #[must_use]
     pub fn structured(content: impl Into<String>) -> Self {
         Self::Ok {
-            content: content.into(),
+            content: vec![ToolResultContent::text(content)],
             is_structured: true,
             artifacts: Vec::new(),
         }
@@ -157,7 +222,27 @@ impl ToolResult {
     #[must_use]
     pub fn with_artifacts(content: impl Into<String>, artifacts: Vec<Artifact>) -> Self {
         Self::Ok {
-            content: content.into(),
+            content: vec![ToolResultContent::text(content)],
+            is_structured: false,
+            artifacts,
+        }
+    }
+
+    /// Construct an `Ok` result with image content.
+    #[must_use]
+    pub fn with_image(media_type: impl Into<String>, data: impl Into<String>) -> Self {
+        Self::Ok {
+            content: vec![ToolResultContent::image(media_type, data)],
+            is_structured: false,
+            artifacts: Vec::new(),
+        }
+    }
+
+    /// Construct an `Ok` result with mixed content blocks.
+    #[must_use]
+    pub fn with_content(content: Vec<ToolResultContent>, artifacts: Vec<Artifact>) -> Self {
+        Self::Ok {
+            content,
             is_structured: false,
             artifacts,
         }
@@ -179,6 +264,20 @@ impl ToolResult {
     #[must_use]
     pub const fn is_err(&self) -> bool {
         matches!(self, Self::Err(_))
+    }
+
+    /// Extract the concatenated text content from all [`ToolResultContent::Text`] blocks.
+    ///
+    /// Returns an empty string for `Err` results or `Ok` results with no text blocks.
+    #[must_use]
+    pub fn text_content(&self) -> String {
+        match self {
+            Self::Ok { content, .. } => {
+                let texts: Vec<&str> = content.iter().filter_map(|c| c.as_text()).collect();
+                texts.join("")
+            }
+            Self::Err(_) => String::new(),
+        }
     }
 }
 
@@ -279,12 +378,56 @@ mod tests {
                 is_structured,
                 artifacts,
             } => {
-                assert_eq!(content, "hello");
+                assert_eq!(content, vec![ToolResultContent::text("hello")]);
                 assert!(!is_structured);
                 assert!(artifacts.is_empty());
             }
             ToolResult::Err(_) => panic!("expected Ok"),
         }
+    }
+
+    #[test]
+    fn tool_result_text_content_joins_text_blocks() {
+        let r = ToolResult::text("hello");
+        assert_eq!(r.text_content(), "hello");
+    }
+
+    #[test]
+    fn tool_result_with_image_creates_image_block() {
+        let r = ToolResult::with_image("image/png", "base64data");
+        match r {
+            ToolResult::Ok { content, .. } => {
+                assert_eq!(content.len(), 1);
+                assert!(matches!(
+                    &content[0],
+                    ToolResultContent::Image { media_type, data }
+                    if media_type == "image/png" && data == "base64data"
+                ));
+            }
+            ToolResult::Err(_) => panic!("expected Ok"),
+        }
+    }
+
+    #[test]
+    fn tool_result_content_serde_roundtrip() {
+        let text = ToolResultContent::text("hello");
+        let json = serde_json::to_string(&text).unwrap();
+        let decoded: ToolResultContent = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, text);
+
+        let image = ToolResultContent::image("image/png", "base64data");
+        let json = serde_json::to_string(&image).unwrap();
+        let decoded: ToolResultContent = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, image);
+    }
+
+    #[test]
+    fn tool_result_content_from_string() {
+        let content: ToolResultContent = "hello".into();
+        assert_eq!(content.as_text(), Some("hello"));
+
+        let content: ToolResultContent = String::from("world").into();
+        assert_eq!(content.as_text(), Some("world"));
     }
 
     #[test]

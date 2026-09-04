@@ -657,10 +657,7 @@ mod tui_mouse_hit_test {
         let hit = reg.region_at(30, 10);
         assert!(hit.is_some());
         assert_eq!(hit.unwrap().z, Z_MODAL);
-        assert_eq!(
-            reg.scroll_target_at(30, 10),
-            Some(ScrollTarget::Modal)
-        );
+        assert_eq!(reg.scroll_target_at(30, 10), Some(ScrollTarget::Modal));
 
         // Outside modal but inside panel: blocked by modal, returns None.
         assert_eq!(reg.region_at(5, 5), None);
@@ -787,8 +784,7 @@ mod tui_mouse_hit_test {
         // Right column top: task progress.
         let tp_zone = reg.zone_at(80, 5);
         assert!(
-            tp_zone == Some(FocusZone::TaskProgress)
-                || tp_zone == Some(FocusZone::RightContent),
+            tp_zone == Some(FocusZone::TaskProgress) || tp_zone == Some(FocusZone::RightContent),
             "Expected TaskProgress or RightContent in right-top, got {tp_zone:?}"
         );
     }
@@ -888,10 +884,7 @@ mod tui_mouse_hit_test {
         let zones = HitZones::compute(area, 1, 10);
         let reg = zones.into_registry(Tab::Plans);
         let click = reg.click_target_at(5, 10);
-        assert_eq!(
-            click,
-            Some(ClickTarget::SetFocus(FocusZone::PlanTree))
-        );
+        assert_eq!(click, Some(ClickTarget::SetFocus(FocusZone::PlanTree)));
     }
 
     // -- Modal z-order integration --
@@ -912,10 +905,7 @@ mod tui_mouse_hit_test {
         assert_eq!(reg.zone_at(5, 10), None);
 
         // Inside modal: returns modal region.
-        assert_eq!(
-            reg.scroll_target_at(50, 20),
-            Some(ScrollTarget::Modal)
-        );
+        assert_eq!(reg.scroll_target_at(50, 20), Some(ScrollTarget::Modal));
     }
 
     // -- into_registry preserves all non-empty zones --
@@ -1134,14 +1124,7 @@ mod tui_mouse_hit_test {
 
     #[test]
     fn all_tabs_all_sizes_produce_valid_registries() {
-        let sizes: &[(u16, u16)] = &[
-            (80, 24),
-            (120, 40),
-            (200, 60),
-            (40, 12),
-            (20, 6),
-            (160, 50),
-        ];
+        let sizes: &[(u16, u16)] = &[(80, 24), (120, 40), (200, 60), (40, 12), (20, 6), (160, 50)];
         for &(w, h) in sizes {
             for &tab in &Tab::ALL {
                 let area = Rect::new(0, 0, w, h);

@@ -363,10 +363,7 @@ pub fn build_generation_subgraph(
 ///
 /// Topology: `Compose(failure evidence) -> AutoFix(Activity) -> Gate -> [Review] -> [Commit]`
 #[must_use]
-pub fn build_autofix_subgraph(
-    descriptor: &WorkflowTemplateDescriptor,
-    generation: u32,
-) -> Graph {
+pub fn build_autofix_subgraph(descriptor: &WorkflowTemplateDescriptor, generation: u32) -> Graph {
     let prefix = format!("gen{generation}");
     let mut graph = Graph::new(GraphMetadata {
         name: format!("{}-autofix-gen{generation}", descriptor.name),

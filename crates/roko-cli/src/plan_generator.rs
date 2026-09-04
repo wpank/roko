@@ -100,10 +100,7 @@ impl PlanSource {
         match self {
             Self::Prd { slug, .. } | Self::Replan { slug, .. } => slug,
             Self::Prompt { .. } => "prompt",
-            Self::File { path } => path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("file"),
+            Self::File { path } => path.file_stem().and_then(|s| s.to_str()).unwrap_or("file"),
         }
     }
 
@@ -241,21 +238,13 @@ pub trait PlanGeneratorAdapter: Send + Sync {
     ///
     /// Called only when the outcome contains valid `tasks_toml`.
     /// Returns the path where the plan was written.
-    fn persist(
-        &self,
-        outcome: &PlanGeneratorOutcome,
-        workdir: &Path,
-    ) -> Result<PathBuf>;
+    fn persist(&self, outcome: &PlanGeneratorOutcome, workdir: &Path) -> Result<PathBuf>;
 
     /// Optional post-generation execution trigger.
     ///
     /// Called after successful persistence. Adapters that auto-execute plans
     /// implement this; others return `Ok(())`.
-    fn on_persisted(
-        &self,
-        _outcome: &PlanGeneratorOutcome,
-        _plan_path: &Path,
-    ) -> Result<()> {
+    fn on_persisted(&self, _outcome: &PlanGeneratorOutcome, _plan_path: &Path) -> Result<()> {
         Ok(())
     }
 
@@ -344,8 +333,8 @@ impl PlanGenerator {
             .or_else(|| extract_fenced_block(raw_output, "tasks.toml"))
             .or_else(|| extract_toml_content_fallback(raw_output));
 
-        let toml_content = toml_content
-            .ok_or_else(|| "no TOML block found in agent output".to_string())?;
+        let toml_content =
+            toml_content.ok_or_else(|| "no TOML block found in agent output".to_string())?;
 
         // 2. Structural pre-check
         if !toml_content.contains("[meta]") {
@@ -378,9 +367,7 @@ impl PlanGenerator {
         })?;
 
         // 5. Policy budget validation
-        let policy = PlanExecutionPolicy::generated_for_environment(
-            template_kind.max_task_count(),
-        );
+        let policy = PlanExecutionPolicy::generated_for_environment(template_kind.max_task_count());
         let policy_issues = crate::plan_policy::validate_plan_budgets(&parsed, policy);
         if !policy_issues.is_empty() {
             return Err(format!(
@@ -429,7 +416,10 @@ impl PlanGenerator {
 
     /// Resolve the effective template kind from overrides or PRD metadata.
     #[must_use]
-    pub fn resolve_template(overrides: &PlanGeneratorOverrides, prd_template: Option<&str>) -> PlanTemplateKind {
+    pub fn resolve_template(
+        overrides: &PlanGeneratorOverrides,
+        prd_template: Option<&str>,
+    ) -> PlanTemplateKind {
         let template_name = overrides.template.as_deref().or(prd_template);
         PlanTemplateKind::resolve(template_name)
     }
@@ -623,7 +613,9 @@ fn extract_fenced_block<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
 /// Fallback: try to extract TOML starting from `[meta]`.
 fn extract_toml_content_fallback(output: &str) -> Option<&str> {
     let meta_start = output.find("[meta]")?;
-    let line_start = output[..meta_start].rfind('\n').map_or(meta_start, |p| p + 1);
+    let line_start = output[..meta_start]
+        .rfind('\n')
+        .map_or(meta_start, |p| p + 1);
     let task_marker = output[line_start..].find("[[task]]")?;
     let last_task_end = output[line_start..].rfind("[[task]]")?;
 
@@ -724,7 +716,8 @@ fn validate_and_fix_plan_toml(
                 if !KNOWN_META_FIELDS.contains(&key.as_str()) {
                     if let Some(correction) = suggest_field_correction(key, KNOWN_META_FIELDS) {
                         if let Some(value) = meta.remove(key.as_str()) {
-                            repairs.push(format!("[meta] field '{key}' corrected to '{correction}'"));
+                            repairs
+                                .push(format!("[meta] field '{key}' corrected to '{correction}'"));
                             meta.insert(correction, value);
                         }
                     }
@@ -743,9 +736,7 @@ fn validate_and_fix_plan_toml(
             if let Some(plan_val) = meta.get("plan") {
                 if let Some(plan_str) = plan_val.as_str() {
                     if plan_str != slug {
-                        repairs.push(format!(
-                            "meta.plan '{plan_str}' corrected to '{slug}'"
-                        ));
+                        repairs.push(format!("meta.plan '{plan_str}' corrected to '{slug}'"));
                         meta.insert("plan".to_string(), toml::Value::String(slug.to_string()));
                     }
                 }
@@ -793,9 +784,8 @@ fn validate_and_fix_plan_toml(
                                 "{task_id_label} is missing required field '{required}'"
                             )),
                             Some(v) if v.as_str().is_some_and(|s| s.trim().is_empty()) => {
-                                errors.push(format!(
-                                    "{task_id_label}: field '{required}' is empty"
-                                ));
+                                errors
+                                    .push(format!("{task_id_label}: field '{required}' is empty"));
                             }
                             _ => {}
                         }
@@ -805,7 +795,12 @@ fn validate_and_fix_plan_toml(
                     if let Some(status_val) = task.get("status").cloned() {
                         if let Some(s) = status_val.as_str() {
                             const VALID_STATUSES: &[&str] = &[
-                                "ready", "pending", "blocked", "in_progress", "done", "skipped",
+                                "ready",
+                                "pending",
+                                "blocked",
+                                "in_progress",
+                                "done",
+                                "skipped",
                             ];
                             if !VALID_STATUSES.contains(&s) {
                                 repairs.push(format!(
@@ -823,8 +818,12 @@ fn validate_and_fix_plan_toml(
                     if let Some(role_val) = task.get("role").cloned() {
                         if let Some(r) = role_val.as_str() {
                             const VALID_ROLES: &[&str] = &[
-                                "implementer", "architect", "researcher", "strategist",
-                                "scribe", "quick-reviewer",
+                                "implementer",
+                                "architect",
+                                "researcher",
+                                "strategist",
+                                "scribe",
+                                "quick-reviewer",
                             ];
                             if !VALID_ROLES.contains(&r) {
                                 repairs.push(format!(
@@ -841,9 +840,7 @@ fn validate_and_fix_plan_toml(
                     // Strip model_hint.
                     if let Some(hint_val) = task.remove("model_hint") {
                         let hint = hint_val.as_str().unwrap_or("<unknown>");
-                        repairs.push(format!(
-                            "{task_id_label}: removed model_hint '{hint}'"
-                        ));
+                        repairs.push(format!("{task_id_label}: removed model_hint '{hint}'"));
                     }
 
                     // Validate [[task.verify]] sub-entries.
@@ -915,13 +912,8 @@ fn validate_and_fix_plan_toml(
                                     crate_name.as_deref().unwrap_or("workspace"),
                                 ),
                             )];
-                            task.insert(
-                                "verify".to_string(),
-                                toml::Value::Array(auto_verify),
-                            );
-                            repairs.push(format!(
-                                "{task_id_label}: auto-added compile verify"
-                            ));
+                            task.insert("verify".to_string(), toml::Value::Array(auto_verify));
+                            repairs.push(format!("{task_id_label}: auto-added compile verify"));
                         }
                     }
                 }
@@ -1180,11 +1172,7 @@ mod tests {
     fn next_tier_escalates_from_haiku() {
         let tier_models = HashMap::new();
         let configured = HashSet::new();
-        let next = next_tier_model(
-            Some("claude-haiku-4-5"),
-            &tier_models,
-            &configured,
-        );
+        let next = next_tier_model(Some("claude-haiku-4-5"), &tier_models, &configured);
         assert_eq!(next, Some("claude-sonnet-4-6".to_string()));
     }
 
@@ -1192,11 +1180,7 @@ mod tests {
     fn next_tier_escalates_from_sonnet() {
         let tier_models = HashMap::new();
         let configured = HashSet::new();
-        let next = next_tier_model(
-            Some("claude-sonnet-4-6"),
-            &tier_models,
-            &configured,
-        );
+        let next = next_tier_model(Some("claude-sonnet-4-6"), &tier_models, &configured);
         assert_eq!(next, Some("claude-opus-4-6".to_string()));
     }
 
@@ -1204,11 +1188,7 @@ mod tests {
     fn next_tier_returns_none_at_top() {
         let tier_models = HashMap::new();
         let configured = HashSet::new();
-        let next = next_tier_model(
-            Some("claude-opus-4-6"),
-            &tier_models,
-            &configured,
-        );
+        let next = next_tier_model(Some("claude-opus-4-6"), &tier_models, &configured);
         assert!(next.is_none());
     }
 
@@ -1218,23 +1198,14 @@ mod tests {
         let mut configured = HashSet::new();
         configured.insert("claude-opus-4-6".to_string());
         // Haiku should skip sonnet (not configured) and go to opus.
-        let next = next_tier_model(
-            Some("claude-haiku-4-5"),
-            &tier_models,
-            &configured,
-        );
+        let next = next_tier_model(Some("claude-haiku-4-5"), &tier_models, &configured);
         assert_eq!(next, Some("claude-opus-4-6".to_string()));
     }
 
     // ---- validate_raw_output golden fixtures ----
 
     fn test_generator() -> PlanGenerator {
-        PlanGenerator::new(
-            IndexMap::new(),
-            HashMap::new(),
-            true,
-            None,
-        )
+        PlanGenerator::new(IndexMap::new(), HashMap::new(), true, None)
     }
 
     const GOLDEN_VALID_PLAN: &str = r#"```toml
@@ -1283,8 +1254,12 @@ command = "cargo check -p roko-cli"
 
     #[test]
     fn validate_golden_valid_plan() {
-        let gen = test_generator();
-        let result = gen.validate_raw_output(GOLDEN_VALID_PLAN, "test-feature", PlanTemplateKind::Default);
+        let generator = test_generator();
+        let result = generator.validate_raw_output(
+            GOLDEN_VALID_PLAN,
+            "test-feature",
+            PlanTemplateKind::Default,
+        );
         let validated = result.expect("golden plan should validate");
         assert_eq!(validated.task_count, 2);
         assert!(validated.tasks_toml.contains("test-feature"));
@@ -1320,8 +1295,9 @@ phase = "compile"
 command = "cargo check -p roko-core"
 ```
 "#;
-        let gen = test_generator();
-        let result = gen.validate_raw_output(plan_with_hint, "strip-hint", PlanTemplateKind::Default);
+        let generator = test_generator();
+        let result =
+            generator.validate_raw_output(plan_with_hint, "strip-hint", PlanTemplateKind::Default);
         let validated = result.expect("plan with model_hint should validate after stripping");
         assert!(!validated.tasks_toml.contains("model_hint"));
         assert!(validated.repairs.iter().any(|r| r.contains("model_hint")));
@@ -1355,8 +1331,12 @@ phase = "compile"
 command = "cargo check -p roko-core"
 ```
 "#;
-        let gen = test_generator();
-        let result = gen.validate_raw_output(plan_wrong_slug, "correct-slug", PlanTemplateKind::Default);
+        let generator = test_generator();
+        let result = generator.validate_raw_output(
+            plan_wrong_slug,
+            "correct-slug",
+            PlanTemplateKind::Default,
+        );
         let validated = result.expect("plan with wrong slug should be corrected");
         assert!(validated.tasks_toml.contains("correct-slug"));
         assert!(validated.repairs.iter().any(|r| r.contains("corrected")));
@@ -1378,8 +1358,9 @@ phase = "compile"
 command = "cargo check"
 ```
 "#;
-        let gen = test_generator();
-        let result = gen.validate_raw_output(plan_no_meta, "no-meta", PlanTemplateKind::Default);
+        let generator = test_generator();
+        let result =
+            generator.validate_raw_output(plan_no_meta, "no-meta", PlanTemplateKind::Default);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("[meta]"));
     }
@@ -1394,8 +1375,9 @@ done = 0
 status = "ready"
 ```
 "#;
-        let gen = test_generator();
-        let result = gen.validate_raw_output(plan_no_tasks, "no-tasks", PlanTemplateKind::Default);
+        let generator = test_generator();
+        let result =
+            generator.validate_raw_output(plan_no_tasks, "no-tasks", PlanTemplateKind::Default);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("[[task]]"));
     }
@@ -1426,8 +1408,9 @@ phase = "compile"
 command = "cargo check -p roko-core"
 ```
 "#;
-        let gen = test_generator();
-        let result = gen.validate_raw_output(plan_bad_status, "bad-status", PlanTemplateKind::Default);
+        let generator = test_generator();
+        let result =
+            generator.validate_raw_output(plan_bad_status, "bad-status", PlanTemplateKind::Default);
         let validated = result.expect("invalid status should be corrected to 'ready'");
         assert!(validated.tasks_toml.contains("ready"));
         assert!(validated.repairs.iter().any(|r| r.contains("status")));
@@ -1459,8 +1442,9 @@ phase = "compile"
 command = "cargo check -p roko-core"
 ```
 "#;
-        let gen = test_generator();
-        let result = gen.validate_raw_output(plan_bad_role, "bad-role", PlanTemplateKind::Default);
+        let generator = test_generator();
+        let result =
+            generator.validate_raw_output(plan_bad_role, "bad-role", PlanTemplateKind::Default);
         let validated = result.expect("invalid role should be corrected to 'implementer'");
         assert!(validated.tasks_toml.contains("implementer"));
         assert!(validated.repairs.iter().any(|r| r.contains("role")));
@@ -1488,8 +1472,9 @@ depends_on = []
 role = "implementer"
 ```
 "#;
-        let gen = test_generator();
-        let result = gen.validate_raw_output(plan_no_verify, "auto-verify", PlanTemplateKind::Default);
+        let generator = test_generator();
+        let result =
+            generator.validate_raw_output(plan_no_verify, "auto-verify", PlanTemplateKind::Default);
         let validated = result.expect("should auto-add verify for implementer");
         assert!(validated.tasks_toml.contains("cargo check -p roko-core"));
         assert!(validated.repairs.iter().any(|r| r.contains("auto-added")));
@@ -1521,8 +1506,8 @@ phase = "compile"
 command = "cargo check -p <relevant-lib>"
 ```
 "#;
-        let gen = test_generator();
-        let result = gen.validate_raw_output(
+        let generator = test_generator();
+        let result = generator.validate_raw_output(
             plan_with_placeholders,
             "placeholder-test",
             PlanTemplateKind::Default,
@@ -1535,8 +1520,8 @@ command = "cargo check -p <relevant-lib>"
 
     #[test]
     fn validate_no_fenced_block_errors() {
-        let gen = test_generator();
-        let result = gen.validate_raw_output(
+        let generator = test_generator();
+        let result = generator.validate_raw_output(
             "I will now implement the feature. Here is my plan.",
             "no-block",
             PlanTemplateKind::Default,
@@ -1577,8 +1562,9 @@ command = "cargo check -p roko-core"
 This plan adds a widget.
 ```
 "#;
-        let gen = test_generator();
-        let result = gen.validate_raw_output(plan_with_md, "with-md", PlanTemplateKind::Default);
+        let generator = test_generator();
+        let result =
+            generator.validate_raw_output(plan_with_md, "with-md", PlanTemplateKind::Default);
         let validated = result.expect("plan with plan.md should validate");
         assert!(validated.plan_md.is_some());
         assert!(validated.plan_md.as_ref().unwrap().contains("widget"));
@@ -1596,21 +1582,25 @@ This plan adds a widget.
                 ..Default::default()
             },
         );
-        let gen = PlanGenerator::new(profiles, HashMap::new(), true, None);
-        assert!(gen.configured_models.contains("sonnet"));
-        assert!(gen.configured_models.contains("claude-sonnet-4-6"));
+        let generator = PlanGenerator::new(profiles, HashMap::new(), true, None);
+        assert!(generator.configured_models.contains("sonnet"));
+        assert!(generator.configured_models.contains("claude-sonnet-4-6"));
     }
 
     #[test]
     fn generator_escalation_disabled() {
-        let gen = PlanGenerator::new(IndexMap::new(), HashMap::new(), false, None);
-        assert!(gen.next_escalation_model(Some("claude-haiku-4-5")).is_none());
+        let generator = PlanGenerator::new(IndexMap::new(), HashMap::new(), false, None);
+        assert!(
+            generator
+                .next_escalation_model(Some("claude-haiku-4-5"))
+                .is_none()
+        );
     }
 
     #[test]
     fn generator_escalation_enabled() {
-        let gen = PlanGenerator::new(IndexMap::new(), HashMap::new(), true, None);
-        let next = gen.next_escalation_model(Some("claude-haiku-4-5"));
+        let generator = PlanGenerator::new(IndexMap::new(), HashMap::new(), true, None);
+        let next = generator.next_escalation_model(Some("claude-haiku-4-5"));
         assert_eq!(next, Some("claude-sonnet-4-6".to_string()));
     }
 
@@ -1757,8 +1747,8 @@ This plan adds a widget.
             ));
         }
         let fenced = format!("```toml\n{tasks}```\n");
-        let gen = test_generator();
-        let result = gen.validate_raw_output(&fenced, "big-plan", PlanTemplateKind::Compact);
+        let generator = test_generator();
+        let result = generator.validate_raw_output(&fenced, "big-plan", PlanTemplateKind::Compact);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("budget"));
     }
@@ -1793,7 +1783,10 @@ This plan adds a widget.
     #[test]
     fn infer_crate_from_crates_path() {
         let files = vec!["crates/roko-core/src/lib.rs".to_string()];
-        assert_eq!(infer_crate_from_paths(&files), Some("roko-core".to_string()));
+        assert_eq!(
+            infer_crate_from_paths(&files),
+            Some("roko-core".to_string())
+        );
     }
 
     #[test]
@@ -1830,8 +1823,12 @@ pha = "compile"
 command = "cargo check -p roko-core"
 ```
 "#;
-        let gen = test_generator();
-        let result = gen.validate_raw_output(plan_verify_typo, "verify-typo", PlanTemplateKind::Default);
+        let generator = test_generator();
+        let result = generator.validate_raw_output(
+            plan_verify_typo,
+            "verify-typo",
+            PlanTemplateKind::Default,
+        );
         let validated = result.expect("verify typo should be corrected");
         assert!(validated.tasks_toml.contains("phase"));
         assert!(validated.repairs.iter().any(|r| r.contains("corrected")));

@@ -9,10 +9,9 @@
 //! building mutations, and to validate results after applying them.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::hash::BuildHasher;
 
-use roko_core::plan_mutation::{
-    MutablePlanV1, MutableTaskV1, PlanMutationOpV1,
-};
+use roko_core::plan_mutation::{MutablePlanV1, MutableTaskV1, PlanMutationOpV1};
 
 // ---------------------------------------------------------------------------
 // Topology queries
@@ -43,10 +42,10 @@ pub fn upstream_tasks(plan: &MutablePlanV1, task_id: &str) -> Vec<String> {
 /// "Sibling" means: same dependency set, different ID, not completed.
 /// Results are sorted lexicographically for deterministic selection.
 #[must_use]
-pub fn pending_siblings(
+pub fn pending_siblings<S: BuildHasher>(
     plan: &MutablePlanV1,
     task_id: &str,
-    completed_ids: &HashSet<&str>,
+    completed_ids: &HashSet<&str, S>,
 ) -> Vec<String> {
     let Some(target) = plan.tasks.get(task_id) else {
         return vec![];
@@ -234,9 +233,9 @@ pub fn build_merge_with_rewiring(
 /// Validate that a set of completed task IDs are preserved (not removed or
 /// modified) by a sequence of mutation operations.
 #[must_use]
-pub fn completed_tasks_preserved(
+pub fn completed_tasks_preserved<S: BuildHasher>(
     ops: &[PlanMutationOpV1],
-    completed_ids: &HashSet<&str>,
+    completed_ids: &HashSet<&str, S>,
 ) -> bool {
     for op in ops {
         match op {
@@ -321,7 +320,12 @@ mod tests {
 
     #[test]
     fn pending_siblings_finds_same_deps() {
-        let plan = test_plan(&[("root", &[]), ("a", &["root"]), ("b", &["root"]), ("c", &[])]);
+        let plan = test_plan(&[
+            ("root", &[]),
+            ("a", &["root"]),
+            ("b", &["root"]),
+            ("c", &[]),
+        ]);
         let completed = HashSet::new();
 
         let sibs = pending_siblings(&plan, "a", &completed);
@@ -345,14 +349,8 @@ mod tests {
     fn split_with_rewiring_rewires_downstream() {
         let plan = test_plan(&[("a", &[]), ("b", &["a"]), ("c", &["b"])]);
 
-        let result = build_split_with_rewiring(
-            &plan,
-            "b",
-            "Part 1",
-            "First part",
-            "Part 2",
-            "Second part",
-        );
+        let result =
+            build_split_with_rewiring(&plan, "b", "Part 1", "First part", "Part 2", "Second part");
         assert!(result.is_some());
         let (ops, part1_id, part2_id) = result.unwrap();
 
@@ -397,16 +395,14 @@ mod tests {
 
     #[test]
     fn merge_with_rewiring_rewires_downstream() {
-        let plan = test_plan(&[("root", &[]), ("a", &["root"]), ("b", &["root"]), ("c", &["a", "b"])]);
+        let plan = test_plan(&[
+            ("root", &[]),
+            ("a", &["root"]),
+            ("b", &["root"]),
+            ("c", &["a", "b"]),
+        ]);
 
-        let result = build_merge_with_rewiring(
-            &plan,
-            "a",
-            "b",
-            "a",
-            "Merged A+B",
-            "Combined task",
-        );
+        let result = build_merge_with_rewiring(&plan, "a", "b", "a", "Merged A+B", "Combined task");
         assert!(result.is_some());
         let ops = result.unwrap();
 
@@ -465,14 +461,7 @@ mod tests {
         let mut plan = test_plan(&[("a", &[])]);
         plan.tasks.get_mut("a").unwrap().completed = true;
 
-        let result = build_split_with_rewiring(
-            &plan,
-            "a",
-            "Part 1",
-            "First",
-            "Part 2",
-            "Second",
-        );
+        let result = build_split_with_rewiring(&plan, "a", "Part 1", "First", "Part 2", "Second");
         assert!(result.is_none());
     }
 
@@ -481,14 +470,7 @@ mod tests {
         let mut plan = test_plan(&[("a", &[]), ("b", &[])]);
         plan.tasks.get_mut("b").unwrap().completed = true;
 
-        let result = build_merge_with_rewiring(
-            &plan,
-            "a",
-            "b",
-            "a",
-            "Merged",
-            "Combined",
-        );
+        let result = build_merge_with_rewiring(&plan, "a", "b", "a", "Merged", "Combined");
         assert!(result.is_none());
     }
 

@@ -112,13 +112,9 @@ pub fn render_plan_tree(frame: &mut Frame<'_>, area: Rect, state: &TuiState, foc
         .map(|plan| plan.id.as_str());
     let title = if focused {
         if filter_active {
-            format!(
-                "Plans ({filtered_total}/{total}{health_suffix}) [Enter:detail h/l:tree]"
-            )
+            format!("Plans ({filtered_total}/{total}{health_suffix}) [Enter:detail h/l:tree]")
         } else {
-            format!(
-                "Plans ({completed}/{total}{health_suffix}) [Enter:detail h/l:tree]"
-            )
+            format!("Plans ({completed}/{total}{health_suffix}) [Enter:detail h/l:tree]")
         }
     } else if filter_active {
         format!("Plans ({filtered_total}/{total}{health_suffix})")
@@ -623,7 +619,10 @@ fn render_plan_line(
         ]
     };
     spans.push(sep(bg));
-    spans.push(Span::styled(progress_cell.0, Style::default().fg(progress_cell.1).bg(bg)));
+    spans.push(Span::styled(
+        progress_cell.0,
+        Style::default().fg(progress_cell.1).bg(bg),
+    ));
     spans.push(sep(bg));
     for mut s in bar_spans {
         // Apply bg to each gradient span
@@ -884,7 +883,9 @@ fn render_progress_bar_spans(width: usize, fill_pct: f64, plan: &PlanEntry) -> V
     let filled_f = pct * width as f64;
     let filled = filled_f as usize;
     let frac = filled_f - filled as f64;
-    let empty = width.saturating_sub(filled).saturating_sub(if frac > 0.01 { 1 } else { 0 });
+    let empty = width
+        .saturating_sub(filled)
+        .saturating_sub(if frac > 0.01 { 1 } else { 0 });
 
     // Color based on status and progress
     let bar_color = if !plan.active && plan.tasks_failed == 0 && plan.status.is_done() {
@@ -1152,7 +1153,10 @@ mod tests {
             "async-\u{2026}-patterns"
         );
         // Very short budget
-        assert_eq!(truncate_plan_name("something-long", 3), "\u{2026}\u{2026}\u{2026}");
+        assert_eq!(
+            truncate_plan_name("something-long", 3),
+            "\u{2026}\u{2026}\u{2026}"
+        );
         // Empty
         assert_eq!(truncate_plan_name("anything", 0), "");
         // No dash — still keeps both ends visible

@@ -1218,10 +1218,7 @@ fn render_mcp_panel(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, the
             };
             lines.push(Line::from(vec![
                 Span::styled(format!("  {icon} "), icon_style),
-                Span::styled(
-                    format!("{}: ", truncate(&server.name, 10)),
-                    theme.accent(),
-                ),
+                Span::styled(format!("{}: ", truncate(&server.name, 10)), theme.accent()),
                 Span::styled(cmd, theme.text()),
             ]));
         }
@@ -1269,7 +1266,10 @@ fn render_mcp_panel(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, the
         Span::styled("   index: ", theme.label()),
         if mcp_stats.index_file_count > 0 {
             Span::styled(
-                format!("{} files / {} sym", mcp_stats.index_file_count, mcp_stats.index_symbol_count),
+                format!(
+                    "{} files / {} sym",
+                    mcp_stats.index_file_count, mcp_stats.index_symbol_count
+                ),
                 theme.value(),
             )
         } else {
@@ -1329,10 +1329,7 @@ fn render_learning_panel(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState
         Line::from(vec![
             Span::styled("episodes: ", theme.label()),
             Span::styled(ep_total.to_string(), theme.value()),
-            Span::styled(
-                format!(" ({ep_passed}P/{ep_failed}F)"),
-                theme.metadata(),
-            ),
+            Span::styled(format!(" ({ep_passed}P/{ep_failed}F)"), theme.metadata()),
         ]),
         Line::from(vec![
             Span::styled("accuracy: ", theme.label()),
@@ -1394,7 +1391,10 @@ fn render_learning_panel(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState
         !tui_state.experiment_winners.is_empty() || !tui_state.experiments.is_empty();
     if has_experiments {
         lines.push(Line::raw(""));
-        lines.push(Line::from(Span::styled("Experiments:", theme.section_header())));
+        lines.push(Line::from(Span::styled(
+            "Experiments:",
+            theme.section_header(),
+        )));
         let max_experiments = (inner.height as usize).saturating_sub(lines.len() + 2);
         let mut shown = 0usize;
         // Active experiments first
@@ -1444,8 +1444,15 @@ fn render_learning_panel(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState
     let remaining_height = (inner.height as usize).saturating_sub(lines.len() + 1);
     if !learn.gate_thresholds.is_empty() && remaining_height > 2 {
         lines.push(Line::raw(""));
-        lines.push(Line::from(Span::styled("Gate Thresholds:", theme.section_header())));
-        for (rung, t) in learn.gate_thresholds.iter().take(remaining_height.saturating_sub(1)) {
+        lines.push(Line::from(Span::styled(
+            "Gate Thresholds:",
+            theme.section_header(),
+        )));
+        for (rung, t) in learn
+            .gate_thresholds
+            .iter()
+            .take(remaining_height.saturating_sub(1))
+        {
             let threshold_style = if *t >= 0.8 {
                 theme.success()
             } else if *t >= 0.5 {
@@ -1491,7 +1498,11 @@ fn render_prompt_stats_panel(
     // Compute per-role aggregates with input/output/cache breakdown
     let mut role_data: BTreeMap<String, (u64, u64, u64, u64, f64)> = BTreeMap::new(); // (in, out, cache_read, turns, cost)
     for ev in &tui_state.efficiency_events {
-        let role = if ev.role.is_empty() { "unknown" } else { ev.role.as_str() };
+        let role = if ev.role.is_empty() {
+            "unknown"
+        } else {
+            ev.role.as_str()
+        };
         let entry = role_data.entry(role.to_string()).or_default();
         entry.0 += ev.input_tokens;
         entry.1 += ev.output_tokens;
@@ -1543,7 +1554,10 @@ fn render_prompt_stats_panel(
 
     // Context window headroom (use configured or default model limit)
     let ctx_limit = crate::tui::state::model_context_limit(
-        &tui_state.efficiency_events.last().map_or(String::new(), |e| e.model.clone()),
+        &tui_state
+            .efficiency_events
+            .last()
+            .map_or(String::new(), |e| e.model.clone()),
     );
     let utilization_pct = if ctx_limit > 0 {
         avg_input_per_turn as f64 / ctx_limit as f64 * 100.0
@@ -1581,12 +1595,13 @@ fn render_prompt_stats_panel(
     ]));
     lines.push(Line::from(vec![
         Span::styled(" ctx:    ", theme.label()),
+        Span::styled(format!("{utilization_pct:.0}%"), util_style),
         Span::styled(
-            format!("{utilization_pct:.0}%"),
-            util_style,
-        ),
-        Span::styled(
-            format!(" ({}/{})", format_count(avg_input_per_turn), format_count(ctx_limit)),
+            format!(
+                " ({}/{})",
+                format_count(avg_input_per_turn),
+                format_count(ctx_limit)
+            ),
             theme.metadata(),
         ),
     ]));

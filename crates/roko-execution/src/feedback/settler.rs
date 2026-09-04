@@ -36,18 +36,18 @@ use super::receipt::TaskAttemptReceiptV1;
 
 /// Fixed sink keys in settlement order. The index IS the row number.
 pub const SINK_KEYS: [&str; 12] = [
-    "attempt_receipt",   // 0 -- critical
-    "actual_cost",       // 1 -- critical
-    "structured_audit",  // 2 -- critical
-    "episode",           // 3 -- optional
-    "efficiency",        // 4 -- optional
-    "routing",           // 5 -- optional
-    "error_pattern",     // 6 -- optional (failed attempts only)
-    "playbook",          // 7 -- optional
-    "knowledge",         // 8 -- optional
-    "daimon",            // 9 -- optional
-    "conductor",         // 10 -- optional
-    "projection",        // 11 -- optional
+    "attempt_receipt",  // 0 -- critical
+    "actual_cost",      // 1 -- critical
+    "structured_audit", // 2 -- critical
+    "episode",          // 3 -- optional
+    "efficiency",       // 4 -- optional
+    "routing",          // 5 -- optional
+    "error_pattern",    // 6 -- optional (failed attempts only)
+    "playbook",         // 7 -- optional
+    "knowledge",        // 8 -- optional
+    "daimon",           // 9 -- optional
+    "conductor",        // 10 -- optional
+    "projection",       // 11 -- optional
 ];
 
 /// Number of critical sinks (rows 0-2).
@@ -116,9 +116,12 @@ impl SettlementLedger {
     /// Whether all rows are in a terminal state (Settled or Skipped).
     #[must_use]
     pub fn is_complete(&self) -> bool {
-        self.entries
-            .values()
-            .all(|e| matches!(e.state, SinkSettlementState::Settled | SinkSettlementState::Skipped))
+        self.entries.values().all(|e| {
+            matches!(
+                e.state,
+                SinkSettlementState::Settled | SinkSettlementState::Skipped
+            )
+        })
     }
 
     /// The first row index that has not been settled or skipped.
@@ -281,6 +284,7 @@ pub struct FeedbackSettler {
     event_callback: Option<SettlementEventCallback>,
 }
 
+#[allow(clippy::missing_fields_in_debug)]
 impl fmt::Debug for FeedbackSettler {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FeedbackSettler")
@@ -341,10 +345,12 @@ impl FeedbackSettler {
         let start_row = ledger.first_unsettled_row().unwrap_or(SINK_KEYS.len());
         let mut optional_failures: Vec<SinkFailure> = Vec::new();
 
-        for row in start_row..SINK_KEYS.len() {
-            let sink = &self.sinks[row];
-            let sink_key = SINK_KEYS[row];
-
+        for (row, (&sink_key, sink)) in SINK_KEYS
+            .iter()
+            .zip(self.sinks.iter())
+            .enumerate()
+            .skip(start_row)
+        {
             // Check applicability.
             if !sink.applicable(receipt) {
                 ledger.mark_skipped(sink_key);
@@ -428,8 +434,8 @@ impl FeedbackSettler {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     use super::*;
     use crate::feedback::receipt::{AttemptTerminalStatus, ChoiceSource};
@@ -521,12 +527,22 @@ mod tests {
             .collect()
     }
 
+    /// Build passing sinks and return the shared call counters alongside them.
+    fn all_passing_sinks_with_counters() -> (Vec<Box<dyn SettlementSink>>, Vec<Arc<AtomicU32>>) {
+        let mut sinks: Vec<Box<dyn SettlementSink>> = Vec::new();
+        let mut counters: Vec<Arc<AtomicU32>> = Vec::new();
+        for key in SINK_KEYS {
+            let sink = TestSink::new(key, false);
+            counters.push(Arc::clone(&sink.call_count));
+            sinks.push(Box::new(sink));
+        }
+        (sinks, counters)
+    }
+
     fn sinks_with_failure(fail_key: &'static str) -> Vec<Box<dyn SettlementSink>> {
         SINK_KEYS
             .iter()
-            .map(|key| {
-                Box::new(TestSink::new(key, *key == fail_key)) as Box<dyn SettlementSink>
-            })
+            .map(|key| Box::new(TestSink::new(key, *key == fail_key)) as Box<dyn SettlementSink>)
             .collect()
     }
 
@@ -606,16 +622,7 @@ mod tests {
 
     #[tokio::test]
     async fn resume_skips_already_settled_rows() {
-        let sinks = all_passing_sinks();
-        // Get shared call counters before moving sinks into the settler.
-        let counters: Vec<_> = sinks
-            .iter()
-            .map(|s| {
-                // Safety: we know these are TestSink instances.
-                let test_sink = s.as_ref() as *const dyn SettlementSink as *const TestSink;
-                unsafe { (*test_sink).call_count.clone() }
-            })
-            .collect();
+        let (sinks, counters) = all_passing_sinks_with_counters();
 
         let settler = FeedbackSettler::new(sinks);
         let receipt = test_receipt();
@@ -704,11 +711,10 @@ mod tests {
         let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let events_clone = events.clone();
 
-        let settler = FeedbackSettler::new(all_passing_sinks()).with_event_callback(Box::new(
-            move |event| {
+        let settler =
+            FeedbackSettler::new(all_passing_sinks()).with_event_callback(Box::new(move |event| {
                 events_clone.lock().push(event.clone());
-            },
-        ));
+            }));
         let receipt = test_receipt();
         let _ = settler.settle(&receipt, None).await;
 

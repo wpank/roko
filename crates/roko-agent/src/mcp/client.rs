@@ -378,12 +378,7 @@ impl StdioTransport {
 
         let mut child = self.child.lock().await;
         // Give the process a brief grace period.
-        match tokio::time::timeout(
-            Duration::from_secs(SHUTDOWN_GRACE_SECS),
-            child.wait(),
-        )
-        .await
-        {
+        match tokio::time::timeout(Duration::from_secs(SHUTDOWN_GRACE_SECS), child.wait()).await {
             Ok(Ok(_)) => {} // exited cleanly
             _ => {
                 let _ = child.kill().await;
@@ -1005,10 +1000,7 @@ mod tests {
     #[test]
     fn redact_stderr_handles_empty_input() {
         assert_eq!(super::redact_stderr("", &[]), "");
-        assert_eq!(
-            super::redact_stderr("", &["secret1234".to_string()]),
-            ""
-        );
+        assert_eq!(super::redact_stderr("", &["secret1234".to_string()]), "");
     }
 
     #[test]
@@ -1022,10 +1014,7 @@ mod tests {
     #[test]
     fn redact_stderr_handles_multiple_secrets() {
         let raw = "key=sk_live_abc123 token=ghp_xyz789";
-        let env_values = vec![
-            "sk_live_abc123".to_string(),
-            "ghp_xyz789".to_string(),
-        ];
+        let env_values = vec!["sk_live_abc123".to_string(), "ghp_xyz789".to_string()];
         let result = super::redact_stderr(raw, &env_values);
         assert_eq!(result, "key=[REDACTED] token=[REDACTED]");
     }

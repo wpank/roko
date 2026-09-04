@@ -170,9 +170,179 @@ fn migrate_v1_to_v2(value: &mut toml::Value) -> Result<(), String> {
         rename_if_absent(budget, "max_agent_usd", "max_turn_usd");
     }
 
+    // Migrate top-level [[gate]] entries to [[gates.rungs]].
+    //
+    // Legacy format: top-level array of tables with tagged `kind` field
+    //   (shell/compile/clippy/test), plus `program`, `args`, `timeout_ms`,
+    //   and `build_system`.
+    // Target format: `[gates]` section with `rungs` array of
+    //   `{ name, command, timeout_secs, required, parallel_with }`.
+    //
+    // The [isfr] section is unconditionally removed -- it was a dead
+    // rate-oracle vestige.
+    if let Some(gate_array) = root.remove("gate")
+        && let Some(entries) = gate_array.as_array()
+    {
+        let mut rungs = Vec::new();
+        for entry in entries {
+            if let Some(rung) = convert_legacy_gate_to_rung(entry) {
+                rungs.push(rung);
+            }
+        }
+        if !rungs.is_empty() {
+            let gates = root
+                .entry("gates")
+                .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+            if let Some(gates_table) = gates.as_table_mut() {
+                // Only insert if there are no existing rungs/custom_rungs.
+                if !gates_table.contains_key("rungs") && !gates_table.contains_key("custom_rungs") {
+                    gates_table.insert("rungs".to_string(), toml::Value::Array(rungs));
+                }
+            }
+        }
+    }
+
+    // Remove dead [isfr] section during migration.
+    root.remove("isfr");
+
     root.insert("schema_version".to_string(), toml::Value::Integer(2));
     root.insert("config_version".to_string(), toml::Value::Integer(2));
     Ok(())
+}
+
+/// Convert one legacy `[[gate]]` entry (tagged enum) to a `[[gates.rungs]]` table.
+///
+/// Returns `None` when the entry has no lossless representation (the spec says
+/// to reject rather than guess when a legacy field has no target).
+fn convert_legacy_gate_to_rung(entry: &toml::Value) -> Option<toml::Value> {
+    let table = entry.as_table()?;
+    let kind = table.get("kind")?.as_str()?;
+
+    let mut rung = toml::map::Map::new();
+
+    match kind {
+        "shell" => {
+            let program = table.get("program")?.as_str()?;
+            let args: Vec<&str> = table
+                .get("args")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
+                .unwrap_or_default();
+            // Build a single shell command from program + args, quoting
+            // arguments that contain whitespace or shell metacharacters.
+            let command = if args.is_empty() {
+                program.to_string()
+            } else {
+                let mut parts = vec![program.to_string()];
+                for arg in &args {
+                    if arg.contains(|c: char| c.is_whitespace() || "\"'\\$;|&<>()".contains(c)) {
+                        parts.push(format!("'{}'", arg.replace('\'', "'\\''")));
+                    } else {
+                        parts.push((*arg).to_string());
+                    }
+                }
+                parts.join(" ")
+            };
+            rung.insert("name".to_string(), toml::Value::String(program.to_string()));
+            rung.insert("command".to_string(), toml::Value::String(command));
+        }
+        "compile" => {
+            let build_system = table
+                .get("build_system")
+                .and_then(|v| v.as_str())
+                .unwrap_or("cargo");
+            let command = match build_system {
+                "cargo" => "cargo check --workspace",
+                "npm" => "npm run build",
+                "go" => "go build ./...",
+                other => {
+                    tracing::warn!(
+                        build_system = other,
+                        "cannot migrate compile gate for unknown build system"
+                    );
+                    return None;
+                }
+            };
+            rung.insert(
+                "name".to_string(),
+                toml::Value::String("compile".to_string()),
+            );
+            rung.insert(
+                "command".to_string(),
+                toml::Value::String(command.to_string()),
+            );
+        }
+        "clippy" => {
+            let build_system = table
+                .get("build_system")
+                .and_then(|v| v.as_str())
+                .unwrap_or("cargo");
+            let command = match build_system {
+                "cargo" => "cargo clippy --workspace --no-deps -- -D warnings",
+                other => {
+                    tracing::warn!(
+                        build_system = other,
+                        "cannot migrate clippy gate for unknown build system"
+                    );
+                    return None;
+                }
+            };
+            rung.insert(
+                "name".to_string(),
+                toml::Value::String("clippy".to_string()),
+            );
+            rung.insert(
+                "command".to_string(),
+                toml::Value::String(command.to_string()),
+            );
+        }
+        "test" => {
+            let build_system = table
+                .get("build_system")
+                .and_then(|v| v.as_str())
+                .unwrap_or("cargo");
+            let command = match build_system {
+                "cargo" => "cargo test --workspace",
+                "npm" => "npm test",
+                "go" => "go test ./...",
+                other => {
+                    tracing::warn!(
+                        build_system = other,
+                        "cannot migrate test gate for unknown build system"
+                    );
+                    return None;
+                }
+            };
+            rung.insert("name".to_string(), toml::Value::String("test".to_string()));
+            rung.insert(
+                "command".to_string(),
+                toml::Value::String(command.to_string()),
+            );
+        }
+        _ => return None, // Unknown kind: cannot migrate losslessly.
+    }
+
+    // Convert timeout_ms to timeout_secs (only when lossless: exact
+    // millisecond values that are not whole seconds are rejected per spec).
+    if let Some(timeout_ms) = table.get("timeout_ms").and_then(|v| v.as_integer())
+        && timeout_ms > 0
+    {
+        if timeout_ms % 1000 != 0 {
+            tracing::warn!(
+                timeout_ms,
+                "cannot losslessly convert gate timeout_ms to timeout_secs"
+            );
+            return None;
+        }
+        rung.insert(
+            "timeout_secs".to_string(),
+            toml::Value::Integer(timeout_ms / 1000),
+        );
+    }
+
+    rung.insert("required".to_string(), toml::Value::Boolean(true));
+
+    Some(toml::Value::Table(rung))
 }
 
 fn rename_if_absent(table: &mut toml::map::Map<String, toml::Value>, old: &str, new: &str) {
@@ -1224,18 +1394,19 @@ fn build_schema_tree() -> toml::Value {
     // and value schemas appear in the serialized tree.
     // Provider sentinel: set Optional fields to Some so they appear in the
     // serialized schema tree. The values are never used at runtime.
-    let mut sentinel_provider = ProviderConfig::default();
-    sentinel_provider.extra_headers = Some(HashMap::new());
-    sentinel_provider.max_concurrent = Some(1);
-    sentinel_provider.limits = Some(Default::default());
-    sentinel_provider.base_url = Some(String::new());
-    sentinel_provider.api_key_env = Some(String::new());
-    sentinel_provider.command = Some(String::new());
-    sentinel_provider.args = Some(Vec::new());
-    config.providers.insert(
-        "_schema_sentinel".to_string(),
-        sentinel_provider,
-    );
+    let sentinel_provider = ProviderConfig {
+        extra_headers: Some(HashMap::new()),
+        max_concurrent: Some(1),
+        limits: Some(Default::default()),
+        base_url: Some(String::new()),
+        api_key_env: Some(String::new()),
+        command: Some(String::new()),
+        args: Some(Vec::new()),
+        ..ProviderConfig::default()
+    };
+    config
+        .providers
+        .insert("_schema_sentinel".to_string(), sentinel_provider);
 
     // Model sentinel: set all Optional and skip_serializing_if fields to
     // non-default values so every field appears in the serialized schema tree.
@@ -1268,22 +1439,20 @@ fn build_schema_tree() -> toml::Value {
         search_context_size: Some(String::new()),
         ..ModelProfile::default()
     };
-    config.models.insert(
-        "_schema_sentinel".to_string(),
-        sentinel_model,
-    );
-    config.profiles.insert(
-        "_schema_sentinel".to_string(),
-        DomainProfile::default(),
-    );
+    config
+        .models
+        .insert("_schema_sentinel".to_string(), sentinel_model);
+    config
+        .profiles
+        .insert("_schema_sentinel".to_string(), DomainProfile::default());
     config
         .agent
         .roles
         .insert("_schema_sentinel".to_string(), RoleOverride::default());
     config.subscriptions.push(SubscriptionConfig::default());
 
-    let mut value = toml::Value::try_from(config)
-        .expect("sentinel RokoConfig must serialize to toml::Value");
+    let mut value =
+        toml::Value::try_from(config).expect("sentinel RokoConfig must serialize to toml::Value");
 
     // Sections backed by Vec<T> where T lacks Default or conditional
     // structs with `skip_serializing_if` are added to the schema tree so
@@ -1291,7 +1460,9 @@ fn build_schema_tree() -> toml::Value {
     // tables accept nested subsections by name.
     if let Some(table) = value.as_table_mut() {
         for key in &["agents", "groups", "repos"] {
-            table.entry((*key).to_string()).or_insert_with(|| toml::Value::Array(Vec::new()));
+            table
+                .entry((*key).to_string())
+                .or_insert_with(|| toml::Value::Array(Vec::new()));
         }
         // `watcher` is skipped when empty. Add an empty table so
         // `[watcher]` and `[watcher.paths]` are accepted.
@@ -1326,10 +1497,7 @@ fn walk_config_paths(
         // Keys are user-defined names. Validate each value against the schema
         // value template (the first value in the default, or the schema table
         // itself if it is empty).
-        let value_schema = schema
-            .as_table()
-            .and_then(|t| t.values().next())
-            .cloned();
+        let value_schema = schema.as_table().and_then(|t| t.values().next()).cloned();
         if let Some(ref vs) = value_schema {
             for (key, val) in input_table {
                 let child_path = if prefix.is_empty() {
@@ -1382,9 +1550,7 @@ fn walk_config_paths(
 
             // For arrays of tables, validate each element against the schema
             // array's element template (first element of the default).
-            if let (Some(input_arr), Some(schema_arr)) =
-                (val.as_array(), schema_val.as_array())
-            {
+            if let (Some(input_arr), Some(schema_arr)) = (val.as_array(), schema_val.as_array()) {
                 if let Some(element_schema) = schema_arr.first() {
                     for (i, element) in input_arr.iter().enumerate() {
                         let elem_path = format!("{child_path}[{i}]");
@@ -1432,9 +1598,7 @@ fn is_likely_enum_table(schema: &toml::Value, input: &toml::Value) -> bool {
     let (Some(st), Some(it)) = (schema.as_table(), input.as_table()) else {
         return false;
     };
-    st.len() == 1
-        && it.len() == 1
-        && st.keys().next() != it.keys().next()
+    st.len() == 1 && it.len() == 1 && st.keys().next() != it.keys().next()
 }
 
 /// Find the nearest known key by edit distance (Levenshtein).
@@ -1448,10 +1612,8 @@ fn find_nearest_key<'a>(input: &str, candidates: &[&'a str]) -> Option<&'a str> 
     let mut best: Option<(&str, usize)> = None;
     for &candidate in candidates {
         let dist = levenshtein_distance(input, candidate);
-        if dist > 0 && dist <= 2 {
-            if best.is_none() || dist < best.unwrap().1 {
-                best = Some((candidate, dist));
-            }
+        if dist > 0 && dist <= 2 && best.as_ref().map_or(true, |b| dist < b.1) {
+            best = Some((candidate, dist));
         }
     }
     best.map(|(key, _)| key)
@@ -1748,7 +1910,7 @@ pub fn merge_global_into(config: &mut RokoConfig) -> Result<(), super::LoadConfi
             );
             return Err(super::LoadConfigError::GlobalConfigParse {
                 path: global_path.clone(),
-                source,
+                detail: source,
             });
         }
     };
@@ -2649,6 +2811,7 @@ default_model = "claude-sonnet"
                 extra_headers: Some(headers),
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
 
@@ -3067,7 +3230,9 @@ strict_validation = true
             .unwrap();
         let diags = validate_known_config_paths(&value);
         assert!(
-            diags.iter().any(|d| d.key == "bogus" && d.message.contains("unknown")),
+            diags
+                .iter()
+                .any(|d| d.key == "bogus" && d.message.contains("unknown")),
             "expected diagnostic for top-level 'bogus', got: {diags:?}"
         );
     }
@@ -3082,8 +3247,7 @@ strict_validation = true
         assert!(
             diags
                 .iter()
-                .any(|d| d.key == "budget.max_plna_usd"
-                    && d.message.contains("max_plan_usd")),
+                .any(|d| d.key == "budget.max_plna_usd" && d.message.contains("max_plan_usd")),
             "expected typo suggestion for 'budget.max_plna_usd', got: {diags:?}"
         );
     }
@@ -3135,8 +3299,7 @@ bogus_field = "x"
         assert!(
             diags
                 .iter()
-                .any(|d| d.key == "providers.my-prov.bogus_field"
-                    && d.message.contains("unknown")),
+                .any(|d| d.key == "providers.my-prov.bogus_field" && d.message.contains("unknown")),
             "expected diagnostic for 'providers.my-prov.bogus_field', got: {diags:?}"
         );
     }
@@ -3165,16 +3328,15 @@ bogus_field = "x"
         assert!(
             diags
                 .iter()
-                .any(|d| d.key == "gate"
-                    && d.message.contains("gates.rungs")),
+                .any(|d| d.key == "gate" && d.message.contains("gates.rungs")),
             "expected migration guidance for [[gate]], got: {diags:?}"
         );
     }
 
     #[test]
     fn validate_paths_accepts_clean_default_config() {
-        let value = toml::Value::try_from(RokoConfig::default())
-            .expect("default config must serialize");
+        let value =
+            toml::Value::try_from(RokoConfig::default()).expect("default config must serialize");
         let diags = validate_known_config_paths(&value);
         assert!(
             diags.is_empty(),
@@ -3214,7 +3376,8 @@ context_pressure_enabled = true
     fn checked_in_config_loads_cleanly_with_nonzero_budgets() {
         // Load the actual workspace roko.toml and verify it produces no
         // unknown-path diagnostics and has the intended budget values.
-        let workspace_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workspace_root = manifest_dir
             .parent()
             .and_then(|p| p.parent())
             .expect("workspace root");

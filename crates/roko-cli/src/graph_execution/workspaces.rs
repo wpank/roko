@@ -20,9 +20,7 @@ use roko_graph::workspace::{
     WorkspaceLeaseState, WorkspaceReconcileResult, WorkspaceReleasePolicy,
 };
 
-use crate::orchestrator::worktree::{
-    WorktreeHealth, WorktreeManager, format_attempt_worktree_id,
-};
+use crate::orchestrator::worktree::{WorktreeHealth, WorktreeManager, format_attempt_worktree_id};
 
 /// CLI adapter that wraps [`WorktreeManager`] to implement the graph-layer
 /// [`ExecutionWorkspaceProvider`] trait.
@@ -86,9 +84,7 @@ impl WorktreeExecutionWorkspaceProvider {
 
     /// Map a [`crate::orchestrator::worktree::WorktreeError`] to a
     /// [`WorkspaceError`].
-    fn map_worktree_error(
-        err: crate::orchestrator::worktree::WorktreeError,
-    ) -> WorkspaceError {
+    fn map_worktree_error(err: crate::orchestrator::worktree::WorktreeError) -> WorkspaceError {
         use crate::orchestrator::worktree::WorktreeError as WE;
         match err {
             WE::BudgetExhausted { max } => WorkspaceError::BudgetExhausted { max },
@@ -104,11 +100,10 @@ impl ExecutionWorkspaceProvider for WorktreeExecutionWorkspaceProvider {
         attempt_id: &WorkspaceAttemptId,
     ) -> Result<WorkspaceLease, WorkspaceError> {
         // Idempotent: if the attempt already has a tracked handle, return it.
-        if let Some(handle) = self.manager.get_attempt(
-            &attempt_id.plan_id,
-            &attempt_id.task_id,
-            attempt_id.attempt,
-        ) {
+        if let Some(handle) =
+            self.manager
+                .get_attempt(&attempt_id.plan_id, &attempt_id.task_id, attempt_id.attempt)
+        {
             self.reject_shared_checkout(&handle.path)?;
             let base = self
                 .manager
@@ -120,11 +115,7 @@ impl ExecutionWorkspaceProvider for WorktreeExecutionWorkspaceProvider {
         // Create a new attempt worktree via the manager.
         let handle = self
             .manager
-            .create_for_attempt(
-                &attempt_id.plan_id,
-                &attempt_id.task_id,
-                attempt_id.attempt,
-            )
+            .create_for_attempt(&attempt_id.plan_id, &attempt_id.task_id, attempt_id.attempt)
             .await
             .map_err(Self::map_worktree_error)?;
 
@@ -164,11 +155,7 @@ impl ExecutionWorkspaceProvider for WorktreeExecutionWorkspaceProvider {
         if handle.path != lease.path || handle.branch != lease.branch {
             return Ok(WorkspaceReconcileResult::Conflict(format!(
                 "tracked handle for '{}' has path={:?} branch={}, but lease expects path={:?} branch={}",
-                worktree_id,
-                handle.path,
-                handle.branch,
-                lease.path,
-                lease.branch,
+                worktree_id, handle.path, handle.branch, lease.path, lease.branch,
             )));
         }
 
@@ -180,12 +167,8 @@ impl ExecutionWorkspaceProvider for WorktreeExecutionWorkspaceProvider {
             .map_err(Self::map_worktree_error)?;
 
         match isolation.health {
-            WorktreeHealth::Ok => {
-                Ok(WorkspaceReconcileResult::Live(lease.clone()))
-            }
-            WorktreeHealth::Missing => {
-                Ok(WorkspaceReconcileResult::AlreadyReleased)
-            }
+            WorktreeHealth::Ok => Ok(WorkspaceReconcileResult::Live(lease.clone())),
+            WorktreeHealth::Missing => Ok(WorkspaceReconcileResult::AlreadyReleased),
             WorktreeHealth::StaleLock | WorktreeHealth::Detached => {
                 Ok(WorkspaceReconcileResult::Conflict(format!(
                     "worktree '{}' health check: {:?}",
@@ -230,8 +213,7 @@ impl ExecutionWorkspaceProvider for WorktreeExecutionWorkspaceProvider {
                 }
                 Ok(WorkspaceLeaseState::Released)
             }
-            WorkspaceReleasePolicy::RetainForFailure
-            | WorkspaceReleasePolicy::RetainForReview => {
+            WorkspaceReleasePolicy::RetainForFailure | WorkspaceReleasePolicy::RetainForReview => {
                 // Keep the manager entry and worktree on disk.
                 // The worktree is no longer actively owned by a running attempt
                 // but is preserved for inspection.
@@ -259,8 +241,7 @@ mod tests {
             &attempt_id.task_id,
             attempt_id.attempt,
         );
-        let manager_id =
-            format_attempt_worktree_id("my-plan", "compile", 2);
+        let manager_id = format_attempt_worktree_id("my-plan", "compile", 2);
         assert_eq!(adapter_id, manager_id);
     }
 
@@ -284,8 +265,7 @@ mod tests {
             idle_ttl: Duration::from_secs(3600),
         };
         let manager = WorktreeManager::new(config);
-        let provider =
-            WorktreeExecutionWorkspaceProvider::new(manager, PathBuf::from("/project"));
+        let provider = WorktreeExecutionWorkspaceProvider::new(manager, PathBuf::from("/project"));
 
         let err = provider
             .reject_shared_checkout(&PathBuf::from("/project"))
@@ -296,9 +276,11 @@ mod tests {
         );
 
         // Different paths pass.
-        assert!(provider
-            .reject_shared_checkout(&PathBuf::from("/project/.worktrees/attempt-abc"))
-            .is_ok());
+        assert!(
+            provider
+                .reject_shared_checkout(&PathBuf::from("/project/.worktrees/attempt-abc"))
+                .is_ok()
+        );
     }
 
     #[test]
@@ -314,8 +296,7 @@ mod tests {
             idle_ttl: Duration::from_secs(3600),
         };
         let manager = WorktreeManager::new(config);
-        let provider =
-            WorktreeExecutionWorkspaceProvider::new(manager, PathBuf::from("/repo"));
+        let provider = WorktreeExecutionWorkspaceProvider::new(manager, PathBuf::from("/repo"));
 
         let attempt_id = WorkspaceAttemptId {
             plan_id: "p1".to_string(),
@@ -345,12 +326,8 @@ mod tests {
         use crate::orchestrator::worktree::WorktreeError;
 
         let err = WorktreeError::BudgetExhausted { max: 5 };
-        let mapped =
-            WorktreeExecutionWorkspaceProvider::map_worktree_error(err);
-        assert!(matches!(
-            mapped,
-            WorkspaceError::BudgetExhausted { max: 5 }
-        ));
+        let mapped = WorktreeExecutionWorkspaceProvider::map_worktree_error(err);
+        assert!(matches!(mapped, WorkspaceError::BudgetExhausted { max: 5 }));
     }
 
     #[test]
@@ -358,8 +335,7 @@ mod tests {
         use crate::orchestrator::worktree::WorktreeError;
 
         let err = WorktreeError::NotFound("ghost".to_string());
-        let mapped =
-            WorktreeExecutionWorkspaceProvider::map_worktree_error(err);
+        let mapped = WorktreeExecutionWorkspaceProvider::map_worktree_error(err);
         assert!(matches!(mapped, WorkspaceError::Io(_)));
     }
 
@@ -492,8 +468,7 @@ mod tests {
             idle_ttl: Duration::from_secs(600),
         };
         let manager = WorktreeManager::new(config);
-        let provider =
-            WorktreeExecutionWorkspaceProvider::new(manager, PathBuf::from("/project"));
+        let provider = WorktreeExecutionWorkspaceProvider::new(manager, PathBuf::from("/project"));
 
         // The accessor should return the same manager reference.
         let m = provider.manager();
@@ -513,20 +488,25 @@ mod tests {
             idle_ttl: Duration::from_secs(3600),
         };
         let manager = WorktreeManager::new(config);
-        let provider =
-            WorktreeExecutionWorkspaceProvider::new(manager, PathBuf::from("/repo"));
+        let provider = WorktreeExecutionWorkspaceProvider::new(manager, PathBuf::from("/repo"));
 
         // Subdirectories of the repo root must be accepted.
-        assert!(provider
-            .reject_shared_checkout(&PathBuf::from("/repo/subdir"))
-            .is_ok());
+        assert!(
+            provider
+                .reject_shared_checkout(&PathBuf::from("/repo/subdir"))
+                .is_ok()
+        );
         // The root itself must be rejected.
-        assert!(provider
-            .reject_shared_checkout(&PathBuf::from("/repo"))
-            .is_err());
+        assert!(
+            provider
+                .reject_shared_checkout(&PathBuf::from("/repo"))
+                .is_err()
+        );
         // A completely different path must be accepted.
-        assert!(provider
-            .reject_shared_checkout(&PathBuf::from("/other/path"))
-            .is_ok());
+        assert!(
+            provider
+                .reject_shared_checkout(&PathBuf::from("/other/path"))
+                .is_ok()
+        );
     }
 }

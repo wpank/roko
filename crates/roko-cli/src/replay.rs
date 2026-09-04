@@ -202,8 +202,7 @@ pub fn traverse_dag(
                 if !visited.contains(parent) && !lookup.contains_key(parent) {
                     // Record the first missing ancestor under deterministic order.
                     if first_missing_ancestor.is_none() {
-                        first_missing_ancestor =
-                            Some((parent.to_string(), sig.id.to_string()));
+                        first_missing_ancestor = Some((parent.to_string(), sig.id.to_string()));
                     }
                 }
                 queue.push_back((*parent, depth + 1));
@@ -295,10 +294,7 @@ pub fn render_forensic_text(records: &[ReplayRecord]) -> Vec<String> {
         lines.push(format!("{indent}  hash:      {}", rec.hash));
         lines.push(format!("{indent}  author:    {}", rec.author));
         lines.push(format!("{indent}  created:   {}", rec.created_at_ms));
-        lines.push(format!(
-            "{indent}  lineage:   [{}]",
-            rec.lineage.join(", ")
-        ));
+        lines.push(format!("{indent}  lineage:   [{}]", rec.lineage.join(", ")));
         if !rec.tags.is_empty() {
             let tag_strs: Vec<String> = rec
                 .tags
@@ -338,10 +334,7 @@ pub fn render_tree_text(records: &[ReplayRecord]) -> Vec<String> {
 pub fn parse_event_filter(value: Option<&str>) -> usize {
     value
         .and_then(|s| {
-            let stripped = s
-                .trim_start_matches("step")
-                .trim_start_matches('#')
-                .trim();
+            let stripped = s.trim_start_matches("step").trim_start_matches('#').trim();
             stripped.parse().ok()
         })
         .unwrap_or(0)
@@ -350,7 +343,7 @@ pub fn parse_event_filter(value: Option<&str>) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use roko_core::{Body, ContentHash, Kind, Engram as Signal};
+    use roko_core::{Body, ContentHash, Engram as Signal, Kind};
 
     /// Build a test signal with a given body text, author, and lineage.
     fn make_signal(body_text: &str, author: &str, lineage: Vec<ContentHash>) -> Signal {
@@ -420,17 +413,16 @@ mod tests {
 
         // B and C are at depth 1; their order depends on lexicographic
         // hash ordering. Collect them.
-        let depth_1: Vec<&str> = records[1..3]
-            .iter()
-            .map(|r| r.hash.as_str())
-            .collect();
+        let depth_1: Vec<&str> = records[1..3].iter().map(|r| r.hash.as_str()).collect();
 
         // Verify they are sorted lexicographically
-        assert!(depth_1[0] < depth_1[1], "BFS parents should be lexicographically sorted");
+        assert!(
+            depth_1[0] < depth_1[1],
+            "BFS parents should be lexicographically sorted"
+        );
 
         // Verify both B and C are present
-        let bc_hashes: HashSet<String> =
-            [b.id.to_string(), c.id.to_string()].into_iter().collect();
+        let bc_hashes: HashSet<String> = [b.id.to_string(), c.id.to_string()].into_iter().collect();
         let actual_hashes: HashSet<String> = depth_1.iter().map(|s| s.to_string()).collect();
         assert_eq!(bc_hashes, actual_hashes);
 
@@ -591,7 +583,10 @@ mod tests {
     fn missing_root_text_shape() {
         let hash = "aaaa".repeat(16);
         let err = ReplayError::root_not_found(&hash);
-        assert_eq!(err.to_text(), format!("error: replay root not found: {hash}"));
+        assert_eq!(
+            err.to_text(),
+            format!("error: replay root not found: {hash}")
+        );
     }
 
     #[test]

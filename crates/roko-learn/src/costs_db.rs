@@ -207,61 +207,62 @@ pub struct CostTable {
 
 impl CostTable {
     /// Look up the pricing entry for a model slug.
+    ///
+    /// Emits a `tracing::warn` on a miss so silent $0.00 fallbacks are visible.
     #[must_use]
     pub fn lookup(&self, model: &str) -> Option<&ModelPricing> {
-        self.models.get(model)
+        let result = self.models.get(model);
+        if result.is_none() && !model.is_empty() {
+            tracing::warn!(model, "costs_db: no pricing entry for model slug");
+        }
+        result
     }
 
-    /// Build the default cost table with the GLM, OpenRouter, and Perplexity pricing rows.
+    /// Build the default cost table.
+    ///
+    /// Seeds from the canonical shared registry
+    /// ([`roko_core::config::model_registry::BUILTIN_PRICING`]) for all
+    /// well-known models, then layers provider-specific overrides (OpenRouter
+    /// prefixed slugs, Gemini high-context tiers, Perplexity per-request fees)
+    /// that the shared registry does not track.
     #[must_use]
     pub fn with_defaults() -> Self {
         let mut models = HashMap::new();
-        models.insert(
-            "kimi-k2.5".to_string(),
-            ModelPricing {
-                input_per_m: 0.60,
-                output_per_m: 3.00,
-                input_per_m_high: None,
-                output_per_m_high: None,
-                cache_read_per_m: Some(0.10),
-                cache_write_per_m: None,
-                per_request: None,
-            },
-        );
+
+        // ── Seed from canonical shared registry ──────────────────────────────
+        for (slug, reg) in roko_core::config::model_registry::BUILTIN_PRICING {
+            models.insert(
+                (*slug).to_string(),
+                ModelPricing {
+                    input_per_m: reg.input_per_m,
+                    output_per_m: reg.output_per_m,
+                    input_per_m_high: None,
+                    output_per_m_high: None,
+                    cache_read_per_m: if reg.cache_read_per_m > 0.0 {
+                        Some(reg.cache_read_per_m)
+                    } else {
+                        None
+                    },
+                    cache_write_per_m: if reg.cache_write_per_m > 0.0 {
+                        Some(reg.cache_write_per_m)
+                    } else {
+                        None
+                    },
+                    per_request: None,
+                },
+            );
+        }
+
+        // ── Provider-specific overrides not in the shared registry ───────────
+
+        // OpenRouter prefixed slugs (different pricing from direct API).
         models.insert(
             "moonshotai/kimi-k2.5".to_string(),
             ModelPricing {
                 input_per_m: 0.38,
                 output_per_m: 1.72,
-                input_per_m_high: None,
-                output_per_m_high: None,
                 cache_read_per_m: Some(0.10),
-                cache_write_per_m: None,
-                per_request: None,
-            },
-        );
-        models.insert(
-            "kimi-k2-thinking".to_string(),
-            ModelPricing {
-                input_per_m: 0.60,
-                output_per_m: 2.50,
-                input_per_m_high: None,
-                output_per_m_high: None,
-                cache_read_per_m: Some(0.15),
-                cache_write_per_m: None,
-                per_request: None,
-            },
-        );
-        models.insert(
-            "glm-5.1".to_string(),
-            ModelPricing {
-                input_per_m: 1.40,
-                output_per_m: 4.40,
-                input_per_m_high: None,
-                output_per_m_high: None,
-                cache_read_per_m: Some(0.26),
-                cache_write_per_m: None,
-                per_request: None,
+                ..Default::default()
             },
         );
         models.insert(
@@ -269,35 +270,8 @@ impl CostTable {
             ModelPricing {
                 input_per_m: 1.26,
                 output_per_m: 3.96,
-                input_per_m_high: None,
-                output_per_m_high: None,
                 cache_read_per_m: Some(0.26),
-                cache_write_per_m: None,
-                per_request: None,
-            },
-        );
-        models.insert(
-            "glm-5".to_string(),
-            ModelPricing {
-                input_per_m: 1.00,
-                output_per_m: 3.20,
-                input_per_m_high: None,
-                output_per_m_high: None,
-                cache_read_per_m: None,
-                cache_write_per_m: None,
-                per_request: None,
-            },
-        );
-        models.insert(
-            "glm-4.7".to_string(),
-            ModelPricing {
-                input_per_m: 0.60,
-                output_per_m: 2.20,
-                input_per_m_high: None,
-                output_per_m_high: None,
-                cache_read_per_m: None,
-                cache_write_per_m: None,
-                per_request: None,
+                ..Default::default()
             },
         );
         models.insert(
@@ -305,13 +279,41 @@ impl CostTable {
             ModelPricing {
                 input_per_m: 15.00,
                 output_per_m: 75.00,
-                input_per_m_high: None,
-                output_per_m_high: None,
-                cache_read_per_m: None,
-                cache_write_per_m: None,
-                per_request: None,
+                ..Default::default()
             },
         );
+
+        // Kimi thinking variant.
+        models.insert(
+            "kimi-k2-thinking".to_string(),
+            ModelPricing {
+                input_per_m: 0.60,
+                output_per_m: 2.50,
+                cache_read_per_m: Some(0.15),
+                ..Default::default()
+            },
+        );
+
+        // Older GLM models not in the shared registry.
+        models.insert(
+            "glm-4.7".to_string(),
+            ModelPricing {
+                input_per_m: 0.60,
+                output_per_m: 2.20,
+                ..Default::default()
+            },
+        );
+
+        // Legacy Claude slug (sonnet-4-5 superseded by sonnet-4-6).
+        models
+            .entry("claude-sonnet-4-5".to_string())
+            .or_insert(ModelPricing {
+                input_per_m: 3.00,
+                output_per_m: 15.00,
+                ..Default::default()
+            });
+
+        // Gemini models with high-context tier pricing.
         models.insert(
             "gemini-2.5-pro".to_string(),
             ModelPricing {
@@ -319,9 +321,7 @@ impl CostTable {
                 output_per_m: 10.00,
                 input_per_m_high: Some(2.50),
                 output_per_m_high: Some(15.00),
-                cache_read_per_m: None,
-                cache_write_per_m: None,
-                per_request: None,
+                ..Default::default()
             },
         );
         models.insert(
@@ -329,11 +329,7 @@ impl CostTable {
             ModelPricing {
                 input_per_m: 0.30,
                 output_per_m: 2.50,
-                input_per_m_high: None,
-                output_per_m_high: None,
-                cache_read_per_m: None,
-                cache_write_per_m: None,
-                per_request: None,
+                ..Default::default()
             },
         );
         models.insert(
@@ -341,11 +337,7 @@ impl CostTable {
             ModelPricing {
                 input_per_m: 0.10,
                 output_per_m: 0.40,
-                input_per_m_high: None,
-                output_per_m_high: None,
-                cache_read_per_m: None,
-                cache_write_per_m: None,
-                per_request: None,
+                ..Default::default()
             },
         );
         models.insert(
@@ -355,9 +347,7 @@ impl CostTable {
                 output_per_m: 12.00,
                 input_per_m_high: Some(4.00),
                 output_per_m_high: Some(18.00),
-                cache_read_per_m: None,
-                cache_write_per_m: None,
-                per_request: None,
+                ..Default::default()
             },
         );
         models.insert(
@@ -365,11 +355,7 @@ impl CostTable {
             ModelPricing {
                 input_per_m: 0.50,
                 output_per_m: 3.00,
-                input_per_m_high: None,
-                output_per_m_high: None,
-                cache_read_per_m: None,
-                cache_write_per_m: None,
-                per_request: None,
+                ..Default::default()
             },
         );
         models.insert(
@@ -377,49 +363,24 @@ impl CostTable {
             ModelPricing {
                 input_per_m: 0.25,
                 output_per_m: 1.50,
-                input_per_m_high: None,
-                output_per_m_high: None,
-                cache_read_per_m: None,
-                cache_write_per_m: None,
-                per_request: None,
+                ..Default::default()
             },
         );
 
-        // Perplexity Sonar models — include per-request search fee.
-        models.insert(
-            "sonar".to_string(),
-            ModelPricing {
-                input_per_m: 1.00,
-                output_per_m: 1.00,
-                input_per_m_high: None,
-                output_per_m_high: None,
-                cache_read_per_m: None,
-                cache_write_per_m: None,
-                per_request: Some(0.005),
-            },
-        );
-        models.insert(
-            "sonar-pro".to_string(),
-            ModelPricing {
-                input_per_m: 3.00,
-                output_per_m: 15.00,
-                input_per_m_high: None,
-                output_per_m_high: None,
-                cache_read_per_m: None,
-                cache_write_per_m: None,
-                per_request: Some(0.014),
-            },
-        );
+        // Perplexity Sonar models — per-request search fees.
+        models.entry("sonar".to_string()).and_modify(|p| {
+            p.per_request = Some(0.005);
+        });
+        models.entry("sonar-pro".to_string()).and_modify(|p| {
+            p.per_request = Some(0.014);
+        });
         models.insert(
             "sonar-reasoning".to_string(),
             ModelPricing {
                 input_per_m: 1.00,
                 output_per_m: 5.00,
-                input_per_m_high: None,
-                output_per_m_high: None,
-                cache_read_per_m: None,
-                cache_write_per_m: None,
                 per_request: Some(0.005),
+                ..Default::default()
             },
         );
         models.insert(
@@ -427,11 +388,8 @@ impl CostTable {
             ModelPricing {
                 input_per_m: 2.00,
                 output_per_m: 8.00,
-                input_per_m_high: None,
-                output_per_m_high: None,
-                cache_read_per_m: None,
-                cache_write_per_m: None,
                 per_request: Some(0.008),
+                ..Default::default()
             },
         );
         models.insert(
@@ -439,56 +397,7 @@ impl CostTable {
             ModelPricing {
                 input_per_m: 2.00,
                 output_per_m: 8.00,
-                input_per_m_high: None,
-                output_per_m_high: None,
-                cache_read_per_m: None,
-                cache_write_per_m: None,
                 per_request: Some(0.005),
-            },
-        );
-        // Bare Anthropic direct API slugs (used by cascade router).
-        models.insert(
-            "claude-opus-4-6".to_string(),
-            ModelPricing {
-                input_per_m: 15.00,
-                output_per_m: 75.00,
-                cache_read_per_m: None,
-                ..Default::default()
-            },
-        );
-        models.insert(
-            "claude-sonnet-4-5".to_string(),
-            ModelPricing {
-                input_per_m: 3.00,
-                output_per_m: 15.00,
-                cache_read_per_m: None,
-                ..Default::default()
-            },
-        );
-        models.insert(
-            "claude-sonnet-4-6".to_string(),
-            ModelPricing {
-                input_per_m: 3.00,
-                output_per_m: 15.00,
-                cache_read_per_m: None,
-                ..Default::default()
-            },
-        );
-        models.insert(
-            "claude-haiku-4-5".to_string(),
-            ModelPricing {
-                input_per_m: 0.80,
-                output_per_m: 4.00,
-                cache_read_per_m: None,
-                ..Default::default()
-            },
-        );
-        models.insert(
-            "claude-haiku-4-5".to_string(),
-            ModelPricing {
-                input_per_m: 0.25,
-                output_per_m: 1.25,
-                cache_read_per_m: None,
                 ..Default::default()
             },
         );
@@ -878,7 +787,7 @@ mod tests {
         let glm_5 = table.lookup("glm-5").expect("glm-5 pricing");
         assert!((glm_5.input_per_m - 1.00).abs() < 1e-9);
         assert!((glm_5.output_per_m - 3.20).abs() < 1e-9);
-        assert_eq!(glm_5.cache_read_per_m, None);
+        assert_eq!(glm_5.cache_read_per_m, Some(0.50));
 
         let glm_4_7 = table.lookup("glm-4.7").expect("glm-4.7 pricing");
         assert!((glm_4_7.input_per_m - 0.60).abs() < 1e-9);
@@ -1423,5 +1332,31 @@ mod tests {
         assert_eq!(summary.total_input_tokens, 3000);
         assert_eq!(summary.total_output_tokens, 600);
         assert_eq!(summary.total_cached_tokens, 300);
+    }
+
+    #[test]
+    fn cost_table_keys_are_unique() {
+        // Regression test: a previous version had a duplicate `claude-haiku-4-5`
+        // insert that silently overwrote the correct pricing with wrong values.
+        let table = CostTable::default();
+        let mut seen = std::collections::HashSet::new();
+        for key in table.models.keys() {
+            assert!(
+                seen.insert(key.clone()),
+                "duplicate key in CostTable: {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn cost_table_no_zero_dollar_pricing() {
+        // Ensure every model in the default table has non-zero base rates.
+        let table = CostTable::default();
+        for (slug, pricing) in &table.models {
+            assert!(
+                pricing.input_per_m > 0.0 || pricing.output_per_m > 0.0,
+                "model {slug} has $0.00 pricing — add a rate or remove it"
+            );
+        }
     }
 }

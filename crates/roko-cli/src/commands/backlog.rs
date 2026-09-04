@@ -263,9 +263,7 @@ impl AuditReport {
 /// Read per-plan task status from all `plans/*/tasks.toml` files.
 ///
 /// Returns a map of `plan_id -> (meta_status, vec of (task_id, task_status))`.
-fn read_toml_plan_statuses(
-    workdir: &Path,
-) -> BTreeMap<String, (String, Vec<(String, String)>)> {
+fn read_toml_plan_statuses(workdir: &Path) -> BTreeMap<String, (String, Vec<(String, String)>)> {
     let plans_dir = workdir.join("plans");
     let mut result = BTreeMap::new();
 
@@ -415,10 +413,7 @@ fn runner_task_status(
     failed: &BTreeMap<String, BTreeSet<String>>,
     skipped: &BTreeMap<String, BTreeSet<String>>,
 ) -> &'static str {
-    if completed
-        .get(plan_id)
-        .is_some_and(|s| s.contains(task_id))
-    {
+    if completed.get(plan_id).is_some_and(|s| s.contains(task_id)) {
         return "completed";
     }
     if failed.get(plan_id).is_some_and(|s| s.contains(task_id)) {
@@ -529,10 +524,7 @@ fn build_audit_report(workdir: &Path) -> AuditReport {
                     task_id: task_id.clone(),
                     toml_status: toml_status.clone(),
                     runner_status: runner.to_string(),
-                    drift: format!(
-                        "runner completed but TOML status=\"{}\"",
-                        toml_status
-                    ),
+                    drift: format!("runner completed but TOML status=\"{}\"", toml_status),
                 });
             }
 
@@ -601,7 +593,11 @@ fn print_audit_report(report: &AuditReport) {
         println!(
             "Plan-level drift ({} issue{}):",
             report.plan_drifts.len(),
-            if report.plan_drifts.len() == 1 { "" } else { "s" }
+            if report.plan_drifts.len() == 1 {
+                ""
+            } else {
+                "s"
+            }
         );
         for d in &report.plan_drifts {
             println!("  [{}] {}", d.plan_id, d.drift);
@@ -613,7 +609,11 @@ fn print_audit_report(report: &AuditReport) {
         println!(
             "Task-level drift ({} issue{}):",
             report.task_drifts.len(),
-            if report.task_drifts.len() == 1 { "" } else { "s" }
+            if report.task_drifts.len() == 1 {
+                ""
+            } else {
+                "s"
+            }
         );
         for d in &report.task_drifts {
             println!("  [{}:{}] {}", d.plan_id, d.task_id, d.drift);
@@ -749,7 +749,11 @@ mod tests {
         .unwrap();
 
         let report = build_audit_report(tmp.path());
-        assert!(report.orphaned_executor_plans.contains(&"ghost-plan".to_string()));
+        assert!(
+            report
+                .orphaned_executor_plans
+                .contains(&"ghost-plan".to_string())
+        );
     }
 
     #[test]
@@ -828,8 +832,16 @@ mod tests {
 
         let report = build_audit_report(tmp.path());
         assert!(!report.plan_drifts.is_empty());
-        assert!(report.plan_drifts[0].drift.contains("meta.status=\"complete\""));
-        assert!(report.plan_drifts[0].drift.contains("executor phase=\"implementing\""));
+        assert!(
+            report.plan_drifts[0]
+                .drift
+                .contains("meta.status=\"complete\"")
+        );
+        assert!(
+            report.plan_drifts[0]
+                .drift
+                .contains("executor phase=\"implementing\"")
+        );
     }
 
     #[test]
@@ -881,19 +893,25 @@ mod tests {
         let mut failed = BTreeMap::new();
         let skipped = BTreeMap::new();
 
-        completed.insert(
-            "p1".to_string(),
-            BTreeSet::from(["T01".to_string()]),
-        );
-        failed.insert(
-            "p1".to_string(),
-            BTreeSet::from(["T02".to_string()]),
-        );
+        completed.insert("p1".to_string(), BTreeSet::from(["T01".to_string()]));
+        failed.insert("p1".to_string(), BTreeSet::from(["T02".to_string()]));
 
-        assert_eq!(runner_task_status("p1", "T01", &completed, &failed, &skipped), "completed");
-        assert_eq!(runner_task_status("p1", "T02", &completed, &failed, &skipped), "failed");
-        assert_eq!(runner_task_status("p1", "T03", &completed, &failed, &skipped), "none");
-        assert_eq!(runner_task_status("p2", "T01", &completed, &failed, &skipped), "none");
+        assert_eq!(
+            runner_task_status("p1", "T01", &completed, &failed, &skipped),
+            "completed"
+        );
+        assert_eq!(
+            runner_task_status("p1", "T02", &completed, &failed, &skipped),
+            "failed"
+        );
+        assert_eq!(
+            runner_task_status("p1", "T03", &completed, &failed, &skipped),
+            "none"
+        );
+        assert_eq!(
+            runner_task_status("p2", "T01", &completed, &failed, &skipped),
+            "none"
+        );
     }
 
     #[test]

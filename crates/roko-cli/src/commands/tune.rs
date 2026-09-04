@@ -136,7 +136,10 @@ pub(crate) async fn cmd_config_preset(cli: &Cli, cmd: ConfigPresetCmd) -> Result
             };
             println!("{}", serde_json::to_string_pretty(&output)?);
         } else {
-            println!("dry-run: {label} preset for {target_label} config at {}", write_path.display());
+            println!(
+                "dry-run: {label} preset for {target_label} config at {}",
+                write_path.display()
+            );
             for entry in &edits {
                 println!("  {} = {}", entry.key, entry.value);
             }
@@ -190,9 +193,7 @@ pub(crate) async fn cmd_config_preset(cli: &Cli, cmd: ConfigPresetCmd) -> Result
         .collect::<HashMap<_, _>>();
 
     // save_pending_edits works on the directory containing roko.toml.
-    let config_dir = write_path
-        .parent()
-        .unwrap_or(&workdir);
+    let config_dir = write_path.parent().unwrap_or(&workdir);
     roko_cli::tui::config_meta::save_pending_edits(config_dir, &pending)
         .map_err(anyhow::Error::msg)?;
 
@@ -316,9 +317,7 @@ fn build_routing_preset(workdir: &Path) -> Result<Vec<PresetDiffEntry>> {
             ("standard", &routing.standard_task_model),
             ("complex", &routing.complex_task_model),
         ] {
-            if !available.iter().any(|s| s == slug)
-                && !config.models.contains_key(slug.as_str())
-            {
+            if !available.iter().any(|s| s == slug) && !config.models.contains_key(slug.as_str()) {
                 bail!(
                     "routing preset references {tier}_task_model = \"{slug}\" \
                      which is not in configured models. \
@@ -353,15 +352,15 @@ fn build_routing_preset(workdir: &Path) -> Result<Vec<PresetDiffEntry>> {
         },
         PresetDiffEntry {
             key: "routing.weights.quality".into(),
-            value: format!("{:.2}", routing.weights.quality),
+            value: format!("{:.2}", routing.weights.default.quality),
         },
         PresetDiffEntry {
             key: "routing.weights.cost".into(),
-            value: format!("{:.2}", routing.weights.cost),
+            value: format!("{:.2}", routing.weights.default.cost),
         },
         PresetDiffEntry {
             key: "routing.weights.latency".into(),
-            value: format!("{:.2}", routing.weights.latency),
+            value: format!("{:.2}", routing.weights.default.latency),
         },
     ])
 }

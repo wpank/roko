@@ -20,10 +20,7 @@ use super::signals::{ComposeRequest, ComposeScope, ExperimentAssignment, cell_id
 pub trait ExperimentProvider: Send + Sync + 'static {
     /// Evaluate which experiments are active for the given context and
     /// return the corresponding prompt sections plus experiment IDs.
-    fn assign_experiments(
-        &self,
-        scope: &ComposeScope,
-    ) -> ExperimentResult;
+    fn assign_experiments(&self, scope: &ComposeScope) -> ExperimentResult;
 }
 
 /// Result of experiment evaluation.
@@ -104,11 +101,9 @@ impl<P: ExperimentProvider> roko_graph::Cell for ExperimentCell<P> {
         };
 
         let body = Body::from_json(&payload).map_err(|e| {
-            roko_core::error::RokoError::Internal(format!(
-                "experiment cell serialization: {e}"
-            ))
+            roko_core::error::RokoError::Store(format!("experiment cell serialization: {e}"))
         })?;
-        let signal = Signal::builder(Kind::Context).body(body).build();
+        let signal = Signal::builder(Kind::ContextPack).body(body).build();
         Ok(vec![signal])
     }
 }
@@ -119,7 +114,7 @@ fn extract_compose_request(input: &[Signal]) -> Result<ComposeRequest> {
             return Ok(req);
         }
     }
-    Err(roko_core::error::RokoError::Internal(
+    Err(roko_core::error::RokoError::Store(
         "ExperimentCell: no ComposeRequest found in input signals".into(),
     ))
 }
@@ -128,13 +123,14 @@ fn extract_compose_request(input: &[Signal]) -> Result<ComposeRequest> {
 mod tests {
     use super::*;
     use roko_core::AgentRole;
+    use roko_graph::Cell;
 
     #[tokio::test]
     async fn noop_produces_no_experiments() {
         let cell = ExperimentCell::default();
         let req = ComposeRequest::new("r1", "p1", "t1", AgentRole::Implementer);
         let body = Body::from_json(&req).unwrap();
-        let signal = Signal::builder(Kind::Context).body(body).build();
+        let signal = Signal::builder(Kind::ContextPack).body(body).build();
 
         let result = cell
             .execute(vec![signal], &roko_graph::CellContext::new())
@@ -151,8 +147,10 @@ mod tests {
         impl ExperimentProvider for TestProvider {
             fn assign_experiments(&self, _scope: &ComposeScope) -> ExperimentResult {
                 ExperimentResult {
-                    sections: vec![PromptSection::new("exp_section", "Try approach B")
-                        .with_section_id("experiment:exp-001:exp_section".into())],
+                    sections: vec![
+                        PromptSection::new("exp_section", "Try approach B")
+                            .with_section_id("experiment:exp-001:exp_section"),
+                    ],
                     experiment_ids: vec!["exp-001".into()],
                     warnings: Vec::new(),
                 }
@@ -162,7 +160,7 @@ mod tests {
         let cell = ExperimentCell::new(TestProvider);
         let req = ComposeRequest::new("r1", "p1", "t1", AgentRole::Implementer);
         let body = Body::from_json(&req).unwrap();
-        let signal = Signal::builder(Kind::Context).body(body).build();
+        let signal = Signal::builder(Kind::ContextPack).body(body).build();
 
         let result = cell
             .execute(vec![signal], &roko_graph::CellContext::new())

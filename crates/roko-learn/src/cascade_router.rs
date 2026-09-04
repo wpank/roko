@@ -62,10 +62,10 @@ use crate::cascade::persistence::{
     remap_role_table_entry,
 };
 use crate::cascade::types::{
-    CATEGORY_CONFIDENCE_WEIGHT, CATEGORY_MIN_TRIALS, CategoryModelStats,
-    GeminiObservationTotals, HIGH_CFACTOR_THRESHOLD, LOW_AFFECT_CONFIDENCE_THRESHOLD,
-    LOW_CFACTOR_THRESHOLD, ModelStats, OVERRIDE_LEARNING_RATE, PARETO_RECOMPUTE_INTERVAL,
-    ParetoFrontierState, PerplexityObservationTotals, StageTracking,
+    CATEGORY_CONFIDENCE_WEIGHT, CATEGORY_MIN_TRIALS, CategoryModelStats, GeminiObservationTotals,
+    HIGH_CFACTOR_THRESHOLD, LOW_AFFECT_CONFIDENCE_THRESHOLD, LOW_CFACTOR_THRESHOLD, ModelStats,
+    OVERRIDE_LEARNING_RATE, PARETO_RECOMPUTE_INTERVAL, ParetoFrontierState,
+    PerplexityObservationTotals, StageTracking,
 };
 use crate::cfactor::{AgentDispatchBias, CFactor};
 use crate::latency::LatencyTracker;
@@ -108,6 +108,14 @@ pub struct CascadeRouter {
     free_tier_shadow_runner: Option<Arc<dyn ShadowModelRunner>>,
 }
 
+impl std::fmt::Debug for CascadeRouter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CascadeRouter")
+            .field("model_slugs", &self.model_slugs)
+            .finish_non_exhaustive()
+    }
+}
+
 impl roko_core::Cell for CascadeRouter {
     fn cell_id(&self) -> &str {
         "cascade-router"
@@ -139,6 +147,7 @@ impl Default for RoutingContext {
             previous_model: None,
             plan_context_tokens: None,
             tier_thresholds: None,
+            cfactor: None,
         }
     }
 }
@@ -1419,16 +1428,9 @@ impl CascadeRouter {
     /// Called alongside the main observation path so the router can
     /// adjust confidence scores based on how a model performs on a
     /// specific task category (e.g. research, implementation, refactor).
-    pub fn record_category_outcome(
-        &self,
-        model_slug: &str,
-        category: TaskCategory,
-        success: bool,
-    ) {
+    pub fn record_category_outcome(&self, model_slug: &str, category: TaskCategory, success: bool) {
         let mut cat = self.category_stats.lock();
-        let entry = cat
-            .entry((model_slug.to_string(), category))
-            .or_default();
+        let entry = cat.entry((model_slug.to_string(), category)).or_default();
         entry.trials += 1;
         if success {
             entry.successes += 1;
@@ -2505,9 +2507,7 @@ impl CascadeRouter {
         // derive per-category deltas below without re-locking.
         let global_rates: HashMap<&str, f64> = candidates
             .iter()
-            .filter_map(|slug| {
-                stats.get(slug).map(|s| (slug.as_str(), s.pass_rate()))
-            })
+            .filter_map(|slug| stats.get(slug).map(|s| (slug.as_str(), s.pass_rate())))
             .collect();
 
         let mut scores: Vec<(String, f64)> = candidates

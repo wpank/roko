@@ -234,11 +234,7 @@ impl ControlReceiptV1 {
     /// Transition to a terminal status. Returns `None` if the receipt is
     /// already terminal (no-op for idempotency).
     #[must_use]
-    pub fn finalize(
-        &self,
-        status: ReceiptStatus,
-        message: Option<String>,
-    ) -> Option<Self> {
+    pub fn finalize(&self, status: ReceiptStatus, message: Option<String>) -> Option<Self> {
         if self.status.is_terminal() {
             return None;
         }
@@ -260,6 +256,7 @@ impl ControlReceiptV1 {
 /// The control service translates commands into effects; the executor
 /// applies them at safe scheduler boundaries.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(missing_docs)]
 pub enum ControlEffect {
     /// Set paused immediately; allow current provider/gate effects to
     /// finish; schedule no new node.
@@ -276,9 +273,7 @@ pub enum ControlEffect {
     /// Reset failed/pending nodes. When `preserve_completed` is false,
     /// reset all non-effect-committed task nodes. Never erases committed
     /// receipts.
-    Repair {
-        preserve_completed: bool,
-    },
+    Repair { preserve_completed: bool },
     /// Invoke gates on the existing valid lease; launch no provider.
     ReverifyGates {
         plan_id: Option<String>,
@@ -317,10 +312,10 @@ pub enum ControlEffect {
 // Finalization intent
 // ---------------------------------------------------------------------------
 
-/// Finalization intent returned by the control service after a cancel
-/// command. The outer controller (#256/#257) uses this to flush the final
-/// checkpoint, follow #249 release policy, and write run terminal state.
+/// Finalization intent returned by the control service after a cancel command.
 ///
+/// The outer controller (#256/#257) uses this to flush the final checkpoint,
+/// follow #249 release policy, and write run terminal state.
 /// The graph control adapter never independently writes terminal state or
 /// releases a #249 lease.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -503,6 +498,7 @@ impl ExecutionControlService {
     ///
     /// Commands with a stale run ID are rejected. Duplicate command IDs
     /// return the prior receipt.
+    #[allow(clippy::too_many_lines)]
     pub fn process_command(
         &self,
         command_id: &str,
@@ -523,10 +519,7 @@ impl ExecutionControlService {
                 kind.label(),
             );
             let receipt = receipt
-                .finalize(
-                    ReceiptStatus::Rejected,
-                    Some("stale run".into()),
-                )
+                .finalize(ReceiptStatus::Rejected, Some("stale run".into()))
                 .unwrap_or(receipt);
             return ControlEffect::Rejected {
                 reason: "stale run".into(),
@@ -535,13 +528,13 @@ impl ExecutionControlService {
         }
 
         // ── Duplicate detection ─────────────────────────────────────
-        if let Some(existing) = self.get_receipt(command_id) {
-            if existing.status.is_terminal() {
-                return ControlEffect::Rejected {
-                    reason: "duplicate command_id".into(),
-                    receipt: existing,
-                };
-            }
+        if let Some(existing) = self.get_receipt(command_id)
+            && existing.status.is_terminal()
+        {
+            return ControlEffect::Rejected {
+                reason: "duplicate command_id".into(),
+                receipt: existing,
+            };
         }
 
         // ── Record Received ─────────────────────────────────────────
@@ -604,11 +597,7 @@ impl ExecutionControlService {
             ControlCommandKind::Approve { approval_id } => {
                 match self.resolve_approval(approval_id, ApprovalResolution::Approved) {
                     Ok(_request) => {
-                        self.finalize_receipt(
-                            command_id,
-                            ReceiptStatus::Applied,
-                            None,
-                        );
+                        self.finalize_receipt(command_id, ReceiptStatus::Applied, None);
                         ControlEffect::ApprovalResolved {
                             approval_id: approval_id.clone(),
                             resolution: ApprovalResolution::Approved,
@@ -675,10 +664,7 @@ impl ExecutionControlService {
                     receipt: cancel_receipt.clone(),
                     created_at_ms: now_ms(),
                 };
-                ControlEffect::Cancel {
-                    plan_id,
-                    intent,
-                }
+                ControlEffect::Cancel { plan_id, intent }
             }
         }
     }
@@ -712,15 +698,9 @@ impl std::fmt::Debug for ExecutionControlService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ExecutionControlService")
             .field("run_id", &self.run_id)
-            .field(
-                "pending_approvals",
-                &self.approvals.lock().len(),
-            )
+            .field("pending_approvals", &self.approvals.lock().len())
             .field("receipts", &self.receipts.lock().len())
-            .field(
-                "cancel_initiated",
-                &*self.cancel_initiated.lock(),
-            )
+            .field("cancel_initiated", &*self.cancel_initiated.lock())
             .finish()
     }
 }
@@ -753,6 +733,7 @@ pub struct ControlSnapshot {
 /// dependency from `roko-graph` to `roko-cli`. The CLI control adapter
 /// maps between them.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(missing_docs)]
 pub enum ControlCommandKind {
     /// Pause the executor.
     Pause,
@@ -976,9 +957,10 @@ mod tests {
         assert_eq!(r2.status, ReceiptStatus::Applied);
 
         // Cannot finalize again (already terminal).
-        assert!(svc
-            .finalize_receipt("cmd-1", ReceiptStatus::Rejected, None)
-            .is_none());
+        assert!(
+            svc.finalize_receipt("cmd-1", ReceiptStatus::Rejected, None)
+                .is_none()
+        );
     }
 
     #[test]
@@ -1379,10 +1361,7 @@ mod tests {
     #[test]
     fn approval_resolution_is_approved() {
         assert!(ApprovalResolution::Approved.is_approved());
-        assert!(!ApprovalResolution::Rejected {
-            reason: "x".into()
-        }
-        .is_approved());
+        assert!(!ApprovalResolution::Rejected { reason: "x".into() }.is_approved());
         assert!(!ApprovalResolution::Expired.is_approved());
     }
 
@@ -1535,10 +1514,7 @@ mod tests {
         assert!(matches!(effects[4], ControlEffect::ReverifyGates { .. }));
         assert!(matches!(effects[5], ControlEffect::Skip { .. }));
         assert_eq!(effects[6], ControlEffect::Reset);
-        assert!(matches!(
-            effects[7],
-            ControlEffect::ApprovalResolved { .. }
-        ));
+        assert!(matches!(effects[7], ControlEffect::ApprovalResolved { .. }));
         // ap-missing-ok was never registered, so rejection of the reject
         // command itself is expected.
         assert!(matches!(effects[8], ControlEffect::Rejected { .. }));

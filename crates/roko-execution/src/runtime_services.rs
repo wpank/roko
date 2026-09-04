@@ -200,6 +200,7 @@ impl fmt::Display for NonPlanServiceHandle {
 
 /// Errors during non-plan service construction.
 #[derive(Debug, Clone, thiserror::Error)]
+#[allow(missing_docs)]
 pub enum ServiceConstructionError {
     /// The requested profile is not valid for a non-plan surface.
     #[error("profile mismatch: {profile} -- {reason}")]
@@ -231,8 +232,10 @@ pub enum ServiceConstructionError {
     /// This is returned by `build_non_plan_services` until the builder is
     /// implemented. Callers should fall back to their current `ServiceFactory`
     /// construction path.
-    #[error("SPEC_DRIFT: RuntimeServicesBuilder not yet available (blocked on #243); \
-             profile={profile}, use ServiceFactory::build as interim")]
+    #[error(
+        "SPEC_DRIFT: RuntimeServicesBuilder not yet available (blocked on #243); \
+             profile={profile}, use ServiceFactory::build as interim"
+    )]
     BuilderNotAvailable { profile: RuntimeProfile },
 }
 
@@ -347,10 +350,7 @@ pub fn overrides_for_workflow(
 ///
 /// Chat sessions enable feedback but disable affect modulation by default.
 /// Cascade routing follows the workspace default unless overridden.
-pub fn overrides_for_chat(
-    model: Option<String>,
-    provider: Option<String>,
-) -> ExecutionOverrides {
+pub fn overrides_for_chat(model: Option<String>, provider: Option<String>) -> ExecutionOverrides {
     ExecutionOverrides {
         model,
         provider,
@@ -419,6 +419,7 @@ pub trait CostSettlement: Send + Sync {
 
 /// Errors from cost settlement.
 #[derive(Debug, Clone, thiserror::Error)]
+#[allow(missing_docs)]
 pub enum CostSettlementError {
     /// The settlement was rejected as a duplicate.
     #[error("duplicate settlement for request_id={request_id}")]
@@ -582,13 +583,7 @@ mod tests {
         let request = NonPlanServiceRequest::new(
             RuntimeProfile::Workflow,
             PathBuf::from("/tmp/test"),
-            overrides_for_workflow(
-                Some("sonnet".to_string()),
-                None,
-                None,
-                Some(true),
-                None,
-            ),
+            overrides_for_workflow(Some("sonnet".to_string()), None, None, Some(true), None),
         );
         let handle = build_non_plan_services(&request).unwrap();
         assert_eq!(handle.profile(), RuntimeProfile::Workflow);

@@ -326,7 +326,7 @@ pub const COMPOSE_SIGNAL_TAG: &str = "compose.v1";
 ///
 /// Returns an error if the signal body cannot be deserialized.
 pub fn parse_compose_request(signal: &roko_core::Signal) -> Result<ComposeRequest, String> {
-    serde_json::from_value(signal.body.data.clone()).map_err(|e| {
+    signal.body.as_json::<ComposeRequest>().map_err(|e| {
         format!(
             "failed to parse ComposeRequest from signal {}: {e}",
             signal.id

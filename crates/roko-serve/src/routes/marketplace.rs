@@ -5,9 +5,9 @@
 
 use std::sync::Arc;
 
+use axum::Router;
 use axum::extract::{Path, Query};
 use axum::routing::{get, post};
-use axum::Router;
 use serde::Deserialize;
 
 use crate::error::ApiError;
@@ -89,9 +89,7 @@ mod tests {
     use serde_json::Value;
 
     /// Helper: call a handler and return (status, parsed JSON body).
-    async fn call_handler(
-        response: axum::response::Response,
-    ) -> (StatusCode, Value) {
+    async fn call_handler(response: axum::response::Response) -> (StatusCode, Value) {
         let status = response.status();
         let body = to_bytes(response.into_body(), usize::MAX)
             .await
@@ -118,7 +116,10 @@ mod tests {
             "details.hint must be a non-empty string"
         );
         // No success-shaped fields may appear.
-        assert!(body.get("artifacts").is_none(), "must not contain artifacts");
+        assert!(
+            body.get("artifacts").is_none(),
+            "must not contain artifacts"
+        );
         assert!(body.get("total").is_none(), "must not contain total");
         assert!(body.get("found").is_none(), "must not contain found");
         assert!(
@@ -188,11 +189,7 @@ mod tests {
         );
 
         // Fork must never return 200.
-        let fork_status = fork_artifact()
-            .await
-            .unwrap_err()
-            .into_response()
-            .status();
+        let fork_status = fork_artifact().await.unwrap_err().into_response().status();
         assert!(
             !fork_status.is_success(),
             "fork must not return 2xx: got {fork_status}"

@@ -81,19 +81,15 @@ impl DreamScheduleConfig {
     /// require the `roko-dreams` crate.
     pub fn validate(&self) -> Result<(), String> {
         if !self.quality_gain.is_finite() || self.quality_gain <= 0.0 {
-            return Err(
-                "dreams.quality_gain must be finite and greater than zero".to_string(),
-            );
+            return Err("dreams.quality_gain must be finite and greater than zero".to_string());
         }
         if !self.quality_penalty.is_finite() || self.quality_penalty <= 0.0 {
-            return Err(
-                "dreams.quality_penalty must be finite and greater than zero".to_string(),
-            );
+            return Err("dreams.quality_penalty must be finite and greater than zero".to_string());
         }
-        if let Some(ref cron) = self.scheduled_cron {
-            if cron.trim().is_empty() {
-                return Err("dreams.scheduled_cron must not be empty".to_string());
-            }
+        if let Some(ref cron) = self.scheduled_cron
+            && cron.trim().is_empty()
+        {
+            return Err("dreams.scheduled_cron must not be empty".to_string());
         }
         Ok(())
     }
@@ -210,7 +206,9 @@ mod tests {
 
     #[test]
     fn dreams_default_validates() {
-        DreamScheduleConfig::default().validate().expect("default dreams config should be valid");
+        DreamScheduleConfig::default()
+            .validate()
+            .expect("default dreams config should be valid");
     }
 
     #[test]

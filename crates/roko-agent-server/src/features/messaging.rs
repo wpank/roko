@@ -15,7 +15,7 @@ use axum::{
 use futures::StreamExt;
 use roko_agent::{
     chat_types::{ChatRequest, FinishReason, RequestOptions, ToolChoice},
-    tool_loop::{StreamEvent, StreamEventKind},
+    tool_loop::StreamEventKind,
     translate::SessionState,
 };
 use serde::Deserialize;
@@ -278,6 +278,7 @@ mod tests {
     };
     use futures::SinkExt;
     use roko_agent::chat_types::{ChatResponse, FinishReason};
+    use roko_agent::tool_loop::{StreamEvent, StreamEventKind};
     use tokio::{net::TcpListener, task::JoinHandle};
     use tokio_tungstenite::{
         MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message as ClientMessage,

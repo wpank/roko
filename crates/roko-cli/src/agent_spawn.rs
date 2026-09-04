@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context as _, Result};
-use roko_agent::provider::{AgentOptions, current_safety_layer, with_safety_layer};
+use roko_agent::provider::{AgentOptions, current_safety_layer};
 use roko_agent::{Agent, SafetyLayer, create_agent_for_model};
 use roko_core::config::schema::RokoConfig;
 
@@ -100,13 +100,10 @@ pub fn spawn_agent_scoped(
     let model = spec.model.clone();
     let role = spec.role.clone();
     let context = error_context.into();
-    with_safety_layer(
-        role_scoped_safety_layer(config, role.as_deref(), current_safety_layer()),
-        || {
-            create_agent_for_model(config, &model, spec.into_agent_options())
-                .with_context(|| context.clone())
-        },
-    )
+    let layer = role_scoped_safety_layer(config, role.as_deref(), current_safety_layer());
+    let mut options = spec.into_agent_options();
+    options.safety_layer = layer;
+    create_agent_for_model(config, &model, options).with_context(|| context.clone())
 }
 
 /// Create an agent under an explicit safety layer.
@@ -119,11 +116,8 @@ pub fn spawn_agent_with_layer(
     let model = spec.model.clone();
     let role = spec.role.clone();
     let context = error_context.into();
-    with_safety_layer(
-        role_scoped_safety_layer(config, role.as_deref(), safety_layer),
-        || {
-            create_agent_for_model(config, &model, spec.into_agent_options())
-                .with_context(|| context.clone())
-        },
-    )
+    let layer = role_scoped_safety_layer(config, role.as_deref(), safety_layer);
+    let mut options = spec.into_agent_options();
+    options.safety_layer = layer;
+    create_agent_for_model(config, &model, options).with_context(|| context.clone())
 }

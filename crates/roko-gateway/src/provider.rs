@@ -105,7 +105,11 @@ impl ModelCallerBackend {
     pub fn openai(caller: Arc<dyn ModelCaller>) -> Self {
         Self::new(
             "openai",
-            vec!["gpt-".into(), "o1".into(), "o3-".into(), "o4-".into()],
+            // o-series: no trailing dash so bare slugs like "o3" and
+            // suffixed variants like "o3-mini" both match.  All three
+            // prefixes are kept dashless and parallel for consistency;
+            // future o-series (o5, …) need a new entry here.
+            vec!["gpt-".into(), "o1".into(), "o3".into(), "o4".into()],
             caller,
         )
     }

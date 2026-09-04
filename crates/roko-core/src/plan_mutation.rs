@@ -198,43 +198,23 @@ pub struct PlanMutationResultV1 {
 #[non_exhaustive]
 pub enum PlanMutationErrorV1 {
     /// Schema version is not supported.
-    SchemaIncompatible {
-        expected: u8,
-        actual: u8,
-    },
+    SchemaIncompatible { expected: u8, actual: u8 },
     /// The base plan fingerprint does not match.
-    FingerprintMismatch {
-        expected: String,
-        actual: String,
-    },
+    FingerprintMismatch { expected: String, actual: String },
     /// A task ID that should exist does not.
-    MissingTaskId {
-        task_id: String,
-    },
+    MissingTaskId { task_id: String },
     /// A task ID that should be unique already exists.
-    DuplicateTaskId {
-        task_id: String,
-    },
+    DuplicateTaskId { task_id: String },
     /// Attempted to mutate a completed task.
-    ImmutableCompletedTask {
-        task_id: String,
-    },
+    ImmutableCompletedTask { task_id: String },
     /// A dependency reference points to a nonexistent task.
-    InvalidReference {
-        task_id: String,
-        references: String,
-    },
+    InvalidReference { task_id: String, references: String },
     /// Split produced zero parts.
-    EmptySplit {
-        task_id: String,
-    },
+    EmptySplit { task_id: String },
     /// Merge requires at least two task IDs.
     EmptyMerge,
     /// The resulting plan would exceed the task limit.
-    TaskLimitExceeded {
-        limit: usize,
-        actual: usize,
-    },
+    TaskLimitExceeded { limit: usize, actual: usize },
     /// The resulting DAG contains a cycle.
     CycleDetected {
         /// Task IDs involved in the cycle (best-effort).
@@ -254,7 +234,10 @@ impl std::fmt::Display for PlanMutationErrorV1 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::SchemaIncompatible { expected, actual } => {
-                write!(f, "schema version {actual} is not supported (expected {expected})")
+                write!(
+                    f,
+                    "schema version {actual} is not supported (expected {expected})"
+                )
             }
             Self::FingerprintMismatch { expected, actual } => {
                 write!(
@@ -271,7 +254,10 @@ impl std::fmt::Display for PlanMutationErrorV1 {
             Self::ImmutableCompletedTask { task_id } => {
                 write!(f, "task '{task_id}' is completed and cannot be mutated")
             }
-            Self::InvalidReference { task_id, references } => {
+            Self::InvalidReference {
+                task_id,
+                references,
+            } => {
                 write!(
                     f,
                     "task '{task_id}' references nonexistent task '{references}'"
@@ -374,8 +360,8 @@ fn detect_cycle(tasks: &BTreeMap<String, MutableTaskV1>) -> Result<(), Vec<Strin
         // Collect nodes still with nonzero in-degree (cycle participants)
         let involved: Vec<String> = in_degree
             .iter()
-            .filter(|(_, &deg)| deg > 0)
-            .map(|(&id, _)| id.to_string())
+            .filter(|(_, deg)| **deg > 0)
+            .map(|(id, _)| id.to_string())
             .collect();
         Err(involved)
     }
@@ -495,12 +481,12 @@ fn apply_op(
         }
 
         PlanMutationOpV1::RemoveTask { task_id } => {
-            let existing = plan
-                .tasks
-                .get(task_id)
-                .ok_or_else(|| PlanMutationErrorV1::MissingTaskId {
-                    task_id: task_id.clone(),
-                })?;
+            let existing =
+                plan.tasks
+                    .get(task_id)
+                    .ok_or_else(|| PlanMutationErrorV1::MissingTaskId {
+                        task_id: task_id.clone(),
+                    })?;
             if existing.completed {
                 return Err(PlanMutationErrorV1::ImmutableCompletedTask {
                     task_id: task_id.clone(),
@@ -530,12 +516,12 @@ fn apply_op(
                     replacement_id: replacement.id.clone(),
                 });
             }
-            let existing = plan
-                .tasks
-                .get(task_id)
-                .ok_or_else(|| PlanMutationErrorV1::MissingTaskId {
-                    task_id: task_id.clone(),
-                })?;
+            let existing =
+                plan.tasks
+                    .get(task_id)
+                    .ok_or_else(|| PlanMutationErrorV1::MissingTaskId {
+                        task_id: task_id.clone(),
+                    })?;
             if existing.completed {
                 return Err(PlanMutationErrorV1::ImmutableCompletedTask {
                     task_id: task_id.clone(),
@@ -551,12 +537,12 @@ fn apply_op(
                     task_id: task_id.clone(),
                 });
             }
-            let existing = plan
-                .tasks
-                .get(task_id)
-                .ok_or_else(|| PlanMutationErrorV1::MissingTaskId {
-                    task_id: task_id.clone(),
-                })?;
+            let existing =
+                plan.tasks
+                    .get(task_id)
+                    .ok_or_else(|| PlanMutationErrorV1::MissingTaskId {
+                        task_id: task_id.clone(),
+                    })?;
             if existing.completed {
                 return Err(PlanMutationErrorV1::ImmutableCompletedTask {
                     task_id: task_id.clone(),
@@ -592,12 +578,12 @@ fn apply_op(
             }
             // All source tasks must exist and be pending
             for tid in task_ids {
-                let existing = plan
-                    .tasks
-                    .get(tid)
-                    .ok_or_else(|| PlanMutationErrorV1::MissingTaskId {
-                        task_id: tid.clone(),
-                    })?;
+                let existing =
+                    plan.tasks
+                        .get(tid)
+                        .ok_or_else(|| PlanMutationErrorV1::MissingTaskId {
+                            task_id: tid.clone(),
+                        })?;
                 if existing.completed {
                     return Err(PlanMutationErrorV1::ImmutableCompletedTask {
                         task_id: tid.clone(),
@@ -606,9 +592,7 @@ fn apply_op(
             }
             // Check merged ID doesn't collide with non-source tasks
             let source_set: HashSet<&str> = task_ids.iter().map(|s| s.as_str()).collect();
-            if !source_set.contains(merged.id.as_str())
-                && plan.tasks.contains_key(&merged.id)
-            {
+            if !source_set.contains(merged.id.as_str()) && plan.tasks.contains_key(&merged.id) {
                 return Err(PlanMutationErrorV1::DuplicateTaskId {
                     task_id: merged.id.clone(),
                 });
@@ -626,12 +610,12 @@ fn apply_op(
             task_id,
             depends_on,
         } => {
-            let task = plan
-                .tasks
-                .get_mut(task_id)
-                .ok_or_else(|| PlanMutationErrorV1::MissingTaskId {
-                    task_id: task_id.clone(),
-                })?;
+            let task =
+                plan.tasks
+                    .get_mut(task_id)
+                    .ok_or_else(|| PlanMutationErrorV1::MissingTaskId {
+                        task_id: task_id.clone(),
+                    })?;
             changed.insert(task_id.clone());
             task.dependencies.insert(depends_on.clone());
         }
@@ -640,12 +624,12 @@ fn apply_op(
             task_id,
             depends_on,
         } => {
-            let task = plan
-                .tasks
-                .get_mut(task_id)
-                .ok_or_else(|| PlanMutationErrorV1::MissingTaskId {
-                    task_id: task_id.clone(),
-                })?;
+            let task =
+                plan.tasks
+                    .get_mut(task_id)
+                    .ok_or_else(|| PlanMutationErrorV1::MissingTaskId {
+                        task_id: task_id.clone(),
+                    })?;
             changed.insert(task_id.clone());
             task.dependencies.remove(depends_on);
         }
@@ -698,10 +682,7 @@ mod tests {
         }
     }
 
-    fn mutation(
-        base: &MutablePlanV1,
-        ops: Vec<PlanMutationOpV1>,
-    ) -> PlanMutationV1 {
+    fn mutation(base: &MutablePlanV1, ops: Vec<PlanMutationOpV1>) -> PlanMutationV1 {
         PlanMutationV1 {
             schema_version: 1,
             mutation_id: "mut-1".into(),
@@ -721,10 +702,7 @@ mod tests {
 
     #[test]
     fn fingerprint_is_deterministic() {
-        let plan = simple_plan(vec![
-            task("t1", "first"),
-            task("t2", "second"),
-        ]);
+        let plan = simple_plan(vec![task("t1", "first"), task("t2", "second")]);
         let fp1 = canonical_fingerprint(&plan);
         let fp2 = canonical_fingerprint(&plan);
         assert_eq!(fp1, fp2);
@@ -768,9 +746,12 @@ mod tests {
     #[test]
     fn rejects_wrong_schema_version() {
         let plan = simple_plan(vec![task("t1", "x")]);
-        let mut m = mutation(&plan, vec![PlanMutationOpV1::RemoveTask {
-            task_id: "t1".into(),
-        }]);
+        let mut m = mutation(
+            &plan,
+            vec![PlanMutationOpV1::RemoveTask {
+                task_id: "t1".into(),
+            }],
+        );
         m.schema_version = 2;
         let err = apply_mutation(&plan, &m, 100).unwrap_err();
         assert!(matches!(
@@ -797,12 +778,18 @@ mod tests {
     #[test]
     fn rejects_fingerprint_mismatch() {
         let plan = simple_plan(vec![task("t1", "x")]);
-        let mut m = mutation(&plan, vec![PlanMutationOpV1::RemoveTask {
-            task_id: "t1".into(),
-        }]);
+        let mut m = mutation(
+            &plan,
+            vec![PlanMutationOpV1::RemoveTask {
+                task_id: "t1".into(),
+            }],
+        );
         m.base_fingerprint = "0".repeat(64);
         let err = apply_mutation(&plan, &m, 100).unwrap_err();
-        assert!(matches!(err, PlanMutationErrorV1::FingerprintMismatch { .. }));
+        assert!(matches!(
+            err,
+            PlanMutationErrorV1::FingerprintMismatch { .. }
+        ));
     }
 
     // -----------------------------------------------------------------------
@@ -976,10 +963,7 @@ mod tests {
             }],
         );
         let err = apply_mutation(&plan, &m, 100).unwrap_err();
-        assert!(matches!(
-            err,
-            PlanMutationErrorV1::ReplaceIdMismatch { .. }
-        ));
+        assert!(matches!(err, PlanMutationErrorV1::ReplaceIdMismatch { .. }));
     }
 
     #[test]
@@ -1119,10 +1103,7 @@ mod tests {
         );
         let (new_plan, _) = apply_mutation(&plan, &m, 100).unwrap();
         assert_eq!(new_plan.tasks.len(), 2);
-        assert_eq!(
-            new_plan.tasks.get("t1").unwrap().title,
-            "part 1 reuses id"
-        );
+        assert_eq!(new_plan.tasks.get("t1").unwrap().title, "part 1 reuses id");
     }
 
     // -----------------------------------------------------------------------
@@ -1143,11 +1124,7 @@ mod tests {
         assert_eq!(new_plan.tasks.len(), 2); // t3 + t12
         assert!(new_plan.tasks.contains_key("t12"));
         assert!(new_plan.tasks.contains_key("t3"));
-        let mut expected = vec![
-            "t1".to_string(),
-            "t12".to_string(),
-            "t2".to_string(),
-        ];
+        let mut expected = vec!["t1".to_string(), "t12".to_string(), "t2".to_string()];
         expected.sort();
         assert_eq!(result.changed_task_ids, expected);
     }
@@ -1209,19 +1186,12 @@ mod tests {
         );
         let (new_plan, _) = apply_mutation(&plan, &m, 100).unwrap();
         assert_eq!(new_plan.tasks.len(), 1);
-        assert_eq!(
-            new_plan.tasks.get("t1").unwrap().title,
-            "merged reusing t1"
-        );
+        assert_eq!(new_plan.tasks.get("t1").unwrap().title, "merged reusing t1");
     }
 
     #[test]
     fn merge_rejects_colliding_id() {
-        let plan = simple_plan(vec![
-            task("t1", "a"),
-            task("t2", "b"),
-            task("t3", "c"),
-        ]);
+        let plan = simple_plan(vec![task("t1", "a"), task("t2", "b"), task("t3", "c")]);
         let m = mutation(
             &plan,
             vec![PlanMutationOpV1::MergeTasks {
@@ -1277,10 +1247,7 @@ mod tests {
 
     #[test]
     fn remove_dependency_succeeds() {
-        let plan = simple_plan(vec![
-            task("t1", "a"),
-            task_with_deps("t2", "b", &["t1"]),
-        ]);
+        let plan = simple_plan(vec![task("t1", "a"), task_with_deps("t2", "b", &["t1"])]);
         let m = mutation(
             &plan,
             vec![PlanMutationOpV1::RemoveDependency {
@@ -1289,14 +1256,7 @@ mod tests {
             }],
         );
         let (new_plan, _) = apply_mutation(&plan, &m, 100).unwrap();
-        assert!(
-            new_plan
-                .tasks
-                .get("t2")
-                .unwrap()
-                .dependencies
-                .is_empty()
-        );
+        assert!(new_plan.tasks.get("t2").unwrap().dependencies.is_empty());
     }
 
     // -----------------------------------------------------------------------
@@ -1325,11 +1285,7 @@ mod tests {
 
     #[test]
     fn rejects_transitive_cycle() {
-        let plan = simple_plan(vec![
-            task("t1", "a"),
-            task("t2", "b"),
-            task("t3", "c"),
-        ]);
+        let plan = simple_plan(vec![task("t1", "a"), task("t2", "b"), task("t3", "c")]);
         let m = mutation(
             &plan,
             vec![
@@ -1391,7 +1347,10 @@ mod tests {
         let err = apply_mutation(&plan, &m, 2).unwrap_err();
         assert!(matches!(
             err,
-            PlanMutationErrorV1::TaskLimitExceeded { limit: 2, actual: 3 }
+            PlanMutationErrorV1::TaskLimitExceeded {
+                limit: 2,
+                actual: 3
+            }
         ));
     }
 
@@ -1601,10 +1560,7 @@ mod tests {
         let json = serde_json::to_string_pretty(&plan).unwrap();
         let parsed: MutablePlanV1 = serde_json::from_str(&json).unwrap();
         assert_eq!(plan, parsed);
-        assert_eq!(
-            canonical_fingerprint(&plan),
-            canonical_fingerprint(&parsed)
-        );
+        assert_eq!(canonical_fingerprint(&plan), canonical_fingerprint(&parsed));
     }
 
     #[test]
@@ -1669,7 +1625,10 @@ mod tests {
         ];
         for e in &errors {
             let s = e.to_string();
-            assert!(!s.is_empty(), "Display should produce non-empty string for {e:?}");
+            assert!(
+                !s.is_empty(),
+                "Display should produce non-empty string for {e:?}"
+            );
         }
     }
 
@@ -1794,11 +1753,7 @@ mod tests {
 
     #[test]
     fn split_and_merge_in_same_mutation() {
-        let plan = simple_plan(vec![
-            task("t1", "a"),
-            task("t2", "b"),
-            task("t3", "c"),
-        ]);
+        let plan = simple_plan(vec![task("t1", "a"), task("t2", "b"), task("t3", "c")]);
         let m = mutation(
             &plan,
             vec![
@@ -1869,17 +1824,13 @@ mod tests {
         let (new_plan, _) = apply_mutation(&plan, &m, 100).unwrap();
         // Completed task is unchanged
         assert!(new_plan.tasks.get("t1").unwrap().completed);
-        assert_eq!(
-            new_plan.tasks.get("t2").unwrap().title,
-            "revised pending"
-        );
+        assert_eq!(new_plan.tasks.get("t2").unwrap().title, "revised pending");
     }
 
     #[test]
     fn metadata_preserved_through_mutation() {
         let mut t = task("t1", "with meta");
-        t.metadata
-            .insert("key".into(), "value".into());
+        t.metadata.insert("key".into(), "value".into());
         let plan = simple_plan(vec![t]);
         let m = mutation(
             &plan,
@@ -1904,10 +1855,7 @@ mod tests {
     fn author_kind_serde() {
         let user = MutationAuthorKind::User;
         let controller = MutationAuthorKind::Controller;
-        assert_eq!(
-            serde_json::to_string(&user).unwrap(),
-            "\"user\""
-        );
+        assert_eq!(serde_json::to_string(&user).unwrap(), "\"user\"");
         assert_eq!(
             serde_json::to_string(&controller).unwrap(),
             "\"controller\""
@@ -1941,15 +1889,14 @@ mod prop_tests {
     }
 
     fn arb_task() -> impl Strategy<Value = MutableTaskV1> {
-        (arb_task_id(), "[a-z ]{1,20}")
-            .prop_map(|(id, title)| MutableTaskV1 {
-                id,
-                title,
-                description: String::new(),
-                dependencies: BTreeSet::new(),
-                metadata: BTreeMap::new(),
-                completed: false,
-            })
+        (arb_task_id(), "[a-z ]{1,20}").prop_map(|(id, title)| MutableTaskV1 {
+            id,
+            title,
+            description: String::new(),
+            dependencies: BTreeSet::new(),
+            metadata: BTreeMap::new(),
+            completed: false,
+        })
     }
 
     proptest! {
@@ -1965,8 +1912,8 @@ mod prop_tests {
             let plan = MutablePlanV1 { plan_id, tasks: task_map };
             let fp1 = canonical_fingerprint(&plan);
             let fp2 = canonical_fingerprint(&plan);
-            prop_assert_eq!(fp1, fp2);
             prop_assert_eq!(fp1.len(), 64);
+            prop_assert_eq!(fp1, fp2);
         }
 
         #[test]
@@ -2030,10 +1977,7 @@ mod prop_tests {
         }
     }
 
-    fn mutation(
-        base: &MutablePlanV1,
-        ops: Vec<PlanMutationOpV1>,
-    ) -> PlanMutationV1 {
+    fn mutation(base: &MutablePlanV1, ops: Vec<PlanMutationOpV1>) -> PlanMutationV1 {
         PlanMutationV1 {
             schema_version: 1,
             mutation_id: "prop-mut".into(),

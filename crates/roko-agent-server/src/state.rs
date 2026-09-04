@@ -14,9 +14,7 @@ use roko_agent::chat_types::{
     ChatRequest, ChatResponse, FinishReason, RequestOptions, ResponseMetadata, SessionState,
     ToolChoice,
 };
-use roko_agent::tool_loop::{
-    LlmBackend, StreamEvent, StreamEventKind, TurnConfig, collect_stream_to_response,
-};
+use roko_agent::tool_loop::{LlmBackend, StreamEvent, TurnConfig, collect_stream_to_response};
 use roko_agent::translate::{BackendResponse, RenderedTools, normalize_finish_reason};
 use roko_chain::ChainClient;
 use roko_core::obs::LogScrubber;
@@ -106,7 +104,7 @@ impl DispatchLike for BackendMessageDispatcher {
     async fn dispatch_streaming(
         &self,
         request: ChatRequest,
-        event_tx: mpsc::UnboundedSender<StreamEvent>,
+        _event_tx: mpsc::UnboundedSender<StreamEvent>,
     ) -> Result<ChatResponse, SidecarDispatchError> {
         let messages = request
             .messages

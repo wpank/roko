@@ -239,6 +239,15 @@ pub struct PreparedGraphCheckpoint {
     cost_ledger: Option<GraphCostLedgerCheckpoint>,
 }
 
+impl std::fmt::Debug for PreparedGraphCheckpoint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedGraphCheckpoint")
+            .field("paths", &self.paths)
+            .field("replayed_entries", &self.replayed_entries)
+            .finish_non_exhaustive()
+    }
+}
+
 impl PreparedGraphCheckpoint {
     /// Run ID shared by telemetry, the manifest, and JSONL records.
     #[must_use]
@@ -349,9 +358,9 @@ impl PreparedGraphCheckpoint {
         correlation_id: String,
     ) -> Result<&ReceiptLedgerEntry> {
         let now = unix_ms();
-        if let Some(existing) = self.manifest.receipts.get(&idempotency_key) {
+        if self.manifest.receipts.contains_key(&idempotency_key) {
             // Already at or past Prepared: idempotent success.
-            return Ok(existing);
+            return Ok(self.manifest.receipts.get(&idempotency_key).unwrap());
         }
         let entry = ReceiptLedgerEntry {
             idempotency_key: idempotency_key.clone(),
@@ -362,12 +371,10 @@ impl PreparedGraphCheckpoint {
             updated_at_ms: now,
             last_error: None,
         };
-        self.manifest.receipts.insert(idempotency_key.clone(), entry);
-        Ok(self
-            .manifest
+        self.manifest
             .receipts
-            .get(&idempotency_key)
-            .expect("just inserted"))
+            .insert(idempotency_key.clone(), entry);
+        Ok(self.manifest.receipts.get(&idempotency_key).unwrap())
     }
 
     /// Transition a receipt from `Prepared` to `Committed`.
@@ -389,9 +396,7 @@ impl PreparedGraphCheckpoint {
             .manifest
             .receipts
             .get_mut(idempotency_key)
-            .ok_or_else(|| {
-                anyhow::anyhow!("receipt '{idempotency_key}' not found in ledger")
-            })?;
+            .ok_or_else(|| anyhow::anyhow!("receipt '{idempotency_key}' not found in ledger"))?;
 
         match entry.state {
             ReceiptState::Prepared => {
@@ -426,9 +431,7 @@ impl PreparedGraphCheckpoint {
             .manifest
             .receipts
             .get_mut(idempotency_key)
-            .ok_or_else(|| {
-                anyhow::anyhow!("receipt '{idempotency_key}' not found in ledger")
-            })?;
+            .ok_or_else(|| anyhow::anyhow!("receipt '{idempotency_key}' not found in ledger"))?;
 
         match entry.state {
             ReceiptState::Prepared => {
@@ -480,9 +483,7 @@ impl PreparedGraphCheckpoint {
             .manifest
             .receipts
             .get_mut(idempotency_key)
-            .ok_or_else(|| {
-                anyhow::anyhow!("receipt '{idempotency_key}' not found in ledger")
-            })?;
+            .ok_or_else(|| anyhow::anyhow!("receipt '{idempotency_key}' not found in ledger"))?;
         entry.last_error = Some(error.into());
         entry.updated_at_ms = unix_ms();
         Ok(())
@@ -1050,9 +1051,8 @@ mod tests {
     fn fresh_checkpoint_has_v3_schema_and_empty_extensions() {
         let dir = tempdir().expect("tempdir");
         let graph = graph("p", 1);
-        let checkpoint =
-            prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
-                .expect("fresh checkpoint");
+        let checkpoint = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("fresh checkpoint");
         assert!(checkpoint.extensions().is_empty());
         assert!(checkpoint.receipts().is_empty());
     }
@@ -1097,7 +1097,9 @@ mod tests {
             value: serde_json::json!({}),
         };
         checkpoint.register_extension(ext.clone()).expect("first");
-        checkpoint.register_extension(ext).expect("idempotent second");
+        checkpoint
+            .register_extension(ext)
+            .expect("idempotent second");
         assert_eq!(checkpoint.extensions().len(), 1);
     }
 
@@ -1173,9 +1175,7 @@ mod tests {
             .expect("idempotent prepare");
         assert_eq!(entry.state, ReceiptState::Prepared);
 
-        checkpoint
-            .commit_receipt("r1", None)
-            .expect("commit");
+        checkpoint.commit_receipt("r1", None).expect("commit");
         // Repeat commit is idempotent.
         let entry = checkpoint
             .commit_receipt("r1", None)
@@ -1184,9 +1184,7 @@ mod tests {
 
         checkpoint.settle_receipt("r1").expect("settle");
         // Repeat settle is idempotent.
-        let entry = checkpoint
-            .settle_receipt("r1")
-            .expect("idempotent settle");
+        let entry = checkpoint.settle_receipt("r1").expect("idempotent settle");
         assert_eq!(entry.state, ReceiptState::Settled);
     }
 
@@ -1282,8 +1280,7 @@ mod tests {
 
         // Read, downgrade to v2 (remove extensions/receipts), and rewrite.
         let bytes = std::fs::read(&manifest_path).expect("read manifest");
-        let mut value: serde_json::Value =
-            serde_json::from_slice(&bytes).expect("parse manifest");
+        let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("parse manifest");
         value["schema_version"] = serde_json::json!(2);
         value.as_object_mut().unwrap().remove("extensions");
         value.as_object_mut().unwrap().remove("receipts");
@@ -1294,9 +1291,8 @@ mod tests {
         .expect("write v2 manifest");
 
         // Resume should succeed with in-memory migration to v3.
-        let resumed =
-            prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
-                .expect("resume v2 manifest");
+        let resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("resume v2 manifest");
         assert_eq!(resumed.replayed_entries(), 1);
         assert!(resumed.extensions().is_empty());
         assert!(resumed.receipts().is_empty());
@@ -1307,16 +1303,14 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let graph = graph("p", 1);
 
-        let checkpoint =
-            prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
-                .expect("fresh checkpoint");
+        let checkpoint = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("fresh checkpoint");
         let manifest_path = checkpoint.paths().manifest.clone();
         drop(checkpoint);
 
         // Rewrite as v99 (unsupported).
         let bytes = std::fs::read(&manifest_path).expect("read manifest");
-        let mut value: serde_json::Value =
-            serde_json::from_slice(&bytes).expect("parse manifest");
+        let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("parse manifest");
         value["schema_version"] = serde_json::json!(99);
         std::fs::write(
             &manifest_path,
@@ -1324,9 +1318,8 @@ mod tests {
         )
         .expect("write v99 manifest");
 
-        let err =
-            prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
-                .expect_err("unsupported version must fail");
+        let err = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect_err("unsupported version must fail");
         assert!(err.to_string().contains("unsupported"));
     }
 
@@ -1335,16 +1328,14 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let graph = graph("p", 1);
 
-        let checkpoint =
-            prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
-                .expect("fresh checkpoint");
+        let checkpoint = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("fresh checkpoint");
         let manifest_path = checkpoint.paths().manifest.clone();
         drop(checkpoint);
 
         // Rewrite as v1 (below minimum).
         let bytes = std::fs::read(&manifest_path).expect("read manifest");
-        let mut value: serde_json::Value =
-            serde_json::from_slice(&bytes).expect("parse manifest");
+        let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("parse manifest");
         value["schema_version"] = serde_json::json!(1);
         std::fs::write(
             &manifest_path,
@@ -1352,9 +1343,8 @@ mod tests {
         )
         .expect("write v1 manifest");
 
-        let err =
-            prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
-                .expect_err("v1 schema must fail closed");
+        let err = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect_err("v1 schema must fail closed");
         assert!(err.to_string().contains("unsupported"));
     }
 
@@ -1389,9 +1379,8 @@ mod tests {
         checkpoint.finish(false).expect("finish");
 
         // Resume and verify extensions and receipts survived.
-        let resumed =
-            prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
-                .expect("resume checkpoint");
+        let resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("resume checkpoint");
         let ext = resumed
             .extension(WORKSPACE_ATTEMPT_EXTENSION)
             .expect("extension survived resume");

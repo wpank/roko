@@ -16,8 +16,8 @@ use roko_fs::RokoLayout;
 
 use crate::agent::{Agent, AgentResult, derived_output};
 use crate::multimodal::{anthropic_messages, gemini_messages, openai_messages};
-use crate::tool_loop::StreamEvent;
 use crate::task_runner::task_id_from_context;
+use crate::tool_loop::StreamEvent;
 use roko_core::{ModelInputMessage, validate_model_input_messages};
 
 use super::{StopReason, ToolLoop, ToolLoopOutput, ToolLoopTurnTrace};
@@ -556,7 +556,7 @@ mod tests {
                 .iter()
                 .map(|(call, result)| {
                     let content = match result {
-                        ToolResult::Ok { content, .. } => content.clone(),
+                        ToolResult::Ok { .. } => result.text_content(),
                         ToolResult::Err(err) => format!("error: {err}"),
                     };
                     serde_json::json!({

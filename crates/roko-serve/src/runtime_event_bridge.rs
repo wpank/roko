@@ -46,10 +46,7 @@ pub struct RuntimeEventBridge {
 impl RuntimeEventBridge {
     /// Create a new bridge.
     #[must_use]
-    pub fn new(
-        projector: Arc<RuntimeEventDashboardProjector>,
-        sse: Arc<SseAdapter>,
-    ) -> Self {
+    pub fn new(projector: Arc<RuntimeEventDashboardProjector>, sse: Arc<SseAdapter>) -> Self {
         Self { projector, sse }
     }
 
@@ -146,9 +143,7 @@ impl RuntimeEventBridge {
 mod tests {
     use chrono::Utc;
 
-    use roko_core::runtime_event::{
-        RuntimeEvent, RuntimeEventEnvelope, RuntimeEventMode,
-    };
+    use roko_core::runtime_event::{RuntimeEvent, RuntimeEventEnvelope, RuntimeEventMode};
 
     use super::*;
 

@@ -216,7 +216,9 @@ pub enum WorkspaceError {
 
     /// The requested attempt already has an active lease with a different
     /// fingerprint, indicating a concurrent ownership conflict.
-    #[error("ownership conflict for {attempt_id}: existing fingerprint {existing}, requested {requested}")]
+    #[error(
+        "ownership conflict for {attempt_id}: existing fingerprint {existing}, requested {requested}"
+    )]
     OwnershipConflict {
         /// The attempt that owns the conflicting lease.
         attempt_id: WorkspaceAttemptId,
@@ -420,9 +422,7 @@ pub mod fake {
         ///
         /// This is the fake equivalent of the CLI manager's batch reconciliation
         /// and prune facilities. It never removes an unproved path.
-        pub async fn reconcile_all(
-            &self,
-        ) -> Vec<(WorkspaceLease, WorkspaceReconcileResult)> {
+        pub async fn reconcile_all(&self) -> Vec<(WorkspaceLease, WorkspaceReconcileResult)> {
             let snapshot: Vec<WorkspaceLease> = self
                 .leases
                 .lock()
@@ -556,9 +556,7 @@ pub mod fake {
                     WorkspaceLeaseState::Retained => {
                         Ok(WorkspaceReconcileResult::Orphaned(existing.clone()))
                     }
-                    WorkspaceLeaseState::Released => {
-                        Ok(WorkspaceReconcileResult::AlreadyReleased)
-                    }
+                    WorkspaceLeaseState::Released => Ok(WorkspaceReconcileResult::AlreadyReleased),
                 },
                 None => Ok(WorkspaceReconcileResult::Orphaned(lease.clone())),
             }
@@ -583,9 +581,9 @@ pub mod fake {
             policy: WorkspaceReleasePolicy,
         ) -> Result<WorkspaceLeaseState, WorkspaceError> {
             let mut guard = self.leases.lock();
-            let entry = guard.get_mut(&lease.lease_fingerprint).ok_or_else(|| {
-                WorkspaceError::LeaseNotFound(lease.lease_id.clone())
-            })?;
+            let entry = guard
+                .get_mut(&lease.lease_fingerprint)
+                .ok_or_else(|| WorkspaceError::LeaseNotFound(lease.lease_id.clone()))?;
 
             let terminal_state = match policy {
                 WorkspaceReleasePolicy::Delete => WorkspaceLeaseState::Released,
@@ -605,14 +603,11 @@ pub mod fake {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::fake::InMemoryWorkspaceProvider;
+    use super::*;
 
     fn test_provider() -> InMemoryWorkspaceProvider {
-        InMemoryWorkspaceProvider::new(
-            PathBuf::from("/repo"),
-            PathBuf::from("/repo/.worktrees"),
-        )
+        InMemoryWorkspaceProvider::new(PathBuf::from("/repo"), PathBuf::from("/repo/.worktrees"))
     }
 
     fn attempt(plan: &str, task: &str, n: u32) -> WorkspaceAttemptId {
@@ -782,8 +777,7 @@ mod tests {
         }
 
         // Verify all paths are unique.
-        let paths: std::collections::HashSet<_> =
-            leases.iter().map(|l| l.path.clone()).collect();
+        let paths: std::collections::HashSet<_> = leases.iter().map(|l| l.path.clone()).collect();
         assert_eq!(paths.len(), 10);
 
         // Verify all branches are unique.
@@ -951,10 +945,9 @@ mod tests {
         let lease1 = provider.reset_for_retry(&lease0, &id1).await.unwrap();
         let lease2 = provider.reset_for_retry(&lease1, &id2).await.unwrap();
 
-        let all_paths: std::collections::HashSet<_> =
-            [&lease0.path, &lease1.path, &lease2.path]
-                .into_iter()
-                .collect();
+        let all_paths: std::collections::HashSet<_> = [&lease0.path, &lease1.path, &lease2.path]
+            .into_iter()
+            .collect();
         assert_eq!(all_paths.len(), 3, "every retry must get a unique path");
     }
 
@@ -1011,9 +1004,12 @@ mod tests {
             .collect();
 
         // All 20 leases must have unique paths.
-        let paths: std::collections::HashSet<_> =
-            leases.iter().map(|l| l.path.clone()).collect();
-        assert_eq!(paths.len(), 20, "concurrent acquires must yield unique paths");
+        let paths: std::collections::HashSet<_> = leases.iter().map(|l| l.path.clone()).collect();
+        assert_eq!(
+            paths.len(),
+            20,
+            "concurrent acquires must yield unique paths"
+        );
 
         // All 20 leases must have unique branches.
         let branches: std::collections::HashSet<_> =
@@ -1025,9 +1021,12 @@ mod tests {
         );
 
         // All 20 leases must have unique lease IDs.
-        let ids: std::collections::HashSet<_> =
-            leases.iter().map(|l| l.lease_id.clone()).collect();
-        assert_eq!(ids.len(), 20, "concurrent acquires must yield unique lease IDs");
+        let ids: std::collections::HashSet<_> = leases.iter().map(|l| l.lease_id.clone()).collect();
+        assert_eq!(
+            ids.len(),
+            20,
+            "concurrent acquires must yield unique lease IDs"
+        );
     }
 
     // -- WorkspaceReconcileResult serde ---------------------------------------
@@ -1094,7 +1093,11 @@ mod tests {
             .unwrap();
 
         let results = provider.reconcile_all().await;
-        assert_eq!(results.len(), 3, "reconcile_all must return all tracked leases");
+        assert_eq!(
+            results.len(),
+            3,
+            "reconcile_all must return all tracked leases"
+        );
 
         // Verify the mix of states.
         let live_count = results

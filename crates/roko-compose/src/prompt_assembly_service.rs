@@ -8,7 +8,7 @@ use roko_core::foundation::{PromptAssembler, PromptSpec};
 use roko_core::{AgentRole, Result};
 use roko_learn::episode_logger::{Episode, EpisodeLogger};
 use roko_learn::playbook::{PlaybookStore, QueryContext};
-use roko_neuro::{KnowledgeEntry, KnowledgeKind, KnowledgeTier, NeuroStore};
+use roko_neuro::{KnowledgeEntry, KnowledgeKind, KnowledgeTier};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -50,20 +50,8 @@ where
     }
 }
 
-/// Blanket impl: any `NeuroStore` also implements `KnowledgeQuery` by
-/// serializing its entries to JSON values.
-impl<T> roko_core::KnowledgeQuery for T
-where
-    T: NeuroStore + Send + Sync,
-{
-    fn query_knowledge(&self, topic: &str, limit: usize) -> roko_core::Result<Vec<serde_json::Value>> {
-        let entries = NeuroStore::query(self, topic, limit)?;
-        Ok(entries
-            .into_iter()
-            .filter_map(|e| serde_json::to_value(e).ok())
-            .collect())
-    }
-}
+// Note: The blanket impl `NeuroStore -> KnowledgeQuery` lives in roko-neuro
+// (next to the NeuroStore trait definition) to satisfy the orphan rule.
 
 /// Service that assembles system prompts via the 9-layer `SystemPromptBuilder`.
 ///
@@ -139,7 +127,7 @@ impl PromptAssemblyService {
     #[must_use]
     pub fn with_knowledge_store<T>(mut self, store: Arc<T>) -> Self
     where
-        T: NeuroStore + Send + Sync + 'static,
+        T: roko_core::KnowledgeQuery + 'static,
     {
         self.knowledge_store = Some(store);
         self
@@ -1061,6 +1049,7 @@ mod tests {
                 cost_usd: 0.01,
                 latency_ms: 1500,
                 success: true,
+                error_class: None,
             })
             .await
             .unwrap();

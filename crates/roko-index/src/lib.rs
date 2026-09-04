@@ -46,15 +46,15 @@ pub use graph::{
 };
 pub use hdc::{HdcFingerprint, fingerprint_file, fingerprint_symbol, similarity};
 pub use parser::{SourceFile, parse_source};
-pub use symbol::{SymbolId, SymbolRef, find_symbol};
-pub use workspace::{
-    AssembledContext, CallGraph, CallGraphDirection, CallGraphEdge, CodeIndex, CodeSlice,
-    ContextOverlay, EmbeddingQuery, FileAst, HdcQuery, ImplementationMatch, IndexQuery,
-    IndexStats, KeywordQuery, PrivacyConfig, ReferenceKind, ReferenceMatch, SearchResult,
-    SearchScope, SearchStrategy, StructuralQuery, SymbolContext, SymbolInfo, WorkspaceIndex,
-    WorkspaceMap, WorkspaceMapEntry,
-};
 #[cfg(feature = "sqlite")]
 pub use sqlite::{
     FileRecord, IndexMeta, IndexStore, IndexStoreError, RankingRecord, SqliteIndex, UpdateStats,
+};
+pub use symbol::{SymbolId, SymbolRef, find_symbol};
+pub use workspace::{
+    AssembledContext, CallGraph, CallGraphDirection, CallGraphEdge, CodeIndex, CodeSlice,
+    ContextOverlay, EmbeddingQuery, FileAst, HdcQuery, ImplementationMatch, IndexQuery, IndexStats,
+    KeywordQuery, PrivacyConfig, ReferenceKind, ReferenceMatch, SearchResult, SearchScope,
+    SearchStrategy, StructuralQuery, SymbolContext, SymbolInfo, WorkspaceIndex, WorkspaceMap,
+    WorkspaceMapEntry,
 };

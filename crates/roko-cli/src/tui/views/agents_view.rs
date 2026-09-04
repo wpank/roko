@@ -138,9 +138,7 @@ fn render_agent_roster(
     // whose label matches the selected role.  Falls back to showing all
     // agents when no agents match the selected role (so the roster is
     // never empty purely due to filtering).
-    let active_role_filter = ROLE_TABS
-        .get(view_state.sub_tab)
-        .map(|(role, _)| *role);
+    let active_role_filter = ROLE_TABS.get(view_state.sub_tab).map(|(role, _)| *role);
     let has_matching = active_role_filter.is_some_and(|role| {
         tui_state
             .agent_summaries
@@ -156,10 +154,7 @@ fn render_agent_roster(
         .agent_summaries
         .iter()
         .enumerate()
-        .filter(|(_, a)| {
-            effective_filter
-                .map_or(true, |role| a.label.eq_ignore_ascii_case(role))
-        })
+        .filter(|(_, a)| effective_filter.map_or(true, |role| a.label.eq_ignore_ascii_case(role)))
         .collect();
     agents.sort_by(|(idx_a, a), (idx_b, b)| {
         agent_status_rank(&a.status)
@@ -176,7 +171,10 @@ fn render_agent_roster(
     let role_suffix = effective_filter
         .map(|r| format!(" [{r}]"))
         .unwrap_or_default();
-    let title = format!(" Agents · {active_count}/{} active{role_suffix} ", agents.len());
+    let title = format!(
+        " Agents · {active_count}/{} active{role_suffix} ",
+        agents.len()
+    );
 
     let border_style = if focused {
         Theme::focused_border_style()
@@ -493,10 +491,7 @@ fn roster_row(row: RosterRow<'_>) -> Line<'static> {
         RosterDensity::Standard => {
             let id_w = 12.min(row.width / 3);
             let attempt_extra = if attempt_badge.is_empty() { 0 } else { 3 };
-            let task_w = row
-                .width
-                .saturating_sub(id_w + 20 + attempt_extra)
-                .max(1);
+            let task_w = row.width.saturating_sub(id_w + 20 + attempt_extra).max(1);
             spans.extend([
                 Span::styled(
                     format!("{:<id_w$}", truncate_middle(row.id, id_w)),
@@ -505,10 +500,7 @@ fn roster_row(row: RosterRow<'_>) -> Line<'static> {
                 Span::styled(format!(" {:<4} ", row.state_label), status_style),
             ]);
             if !attempt_badge.is_empty() {
-                spans.push(Span::styled(
-                    format!("{attempt_badge} "),
-                    attempt_style,
-                ));
+                spans.push(Span::styled(format!("{attempt_badge} "), attempt_style));
             }
             spans.extend([
                 Span::styled(
@@ -542,10 +534,7 @@ fn roster_row(row: RosterRow<'_>) -> Line<'static> {
                 Span::styled(format!(" {:<4} ", row.state_label), status_style),
             ]);
             if !attempt_badge.is_empty() {
-                spans.push(Span::styled(
-                    format!("{attempt_badge} "),
-                    attempt_style,
-                ));
+                spans.push(Span::styled(format!("{attempt_badge} "), attempt_style));
             }
             spans.extend([
                 Span::styled(
@@ -578,10 +567,7 @@ fn roster_header(width: usize, density: RosterDensity, theme: &Theme) -> Line<'s
             "   agent          model      state  task                 tokens   cost ctx"
         }
     };
-    Line::from(Span::styled(
-        truncate_middle(label, width),
-        theme.label(),
-    ))
+    Line::from(Span::styled(truncate_middle(label, width), theme.label()))
 }
 
 // ---------------------------------------------------------------------------
@@ -609,10 +595,7 @@ fn render_summary_line(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, 
             },
         ),
         Span::styled("  tokens: ", theme.label()),
-        Span::styled(
-            format_tokens(total_tokens),
-            theme.value(),
-        ),
+        Span::styled(format_tokens(total_tokens), theme.value()),
         Span::styled("  cost: ", theme.label()),
         Span::styled(
             if cost > 0.001 {
@@ -781,7 +764,8 @@ fn render_output_body(
             format!(" ({})", truncate_middle(&agent_model, 14))
         };
         format!(
-            "Output \u{00b7} {}{}{}", selected_id, model_part, attempt_suffix
+            "Output \u{00b7} {}{}{}",
+            selected_id, model_part, attempt_suffix
         )
     } else {
         let model_part = if agent_model.is_empty() {
@@ -793,7 +777,8 @@ fn render_output_body(
             .map(|t| format!(" \u{00b7} {}", truncate_middle(t, 32)))
             .unwrap_or_default();
         format!(
-            "Output \u{00b7} {}{}{}{}", selected_id, model_part, task_part, attempt_suffix
+            "Output \u{00b7} {}{}{}{}",
+            selected_id, model_part, task_part, attempt_suffix
         )
     };
 
@@ -884,8 +869,8 @@ fn render_output_body(
         .min(u16::MAX as usize);
     let scroll = tui_state.agent_scroll.unwrap_or(max_scroll).min(max_scroll);
     let is_following = tui_state.agent_scroll.is_none();
-    let is_agent_active = selected_agent
-        .is_some_and(|a| AgentStatus::from(a.status.as_str()).is_active());
+    let is_agent_active =
+        selected_agent.is_some_and(|a| AgentStatus::from(a.status.as_str()).is_active());
     let line_pos = scroll.saturating_add(visible_height).min(total_lines);
     let tail_indicator = if is_following {
         if is_agent_active {
@@ -918,12 +903,21 @@ fn render_output_body(
         let search_info = if search.pattern_error {
             Span::styled(
                 " [regex error] ",
-                Style::default().fg(theme.danger).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.danger)
+                    .add_modifier(Modifier::BOLD),
             )
         } else if search.match_count > 0 {
             Span::styled(
-                format!(" [/{} {}/{}] ", search.pattern, search.current_match + 1, search.match_count),
-                Style::default().fg(Theme::SAGE).add_modifier(Modifier::BOLD),
+                format!(
+                    " [/{} {}/{}] ",
+                    search.pattern,
+                    search.current_match + 1,
+                    search.match_count
+                ),
+                Style::default()
+                    .fg(Theme::SAGE)
+                    .add_modifier(Modifier::BOLD),
             )
         } else {
             Span::styled(
@@ -937,7 +931,13 @@ fn render_output_body(
     frame.render_widget(block, area);
 
     if output_lines.is_empty() {
-        render_pane_empty(frame, output_area, PaneEmpty::NoAgentOutput, theme, tui_state.atmosphere.frame_count as usize);
+        render_pane_empty(
+            frame,
+            output_area,
+            PaneEmpty::NoAgentOutput,
+            theme,
+            tui_state.atmosphere.frame_count as usize,
+        );
     } else {
         let paragraph = output_paragraph.scroll((scroll as u16, 0));
         frame.render_widget(paragraph, output_area);
@@ -1439,10 +1439,7 @@ fn render_route_metrics_bar(
                 usage_style,
             ),
             Span::styled("  ", Style::default()),
-            Span::styled(
-                truncate_middle(tier, 12),
-                theme.value(),
-            ),
+            Span::styled(truncate_middle(tier, 12), theme.value()),
         ])
     } else if area.width < 78 {
         Line::from(vec![
@@ -1460,10 +1457,7 @@ fn render_route_metrics_bar(
                 usage_style,
             ),
             Span::styled("  ·  ", theme.label()),
-            Span::styled(
-                truncate_middle(tier, 12),
-                theme.value(),
-            ),
+            Span::styled(truncate_middle(tier, 12), theme.value()),
         ])
     } else {
         Line::from(vec![

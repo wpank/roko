@@ -4,10 +4,10 @@
 //! returns a [`CostProjection`] with predicted input and output token counts and
 //! the resulting cost in USD.
 //!
-//! The pricing table used here is intentionally separate from the live
-//! [`CostTable`] that reads `roko.toml` model profiles; it provides hardcoded
-//! conservative defaults for use in contexts where a full config is not
-//! available (e.g. pre-flight CLI checks, TUI estimates).
+//! Pricing is resolved from the canonical shared registry
+//! ([`roko_core::config::model_registry::builtin_pricing`]) so projections
+//! stay in sync with the live cost tables and TUI. Local zero-cost overrides
+//! cover self-hosted models (llama, ollama, mistral).
 //!
 //! # Default output token assumption
 //!
@@ -43,7 +43,7 @@ const FALLBACK_INPUT_PER_K: f64 = 0.003;
 const FALLBACK_OUTPUT_PER_K: f64 = 0.015;
 
 /// Per-model pricing entry used by the local projection table.
-struct Pricing {
+struct ProjectionPricing {
     /// Cost in USD per 1 000 input tokens.
     input_per_k: f64,
     /// Cost in USD per 1 000 output tokens.
@@ -106,73 +106,37 @@ pub fn project_task_cost_with_output(
 
 // ── pricing table ─────────────────────────────────────────────────────────────
 
-/// Per-model pricing table.
+/// Resolve pricing for a model slug by delegating to the canonical shared
+/// registry ([`roko_core::config::model_registry::builtin_pricing`]).
 ///
-/// Entries are `(slug_prefix, input_per_k_usd, output_per_k_usd)`.
-/// Resolution uses prefix matching so slugs with date suffixes such as
-/// `"claude-sonnet-4-6-20250514"` still resolve to the `"claude-sonnet-4-6"`
-/// entry.
-///
-/// Prices are expressed per-1K tokens (not per-million) to keep the arithmetic
-/// readable at typical task scale.
-static PRICING_TABLE: &[(&str, f64, f64)] = &[
-    // Anthropic Claude models
-    ("claude-opus-4-6", 0.015, 0.075),
-    ("claude-sonnet-4-6", 0.003, 0.015),
-    ("claude-haiku-4-5", 0.0008, 0.004),
-    // GLM / ZhipuAI
-    ("glm-5.1", 0.0014, 0.0044),
-    ("glm-5", 0.001, 0.0032),
-    // Kimi
-    ("kimi-k2.5", 0.0006, 0.003),
-    // OpenAI GPT-5 series
-    ("gpt-5.4-mini", 0.0004, 0.0016),
-    ("gpt-5.4", 0.0025, 0.010),
-    ("gpt-5.2", 0.002, 0.008),
-    // Perplexity / Ollama (typically negligible or zero cost)
-    ("llama", 0.0, 0.0),
-    ("ollama", 0.0, 0.0),
-    ("mistral", 0.001, 0.003),
-];
-
-/// Resolve pricing for a model slug, using prefix matching.
-///
+/// The registry stores per-million rates; this function converts to per-1K.
 /// Falls back to [`FALLBACK_INPUT_PER_K`] / [`FALLBACK_OUTPUT_PER_K`] when
 /// no entry matches.
-fn resolve_pricing(slug: &str) -> Pricing {
-    // Try exact match first.
-    for &(prefix, inp, out) in PRICING_TABLE {
-        if slug == prefix {
-            return Pricing {
-                input_per_k: inp,
-                output_per_k: out,
-            };
-        }
+fn resolve_pricing(slug: &str) -> ProjectionPricing {
+    if let Some(reg) = roko_core::config::model_registry::builtin_pricing(slug) {
+        return ProjectionPricing {
+            input_per_k: reg.input_per_m / 1_000.0,
+            output_per_k: reg.output_per_m / 1_000.0,
+        };
     }
 
-    // Prefix match: the table key must be a proper prefix of the slug,
-    // separated by `-` or `.` at the boundary.
-    let mut best: Option<(usize, f64, f64)> = None;
-    for &(prefix, inp, out) in PRICING_TABLE {
-        if slug.len() > prefix.len()
-            && slug.starts_with(prefix)
-            && matches!(slug.as_bytes().get(prefix.len()), Some(b'-' | b'.'))
-        {
-            if best.map_or(true, |(len, _, _)| prefix.len() > len) {
-                best = Some((prefix.len(), inp, out));
-            }
-        }
+    // Local zero-cost overrides for self-hosted / local models.
+    let lower = slug.to_ascii_lowercase();
+    if lower.starts_with("llama") || lower.starts_with("ollama") {
+        return ProjectionPricing {
+            input_per_k: 0.0,
+            output_per_k: 0.0,
+        };
     }
-
-    if let Some((_, inp, out)) = best {
-        return Pricing {
-            input_per_k: inp,
-            output_per_k: out,
+    if lower.starts_with("mistral") {
+        return ProjectionPricing {
+            input_per_k: 0.001,
+            output_per_k: 0.003,
         };
     }
 
     // Unknown model — use conservative fallback.
-    Pricing {
+    ProjectionPricing {
         input_per_k: FALLBACK_INPUT_PER_K,
         output_per_k: FALLBACK_OUTPUT_PER_K,
     }

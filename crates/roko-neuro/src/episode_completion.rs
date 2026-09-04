@@ -112,6 +112,8 @@ impl DistillationBackend for GatewayDistillationBackend {
                 routing_hints: Vec::new(),
                 cache_policy: CachePolicy::Default,
                 tools: Vec::new(),
+                generation_settings: None,
+                mcp_config: None,
             })
             .await
             .context("call gateway distillation model")?;

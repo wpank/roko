@@ -23,11 +23,11 @@ use std::time::Duration;
 
 use roko_graph::delivery::{
     CompletionDeliveryReceiptV1, CompletionDeliveryRequest, CompletionDeliveryService,
-    CompletionDeliveryState, DeliveryError, DeliveryReceiptStore, ReleasePolicy,
-    DELIVERY_EXTENSION_KEY, delivery_extension_value,
+    CompletionDeliveryState, DELIVERY_EXTENSION_KEY, DeliveryError, DeliveryReceiptStore,
+    ReleasePolicy, delivery_extension_value,
 };
 use roko_graph::events::{
-    CommonFields, EventSeqCounter, GraphEventSink, GraphExecutionEvent, GRAPH_EVENT_SCHEMA_VERSION,
+    CommonFields, EventSeqCounter, GRAPH_EVENT_SCHEMA_VERSION, GraphEventSink, GraphExecutionEvent,
 };
 use tracing::{debug, info, warn};
 
@@ -97,7 +97,6 @@ impl PublicationBackend for NoOpPublicationBackend {
 /// Uses the existing `MergeQueue`, `PlanMerger`, and `GitHubWorkflow`
 /// services from the runner layer. Emits delivery events through an
 /// optional [`GraphEventSink`] at each state transition.
-#[derive(Debug)]
 pub struct CliCompletionDeliveryService {
     /// Thread-safe receipt store for idempotency.
     store: DeliveryReceiptStore,
@@ -117,8 +116,17 @@ pub struct CliCompletionDeliveryService {
     seq_counter: Arc<EventSeqCounter>,
 }
 
+impl std::fmt::Debug for CliCompletionDeliveryService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CliCompletionDeliveryService")
+            .field("workdir", &self.workdir)
+            .field("regression_timeout", &self.regression_timeout)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Builder configuration for [`CliCompletionDeliveryService`].
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CliDeliveryConfig {
     /// Working directory for merge and regression operations.
     pub workdir: PathBuf,
@@ -132,6 +140,15 @@ pub struct CliDeliveryConfig {
     pub publication_backend: Option<Arc<dyn PublicationBackend>>,
     /// Optional event sink for delivery progress events.
     pub event_sink: Option<Arc<dyn GraphEventSink>>,
+}
+
+impl std::fmt::Debug for CliDeliveryConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CliDeliveryConfig")
+            .field("workdir", &self.workdir)
+            .field("regression_timeout", &self.regression_timeout)
+            .finish_non_exhaustive()
+    }
 }
 
 impl CliDeliveryConfig {
@@ -200,9 +217,7 @@ impl CliCompletionDeliveryService {
     }
 
     /// Build an orchestrator-compatible `MergeRequest` from a delivery request.
-    fn to_merge_request(
-        request: &CompletionDeliveryRequest,
-    ) -> crate::orchestrator::MergeRequest {
+    fn to_merge_request(request: &CompletionDeliveryRequest) -> crate::orchestrator::MergeRequest {
         crate::orchestrator::MergeRequest::new(
             &request.plan_id,
             &request.branch,
@@ -212,15 +227,9 @@ impl CliCompletionDeliveryService {
     }
 
     /// Run the merge + regression phase using the configured backends.
-    async fn run_merge_regression(
-        &self,
-        request: &CompletionDeliveryRequest,
-    ) -> MergePhaseResult {
+    async fn run_merge_regression(&self, request: &CompletionDeliveryRequest) -> MergePhaseResult {
         let merge_req = Self::to_merge_request(request);
-        let merger_config = PlanMergerConfig::new(
-            self.workdir.clone(),
-            self.regression_timeout,
-        );
+        let merger_config = PlanMergerConfig::new(self.workdir.clone(), self.regression_timeout);
 
         // Step 1: Merge
         let merge_outcome = self.merge_backend.merge(&merge_req, &merger_config).await;
@@ -384,10 +393,7 @@ impl CliCompletionDeliveryService {
                 .try_acquire(&request.delivery_id)
                 .map_err(|blocked| DeliveryError::QueueRejected {
                     delivery_id: blocked.blocked_id,
-                    reason: format!(
-                        "merge slot held by delivery '{}'",
-                        blocked.holder_id
-                    ),
+                    reason: format!("merge slot held by delivery '{}'", blocked.holder_id),
                 })?;
 
             self.advance_and_emit(receipt, CompletionDeliveryState::Queued)
@@ -612,11 +618,7 @@ async fn git_head_oid(workdir: &std::path::Path) -> Option<String> {
         .await
         .ok()?;
     if output.status.success() {
-        Some(
-            String::from_utf8_lossy(&output.stdout)
-                .trim()
-                .to_string(),
-        )
+        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
     } else {
         None
     }
@@ -705,9 +707,7 @@ mod tests {
     impl StubPublicationBackend {
         fn ok() -> Self {
             Self {
-                result: Mutex::new(Ok(
-                    "https://github.com/org/repo/pull/42".to_string(),
-                )),
+                result: Mutex::new(Ok("https://github.com/org/repo/pull/42".to_string())),
             }
         }
         fn fail() -> Self {

@@ -1975,13 +1975,12 @@ pub async fn run_gate_once(
                             &verify_steps_for_retry,
                             verdict_publisher.clone(),
                         );
-                        let pipeline_retry =
-                            GatePipelineBuilder::from_config_with_execution(
-                                &gates_config,
-                                complexity,
-                                inputs_retry,
-                                config_retry,
-                            );
+                        let pipeline_retry = GatePipelineBuilder::from_config_with_execution(
+                            &gates_config,
+                            complexity,
+                            inputs_retry,
+                            config_retry,
+                        );
                         let command = canonical_commands.join(" && ");
                         let compile_permit = if canonical_uses_cargo {
                             match acquire_compile_ownership(
@@ -2908,6 +2907,7 @@ fn classify_failure_kind(verdicts: &[Verdict], output: &str) -> RunnerFailureKin
                     RunnerFailureKind::Resource | RunnerFailureKind::Transient => fallback,
                     RunnerFailureKind::Permanent
                     | RunnerFailureKind::Structural
+                    | RunnerFailureKind::ContextOverflow
                     | RunnerFailureKind::Unknown => RunnerFailureKind::Structural,
                 }
             }
@@ -2937,10 +2937,16 @@ fn classify_failure_kind(verdicts: &[Verdict], output: &str) -> RunnerFailureKin
 /// 2. `spawn_gate` worker body — the spawned task calls `Self::run`.
 /// 3. Preflight spawn branch in `event_loop.rs` — injects the same shared service.
 /// 4. Normal/plan-verify spawn branch in `event_loop.rs` — injects the same shared service.
-#[derive(Debug)]
 pub struct RunnerProductionGateAdapter {
     /// The injected shared gate service.
     service: Arc<dyn roko_gate::production_service::ProductionGateRunner>,
+}
+
+impl std::fmt::Debug for RunnerProductionGateAdapter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunnerProductionGateAdapter")
+            .finish_non_exhaustive()
+    }
 }
 
 impl RunnerProductionGateAdapter {
@@ -2983,12 +2989,7 @@ impl RunnerProductionGateAdapter {
             .unwrap_or_default();
 
         // Compute workspace fingerprint synchronously from the workdir.
-        let workspace_fingerprint = format!(
-            "{}:{}:{}",
-            plan_id,
-            task_id,
-            effect.generation
-        );
+        let workspace_fingerprint = format!("{}:{}:{}", plan_id, task_id, effect.generation);
 
         roko_gate::ProductionGateRequest {
             run_id: format!("{}:{}", plan_id, effect.generation),
@@ -3048,7 +3049,7 @@ impl RunnerProductionGateAdapter {
                     error_digest: rv
                         .failure_classification
                         .as_ref()
-                        .map(|fc| format!("{:?}", fc.kind)),
+                        .map(|fc| format!("{:?}", fc.primary)),
                     failure_kind,
                     rung_index: Some(rv.rung.as_index()),
                 }
@@ -3154,7 +3155,8 @@ impl RunnerProductionGateAdapter {
 pub fn default_gate_adapter() -> RunnerProductionGateAdapter {
     RunnerProductionGateAdapter::new(Arc::new(
         roko_gate::production_service::ProductionGateService::new(),
-    ) as Arc<dyn roko_gate::production_service::ProductionGateRunner>)
+    )
+        as Arc<dyn roko_gate::production_service::ProductionGateRunner>)
 }
 
 // ── Generated-test artifact store ───────────────────────────────────────
@@ -4622,8 +4624,7 @@ cargo_fix_enabled = false
 
     #[tokio::test]
     async fn adapter_run_delegates_to_service() {
-        let adapter =
-            RunnerProductionGateAdapter::new(Arc::new(FakeGateRunner { passed: true }));
+        let adapter = RunnerProductionGateAdapter::new(Arc::new(FakeGateRunner { passed: true }));
         let effect = gate_effect(GateCompletionKind::Gate);
         let completion = adapter
             .run(
@@ -4648,8 +4649,7 @@ cargo_fix_enabled = false
 
     #[tokio::test]
     async fn adapter_run_failing_service() {
-        let adapter =
-            RunnerProductionGateAdapter::new(Arc::new(FakeGateRunner { passed: false }));
+        let adapter = RunnerProductionGateAdapter::new(Arc::new(FakeGateRunner { passed: false }));
         let effect = gate_effect(GateCompletionKind::Gate);
         let completion = adapter
             .run(

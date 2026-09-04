@@ -166,9 +166,7 @@ pub fn build_crash_report(
 
         // Days since 1970-01-01 to Y-M-D (simplified leap year calculation).
         let (year, month, day) = epoch_days_to_ymd(days);
-        format!(
-            "{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z"
-        )
+        format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z")
     };
 
     CrashReport {
@@ -317,12 +315,7 @@ mod tests {
 
     #[test]
     fn build_crash_report_populates_os() {
-        let report = build_crash_report(
-            Some("test".to_string()),
-            None,
-            "0.1.0",
-            "1.96.1",
-        );
+        let report = build_crash_report(Some("test".to_string()), None, "0.1.0", "1.96.1");
         assert!(!report.os.is_empty());
         assert_eq!(report.version, "0.1.0");
         assert_eq!(report.rust_version, "1.96.1");

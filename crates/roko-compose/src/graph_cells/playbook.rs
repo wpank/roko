@@ -97,11 +97,9 @@ impl<P: PlaybookProvider> roko_graph::Cell for PlaybookCell<P> {
 
         let payload = PlaybookSections::new(scope, sections);
         let body = Body::from_json(&payload).map_err(|e| {
-            roko_core::error::RokoError::Internal(format!(
-                "playbook cell serialization: {e}"
-            ))
+            roko_core::error::RokoError::Store(format!("playbook cell serialization: {e}"))
         })?;
-        let signal = Signal::builder(Kind::Context).body(body).build();
+        let signal = Signal::builder(Kind::ContextPack).body(body).build();
         Ok(vec![signal])
     }
 }
@@ -112,7 +110,7 @@ fn extract_compose_request(input: &[Signal]) -> Result<ComposeRequest> {
             return Ok(req);
         }
     }
-    Err(roko_core::error::RokoError::Internal(
+    Err(roko_core::error::RokoError::Store(
         "PlaybookCell: no ComposeRequest found in input signals".into(),
     ))
 }
@@ -121,13 +119,14 @@ fn extract_compose_request(input: &[Signal]) -> Result<ComposeRequest> {
 mod tests {
     use super::*;
     use roko_core::AgentRole;
+    use roko_graph::Cell;
 
     #[tokio::test]
     async fn noop_produces_empty() {
         let cell = PlaybookCell::default();
         let req = ComposeRequest::new("r1", "p1", "t1", AgentRole::Implementer);
         let body = Body::from_json(&req).unwrap();
-        let signal = Signal::builder(Kind::Context).body(body).build();
+        let signal = Signal::builder(Kind::ContextPack).body(body).build();
 
         let result = cell
             .execute(vec![signal], &roko_graph::CellContext::new())

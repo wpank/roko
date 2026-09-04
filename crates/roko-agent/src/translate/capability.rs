@@ -61,7 +61,8 @@ pub struct ModelCapabilities {
 /// profile into a smaller, translator-facing shape.
 #[must_use]
 pub fn capabilities_for(slug: &str) -> ModelCapabilities {
-    if slug.starts_with("glm-5") || slug == "glm-5.1" {
+    // GLM family (Zhipu) — family-level: glm-5, glm-6, …
+    if slug.starts_with("glm-") {
         return ModelCapabilities {
             supports_tools: true,
             supports_parallel_tool_calls: true,
@@ -76,7 +77,8 @@ pub fn capabilities_for(slug: &str) -> ModelCapabilities {
         };
     }
 
-    if slug.starts_with("kimi-k2") {
+    // Kimi family (Moonshot) — family-level: kimi-k2, kimi-k3, …
+    if slug.starts_with("kimi-") {
         return ModelCapabilities {
             supports_tools: true,
             supports_parallel_tool_calls: true,
@@ -497,5 +499,27 @@ mod tests {
         let _: Arc<dyn Translator + Send + Sync> = translator_for("claude-opus-4-6");
         let _: Arc<dyn Translator + Send + Sync> = translator_for("gpt-5");
         let _: Arc<dyn Translator + Send + Sync> = translator_for("random-model-123");
+    }
+
+    #[test]
+    fn capabilities_future_glm_generations() {
+        let caps = capabilities_for("glm-6");
+        assert!(caps.supports_tools);
+        assert_eq!(caps.tool_format, ToolFormat::OpenAiJson);
+        assert!(caps.supports_thinking);
+
+        let caps = capabilities_for("glm-7-chat");
+        assert!(caps.supports_tools);
+    }
+
+    #[test]
+    fn capabilities_future_kimi_generations() {
+        let caps = capabilities_for("kimi-k3");
+        assert!(caps.supports_tools);
+        assert_eq!(caps.tool_format, ToolFormat::OpenAiJson);
+        assert!(caps.supports_thinking);
+
+        let caps = capabilities_for("kimi-k4-turbo");
+        assert!(caps.supports_tools);
     }
 }

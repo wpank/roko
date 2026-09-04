@@ -1269,14 +1269,29 @@ mod tests {
         let filtered = filter_tools_by_ceiling(tools, &ceiling);
 
         let names: Vec<&str> = filtered.iter().map(|t| t.name.as_str()).collect();
-        assert!(names.contains(&"read_file"), "read_file should pass research ceiling");
+        assert!(
+            names.contains(&"read_file"),
+            "read_file should pass research ceiling"
+        );
         assert!(names.contains(&"glob"), "glob should pass research ceiling");
         assert!(names.contains(&"grep"), "grep should pass research ceiling");
         assert!(names.contains(&"ls"), "ls should pass research ceiling");
-        assert!(names.contains(&"web_fetch"), "web_fetch should pass research ceiling");
-        assert!(!names.contains(&"write_file"), "write_file should be excluded by research ceiling");
-        assert!(!names.contains(&"edit_file"), "edit_file should be excluded by research ceiling");
-        assert!(!names.contains(&"bash"), "bash should be excluded by research ceiling");
+        assert!(
+            names.contains(&"web_fetch"),
+            "web_fetch should pass research ceiling"
+        );
+        assert!(
+            !names.contains(&"write_file"),
+            "write_file should be excluded by research ceiling"
+        );
+        assert!(
+            !names.contains(&"edit_file"),
+            "edit_file should be excluded by research ceiling"
+        );
+        assert!(
+            !names.contains(&"bash"),
+            "bash should be excluded by research ceiling"
+        );
     }
 
     #[test]
@@ -1293,7 +1308,10 @@ mod tests {
         assert!(!names.contains(&"write_file"));
         assert!(!names.contains(&"edit_file"));
         assert!(!names.contains(&"bash"));
-        assert!(!names.contains(&"web_fetch"), "web_fetch should be excluded by status ceiling (no network)");
+        assert!(
+            !names.contains(&"web_fetch"),
+            "web_fetch should be excluded by status ceiling (no network)"
+        );
     }
 
     #[test]

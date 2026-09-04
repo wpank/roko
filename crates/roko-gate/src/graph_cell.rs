@@ -169,11 +169,9 @@ impl GraphEventProgressSink {
     #[must_use]
     pub fn rung_progress(event: &GatePipelineProgress) -> (u32, u32) {
         match event {
-            GatePipelineProgress::RungStarted { rung, .. } => (rung.as_index() as u32, 7),
-            GatePipelineProgress::RungOutput { rung, .. } => (rung.as_index() as u32, 7),
-            GatePipelineProgress::RungCompleted { rung, .. } => {
-                (rung.as_index() as u32 + 1, 7)
-            }
+            GatePipelineProgress::RungStarted { rung, .. } => (rung.as_index(), 7),
+            GatePipelineProgress::RungOutput { rung, .. } => (rung.as_index(), 7),
+            GatePipelineProgress::RungCompleted { rung, .. } => (rung.as_index() + 1, 7),
             GatePipelineProgress::PipelineCompleted { .. } => (7, 7),
         }
     }
@@ -257,14 +255,9 @@ impl GatePipelineCell {
 
     /// Decode a `GatePipelineCellInput` from an input Signal's JSON body.
     fn decode_input(signal: &Signal) -> roko_core::Result<GatePipelineCellInput> {
-        signal
-            .body
-            .as_json::<GatePipelineCellInput>()
-            .map_err(|e| {
-                roko_core::RokoError::Invalid(format!(
-                    "GatePipelineCell: failed to decode input: {e}"
-                ))
-            })
+        signal.body.as_json::<GatePipelineCellInput>().map_err(|e| {
+            roko_core::RokoError::Invalid(format!("GatePipelineCell: failed to decode input: {e}"))
+        })
     }
 
     /// Encode a `ProductionGateVerdictV1` into an output Signal.
@@ -297,7 +290,7 @@ impl roko_core::Cell for GatePipelineCell {
 
     fn estimated_duration(&self) -> Option<Duration> {
         // Gate pipelines typically take 30s to 15 minutes.
-        Some(Duration::from_secs(120))
+        Some(Duration::from_mins(2))
     }
 }
 
@@ -366,8 +359,9 @@ mod tests {
     };
     use crate::rung_selector::Rung;
     use async_trait::async_trait;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use roko_core::Cell;
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     // ── Mock runners ─────────────────────────────────────────────────────
 
@@ -515,9 +509,7 @@ mod tests {
             _request: ProductionGateRequest,
             _progress_sink: Arc<dyn ProgressSink>,
         ) -> roko_core::Result<ProductionGateVerdictV1> {
-            Err(roko_core::RokoError::Invalid(
-                "simulated gate error".into(),
-            ))
+            Err(roko_core::RokoError::Invalid("simulated gate error".into()))
         }
     }
 
@@ -934,8 +926,8 @@ mod tests {
     async fn adaptive_thresholds_are_forwarded() {
         let adaptive = AdaptiveThresholds::default();
         let runner = MockProgressRunner::new(vec![(Rung::Compile, RungState::Passed)]);
-        let cell = GatePipelineCell::new(Arc::new(runner))
-            .with_adaptive_thresholds(adaptive.clone());
+        let cell =
+            GatePipelineCell::new(Arc::new(runner)).with_adaptive_thresholds(adaptive.clone());
 
         let output = cell
             .execute_gate(input_signal())
@@ -1090,10 +1082,7 @@ mod tests {
         assert_eq!(decoded.baseline_fingerprint.as_deref(), Some("baseline-fp"));
 
         let request = decoded.into_request(CancellationToken::new(), None);
-        assert_eq!(
-            request.baseline_fingerprint.as_deref(),
-            Some("baseline-fp")
-        );
+        assert_eq!(request.baseline_fingerprint.as_deref(), Some("baseline-fp"));
     }
 
     // ── Integration: gate failure prevents dependent execution ───────────

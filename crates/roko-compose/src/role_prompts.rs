@@ -422,7 +422,10 @@ impl RoleSystemPromptSpec {
     ) -> SystemPromptBuilder {
         let mut builder = SystemPromptBuilder::new(role_identity_for(self.role))
             .with_conventions(self.conventions_text())
-            .with_tools(tool_allowlist_instructions(&self.tool_allowlist_csv, self.has_mcp_tools))
+            .with_tools(tool_allowlist_instructions(
+                &self.tool_allowlist_csv,
+                self.has_mcp_tools,
+            ))
             .with_anti_patterns(self.anti_patterns())
             .with_affect_state(self.affect_state);
 
@@ -430,6 +433,10 @@ impl RoleSystemPromptSpec {
             adjusted_adaptive_budget_for(self.role, self.complexity, self.context_window_tokens)
                 .budget,
         );
+
+        if let Some(ref hint) = self.model_hint {
+            builder = builder.with_model_hint(hint);
+        }
 
         if let Some(registry) = section_effectiveness {
             builder = builder.with_section_effectiveness(format!("{:?}", self.role), registry);
@@ -1109,15 +1116,34 @@ mod tests {
     }
 
     #[test]
-    fn model_hint_passthrough() {
-        let ctx = TaskContext::new("Implement model hint passthrough");
+    fn model_hint_adapts_prompt_for_known_models() {
+        let ctx = TaskContext::new("Implement model hint adaptation");
         let baseline = RoleSystemPromptSpec::new(AgentRole::Implementer, ctx.clone(), "Read,Edit");
-        let hinted = RoleSystemPromptSpec::new(AgentRole::Implementer, ctx, "Read,Edit")
-            .with_model_hint("glm-5.1");
+        let claude_hinted =
+            RoleSystemPromptSpec::new(AgentRole::Implementer, ctx.clone(), "Read,Edit")
+                .with_model_hint("claude-sonnet-4-20250514");
+        let openai_hinted =
+            RoleSystemPromptSpec::new(AgentRole::Implementer, ctx.clone(), "Read,Edit")
+                .with_model_hint("gpt-4o");
 
-        assert_eq!(hinted.model_hint.as_deref(), Some("glm-5.1"));
-        assert_eq!(baseline.build(), hinted.build());
-        assert_eq!(baseline.build_sections(), hinted.build_sections());
+        assert_eq!(
+            claude_hinted.model_hint.as_deref(),
+            Some("claude-sonnet-4-20250514")
+        );
+
+        // Known models produce different prompts than baseline.
+        let baseline_prompt = baseline.build();
+        let claude_prompt = claude_hinted.build();
+        let openai_prompt = openai_hinted.build();
+        assert_ne!(baseline_prompt, claude_prompt);
+        assert_ne!(baseline_prompt, openai_prompt);
+        assert!(claude_prompt.contains("XML"));
+        assert!(openai_prompt.contains("JSON"));
+
+        // Unknown model slug produces the same prompt as baseline.
+        let unknown = RoleSystemPromptSpec::new(AgentRole::Implementer, ctx, "Read,Edit")
+            .with_model_hint("glm-5.1");
+        assert_eq!(baseline_prompt, unknown.build());
     }
 
     #[test]

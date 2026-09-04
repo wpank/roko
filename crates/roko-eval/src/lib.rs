@@ -36,7 +36,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Instant;
 
 use async_trait::async_trait;
@@ -424,10 +424,11 @@ impl CriterionResult {
 ///
 /// Mirrors the `GateComposition` variants in `roko-gate` so that profiles
 /// can express the same composition semantics.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum CompositionStrategy {
     /// Run criteria in order; short-circuit on first failure.
+    #[default]
     Sequential,
     /// Run all criteria; pass if all pass.
     Parallel,
@@ -438,12 +439,6 @@ pub enum CompositionStrategy {
     },
     /// Try criteria in order; use the first non-error result.
     Fallback,
-}
-
-impl Default for CompositionStrategy {
-    fn default() -> Self {
-        Self::Sequential
-    }
 }
 
 /// The top-level result from running a [`Profile`].
@@ -542,11 +537,7 @@ impl fmt::Debug for Profile {
             .field("name", &self.name)
             .field(
                 "criteria",
-                &self
-                    .criteria
-                    .iter()
-                    .map(|c| c.name())
-                    .collect::<Vec<_>>(),
+                &self.criteria.iter().map(|c| c.name()).collect::<Vec<_>>(),
             )
             .field("strategy", &self.strategy)
             .finish()
@@ -698,11 +689,7 @@ pub struct ProcessCollector {
 impl ProcessCollector {
     /// Construct a new process collector.
     #[must_use]
-    pub fn new(
-        kind: EvidenceKind,
-        program: impl Into<String>,
-        args: Vec<String>,
-    ) -> Self {
+    pub fn new(kind: EvidenceKind, program: impl Into<String>, args: Vec<String>) -> Self {
         Self {
             kind,
             program: program.into(),
@@ -965,8 +952,7 @@ impl Criterion for LegacyCriterion {
         let signal = roko_core::Signal::builder(roko_core::Kind::Task)
             .body(roko_core::Body::from_json(&payload).unwrap_or_else(|_| roko_core::Body::empty()))
             .build();
-        let ctx = roko_core::Context::now()
-            .with_attr("workdir", artifact.path.to_string_lossy());
+        let ctx = roko_core::Context::now().with_attr("workdir", artifact.path.to_string_lossy());
 
         // Run the gate synchronously using a blocking bridge.
         // This is intentional: `Criterion::evaluate` is synchronous because
@@ -1054,7 +1040,10 @@ impl roko_core::foundation::GateRunner for BridgeGateRunner {
 /// Convert a [`CriterionResult`] to a [`Verdict`](roko_core::Verdict) for
 /// backward compatibility with callers that expect the core type.
 #[must_use]
-pub fn criterion_result_to_verdict(gate_name: &str, result: &CriterionResult) -> roko_core::Verdict {
+pub fn criterion_result_to_verdict(
+    gate_name: &str,
+    result: &CriterionResult,
+) -> roko_core::Verdict {
     let mut verdict = if result.passed {
         roko_core::Verdict::pass(gate_name)
     } else {
@@ -1116,9 +1105,7 @@ pub fn verdict_to_criterion_result(verdict: &roko_core::Verdict) -> CriterionRes
             .or(verdict.detail.as_ref().filter(|d| !d.is_empty()))
             .unwrap_or(&verdict.reason);
 
-        result
-            .findings
-            .push(Finding::new(Severity::Error, message));
+        result.findings.push(Finding::new(Severity::Error, message));
     }
 
     result
@@ -1131,16 +1118,14 @@ pub fn verdict_to_criterion_result(verdict: &roko_core::Verdict) -> CriterionRes
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     // -- ProcessCollector tests --
 
     #[tokio::test]
     async fn process_collector_captures_stdout_and_exit_code() {
-        let collector = ProcessCollector::new(
-            EvidenceKind::Shell,
-            "echo",
-            vec!["hello world".into()],
-        );
+        let collector =
+            ProcessCollector::new(EvidenceKind::Shell, "echo", vec!["hello world".into()]);
 
         let artifact = EvalArtifactRef::new(".");
         let ctx = EvalContext::new();
@@ -1177,11 +1162,8 @@ mod tests {
 
     #[tokio::test]
     async fn process_collector_returns_spawn_error_for_missing_program() {
-        let collector = ProcessCollector::new(
-            EvidenceKind::Shell,
-            "nonexistent-program-xyz-12345",
-            vec![],
-        );
+        let collector =
+            ProcessCollector::new(EvidenceKind::Shell, "nonexistent-program-xyz-12345", vec![]);
 
         let artifact = EvalArtifactRef::new(".");
         let ctx = EvalContext::new();
@@ -1416,8 +1398,7 @@ mod tests {
             }
         }
 
-        let profile = Profile::new("missing-evidence")
-            .with_criterion(Box::new(NeedsCompile));
+        let profile = Profile::new("missing-evidence").with_criterion(Box::new(NeedsCompile));
 
         let artifact = EvalArtifactRef::new(".");
         let evidence = EvidenceBag::new(); // empty -- no compile evidence
@@ -1426,11 +1407,13 @@ mod tests {
         let verdict = profile.evaluate(&artifact, &evidence, &ctx);
         assert!(!verdict.passed);
         assert_eq!(verdict.criteria_results.len(), 1);
-        assert!(verdict.criteria_results[0]
-            .result
-            .findings
-            .iter()
-            .any(|f| f.message.contains("Missing required evidence")));
+        assert!(
+            verdict.criteria_results[0]
+                .result
+                .findings
+                .iter()
+                .any(|f| f.message.contains("Missing required evidence"))
+        );
     }
 
     // -- LegacyCriterion tests --
@@ -1499,9 +1482,7 @@ mod tests {
         assert!(!result.passed);
         assert!((result.score - 0.0).abs() < f64::EPSILON);
         assert!(!result.findings.is_empty());
-        assert!(result.findings[0]
-            .message
-            .contains("mock failure reason"));
+        assert!(result.findings[0].message.contains("mock failure reason"));
     }
 
     // -- Conversion function tests --
@@ -1625,8 +1606,7 @@ mod tests {
             );
 
         let json = serde_json::to_string(&result).expect("serialize");
-        let deserialized: CriterionResult =
-            serde_json::from_str(&json).expect("deserialize");
+        let deserialized: CriterionResult = serde_json::from_str(&json).expect("deserialize");
 
         assert_eq!(deserialized.passed, result.passed);
         assert!((deserialized.score - result.score).abs() < f64::EPSILON);
@@ -1647,8 +1627,7 @@ mod tests {
         };
 
         let json = serde_json::to_string(&verdict).expect("serialize");
-        let deserialized: EvalVerdict =
-            serde_json::from_str(&json).expect("deserialize");
+        let deserialized: EvalVerdict = serde_json::from_str(&json).expect("deserialize");
 
         assert_eq!(deserialized.profile_name, "test");
         assert!(deserialized.passed);
@@ -1692,8 +1671,7 @@ mod tests {
 
     #[test]
     fn eval_artifact_ref_builder() {
-        let artifact = EvalArtifactRef::new("/workspace")
-            .with_label("my-plan");
+        let artifact = EvalArtifactRef::new("/workspace").with_label("my-plan");
 
         assert_eq!(artifact.path, PathBuf::from("/workspace"));
         assert_eq!(artifact.label.as_deref(), Some("my-plan"));

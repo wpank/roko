@@ -621,6 +621,7 @@ impl ChatAgentSession {
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             });
 
         let model_key = self.model_call_model_key();
@@ -663,6 +664,8 @@ impl ChatAgentSession {
             routing_hints: Vec::new(),
             cache_policy: CachePolicy::Bypass,
             tools: Vec::new(),
+            generation_settings: None,
+            mcp_config: None,
         }
     }
 

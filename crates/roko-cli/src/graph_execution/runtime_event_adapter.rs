@@ -177,10 +177,7 @@ impl GraphRuntimeEventAdapter {
     /// This match is exhaustive and compile-time: adding a new
     /// `GraphExecutionEvent` variant without a conversion arm here is a
     /// build error.
-    fn map_payload(
-        &self,
-        event: &GraphExecutionEvent,
-    ) -> (RuntimeEvent, RuntimeEventMode) {
+    fn map_payload(&self, event: &GraphExecutionEvent) -> (RuntimeEvent, RuntimeEventMode) {
         let mode = self.infer_mode(event);
 
         let payload = match event {
@@ -190,39 +187,35 @@ impl GraphRuntimeEventAdapter {
                 prompt: String::new(),
                 complexity: "graph".to_string(),
             },
-            GraphExecutionEvent::GraphCompleted { common, stats } => {
-                RuntimeEvent::RunCompleted {
-                    run_id: common.run_id.clone(),
-                    success: true,
-                    cost_usd: 0.0,
-                    duration_ms: stats.elapsed_ms,
-                }
-            }
-            GraphExecutionEvent::GraphFailed { common, stats, error: _ } => {
-                RuntimeEvent::RunCompleted {
-                    run_id: common.run_id.clone(),
-                    success: false,
-                    cost_usd: 0.0,
-                    duration_ms: stats.elapsed_ms,
-                }
-            }
-            GraphExecutionEvent::GraphCancelled { common, stats } => {
-                RuntimeEvent::RunCompleted {
-                    run_id: common.run_id.clone(),
-                    success: false,
-                    cost_usd: 0.0,
-                    duration_ms: stats.elapsed_ms,
-                }
-            }
+            GraphExecutionEvent::GraphCompleted { common, stats } => RuntimeEvent::RunCompleted {
+                run_id: common.run_id.clone(),
+                success: true,
+                cost_usd: 0.0,
+                duration_ms: stats.elapsed_ms,
+            },
+            GraphExecutionEvent::GraphFailed {
+                common,
+                stats,
+                error: _,
+            } => RuntimeEvent::RunCompleted {
+                run_id: common.run_id.clone(),
+                success: false,
+                cost_usd: 0.0,
+                duration_ms: stats.elapsed_ms,
+            },
+            GraphExecutionEvent::GraphCancelled { common, stats } => RuntimeEvent::RunCompleted {
+                run_id: common.run_id.clone(),
+                success: false,
+                cost_usd: 0.0,
+                duration_ms: stats.elapsed_ms,
+            },
 
             // ── Wave lifecycle ──────────────────────────────────────
-            GraphExecutionEvent::WaveStarted { common, wave } => {
-                RuntimeEvent::PipelinePhase {
-                    run_id: common.run_id.clone(),
-                    phase: format!("wave-{}", wave.wave_index),
-                    status: "started".to_string(),
-                }
-            }
+            GraphExecutionEvent::WaveStarted { common, wave } => RuntimeEvent::PipelinePhase {
+                run_id: common.run_id.clone(),
+                phase: format!("wave-{}", wave.wave_index),
+                status: "started".to_string(),
+            },
             GraphExecutionEvent::WaveCompleted {
                 common,
                 wave,
@@ -424,15 +417,13 @@ impl GraphRuntimeEventAdapter {
                 cost_usd: *actual_micro_usd as f64 / 1_000_000.0,
                 model: String::new(),
             },
-            GraphExecutionEvent::BudgetUpdated { common, amounts } => {
-                RuntimeEvent::BudgetUpdated {
-                    budget_id: common.run_id.clone(),
-                    spent_usd: amounts.actual_micro_usd as f64 / 1_000_000.0,
-                    limit_usd: (amounts.actual_micro_usd + amounts.remaining_micro_usd) as f64
-                        / 1_000_000.0,
-                    remaining_usd: amounts.remaining_micro_usd as f64 / 1_000_000.0,
-                }
-            }
+            GraphExecutionEvent::BudgetUpdated { common, amounts } => RuntimeEvent::BudgetUpdated {
+                budget_id: common.run_id.clone(),
+                spent_usd: amounts.actual_micro_usd as f64 / 1_000_000.0,
+                limit_usd: (amounts.actual_micro_usd + amounts.remaining_micro_usd) as f64
+                    / 1_000_000.0,
+                remaining_usd: amounts.remaining_micro_usd as f64 / 1_000_000.0,
+            },
 
             // ── Gate rungs ──────────────────────────────────────────
             GraphExecutionEvent::GateRungStarted {
@@ -498,20 +489,27 @@ impl GraphRuntimeEventAdapter {
                 phase: "replay".to_string(),
                 status: "started".to_string(),
             },
-            GraphExecutionEvent::ReplayCompleted { common } => {
-                RuntimeEvent::PipelinePhase {
-                    run_id: common.run_id.clone(),
-                    phase: "replay".to_string(),
-                    status: "complete".to_string(),
-                }
-            }
+            GraphExecutionEvent::ReplayCompleted { common } => RuntimeEvent::PipelinePhase {
+                run_id: common.run_id.clone(),
+                phase: "replay".to_string(),
+                status: "complete".to_string(),
+            },
 
             // ── Gap ─────────────────────────────────────────────────
-            GraphExecutionEvent::Gap { common, lost_count } => {
-                RuntimeEvent::SequenceGap {
-                    first_missing_seq: common.seq.saturating_sub(*lost_count),
-                    last_missing_seq: common.seq.saturating_sub(1),
-                    reason: format!("{lost_count} graph event(s) dropped"),
+            GraphExecutionEvent::Gap { common, lost_count } => RuntimeEvent::SequenceGap {
+                first_missing_seq: common.seq.saturating_sub(*lost_count),
+                last_missing_seq: common.seq.saturating_sub(1),
+                reason: format!("{lost_count} graph event(s) dropped"),
+            },
+
+            // ── Delivery events (mapped to extension) ────
+            _ => {
+                // Unrecognized graph events (including Delivery*) are
+                // forwarded as Extension payloads so no information is lost.
+                RuntimeEvent::Extension {
+                    namespace: "graph.delivery".to_string(),
+                    version: "1".to_string(),
+                    value: serde_json::json!({ "event": "delivery" }),
                 }
             }
         };
@@ -576,7 +574,10 @@ mod tests {
             "graph-1",
             "plan-alpha",
             vec![
-                ("T01".to_string(), TaskEntry::new("compile", "Compile", "implementer")),
+                (
+                    "T01".to_string(),
+                    TaskEntry::new("compile", "Compile", "implementer"),
+                ),
                 ("T02".to_string(), TaskEntry::new("test", "Test", "tester")),
             ],
             &HashMap::new(),
@@ -593,10 +594,7 @@ mod tests {
 
         assert_eq!(envelope.source, "graph");
         assert_eq!(envelope.run_id, "run-1");
-        assert!(matches!(
-            envelope.payload,
-            RuntimeEvent::RunStarted { .. }
-        ));
+        assert!(matches!(envelope.payload, RuntimeEvent::RunStarted { .. }));
     }
 
     #[test]
@@ -824,10 +822,7 @@ mod tests {
             tool_name: "write_file".to_string(),
         };
         let env = adapter.convert(&start);
-        assert!(matches!(
-            env.payload,
-            RuntimeEvent::ToolCallStarted { .. }
-        ));
+        assert!(matches!(env.payload, RuntimeEvent::ToolCallStarted { .. }));
 
         let complete = GraphExecutionEvent::ToolCompleted {
             common: test_common(13),
@@ -911,10 +906,7 @@ mod tests {
             rung_name: "compile".to_string(),
         };
         let env = adapter.convert(&start);
-        assert!(matches!(
-            env.payload,
-            RuntimeEvent::GateRungStarted { .. }
-        ));
+        assert!(matches!(env.payload, RuntimeEvent::GateRungStarted { .. }));
 
         let output = GraphExecutionEvent::GateRungOutput {
             common: test_common(17),
@@ -975,8 +967,7 @@ mod tests {
             common: test_common(1),
         };
         let original_ts = chrono::Utc::now();
-        let envelope =
-            adapter.convert_replay(&event, "original-id", 42, original_ts);
+        let envelope = adapter.convert_replay(&event, "original-id", 42, original_ts);
 
         assert_eq!(envelope.event_id, "original-id");
         assert_eq!(envelope.seq, 42);

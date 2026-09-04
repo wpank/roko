@@ -125,12 +125,8 @@ pub(crate) fn render(
             render_plan_detail(frame, rows[2], prds, selected, data, tui_state, theme);
         }
         _ => {
-            let (sidebar, detail) = crate::tui::layout::responsive_panel_split(
-                rows[2],
-                40,
-                100,
-                rows[2].height / 3,
-            );
+            let (sidebar, detail) =
+                crate::tui::layout::responsive_panel_split(rows[2], 40, 100, rows[2].height / 3);
             render_prd_list(frame, sidebar, prds, selected, theme);
             render_plan_detail(frame, detail, prds, selected, data, tui_state, theme);
         }
@@ -188,10 +184,7 @@ fn render_stats_bar(
         .alignment(Alignment::Center)
     };
 
-    frame.render_widget(
-        stat("PRDs", prds.len().to_string(), theme.value()),
-        cols[0],
-    );
+    frame.render_widget(stat("PRDs", prds.len().to_string(), theme.value()), cols[0]);
     frame.render_widget(stat("Plans", plan_count.to_string(), theme.info()), cols[1]);
     frame.render_widget(
         stat("Tasks", format!("{done_tasks}/{total_tasks}"), tasks_style),
@@ -368,8 +361,10 @@ fn render_plan_detail(
 
     let sep_width = inner.width as usize;
     let separator = "\u{2500}".repeat(sep_width.min(120));
-    let sep_line =
-        Line::from(Span::styled(separator.clone(), ratatui::style::Style::default().fg(Theme::SEPARATOR)));
+    let sep_line = Line::from(Span::styled(
+        separator.clone(),
+        ratatui::style::Style::default().fg(Theme::SEPARATOR),
+    ));
 
     let meta_lines = vec![
         Line::from(vec![
@@ -409,10 +404,8 @@ fn render_plan_detail(
     );
 
     // CLI actions block: show actionable commands based on PRD status.
-    let mut action_lines: Vec<Line<'_>> = vec![Line::from(Span::styled(
-        "Actions",
-        theme.section_header(),
-    ))];
+    let mut action_lines: Vec<Line<'_>> =
+        vec![Line::from(Span::styled("Actions", theme.section_header()))];
     match status {
         PrdStatus::Idea | PrdStatus::Draft => {
             action_lines.push(Line::from(Span::styled(
@@ -502,7 +495,10 @@ fn render_plan_detail(
             Row::new(vec![
                 Cell::from(Span::styled(status.icon(), icon_style)),
                 Cell::from(Span::styled(truncate(&task.id, 8), theme.metadata())),
-                Cell::from(Span::styled(truncate(&task.title, title_max), theme.value())),
+                Cell::from(Span::styled(
+                    truncate(&task.title, title_max),
+                    theme.value(),
+                )),
                 Cell::from(Span::styled(truncate(&task.agent, 12), theme.metadata())),
             ])
         })

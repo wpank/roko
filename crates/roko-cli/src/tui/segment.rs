@@ -44,12 +44,12 @@ impl SegmentKind {
     /// Icon prefix character for the segment kind.
     const fn icon(self) -> &'static str {
         match self {
-            Self::Thinking => "\u{2502} ",   // |
+            Self::Thinking => "\u{2502} ", // |
             Self::Heading => "",
-            Self::ToolUse => "\u{25b8} ",    // >
-            Self::Code => "\u{2502} ",       // |
-            Self::Success => "\u{2713} ",    // check
-            Self::Error => "\u{2717} ",      // x
+            Self::ToolUse => "\u{25b8} ", // >
+            Self::Code => "\u{2502} ",    // |
+            Self::Success => "\u{2713} ", // check
+            Self::Error => "\u{2717} ",   // x
             Self::Blank => "",
             Self::TurnMarker => "",
         }
@@ -331,8 +331,8 @@ fn render_groups(groups: &[SegmentGroup], theme: &Theme) -> Vec<Line<'static>> {
         let style = content_style(group.kind, theme);
 
         // Fold long tool-use groups: show first N lines + "[+M lines]" summary.
-        let should_fold = matches!(group.kind, SegmentKind::ToolUse)
-            && group.lines.len() > FOLD_THRESHOLD;
+        let should_fold =
+            matches!(group.kind, SegmentKind::ToolUse) && group.lines.len() > FOLD_THRESHOLD;
 
         if should_fold {
             for line in group.lines.iter().take(FOLD_PREVIEW_LINES) {
@@ -369,7 +369,11 @@ fn render_turn_boundary(turn_index: usize, raw_lines: &[String], theme: &Theme) 
         .first()
         .and_then(|line| {
             let plain = strip_ansi(line);
-            let trimmed = plain.trim().trim_start_matches('\u{2500}').trim_start_matches('-').trim();
+            let trimmed = plain
+                .trim()
+                .trim_start_matches('\u{2500}')
+                .trim_start_matches('-')
+                .trim();
             if trimmed.is_empty() {
                 None
             } else {
@@ -397,10 +401,7 @@ fn render_turn_boundary(turn_index: usize, raw_lines: &[String], theme: &Theme) 
                 .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            extra_part,
-            Style::default().fg(Theme::TEXT_GHOST),
-        ),
+        Span::styled(extra_part, Style::default().fg(Theme::TEXT_GHOST)),
         Span::styled(
             format!("\u{253c}{sep}"),
             Style::default().fg(Theme::TEXT_PHANTOM),
@@ -421,9 +422,7 @@ fn render_code_block(code_lines: &[String], theme: &Theme, out: &mut Vec<Line<'s
         let trimmed = strip_ansi(line).trim().to_string();
         !trimmed.is_empty()
             && !trimmed.starts_with("```")
-            && (trimmed.starts_with('{')
-                || trimmed.starts_with('[')
-                || trimmed.starts_with("\""))
+            && (trimmed.starts_with('{') || trimmed.starts_with('[') || trimmed.starts_with("\""))
     });
 
     for line in code_lines {
@@ -456,31 +455,18 @@ fn render_code_block(code_lines: &[String], theme: &Theme, out: &mut Vec<Line<'s
 }
 
 /// Render a single JSON line with key highlighting.
-fn render_json_line(
-    raw: &str,
-    plain: &str,
-    border_style: Style,
-    theme: &Theme,
-) -> Line<'static> {
+fn render_json_line(raw: &str, plain: &str, border_style: Style, theme: &Theme) -> Line<'static> {
     let key_style = Style::default()
         .fg(Theme::BONE)
         .bg(Theme::BG_SECONDARY)
         .add_modifier(Modifier::BOLD);
-    let string_style = Style::default()
-        .fg(Theme::SAGE)
-        .bg(Theme::BG_SECONDARY);
-    let punct_style = Style::default()
-        .fg(Theme::TEXT_DIM)
-        .bg(Theme::BG_SECONDARY);
-    let number_style = Style::default()
-        .fg(Theme::WARNING)
-        .bg(Theme::BG_SECONDARY);
+    let string_style = Style::default().fg(Theme::SAGE).bg(Theme::BG_SECONDARY);
+    let punct_style = Style::default().fg(Theme::TEXT_DIM).bg(Theme::BG_SECONDARY);
+    let number_style = Style::default().fg(Theme::WARNING).bg(Theme::BG_SECONDARY);
     let bool_style = Style::default()
         .fg(Theme::DREAM_BRIGHT)
         .bg(Theme::BG_SECONDARY);
-    let default_style = Style::default()
-        .fg(theme.success)
-        .bg(Theme::BG_SECONDARY);
+    let default_style = Style::default().fg(theme.success).bg(Theme::BG_SECONDARY);
 
     let mut spans = vec![Span::styled("\u{2502} ", border_style)];
 
@@ -527,7 +513,11 @@ fn render_json_line(
             c if c.is_ascii_digit() || c == '-' => {
                 let start = i;
                 while i < chars.len()
-                    && (chars[i].is_ascii_digit() || chars[i] == '.' || chars[i] == '-' || chars[i] == 'e' || chars[i] == 'E')
+                    && (chars[i].is_ascii_digit()
+                        || chars[i] == '.'
+                        || chars[i] == '-'
+                        || chars[i] == 'e'
+                        || chars[i] == 'E')
                 {
                     i += 1;
                 }
@@ -809,9 +799,7 @@ mod tests {
 
     #[test]
     fn long_tool_use_groups_are_folded() {
-        let mut tool_lines: Vec<String> = (0..10)
-            .map(|i| format!("Running step {i}"))
-            .collect();
+        let mut tool_lines: Vec<String> = (0..10).map(|i| format!("Running step {i}")).collect();
         tool_lines.push("done".to_string());
 
         let render = render_cached_output(&tool_lines, &Theme::dark());
@@ -881,6 +869,9 @@ mod tests {
                 .iter()
                 .any(|span| span.content.contains("\"name\"") && span.style.fg == Some(Theme::BONE))
         });
-        assert!(has_key_color, "JSON keys should be highlighted with BONE color");
+        assert!(
+            has_key_color,
+            "JSON keys should be highlighted with BONE color"
+        );
     }
 }

@@ -105,10 +105,7 @@ pub fn braille_spans_gradient(
         // Intensity = average of left/right normalized values
         let intensity = ((lv + rv) / (2.0 * max)).clamp(0.0, 1.0);
         let color = lerp_color(low_color, high_color, intensity);
-        spans.push(Span::styled(
-            ch.to_string(),
-            Style::default().fg(color),
-        ));
+        spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
     }
 
     spans
@@ -184,6 +181,12 @@ fn lerp_color(a: Color, b: Color, t: f64) -> Color {
             (ag as f64 + (bg as f64 - ag as f64) * t).clamp(0.0, 255.0) as u8,
             (ab as f64 + (bb as f64 - ab as f64) * t).clamp(0.0, 255.0) as u8,
         ),
-        _ => if t < 0.5 { a } else { b },
+        _ => {
+            if t < 0.5 {
+                a
+            } else {
+                b
+            }
+        }
     }
 }

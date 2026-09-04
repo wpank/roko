@@ -99,16 +99,16 @@ pub use workspace::{
 
 // Re-export graph execution event contract (#246).
 pub use events::{
-    BudgetAmounts, CommonFields, DispatchFields, EventSeqCounter, GraphEventDelivery,
-    GraphEventDisposition, GraphEventError, GraphEventSink, GraphExecutionEvent, NodeFields,
-    TerminalStats, WaveFields, GRAPH_EVENT_SCHEMA_VERSION,
+    BudgetAmounts, CommonFields, DispatchFields, EventSeqCounter, GRAPH_EVENT_SCHEMA_VERSION,
+    GraphEventDelivery, GraphEventDisposition, GraphEventError, GraphEventSink,
+    GraphExecutionEvent, NodeFields, TerminalStats, WaveFields,
 };
 
 // Re-export approval, control, and cancellation ports (#255).
 pub use control::{
-    ApprovalRequestV1, ApprovalResolution, ControlCommandKind, ControlEffect,
-    ControlReceiptV1, ControlSnapshot, ExecutionControlService, FinalizationIntent,
-    ReceiptStatus, build_approval_request, CONTROL_EXTENSION_NAME, CONTROL_EXTENSION_VERSION,
+    ApprovalRequestV1, ApprovalResolution, CONTROL_EXTENSION_NAME, CONTROL_EXTENSION_VERSION,
+    ControlCommandKind, ControlEffect, ControlReceiptV1, ControlSnapshot, ExecutionControlService,
+    FinalizationIntent, ReceiptStatus, build_approval_request,
 };
 
 // Re-export graph-layer replan mutation adapter (#252).
@@ -120,8 +120,8 @@ pub use plan_mutation::{
 // Re-export completion delivery lifecycle (#254).
 pub use delivery::{
     CompletionDeliveryReceiptV1, CompletionDeliveryRequest, CompletionDeliveryService,
-    CompletionDeliveryState, DeliveryError, DeliveryReceiptStore, DeliveryTransitionError,
-    MergeSlot, MergeSlotBlocked, ReleasePolicy, DELIVERY_EXTENSION_KEY, delivery_extension_value,
+    CompletionDeliveryState, DELIVERY_EXTENSION_KEY, DeliveryError, DeliveryReceiptStore,
+    DeliveryTransitionError, MergeSlot, MergeSlotBlocked, ReleasePolicy, delivery_extension_value,
 };
 
 // Re-export authored graph production profile (#267).

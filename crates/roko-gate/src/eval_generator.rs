@@ -605,7 +605,10 @@ mod tests {
             property_body: Some("   ".into()),
         };
         let err = generator.generate_checked(&request).unwrap_err();
-        assert!(matches!(err, EvalGenerationError::MissingPropertyBody { .. }));
+        assert!(matches!(
+            err,
+            EvalGenerationError::MissingPropertyBody { .. }
+        ));
     }
 
     #[test]
@@ -653,7 +656,10 @@ mod tests {
             property_body: Some("todo!()".into()),
         };
         let err = generator.generate_checked(&request).unwrap_err();
-        assert!(matches!(err, EvalGenerationError::VacuousPropertyBody { .. }));
+        assert!(matches!(
+            err,
+            EvalGenerationError::VacuousPropertyBody { .. }
+        ));
     }
 
     #[test]
@@ -667,7 +673,10 @@ mod tests {
             property_body: Some("unimplemented!()".into()),
         };
         let err = generator.generate_checked(&request).unwrap_err();
-        assert!(matches!(err, EvalGenerationError::VacuousPropertyBody { .. }));
+        assert!(matches!(
+            err,
+            EvalGenerationError::VacuousPropertyBody { .. }
+        ));
     }
 
     #[test]

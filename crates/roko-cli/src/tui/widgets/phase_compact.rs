@@ -71,10 +71,7 @@ pub fn render_phase_compact(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
 
     let title_spans = if let Some(name) = active_phase_name {
         let badge = phase_badge(name);
-        vec![
-            Span::styled("Phase ", theme.section_header()),
-            badge,
-        ]
+        vec![Span::styled("Phase ", theme.section_header()), badge]
     } else {
         vec![Span::styled("Phase", theme.section_header())]
     };
@@ -127,10 +124,7 @@ pub fn render_phase_compact(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
                 for col in 0..w {
                     let t = seg_frac + (col as f64 / (inner_w as f64).max(1.0));
                     let color = Theme::progress_gradient(t.min(1.0));
-                    bar_spans.push(Span::styled(
-                        "\u{2588}",
-                        Style::default().fg(color),
-                    ));
+                    bar_spans.push(Span::styled("\u{2588}", Style::default().fg(color)));
                 }
             }
             PhaseStatus::Active => {
@@ -140,10 +134,7 @@ pub fn render_phase_compact(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
                     for col in 0..fill_count {
                         let t = seg_frac + (col as f64 / (inner_w as f64).max(1.0));
                         let color = Theme::progress_gradient(t.min(1.0));
-                        bar_spans.push(Span::styled(
-                            "\u{2588}",
-                            Style::default().fg(color),
-                        ));
+                        bar_spans.push(Span::styled("\u{2588}", Style::default().fg(color)));
                     }
                     bar_spans.push(Span::styled(
                         spinner_ch.to_string(),
@@ -182,11 +173,11 @@ pub fn render_phase_compact(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
     {
         let step = &state.phase_pipeline[idx];
         let mut spans = vec![
+            Span::styled(" HALTED ", theme.badge_failed()),
             Span::styled(
-                " HALTED ",
-                theme.badge_failed(),
+                format!(" at {}", step.name),
+                Style::default().fg(Theme::EMBER),
             ),
-            Span::styled(format!(" at {}", step.name), Style::default().fg(Theme::EMBER)),
         ];
         if step.elapsed_secs > 0.0 {
             spans.push(Span::styled(
@@ -205,10 +196,7 @@ pub fn render_phase_compact(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
             .all(|s| s.status == PhaseStatus::Done);
         if all_done && !state.phase_pipeline.is_empty() {
             Line::from(vec![
-                Span::styled(
-                    " COMPLETE ",
-                    theme.badge_complete(),
-                ),
+                Span::styled(" COMPLETE ", theme.badge_complete()),
                 Span::styled(" all phases done", Style::default().fg(Theme::SAGE)),
             ])
         } else if state.phase_pipeline.is_empty() {
@@ -303,17 +291,11 @@ fn build_phase_flow(pipeline: &[super::super::state::PhaseStep]) -> Line<'static
                 PhaseStatus::Failed => Theme::EMBER,
                 _ => Theme::TEXT_GHOST,
             };
-            spans.push(Span::styled(
-                " \u{2192} ",
-                Style::default().fg(arrow_color),
-            ));
+            spans.push(Span::styled(" \u{2192} ", Style::default().fg(arrow_color)));
         }
         // Phase name or completion checkmark.
         let (label, style) = match step.status {
-            PhaseStatus::Done => (
-                "\u{2713}".to_string(),
-                Style::default().fg(Theme::SAGE),
-            ),
+            PhaseStatus::Done => ("\u{2713}".to_string(), Style::default().fg(Theme::SAGE)),
             PhaseStatus::Active => (
                 step.name.clone(),
                 Style::default()
@@ -326,10 +308,7 @@ fn build_phase_flow(pipeline: &[super::super::state::PhaseStep]) -> Line<'static
                     .fg(Theme::EMBER)
                     .add_modifier(Modifier::BOLD),
             ),
-            PhaseStatus::Pending => (
-                step.name.clone(),
-                Style::default().fg(Theme::TEXT_DIM),
-            ),
+            PhaseStatus::Pending => (step.name.clone(), Style::default().fg(Theme::TEXT_DIM)),
         };
         spans.push(Span::styled(label, style));
     }
@@ -346,7 +325,9 @@ fn phase_badge(phase_name: &str) -> Span<'static> {
     let lower = phase_name.to_ascii_lowercase();
     if lower.contains("implement") || lower.contains("dispatch") || lower.contains("exec") {
         Span::styled(" IMPL ", theme.badge_running())
-    } else if lower.contains("gate") || lower.contains("compil") || lower.contains("test")
+    } else if lower.contains("gate")
+        || lower.contains("compil")
+        || lower.contains("test")
         || lower.contains("verify")
     {
         Span::styled(" GATE ", theme.badge_pending())
@@ -374,7 +355,14 @@ fn phase_badge(phase_name: &str) -> Span<'static> {
         )
     } else {
         Span::styled(
-            format!(" {} ", &phase_name.to_ascii_uppercase().chars().take(4).collect::<String>()),
+            format!(
+                " {} ",
+                &phase_name
+                    .to_ascii_uppercase()
+                    .chars()
+                    .take(4)
+                    .collect::<String>()
+            ),
             Style::default()
                 .fg(Theme::VOID)
                 .bg(Theme::TEXT_DIM)

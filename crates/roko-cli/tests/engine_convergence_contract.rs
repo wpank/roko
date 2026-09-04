@@ -139,8 +139,7 @@ fn tasks_file_to_graph(fixture_name: &str) -> roko_graph::Graph {
                 max_retries: task.max_retries,
                 domain: task.domain.as_ref().map(|d| d.label().to_string()),
                 sequence: seq,
-                full_config_json: serde_json::to_value(task)
-                    .unwrap_or(serde_json::Value::Null),
+                full_config_json: serde_json::to_value(task).unwrap_or(serde_json::Value::Null),
             };
             (task.id.clone(), info)
         })
@@ -296,9 +295,27 @@ fn expected_final_task_ids_partition_all_tasks() {
 
         // Every task ID must appear in exactly one of completed/skipped/failed.
         let mut accounted: Vec<&str> = Vec::new();
-        accounted.extend(expected.final_state.completed_task_ids.iter().map(|s| s.as_str()));
-        accounted.extend(expected.final_state.skipped_task_ids.iter().map(|s| s.as_str()));
-        accounted.extend(expected.final_state.failed_task_ids.iter().map(|s| s.as_str()));
+        accounted.extend(
+            expected
+                .final_state
+                .completed_task_ids
+                .iter()
+                .map(|s| s.as_str()),
+        );
+        accounted.extend(
+            expected
+                .final_state
+                .skipped_task_ids
+                .iter()
+                .map(|s| s.as_str()),
+        );
+        accounted.extend(
+            expected
+                .final_state
+                .failed_task_ids
+                .iter()
+                .map(|s| s.as_str()),
+        );
 
         // Allow tasks to not appear in any terminal list (e.g. cancelled tasks
         // may be in failed_task_ids). But every listed ID must be a real task.

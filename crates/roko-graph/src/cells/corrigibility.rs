@@ -319,9 +319,8 @@ pub fn register_corrigibility_cells(registry: &mut CellRegistry) {
                 });
             }
             t if t == VERIFY_TRUTH_CELL_TYPE => {
-                registry.register_with_descriptor(t, desc, |_| {
-                    Box::new(VerifyTruthCell::standalone())
-                });
+                registry
+                    .register_with_descriptor(t, desc, |_| Box::new(VerifyTruthCell::standalone()));
             }
             t if t == VERIFY_IMPACT_CELL_TYPE => {
                 registry.register_with_descriptor(t, desc, |_| {
@@ -329,9 +328,8 @@ pub fn register_corrigibility_cells(registry: &mut CellRegistry) {
                 });
             }
             t if t == VERIFY_TASK_CELL_TYPE => {
-                registry.register_with_descriptor(t, desc, |_| {
-                    Box::new(VerifyTaskCell::standalone())
-                });
+                registry
+                    .register_with_descriptor(t, desc, |_| Box::new(VerifyTaskCell::standalone()));
             }
             _ => unreachable!(),
         }

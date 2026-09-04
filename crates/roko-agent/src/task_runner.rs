@@ -423,19 +423,6 @@ const SONNET_FALLBACK: ModelPricing = ModelPricing {
     cache_write_per_m: 3.75,
 };
 
-/// Hardcoded pricing for well-known models: (slug, input, output, cache_read, cache_write).
-const KNOWN_MODEL_PRICING: &[(&str, f64, f64, f64, f64)] = &[
-    ("claude-opus-4-6", 15.00, 75.00, 3.75, 18.75),
-    ("claude-sonnet-4-6", 3.00, 15.00, 0.30, 3.75),
-    ("claude-haiku-4-5", 0.80, 4.00, 0.08, 1.00),
-    ("glm-5.1", 1.40, 4.40, 0.26, 1.75),
-    ("glm-5", 1.00, 3.20, 0.50, 1.25),
-    ("kimi-k2.5", 0.60, 3.00, 0.10, 0.75),
-    ("gpt-5.2", 2.00, 8.00, 0.50, 2.50),
-    ("gpt-5.4", 2.50, 10.00, 0.63, 3.13),
-    ("gpt-5.4-mini", 0.40, 1.60, 0.10, 0.50),
-];
-
 impl CostTable {
     /// Insert or replace pricing for a model.
     pub fn insert(&mut self, model_slug: impl Into<String>, pricing: ModelPricing) {
@@ -465,16 +452,16 @@ impl CostTable {
             }
         }
 
-        // Merge hardcoded defaults for known models (won't override config).
-        for &(slug, input, output, cache_r, cache_w) in KNOWN_MODEL_PRICING {
+        // Merge defaults from the canonical shared registry (won't override config).
+        for (slug, reg) in roko_core::config::model_registry::BUILTIN_PRICING {
             table
                 .models
-                .entry(slug.to_string())
+                .entry((*slug).to_string())
                 .or_insert(ModelPricing {
-                    input_per_m: input,
-                    output_per_m: output,
-                    cache_read_per_m: cache_r,
-                    cache_write_per_m: cache_w,
+                    input_per_m: reg.input_per_m,
+                    output_per_m: reg.output_per_m,
+                    cache_read_per_m: reg.cache_read_per_m,
+                    cache_write_per_m: reg.cache_write_per_m,
                 });
         }
 

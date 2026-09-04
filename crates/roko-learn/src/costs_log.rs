@@ -215,6 +215,22 @@ impl CostsLog {
         Ok(out)
     }
 
+    /// Return today's total cost in USD (calendar day in UTC).
+    ///
+    /// Convenience wrapper around [`daily_cost(1)`](Self::daily_cost).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying log cannot be read.
+    pub async fn cost_today(&self) -> io::Result<f64> {
+        Ok(self
+            .daily_cost(1)
+            .await?
+            .last()
+            .map(|(_, cost)| *cost)
+            .unwrap_or(0.0))
+    }
+
     /// Return the recent cost rate for the last `window` of wall-clock time.
     ///
     /// The result is expressed in USD/minute.

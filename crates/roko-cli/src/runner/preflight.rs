@@ -349,8 +349,7 @@ pub async fn check_provider_connectivity(config: &RokoConfig) -> Vec<PreflightCh
             Some(url) => {
                 let pid = provider_id.clone();
                 handles.push(tokio::spawn(async move {
-                    let result =
-                        crate::doctor::probe_one_provider(pid.clone(), url, timeout).await;
+                    let result = crate::doctor::probe_one_provider(pid.clone(), url, timeout).await;
                     (pid, result)
                 }));
             }
@@ -511,14 +510,26 @@ mod tests {
 
         // Verify the workspace was not mutated.
         let contents = std::fs::read_to_string(&marker).expect("read marker");
-        assert_eq!(contents, "before", "preflight must not mutate the workspace");
+        assert_eq!(
+            contents, "before",
+            "preflight must not mutate the workspace"
+        );
     }
 
     #[test]
     fn preflight_severity_mapping_is_consistent() {
         // Verify that severity_to_status maps correctly for all variants.
-        assert_eq!(severity_to_status(DiagnosticSeverity::Info), PreflightStatus::Pass);
-        assert_eq!(severity_to_status(DiagnosticSeverity::Warning), PreflightStatus::Warn);
-        assert_eq!(severity_to_status(DiagnosticSeverity::Error), PreflightStatus::Fail);
+        assert_eq!(
+            severity_to_status(DiagnosticSeverity::Info),
+            PreflightStatus::Pass
+        );
+        assert_eq!(
+            severity_to_status(DiagnosticSeverity::Warning),
+            PreflightStatus::Warn
+        );
+        assert_eq!(
+            severity_to_status(DiagnosticSeverity::Error),
+            PreflightStatus::Fail
+        );
     }
 }

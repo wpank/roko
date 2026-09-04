@@ -27,8 +27,8 @@ use crate::prompt::{PromptSection, SectionPriority, estimate_tokens};
 
 use super::signals::{
     ComposeRequest, ComposeScope, ComposedPrompt, EpisodeSections, ExperimentAssignment,
-    KnowledgeSections, ModulationSections, PlaybookSections, SafetySections,
-    TaskContextSections, cell_ids,
+    KnowledgeSections, ModulationSections, PlaybookSections, SafetySections, TaskContextSections,
+    cell_ids,
 };
 
 // ---------------------------------------------------------------------------
@@ -167,12 +167,12 @@ impl roko_graph::Cell for AggregateCell {
 
         // 3. Validate that required providers succeeded.
         if !collected.has_safety {
-            return Err(roko_core::error::RokoError::Internal(
+            return Err(roko_core::error::RokoError::Store(
                 "AggregateCell: required safety provider missing or errored".into(),
             ));
         }
         if !collected.has_task_context {
-            return Err(roko_core::error::RokoError::Internal(
+            return Err(roko_core::error::RokoError::Store(
                 "AggregateCell: required task_context provider missing or errored".into(),
             ));
         }
@@ -221,7 +221,7 @@ impl roko_graph::Cell for AggregateCell {
         // Sort pending by priority descending so higher-priority sections
         // are included first when budget is tight.
         let mut pending_sorted: Vec<_> = pending.into_iter().collect();
-        pending_sorted.sort_by(|a, b| b.priority.cmp(&a.priority));
+        pending_sorted.sort_by_key(|s| std::cmp::Reverse(s.priority));
 
         for section in pending_sorted {
             let tokens = estimate_tokens(&section.content);
@@ -255,11 +255,9 @@ impl roko_graph::Cell for AggregateCell {
         };
 
         let body = Body::from_json(&prompt).map_err(|e| {
-            roko_core::error::RokoError::Internal(format!(
-                "aggregate cell serialization: {e}"
-            ))
+            roko_core::error::RokoError::Store(format!("aggregate cell serialization: {e}"))
         })?;
-        let signal = Signal::builder(Kind::Context).body(body).build();
+        let signal = Signal::builder(Kind::ContextPack).body(body).build();
         Ok(vec![signal])
     }
 }
@@ -290,9 +288,7 @@ fn collect_enrichment_outputs(
         // Try each enrichment payload type in turn.
         if let Ok(payload) = signal.body.as_json::<SafetySections>() {
             if !payload.scope.matches(request_scope) {
-                warn!(
-                    "AggregateCell: rejecting safety output with mismatched scope"
-                );
+                warn!("AggregateCell: rejecting safety output with mismatched scope");
                 continue;
             }
             has_safety = true;
@@ -303,9 +299,7 @@ fn collect_enrichment_outputs(
 
         if let Ok(payload) = signal.body.as_json::<TaskContextSections>() {
             if !payload.scope.matches(request_scope) {
-                warn!(
-                    "AggregateCell: rejecting task_context output with mismatched scope"
-                );
+                warn!("AggregateCell: rejecting task_context output with mismatched scope");
                 continue;
             }
             has_task_context = true;
@@ -316,9 +310,7 @@ fn collect_enrichment_outputs(
 
         if let Ok(payload) = signal.body.as_json::<KnowledgeSections>() {
             if !payload.scope.matches(request_scope) {
-                warnings.push(
-                    "knowledge provider scope mismatch; degrading to empty".into(),
-                );
+                warnings.push("knowledge provider scope mismatch; degrading to empty".into());
                 continue;
             }
             sections.extend(payload.sections);
@@ -328,9 +320,7 @@ fn collect_enrichment_outputs(
 
         if let Ok(payload) = signal.body.as_json::<EpisodeSections>() {
             if !payload.scope.matches(request_scope) {
-                warnings.push(
-                    "episodes provider scope mismatch; degrading to empty".into(),
-                );
+                warnings.push("episodes provider scope mismatch; degrading to empty".into());
                 continue;
             }
             sections.extend(payload.sections);
@@ -340,9 +330,7 @@ fn collect_enrichment_outputs(
 
         if let Ok(payload) = signal.body.as_json::<PlaybookSections>() {
             if !payload.scope.matches(request_scope) {
-                warnings.push(
-                    "playbook provider scope mismatch; degrading to empty".into(),
-                );
+                warnings.push("playbook provider scope mismatch; degrading to empty".into());
                 continue;
             }
             sections.extend(payload.sections);
@@ -352,9 +340,7 @@ fn collect_enrichment_outputs(
 
         if let Ok(payload) = signal.body.as_json::<ModulationSections>() {
             if !payload.scope.matches(request_scope) {
-                warnings.push(
-                    "modulation provider scope mismatch; degrading to empty".into(),
-                );
+                warnings.push("modulation provider scope mismatch; degrading to empty".into());
                 continue;
             }
             sections.extend(payload.sections);
@@ -364,9 +350,7 @@ fn collect_enrichment_outputs(
 
         if let Ok(payload) = signal.body.as_json::<ExperimentAssignment>() {
             if !payload.scope.matches(request_scope) {
-                warnings.push(
-                    "experiment provider scope mismatch; degrading to empty".into(),
-                );
+                warnings.push("experiment provider scope mismatch; degrading to empty".into());
                 continue;
             }
             sections.extend(payload.sections);
@@ -398,9 +382,7 @@ fn collect_enrichment_outputs(
 }
 
 /// Extract the compose scope and optional budget from input signals.
-fn extract_scope_and_budget(
-    input: &[Signal],
-) -> Result<(ComposeScope, Option<usize>)> {
+fn extract_scope_and_budget(input: &[Signal]) -> Result<(ComposeScope, Option<usize>)> {
     // First try to find a ComposeRequest directly.
     for signal in input {
         if let Ok(req) = signal.body.as_json::<ComposeRequest>() {
@@ -433,7 +415,7 @@ fn extract_scope_and_budget(
         }
     }
 
-    Err(roko_core::error::RokoError::Internal(
+    Err(roko_core::error::RokoError::Store(
         "AggregateCell: could not determine compose scope from input signals".into(),
     ))
 }
@@ -455,6 +437,7 @@ mod tests {
     use super::*;
     use crate::prompt::Placement;
     use roko_core::AgentRole;
+    use roko_graph::Cell;
 
     fn test_scope() -> ComposeScope {
         ComposeScope {
@@ -468,20 +451,24 @@ mod tests {
     fn make_safety_signal(scope: &ComposeScope) -> Signal {
         let payload = SafetySections::new(
             scope.clone(),
-            vec![PromptSection::new("safety_notice", "Do not modify safety files")
-                .with_priority(SectionPriority::Critical)
-                .with_placement(Placement::Start)],
+            vec![
+                PromptSection::new("safety_notice", "Do not modify safety files")
+                    .with_priority(SectionPriority::Critical)
+                    .with_placement(Placement::Start),
+            ],
         );
         let body = Body::from_json(&payload).unwrap();
-        Signal::builder(Kind::Context).body(body).build()
+        Signal::builder(Kind::ContextPack).body(body).build()
     }
 
     fn make_task_context_signal(scope: &ComposeScope) -> Signal {
         let payload = TaskContextSections::new(
             scope.clone(),
-            vec![PromptSection::new("task_brief", "Implement the widget")
-                .with_priority(SectionPriority::Critical)
-                .with_placement(Placement::End)],
+            vec![
+                PromptSection::new("task_brief", "Implement the widget")
+                    .with_priority(SectionPriority::Critical)
+                    .with_placement(Placement::End),
+            ],
         );
         let body = Body::from_json(&payload).unwrap();
         Signal::builder(Kind::Task).body(body).build()
@@ -493,7 +480,7 @@ mod tests {
             vec![PromptSection::new("knowledge_fact", "Rust uses ownership")],
         );
         let body = Body::from_json(&payload).unwrap();
-        Signal::builder(Kind::Context).body(body).build()
+        Signal::builder(Kind::ContextPack).body(body).build()
     }
 
     fn make_request_signal(scope: &ComposeScope) -> Signal {
@@ -503,7 +490,7 @@ mod tests {
             context_window_tokens: None,
         };
         let body = Body::from_json(&req).unwrap();
-        Signal::builder(Kind::Context).body(body).build()
+        Signal::builder(Kind::ContextPack).body(body).build()
     }
 
     #[tokio::test]
@@ -540,9 +527,7 @@ mod tests {
             make_task_context_signal(&scope),
         ];
 
-        let result = cell
-            .execute(input, &roko_graph::CellContext::new())
-            .await;
+        let result = cell.execute(input, &roko_graph::CellContext::new()).await;
         assert!(result.is_err());
         let err_msg = format!("{}", result.unwrap_err());
         assert!(err_msg.contains("safety"));
@@ -555,9 +540,7 @@ mod tests {
 
         let input = vec![make_request_signal(&scope), make_safety_signal(&scope)];
 
-        let result = cell
-            .execute(input, &roko_graph::CellContext::new())
-            .await;
+        let result = cell.execute(input, &roko_graph::CellContext::new()).await;
         assert!(result.is_err());
         let err_msg = format!("{}", result.unwrap_err());
         assert!(err_msg.contains("task_context"));
@@ -604,7 +587,7 @@ mod tests {
                 vec![PromptSection::new("knowledge_fact", "should be rejected")],
             );
             let body = Body::from_json(&payload).unwrap();
-            Signal::builder(Kind::Context).body(body).build()
+            Signal::builder(Kind::ContextPack).body(body).build()
         };
 
         let input = vec![
@@ -635,20 +618,18 @@ mod tests {
         let dup1 = {
             let payload = KnowledgeSections::new(
                 scope.clone(),
-                vec![PromptSection::new("knowledge_fact", "first")
-                    .with_section_id("dup-id")],
+                vec![PromptSection::new("knowledge_fact", "first").with_section_id("dup-id")],
             );
             let body = Body::from_json(&payload).unwrap();
-            Signal::builder(Kind::Context).body(body).build()
+            Signal::builder(Kind::ContextPack).body(body).build()
         };
         let dup2 = {
             let payload = KnowledgeSections::new(
                 scope.clone(),
-                vec![PromptSection::new("knowledge_fact", "second")
-                    .with_section_id("dup-id")],
+                vec![PromptSection::new("knowledge_fact", "second").with_section_id("dup-id")],
             );
             let body = Body::from_json(&payload).unwrap();
-            Signal::builder(Kind::Context).body(body).build()
+            Signal::builder(Kind::ContextPack).body(body).build()
         };
 
         let input = vec![
@@ -687,7 +668,7 @@ mod tests {
         };
         let req_signal = {
             let body = Body::from_json(&req).unwrap();
-            Signal::builder(Kind::Context).body(body).build()
+            Signal::builder(Kind::ContextPack).body(body).build()
         };
 
         // Knowledge with low priority and long content.
@@ -695,11 +676,13 @@ mod tests {
             let long_content = "x".repeat(1000); // ~250 tokens
             let payload = KnowledgeSections::new(
                 scope.clone(),
-                vec![PromptSection::new("knowledge_fact", long_content)
-                    .with_priority(SectionPriority::Low)],
+                vec![
+                    PromptSection::new("knowledge_fact", long_content)
+                        .with_priority(SectionPriority::Low),
+                ],
             );
             let body = Body::from_json(&payload).unwrap();
-            Signal::builder(Kind::Context).body(body).build()
+            Signal::builder(Kind::ContextPack).body(body).build()
         };
 
         let input = vec![
@@ -718,10 +701,12 @@ mod tests {
         // Critical sections (safety + task) should be included.
         // The large low-priority knowledge section should be dropped.
         assert!(!prompt.dropped_section_ids.is_empty());
-        assert!(prompt
-            .warnings
-            .iter()
-            .any(|w| w.contains("budget pressure")));
+        assert!(
+            prompt
+                .warnings
+                .iter()
+                .any(|w| w.contains("budget pressure"))
+        );
     }
 
     #[test]
@@ -732,26 +717,16 @@ mod tests {
         let knowledge = PromptSection::new("knowledge_fact", "x");
         let gate = PromptSection::new("gate_feedback", "x");
 
-        assert!(
-            (classify_section(&safety) as u8) < (classify_section(&role) as u8)
-        );
-        assert!(
-            (classify_section(&role) as u8)
-                < (classify_section(&knowledge) as u8)
-        );
-        assert!(
-            (classify_section(&knowledge) as u8)
-                < (classify_section(&task) as u8)
-        );
-        assert!(
-            (classify_section(&task) as u8) < (classify_section(&gate) as u8)
-        );
+        assert!((classify_section(&safety) as u8) < (classify_section(&role) as u8));
+        assert!((classify_section(&role) as u8) < (classify_section(&knowledge) as u8));
+        assert!((classify_section(&knowledge) as u8) < (classify_section(&task) as u8));
+        assert!((classify_section(&task) as u8) < (classify_section(&gate) as u8));
     }
 
     #[test]
     fn classify_experiment_section() {
-        let exp = PromptSection::new("custom_exp", "x")
-            .with_section_id("experiment:001:custom_exp");
+        let exp =
+            PromptSection::new("custom_exp", "x").with_section_id("experiment:001:custom_exp");
         let mut exp_with_id = exp.clone();
         exp_with_id.experiment_id = Some("001".into());
         assert_eq!(

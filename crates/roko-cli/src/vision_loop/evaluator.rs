@@ -11,7 +11,7 @@ use roko_agent::{
 use roko_core::agent::resolve_model;
 use roko_core::chat_types::{ChatMessage, ContentBlock, ImageUrl, MessageContent};
 use roko_core::config::schema::RokoConfig;
-use roko_core::{Body, Kind, Signal};
+use roko_core::{Body, Kind, MessageRole, ModelInputBlock, ModelInputMessage, Signal};
 use roko_learn::model_call_feedback::{ModelCallFeedback, ModelCallFeedbackRecorder};
 
 use crate::learning_helpers::{capture_runtime_model_slugs, provider_id_for_model};
@@ -76,11 +76,14 @@ impl VisionEvaluator {
 
         let user_text = prompt::user_code_block(current_code);
 
-        // Build the multimodal prompt as a text signal for the Agent trait.
-        // The system prompt and user content (text + image) are combined into
-        // the prompt engram. The agent's provider adapter will parse them into
-        // the correct wire format (OpenAI messages, Anthropic blocks, etc.).
-        let full_prompt = build_multimodal_prompt(&sys_prompt, &user_text, screenshot_data_uri);
+        // Build structured multimodal input with proper Image blocks so that
+        // provider adapters can emit the correct wire format (Anthropic image
+        // source blocks, OpenAI image_url parts, Gemini inlineData parts).
+        let user_prompt = format!(
+            "{user_text}\n\n\
+             Evaluate the screenshot above against the goal and respond with ONLY valid JSON."
+        );
+        let input_messages = build_input_messages(&user_prompt, screenshot_data_uri);
 
         let llm_timeout_ms = self.config.timeouts.llm_call().as_millis() as u64;
         let options = AgentOptions {
@@ -89,6 +92,7 @@ impl VisionEvaluator {
             name: "vision-evaluator".to_string(),
             working_dir: Some(self.workdir.clone()),
             immune_root: Some(self.workdir.clone()),
+            input_messages,
             ..Default::default()
         };
 
@@ -96,7 +100,7 @@ impl VisionEvaluator {
             .map_err(|e| anyhow::anyhow!("failed to create vision agent: {e}"))?;
 
         let input = Signal::builder(Kind::Prompt)
-            .body(Body::text(&full_prompt))
+            .body(Body::text(&user_prompt))
             .build();
 
         let started = Instant::now();
@@ -163,6 +167,7 @@ impl VisionEvaluator {
                 latency_ms,
                 success: learning_success,
                 provider_success: Some(result.success),
+                error_class: None,
             })
             .await
         {
@@ -176,23 +181,33 @@ impl VisionEvaluator {
     }
 }
 
-/// Build a prompt that includes both text and image reference.
-/// The agent system prompt is set via `AgentOptions::system_prompt`, so the
-/// prompt engram carries the user turn: code text + image instruction.
-fn build_multimodal_prompt(
-    _system_prompt: &str,
-    user_text: &str,
-    screenshot_data_uri: &str,
-) -> String {
-    // For providers that don't natively support multimodal content blocks via
-    // the Agent trait, we embed the image reference as a structured hint.
-    // Providers that do support vision (Anthropic API, OpenAI compat) will
-    // extract the image_url from the prompt when it matches this pattern.
-    format!(
-        "{user_text}\n\n\
-         [IMAGE: {screenshot_data_uri}]\n\n\
-         Evaluate the screenshot above against the goal and respond with ONLY valid JSON."
-    )
+/// Parse a `data:<media_type>;base64,<data>` URI into its components.
+fn parse_data_uri(data_uri: &str) -> Option<(String, String)> {
+    let rest = data_uri.strip_prefix("data:")?;
+    let (header, data) = rest.split_once(";base64,")?;
+    Some((header.to_string(), data.to_string()))
+}
+
+/// Build ordered `ModelInputMessage` blocks for the user turn so that
+/// provider adapters emit real image blocks instead of text placeholders.
+fn build_input_messages(user_text: &str, screenshot_data_uri: &str) -> Vec<ModelInputMessage> {
+    let mut blocks = vec![ModelInputBlock::text(user_text)];
+
+    if let Some((media_type, data)) = parse_data_uri(screenshot_data_uri) {
+        blocks.push(ModelInputBlock::image(media_type, data));
+    } else {
+        // Fallback: if the URI cannot be parsed, include it as text so the
+        // model still receives *something* rather than silently losing it.
+        tracing::warn!(
+            "screenshot data URI could not be parsed as data:<type>;base64,<data>; \
+             falling back to text embedding"
+        );
+        blocks.push(ModelInputBlock::text(format!(
+            "[screenshot: {screenshot_data_uri}]"
+        )));
+    }
+
+    vec![ModelInputMessage::new(MessageRole::User, blocks)]
 }
 
 /// Parse the model response into an `Evaluation`, stripping markdown fences if present.
@@ -411,6 +426,55 @@ mod tests {
     }
 
     #[test]
+    fn parse_data_uri_valid_png() {
+        let (media, data) = parse_data_uri("data:image/png;base64,aGVsbG8=").unwrap();
+        assert_eq!(media, "image/png");
+        assert_eq!(data, "aGVsbG8=");
+    }
+
+    #[test]
+    fn parse_data_uri_valid_webp() {
+        let (media, data) = parse_data_uri("data:image/webp;base64,AAAA").unwrap();
+        assert_eq!(media, "image/webp");
+        assert_eq!(data, "AAAA");
+    }
+
+    #[test]
+    fn parse_data_uri_rejects_non_data_uri() {
+        assert!(parse_data_uri("https://example.com/image.png").is_none());
+        assert!(parse_data_uri("not a uri").is_none());
+    }
+
+    #[test]
+    fn build_input_messages_produces_text_and_image_blocks() {
+        let msgs = build_input_messages("evaluate this", "data:image/png;base64,aGVsbG8=");
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].role, MessageRole::User);
+        assert_eq!(msgs[0].content.len(), 2);
+        match &msgs[0].content[0] {
+            ModelInputBlock::Text { text } => assert!(text.contains("evaluate this")),
+            _ => panic!("expected text block"),
+        }
+        match &msgs[0].content[1] {
+            ModelInputBlock::Image { media_type, data } => {
+                assert_eq!(media_type, "image/png");
+                assert_eq!(data, "aGVsbG8=");
+            }
+            _ => panic!("expected image block"),
+        }
+    }
+
+    #[test]
+    fn build_input_messages_falls_back_to_text_for_invalid_uri() {
+        let msgs = build_input_messages("evaluate this", "https://example.com/img.png");
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].content.len(), 2);
+        // Both blocks should be text when the URI cannot be parsed.
+        assert!(matches!(&msgs[0].content[0], ModelInputBlock::Text { .. }));
+        assert!(matches!(&msgs[0].content[1], ModelInputBlock::Text { .. }));
+    }
+
+    #[test]
     fn multimodal_messages_have_correct_shape() {
         let msgs = build_multimodal_messages("sys", "code here", "data:image/png;base64,abc");
         assert_eq!(msgs.len(), 2);
@@ -468,6 +532,7 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"{\"score\":8.5,\"n
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
         config.models.insert(

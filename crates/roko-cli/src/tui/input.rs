@@ -783,9 +783,9 @@ fn handle_batch_review_key(key: KeyEvent) -> TuiAction {
         KeyCode::Esc | KeyCode::Char('q') => TuiAction::CloseModal,
         KeyCode::Up | KeyCode::Char('k') => TuiAction::ModalScrollUp,
         KeyCode::Down | KeyCode::Char('j') => TuiAction::ModalScrollDown,
-        KeyCode::Char('a') => TuiAction::ConfirmYes,  // approve
-        KeyCode::Char('r') => TuiAction::ConfirmNo,   // reject
-        KeyCode::Char('s') => TuiAction::CloseModal,  // skip (dismiss without action)
+        KeyCode::Char('a') => TuiAction::ConfirmYes, // approve
+        KeyCode::Char('r') => TuiAction::ConfirmNo,  // reject
+        KeyCode::Char('s') => TuiAction::CloseModal, // skip (dismiss without action)
         _ => TuiAction::None,
     }
 }
@@ -1049,9 +1049,7 @@ fn handle_plans_key(key: KeyEvent, focus: FocusZone) -> TuiAction {
         KeyCode::Char('V') => TuiAction::ReverifyPlan,
 
         // Direct plan selection by number (1-9 select plan at that 0-based index)
-        KeyCode::Char(c @ '1'..='9') => {
-            TuiAction::SelectPlanByIndex((c as usize) - ('1' as usize))
-        }
+        KeyCode::Char(c @ '1'..='9') => TuiAction::SelectPlanByIndex((c as usize) - ('1' as usize)),
         _ => TuiAction::None,
     }
 }

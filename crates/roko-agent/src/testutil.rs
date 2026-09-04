@@ -10,9 +10,11 @@ use crate::provider::ProviderError;
 use crate::rate_limit::ProviderRateLimiter;
 use crate::safety::SafetyLayer;
 use crate::streaming::parse_sse_line;
-use crate::tool_loop::{LlmBackend, LlmError, StreamEvent, StreamEventKind, StopReason, TurnConfig, ToolLoop};
+use crate::tool_loop::{
+    LlmBackend, LlmError, StopReason, StreamEvent, StreamEventKind, ToolLoop, TurnConfig,
+};
 use crate::translate::{
-    BackendResponse, FinishReason, OpenAiTranslator, RenderedTools, SessionState, Translator,
+    BackendResponse, OpenAiTranslator, RenderedTools, SessionState, Translator,
 };
 use async_trait::async_trait;
 use roko_core::tool::{
@@ -481,10 +483,7 @@ async fn run_llm_streaming(backend: ParityBackend) -> Result<(), String> {
     .map_err(|err| format!("streaming request failed: {err}"))?;
 
     use futures::StreamExt;
-    let events: Vec<StreamEvent> = stream
-        .filter_map(|r| async { r.ok() })
-        .collect()
-        .await;
+    let events: Vec<StreamEvent> = stream.filter_map(|r| async { r.ok() }).collect().await;
 
     let observed = normalize_events(&events);
     if observed != scenario.expected_chunks {
@@ -497,11 +496,13 @@ async fn run_llm_streaming(backend: ParityBackend) -> Result<(), String> {
     match events.last().map(|e| &e.kind) {
         Some(StreamEventKind::Done { .. }) => {}
         other => {
-            return Err(format!(
-                "stream did not end with a Done event: {other:?}"
-            ));
+            return Err(format!("stream did not end with a Done event: {other:?}"));
         }
     }
+
+    // Reconstruct a BackendResponse from the accumulated stream events so
+    // we can reuse extract_text / extract_usage / extract_backend_session.
+    let response = response_from_stream_events(&events);
 
     if response.extract_text() != scenario.scenario.expected_content {
         return Err("streamed final content mismatch".to_string());
@@ -1033,6 +1034,50 @@ fn usage_from_chunks(chunks: &[ExpectedChunk]) -> crate::Usage {
         }
     }
     usage
+}
+
+/// Reconstruct a [`BackendResponse`] from collected stream events by
+/// accumulating text deltas and building a synthetic OpenAI-shaped JSON
+/// response so that `extract_text`, `extract_usage`, and session extraction
+/// all work the same way as the non-streaming happy path.
+fn response_from_stream_events(events: &[StreamEvent]) -> BackendResponse {
+    let mut text = String::new();
+    let mut usage_json = serde_json::json!({});
+    let model = String::new();
+    let response_id = String::new();
+
+    for event in events {
+        match &event.kind {
+            StreamEventKind::TextDelta(delta) => text.push_str(delta),
+            StreamEventKind::Usage(u) => {
+                usage_json = serde_json::json!({
+                    "prompt_tokens": u.input_tokens,
+                    "completion_tokens": u.output_tokens,
+                    "cache_read_input_tokens": u.cache_read_tokens,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    // Wrap in an OpenAI chat-completions-shaped envelope so that
+    // `BackendResponse::Json(v).extract_text()` and `extract_usage()`
+    // both work.
+    let envelope = serde_json::json!({
+        "id": response_id,
+        "model": model,
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": text,
+            },
+            "finish_reason": "stop",
+        }],
+        "usage": usage_json,
+    });
+
+    let _ = (model, response_id); // suppress unused warnings
+    BackendResponse::Json(envelope)
 }
 
 fn make_tool_loop<B>(backend: B) -> ToolLoop

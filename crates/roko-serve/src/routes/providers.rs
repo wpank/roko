@@ -166,6 +166,7 @@ async fn explain_routing(
         previous_model: Some(resolved.slug.clone()),
         plan_context_tokens: None,
         tier_thresholds: None,
+        cfactor: None,
     };
 
     let cascade_path = state.workdir.join(".roko/learn/cascade-router.json");
@@ -635,6 +636,8 @@ fn provider_test_request(model_key: &str, provider_id: &str) -> ModelCallRequest
         routing_hints: Vec::new(),
         cache_policy: CachePolicy::Bypass,
         tools: Vec::new(),
+        generation_settings: None,
+        mcp_config: None,
     }
 }
 
@@ -746,6 +749,7 @@ mod tests {
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
         config.models.insert(
@@ -851,6 +855,7 @@ mod tests {
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
         config.models.insert(
@@ -946,6 +951,7 @@ mod tests {
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
         config.models.insert(
@@ -1141,6 +1147,7 @@ mod tests {
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
         config.providers.insert(
@@ -1157,6 +1164,7 @@ mod tests {
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
         config.models.insert(
@@ -1314,6 +1322,7 @@ mod tests {
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
 
@@ -1404,6 +1413,7 @@ mod tests {
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
         config.models.insert(
@@ -1531,6 +1541,7 @@ mod tests {
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
 

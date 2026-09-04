@@ -35,10 +35,7 @@ pub fn render_welcome(frame: &mut Frame<'_>, area: Rect, initialized: bool, them
             theme.success().add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "  Next steps:",
-            theme.text(),
-        )));
+        lines.push(Line::from(Span::styled("  Next steps:", theme.text())));
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
             Span::styled("    roko config set-secret", theme.accent()),

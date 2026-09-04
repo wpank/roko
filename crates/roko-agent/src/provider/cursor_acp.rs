@@ -8,7 +8,6 @@ use roko_core::agent::ProviderKind;
 #[cfg(test)]
 use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
 use roko_core::config::schema::{ModelProfile, ProviderConfig};
-use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
 use serde_json::Value;
 
 /// Adapter for the Cursor ACP HTTP fallback.
@@ -44,10 +43,7 @@ impl ProviderAdapter for CursorAcpAdapter {
         let api_key = provider.resolve_api_key().ok_or_else(|| {
             AgentCreationError::MissingApiKey(provider.api_key_env.clone().unwrap_or_default())
         })?;
-        let timeout_ms = options
-            .timeout_ms
-            .or(provider.timeout_ms)
-            .unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS);
+        let timeout_ms = options.effective_timeout_ms(provider.timeout_ms);
 
         let mut agent = CursorAgent::new(
             api_key,
@@ -63,31 +59,19 @@ impl ProviderAdapter for CursorAcpAdapter {
         if !options.name.is_empty() {
             agent = agent.with_name(options.name.clone());
         }
+        if let Some(prompt) = &options.system_prompt {
+            agent = agent.with_system_prompt(prompt.clone());
+        }
 
         Ok(Box::new(agent))
     }
 
     fn classify_error(&self, status: u16, body: &Value) -> ProviderError {
-        match status {
-            429 => ProviderError::RateLimit {
-                retry_after_ms: body
-                    .pointer("/retry_after")
-                    .and_then(|value| value.as_u64())
-                    .map(|seconds| seconds * 1000),
-            },
-            401 | 403 => ProviderError::AuthFailure,
-            404 => ProviderError::ModelNotFound,
-            408 => ProviderError::Timeout,
-            // 529 (API overload) — treat as rate-limit for retry purposes.
-            529 => ProviderError::RateLimit {
-                retry_after_ms: body
-                    .pointer("/retry_after")
-                    .and_then(|value| value.as_u64())
-                    .map(|seconds| seconds * 1000),
-            },
-            500..=599 => ProviderError::ServerError(status),
-            _ => ProviderError::Other(format!("HTTP {}", status)),
-        }
+        super::error_classify::classify_http_status(
+            status,
+            body,
+            super::error_classify::RetryAfterSource::BodyRetryAfterCompat,
+        )
     }
 }
 
@@ -228,6 +212,7 @@ mod tests {
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         };
         let options = AgentOptions {
             timeout_ms: Some(2_500),

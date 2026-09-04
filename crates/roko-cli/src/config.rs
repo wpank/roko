@@ -157,7 +157,9 @@ impl Config {
                 .clone()
                 .unwrap_or_else(AgentConfig::default_command),
             args: core_agent.args.clone().unwrap_or_default(),
-            timeout_ms: core_agent.timeout_ms.unwrap_or(AgentConfig::default_timeout()),
+            timeout_ms: core_agent
+                .timeout_ms
+                .unwrap_or(AgentConfig::default_timeout()),
             env: core_agent.env.clone().unwrap_or_default(),
             fallback_model: core_agent.fallback_model.clone(),
             clean_output: AgentConfig::default_clean(),
@@ -392,17 +394,17 @@ impl DaimonConfig {
     /// Returns an error if `strategy_space.dimensions` does not contain
     /// exactly 8 entries.
     pub fn from_core(core: &roko_core::config::execution::DaimonConfig) -> Result<Self> {
-        let dims: [String; 8] = core
-            .strategy_space
-            .dimensions
-            .clone()
-            .try_into()
-            .map_err(|values: Vec<String>| {
-                anyhow!(
-                    "daimon.strategy_space.dimensions must contain exactly 8 entries, got {}",
-                    values.len()
-                )
-            })?;
+        let dims: [String; 8] =
+            core.strategy_space
+                .dimensions
+                .clone()
+                .try_into()
+                .map_err(|values: Vec<String>| {
+                    anyhow!(
+                        "daimon.strategy_space.dimensions must contain exactly 8 entries, got {}",
+                        values.len()
+                    )
+                })?;
         let def = StrategySpaceDefinition {
             domain: core.strategy_space.domain.clone(),
             dimensions: dims,
@@ -1615,6 +1617,7 @@ impl ProviderLayer {
             extra_headers: self.extra_headers,
             max_concurrent: self.max_concurrent,
             limits: self.limits,
+            require_confirmation: false,
         })
     }
 }
@@ -3159,7 +3162,12 @@ impl ConfigSources {
 
         let lookup = |key: &str| -> Source {
             // Check merge_context field provenance first (most specific).
-            if let Some(fp) = validated.merge_context.field_provenance.iter().find(|fp| fp.key == key) {
+            if let Some(fp) = validated
+                .merge_context
+                .field_provenance
+                .iter()
+                .find(|fp| fp.key == key)
+            {
                 return match &fp.value_source {
                     CS::Env => Source::Env,
                     CS::File | CS::LocalOverride => Source::Project,
@@ -3602,6 +3610,19 @@ pub fn command_on_path(cmd: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Derive the set of known top-level TOML keys from serializing a default
+    /// `RokoConfig`.  This stays in sync automatically as fields are added.
+    fn known_config_keys() -> std::collections::HashSet<String> {
+        let default_toml = toml::to_string(&RokoConfig::default()).expect("serialize default");
+        let value: toml::Value = toml::from_str(&default_toml).expect("parse default");
+        value
+            .as_table()
+            .expect("default is a table")
+            .keys()
+            .cloned()
+            .collect()
+    }
 
     #[test]
     fn parses_minimal_config() {
@@ -4621,7 +4642,7 @@ program = "echo"
             .as_table()
             .expect("init template is a TOML table")
             .keys()
-            .filter(|key| !KNOWN_CONFIG_KEYS.contains(&key.as_str()))
+            .filter(|key| !known_config_keys().contains(key.as_str()))
             .collect::<Vec<_>>();
         assert!(
             unknown_keys.is_empty(),
@@ -4751,7 +4772,7 @@ model = "opus-4"
         let table = value.as_table().unwrap();
         let unknown_known: Vec<&String> = table
             .keys()
-            .filter(|k| !KNOWN_CONFIG_KEYS.contains(&k.as_str()))
+            .filter(|k| !known_config_keys().contains(k.as_str()))
             .collect();
         assert!(
             unknown_known.is_empty(),
@@ -4763,7 +4784,7 @@ model = "opus-4"
         let table = value.as_table().unwrap();
         let unknown: Vec<&String> = table
             .keys()
-            .filter(|k| !KNOWN_CONFIG_KEYS.contains(&k.as_str()))
+            .filter(|k| !known_config_keys().contains(k.as_str()))
             .collect();
         assert_eq!(
             unknown.len(),

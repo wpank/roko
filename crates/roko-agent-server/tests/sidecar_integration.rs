@@ -286,10 +286,7 @@ async fn capabilities_reflect_enabled_features() {
     let (status, body) = get_json(&router, "/capabilities").await;
     assert_eq!(status, StatusCode::OK);
     let features = body["features"].as_array().expect("features array");
-    let feature_names: Vec<&str> = features
-        .iter()
-        .filter_map(Value::as_str)
-        .collect();
+    let feature_names: Vec<&str> = features.iter().filter_map(Value::as_str).collect();
     for expected in ["messaging", "predictions", "research", "tasks"] {
         assert!(
             feature_names.contains(&expected),
@@ -405,9 +402,11 @@ async fn message_without_dispatcher_returns_503() {
     let router = all_features_router(None);
     let (status, body) = post_json(&router, "/message", json!({"prompt": "test"})).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-    assert!(body["error"]
-        .as_str()
-        .is_some_and(|s| s.contains("no configured dispatcher")));
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|s| s.contains("no configured dispatcher"))
+    );
 }
 
 #[tokio::test]
@@ -415,9 +414,11 @@ async fn message_dispatch_error_returns_502() {
     let router = all_features_router(Some(error_dispatcher()));
     let (status, body) = post_json(&router, "/message", json!({"prompt": "test"})).await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
-    assert!(body["error"]
-        .as_str()
-        .is_some_and(|s| s.contains("dispatch failed")));
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|s| s.contains("dispatch failed"))
+    );
 }
 
 #[tokio::test]
@@ -431,10 +432,7 @@ async fn message_success_returns_response_envelope() {
         body.get("finish_reason").is_some(),
         "should include finish_reason"
     );
-    assert!(
-        body.get("engram_id").is_some(),
-        "should include engram_id"
-    );
+    assert!(body.get("engram_id").is_some(), "should include engram_id");
 }
 
 // ---------------------------------------------------------------------------
@@ -508,12 +506,8 @@ async fn accept_nonexistent_task_returns_404() {
 #[tokio::test]
 async fn complete_nonexistent_task_returns_404() {
     let router = all_features_router(None);
-    let (status, _body) = post_json(
-        &router,
-        "/tasks/999/complete",
-        json!({"result": "done"}),
-    )
-    .await;
+    let (status, _body) =
+        post_json(&router, "/tasks/999/complete", json!({"result": "done"})).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 

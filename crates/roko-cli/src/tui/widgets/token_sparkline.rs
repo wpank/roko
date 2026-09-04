@@ -176,10 +176,7 @@ pub fn render_token_sparkline(
                 }),
             ),
             Span::styled(" events ", theme.label()),
-            Span::styled(
-                format!("{}", snapshot.event_count),
-                theme.value(),
-            ),
+            Span::styled(format!("{}", snapshot.event_count), theme.value()),
             Span::styled(" window ", theme.label()),
             Span::styled(format!("{window}"), Style::default().fg(Theme::TEXT_DIM)),
         ]);
@@ -229,10 +226,7 @@ pub fn render_token_sparkline(
         lines.push(Line::from(spans));
     } else {
         lines.push(Line::from(Span::styled(
-            format!(
-                " {} waiting for data",
-                state.atmosphere.spinner()
-            ),
+            format!(" {} waiting for data", state.atmosphere.spinner()),
             Style::default().fg(Theme::TEXT_DIM),
         )));
     }

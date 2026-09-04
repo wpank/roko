@@ -44,10 +44,7 @@ fn finding_to_doctor_check(finding: &DiagnosticFinding) -> DoctorCheck {
         },
         path: finding.evidence.get("path").cloned(),
         url: None,
-        fix: finding
-            .remediation
-            .as_ref()
-            .and_then(|r| r.command.clone()),
+        fix: finding.remediation.as_ref().and_then(|r| r.command.clone()),
     }
 }
 
@@ -3658,6 +3655,7 @@ mod tests {
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         }
     }
 
@@ -3841,9 +3839,7 @@ mod tests {
     #[test]
     fn disk_report_advisory_large_jsonl_exits_one() {
         let mut report = clean_disk_report();
-        report
-            .large_jsonl_files
-            .push("/tmp/big.jsonl".to_string());
+        report.large_jsonl_files.push("/tmp/big.jsonl".to_string());
         assert_eq!(report.exit_code(), 1);
     }
 

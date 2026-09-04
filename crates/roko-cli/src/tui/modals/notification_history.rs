@@ -179,10 +179,7 @@ pub fn render_notification_history(
 
         // Show source if present.
         if !entry.source.is_empty() {
-            spans.push(Span::styled(
-                format!("  ({})", entry.source),
-                theme.muted(),
-            ));
+            spans.push(Span::styled(format!("  ({})", entry.source), theme.muted()));
         }
 
         // Indicate navigable entries.
@@ -318,7 +315,11 @@ fn find_long_tokens(s: &str, min_len: usize) -> Vec<(usize, usize)> {
     let bytes = s.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i].is_ascii_alphanumeric() || bytes[i] == b'+' || bytes[i] == b'/' || bytes[i] == b'=' {
+        if bytes[i].is_ascii_alphanumeric()
+            || bytes[i] == b'+'
+            || bytes[i] == b'/'
+            || bytes[i] == b'='
+        {
             let start = i;
             while i < bytes.len()
                 && (bytes[i].is_ascii_alphanumeric()
@@ -375,7 +376,14 @@ mod tests {
             .draw(|frame| {
                 let area = frame.area();
                 render_notification_history(
-                    frame, area, entries, scroll, selected, evicted, filter, &Theme::dark(),
+                    frame,
+                    area,
+                    entries,
+                    scroll,
+                    selected,
+                    evicted,
+                    filter,
+                    &Theme::dark(),
                 );
             })
             .expect("render");

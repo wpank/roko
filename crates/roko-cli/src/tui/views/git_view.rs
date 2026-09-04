@@ -266,9 +266,7 @@ fn render_worktree_list(
         Constraint::Length(10),
     ];
     let table = Table::new(rows, widths)
-        .header(
-            Row::new(["path", "branch", "status"]).style(theme.label()),
-        )
+        .header(Row::new(["path", "branch", "status"]).style(theme.label()))
         .column_spacing(1);
     frame.render_widget(table, inner);
 }
@@ -430,8 +428,8 @@ fn render_right_panel(
         render_diff_viewer(frame, sections[1], git_data, focused, view_state, theme);
         render_branch_info(frame, sections[2], git_data, focused, theme);
     } else {
-        let sections = Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)])
-            .split(area);
+        let sections =
+            Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)]).split(area);
         render_commit_graph(frame, sections[0], git_data, focused, view_state, theme);
         render_branch_info(frame, sections[1], git_data, focused, theme);
     }
@@ -601,13 +599,13 @@ fn render_branch_info(
     let (total_add, total_del) = git_data
         .numstat
         .iter()
-        .fold((0usize, 0usize), |(a, d), (add, del, _)| {
-            (a + add, d + del)
-        });
+        .fold((0usize, 0usize), |(a, d), (add, del, _)| (a + add, d + del));
 
     let sep_width = inner.width as usize;
-    let separator =
-        Line::from(Span::styled("─".repeat(sep_width), Style::default().fg(Theme::SEPARATOR)));
+    let separator = Line::from(Span::styled(
+        "─".repeat(sep_width),
+        Style::default().fg(Theme::SEPARATOR),
+    ));
 
     let mut lines = vec![
         Line::from(vec![
@@ -977,7 +975,10 @@ fn collect_diff(workdir: &Path) -> String {
 fn collect_numstat(workdir: &Path) -> Vec<(usize, usize, String)> {
     let mut result = Vec::new();
     // Collect both staged and unstaged numstat.
-    for args in [&["diff", "--numstat"][..], &["diff", "--cached", "--numstat"][..]] {
+    for args in [
+        &["diff", "--numstat"][..],
+        &["diff", "--cached", "--numstat"][..],
+    ] {
         let output = run_git(workdir, args);
         let Some(output) = output else { continue };
         for line in output.lines() {
@@ -987,7 +988,10 @@ fn collect_numstat(workdir: &Path) -> Vec<(usize, usize, String)> {
                 let del = parts[1].parse::<usize>().unwrap_or(0);
                 let name = parts[2].to_string();
                 // Avoid duplicates if same file appears in both.
-                if !result.iter().any(|(_, _, n): &(usize, usize, String)| n == &name) {
+                if !result
+                    .iter()
+                    .any(|(_, _, n): &(usize, usize, String)| n == &name)
+                {
                     result.push((add, del, name));
                 }
             }
@@ -1004,7 +1008,10 @@ fn shorten_path(path: &str, max: usize) -> String {
     if path.len() <= max {
         return path.to_string();
     }
-    format!("...{}", &path[path.len().saturating_sub(max.saturating_sub(3))..])
+    format!(
+        "...{}",
+        &path[path.len().saturating_sub(max.saturating_sub(3))..]
+    )
 }
 
 use crate::tui::display_utils::truncate;

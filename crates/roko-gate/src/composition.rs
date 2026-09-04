@@ -704,8 +704,12 @@ mod tests {
         }
 
         impl roko_core::Cell for SlowGate {
-            fn cell_id(&self) -> &str { "slow-gate-test" }
-            fn cell_name(&self) -> &str { "SlowGate" }
+            fn cell_id(&self) -> &str {
+                "slow-gate-test"
+            }
+            fn cell_name(&self) -> &str {
+                "SlowGate"
+            }
             fn protocols(&self) -> Vec<roko_core::ProtocolId> {
                 vec![roko_core::ProtocolId::Verify]
             }
@@ -717,7 +721,9 @@ mod tests {
                 tokio::time::sleep(self.delay).await;
                 Verdict::pass(&self.gate_name).with_score(1.0)
             }
-            fn name(&self) -> &str { &self.gate_name }
+            fn name(&self) -> &str {
+                &self.gate_name
+            }
         }
 
         let gate = ParallelGate::new("order")

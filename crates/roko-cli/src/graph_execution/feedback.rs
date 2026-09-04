@@ -202,7 +202,11 @@ impl CliTaskSettlementAdapter {
             tokens_out: receipt.tokens_out,
             cost_usd: receipt.cost_usd(),
             duration_ms: receipt.duration_ms(),
-            exit_code: if receipt.succeeded() { Some(0) } else { Some(1) },
+            exit_code: if receipt.succeeded() {
+                Some(0)
+            } else {
+                Some(1)
+            },
             is_error: !receipt.succeeded(),
         };
 
@@ -330,7 +334,7 @@ mod tests {
 
     #[tokio::test]
     async fn task_settlement_adapter_fans_out_success() {
-        use crate::runtime_feedback::{FeedbackFacade, FeedbackSink, FeedbackEvent};
+        use crate::runtime_feedback::{FeedbackEvent, FeedbackFacade, FeedbackSink};
         use std::sync::Arc;
         use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -339,7 +343,9 @@ mod tests {
 
         #[async_trait::async_trait]
         impl FeedbackSink for CounterSink {
-            fn name(&self) -> &'static str { "counter" }
+            fn name(&self) -> &'static str {
+                "counter"
+            }
             async fn on_event(&self, _: &FeedbackEvent) -> Result<()> {
                 self.0.fetch_add(1, Ordering::Relaxed);
                 Ok(())
@@ -347,18 +353,21 @@ mod tests {
         }
 
         let counter = Arc::new(CounterSink(AtomicU32::new(0)));
-        let facade = Arc::new(
-            FeedbackFacade::new().with_sink(counter.clone() as Arc<dyn FeedbackSink>),
-        );
+        let facade =
+            Arc::new(FeedbackFacade::new().with_sink(counter.clone() as Arc<dyn FeedbackSink>));
         let adapter = CliTaskSettlementAdapter::new(facade);
         let receipt = test_receipt(true);
         adapter.fan_out(&receipt).await.expect("fan_out succeeds");
-        assert_eq!(counter.0.load(Ordering::Relaxed), 1, "sink should see one event");
+        assert_eq!(
+            counter.0.load(Ordering::Relaxed),
+            1,
+            "sink should see one event"
+        );
     }
 
     #[tokio::test]
     async fn task_settlement_adapter_fans_out_failure() {
-        use crate::runtime_feedback::{FeedbackFacade, FeedbackSink, FeedbackEvent};
+        use crate::runtime_feedback::{FeedbackEvent, FeedbackFacade, FeedbackSink};
         use std::sync::Arc;
         use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -367,7 +376,9 @@ mod tests {
 
         #[async_trait::async_trait]
         impl FeedbackSink for CounterSink {
-            fn name(&self) -> &'static str { "counter" }
+            fn name(&self) -> &'static str {
+                "counter"
+            }
             async fn on_event(&self, _: &FeedbackEvent) -> Result<()> {
                 self.0.fetch_add(1, Ordering::Relaxed);
                 Ok(())
@@ -375,28 +386,32 @@ mod tests {
         }
 
         let counter = Arc::new(CounterSink(AtomicU32::new(0)));
-        let facade = Arc::new(
-            FeedbackFacade::new().with_sink(counter.clone() as Arc<dyn FeedbackSink>),
-        );
+        let facade =
+            Arc::new(FeedbackFacade::new().with_sink(counter.clone() as Arc<dyn FeedbackSink>));
         let adapter = CliTaskSettlementAdapter::new(facade);
         let receipt = test_receipt(false);
-        adapter.fan_out(&receipt).await.expect("fan_out succeeds even for failed tasks");
+        adapter
+            .fan_out(&receipt)
+            .await
+            .expect("fan_out succeeds even for failed tasks");
         assert_eq!(counter.0.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]
     async fn manual_override_maps_to_override_source() {
-        use crate::runtime_feedback::{FeedbackFacade, FeedbackSink, FeedbackEvent};
         use crate::dispatch::ModelChoiceSource;
-        use std::sync::Arc;
+        use crate::runtime_feedback::{FeedbackEvent, FeedbackFacade, FeedbackSink};
         use parking_lot::Mutex;
+        use std::sync::Arc;
 
         #[derive(Debug)]
         struct CaptureSink(Mutex<Vec<FeedbackEvent>>);
 
         #[async_trait::async_trait]
         impl FeedbackSink for CaptureSink {
-            fn name(&self) -> &'static str { "capture" }
+            fn name(&self) -> &'static str {
+                "capture"
+            }
             async fn on_event(&self, event: &FeedbackEvent) -> Result<()> {
                 self.0.lock().push(event.clone());
                 Ok(())
@@ -404,9 +419,8 @@ mod tests {
         }
 
         let capture = Arc::new(CaptureSink(Mutex::new(Vec::new())));
-        let facade = Arc::new(
-            FeedbackFacade::new().with_sink(capture.clone() as Arc<dyn FeedbackSink>),
-        );
+        let facade =
+            Arc::new(FeedbackFacade::new().with_sink(capture.clone() as Arc<dyn FeedbackSink>));
         let adapter = CliTaskSettlementAdapter::new(facade);
 
         let mut receipt = test_receipt(true);

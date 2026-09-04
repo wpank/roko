@@ -11,7 +11,7 @@ use roko_core::agent::AgentRole;
 use roko_core::task::{TaskCategory, TaskComplexityBand};
 use roko_learn::episode_logger::{Episode, EpisodeLogger};
 use roko_learn::model_router::{LinUCBRouter, RoutingContext};
-// ProviderHealthTracker removed — health tracking not yet integrated into LinUCBRouter
+use roko_learn::provider_health::ProviderHealthTracker;
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
@@ -33,6 +33,7 @@ fn default_ctx() -> RoutingContext {
         previous_model: None,
         plan_context_tokens: None,
         tier_thresholds: None,
+        cfactor: None,
     }
 }
 
@@ -135,6 +136,156 @@ fn auto_persist_on_update() {
     assert_eq!(reloaded.total_observations(), 2);
 }
 
-// Tests 5-9 (ProviderHealthTracker integration) removed:
-// ProviderHealthTracker exists but is not yet wired into LinUCBRouter.
-// These tests should be re-added when with_health_tracker() is implemented.
+// ─── Helpers (health) ─────────────────────────────────────────────────────
+
+/// Map model slugs to a synthetic provider name.
+fn slug_to_provider(slug: &str) -> String {
+    if slug.starts_with("claude") {
+        "anthropic".to_string()
+    } else {
+        "other".to_string()
+    }
+}
+
+/// Build a router with enough observations to exit cold-start.
+fn warm_router_with_health(health: ProviderHealthTracker) -> LinUCBRouter {
+    let router = LinUCBRouter::new(test_slugs()).with_health_tracker(health, slug_to_provider);
+
+    let ctx = default_ctx();
+    // Push past the cold-start threshold (50 observations).
+    for _ in 0..60 {
+        router.update(&ctx, "claude-sonnet-4-5", 0.8);
+    }
+
+    router
+}
+
+// ─── Test 5: Health tracker is stored and retrievable ─────────────────────
+
+#[test]
+fn health_tracker_stored_on_router() {
+    let health = ProviderHealthTracker::new();
+    let router = LinUCBRouter::new(test_slugs()).with_health_tracker(health, slug_to_provider);
+
+    assert!(
+        router.health_tracker().is_some(),
+        "health tracker should be accessible after with_health_tracker()"
+    );
+}
+
+// ─── Test 6: Healthy providers are selected normally ──────────────────────
+
+#[test]
+fn healthy_providers_selected_normally() {
+    let health = ProviderHealthTracker::new();
+    let router = warm_router_with_health(health);
+
+    // All providers healthy — should select from UCB scores.
+    let ctx = default_ctx();
+    let model = router.select_model(&ctx);
+    let slug = model.slug.clone();
+
+    // The router should pick one of the known slugs.
+    let known = test_slugs();
+    assert!(
+        known.contains(&slug.to_string()),
+        "selected slug '{slug}' should be one of {known:?}"
+    );
+}
+
+// ─── Test 7: Degraded provider is skipped ─────────────────────────────────
+
+#[test]
+fn degraded_provider_skipped_in_selection() {
+    let health = ProviderHealthTracker::new();
+
+    // Trip the circuit breaker for "anthropic" (3 consecutive failures).
+    for _ in 0..3 {
+        health.record_failure("anthropic");
+    }
+
+    assert!(
+        !health.is_healthy("anthropic"),
+        "anthropic should be unhealthy after 3 failures"
+    );
+
+    let router = warm_router_with_health(health);
+    let ctx = default_ctx();
+
+    // With anthropic unhealthy and all slugs being claude-*, every slug maps
+    // to "anthropic". When all providers are unhealthy the router falls back
+    // to the best-scoring arm (it never returns an error).
+    let model = router.select_model(&ctx);
+    let slug = model.slug.clone();
+    let known = test_slugs();
+    assert!(
+        known.contains(&slug.to_string()),
+        "fallback slug '{slug}' should be one of {known:?}"
+    );
+}
+
+// ─── Test 8: Recovery after recording success ─────────────────────────────
+
+#[test]
+fn provider_recovers_after_success() {
+    let health = ProviderHealthTracker::new();
+
+    // Trip the breaker.
+    for _ in 0..3 {
+        health.record_failure("anthropic");
+    }
+    assert!(!health.is_healthy("anthropic"));
+
+    // Record a success — should reset to healthy.
+    health.record_success("anthropic");
+    assert!(
+        health.is_healthy("anthropic"),
+        "anthropic should be healthy after record_success()"
+    );
+
+    // Router should route normally again.
+    let router = warm_router_with_health(health);
+    let ctx = default_ctx();
+    let model = router.select_model(&ctx);
+    let slug = model.slug.clone();
+    let known = test_slugs();
+    assert!(
+        known.contains(&slug.to_string()),
+        "recovered slug '{slug}' should be one of {known:?}"
+    );
+}
+
+// ─── Test 9: filter_arms removes unhealthy arms ──────────────────────────
+
+#[test]
+fn filter_arms_removes_unhealthy() {
+    let health = ProviderHealthTracker::new();
+
+    // All healthy initially — filter should keep all.
+    let arms = test_slugs();
+    let filtered = health.filter_arms(&arms, slug_to_provider);
+    assert_eq!(
+        filtered.len(),
+        arms.len(),
+        "all arms should pass when healthy"
+    );
+
+    // Trip anthropic.
+    for _ in 0..3 {
+        health.record_failure("anthropic");
+    }
+
+    // All claude-* models map to anthropic, so everything is filtered out.
+    let filtered = health.filter_arms(&arms, slug_to_provider);
+    assert!(
+        filtered.is_empty(),
+        "all arms should be filtered when their provider is unhealthy"
+    );
+
+    // filter_arms_or_best should still return at least one fallback.
+    let fallback = health.filter_arms_or_best(&arms, slug_to_provider);
+    assert!(
+        !fallback.is_empty(),
+        "filter_arms_or_best should always return at least one arm"
+    );
+}

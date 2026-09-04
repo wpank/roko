@@ -12,6 +12,7 @@ use serde::Serialize;
 /// without adding Runner-specific variants to `roko-core`.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[allow(missing_docs)]
 pub enum RunnerLifecycleEvent {
     /// Runner started with the given profile and plan count.
     Started {

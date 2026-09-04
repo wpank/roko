@@ -4,8 +4,8 @@ use anyhow::{Context, Result};
 use std::ffi::OsStr;
 
 use roko_cli::config::command_on_path;
-use roko_core::config::schema::RokoConfig;
 use roko_core::config::GateRungConfig;
+use roko_core::config::schema::RokoConfig;
 
 /// Render the default `roko.toml` template used by `roko init`.
 ///
@@ -157,8 +157,8 @@ fn append_no_profile_gate_hint(out: &mut String) {
         "\n# No default gate rungs were written because no supported project profile was supplied.\n",
     );
     out.push_str("# Supported profiles: rust, typescript.\n");
-    out.push_str("# Add [[gates.rungs]] entries under the [gates] table for custom validation commands.\n");
     out.push_str(
-        "# Or rerun `roko init --profile rust` / `roko init --profile typescript`.\n",
+        "# Add [[gates.rungs]] entries under the [gates] table for custom validation commands.\n",
     );
+    out.push_str("# Or rerun `roko init --profile rust` / `roko init --profile typescript`.\n");
 }

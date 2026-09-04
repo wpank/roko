@@ -7,11 +7,11 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::{Map, Value};
-use tokio::sync::mpsc;
 
 use crate::http::{HttpPoster, ReqwestPoster};
+use crate::model_call_service::{ProviderOutcomeRecorder, provider_error_kind};
 use crate::multimodal::wire_messages_contain_images;
-use crate::provider::map_provider_error;
+use crate::provider::{ProviderError, map_provider_error};
 use crate::rate_limit::ProviderRateLimiter;
 use crate::streaming::parse_sse_line;
 use crate::tool_loop::{LlmBackend, LlmError};
@@ -110,6 +110,8 @@ pub struct OpenAiCompatLlmBackend {
     /// `image_url` content parts (data URIs). When false, image input fails
     /// before provider I/O.
     supports_vision: bool,
+    /// Optional circuit-breaker outcome recorder.
+    outcome_recorder: Option<Arc<dyn ProviderOutcomeRecorder>>,
 }
 
 impl OpenAiCompatLlmBackend {
@@ -140,6 +142,7 @@ impl OpenAiCompatLlmBackend {
             api_key_env: None,
             metrics: None,
             supports_vision: false,
+            outcome_recorder: None,
         }
     }
 
@@ -285,6 +288,34 @@ impl OpenAiCompatLlmBackend {
         self
     }
 
+    /// Attach a circuit-breaker outcome recorder.
+    #[must_use]
+    pub fn with_outcome_recorder(mut self, recorder: Arc<dyn ProviderOutcomeRecorder>) -> Self {
+        self.outcome_recorder = Some(recorder);
+        self
+    }
+
+    /// Record a failure into the circuit-breaker outcome recorder.
+    fn record_failure(&self, error: &LlmError) {
+        let Some(recorder) = &self.outcome_recorder else {
+            return;
+        };
+        let kind = match error {
+            LlmError::Provider(ProviderError::RateLimit { .. }) => "rate_limit",
+            LlmError::Provider(ProviderError::AuthFailure) => "auth_failure",
+            LlmError::Provider(ProviderError::Timeout) | LlmError::Timeout(_) => "timeout",
+            LlmError::Provider(ProviderError::ServerError(_)) => "server_error",
+            LlmError::Provider(ProviderError::ContentPolicy) => "content_policy",
+            LlmError::Provider(ProviderError::ContextOverflow) => "context_overflow",
+            LlmError::Provider(ProviderError::ModelNotFound) => "model_not_found",
+            LlmError::Provider(ProviderError::Other(message))
+            | LlmError::Backend(message)
+            | LlmError::Network(message) => provider_error_kind(message),
+            LlmError::RetriesExhausted => "retries_exhausted",
+        };
+        recorder.record_provider_failure(&self.provider_id, kind);
+    }
+
     /// Map a raw error into a user-friendly message using provider context.
     fn decorate_error(&self, raw_err: &dyn std::fmt::Display) -> String {
         map_provider_error(
@@ -400,7 +431,6 @@ impl OpenAiCompatLlmBackend {
         serde_json::to_vec(&body).map_err(|e| LlmError::Backend(format!("serialize: {e}")))
     }
 
-
     fn capture_stream_metadata(line: &[u8], metadata: &mut StreamResponseMetadata) {
         let line = String::from_utf8_lossy(line);
         let line = line.trim_end_matches(['\r', '\n']);
@@ -489,7 +519,7 @@ impl LlmBackend for OpenAiCompatLlmBackend {
         let body_bytes = self.build_body(messages, tools, session, false)?;
         self.rate_limiter.acquire(&self.provider_id).await;
 
-        let raw = self
+        let raw = match self
             .poster
             .post_json(
                 &self.endpoint(),
@@ -498,11 +528,27 @@ impl LlmBackend for OpenAiCompatLlmBackend {
                 self.timeout_ms,
             )
             .await
-            .map_err(classify_http_error)?;
+        {
+            Ok(raw) => raw,
+            Err(err) => {
+                let mapped = classify_http_error(err);
+                self.record_failure(&mapped);
+                return Err(mapped);
+            }
+        };
 
-        let json: Value = serde_json::from_str(&raw)
-            .map_err(|e| LlmError::Backend(format!("parse response: {e}")))?;
+        let json: Value = match serde_json::from_str(&raw) {
+            Ok(json) => json,
+            Err(e) => {
+                let mapped = LlmError::Backend(format!("parse response: {e}"));
+                self.record_failure(&mapped);
+                return Err(mapped);
+            }
+        };
 
+        if let Some(recorder) = &self.outcome_recorder {
+            recorder.record_provider_success(&self.provider_id);
+        }
         Ok(BackendResponse::Json(json))
     }
 
@@ -651,8 +697,7 @@ impl LlmBackend for OpenAiCompatLlmBackend {
                     let line_str = String::from_utf8_lossy(&line);
                     let line_str = line_str.trim_end_matches(['\r', '\n']);
 
-                    if let Some(stream_chunk) = parse_sse_line(line_str) {
-                        let event: StreamEvent = stream_chunk.into();
+                    if let Some(event) = parse_sse_line(line_str) {
                         // Record TTFT on the first non-error content/tool/reasoning chunk.
                         if !ttft_recorded {
                             let is_content_chunk = matches!(
@@ -721,8 +766,7 @@ impl LlmBackend for OpenAiCompatLlmBackend {
             if !pending.is_empty() {
                 let line_str = String::from_utf8_lossy(&pending);
                 let line_str = line_str.trim_end_matches(['\r', '\n']);
-                if let Some(stream_chunk) = parse_sse_line(line_str) {
-                    let event: StreamEvent = stream_chunk.into();
+                if let Some(event) = parse_sse_line(line_str) {
                     if matches!(event.kind, StreamEventKind::Done { .. }) {
                         sent_done = true;
                     }
@@ -804,9 +848,10 @@ mod tests {
     use std::thread;
     use std::time::Duration as StdDuration;
     use std::time::Instant;
+    use tokio::sync::mpsc;
 
     use crate::dispatcher::{HandlerResolver, ToolDispatcher};
-    use crate::tool_loop::{StopReason, StreamEventKind, TurnConfig, ToolLoop};
+    use crate::tool_loop::{StopReason, StreamEventKind, ToolLoop, TurnConfig};
     use crate::translate::{OpenAiTranslator, Translator};
     use roko_core::tool::{
         ToolCall, ToolCategory, ToolConcurrency, ToolContext, ToolDef, ToolHandler, ToolPermission,
@@ -918,7 +963,7 @@ mod tests {
                     None
                 }
             });
-        let dispatcher = Arc::new(ToolDispatcher::new(registry, resolver));
+        let dispatcher = Arc::new(ToolDispatcher::new_unguarded(registry, resolver));
         let translator: Arc<dyn Translator> = Arc::new(OpenAiTranslator);
         ToolLoop::new(translator, dispatcher, Arc::new(backend))
     }
@@ -1503,7 +1548,10 @@ mod tests {
             .await
             .expect("stream should emit before completion")
             .expect("stream channel open");
-        assert!(matches!(first_chunk.kind, StreamEventKind::ReasoningDelta(_)));
+        assert!(matches!(
+            first_chunk.kind,
+            StreamEventKind::ReasoningDelta(_)
+        ));
         assert!(
             !run.is_finished(),
             "streaming events should arrive before the tool loop finishes"
@@ -1525,10 +1573,13 @@ mod tests {
         assert_eq!(result.total_usage.output_tokens, 11);
         assert_eq!(result.total_usage.cache_read_tokens, 3);
 
+        // The raw ToolCallStart event embeds the index key with the real
+        // id after a NUL separator and may carry initial argument fragments
+        // after a SOH separator: "__idx_0\0call-1\x01{\"value\":".
         assert!(events.iter().any(|e| matches!(
             &e.kind,
             StreamEventKind::ToolCallStart { id, name }
-                if id == "call-1" && name == "echo"
+                if id.contains("call-1") && name == "echo"
         )));
         assert!(events.iter().any(|e| {
             matches!(&e.kind, StreamEventKind::TextDelta(content) if content == "final ")
@@ -1656,7 +1707,7 @@ mod tests {
             use futures::StreamExt;
             let events: Vec<_> = stream.collect().await;
             let got_timeout = events.iter().any(|e| {
-                if let Err(ref err) = e {
+                if let Err(err) = e {
                     format!("{err:?}").contains("TTFT timeout")
                         || format!("{err:?}").contains("Timeout")
                 } else {
@@ -1665,7 +1716,7 @@ mod tests {
             });
             assert!(got_timeout, "expected TTFT timeout in stream events");
         } else {
-            let err = stream.unwrap_err();
+            let err = stream.err().expect("already checked Err");
             assert!(
                 format!("{err:?}").contains("TTFT timeout")
                     || format!("{err:?}").contains("Timeout"),

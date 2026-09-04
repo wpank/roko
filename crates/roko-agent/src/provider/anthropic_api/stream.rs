@@ -204,10 +204,7 @@ impl AnthropicStreamState {
         let json: Value = serde_json::from_str(data)
             .map_err(|e| LlmError::Backend(format!("parse content_block_start: {e}")))?;
 
-        let index = json
-            .get("index")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
+        let index = json.get("index").and_then(Value::as_u64).unwrap_or(0);
 
         let block = json.get("content_block").unwrap_or(&Value::Null);
         let block_type = block.get("type").and_then(Value::as_str).unwrap_or("");
@@ -256,10 +253,7 @@ impl AnthropicStreamState {
         let json: Value = serde_json::from_str(data)
             .map_err(|e| LlmError::Backend(format!("parse content_block_delta: {e}")))?;
 
-        let index = json
-            .get("index")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
+        let index = json.get("index").and_then(Value::as_u64).unwrap_or(0);
 
         let delta = json.get("delta").unwrap_or(&Value::Null);
         let delta_type = delta.get("type").and_then(Value::as_str).unwrap_or("");
@@ -319,19 +313,15 @@ impl AnthropicStreamState {
         let json: Value = serde_json::from_str(data)
             .map_err(|e| LlmError::Backend(format!("parse content_block_stop: {e}")))?;
 
-        let index = json
-            .get("index")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
+        let index = json.get("index").and_then(Value::as_u64).unwrap_or(0);
 
         if let Some(tool_block) = self.tool_blocks.remove(&index) {
             // Parse accumulated JSON into a Value.
             let args: Value = if tool_block.json_acc.trim().is_empty() {
                 serde_json::json!({})
             } else {
-                serde_json::from_str(&tool_block.json_acc).unwrap_or_else(|_| {
-                    Value::String(tool_block.json_acc.clone())
-                })
+                serde_json::from_str(&tool_block.json_acc)
+                    .unwrap_or_else(|_| Value::String(tool_block.json_acc.clone()))
             };
 
             Ok(vec![StreamEvent::now(StreamEventKind::ToolCallEnd {
@@ -381,10 +371,7 @@ impl AnthropicStreamState {
         }
 
         // Extract stop reason from message_delta.delta.stop_reason.
-        if let Some(stop_reason) = json
-            .pointer("/delta/stop_reason")
-            .and_then(Value::as_str)
-        {
+        if let Some(stop_reason) = json.pointer("/delta/stop_reason").and_then(Value::as_str) {
             let finish_reason = match stop_reason {
                 "end_turn" => "stop",
                 "tool_use" => "tool_calls",
@@ -413,9 +400,8 @@ impl AnthropicStreamState {
     }
 
     fn handle_error(&mut self, data: &str) -> Result<Vec<StreamEvent>, LlmError> {
-        let json: Value = serde_json::from_str(data).unwrap_or_else(|_| {
-            serde_json::json!({"error": {"message": data}})
-        });
+        let json: Value = serde_json::from_str(data)
+            .unwrap_or_else(|_| serde_json::json!({"error": {"message": data}}));
 
         let message = json
             .pointer("/error/message")
@@ -424,7 +410,9 @@ impl AnthropicStreamState {
             .to_string();
 
         // Error events never emit Done -- prior deltas remain observable.
-        Err(LlmError::Backend(format!("Anthropic stream error: {message}")))
+        Err(LlmError::Backend(format!(
+            "Anthropic stream error: {message}"
+        )))
     }
 }
 
@@ -582,10 +570,7 @@ mod tests {
 
     #[test]
     fn parse_frames_flushes_unterminated_frame() {
-        let lines = vec![
-            "event: message_stop".to_string(),
-            "data: {}".to_string(),
-        ];
+        let lines = vec!["event: message_stop".to_string(), "data: {}".to_string()];
         let frames = parse_sse_frames(&lines);
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].0, "message_stop");
@@ -811,7 +796,9 @@ mod tests {
             )
             .unwrap();
 
-        let done = events.iter().find(|e| matches!(e.kind, StreamEventKind::Done { .. }));
+        let done = events
+            .iter()
+            .find(|e| matches!(e.kind, StreamEventKind::Done { .. }));
         assert!(matches!(
             &done.unwrap().kind,
             StreamEventKind::Done { finish_reason } if finish_reason == "tool_calls"
@@ -828,7 +815,9 @@ mod tests {
             )
             .unwrap();
 
-        let done = events.iter().find(|e| matches!(e.kind, StreamEventKind::Done { .. }));
+        let done = events
+            .iter()
+            .find(|e| matches!(e.kind, StreamEventKind::Done { .. }));
         assert!(matches!(
             &done.unwrap().kind,
             StreamEventKind::Done { finish_reason } if finish_reason == "length"

@@ -718,9 +718,7 @@ enum DispatchMode {
     },
     /// Deprecated direct fallback. Kept only to make stale paths fail visibly.
     #[allow(dead_code)]
-    Direct {
-        auth: AuthMethod,
-    },
+    Direct { auth: AuthMethod },
     /// Full agent session with system prompt, tools, MCP, safety.
     Session,
 }

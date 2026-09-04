@@ -444,16 +444,11 @@ pub async fn cmd_validate(workdir: &Path) -> Result<()> {
 
     // Phase 1b: validate all TOML paths against the RokoConfig schema.
     // Unknown paths are errors in `roko config validate`.
-    let path_diagnostics =
-        roko_core::config::loader::validate_known_config_paths(&parsed_value);
+    let path_diagnostics = roko_core::config::loader::validate_known_config_paths(&parsed_value);
     if !path_diagnostics.is_empty() {
         print_phase_status("Phase 1b: Config path validation", false);
         for diag in &path_diagnostics {
-            println!(
-                "  ✗ {}: {}",
-                config_path.display(),
-                diag.message
-            );
+            println!("  ✗ {}: {}", config_path.display(), diag.message);
         }
         println!();
         println!("Result: 0 warnings, {} errors", path_diagnostics.len());
@@ -1013,6 +1008,7 @@ fn legacy_provider_config(config: &RokoConfig) -> Result<(String, ProviderConfig
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         )),
         "ollama" => Ok((
@@ -1033,6 +1029,7 @@ fn legacy_provider_config(config: &RokoConfig) -> Result<(String, ProviderConfig
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         )),
         other => Err(anyhow!(
@@ -2090,6 +2087,7 @@ command = "claude"
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
 
@@ -2171,6 +2169,7 @@ command = "claude"
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         )]);
         config.models.insert(
@@ -2259,6 +2258,7 @@ command = "claude"
                 extra_headers: Some(headers),
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
 

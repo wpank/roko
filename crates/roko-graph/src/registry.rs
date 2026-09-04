@@ -18,7 +18,7 @@ pub type CellFactory = Box<dyn Fn(toml::Value) -> Box<dyn Cell> + Send + Sync>;
 /// Used by [`Graph::validate_edges`] to check edge type compatibility without
 /// constructing live Cell instances. Every production registration must provide
 /// a descriptor; test-only registrations may use [`CellDescriptor::test_stub`].
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CellDescriptor {
     /// Cell type name (matches the registry key).
     pub id: String,
@@ -192,10 +192,7 @@ impl Default for CellRegistry {
 impl std::fmt::Debug for CellRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CellRegistry")
-            .field(
-                "registered_types",
-                &self.entries.keys().collect::<Vec<_>>(),
-            )
+            .field("registered_types", &self.entries.keys().collect::<Vec<_>>())
             .finish()
     }
 }
@@ -357,7 +354,10 @@ mod tests {
             .expect("descriptor must exist");
         assert_eq!(d.id, "typed-cell");
         assert_eq!(d.version, (1, 2, 0));
-        assert_eq!(d.input_schema, Some(TypeSchema::OfKind(roko_core::Kind::Task)));
+        assert_eq!(
+            d.input_schema,
+            Some(TypeSchema::OfKind(roko_core::Kind::Task))
+        );
         assert_eq!(
             d.output_schema,
             Some(TypeSchema::OfKind(roko_core::Kind::Episode))

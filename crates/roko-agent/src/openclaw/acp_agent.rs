@@ -28,7 +28,6 @@ use roko_core::{Body, Context, Kind, Signal};
 use tokio::sync::mpsc;
 
 use crate::agent::{Agent, AgentResult, derived_output};
-use crate::chat_types::FinishReason;
 use crate::harness::acp_client::{
     AcpEvent, AcpNotification, AcpPromptPayload, AcpStdioClient, NewSessionOpts,
 };
@@ -59,6 +58,8 @@ pub struct OpenClawAcpConfig {
     pub auto_approve_permissions: bool,
     /// Optional OS-enforced limits for the ACP subprocess.
     pub resource_limits: Option<ResourceLimits>,
+    /// Optional system prompt prepended to every prompt.
+    pub system_prompt: Option<String>,
 }
 
 impl Default for OpenClawAcpConfig {
@@ -71,6 +72,7 @@ impl Default for OpenClawAcpConfig {
             timeout: Duration::from_secs(120),
             auto_approve_permissions: true,
             resource_limits: None,
+            system_prompt: None,
         }
     }
 }
@@ -362,7 +364,13 @@ impl OpenClawAcpAgent {
 #[async_trait]
 impl Agent for OpenClawAcpAgent {
     async fn run(&self, input: &Signal, _ctx: &Context) -> AgentResult {
-        let prompt = Self::extract_prompt(input);
+        let raw_prompt = Self::extract_prompt(input);
+        let prompt = match &self.config.system_prompt {
+            Some(sp) => {
+                format!("[SYSTEM INSTRUCTIONS]\n{sp}\n[END SYSTEM INSTRUCTIONS]\n\n{raw_prompt}")
+            }
+            None => raw_prompt,
+        };
         let (output_text, usage, success) = self.run_acp_lifecycle(&prompt, None).await;
 
         let display_text = if success && output_text.is_empty() {
@@ -401,7 +409,13 @@ impl Agent for OpenClawAcpAgent {
         _ctx: &Context,
         event_tx: mpsc::Sender<StreamEvent>,
     ) -> AgentResult {
-        let prompt = Self::extract_prompt(input);
+        let raw_prompt = Self::extract_prompt(input);
+        let prompt = match &self.config.system_prompt {
+            Some(sp) => {
+                format!("[SYSTEM INSTRUCTIONS]\n{sp}\n[END SYSTEM INSTRUCTIONS]\n\n{raw_prompt}")
+            }
+            None => raw_prompt,
+        };
         let (output_text, usage, success) = self.run_acp_lifecycle(&prompt, Some(&event_tx)).await;
 
         let display_text = if success && output_text.is_empty() {
@@ -581,6 +595,7 @@ mod tests {
             timeout: Duration::from_secs(60),
             auto_approve_permissions: false,
             resource_limits: None,
+            system_prompt: None,
         };
         assert_eq!(config.binary, "/usr/local/bin/openclaw");
         assert_eq!(config.cwd, PathBuf::from("/tmp/workspace"));

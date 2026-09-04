@@ -36,10 +36,10 @@ impl DispatchFactory {
     /// Create a minimal factory for testing (no MCP, no plugins).
     pub fn for_test() -> Self {
         Self {
-            semaphores: Arc::new(ProviderSemaphores::new(&[])),
+            semaphores: Arc::new(ProviderSemaphores::new(&indexmap::IndexMap::new())),
             mcp_runtime: None,
             local_tool_runtime: None,
-            rate_limiter: Arc::new(ProviderRateLimiter::default()),
+            rate_limiter: Arc::new(ProviderRateLimiter::new(60)),
             health_registry: Arc::new(ProviderHealthRegistry::new()),
             cascade_router: None,
         }

@@ -109,13 +109,7 @@ async fn cmd_graph_run(path: &Path, json: bool, quiet: bool) -> Result<i32> {
     }
 
     let telemetry_hub = SharedStateHub::new_in_process();
-    let output = execute_graph(
-        path,
-        &telemetry_hub,
-        None,
-        Some(profile.effective()),
-    )
-    .await?;
+    let output = execute_graph(path, &telemetry_hub, None, Some(profile.effective())).await?;
 
     if json {
         // JSON output: emit a canonical JSON summary
@@ -135,7 +129,10 @@ async fn cmd_graph_run(path: &Path, json: bool, quiet: bool) -> Result<i32> {
                 })
             }).collect::<Vec<_>>(),
         });
-        println!("{}", serde_json::to_string_pretty(&summary).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&summary).unwrap_or_default()
+        );
     } else if !quiet {
         // Human-readable output
         println!("{}", output.summary());
@@ -459,8 +456,18 @@ cell_type = "noop"
 "#;
         let graph = loader::load_from_str(toml_str).unwrap();
         assert_eq!(graph.policy.capabilities.len(), 2);
-        assert!(graph.policy.capabilities.contains(&roko_core::Capability::Llm));
-        assert!(graph.policy.capabilities.contains(&roko_core::Capability::Shell));
+        assert!(
+            graph
+                .policy
+                .capabilities
+                .contains(&roko_core::Capability::Llm)
+        );
+        assert!(
+            graph
+                .policy
+                .capabilities
+                .contains(&roko_core::Capability::Shell)
+        );
     }
 
     #[test]

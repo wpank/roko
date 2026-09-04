@@ -24,8 +24,7 @@ use crate::harness::{
 };
 use crate::http::ReqwestPoster;
 use crate::openai_compat_backend::OpenAiCompatLlmBackend;
-use crate::streaming::parse_sse_line;
-use crate::tool_loop::{LlmBackend, StreamEvent, StreamEventKind, TurnConfig, collect_stream_to_response};
+use crate::tool_loop::{LlmBackend, StreamEvent, TurnConfig, collect_stream_to_response};
 use crate::translate::{BackendResponse, RenderedTools, SessionState};
 use crate::usage::Usage;
 use roko_core::{Body, Context, Kind, Provenance, Signal};
@@ -52,6 +51,8 @@ pub struct HermesHttpAgent {
     config: HermesConfig,
     /// Human-readable name (e.g., `"hermes-http"`).
     agent_name: String,
+    /// Optional system prompt injected as a system message.
+    system_prompt: Option<String>,
     /// Shared HTTP client for post-turn run lookups (token accounting level 2).
     http: reqwest::Client,
     /// Pre-computed capabilities (constant for the lifetime of the adapter).
@@ -113,8 +114,16 @@ impl HermesHttpAgent {
             capabilities,
             config,
             agent_name: "hermes-http".to_string(),
+            system_prompt: None,
             safety: crate::safety::SafetyLayer::with_defaults(),
         }
+    }
+
+    /// Set an optional system prompt included in every request.
+    #[must_use]
+    pub fn with_system_prompt(mut self, prompt: String) -> Self {
+        self.system_prompt = Some(prompt);
+        self
     }
 
     /// Attach a lifecycle service for the Hermes gateway daemon.
@@ -191,6 +200,22 @@ impl HermesHttpAgent {
             .tag("agent", &self.agent_name)
             .tag("model", model)
             .build()
+    }
+
+    /// Build the messages array, optionally prepending a system message.
+    fn build_messages(&self, prompt_text: &str) -> Vec<Value> {
+        let mut messages = Vec::new();
+        if let Some(sp) = &self.system_prompt {
+            messages.push(serde_json::json!({
+                "role": "system",
+                "content": sp,
+            }));
+        }
+        messages.push(serde_json::json!({
+            "role": "user",
+            "content": prompt_text,
+        }));
+        messages
     }
 
     /// Build a failure output signal with standard tags.
@@ -333,10 +358,7 @@ impl Agent for HermesHttpAgent {
             }
         };
 
-        let messages = vec![serde_json::json!({
-            "role": "user",
-            "content": prompt_text,
-        })];
+        let messages = self.build_messages(&prompt_text);
 
         let tools = RenderedTools::JsonArray(serde_json::json!([]));
         let session = SessionState::default();
@@ -397,10 +419,7 @@ impl Agent for HermesHttpAgent {
             }
         };
 
-        let messages = vec![serde_json::json!({
-            "role": "user",
-            "content": prompt_text,
-        })];
+        let messages = self.build_messages(&prompt_text);
 
         let tools = RenderedTools::JsonArray(serde_json::json!([]));
         let session = SessionState::default();
@@ -490,6 +509,8 @@ impl HarnessAdapter for HermesHttpAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::streaming::parse_sse_line;
+    use crate::tool_loop::StreamEventKind;
 
     #[test]
     fn basic_sse_fixture_parses_correctly() {

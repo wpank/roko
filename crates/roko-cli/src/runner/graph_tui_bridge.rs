@@ -212,11 +212,7 @@ mod tests {
         (hub, bridge)
     }
 
-    fn make_node_result(
-        node_id: &str,
-        status: NodeStatus,
-        duration_ms: u64,
-    ) -> NodeResult {
+    fn make_node_result(node_id: &str, status: NodeStatus, duration_ms: u64) -> NodeResult {
         NodeResult {
             node_id: node_id.to_string(),
             cell_type: "task-executor".to_string(),
@@ -320,26 +316,24 @@ mod tests {
 
     #[test]
     fn build_node_title_map_collects_titles() {
-        let tasks = vec![
-            (
-                "T01".to_string(),
-                roko_graph::convert::PlanTaskInfo {
-                    title: "First".to_string(),
-                    description: None,
-                    role: None,
-                    tier: "focused".to_string(),
-                    model_hint: None,
-                    files: Vec::new(),
-                    depends_on: Vec::new(),
-                    depends_on_plan: Vec::new(),
-                    timeout_secs: 60,
-                    max_retries: 0,
-                    domain: None,
-                    sequence: 0,
-                    full_config_json: serde_json::Value::Null,
-                },
-            ),
-        ];
+        let tasks = vec![(
+            "T01".to_string(),
+            roko_graph::convert::PlanTaskInfo {
+                title: "First".to_string(),
+                description: None,
+                role: None,
+                tier: "focused".to_string(),
+                model_hint: None,
+                files: Vec::new(),
+                depends_on: Vec::new(),
+                depends_on_plan: Vec::new(),
+                timeout_secs: 60,
+                max_retries: 0,
+                domain: None,
+                sequence: 0,
+                full_config_json: serde_json::Value::Null,
+            },
+        )];
 
         let map = build_node_title_map(&tasks);
         assert_eq!(map.get("T01").map(String::as_str), Some("First"));

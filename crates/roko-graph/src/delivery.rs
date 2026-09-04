@@ -254,8 +254,9 @@ impl CompletionDeliveryReceiptV1 {
         self.state = new_state;
         self.release_policy = match new_state {
             CompletionDeliveryState::Delivered => ReleasePolicy::Delete,
-            CompletionDeliveryState::RegressionFailed
-            | CompletionDeliveryState::TerminalFailed => ReleasePolicy::RetainForFailure,
+            CompletionDeliveryState::RegressionFailed | CompletionDeliveryState::TerminalFailed => {
+                ReleasePolicy::RetainForFailure
+            }
             CompletionDeliveryState::Conflict => ReleasePolicy::RetainForReview,
             _ => ReleasePolicy::RetainForReview,
         };
@@ -785,9 +786,7 @@ mod tests {
         let mut receipt = CompletionDeliveryReceiptV1::prepared(req);
         receipt.merge_commit = Some("abc123def".to_string());
         receipt.publication_ref = Some("https://github.com/org/repo/pull/42".to_string());
-        receipt
-            .advance(CompletionDeliveryState::Delivered)
-            .unwrap();
+        receipt.advance(CompletionDeliveryState::Delivered).unwrap();
 
         let json = serde_json::to_string(&receipt).unwrap();
         let back: CompletionDeliveryReceiptV1 = serde_json::from_str(&json).unwrap();
@@ -918,9 +917,7 @@ mod tests {
         let req = test_request("d-ext");
         let mut receipt = CompletionDeliveryReceiptV1::prepared(req);
         receipt.merge_commit = Some("deadbeef".to_string());
-        receipt
-            .advance(CompletionDeliveryState::Merged)
-            .unwrap();
+        receipt.advance(CompletionDeliveryState::Merged).unwrap();
 
         let value = delivery_extension_value(&receipt);
         assert_eq!(value["state"], "merged");
@@ -932,9 +929,7 @@ mod tests {
         let req = test_request("d-ext-err");
         let mut receipt = CompletionDeliveryReceiptV1::prepared(req);
         receipt.error = Some("merge conflict in src/lib.rs".to_string());
-        receipt
-            .advance(CompletionDeliveryState::Conflict)
-            .unwrap();
+        receipt.advance(CompletionDeliveryState::Conflict).unwrap();
 
         let value = delivery_extension_value(&receipt);
         assert_eq!(value["state"], "conflict");

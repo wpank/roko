@@ -554,10 +554,11 @@ fn similar_strings(a: &str, b: &str) -> bool {
 /// Serializes as lowercase strings for ACP protocol compatibility.
 /// Maps 1:1 to the CLI `WorkflowExecutionRoute` enum; kept as a separate
 /// type because ACP does not depend on `roko-cli`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AcpWorkflowRoute {
     /// Default production route — selects WorkflowEngine.
+    #[default]
     LegacyDefault,
     /// Graph-based canary path (#257).
     GraphCanary,
@@ -565,12 +566,6 @@ pub enum AcpWorkflowRoute {
     ReplayOnly,
     /// Explicit legacy fallback with observable warning (#277).
     LiveFallback,
-}
-
-impl Default for AcpWorkflowRoute {
-    fn default() -> Self {
-        Self::LegacyDefault
-    }
 }
 
 impl std::fmt::Display for AcpWorkflowRoute {
@@ -638,8 +633,7 @@ impl AcpSessionServiceAdapter {
     ) -> anyhow::Result<roko_execution::NonPlanServiceHandle> {
         use roko_execution::profiles::RuntimeProfile;
 
-        let exec_overrides =
-            roko_execution::overrides_for_acp(session_id, model_key, mcp_config);
+        let exec_overrides = roko_execution::overrides_for_acp(session_id, model_key, mcp_config);
         let request = roko_execution::NonPlanServiceRequest::new(
             RuntimeProfile::Workflow,
             workdir.to_path_buf(),

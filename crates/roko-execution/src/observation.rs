@@ -35,6 +35,7 @@ pub trait ObservationPublisher: Send + Sync + std::fmt::Debug {
 
 /// Serializable summary of the observation bundle for diagnostics.
 #[derive(Debug, Serialize, Deserialize)]
+#[allow(missing_docs)]
 pub struct ObservationBundleSummary {
     pub has_event_publisher: bool,
     pub telemetry_enabled: bool,

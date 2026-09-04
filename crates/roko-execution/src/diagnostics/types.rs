@@ -14,9 +14,7 @@ use std::path::PathBuf;
 ///
 /// Each variant maps 1:1 to a check function in [`super::checks`].
 /// Do not add a second naming scheme; this enum is the canonical source.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DiagnosticCheckId {
     /// Configuration file presence and parse validity.
@@ -45,7 +43,7 @@ pub enum DiagnosticCheckId {
 
 impl DiagnosticCheckId {
     /// All 11 check IDs in canonical sort order.
-    pub const ALL: &'static [DiagnosticCheckId] = &[
+    pub const ALL: &'static [Self] = &[
         Self::Config,
         Self::Credentials,
         Self::Disk,
@@ -207,9 +205,12 @@ impl DiagnosticReport {
     /// Returns `true` if any finding has [`DiagnosticSeverity::Warning`] or higher.
     #[must_use]
     pub fn has_warnings_or_errors(&self) -> bool {
-        self.findings
-            .iter()
-            .any(|f| matches!(f.severity, DiagnosticSeverity::Warning | DiagnosticSeverity::Error))
+        self.findings.iter().any(|f| {
+            matches!(
+                f.severity,
+                DiagnosticSeverity::Warning | DiagnosticSeverity::Error
+            )
+        })
     }
 
     /// Count of findings at each severity level.

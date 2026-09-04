@@ -272,10 +272,10 @@ impl ServiceFactory {
             Arc::new(MemoryFeedbackSink::default())
         };
 
-        // knowledge_store implements KnowledgeQuery via the blanket impl
-        // in roko-compose (NeuroStore -> KnowledgeQuery).
+        // knowledge_store implements KnowledgeQuery via the concrete impl
+        // in roko-neuro (KnowledgeStore -> KnowledgeQuery).
         let gateway_knowledge_query: Arc<dyn roko_core::KnowledgeQuery> =
-            Arc::clone(&knowledge_store);
+            knowledge_store.clone() as Arc<dyn roko_core::KnowledgeQuery>;
         let cost_table = roko_agent::CostTable::from_config_with_defaults(&workspace_config.models);
         let provider_health_registry = Arc::new(ProviderHealthRegistry::load_or_new(
             &config.roko_dir.join("learn").join("provider-health.json"),
@@ -598,6 +598,7 @@ mod tests {
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
+                require_confirmation: false,
             },
         );
         config.models.insert(

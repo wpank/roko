@@ -51,7 +51,7 @@ pub use playbook::{NoopPlaybookProvider, PlaybookCell, PlaybookProvider};
 pub use safety::{NoopSafetyContextProvider, SafetyCell, SafetyContextProvider};
 pub use signals::{
     ComposeRequest, ComposeScope, ComposedPrompt, EpisodeSections, ExperimentAssignment,
-    KnowledgeSections, ModulationSections, PlaybookSections, SafetySections,
-    TaskContextSections, cell_ids,
+    KnowledgeSections, ModulationSections, PlaybookSections, SafetySections, TaskContextSections,
+    cell_ids,
 };
 pub use task_context::{NoopTaskContextProvider, TaskContextCell, TaskContextProvider};

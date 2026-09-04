@@ -514,6 +514,7 @@ impl Agent for CodexAgent {
             output_tokens: Some(u64::from(parsed.usage.completion_tokens)),
             cache_creation_tokens: Some(0),
             cache_read_tokens: Some(u64::from(parsed.usage.cache_read_tokens())),
+            reasoning_tokens: None,
             // Cost is not reported by the provider; dispatch back-fills it
             // from the model profile's pricing (`fill_cost_from_profile`).
             cost_usd: None,
@@ -1069,6 +1070,7 @@ mod tests {
                 extra_headers: None,
                 max_concurrent: Some(1),
                 limits: None,
+                require_confirmation: false,
             },
         );
 

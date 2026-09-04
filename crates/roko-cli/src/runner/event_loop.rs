@@ -69,6 +69,7 @@ use roko_agent::ViolationSeverity;
 use roko_agent::model_call_service::ProviderOutcomeRecorder as _;
 use roko_agent::safety::DispatchSafetyContext;
 use roko_agent::safety::contract::{AgentContract, ContractLoadMode};
+use roko_learn::cfactor::CFactor;
 use roko_learn::efficiency::AgentEfficiencyEvent;
 use roko_learn::episode_logger::{EpisodeGateVerdict, EpisodeLogger};
 use roko_learn::error_pattern_store::{
@@ -125,9 +126,7 @@ use super::types::{
     TaskAttemptStatus, TaskLifecycleStatus, TaskPhaseDurations, TaskRunCategory, TaskRunSummary,
     TimeoutAgentSnapshot, TimeoutEvent, TimeoutKind, effective_plan_timeout_secs,
 };
-use crate::execution_control::{
-    CommandAckStatus, ExecutionCommand, ExecutionCommandKind, ack_for,
-};
+use crate::execution_control::{CommandAckStatus, ExecutionCommand, ExecutionCommandKind, ack_for};
 
 /// Bridges passive observable telemetry into the runner's shared StateHub.
 pub struct StateHubTelemetrySink(StateHubSender);
@@ -416,6 +415,9 @@ pub struct RunReport {
     /// Whether the run was halted because cumulative cost exceeded the
     /// configured `max_plan_usd` budget ceiling.
     pub budget_exhausted: bool,
+    /// Whether the run was halted because the daily cost ceiling
+    /// (`max_daily_usd`) was exceeded.
+    pub daily_budget_exhausted: bool,
 }
 
 /// Per-task cost report for the RunLedger.
@@ -454,6 +456,7 @@ pub struct PlanReport {
 impl RunReport {
     pub fn all_succeeded(&self) -> bool {
         !self.budget_exhausted
+            && !self.daily_budget_exhausted
             && self.tasks_failed == 0
             && self.tasks_blocked == 0
             && self.tasks_cancelled == 0
@@ -461,6 +464,19 @@ impl RunReport {
             && self.tasks_nonterminal == 0
             && self.plans.iter().all(|plan| plan.completed)
     }
+}
+
+/// Load the most recent cfactor snapshot from `c-factor.jsonl`.
+///
+/// Returns `None` if the file is missing, empty, or unparseable. This is a
+/// best-effort read -- dispatch proceeds without cfactor data when unavailable.
+fn load_latest_cfactor(layout: &RokoLayout) -> Option<CFactor> {
+    let path = layout.learn_dir().join("c-factor.jsonl");
+    let contents = std::fs::read_to_string(&path).ok()?;
+    contents
+        .lines()
+        .rev()
+        .find_map(|line| serde_json::from_str::<CFactor>(line).ok())
 }
 
 fn duration_secs(duration: Duration) -> u64 {
@@ -1434,6 +1450,7 @@ struct TaskRuntimeState {
     last_dispatch_ms: u64,
     phase_clock: TaskPhaseClock,
     routing_context: Option<roko_learn::model_router::RoutingContext>,
+    model_forced: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1528,6 +1545,7 @@ impl TaskRuntimeState {
             last_dispatch_ms: state.last_dispatch_ms,
             phase_clock: TaskPhaseClock::new(state.task_started_at),
             routing_context: state.routing_context.clone(),
+            model_forced: state.model_forced,
         }
     }
 
@@ -1555,6 +1573,7 @@ impl TaskRuntimeState {
         state.task_started_at = self.task_started_at;
         state.last_dispatch_ms = self.last_dispatch_ms;
         state.routing_context = self.routing_context.clone();
+        state.model_forced = self.model_forced;
     }
 }
 
@@ -3081,6 +3100,31 @@ pub async fn run_with_tui_commands(
 
     // State and TUI bridge.
     let mut state = RunState::new(total_tasks);
+
+    // ── Seed daily cost from the costs log ──────────────────────────────
+    //
+    // Read today's prior spend so the daily budget guardrail can compare
+    // against the configured `max_daily_usd` ceiling without re-reading
+    // the file on every dispatch tick.
+    if config.max_daily_usd > 0.0 {
+        let costs_log =
+            roko_learn::costs_log::CostsLog::at(config.layout.learn_dir().join("costs.jsonl"));
+        match costs_log.daily_cost(1).await {
+            Ok(days) => {
+                let today_cost = days.last().map_or(0.0, |(_, cost)| *cost);
+                state.prior_daily_cost_usd = today_cost;
+                info!(
+                    prior_daily_cost_usd = today_cost,
+                    max_daily_usd = config.max_daily_usd,
+                    "daily budget: seeded prior cost from costs log"
+                );
+            }
+            Err(error) => {
+                warn!(%error, "failed to read daily cost from costs log — daily budget enforcement degraded");
+            }
+        }
+    }
+
     let mut dream_completion_pending = false;
 
     // Run ledger — optional enhancement for tracking task starts, completions,
@@ -3424,10 +3468,7 @@ pub async fn run_with_tui_commands(
     let run_id = state.run_id().to_string();
     // Adapter that processes ExecutionCommands and returns RunnerCommandEffects.
     let exec_adapter = exec_ack_tx.as_ref().map(|ack_tx| {
-        super::control_adapter::RunnerExecutionCommandAdapter::new(
-            run_id.clone(),
-            ack_tx.clone(),
-        )
+        super::control_adapter::RunnerExecutionCommandAdapter::new(run_id.clone(), ack_tx.clone())
     });
     emit_runner_event(
         &paths,
@@ -3793,7 +3834,12 @@ pub async fn run_with_tui_commands(
                     .await;
                 }
                 append_agent_event(&paths, &event, &state);
-                publish_learning_agent_event(&learning_event_bus, &event, &state);
+                publish_learning_agent_event(
+                    &learning_event_bus,
+                    &event,
+                    &state,
+                    config.cli_model_override.is_some(),
+                );
                 capture_task_runtime(
                     &mut task_runtime_states,
                     &state,
@@ -6426,6 +6472,12 @@ pub async fn run_with_tui_commands(
                         RunnerCommandEffect::Rejected { message } => {
                             tui.error(&message);
                         }
+                        RunnerCommandEffect::ApprovalResolved { .. } => {
+                            // Approval resolution handled by the adapter.
+                        }
+                        RunnerCommandEffect::Reset => {
+                            // Reset handled by the adapter.
+                        }
                     }
                 } else {
                     // No adapter — send a rejection ack directly if we have
@@ -7534,6 +7586,19 @@ fn handle_agent_failure(
         }
 
         state.set_retry_backoff_from_decision(&plan_id, &decision);
+        // P1-5: On context overflow, shrink the context budget by 25% so
+        // the next dispatch injects fewer context sections and stays
+        // within the model's context window.
+        if failure_kind == RunnerFailureKind::ContextOverflow {
+            state.apply_context_overflow_shrink(&plan_id, &task_id);
+            let factor = state.context_shrink_factor(&plan_id, &task_id);
+            info!(
+                plan_id = %plan_id,
+                task_id = %task_id,
+                shrink_factor = factor,
+                "context overflow — reducing context budget for retry"
+            );
+        }
         let retry_attempt = decision
             .next_attempt
             .unwrap_or_else(|| state.iteration_for(&plan_id, &task_id));
@@ -8419,6 +8484,7 @@ fn publish_learning_agent_event(
     bus: &roko_learn::events::EventBus,
     event: &AgentEvent,
     state: &RunState,
+    is_model_override: bool,
 ) {
     match event {
         AgentEvent::Started {
@@ -8429,6 +8495,7 @@ fn publish_learning_agent_event(
                 model: model.clone(),
                 provider: provider.clone(),
                 timestamp_ms: chrono::Utc::now().timestamp_millis(),
+                is_model_override,
             });
         }
         AgentEvent::TurnCompleted {
@@ -8635,6 +8702,7 @@ fn emit_runner_event_with_facades(
             prompt_text: (!state.current_prompt_text.trim().is_empty())
                 .then(|| state.current_prompt_text.clone()),
             agent_output: state.agent_output.clone(),
+            model_forced: state.model_forced,
         };
         if let Some(feedback) = runner_event_to_feedback(&event, &state.routing_context, &usage) {
             if let Some(tasks) = feedback_tasks {
@@ -8996,6 +9064,11 @@ struct TaskUsageSnapshot {
     duration_ms: u64,
     prompt_text: Option<String>,
     agent_output: String,
+    /// Whether the model was forced via `--model` / `--force-backend`.
+    /// When `true`, feedback writers tag the observation as
+    /// `ModelChoiceSource::Override` so the cascade router's bandit
+    /// policy is not corrupted by manual overrides.
+    model_forced: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -9576,7 +9649,11 @@ fn runner_event_to_feedback(
                 plan_id: attempt.plan_id.clone(),
                 task_id: attempt.task_id.clone(),
                 outcome: agent_outcome,
-                model_source: ModelChoiceSource::Default,
+                model_source: if usage.model_forced {
+                    ModelChoiceSource::Override
+                } else {
+                    ModelChoiceSource::Default
+                },
                 succeeded,
                 routing_context: routing_ctx.clone(),
                 prompt_text: usage.prompt_text.clone(),
@@ -10147,43 +10224,51 @@ fn load_executor(
     // The unified snapshot is authoritative whenever present. Standalone
     // orchestrator/executor files are legacy fallbacks only for NotFound;
     // corruption must never resume an unrelated generation.
-    let (snapshot, merge_queue, snapshot_path) = match extract_executor_from_unified(
-        preloaded_unified,
-        paths,
-    ) {
-        Ok(Some((snapshot, merge_queue))) => (
-            snapshot,
-            merge_queue,
-            paths.state_snapshot_json.display().to_string(),
-        ),
-        Ok(None) => match load_orchestrator_checkpoint(paths) {
+    let (snapshot, merge_queue, snapshot_path) =
+        match extract_executor_from_unified(preloaded_unified, paths) {
             Ok(Some((snapshot, merge_queue))) => (
                 snapshot,
                 merge_queue,
-                paths.orchestrator_json.display().to_string(),
+                paths.state_snapshot_json.display().to_string(),
             ),
-            Ok(None) => match load_legacy_executor_checkpoint(paths) {
-                Ok(Some(snapshot)) => (
+            Ok(None) => match load_orchestrator_checkpoint(paths) {
+                Ok(Some((snapshot, merge_queue))) => (
                     snapshot,
-                    MergeQueue::new(),
-                    paths.executor_json.display().to_string(),
+                    merge_queue,
+                    paths.orchestrator_json.display().to_string(),
                 ),
-                Ok(None) => {
-                    return ResumeLoad {
-                        executor: ParallelExecutor::new(config.clone()),
-                        merge_queue: MergeQueue::new(),
-                        marker: ResumeMarker {
-                            outcome: ResumeOutcome::Fresh,
-                            snapshot_path: paths.state_snapshot_json.display().to_string(),
-                            snapshot_plan_ids: Vec::new(),
-                            current_plan_ids: plan_ids.to_vec(),
-                            message: Some("no executor snapshot found".to_string()),
-                        },
-                    };
-                }
+                Ok(None) => match load_legacy_executor_checkpoint(paths) {
+                    Ok(Some(snapshot)) => (
+                        snapshot,
+                        MergeQueue::new(),
+                        paths.executor_json.display().to_string(),
+                    ),
+                    Ok(None) => {
+                        return ResumeLoad {
+                            executor: ParallelExecutor::new(config.clone()),
+                            merge_queue: MergeQueue::new(),
+                            marker: ResumeMarker {
+                                outcome: ResumeOutcome::Fresh,
+                                snapshot_path: paths.state_snapshot_json.display().to_string(),
+                                snapshot_plan_ids: Vec::new(),
+                                current_plan_ids: plan_ids.to_vec(),
+                                message: Some("no executor snapshot found".to_string()),
+                            },
+                        };
+                    }
+                    Err(e) => {
+                        let snapshot_path = paths.executor_json.display().to_string();
+                        warn!(err = %e, "failed to load legacy executor snapshot");
+                        return fresh_after_snapshot_error(
+                            Some((snapshot_path, ResumeOutcome::Corrupt, e)),
+                            config,
+                            plan_ids,
+                        );
+                    }
+                },
                 Err(e) => {
-                    let snapshot_path = paths.executor_json.display().to_string();
-                    warn!(err = %e, "failed to load legacy executor snapshot");
+                    let snapshot_path = paths.orchestrator_json.display().to_string();
+                    warn!(err = %e, "failed to load legacy orchestrator snapshot");
                     return fresh_after_snapshot_error(
                         Some((snapshot_path, ResumeOutcome::Corrupt, e)),
                         config,
@@ -10192,25 +10277,15 @@ fn load_executor(
                 }
             },
             Err(e) => {
-                let snapshot_path = paths.orchestrator_json.display().to_string();
-                warn!(err = %e, "failed to load legacy orchestrator snapshot");
+                let snapshot_path = paths.state_snapshot_json.display().to_string();
+                warn!(err = %e, "failed to load authoritative unified state snapshot");
                 return fresh_after_snapshot_error(
                     Some((snapshot_path, ResumeOutcome::Corrupt, e)),
                     config,
                     plan_ids,
                 );
             }
-        },
-        Err(e) => {
-            let snapshot_path = paths.state_snapshot_json.display().to_string();
-            warn!(err = %e, "failed to load authoritative unified state snapshot");
-            return fresh_after_snapshot_error(
-                Some((snapshot_path, ResumeOutcome::Corrupt, e)),
-                config,
-                plan_ids,
-            );
-        }
-    };
+        };
 
     // Validate: snapshot must contain at least one of the current plan IDs.
     let snap_plan_ids: Vec<String> = snapshot.plan_states.keys().cloned().collect();
@@ -11203,10 +11278,10 @@ async fn dispatch_action(
 
             if max_plan_usd > 0.0 {
                 let mut guardrail = roko_learn::budget::BudgetGuardrail::new(
-                    max_plan_usd,        // per-task ceiling (re-used as plan ceiling here)
-                    max_plan_usd * 10.0, // session ceiling — not enforced at this layer
-                    max_plan_usd * 30.0, // day ceiling — not enforced at this layer
-                    0.80,                // warn threshold
+                    max_plan_usd, // per-task ceiling (re-used as plan ceiling here)
+                    0.0,          // session — not enforced; daily check is separate
+                    0.0,          // day — not enforced; daily check is separate
+                    0.80,         // warn threshold
                 );
                 let budget_action = guardrail.record_cost(plan_spent, "task");
                 match budget_action {
@@ -11284,6 +11359,88 @@ async fn dispatch_action(
                         );
                     }
                     roko_learn::budget::BudgetAction::Ok => {}
+                }
+            }
+
+            // ── Daily budget enforcement ──────────────────────────────────
+            //
+            // When `max_daily_usd` is configured (> 0), check the day's total
+            // cost: prior spend from the costs log (seeded at startup) plus
+            // the in-session accumulated cost. Once tripped, the flag persists
+            // across ticks just like `budget_exhausted`.
+            let max_daily_usd = ctx.config.max_daily_usd;
+
+            if ctx.state.daily_budget_exhausted && !ctx.config.budget_override {
+                warn!(
+                    plan_id = %plan_id,
+                    "daily budget already exhausted — halting dispatch (--budget-override to continue)"
+                );
+                return ActionDispatchOutcome::Noop;
+            }
+
+            if max_daily_usd > 0.0 && !ctx.state.daily_budget_exhausted {
+                let today_total = ctx.state.prior_daily_cost_usd + ctx.state.total_cost_usd;
+                let mut guardrail = roko_learn::budget::BudgetGuardrail::new(
+                    max_daily_usd, // per-task slot used for the daily ceiling
+                    max_daily_usd, // session slot — same ceiling
+                    max_daily_usd, // day slot — same ceiling
+                    0.80,          // warn threshold
+                );
+                let budget_action = guardrail.record_cost(today_total, "task");
+                match budget_action {
+                    roko_learn::budget::BudgetAction::Block => {
+                        warn!(
+                            plan_id = %plan_id,
+                            today_spent = today_total,
+                            limit = max_daily_usd,
+                            "daily budget exceeded — BudgetAction::Block"
+                        );
+                        ctx.state.daily_budget_exhausted = true;
+                        if ctx.config.budget_override {
+                            warn!(
+                                plan_id = %plan_id,
+                                "--budget-override active — continuing past daily budget ceiling"
+                            );
+                        } else {
+                            ctx.tui.error(&format!(
+                                "daily budget exceeded: ${today_total:.2} >= ${max_daily_usd:.2}"
+                            ));
+                            if let Err(e) = ctx.executor.apply_event(
+                                plan_id,
+                                &ExecutorEvent::Fatal(format!(
+                                    "daily budget exceeded: ${today_total:.2} >= ${max_daily_usd:.2}"
+                                )),
+                            ) {
+                                error!(plan_id = %plan_id, error = %e,
+                                    "failed to apply Fatal event -- forcing plan terminal");
+                                ctx.state.force_plan_terminal(plan_id);
+                            }
+                            return ActionDispatchOutcome::Handled;
+                        }
+                    }
+                    roko_learn::budget::BudgetAction::RouteToCheaper => {
+                        warn!(
+                            plan_id = %plan_id,
+                            today_spent = today_total,
+                            limit = max_daily_usd,
+                            pct = ">80%",
+                            "daily budget >80% consumed — routing to cheaper models"
+                        );
+                        budget_pressure = true;
+                    }
+                    roko_learn::budget::BudgetAction::Warn {
+                        percent_used,
+                        level,
+                    } => {
+                        warn!(
+                            plan_id = %plan_id,
+                            pct = format!("{:.0}%", percent_used * 100.0),
+                            level,
+                            "daily budget warning"
+                        );
+                    }
+                    roko_learn::budget::BudgetAction::BlockNewSessions
+                    | roko_learn::budget::BudgetAction::Ok => {}
                 }
             }
 
@@ -12072,10 +12229,21 @@ async fn dispatch_action(
                         .map(|_| default_effort_label(ctx.config)),
                     temperament: None,
                     previous_model: None,
-                    plan_context_tokens: None,
+                    // P1-5: When a previous attempt overflowed the context
+                    // window, apply the cumulative 0.75^N shrink factor so
+                    // the routing layer sees the reduced budget.
+                    plan_context_tokens: {
+                        let shrink = ctx.state.context_shrink_factor(plan_id, &task_id);
+                        if shrink < 1.0 {
+                            Some((200_000_f64 * shrink) as u64)
+                        } else {
+                            None
+                        }
+                    },
                     tier_thresholds: daimon_hook
                         .as_ref()
                         .map(|hook| roko_daimon::adjusted_thresholds(&hook.behavioral_state)),
+                    cfactor: load_latest_cfactor(&ctx.config.layout),
                 }
             };
             // E08-T07: Extract conductor routing bias so the model router can
@@ -12126,40 +12294,49 @@ async fn dispatch_action(
                 dependency_outputs: ctx.state.dependency_outputs(plan_id, &task_def.depends_on),
             };
             ctx.state.task_model_hint = task_def.model_hint.clone();
+            // P1-6: Write routing_context to the per-task runtime snapshot
+            // instead of the shared RunState, preventing concurrent
+            // dispatches from overwriting each other's context.
+            // restore_task_runtime swaps this back before event processing.
+            if let Some(runtime) = ctx.task_runtime_states.get_mut(&attempt_ref.key()) {
+                runtime.routing_context = dispatch_ctx.routing_context.clone();
+            }
             ctx.state.routing_context = dispatch_ctx.routing_context.clone();
             ctx.state.current_task_role = task_def
                 .role
                 .clone()
                 .unwrap_or_else(|| "implementer".to_string());
             let dispatcher = ctx.factory.dispatcher();
-            let mut dispatch_plan = match dispatcher.plan_logged(&task_def, &dispatch_ctx, &task_id, budget_pressure) {
-                Ok(plan) => plan,
-                Err(err) => {
-                    let message = format!("dispatch planning failed: {err}");
-                    error!(plan_id = %plan_id, task = %task_id, error = %message);
-                    release_prepared_task_dispatch(
-                        ctx.attempt_ownership,
-                        ctx.task_dag,
-                        &attempt_ref,
-                        is_dag_task_spawn,
-                    );
-                    ctx.task_runtime_states.remove(&attempt_ref.key());
-                    if let Err(e) = ctx
-                        .executor
-                        .apply_event(plan_id, &ExecutorEvent::Fatal(message.clone()))
-                    {
-                        error!(plan_id = %plan_id, error = %e,
+            let mut dispatch_plan =
+                match dispatcher.plan_logged(&task_def, &dispatch_ctx, &task_id, budget_pressure) {
+                    Ok(plan) => plan,
+                    Err(err) => {
+                        let message = format!("dispatch planning failed: {err}");
+                        error!(plan_id = %plan_id, task = %task_id, error = %message);
+                        release_prepared_task_dispatch(
+                            ctx.attempt_ownership,
+                            ctx.task_dag,
+                            &attempt_ref,
+                            is_dag_task_spawn,
+                        );
+                        ctx.task_runtime_states.remove(&attempt_ref.key());
+                        if let Err(e) = ctx
+                            .executor
+                            .apply_event(plan_id, &ExecutorEvent::Fatal(message.clone()))
+                        {
+                            error!(plan_id = %plan_id, error = %e,
                             "failed to apply Fatal event -- forcing plan terminal");
-                        ctx.state.force_plan_terminal(plan_id);
+                            ctx.state.force_plan_terminal(plan_id);
+                        }
+                        ctx.tui.error(&message);
+                        return ActionDispatchOutcome::Handled;
                     }
-                    ctx.tui.error(&message);
-                    return ActionDispatchOutcome::Handled;
-                }
-            };
+                };
             let mut prompt_experiment_guard = PreparedPromptExperimentGuard::new(
                 dispatch_ctx.prompt_experiment.clone(),
                 &dispatch_plan.prompt.diagnostics.experiment_assignments,
             );
+            ctx.state.model_forced = dispatch_plan.forced;
             let mut selected_source = "dispatcher".to_string();
             let allow_learned_model_modulation =
                 task_def.model_hint.is_none() && !dispatch_plan.forced;
@@ -12184,10 +12361,15 @@ async fn dispatch_action(
                             "provider health filtered knowledge-cascade candidates"
                         );
                     }
+                    // Use the cfactor snapshot already loaded into the routing context.
+                    let cfactor_ref = dispatch_ctx
+                        .routing_context
+                        .as_ref()
+                        .and_then(|rc| rc.cfactor.as_ref());
                     if let Some(selected) = router.select_for_frequency_among_with_knowledge(
                         roko_core::OperatingFrequency::Theta,
                         dispatch_ctx.routing_context.as_ref(),
-                        None, // cfactor not threaded into runner-v2 dispatch
+                        cfactor_ref,
                         Some(task_id.as_str()),
                         &healthy_knowledge_candidates,
                         knowledge_ref,
@@ -12214,10 +12396,11 @@ async fn dispatch_action(
             // default_effort / built-in role defaults before daimon modulation
             // so roles like researcher and implementer get "high" effort by
             // default.  The daimon can still override this downstream.
-            let mut dispatch_effort: Option<String> =
-                ctx.config.roko_config.as_ref().map(|roko_cfg| {
-                    roko_cfg.agent.effort_for_role(&role).to_string()
-                });
+            let mut dispatch_effort: Option<String> = ctx
+                .config
+                .roko_config
+                .as_ref()
+                .map(|roko_cfg| roko_cfg.agent.effort_for_role(&role).to_string());
             let daimon_modulation = daimon_hook.as_ref().and_then(|hook| {
                 daimon_dispatch_modulation(
                     ctx.config,
@@ -12415,8 +12598,28 @@ async fn dispatch_action(
             // per-role context_scope.  Strategist-class roles receive no
             // episode context (max=0); reviewer-class roles get up to 5;
             // implementer-class roles get up to 3.
+            let mut context_scope = role_context_limits(role_enum);
             {
-                let context_scope = role_context_limits(role_enum);
+                // P1-5: On context overflow retries, reduce context section
+                // limits proportionally to the cumulative shrink factor so
+                // the prompt actually fits the model's context window.
+                let shrink = ctx.state.context_shrink_factor(plan_id, &task_id);
+                if shrink < 1.0 {
+                    context_scope.max_file_intel_entries =
+                        ((context_scope.max_file_intel_entries as f64) * shrink).ceil() as usize;
+                    context_scope.max_warning_entries =
+                        ((context_scope.max_warning_entries as f64) * shrink).ceil() as usize;
+                    context_scope.max_error_patterns =
+                        ((context_scope.max_error_patterns as f64) * shrink).ceil() as usize;
+                    context_scope.max_similar_episodes =
+                        ((context_scope.max_similar_episodes as f64) * shrink).ceil() as usize;
+                    debug!(
+                        plan_id = %plan_id,
+                        task = %task_id,
+                        shrink_factor = shrink,
+                        "applied context overflow shrink to scoping limits"
+                    );
+                }
                 if context_scope.max_similar_episodes > 0 {
                     let task_fp =
                         roko_learn::hdc_fingerprint::fingerprint_episode(&task_def.title, "");
@@ -12486,7 +12689,10 @@ async fn dispatch_action(
                     .layout
                     .learn_dir()
                     .join("discovered-patterns.json");
-                let pattern_section = format_discovered_patterns_section(&pattern_path);
+                let pattern_section = format_discovered_patterns_section(
+                    &pattern_path,
+                    context_scope.max_error_patterns,
+                );
                 if let Some(section) = pattern_section {
                     system_prompt.push_str("\n\n");
                     system_prompt.push_str(&section);
@@ -12755,8 +12961,11 @@ async fn dispatch_action(
 
             // ── E04-T06 / E34: Pre-dispatch safety check ─────────────
             {
-                let effective_safety =
-                    ctx.config.safety_layer.clone().with_contract(effective_contract.clone());
+                let effective_safety = ctx
+                    .config
+                    .safety_layer
+                    .clone()
+                    .with_contract(effective_contract.clone());
                 if let Err(violation) = effective_safety.pre_dispatch_check_with_context(
                     plan_id,
                     &task_id,
@@ -12795,8 +13004,11 @@ async fn dispatch_action(
 
             let contract_allowed_tools = effective_contract.allowed_tools.clone();
             let contract_denied_tools = effective_contract.forbidden_tool_names();
-            let permission_bypass_allowed =
-                ctx.config.safety_layer.sandbox_level.allows_permission_bypass();
+            let permission_bypass_allowed = ctx
+                .config
+                .safety_layer
+                .sandbox_level
+                .allows_permission_bypass();
             if contract_allowed_tools.is_some() || !contract_denied_tools.is_empty() {
                 debug!(
                     role = %task_role,
@@ -15155,13 +15367,16 @@ fn record_gate_failure_reflection(
     );
 }
 
-/// E45-T03: Load the top 5 unresolved error patterns from the shared store
+/// E45-T03: Load the top N unresolved error patterns from the shared store
 /// and format them as a prompt section for the agent.
 ///
 /// Returns `None` when the store is empty or missing.
-fn format_discovered_patterns_section(pattern_path: &std::path::Path) -> Option<String> {
+fn format_discovered_patterns_section(
+    pattern_path: &std::path::Path,
+    limit: usize,
+) -> Option<String> {
     let store = ErrorPatternStore::load(pattern_path);
-    let top = store.top_patterns(5);
+    let top = store.top_patterns(limit);
     if top.is_empty() {
         return None;
     }
@@ -20146,6 +20361,7 @@ fn build_report(
         task_costs,
         tasks,
         budget_exhausted: state.budget_exhausted,
+        daily_budget_exhausted: state.daily_budget_exhausted,
     }
 }
 
@@ -20408,6 +20624,7 @@ mod tests {
                 duration_ms: 0,
                 prompt_text: None,
                 agent_output: String::new(),
+                model_forced: false,
             },
         )
         .expect("plan completion feedback");
@@ -20647,7 +20864,10 @@ mod tests {
             repo_root: fixture.repo_root.clone(),
             replay_root: fixture.repo_root.join(".roko/worktrees"),
             safety: roko_agent::SafetyLayer::with_defaults(),
-            contract: AgentContract::permissive("implementer"),
+            contract: AgentContract {
+                role: "implementer".into(),
+                ..AgentContract::default()
+            },
             task: fixture.task.clone(),
             timeout: Duration::from_secs(120),
             gates_config: GatesConfig::default(),
@@ -23027,8 +23247,7 @@ mod budget_integration_tests {
         let max_plan_usd = 5.0;
         let plan_spent = 6.0; // exceeds ceiling
 
-        let mut guardrail =
-            BudgetGuardrail::new(max_plan_usd, max_plan_usd * 10.0, max_plan_usd * 30.0, 0.80);
+        let mut guardrail = BudgetGuardrail::new(max_plan_usd, 0.0, 0.0, 0.80);
         let action = guardrail.record_cost(plan_spent, "task");
         assert_eq!(
             action,
@@ -23056,8 +23275,7 @@ mod budget_integration_tests {
         let max_plan_usd = 10.0;
         let plan_spent = 15.0; // way over budget
 
-        let mut guardrail =
-            BudgetGuardrail::new(max_plan_usd, max_plan_usd * 10.0, max_plan_usd * 30.0, 0.80);
+        let mut guardrail = BudgetGuardrail::new(max_plan_usd, 0.0, 0.0, 0.80);
         let action = guardrail.record_cost(plan_spent, "task");
         assert_eq!(action, BudgetAction::Block);
 
@@ -23110,8 +23328,7 @@ mod budget_integration_tests {
         let max_plan_usd = 10.0;
         let plan_spent = state.plan_cost("test-plan");
 
-        let mut guardrail =
-            BudgetGuardrail::new(max_plan_usd, max_plan_usd * 10.0, max_plan_usd * 30.0, 0.70);
+        let mut guardrail = BudgetGuardrail::new(max_plan_usd, 0.0, 0.0, 0.70);
         let action = guardrail.record_cost(plan_spent, "task");
         // $7.50 / $10.0 = 75% → should be Warn (above 70% threshold).
         match action {
@@ -23128,7 +23345,7 @@ mod budget_integration_tests {
         state.cost_usd = 3.00;
         state.roll_into_totals();
         let plan_spent = state.plan_cost("test-plan");
-        let mut guardrail2 = BudgetGuardrail::new(max_plan_usd, 100.0, 300.0, 0.70);
+        let mut guardrail2 = BudgetGuardrail::new(max_plan_usd, 0.0, 0.0, 0.70);
         assert_eq!(
             guardrail2.record_cost(plan_spent, "task"),
             BudgetAction::Block,
@@ -26457,7 +26674,7 @@ mod tests_error_pattern_sharing {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("nonexistent.json");
 
-        let result = format_discovered_patterns_section(&path);
+        let result = format_discovered_patterns_section(&path, 5);
         assert!(result.is_none(), "missing file must return None");
     }
 
@@ -26475,7 +26692,7 @@ mod tests_error_pattern_sharing {
         );
 
         let path = learn_dir.join("discovered-patterns.json");
-        let section = format_discovered_patterns_section(&path)
+        let section = format_discovered_patterns_section(&path, 5)
             .expect("section must be Some when patterns exist");
 
         assert!(
@@ -26528,7 +26745,7 @@ mod tests_error_pattern_sharing {
         });
         std::fs::write(&path, serde_json::to_string_pretty(&json).unwrap()).unwrap();
 
-        let section = format_discovered_patterns_section(&path)
+        let section = format_discovered_patterns_section(&path, 5)
             .expect("section must be Some since one unresolved pattern exists");
 
         assert!(
@@ -26567,7 +26784,7 @@ mod tests_error_pattern_sharing {
         }
 
         let path = learn_dir.join("discovered-patterns.json");
-        let section = format_discovered_patterns_section(&path)
+        let section = format_discovered_patterns_section(&path, 5)
             .expect("section must be Some for non-empty store");
 
         // Count numbered list items ("1. ", "2. ", ...): the function caps at 5.

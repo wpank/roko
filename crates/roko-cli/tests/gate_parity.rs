@@ -124,9 +124,10 @@ impl roko_gate::production_service::ProductionGateRunner for FixtureGateRunner {
                     "skipped" => RungState::Skipped,
                     _ => RungState::Skipped,
                 };
-                let test_counts = fr.test_counts.as_ref().map(|tc| {
-                    roko_core::TestCount::new(tc.passed, tc.failed, tc.ignored)
-                });
+                let test_counts = fr
+                    .test_counts
+                    .as_ref()
+                    .map(|tc| roko_core::TestCount::new(tc.passed, tc.failed, tc.ignored));
                 ProductionGateRungVerdict {
                     rung,
                     gate_name: fr.gate_name.clone(),
@@ -136,18 +137,19 @@ impl roko_gate::production_service::ProductionGateRunner for FixtureGateRunner {
                     evidence: EvidenceRef::default(),
                     duration: Duration::from_millis(fr.duration_ms),
                     test_counts,
-                    input_fingerprint: fr
-                        .evidence_fingerprint
-                        .clone()
-                        .unwrap_or_default(),
+                    input_fingerprint: fr.evidence_fingerprint.clone().unwrap_or_default(),
                     skip_reason: None,
                 }
             })
             .collect();
 
-        let has_failure = rung_verdicts
-            .iter()
-            .any(|rv| matches!(rv.state, RungState::Failed) && !self.rungs.iter().any(|fr| fr.rung == rv.rung.label() && fr.preexisting));
+        let has_failure = rung_verdicts.iter().any(|rv| {
+            matches!(rv.state, RungState::Failed)
+                && !self
+                    .rungs
+                    .iter()
+                    .any(|fr| fr.rung == rv.rung.label() && fr.preexisting)
+        });
 
         let outcome = if self.cancelled {
             PipelineOutcome::Cancelled
@@ -159,9 +161,7 @@ impl roko_gate::production_service::ProductionGateRunner for FixtureGateRunner {
 
         let mostly_passing = rung_verdicts.iter().any(|rv| {
             matches!(rv.state, RungState::Failed)
-                && rv
-                    .test_counts
-                    .is_some_and(|tc| tc.passed > 10 * tc.failed)
+                && rv.test_counts.is_some_and(|tc| tc.passed > 10 * tc.failed)
         });
 
         Ok(ProductionGateVerdictV1 {
@@ -189,8 +189,8 @@ fn fixtures_path() -> PathBuf {
 }
 
 fn load_fixtures() -> FixtureFile {
-    let content = std::fs::read_to_string(fixtures_path())
-        .expect("cannot read gate_parity/fixtures.json");
+    let content =
+        std::fs::read_to_string(fixtures_path()).expect("cannot read gate_parity/fixtures.json");
     serde_json::from_str(&content).expect("cannot parse gate_parity/fixtures.json")
 }
 
@@ -246,9 +246,8 @@ async fn runner_adapter_matches_fixture_expectations() {
             cancelled: case.expected.outcome == "cancelled",
             timed_out: case.expected.outcome == "timed_out",
         };
-        let adapter = roko_cli::runner::gate_dispatch::RunnerProductionGateAdapter::new(
-            Arc::new(runner),
-        );
+        let adapter =
+            roko_cli::runner::gate_dispatch::RunnerProductionGateAdapter::new(Arc::new(runner));
 
         let effect = make_gate_effect();
         let completion = adapter
@@ -316,9 +315,8 @@ async fn per_rung_state_maps_correctly() {
             cancelled: case.expected.outcome == "cancelled",
             timed_out: false,
         };
-        let adapter = roko_cli::runner::gate_dispatch::RunnerProductionGateAdapter::new(
-            Arc::new(runner),
-        );
+        let adapter =
+            roko_cli::runner::gate_dispatch::RunnerProductionGateAdapter::new(Arc::new(runner));
         let effect = make_gate_effect();
         let completion = adapter
             .run(
@@ -371,7 +369,10 @@ async fn per_rung_state_maps_correctly() {
                         case.id, i
                     );
                 }
-                _ => panic!("case '{}' rung {}: unknown state '{}'", case.id, i, rung.state),
+                _ => panic!(
+                    "case '{}' rung {}: unknown state '{}'",
+                    case.id, i, rung.state
+                ),
             }
         }
     }
@@ -455,8 +456,7 @@ async fn graph_cell_matches_fixture_expectations() {
             timeout_secs: 600,
             baseline_fingerprint: None,
         };
-        let body =
-            roko_core::Body::from_json(&cell_input).expect("serialize cell input");
+        let body = roko_core::Body::from_json(&cell_input).expect("serialize cell input");
         let signal = roko_core::Signal::builder(roko_core::Kind::Task)
             .body(body)
             .build();
@@ -526,9 +526,9 @@ async fn runner_and_graph_verdicts_converge() {
             cancelled: case.expected.outcome == "cancelled",
             timed_out: case.expected.outcome == "timed_out",
         };
-        let adapter = roko_cli::runner::gate_dispatch::RunnerProductionGateAdapter::new(
-            Arc::new(runner_runner),
-        );
+        let adapter = roko_cli::runner::gate_dispatch::RunnerProductionGateAdapter::new(Arc::new(
+            runner_runner,
+        ));
         let effect = make_gate_effect();
         let completion = adapter
             .run(
@@ -568,8 +568,7 @@ async fn runner_and_graph_verdicts_converge() {
             timeout_secs: 600,
             baseline_fingerprint: None,
         };
-        let body =
-            roko_core::Body::from_json(&cell_input).expect("serialize cell input");
+        let body = roko_core::Body::from_json(&cell_input).expect("serialize cell input");
         let signal = roko_core::Signal::builder(roko_core::Kind::Task)
             .body(body)
             .build();

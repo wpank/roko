@@ -390,11 +390,7 @@ impl SqliteIndex {
     pub fn ranking_for(&self, id: &SymbolId) -> Result<Option<f64>> {
         let result = self.conn.query_row(
             "SELECT score FROM rankings WHERE file_path = ?1 AND name = ?2 AND kind = ?3",
-            params![
-                id.file_path,
-                id.symbol_name,
-                format!("{:?}", id.kind),
-            ],
+            params![id.file_path, id.symbol_name, format!("{:?}", id.kind),],
             |row| row.get(0),
         );
         match result {
@@ -484,6 +480,7 @@ const INDEX_DB_NAME: &str = "index.db";
 
 /// Typed errors that `IndexStore` can report for non-fatal conditions.
 #[derive(Debug)]
+#[allow(missing_docs)]
 pub enum IndexStoreError {
     /// The schema version in the DB does not match the running code.
     VersionMismatch { stored: i64, expected: i64 },
@@ -562,6 +559,15 @@ pub struct IndexStore {
     canonical_root: String,
 }
 
+impl std::fmt::Debug for IndexStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IndexStore")
+            .field("db_path", &self.db_path)
+            .field("canonical_root", &self.canonical_root)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Metadata stored in the `index_meta` table.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IndexMeta {
@@ -586,8 +592,9 @@ impl IndexStore {
     /// Validates the schema version and canonical root. Returns a typed
     /// error for mismatch, corruption, or lock contention.
     pub fn open_readonly(root: &Path) -> std::result::Result<Self, IndexStoreError> {
-        let root = std::fs::canonicalize(root)
-            .map_err(|e| IndexStoreError::Other(anyhow::Error::new(e).context("canonicalize root")))?;
+        let root = std::fs::canonicalize(root).map_err(|e| {
+            IndexStoreError::Other(anyhow::Error::new(e).context("canonicalize root"))
+        })?;
         let db_path = Self::db_path_for(&root);
         if !db_path.exists() {
             return Err(IndexStoreError::Other(anyhow::anyhow!(
@@ -782,10 +789,10 @@ impl IndexStore {
         })?;
 
         // Fsync the parent directory for rename durability.
-        if let Some(parent) = db_path.parent() {
-            if let Ok(dir) = std::fs::File::open(parent) {
-                let _ = dir.sync_all();
-            }
+        if let Some(parent) = db_path.parent()
+            && let Ok(dir) = std::fs::File::open(parent)
+        {
+            let _ = dir.sync_all();
         }
 
         // Re-open the final DB for continued use.
@@ -819,10 +826,7 @@ impl IndexStore {
             .map(|p| p.to_string_lossy().to_string())
             .collect();
 
-        let mut stmt = self
-            .inner
-            .conn
-            .prepare("SELECT path FROM files")?;
+        let mut stmt = self.inner.conn.prepare("SELECT path FROM files")?;
         let stored_paths: Vec<String> = stmt
             .query_map([], |row| row.get(0))?
             .filter_map(|r| r.ok())
@@ -924,10 +928,7 @@ impl IndexStore {
                 db_path.display()
             );
         }
-        let file_name = db_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
+        let file_name = db_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if file_name != INDEX_DB_NAME {
             bail!(
                 "unexpected index database filename: {} (expected {})",
@@ -1160,7 +1161,10 @@ mod tests {
 
         let meta = store.meta().expect("meta");
         assert_eq!(meta.schema_version, SCHEMA_VERSION);
-        assert_eq!(meta.canonical_root, root.canonicalize().unwrap().to_string_lossy());
+        assert_eq!(
+            meta.canonical_root,
+            root.canonicalize().unwrap().to_string_lossy()
+        );
         assert!(!meta.index_version.is_empty());
         assert!(meta.feature_fingerprint.contains("sqlite"));
     }
@@ -1206,8 +1210,7 @@ mod tests {
             content: "fn bar() {}".into(),
         };
 
-        let store =
-            IndexStore::build(root, &[sym1, sym2], &[], &[fr1, fr2]).expect("build");
+        let store = IndexStore::build(root, &[sym1, sym2], &[], &[fr1, fr2]).expect("build");
 
         // Incremental update with only a.rs present: b.rs symbols should be removed.
         let fake_a = PathBuf::from("a.rs");
@@ -1352,7 +1355,10 @@ mod tests {
 
         IndexStore::rebuild(root).expect("rebuild");
 
-        assert!(!IndexStore::db_path_for(root).exists(), "DB should be removed");
+        assert!(
+            !IndexStore::db_path_for(root).exists(),
+            "DB should be removed"
+        );
         assert!(other_file.exists(), "unrelated files must not be removed");
     }
 
@@ -1362,10 +1368,7 @@ mod tests {
         let root = Path::new("/tmp/test-root");
         let db = IndexStore::db_path_for(root);
         assert!(db.starts_with(root.join(".roko")));
-        assert_eq!(
-            db.file_name().and_then(|n| n.to_str()),
-            Some(INDEX_DB_NAME)
-        );
+        assert_eq!(db.file_name().and_then(|n| n.to_str()), Some(INDEX_DB_NAME));
     }
 
     #[test]
@@ -1456,10 +1459,8 @@ mod tests {
             score: 0.75,
         };
 
-        let store = IndexStore::build_with_rankings(
-            root, &[sym], &[], &[fr], &[ranking],
-        )
-        .expect("build with rankings");
+        let store = IndexStore::build_with_rankings(root, &[sym], &[], &[fr], &[ranking])
+            .expect("build with rankings");
 
         assert_eq!(store.inner().ranking_count().expect("count"), 1);
         let top = store.inner().top_rankings(10).expect("top");

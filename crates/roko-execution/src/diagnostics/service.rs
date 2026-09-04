@@ -135,21 +135,23 @@ mod tests {
         let report = DiagnosticService::run(&request);
         assert!(!report.findings.is_empty());
         // Config should be missing.
-        assert!(report.findings.iter().any(|f| f.check_id == DiagnosticCheckId::Config
-            && matches!(
-                f.severity,
-                DiagnosticSeverity::Error | DiagnosticSeverity::Warning
-            )));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.check_id == DiagnosticCheckId::Config
+                    && matches!(
+                        f.severity,
+                        DiagnosticSeverity::Error | DiagnosticSeverity::Warning
+                    ))
+        );
     }
 
     #[test]
     fn run_config_check_with_valid_toml() {
         let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(
-            dir.path().join("roko.toml"),
-            "[agent]\nmodel = \"test\"\n",
-        )
-        .expect("write toml");
+        std::fs::write(dir.path().join("roko.toml"), "[agent]\nmodel = \"test\"\n")
+            .expect("write toml");
         let mut selected = BTreeSet::new();
         selected.insert(DiagnosticCheckId::Config);
         let request = DiagnosticRequest {
@@ -165,8 +167,7 @@ mod tests {
     #[test]
     fn run_config_check_with_invalid_toml() {
         let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(dir.path().join("roko.toml"), "{{invalid}}")
-            .expect("write bad toml");
+        std::fs::write(dir.path().join("roko.toml"), "{{invalid}}").expect("write bad toml");
         let mut selected = BTreeSet::new();
         selected.insert(DiagnosticCheckId::Config);
         let request = DiagnosticRequest {
@@ -177,7 +178,12 @@ mod tests {
         };
         let report = DiagnosticService::run(&request);
         assert!(report.has_errors());
-        assert!(report.findings.iter().any(|f| f.code == "config_parse_error"));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.code == "config_parse_error")
+        );
     }
 
     #[test]
@@ -193,15 +199,19 @@ mod tests {
         };
         let report = DiagnosticService::run(&request);
         assert!(report.has_errors());
-        assert!(report.findings.iter().any(|f| f.code == "workspace_missing"));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.code == "workspace_missing")
+        );
     }
 
     #[test]
     fn run_workspace_check_with_roko_dir() {
         let dir = tempfile::tempdir().expect("tempdir");
         for sub in ["state", "learn", "memory", "prd"] {
-            std::fs::create_dir_all(dir.path().join(".roko").join(sub))
-                .expect("create dir");
+            std::fs::create_dir_all(dir.path().join(".roko").join(sub)).expect("create dir");
         }
         let mut selected = BTreeSet::new();
         selected.insert(DiagnosticCheckId::Workspace);
@@ -467,10 +477,12 @@ mod tests {
             allow_repairs: false,
         };
         let report = DiagnosticService::run(&request);
-        assert!(report
-            .findings
-            .iter()
-            .any(|f| f.code == "schema_version_current"));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.code == "schema_version_current")
+        );
     }
 
     #[test]
@@ -503,13 +515,8 @@ mod tests {
             11,
             "spec requires exactly 11 shared check IDs"
         );
-        let all_set: BTreeSet<DiagnosticCheckId> =
-            DiagnosticCheckId::ALL.iter().copied().collect();
-        assert_eq!(
-            all_set.len(),
-            11,
-            "ALL slice must not contain duplicates"
-        );
+        let all_set: BTreeSet<DiagnosticCheckId> = DiagnosticCheckId::ALL.iter().copied().collect();
+        assert_eq!(all_set.len(), 11, "ALL slice must not contain duplicates");
     }
 
     #[test]
@@ -636,8 +643,7 @@ mod tests {
     #[test]
     fn full_doctor_matrix_runs_all_eleven() {
         // Fixed adapter matrix: full doctor runs all 11 shared checks.
-        let all_ids: BTreeSet<DiagnosticCheckId> =
-            DiagnosticCheckId::ALL.iter().copied().collect();
+        let all_ids: BTreeSet<DiagnosticCheckId> = DiagnosticCheckId::ALL.iter().copied().collect();
         assert_eq!(all_ids.len(), 11);
 
         let dir = tempfile::tempdir().expect("tempdir");

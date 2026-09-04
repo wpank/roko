@@ -8,6 +8,34 @@
 //! one-shot mode).
 
 #![allow(missing_docs)]
+// Temporary broad allows matching lib.rs while the CLI crate is cleaned.
+#![allow(
+    clippy::collapsible_if,
+    clippy::collapsible_else_if,
+    clippy::too_many_lines,
+    clippy::use_self,
+    clippy::needless_borrow,
+    clippy::needless_borrows_for_generic_args,
+    clippy::unnecessary_unwrap,
+    clippy::unnecessary_literal_unwrap,
+    clippy::unwrap_or_default,
+    clippy::unwrap_used,
+    clippy::needless_return,
+    clippy::redundant_else,
+    clippy::useless_format,
+    clippy::unnecessary_lazy_evaluations,
+    clippy::case_sensitive_file_extension_comparisons,
+    clippy::manual_is_multiple_of,
+    clippy::stable_sort_primitive,
+    clippy::derivable_impls,
+    clippy::needless_lifetimes,
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments
+)]
 
 mod agent_serve;
 mod commands;
@@ -25,18 +53,18 @@ use octocrab::models::webhook_events::WebhookEventType;
 use roko_agent::process::{cleanup_orphaned_agents, reap_orphaned_children};
 use roko_agent::translate::BackendResponse;
 use roko_cli::agent_spawn::{SpawnAgentSpec, spawn_agent_scoped};
-use roko_cli::serve_runtime::RokoCliRuntime;
-use roko_cli::tui::App;
-use roko_cli::{
-    Config, DashboardScaffold, EditTarget, InjectKind, InjectRequest, PageId, PipeMode, Plan,
-    RepoRegistry, Source, WizardInputs, config_cmd, load_resolved_config,
-    run_init_wizard, run_once,
-};
-pub use roko_cli::{model_selection, repo_context};
 use roko_cli::resolved_overrides::{
     ConfigEditTarget, ConfigSetInput, DoInput, GlobalCliFlags, LearnTuneInput, PlanRunInput,
     ResolvedExecutionOverrides,
 };
+use roko_cli::serve_runtime::RokoCliRuntime;
+use roko_cli::tui::App;
+use roko_cli::{
+    Config, DashboardScaffold, EditTarget, InjectKind, InjectRequest, PageId, PipeMode, Plan,
+    RepoRegistry, Source, WizardInputs, config_cmd, load_resolved_config, run_init_wizard,
+    run_once,
+};
+pub use roko_cli::{model_selection, repo_context};
 use roko_core::agent::{AgentRole, ProviderKind};
 use roko_core::config::ServeDeployWebhookConfig;
 use roko_core::config::schema::{ModelProfile, ProviderConfig, RokoConfig};
@@ -2457,8 +2485,12 @@ enum DreamCmdLegacy {
         workdir: Option<PathBuf>,
         dry_run: bool,
     },
-    Report { workdir: Option<PathBuf> },
-    Schedule { workdir: Option<PathBuf> },
+    Report {
+        workdir: Option<PathBuf>,
+    },
+    Schedule {
+        workdir: Option<PathBuf>,
+    },
 }
 
 // EventSourcesCmdLegacy, ProviderCmdLegacy, ModelCmdLegacy removed — dispatch goes direct
@@ -3886,16 +3918,8 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             as_of,
             format,
         } => {
-            commands::util::cmd_replay(
-                cli,
-                workdir,
-                hash,
-                forensic,
-                from_event,
-                as_of,
-                format,
-            )
-            .await
+            commands::util::cmd_replay(cli, workdir, hash, forensic, from_event, as_of, format)
+                .await
         }
         Command::History { id, workdir } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
@@ -4476,6 +4500,7 @@ fn dispatch_mcp_cmd(cmd: &ConfigMcpCmd, workdir: &Path) -> Result<()> {
         ConfigMcpCmd::Test {
             name,
             workdir: wd_override,
+            timeout_secs: _,
         } => {
             let wd = wd_override.as_deref().unwrap_or(workdir);
             let resolved = resolve_mcp_config_path(None, wd);
@@ -4916,8 +4941,8 @@ mod tests {
 
     #[test]
     fn cli_parses_config_preset_gates() {
-        let cli =
-            Cli::try_parse_from(["roko", "config", "preset", "gates"]).expect("parse config preset gates");
+        let cli = Cli::try_parse_from(["roko", "config", "preset", "gates"])
+            .expect("parse config preset gates");
         assert!(matches!(
             cli.command,
             Some(Command::Config {
@@ -4978,10 +5003,7 @@ mod tests {
             cli.command,
             Some(Command::Config {
                 cmd: ConfigCmd::Preset {
-                    cmd: ConfigPresetCmd::Budget {
-                        global: true,
-                        ..
-                    },
+                    cmd: ConfigPresetCmd::Budget { global: true, .. },
                 },
             })
         ));
@@ -5357,8 +5379,7 @@ mod tests {
     #[tokio::test]
     async fn inject_fail_closed_abort() {
         let tmp = tempfile::tempdir().unwrap();
-        let cli =
-            Cli::try_parse_from(["roko", "inject", "sess-1", "", "--kind", "abort"]).unwrap();
+        let cli = Cli::try_parse_from(["roko", "inject", "sess-1", "", "--kind", "abort"]).unwrap();
         let code = commands::util::cmd_inject(
             &cli,
             "sess-1".into(),
@@ -5421,8 +5442,7 @@ mod tests {
     #[tokio::test]
     async fn inject_fail_closed_json_output() {
         let tmp = tempfile::tempdir().unwrap();
-        let cli =
-            Cli::try_parse_from(["roko", "--json", "inject", "sess-1", "payload"]).unwrap();
+        let cli = Cli::try_parse_from(["roko", "--json", "inject", "sess-1", "payload"]).unwrap();
         assert!(cli.json, "json flag must be set");
         let code = commands::util::cmd_inject(
             &cli,
@@ -6035,9 +6055,7 @@ mod tests {
 
     #[test]
     fn cli_parses_replay_from_event() {
-        let cli =
-            Cli::try_parse_from(["roko", "replay", "abcd1234", "--from-event", "3"])
-                .unwrap();
+        let cli = Cli::try_parse_from(["roko", "replay", "abcd1234", "--from-event", "3"]).unwrap();
         match cli.command {
             Some(Command::Replay {
                 from_event, as_of, ..
@@ -6051,8 +6069,7 @@ mod tests {
 
     #[test]
     fn cli_parses_replay_as_of_hidden() {
-        let cli =
-            Cli::try_parse_from(["roko", "replay", "abcd1234", "--as-of", "5"]).unwrap();
+        let cli = Cli::try_parse_from(["roko", "replay", "abcd1234", "--as-of", "5"]).unwrap();
         match cli.command {
             Some(Command::Replay {
                 from_event, as_of, ..
@@ -6080,14 +6097,8 @@ mod tests {
 
     #[test]
     fn cli_parses_replay_with_workdir() {
-        let cli = Cli::try_parse_from([
-            "roko",
-            "replay",
-            "abcd1234",
-            "--workdir",
-            "/tmp/proj",
-        ])
-        .unwrap();
+        let cli =
+            Cli::try_parse_from(["roko", "replay", "abcd1234", "--workdir", "/tmp/proj"]).unwrap();
         match cli.command {
             Some(Command::Replay { workdir, .. }) => {
                 assert_eq!(workdir, Some(PathBuf::from("/tmp/proj")));
@@ -6098,8 +6109,7 @@ mod tests {
 
     #[test]
     fn cli_parses_replay_global_json() {
-        let cli =
-            Cli::try_parse_from(["roko", "--json", "replay", "abcd1234"]).unwrap();
+        let cli = Cli::try_parse_from(["roko", "--json", "replay", "abcd1234"]).unwrap();
         assert!(cli.json);
         assert!(matches!(cli.command, Some(Command::Replay { .. })));
     }
@@ -6217,15 +6227,11 @@ mod tests {
 
     #[test]
     fn deploy_railway_dry_run_flag() {
-        let cli =
-            Cli::try_parse_from(["roko", "deploy", "railway", "--dry-run"]).unwrap();
+        let cli = Cli::try_parse_from(["roko", "deploy", "railway", "--dry-run"]).unwrap();
         assert!(matches!(
             cli.command,
             Some(Command::Deploy {
-                cmd: DeployCmd::Railway {
-                    dry_run: true,
-                    ..
-                }
+                cmd: DeployCmd::Railway { dry_run: true, .. }
             })
         ));
     }
@@ -6236,10 +6242,7 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Command::Deploy {
-                cmd: DeployCmd::Fly {
-                    dry_run: true,
-                    ..
-                }
+                cmd: DeployCmd::Fly { dry_run: true, .. }
             })
         ));
     }
@@ -6251,10 +6254,7 @@ mod tests {
         ])
         .unwrap();
         if let Some(Command::Deploy {
-            cmd:
-                DeployCmd::Fly {
-                    app, region, ..
-                },
+            cmd: DeployCmd::Fly { app, region, .. },
         }) = cli.command
         {
             assert_eq!(app, "my-app");
@@ -6297,8 +6297,7 @@ mod tests {
 
     #[test]
     fn deploy_fly_force_flag() {
-        let cli =
-            Cli::try_parse_from(["roko", "deploy", "fly", "--force"]).unwrap();
+        let cli = Cli::try_parse_from(["roko", "deploy", "fly", "--force"]).unwrap();
         assert!(matches!(
             cli.command,
             Some(Command::Deploy {
@@ -6309,15 +6308,11 @@ mod tests {
 
     #[test]
     fn deploy_docker_dry_run_flag() {
-        let cli =
-            Cli::try_parse_from(["roko", "deploy", "docker", "--dry-run"]).unwrap();
+        let cli = Cli::try_parse_from(["roko", "deploy", "docker", "--dry-run"]).unwrap();
         assert!(matches!(
             cli.command,
             Some(Command::Deploy {
-                cmd: DeployCmd::Docker {
-                    dry_run: true,
-                    ..
-                }
+                cmd: DeployCmd::Docker { dry_run: true, .. }
             })
         ));
     }
@@ -7956,8 +7951,7 @@ mod tests {
     #[test]
     fn cli_flags_model_alias_equivalence() {
         let cli_model = Cli::try_parse_from(["roko", "--model", "sonnet", "status"]).unwrap();
-        let cli_force =
-            Cli::try_parse_from(["roko", "--force-model", "sonnet", "status"]).unwrap();
+        let cli_force = Cli::try_parse_from(["roko", "--force-model", "sonnet", "status"]).unwrap();
         assert_eq!(cli_model.model, cli_force.model);
         assert_eq!(cli_model.model.as_deref(), Some("sonnet"));
     }
@@ -7966,8 +7960,7 @@ mod tests {
     fn cli_flags_no_replan_resolves() {
         let cli = Cli::try_parse_from(["roko", "--no-replan", "status"]).unwrap();
         let flags = global_cli_flags(&cli);
-        let overrides =
-            ResolvedExecutionOverrides::for_do(&flags, &DoInput::default());
+        let overrides = ResolvedExecutionOverrides::for_do(&flags, &DoInput::default());
         assert_eq!(overrides.replan, ReplanPolicy::DisabledByUser);
     }
 
@@ -7975,10 +7968,7 @@ mod tests {
     fn cli_flags_skip_validate_resolves() {
         let cli = Cli::try_parse_from(["roko", "--skip-validate", "status"]).unwrap();
         let flags = global_cli_flags(&cli);
-        let overrides = ResolvedExecutionOverrides::for_plan_run(
-            &flags,
-            &PlanRunInput::default(),
-        );
+        let overrides = ResolvedExecutionOverrides::for_plan_run(&flags, &PlanRunInput::default());
         assert_eq!(overrides.validation, ValidationPolicy::SkipStructureOnly);
     }
 
@@ -7986,8 +7976,7 @@ mod tests {
     fn cli_flags_headless_resolves() {
         let cli = Cli::try_parse_from(["roko", "--headless", "status"]).unwrap();
         let flags = global_cli_flags(&cli);
-        let overrides =
-            ResolvedExecutionOverrides::for_do(&flags, &DoInput::default());
+        let overrides = ResolvedExecutionOverrides::for_do(&flags, &DoInput::default());
         assert_eq!(overrides.interaction_mode, InteractionMode::Headless);
     }
 
@@ -8035,8 +8024,7 @@ mod tests {
     fn cli_flags_serve_required() {
         let cli = Cli::try_parse_from(["roko", "status"]).unwrap();
         let flags = global_cli_flags(&cli);
-        let overrides =
-            ResolvedExecutionOverrides::for_run(&flags, None, true, None);
+        let overrides = ResolvedExecutionOverrides::for_run(&flags, None, true, None);
         assert_eq!(overrides.serve_policy, ServePolicy::Required);
     }
 
@@ -8044,8 +8032,7 @@ mod tests {
     fn cli_flags_no_serve_disabled() {
         let cli = Cli::try_parse_from(["roko", "--no-serve", "status"]).unwrap();
         let flags = global_cli_flags(&cli);
-        let overrides =
-            ResolvedExecutionOverrides::for_run(&flags, None, false, None);
+        let overrides = ResolvedExecutionOverrides::for_run(&flags, None, false, None);
         assert_eq!(overrides.serve_policy, ServePolicy::Disabled);
     }
 

@@ -25,9 +25,7 @@ pub enum RunnerCommandEffect {
     /// The runner should set `control_paused = false`.
     Resume,
     /// The runner should cancel the current run via `CancellationToken`.
-    Cancel {
-        plan_id: Option<String>,
-    },
+    Cancel { plan_id: Option<String> },
     /// An approval was resolved. The runner should unblock the pending
     /// approval gate for the given approval ID.
     ApprovalResolved {
@@ -45,9 +43,7 @@ pub enum RunnerCommandEffect {
         message: String,
     },
     /// The command was rejected (e.g. stale run ID).
-    Rejected {
-        message: String,
-    },
+    Rejected { message: String },
 }
 
 /// The runner-v2 adapter for `ExecutionCommand` processing.
@@ -251,8 +247,7 @@ mod tests {
 
     #[tokio::test]
     async fn tui_command_pause_resume_roundtrip() {
-        let (sender, mut cmd_rx, ack_tx, ack_rx) =
-            ExecutionCommandSender::channel("run-adapter");
+        let (sender, mut cmd_rx, ack_tx, ack_rx) = ExecutionCommandSender::channel("run-adapter");
         let adapter = RunnerExecutionCommandAdapter::new("run-adapter", ack_tx);
         let mut ack_receiver = crate::execution_control::CommandAckReceiver::new(ack_rx);
 
@@ -277,8 +272,7 @@ mod tests {
 
     #[tokio::test]
     async fn tui_command_cancel_roundtrip() {
-        let (sender, mut cmd_rx, ack_tx, ack_rx) =
-            ExecutionCommandSender::channel("run-cancel");
+        let (sender, mut cmd_rx, ack_tx, ack_rx) = ExecutionCommandSender::channel("run-cancel");
         let adapter = RunnerExecutionCommandAdapter::new("run-cancel", ack_tx);
         let mut ack_receiver = crate::execution_control::CommandAckReceiver::new(ack_rx);
 
@@ -305,8 +299,7 @@ mod tests {
 
     #[tokio::test]
     async fn tui_command_stale_run_rejected() {
-        let (sender, mut cmd_rx, ack_tx, ack_rx) =
-            ExecutionCommandSender::channel("run-old");
+        let (sender, mut cmd_rx, ack_tx, ack_rx) = ExecutionCommandSender::channel("run-old");
         let adapter = RunnerExecutionCommandAdapter::new("run-current", ack_tx);
         let mut ack_receiver = crate::execution_control::CommandAckReceiver::new(ack_rx);
 
@@ -329,8 +322,7 @@ mod tests {
 
     #[tokio::test]
     async fn tui_command_unimplemented_kinds_rejected() {
-        let (sender, mut cmd_rx, ack_tx, ack_rx) =
-            ExecutionCommandSender::channel("run-unimpl");
+        let (sender, mut cmd_rx, ack_tx, ack_rx) = ExecutionCommandSender::channel("run-unimpl");
         let adapter = RunnerExecutionCommandAdapter::new("run-unimpl", ack_tx);
         let mut ack_receiver = crate::execution_control::CommandAckReceiver::new(ack_rx);
 
@@ -366,8 +358,7 @@ mod tests {
 
     #[tokio::test]
     async fn tui_command_approve_roundtrip() {
-        let (sender, mut cmd_rx, ack_tx, ack_rx) =
-            ExecutionCommandSender::channel("run-approve");
+        let (sender, mut cmd_rx, ack_tx, ack_rx) = ExecutionCommandSender::channel("run-approve");
         let adapter = RunnerExecutionCommandAdapter::new("run-approve", ack_tx);
         let mut ack_receiver = crate::execution_control::CommandAckReceiver::new(ack_rx);
 
@@ -398,8 +389,7 @@ mod tests {
 
     #[tokio::test]
     async fn tui_command_reject_approval_roundtrip() {
-        let (sender, mut cmd_rx, ack_tx, ack_rx) =
-            ExecutionCommandSender::channel("run-reject");
+        let (sender, mut cmd_rx, ack_tx, ack_rx) = ExecutionCommandSender::channel("run-reject");
         let adapter = RunnerExecutionCommandAdapter::new("run-reject", ack_tx);
         let mut ack_receiver = crate::execution_control::CommandAckReceiver::new(ack_rx);
 
@@ -431,8 +421,7 @@ mod tests {
 
     #[tokio::test]
     async fn tui_command_reset_roundtrip() {
-        let (sender, mut cmd_rx, ack_tx, ack_rx) =
-            ExecutionCommandSender::channel("run-reset");
+        let (sender, mut cmd_rx, ack_tx, ack_rx) = ExecutionCommandSender::channel("run-reset");
         let adapter = RunnerExecutionCommandAdapter::new("run-reset", ack_tx);
         let mut ack_receiver = crate::execution_control::CommandAckReceiver::new(ack_rx);
 
@@ -449,8 +438,7 @@ mod tests {
 
     #[tokio::test]
     async fn tui_command_all_ten_variants_produce_effects() {
-        let (sender, mut cmd_rx, ack_tx, _ack_rx) =
-            ExecutionCommandSender::channel("run-ten");
+        let (sender, mut cmd_rx, ack_tx, _ack_rx) = ExecutionCommandSender::channel("run-ten");
         let adapter = RunnerExecutionCommandAdapter::new("run-ten", ack_tx);
 
         let kinds = vec![
@@ -484,17 +472,26 @@ mod tests {
         assert_eq!(effects.len(), 10);
         assert_eq!(effects[0], RunnerCommandEffect::Pause);
         assert_eq!(effects[1], RunnerCommandEffect::Resume);
-        assert!(matches!(effects[2], RunnerCommandEffect::NotImplemented { .. }));
-        assert!(matches!(effects[3], RunnerCommandEffect::NotImplemented { .. }));
-        assert!(matches!(effects[4], RunnerCommandEffect::NotImplemented { .. }));
-        assert!(matches!(effects[5], RunnerCommandEffect::NotImplemented { .. }));
+        assert!(matches!(
+            effects[2],
+            RunnerCommandEffect::NotImplemented { .. }
+        ));
+        assert!(matches!(
+            effects[3],
+            RunnerCommandEffect::NotImplemented { .. }
+        ));
+        assert!(matches!(
+            effects[4],
+            RunnerCommandEffect::NotImplemented { .. }
+        ));
+        assert!(matches!(
+            effects[5],
+            RunnerCommandEffect::NotImplemented { .. }
+        ));
         assert!(matches!(effects[6], RunnerCommandEffect::Cancel { .. }));
         assert!(matches!(
             effects[7],
-            RunnerCommandEffect::ApprovalResolved {
-                approved: true,
-                ..
-            }
+            RunnerCommandEffect::ApprovalResolved { approved: true, .. }
         ));
         assert!(matches!(
             effects[8],

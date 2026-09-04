@@ -427,27 +427,52 @@ pub fn register_immune_cells(registry: &mut CellRegistry) {
     let schema = state_schema();
     registry.register_with_descriptor(
         IMMUNE_PERCEPTION_CELL_TYPE,
-        CellDescriptor::new(IMMUNE_PERCEPTION_CELL_TYPE, (1, 0, 0), Some(schema.clone()), Some(schema.clone())),
+        CellDescriptor::new(
+            IMMUNE_PERCEPTION_CELL_TYPE,
+            (1, 0, 0),
+            Some(schema.clone()),
+            Some(schema.clone()),
+        ),
         |_| Box::new(ImmunePerceptionCell::default()),
     );
     registry.register_with_descriptor(
         IMMUNE_ASSESSMENT_CELL_TYPE,
-        CellDescriptor::new(IMMUNE_ASSESSMENT_CELL_TYPE, (1, 0, 0), Some(schema.clone()), Some(schema.clone())),
+        CellDescriptor::new(
+            IMMUNE_ASSESSMENT_CELL_TYPE,
+            (1, 0, 0),
+            Some(schema.clone()),
+            Some(schema.clone()),
+        ),
         |_| Box::new(ImmuneAssessmentCell::default()),
     );
     registry.register_with_descriptor(
         IMMUNE_CONTAINMENT_CELL_TYPE,
-        CellDescriptor::new(IMMUNE_CONTAINMENT_CELL_TYPE, (1, 0, 0), Some(schema.clone()), Some(schema.clone())),
+        CellDescriptor::new(
+            IMMUNE_CONTAINMENT_CELL_TYPE,
+            (1, 0, 0),
+            Some(schema.clone()),
+            Some(schema.clone()),
+        ),
         |_| Box::new(ImmuneContainmentCell::default()),
     );
     registry.register_with_descriptor(
         IMMUNE_VALIDATION_CELL_TYPE,
-        CellDescriptor::new(IMMUNE_VALIDATION_CELL_TYPE, (1, 0, 0), Some(schema.clone()), Some(schema.clone())),
+        CellDescriptor::new(
+            IMMUNE_VALIDATION_CELL_TYPE,
+            (1, 0, 0),
+            Some(schema.clone()),
+            Some(schema.clone()),
+        ),
         |_| Box::new(ImmuneValidationCell::default()),
     );
     registry.register_with_descriptor(
         IMMUNE_ESCALATION_CELL_TYPE,
-        CellDescriptor::new(IMMUNE_ESCALATION_CELL_TYPE, (1, 0, 0), Some(schema.clone()), Some(schema)),
+        CellDescriptor::new(
+            IMMUNE_ESCALATION_CELL_TYPE,
+            (1, 0, 0),
+            Some(schema.clone()),
+            Some(schema),
+        ),
         |_| Box::new(ImmuneEscalationCell::default()),
     );
 }

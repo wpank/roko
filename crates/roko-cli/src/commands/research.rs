@@ -60,8 +60,8 @@ fn save_perplexity_research(
 
 /// Read the last `max_lines` from a file, returning the content and the total line count.
 fn tail_lines_bounded(path: &Path, max_lines: usize) -> Result<(String, usize, usize)> {
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("read {}", path.display()))?;
+    let content =
+        std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     let total = content.lines().count();
     if total <= max_lines {
         return Ok((content, total, total));
@@ -104,8 +104,8 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
     let agent_command = command_from_config(&workdir).unwrap_or_else(|| "claude".to_string());
     let config = roko_core::config::loader::load_config_unified(&workdir).unwrap_or_default();
     // #181: resolve per-role effort for the researcher role; CLI --effort wins.
-    let researcher_effort = cli_effort_ref
-        .unwrap_or_else(|| config.agent.effort_for_role("researcher"));
+    let researcher_effort =
+        cli_effort_ref.unwrap_or_else(|| config.agent.effort_for_role("researcher"));
 
     match cmd {
         ResearchCmd::Topic {
@@ -116,12 +116,7 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
             let topic = topic.join(" ");
 
             // Validate: --deep conflicts with --backend gemini|agent
-            if deep
-                && matches!(
-                    backend,
-                    ResearchBackend::Gemini | ResearchBackend::Agent
-                )
-            {
+            if deep && matches!(backend, ResearchBackend::Gemini | ResearchBackend::Agent) {
                 anyhow::bail!(
                     "--deep requires Perplexity; it conflicts with --backend {}",
                     backend
@@ -136,18 +131,21 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
             //   3. Configured Gemini grounding -> Gemini
             //   4. Configured Perplexity standard search -> Perplexity standard
             //   5. Agent (Claude CLI) fallback
-            let effective_deep = deep || (backend == ResearchBackend::Auto && config.perplexity.auto_deep);
+            let effective_deep =
+                deep || (backend == ResearchBackend::Auto && config.perplexity.auto_deep);
 
             match backend {
                 ResearchBackend::Auto => {
                     if effective_deep {
                         if config.perplexity.default_research_model.is_some() {
-                            let reason = if deep { "--deep flag" } else { "auto_deep config" };
+                            let reason = if deep {
+                                "--deep flag"
+                            } else {
+                                "auto_deep config"
+                            };
                             println!("  Backend: perplexity-deep ({reason})");
-                            return run_perplexity_deep(
-                                &workdir, &config, &topic, resume_session,
-                            )
-                            .await;
+                            return run_perplexity_deep(&workdir, &config, &topic, resume_session)
+                                .await;
                         }
                         // deep requested but no Perplexity research model configured
                         if deep {
@@ -170,10 +168,8 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
                     }
                     if config.perplexity.default_search_model.is_some() {
                         println!("  Backend: perplexity (auto: search model configured)");
-                        return run_perplexity_standard(
-                            &workdir, &config, &topic, resume_session,
-                        )
-                        .await;
+                        return run_perplexity_standard(&workdir, &config, &topic, resume_session)
+                            .await;
                     }
                     println!("  Backend: agent (auto: fallback)");
                     run_agent_fallback(
@@ -195,10 +191,8 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
                             );
                         }
                         println!("  Backend: perplexity-deep (explicit)");
-                        return run_perplexity_deep(
-                            &workdir, &config, &topic, resume_session,
-                        )
-                        .await;
+                        return run_perplexity_deep(&workdir, &config, &topic, resume_session)
+                            .await;
                     }
                     if config.perplexity.default_search_model.is_none() {
                         anyhow::bail!(
@@ -206,8 +200,7 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
                         );
                     }
                     println!("  Backend: perplexity (explicit)");
-                    run_perplexity_standard(&workdir, &config, &topic, resume_session)
-                        .await
+                    run_perplexity_standard(&workdir, &config, &topic, resume_session).await
                 }
                 ResearchBackend::Gemini => {
                     if config.gemini.grounding_model.is_none() {
@@ -216,14 +209,7 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
                         );
                     }
                     println!("  Backend: gemini (explicit)");
-                    run_gemini_grounded(
-                        &workdir,
-                        &config,
-                        &topic,
-                        model_ref,
-                        resume_session,
-                    )
-                    .await
+                    run_gemini_grounded(&workdir, &config, &topic, model_ref, resume_session).await
                 }
                 ResearchBackend::Agent => {
                     println!("  Backend: agent (explicit)");
@@ -507,19 +493,16 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
                                 .to_string(),
                             path: f.display().to_string(),
                             size: meta.as_ref().map(|m| m.len()).unwrap_or(0),
-                            modified: meta
-                                .and_then(|m| m.modified().ok())
-                                .map(|t| {
-                                    let dt: chrono::DateTime<chrono::Local> = t.into();
-                                    dt.format("%Y-%m-%dT%H:%M:%S").to_string()
-                                }),
+                            modified: meta.and_then(|m| m.modified().ok()).map(|t| {
+                                let dt: chrono::DateTime<chrono::Local> = t.into();
+                                dt.format("%Y-%m-%dT%H:%M:%S").to_string()
+                            }),
                         }
                     })
                     .collect();
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&entries)
-                        .unwrap_or_else(|_| "[]".to_string())
+                    serde_json::to_string_pretty(&entries).unwrap_or_else(|_| "[]".to_string())
                 );
             } else if files.is_empty() {
                 println!("No research artifacts. Run: roko research topic \"your topic\"");
@@ -605,9 +588,8 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
 
             // Persist search results unless --no-save
             if !no_save && !results.is_empty() {
-                let out_path = output.unwrap_or_else(|| {
-                    research_output_path(&workdir, &query_str, "search")
-                });
+                let out_path =
+                    output.unwrap_or_else(|| research_output_path(&workdir, &query_str, "search"));
                 let mut doc = String::new();
                 let _ = writeln!(doc, "# Search: {query_str}\n");
                 let _ = writeln!(
@@ -681,8 +663,7 @@ async fn run_perplexity_deep(
         &config.perplexity,
     );
 
-    let (routing_config, timeout_ms) =
-        with_perplexity_research_model(config, &model_slug, true);
+    let (routing_config, timeout_ms) = with_perplexity_research_model(config, &model_slug, true);
     let agent = spawn_agent_scoped(
         &routing_config,
         SpawnAgentSpec {
@@ -711,8 +692,7 @@ async fn run_perplexity_deep(
         .build();
 
     let started = Instant::now();
-    let mut handle =
-        tokio::spawn(async move { agent.run(&input, &Context::now()).await });
+    let mut handle = tokio::spawn(async move { agent.run(&input, &Context::now()).await });
     let poll_started = std::time::Instant::now();
     let result = loop {
         tokio::select! {
@@ -760,8 +740,7 @@ async fn run_perplexity_deep(
         })
         .unwrap_or_default();
 
-    let out_path =
-        save_perplexity_research(workdir, topic, &content, &citations, "deep")?;
+    let out_path = save_perplexity_research(workdir, topic, &content, &citations, "deep")?;
     println!("📄 Saved: {}", out_path.display());
     if !citations.is_empty() {
         println!("📚 {} citations", citations.len());
@@ -803,12 +782,8 @@ async fn run_gemini_grounded(
         .clone()
         .context("gemini.grounding_model not configured")?;
 
-    let (combined_prompt, enable_grounding) = build_research_prompt_gemini(
-        workdir,
-        topic,
-        ResearchMode::Topic,
-        &config.gemini,
-    );
+    let (combined_prompt, enable_grounding) =
+        build_research_prompt_gemini(workdir, topic, ResearchMode::Topic, &config.gemini);
     if !enable_grounding {
         anyhow::bail!("Gemini grounding not enabled for model {model_slug}");
     }
@@ -886,6 +861,7 @@ async fn run_gemini_grounded(
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         }),
         model_profile,
     );
@@ -955,8 +931,7 @@ async fn run_gemini_grounded(
         save_research_with_grounding(workdir, topic, &content, grounding)?
     } else {
         let path = research_output_path(workdir, topic, "");
-        std::fs::write(&path, &content)
-            .with_context(|| format!("write {}", path.display()))?;
+        std::fs::write(&path, &content).with_context(|| format!("write {}", path.display()))?;
         path
     };
 
@@ -1007,8 +982,7 @@ async fn run_perplexity_standard(
         ResearchMode::Topic,
         &config.perplexity,
     );
-    let (routing_config, timeout_ms) =
-        with_perplexity_research_model(config, &model_slug, false);
+    let (routing_config, timeout_ms) = with_perplexity_research_model(config, &model_slug, false);
     let agent = spawn_agent_scoped(
         &routing_config,
         SpawnAgentSpec {
@@ -1079,8 +1053,7 @@ async fn run_perplexity_standard(
         .unwrap_or_default();
 
     // Use the rich citation saver instead of manual append
-    let out_path =
-        save_perplexity_research(workdir, topic, &content, &citations, "")?;
+    let out_path = save_perplexity_research(workdir, topic, &content, &citations, "")?;
     println!("📄 Saved: {}", out_path.display());
     if !citations.is_empty() {
         println!("📚 {} citations", citations.len());
@@ -1243,6 +1216,7 @@ pub(crate) fn with_perplexity_research_model(
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         }),
         model_profile,
     );
@@ -1344,14 +1318,8 @@ mod tests {
         let research_dir = dir.path().join(".roko/research");
         std::fs::create_dir_all(&research_dir).unwrap();
 
-        let path = save_perplexity_research(
-            dir.path(),
-            "test",
-            "Content here.",
-            &[],
-            "deep",
-        )
-        .unwrap();
+        let path =
+            save_perplexity_research(dir.path(), "test", "Content here.", &[], "deep").unwrap();
 
         let doc = std::fs::read_to_string(&path).unwrap();
         assert!(doc.contains("Content here."));

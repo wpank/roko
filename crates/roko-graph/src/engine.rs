@@ -1405,8 +1405,8 @@ impl GraphEngine {
             .unwrap_or_default()
             .as_millis() as i64;
 
-        let graph_fingerprint = crate::fingerprint::graph_execution_fingerprint(&self.graph)
-            .unwrap_or_default();
+        let graph_fingerprint =
+            crate::fingerprint::graph_execution_fingerprint(&self.graph).unwrap_or_default();
 
         GraphSnapshot {
             schema_version: GRAPH_SNAPSHOT_SCHEMA_VERSION,
@@ -2078,6 +2078,7 @@ impl GraphEngine {
     /// This is the single emission path shared by sequential, parallel,
     /// `start()`, resume, and Hot Graph. It does NOT replace telemetry;
     /// the engine emits to both sinks independently.
+    #[allow(dead_code)]
     async fn emit_graph_event(&self, event: &crate::events::GraphExecutionEvent) {
         crate::events::emit_graph_event(self.event_sink.as_ref(), event).await;
     }
@@ -2386,6 +2387,7 @@ async fn emit_telemetry_to(
 /// - `security.verify.*` -- independently hosted corrigibility Verify Cells
 /// - `security.immune.*` -- ordered runtime immune-pipeline Cells
 /// - `noop` -- `NoopCell` (passes input through unchanged, useful for testing)
+#[allow(clippy::too_many_lines)]
 #[must_use]
 pub fn default_registry() -> CellRegistry {
     let mut registry = CellRegistry::new();
@@ -2441,7 +2443,12 @@ pub fn default_registry() -> CellRegistry {
 
     registry.register_with_descriptor(
         "sense",
-        CellDescriptor::new("sense", (0, 1, 0), None, Some(TypeSchema::OfKind(Kind::AgentMessage))),
+        CellDescriptor::new(
+            "sense",
+            (0, 1, 0),
+            None,
+            Some(TypeSchema::OfKind(Kind::AgentMessage)),
+        ),
         |_config| Box::new(crate::cells::cognitive::SenseCell::new()),
     );
     registry.register_with_descriptor(
@@ -2497,7 +2504,12 @@ pub fn default_registry() -> CellRegistry {
     );
     registry.register_with_descriptor(
         "persist",
-        CellDescriptor::new("persist", (0, 1, 0), Some(TypeSchema::OfKind(Kind::GateVerdict)), None),
+        CellDescriptor::new(
+            "persist",
+            (0, 1, 0),
+            Some(TypeSchema::OfKind(Kind::GateVerdict)),
+            None,
+        ),
         |_config| Box::new(crate::cells::cognitive::PersistCell::new()),
     );
     registry.register("react", |_config| {
@@ -4002,6 +4014,7 @@ to = "b"
 
     mod graph_validation {
         use super::*;
+        use crate::GraphMetadata;
         use crate::registry::CellDescriptor;
         use roko_core::{Kind, TypeSchema};
 
@@ -4023,7 +4036,12 @@ to = "b"
                     None,
                     Some(TypeSchema::OfKind(Kind::AgentMessage)),
                 ),
-                |_| Box::new(NoopCell::with_id_and_name("agent-msg-source", "AgentMsgSource")),
+                |_| {
+                    Box::new(NoopCell::with_id_and_name(
+                        "agent-msg-source",
+                        "AgentMsgSource",
+                    ))
+                },
             );
             reg.register_with_descriptor(
                 "agent-msg-sink",
@@ -4075,7 +4093,9 @@ to = "b"
                 name: "compatible".to_string(),
                 ..Default::default()
             });
-            graph.add_node(make_node("src", "agent-msg-source")).unwrap();
+            graph
+                .add_node(make_node("src", "agent-msg-source"))
+                .unwrap();
             graph.add_node(make_node("tgt", "agent-msg-sink")).unwrap();
             graph.add_edge(make_edge("src", "tgt")).unwrap();
 
@@ -4091,7 +4111,9 @@ to = "b"
                 name: "mismatch".to_string(),
                 ..Default::default()
             });
-            graph.add_node(make_node("src", "agent-msg-source")).unwrap();
+            graph
+                .add_node(make_node("src", "agent-msg-source"))
+                .unwrap();
             graph.add_node(make_node("tgt", "episode-sink")).unwrap();
             graph.add_edge(make_edge("src", "tgt")).unwrap();
 
@@ -4168,8 +4190,12 @@ to = "b"
                 name: "names".to_string(),
                 ..Default::default()
             });
-            graph.add_node(make_node("my-source", "agent-msg-source")).unwrap();
-            graph.add_node(make_node("my-target", "episode-sink")).unwrap();
+            graph
+                .add_node(make_node("my-source", "agent-msg-source"))
+                .unwrap();
+            graph
+                .add_node(make_node("my-target", "episode-sink"))
+                .unwrap();
             graph.add_edge(make_edge("my-source", "my-target")).unwrap();
 
             let engine = GraphEngine::new(graph, registry);
@@ -4188,7 +4214,9 @@ to = "b"
                 name: "multi-error".to_string(),
                 ..Default::default()
             });
-            graph.add_node(make_node("src", "agent-msg-source")).unwrap();
+            graph
+                .add_node(make_node("src", "agent-msg-source"))
+                .unwrap();
             graph.add_node(make_node("tgt1", "episode-sink")).unwrap();
             graph.add_node(make_node("tgt2", "episode-sink")).unwrap();
             graph.add_edge(make_edge("src", "tgt1")).unwrap();
@@ -4306,13 +4334,7 @@ to = "b"
             ] {
                 graph.add_node(make_node(id, ct)).unwrap();
             }
-            for (from, to) in [
-                ("s", "a"),
-                ("a", "c"),
-                ("c", "x"),
-                ("x", "v"),
-                ("v", "p"),
-            ] {
+            for (from, to) in [("s", "a"), ("a", "c"), ("c", "x"), ("x", "v"), ("v", "p")] {
                 graph.add_edge(make_edge(from, to)).unwrap();
             }
 
@@ -4350,8 +4372,7 @@ to = "b"
         };
 
         let json = serde_json::to_string(&snap).expect("serialize");
-        let deserialized: GraphSnapshotV2 =
-            serde_json::from_str(&json).expect("deserialize");
+        let deserialized: GraphSnapshotV2 = serde_json::from_str(&json).expect("deserialize");
 
         assert_eq!(deserialized.schema_version, GRAPH_SNAPSHOT_SCHEMA_VERSION);
         assert_eq!(deserialized.graph_fingerprint, "abc123");
@@ -4378,8 +4399,7 @@ to = "b"
             }
         });
 
-        let snap: GraphSnapshotV2 =
-            serde_json::from_value(json).expect("deserialize old format");
+        let snap: GraphSnapshotV2 = serde_json::from_value(json).expect("deserialize old format");
 
         assert_eq!(snap.schema_version, GRAPH_SNAPSHOT_SCHEMA_VERSION);
         assert!(snap.graph_fingerprint.is_empty());

@@ -22,7 +22,7 @@
 //! [`DashboardEvent`]: roko_core::dashboard_snapshot::DashboardEvent
 //! [`StateHubSender`]: crate::state_hub::StateHubSender
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 
 use roko_core::dashboard_snapshot::DashboardEvent;
 use roko_core::runtime_event::{RuntimeEvent, RuntimeEventEnvelope};
@@ -73,10 +73,10 @@ impl Inner {
             return true;
         }
         // Evict oldest if at capacity.
-        if self.seen_ids.len() >= DEDUP_LRU_CAPACITY {
-            if let Some(oldest) = self.seen_ids.pop_front() {
-                self.seen_set.remove(&oldest);
-            }
+        if self.seen_ids.len() >= DEDUP_LRU_CAPACITY
+            && let Some(oldest) = self.seen_ids.pop_front()
+        {
+            self.seen_set.remove(&oldest);
         }
         self.seen_ids.push_back(event_id.to_string());
         self.seen_set.insert(event_id.to_string());
@@ -107,7 +107,7 @@ impl Inner {
 }
 
 /// Result of projecting a single envelope.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ProjectionResult {
     /// One or more `DashboardEvent` values were produced.
     Projected(Vec<DashboardEvent>),
@@ -200,8 +200,8 @@ impl RuntimeEventDashboardProjector {
     /// Convert a runtime event envelope into dashboard events.
     ///
     /// Returns an empty vec for events with no dashboard projection.
+    #[allow(clippy::too_many_lines)]
     fn map_to_dashboard(envelope: &RuntimeEventEnvelope) -> Vec<DashboardEvent> {
-        let run_id = &envelope.run_id;
         let plan_id_opt = envelope.plan_id.as_deref().unwrap_or("");
         let task_id_opt = envelope.task_id.as_deref().unwrap_or("");
         let ts_ms = envelope.ts.timestamp_millis() as u64;
@@ -260,20 +260,20 @@ impl RuntimeEventDashboardProjector {
             }
 
             // ── Wave lifecycle ──────────────────────────────────────
-            RuntimeEvent::PipelinePhase {
-                phase, status, ..
-            } => vec![DashboardEvent::PhaseTransition {
-                plan_id: plan_id_opt.to_string(),
-                from: String::new(),
-                to: format!("{phase}:{status}"),
-            }],
+            RuntimeEvent::PipelinePhase { phase, status, .. } => {
+                vec![DashboardEvent::PhaseTransition {
+                    plan_id: plan_id_opt.to_string(),
+                    from: String::new(),
+                    to: format!("{phase}:{status}"),
+                }]
+            }
 
             // ── Task lifecycle ──────────────────────────────────────
             RuntimeEvent::TaskStarted {
                 plan_id,
                 task_id,
                 task_title,
-                role,
+                role: _,
                 ..
             } => vec![DashboardEvent::TaskStarted {
                 plan_id: plan_id.clone(),
@@ -312,7 +312,7 @@ impl RuntimeEventDashboardProjector {
                     },
                 ]
             }
-            RuntimeEvent::TaskSkipped { task_id, reason } => {
+            RuntimeEvent::TaskSkipped { task_id, reason: _ } => {
                 vec![DashboardEvent::TaskCompleted {
                     plan_id: plan_id_opt.to_string(),
                     task_id: task_id.clone(),
@@ -368,7 +368,7 @@ impl RuntimeEventDashboardProjector {
                 },
             ],
             RuntimeEvent::AgentProgress {
-                agent_id,
+                agent_id: _,
                 message,
                 ..
             } => vec![
@@ -388,15 +388,15 @@ impl RuntimeEventDashboardProjector {
             ],
 
             // ── Tool calls ──────────────────────────────────────────
-            RuntimeEvent::ToolCallStarted {
-                agent_id, tool, ..
-            } => vec![DashboardEvent::EventLogEntry {
-                timestamp_ms: ts_ms,
-                event_type: "tool_started".to_string(),
-                plan_id: plan_id_opt.to_string(),
-                task_id: task_id_opt.to_string(),
-                message: format!("{agent_id}: {tool}"),
-            }],
+            RuntimeEvent::ToolCallStarted { agent_id, tool, .. } => {
+                vec![DashboardEvent::EventLogEntry {
+                    timestamp_ms: ts_ms,
+                    event_type: "tool_started".to_string(),
+                    plan_id: plan_id_opt.to_string(),
+                    task_id: task_id_opt.to_string(),
+                    message: format!("{agent_id}: {tool}"),
+                }]
+            }
             RuntimeEvent::ToolCallCompleted {
                 agent_id,
                 tool,
@@ -421,29 +421,29 @@ impl RuntimeEventDashboardProjector {
                 cost_usd,
                 ..
             } => {
-                let mut events = vec![];
-                events.push(DashboardEvent::EfficiencyEvent {
-                    plan_id: plan_id_opt.to_string(),
-                    task_id: task_id_opt.to_string(),
-                    metric: "input_tokens".to_string(),
-                    value: *input_tokens as f64,
-                });
-                events.push(DashboardEvent::EfficiencyEvent {
-                    plan_id: plan_id_opt.to_string(),
-                    task_id: task_id_opt.to_string(),
-                    metric: "output_tokens".to_string(),
-                    value: *output_tokens as f64,
-                });
-                events.push(DashboardEvent::EfficiencyEvent {
-                    plan_id: plan_id_opt.to_string(),
-                    task_id: task_id_opt.to_string(),
-                    metric: "cost_usd".to_string(),
-                    value: *cost_usd,
-                });
-                events
+                vec![
+                    DashboardEvent::EfficiencyEvent {
+                        plan_id: plan_id_opt.to_string(),
+                        task_id: task_id_opt.to_string(),
+                        metric: "input_tokens".to_string(),
+                        value: *input_tokens as f64,
+                    },
+                    DashboardEvent::EfficiencyEvent {
+                        plan_id: plan_id_opt.to_string(),
+                        task_id: task_id_opt.to_string(),
+                        metric: "output_tokens".to_string(),
+                        value: *output_tokens as f64,
+                    },
+                    DashboardEvent::EfficiencyEvent {
+                        plan_id: plan_id_opt.to_string(),
+                        task_id: task_id_opt.to_string(),
+                        metric: "cost_usd".to_string(),
+                        value: *cost_usd,
+                    },
+                ]
             }
             RuntimeEvent::BudgetUpdated {
-                spent_usd,
+                spent_usd: _,
                 remaining_usd,
                 ..
             } => vec![DashboardEvent::EfficiencyEvent {
@@ -455,7 +455,7 @@ impl RuntimeEventDashboardProjector {
 
             // ── Gate rungs ──────────────────────────────────────────
             RuntimeEvent::GateRungStarted {
-                gate_name, rung, ..
+                gate_name, rung: _, ..
             } => vec![DashboardEvent::GateRungStarted {
                 plan_id: plan_id_opt.to_string(),
                 task_id: task_id_opt.to_string(),
@@ -757,10 +757,7 @@ mod tests {
         match result {
             ProjectionResult::Projected(events) => {
                 assert_eq!(events.len(), 1);
-                if let DashboardEvent::TaskStarted {
-                    task_id, title, ..
-                } = &events[0]
-                {
+                if let DashboardEvent::TaskStarted { task_id, title, .. } = &events[0] {
                     assert_eq!(task_id, "compile");
                     assert_eq!(title, "Compile");
                 } else {

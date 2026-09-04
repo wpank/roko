@@ -88,6 +88,7 @@ impl AgentResult {
     /// Compatibility alias for older docs and callers that still use the
     /// `all_engrams` name.
     #[must_use]
+    #[deprecated(note = "Use all_signals() instead")]
     pub fn all_engrams(&self) -> Vec<Signal> {
         self.all_signals()
     }

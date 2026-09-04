@@ -16,8 +16,8 @@ use serde::{Deserialize, Serialize};
 use tokio::time::{Duration, timeout};
 
 use super::{
-    McpClient, McpConfig, McpHandlerResolver, McpTransportConfig, StdioTransport, Transport,
-    dedup_tools, mcp_to_tool_def,
+    MCP_TOOL_SEPARATOR, McpClient, McpConfig, McpHandlerResolver, McpTransportConfig,
+    StdioTransport, Transport, dedup_tools, mcp_to_tool_def,
 };
 use crate::dispatcher::HandlerResolver;
 use crate::mcp::client::McpError;
@@ -372,8 +372,6 @@ pub async fn discover_mcp_runtime(config: &McpConfig) -> Result<McpRuntime, McpB
     ))
 }
 
-const MCP_TOOL_SEPARATOR: char = '.';
-
 /// Discover and convert MCP tools without retaining their execution clients.
 ///
 /// Prefer [`discover_mcp_runtime`] for any tool loop. This definition-only
@@ -403,31 +401,28 @@ pub async fn test_mcp_server(
     let command_available = super::is_command_on_path(&server.command);
 
     // Spawn in diagnostic mode so we can capture stderr.
-    let transport = match StdioTransport::spawn_diagnostic(
-        &server.command,
-        &server.args,
-        &server.env,
-    ) {
-        Ok(t) => t,
-        Err(err) => {
-            return McpTestReport {
-                config_path,
-                server: server.name.clone(),
-                command_available,
-                stages: vec![McpTestStageResult {
-                    stage: "spawn".to_string(),
-                    success: false,
-                    latency_ms: None,
-                    error: Some(err.to_string()),
-                }],
-                protocol_version: None,
-                tool_count: 0,
-                tool_names: vec![],
-                stderr_summary: None,
-                status: McpTestStatus::Failed,
-            };
-        }
-    };
+    let transport =
+        match StdioTransport::spawn_diagnostic(&server.command, &server.args, &server.env) {
+            Ok(t) => t,
+            Err(err) => {
+                return McpTestReport {
+                    config_path,
+                    server: server.name.clone(),
+                    command_available,
+                    stages: vec![McpTestStageResult {
+                        stage: "spawn".to_string(),
+                        success: false,
+                        latency_ms: None,
+                        error: Some(err.to_string()),
+                    }],
+                    protocol_version: None,
+                    tool_count: 0,
+                    tool_names: vec![],
+                    stderr_summary: None,
+                    status: McpTestStatus::Failed,
+                };
+            }
+        };
 
     let env_values: Vec<String> = server.env.values().cloned().collect();
     let transport = Arc::new(transport);
@@ -466,10 +461,7 @@ pub async fn test_mcp_server(
                 stage: "initialize".to_string(),
                 success: false,
                 latency_ms: Some(discovery_timeout.as_millis() as u64),
-                error: Some(format!(
-                    "timed out after {}s",
-                    discovery_timeout.as_secs()
-                )),
+                error: Some(format!("timed out after {}s", discovery_timeout.as_secs())),
             });
             overall_ok = false;
         }
@@ -502,10 +494,7 @@ pub async fn test_mcp_server(
                     stage: "tools_list".to_string(),
                     success: false,
                     latency_ms: Some(discovery_timeout.as_millis() as u64),
-                    error: Some(format!(
-                        "timed out after {}s",
-                        discovery_timeout.as_secs()
-                    )),
+                    error: Some(format!("timed out after {}s", discovery_timeout.as_secs())),
                 });
                 overall_ok = false;
             }
@@ -720,8 +709,14 @@ mod tests {
             mcp_to_tool_def(&fake_mcp_tool("status"), "git"),
         ];
         let clients: HashMap<String, McpRuntimeClient> = HashMap::from([
-            ("fs".to_string(), Arc::new(McpClient::new(t1 as McpRuntimeTransport))),
-            ("git".to_string(), Arc::new(McpClient::new(t2 as McpRuntimeTransport))),
+            (
+                "fs".to_string(),
+                Arc::new(McpClient::new(t1 as McpRuntimeTransport)),
+            ),
+            (
+                "git".to_string(),
+                Arc::new(McpClient::new(t2 as McpRuntimeTransport)),
+            ),
         ]);
         let runtime = McpRuntime::from_clients(tools, clients);
         assert_eq!(runtime.server_count(), 2);
@@ -734,9 +729,10 @@ mod tests {
     fn runtime_from_clients_with_lifecycle_state() {
         let (t, _) = FakeTransport::ok(vec![]);
         let tools = vec![mcp_to_tool_def(&fake_mcp_tool("echo"), "srv")];
-        let clients = HashMap::from([
-            ("srv".to_string(), Arc::new(McpClient::new(t as McpRuntimeTransport))),
-        ]);
+        let clients = HashMap::from([(
+            "srv".to_string(),
+            Arc::new(McpClient::new(t as McpRuntimeTransport)),
+        )]);
         let lifecycle = vec![McpLifecycleState {
             server_name: "srv".to_string(),
             last_health_check: Some(Instant::now()),
@@ -753,11 +749,22 @@ mod tests {
     #[test]
     fn runtime_dedup_last_writer_wins() {
         let all = vec![
-            ("a".to_string(), vec![mcp_to_tool_def(&fake_mcp_tool("search"), "shared")]),
-            ("b".to_string(), vec![mcp_to_tool_def(
-                &McpToolDef { name: "search".into(), description: Some("v2".into()), input_schema: None, annotations: None },
-                "shared",
-            )]),
+            (
+                "a".to_string(),
+                vec![mcp_to_tool_def(&fake_mcp_tool("search"), "shared")],
+            ),
+            (
+                "b".to_string(),
+                vec![mcp_to_tool_def(
+                    &McpToolDef {
+                        name: "search".into(),
+                        description: Some("v2".into()),
+                        input_schema: None,
+                        annotations: None,
+                    },
+                    "shared",
+                )],
+            ),
         ];
         let deduped = dedup_tools(all);
         assert_eq!(deduped.len(), 1);
@@ -769,22 +776,27 @@ mod tests {
         let (t, _) = FakeTransport::ok(vec![]);
         let bad = mcp_to_tool_def(&fake_mcp_tool("read"), "missing_server");
         let builtin = roko_core::tool::ToolDef::new(
-            "builtin.echo", "echo",
-            roko_core::tool::ToolCategory::System,
+            "builtin.echo",
+            "echo",
+            roko_core::tool::ToolCategory::Meta,
             roko_core::tool::ToolPermission::read_only(),
         );
-        let mut empty_srv = mcp_to_tool_def(&fake_mcp_tool("read"), "valid");
+        let mut empty_srv = mcp_to_tool_def(&fake_mcp_tool("empty_read"), "valid");
         empty_srv.source = roko_core::tool::ToolSource::Mcp { server: "".into() };
         let mut no_suffix = mcp_to_tool_def(&fake_mcp_tool("read"), "valid");
         no_suffix.name = "valid.".to_string();
 
         let tools = vec![
             mcp_to_tool_def(&fake_mcp_tool("read"), "valid"),
-            bad.clone(), builtin.clone(), empty_srv.clone(), no_suffix.clone(),
+            bad.clone(),
+            builtin.clone(),
+            empty_srv.clone(),
+            no_suffix.clone(),
         ];
-        let clients = HashMap::from([
-            ("valid".to_string(), Arc::new(McpClient::new(t as McpRuntimeTransport))),
-        ]);
+        let clients = HashMap::from([(
+            "valid".to_string(),
+            Arc::new(McpClient::new(t as McpRuntimeTransport)),
+        )]);
         let runtime = McpRuntime::from_clients(tools, clients);
         let un = runtime.unexecutable_tools();
         assert!(!un.contains(&"valid.read".to_string()));
@@ -798,29 +810,40 @@ mod tests {
     fn runtime_no_unexecutable_when_all_valid() {
         let (t, _) = FakeTransport::ok(vec![]);
         let tools = vec![mcp_to_tool_def(&fake_mcp_tool("status"), "git")];
-        let clients = HashMap::from([
-            ("git".to_string(), Arc::new(McpClient::new(t as McpRuntimeTransport))),
-        ]);
-        assert!(McpRuntime::from_clients(tools, clients).unexecutable_tools().is_empty());
+        let clients = HashMap::from([(
+            "git".to_string(),
+            Arc::new(McpClient::new(t as McpRuntimeTransport)),
+        )]);
+        assert!(
+            McpRuntime::from_clients(tools, clients)
+                .unexecutable_tools()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
     async fn runtime_resolver_routes_call_to_correct_client() {
-        let (transport, _) = FakeTransport::ok(vec![ok_resp(1, serde_json::json!({
-            "content": [{"type": "text", "text": "file data"}], "isError": false
-        }))]);
+        let (transport, _) = FakeTransport::ok(vec![ok_resp(
+            1,
+            serde_json::json!({
+                "content": [{"type": "text", "text": "file data"}], "isError": false
+            }),
+        )]);
         let tref = Arc::clone(&transport);
         let tools = vec![mcp_to_tool_def(&fake_mcp_tool("read_file"), "fs")];
-        let clients = HashMap::from([
-            ("fs".to_string(), Arc::new(McpClient::new(transport as McpRuntimeTransport))),
-        ]);
+        let clients = HashMap::from([(
+            "fs".to_string(),
+            Arc::new(McpClient::new(transport as McpRuntimeTransport)),
+        )]);
         let runtime = McpRuntime::from_clients(tools, clients);
         let resolver = runtime.resolver(Arc::new(|_: &str| None));
         let handler = resolver.resolve("fs.read_file").expect("handler");
-        let result = handler.execute(
-            ToolCall::new("c1", "fs.read_file", serde_json::json!({"path": "/tmp"})),
-            &ToolContext::testing("/tmp/bridge-test"),
-        ).await;
+        let result = handler
+            .execute(
+                ToolCall::new("c1", "fs.read_file", serde_json::json!({"path": "/tmp"})),
+                &ToolContext::testing("/tmp/bridge-test"),
+            )
+            .await;
         assert_eq!(result, roko_core::tool::ToolResult::text("file data"));
         let reqs = tref.take_requests();
         assert_eq!(reqs[0].method, "tools/call");
@@ -831,9 +854,10 @@ mod tests {
     fn runtime_resolver_returns_none_for_missing_tool() {
         let (t, _) = FakeTransport::ok(vec![]);
         let tools = vec![mcp_to_tool_def(&fake_mcp_tool("echo"), "srv")];
-        let clients = HashMap::from([
-            ("srv".to_string(), Arc::new(McpClient::new(t as McpRuntimeTransport))),
-        ]);
+        let clients = HashMap::from([(
+            "srv".to_string(),
+            Arc::new(McpClient::new(t as McpRuntimeTransport)),
+        )]);
         let resolver = McpRuntime::from_clients(tools, clients).resolver(Arc::new(|_: &str| None));
         assert!(resolver.resolve("unknown.tool").is_none());
         assert!(resolver.resolve("unprefixed").is_none());
@@ -841,18 +865,26 @@ mod tests {
 
     #[tokio::test]
     async fn handler_call_tool_error_flag() {
-        let (transport, _) = FakeTransport::ok(vec![ok_resp(1, serde_json::json!({
-            "content": [{"type": "text", "text": "denied"}], "isError": true
-        }))]);
+        let (transport, _) = FakeTransport::ok(vec![ok_resp(
+            1,
+            serde_json::json!({
+                "content": [{"type": "text", "text": "denied"}], "isError": true
+            }),
+        )]);
         let tools = vec![mcp_to_tool_def(&fake_mcp_tool("write_file"), "fs")];
-        let clients = HashMap::from([
-            ("fs".to_string(), Arc::new(McpClient::new(transport as McpRuntimeTransport))),
-        ]);
+        let clients = HashMap::from([(
+            "fs".to_string(),
+            Arc::new(McpClient::new(transport as McpRuntimeTransport)),
+        )]);
         let resolver = McpRuntime::from_clients(tools, clients).resolver(Arc::new(|_: &str| None));
-        let result = resolver.resolve("fs.write_file").unwrap().execute(
-            ToolCall::new("c1", "fs.write_file", serde_json::json!({})),
-            &ToolContext::testing("/tmp/bridge-err"),
-        ).await;
+        let result = resolver
+            .resolve("fs.write_file")
+            .unwrap()
+            .execute(
+                ToolCall::new("c1", "fs.write_file", serde_json::json!({})),
+                &ToolContext::testing("/tmp/bridge-err"),
+            )
+            .await;
         assert!(matches!(result, roko_core::tool::ToolResult::Err(_)));
     }
 
@@ -862,9 +894,10 @@ mod tests {
         assert!(!dropped.load(Ordering::SeqCst));
         {
             let tools = vec![mcp_to_tool_def(&fake_mcp_tool("echo"), "srv")];
-            let clients = HashMap::from([
-                ("srv".to_string(), Arc::new(McpClient::new(transport as McpRuntimeTransport))),
-            ]);
+            let clients = HashMap::from([(
+                "srv".to_string(),
+                Arc::new(McpClient::new(transport as McpRuntimeTransport)),
+            )]);
             let _rt = McpRuntime::from_clients(tools, clients);
             assert!(!dropped.load(Ordering::SeqCst));
         }
@@ -874,34 +907,51 @@ mod tests {
     #[tokio::test]
     async fn client_initialize_failure_propagates() {
         let (t, _) = FakeTransport::new(vec![Ok(err_resp(1, -32600, "init refused"))]);
-        let err = McpClient::new(t as McpRuntimeTransport).initialize().await.unwrap_err();
+        let err = McpClient::new(t as McpRuntimeTransport)
+            .initialize()
+            .await
+            .unwrap_err();
         assert!(matches!(err, McpError::Server { code: -32600, .. }));
     }
 
     #[tokio::test]
     async fn client_list_tools_failure_propagates() {
         let (t, _) = FakeTransport::new(vec![Ok(err_resp(1, -32601, "not found"))]);
-        let err = McpClient::new(t as McpRuntimeTransport).list_tools().await.unwrap_err();
+        let err = McpClient::new(t as McpRuntimeTransport)
+            .list_tools()
+            .await
+            .unwrap_err();
         assert!(matches!(err, McpError::Server { code: -32601, .. }));
     }
 
     #[tokio::test]
     async fn client_transport_error_propagates() {
         let (t, _) = FakeTransport::new(vec![Err(McpError::Transport("lost".into()))]);
-        let err = McpClient::new(t as McpRuntimeTransport).initialize().await.unwrap_err();
+        let err = McpClient::new(t as McpRuntimeTransport)
+            .initialize()
+            .await
+            .unwrap_err();
         assert!(matches!(err, McpError::Transport(_)));
     }
 
     #[tokio::test(start_paused = true)]
     async fn initialize_timeout_fires() {
         let t: McpRuntimeTransport = Arc::new(HangingTransport);
-        assert!(timeout(MCP_DISCOVERY_TIMEOUT, McpClient::new(t).initialize()).await.is_err());
+        assert!(
+            timeout(MCP_DISCOVERY_TIMEOUT, McpClient::new(t).initialize())
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test(start_paused = true)]
     async fn list_tools_timeout_fires() {
         let t: McpRuntimeTransport = Arc::new(HangingTransport);
-        assert!(timeout(MCP_DISCOVERY_TIMEOUT, McpClient::new(t).list_tools()).await.is_err());
+        assert!(
+            timeout(MCP_DISCOVERY_TIMEOUT, McpClient::new(t).list_tools())
+                .await
+                .is_err()
+        );
     }
 
     #[test]
@@ -909,23 +959,47 @@ mod tests {
         let (t1, _) = FakeTransport::ok(vec![]);
         let (t2, _) = FakeTransport::ok(vec![]);
         let all = vec![
-            ("fs".to_string(), vec![
-                mcp_to_tool_def(&fake_mcp_tool("read_file"), "fs"),
-                mcp_to_tool_def(&fake_mcp_tool("write_file"), "fs"),
-            ]),
-            ("git".to_string(), vec![
-                mcp_to_tool_def(&fake_mcp_tool("status"), "git"),
-                mcp_to_tool_def(&fake_mcp_tool("diff"), "git"),
-            ]),
+            (
+                "fs".to_string(),
+                vec![
+                    mcp_to_tool_def(&fake_mcp_tool("read_file"), "fs"),
+                    mcp_to_tool_def(&fake_mcp_tool("write_file"), "fs"),
+                ],
+            ),
+            (
+                "git".to_string(),
+                vec![
+                    mcp_to_tool_def(&fake_mcp_tool("status"), "git"),
+                    mcp_to_tool_def(&fake_mcp_tool("diff"), "git"),
+                ],
+            ),
         ];
         let deduped = dedup_tools(all);
         let clients: HashMap<String, McpRuntimeClient> = HashMap::from([
-            ("fs".to_string(), Arc::new(McpClient::new(t1 as McpRuntimeTransport))),
-            ("git".to_string(), Arc::new(McpClient::new(t2 as McpRuntimeTransport))),
+            (
+                "fs".to_string(),
+                Arc::new(McpClient::new(t1 as McpRuntimeTransport)),
+            ),
+            (
+                "git".to_string(),
+                Arc::new(McpClient::new(t2 as McpRuntimeTransport)),
+            ),
         ]);
         let lifecycle = vec![
-            McpLifecycleState { server_name: "fs".into(), last_health_check: Some(Instant::now()), last_error: None, negotiated_capabilities: Some(serde_json::json!({})), available_tools: vec!["read_file".into(), "write_file".into()] },
-            McpLifecycleState { server_name: "git".into(), last_health_check: Some(Instant::now()), last_error: None, negotiated_capabilities: Some(serde_json::json!({})), available_tools: vec!["status".into(), "diff".into()] },
+            McpLifecycleState {
+                server_name: "fs".into(),
+                last_health_check: Some(Instant::now()),
+                last_error: None,
+                negotiated_capabilities: Some(serde_json::json!({})),
+                available_tools: vec!["read_file".into(), "write_file".into()],
+            },
+            McpLifecycleState {
+                server_name: "git".into(),
+                last_health_check: Some(Instant::now()),
+                last_error: None,
+                negotiated_capabilities: Some(serde_json::json!({})),
+                available_tools: vec!["status".into(), "diff".into()],
+            },
         ];
         let runtime = McpRuntime::from_clients_with_lifecycle(deduped, clients, lifecycle);
         assert_eq!(runtime.server_count(), 2);
@@ -938,7 +1012,10 @@ mod tests {
     fn runtime_debug_does_not_panic() {
         let (t, _) = FakeTransport::ok(vec![]);
         let tools = vec![mcp_to_tool_def(&fake_mcp_tool("echo"), "srv")];
-        let clients = HashMap::from([("srv".to_string(), Arc::new(McpClient::new(t as McpRuntimeTransport)))]);
+        let clients = HashMap::from([(
+            "srv".to_string(),
+            Arc::new(McpClient::new(t as McpRuntimeTransport)),
+        )]);
         let debug = format!("{:?}", McpRuntime::from_clients(tools, clients));
         assert!(debug.contains("McpRuntime"));
     }
@@ -948,7 +1025,10 @@ mod tests {
         let (t, _) = FakeTransport::ok(vec![]);
         let counter = Arc::new(AtomicUsize::new(0));
         let tools = vec![mcp_to_tool_def(&fake_mcp_tool("echo"), "srv")];
-        let clients = HashMap::from([("srv".to_string(), Arc::new(McpClient::new(t as McpRuntimeTransport)))]);
+        let clients = HashMap::from([(
+            "srv".to_string(),
+            Arc::new(McpClient::new(t as McpRuntimeTransport)),
+        )]);
         let runtime = McpRuntime::from_clients(tools, clients)
             .with_owner(Arc::clone(&counter) as Arc<dyn Send + Sync>);
         assert!(Arc::strong_count(&counter) >= 2);
@@ -964,12 +1044,7 @@ mod tests {
             command: "__roko_nonexistent_binary_xyz__".to_string(),
             ..Default::default()
         };
-        let report = test_mcp_server(
-            &server,
-            PathBuf::from("/tmp/test.mcp.json"),
-            None,
-        )
-        .await;
+        let report = test_mcp_server(&server, PathBuf::from("/tmp/test.mcp.json"), None).await;
         assert_eq!(report.status, McpTestStatus::Failed);
         assert_eq!(report.server, "broken");
         assert!(!report.command_available);

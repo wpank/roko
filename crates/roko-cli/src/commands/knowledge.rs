@@ -8,10 +8,28 @@ use sha2::{Digest, Sha256};
 pub(crate) async fn dispatch_knowledge(cli: &Cli, cmd: KnowledgeCmd) -> Result<i32> {
     match cmd {
         KnowledgeCmd::Query { topic, workdir, .. } => {
-            cmd_neuro(cli, NeuroCmd::Query { topic, workdir, limit: 10 }).await
+            cmd_neuro(
+                cli,
+                NeuroCmd::Query {
+                    topic,
+                    workdir,
+                    limit: 10,
+                },
+            )
+            .await
         }
         KnowledgeCmd::Stats { workdir } => cmd_neuro(cli, NeuroCmd::Stats { workdir }).await,
-        KnowledgeCmd::Gc { workdir, .. } => cmd_neuro(cli, NeuroCmd::Gc { workdir, threshold: None, dry_run: false }).await,
+        KnowledgeCmd::Gc { workdir, .. } => {
+            cmd_neuro(
+                cli,
+                NeuroCmd::Gc {
+                    workdir,
+                    threshold: None,
+                    dry_run: false,
+                },
+            )
+            .await
+        }
         KnowledgeCmd::Export {
             workdir,
             output,
@@ -165,7 +183,16 @@ async fn cmd_backfill_hdc(cli: &Cli, workdir: Option<PathBuf>) -> Result<i32> {
 
 pub(crate) async fn dispatch_knowledge_dream(cli: &Cli, cmd: KnowledgeDreamCmd) -> Result<i32> {
     match cmd {
-        KnowledgeDreamCmd::Run { workdir, .. } => cmd_dream(cli, DreamCmdLegacy::Run { workdir, dry_run: false }).await,
+        KnowledgeDreamCmd::Run { workdir, .. } => {
+            cmd_dream(
+                cli,
+                DreamCmdLegacy::Run {
+                    workdir,
+                    dry_run: false,
+                },
+            )
+            .await
+        }
         KnowledgeDreamCmd::Report { workdir } => {
             cmd_dream(cli, DreamCmdLegacy::Report { workdir }).await
         }
@@ -339,7 +366,6 @@ pub(crate) async fn cmd_archive(
 
     Ok(EXIT_SUCCESS)
 }
-
 
 pub(crate) async fn cmd_neuro(cli: &Cli, cmd: NeuroCmd) -> Result<i32> {
     match cmd {
@@ -714,9 +740,7 @@ pub(crate) async fn cmd_neuro(cli: &Cli, cmd: NeuroCmd) -> Result<i32> {
             roko_neuro::validate_peer_name(&peer)?;
 
             // Acquire exclusive workspace lock for transactional sync (#37).
-            let _lock = crate::workspace_lock::acquire_workspace_lock(
-                &wd.join(".roko"),
-            )?;
+            let _lock = roko_cli::workspace_lock::acquire_workspace_lock(&wd.join(".roko"))?;
 
             let store = KnowledgeStore::for_workdir(&wd);
             let layout = roko_neuro::MeshLayout::new(&wd);
@@ -1543,8 +1567,8 @@ pub(crate) struct NeuroFileSet {
 mod tests {
     use super::*;
     use roko_neuro::{
-        KnowledgeEntry, KnowledgeKind, KnowledgeStore, KnowledgeTier, MeshLayout,
-        load_peer_cursor, receive_sync, send_sync, validate_peer_name,
+        KnowledgeEntry, KnowledgeKind, KnowledgeStore, KnowledgeTier, MeshLayout, load_peer_cursor,
+        receive_sync, send_sync, validate_peer_name,
     };
     use tempfile::TempDir;
 
@@ -1613,7 +1637,10 @@ mod tests {
 
         // Verify cursor was set.
         let cursor = load_peer_cursor(&layout_b.cursor_path("peer-a")).unwrap();
-        assert_eq!(cursor.last_committed_sequence, send_result.high_water_sequence);
+        assert_eq!(
+            cursor.last_committed_sequence,
+            send_result.high_water_sequence
+        );
     }
 
     #[test]
@@ -1648,9 +1675,7 @@ mod tests {
         let store_a = KnowledgeStore::for_workdir(&wd_a);
         let store_b = KnowledgeStore::for_workdir(&wd_b);
 
-        store_a
-            .ingest(vec![make_entry("e1", "data")])
-            .unwrap();
+        store_a.ingest(vec![make_entry("e1", "data")]).unwrap();
 
         let send_result = send_sync(&wd_a, "peer-b", "ws-a", &store_a, 100)
             .unwrap()

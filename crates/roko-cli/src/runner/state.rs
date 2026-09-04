@@ -202,7 +202,21 @@ pub struct RunState {
     /// Dispatch-time routing context for the current task. Stored here
     /// so `FeedbackEvent::TaskCompleted` can carry the real feature
     /// vector to the CascadeRouter's bandit.
+    ///
+    /// P1-6: The dispatch site writes routing_context to the per-task
+    /// `TaskRuntimeState` snapshot immediately at dispatch time, then
+    /// mirrors the value here for the single-task synchronous path.
+    /// `restore_task_runtime` swaps the per-task snapshot back before
+    /// event processing, so the feedback path always sees the correct
+    /// context even under concurrent dispatches.
     pub routing_context: Option<RoutingContext>,
+
+    /// Multiplicative context shrink factor for the current task, applied
+    /// on context overflow retries. Starts at `1.0`; each
+    /// `ContextOverflow` retry multiplies by `0.75` (reducing injected
+    /// context by 25%). Stored per `plan_id:task_id` so shrinkage
+    /// accumulates across consecutive overflow retries of the same task.
+    pub context_shrink_factors: HashMap<String, f64>,
 
     /// Per-task failure reasons (plan_id:task_id → reason string).
     /// Populated when a task fails so the final summary can show why.
@@ -214,6 +228,15 @@ pub struct RunState {
     /// `config.budget_override` is true).
     pub budget_exhausted: bool,
 
+    /// Whether the daily budget guardrail has been tripped for the current run.
+    /// Once set, every subsequent dispatch is blocked (unless
+    /// `config.budget_override` is true).
+    pub daily_budget_exhausted: bool,
+
+    /// Cost already recorded in the costs log for today *before* this run
+    /// started. Combined with `total_cost_usd` to enforce `max_daily_usd`.
+    pub prior_daily_cost_usd: f64,
+
     /// Whether the disk budget has been exceeded for the current run.
     /// Once set, every subsequent dispatch is blocked until the operator
     /// frees space or raises `resources.max_plan_disk_mb`.
@@ -223,6 +246,13 @@ pub struct RunState {
     /// Role of the current task (e.g. "implementer", "strategist").
     /// Populated from the task definition's `role` field at dispatch time.
     pub current_task_role: String,
+
+    // ─── Model Choice Source ────────────────────────────────────────
+    /// Whether the current task's model was forced via `--model` /
+    /// `--force-model` / `--force-backend`. When `true`, feedback
+    /// writers tag the observation as `ModelChoiceSource::Override` so
+    /// the cascade router's learned policy is not corrupted.
+    pub model_forced: bool,
 
     // ─── Review Verdict ──────────────────────────────────────────────
     /// Parsed structured review verdict from the most recent agent turn.
@@ -317,10 +347,14 @@ impl RunState {
             revised_tasks: HashMap::new(),
             task_fingerprints: Vec::new(),
             routing_context: None,
+            context_shrink_factors: HashMap::new(),
             failure_reasons: HashMap::new(),
             budget_exhausted: false,
+            daily_budget_exhausted: false,
+            prior_daily_cost_usd: 0.0,
             disk_budget_paused: false,
             current_task_role: String::new(),
+            model_forced: false,
             parsed_review_verdict: None,
             express_mode: false,
             cumulative_reflection_cost_usd: 0.0,
@@ -365,7 +399,10 @@ impl RunState {
                 .next_attempt
                 .max(task.current_attempt.saturating_add(1));
         }
-        if let Some(val) = self.task_lifecycle_mut(task_id, &key).map(|t| t.current_attempt) {
+        if let Some(val) = self
+            .task_lifecycle_mut(task_id, &key)
+            .map(|t| t.current_attempt)
+        {
             self.iterations.insert(key, val);
         }
     }
@@ -736,7 +773,10 @@ impl RunState {
                 .next_attempt
                 .max(task.current_attempt.saturating_add(1));
         }
-        if let Some(val) = self.task_lifecycle_mut(&attempt.task_id, &key).map(|t| t.current_attempt) {
+        if let Some(val) = self
+            .task_lifecycle_mut(&attempt.task_id, &key)
+            .map(|t| t.current_attempt)
+        {
             self.iterations.insert(key, val);
         }
     }
@@ -811,8 +851,14 @@ impl RunState {
                 }
             }
         }
-        if let Some(val) = self.task_lifecycle_mut(&attempt.task_id, &task_key).map(|t| t.current_attempt.max(1)) {
-            if matches!(decision.action, RetryAction::RetryAfterBackoff | RetryAction::Replan) {
+        if let Some(val) = self
+            .task_lifecycle_mut(&attempt.task_id, &task_key)
+            .map(|t| t.current_attempt.max(1))
+        {
+            if matches!(
+                decision.action,
+                RetryAction::RetryAfterBackoff | RetryAction::Replan
+            ) {
                 self.iterations.insert(task_key, val);
             }
         }
@@ -899,6 +945,29 @@ impl RunState {
         self.task_started_at = Instant::now();
         self.last_dispatch_ms = 0;
         self.routing_context = None;
+        self.model_forced = false;
+    }
+
+    /// Return the context shrink factor for the given plan/task pair.
+    /// Defaults to `1.0` (no shrinkage). Each context overflow retry
+    /// multiplies by `0.75`.
+    pub fn context_shrink_factor(&self, plan_id: &str, task_id: &str) -> f64 {
+        let key = format!("{plan_id}:{task_id}");
+        self.context_shrink_factors
+            .get(&key)
+            .copied()
+            .unwrap_or(1.0)
+    }
+
+    /// Shrink the context budget for the given task by 25%.
+    pub fn apply_context_overflow_shrink(&mut self, plan_id: &str, task_id: &str) {
+        let key = format!("{plan_id}:{task_id}");
+        let current = self
+            .context_shrink_factors
+            .get(&key)
+            .copied()
+            .unwrap_or(1.0);
+        self.context_shrink_factors.insert(key, current * 0.75);
     }
 
     /// Record a completed task, rolling per-task stats into totals.

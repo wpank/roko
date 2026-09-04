@@ -37,9 +37,7 @@ pub fn render_task_progress(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
     let atm = &state.atmosphere;
 
     // Use the selected plan's tasks when a plan is selected, otherwise global checklist.
-    let selected_plan = state
-        .plans
-        .get(state.selected_plan_idx);
+    let selected_plan = state.plans.get(state.selected_plan_idx);
     let plan_task_rows: Vec<TaskRow> = if let Some(plan) = selected_plan {
         plan.tasks
             .iter()
@@ -154,14 +152,17 @@ pub fn render_task_progress(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
             None
         };
 
-        let total_suffix_len = count_suffix.chars().count()
-            + eta_suffix.as_ref().map_or(0, |s| s.chars().count());
+        let total_suffix_len =
+            count_suffix.chars().count() + eta_suffix.as_ref().map_or(0, |s| s.chars().count());
         let bar_width = inner_width.saturating_sub(total_suffix_len + 1).max(4);
         let bar_spans = semantic_bar(bar_width, fill_pct, Some(atm.heartbeat()));
 
         let mut bar_line = vec![Span::styled(" ", Style::default())];
         bar_line.extend(bar_spans);
-        bar_line.push(Span::styled(count_suffix, Style::default().fg(Theme::FG_DIM)));
+        bar_line.push(Span::styled(
+            count_suffix,
+            Style::default().fg(Theme::FG_DIM),
+        ));
         if let Some(eta) = eta_suffix {
             bar_line.push(Span::styled(eta, Style::default().fg(Theme::DREAM)));
         }
@@ -230,12 +231,7 @@ pub fn render_task_progress(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
                 Some(Theme::BG_HIGHLIGHT),
             )
         } else if is_active {
-            (
-                theme
-                    .value()
-                    .bg(Theme::BG_RAISED),
-                Some(Theme::BG_RAISED),
-            )
+            (theme.value().bg(Theme::BG_RAISED), Some(Theme::BG_RAISED))
         } else {
             (Style::default().fg(Theme::TEXT), None)
         };

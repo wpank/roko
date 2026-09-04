@@ -255,9 +255,7 @@ pub fn print_env_list(json: bool) {
         .iter()
         .filter(|s| s.stability == Stability::Deprecated)
         .count();
-    println!(
-        "{total} registered variables ({secret_count} secret, {deprecated_count} deprecated)"
-    );
+    println!("{total} registered variables ({secret_count} secret, {deprecated_count} deprecated)");
 }
 
 // ---------------------------------------------------------------------------
@@ -1710,7 +1708,9 @@ pub fn parse_url_env(s: &str) -> Result<String, String> {
     {
         Ok(trimmed.to_string())
     } else {
-        Err(format!("invalid URL '{trimmed}': missing http(s):// or ws(s):// scheme"))
+        Err(format!(
+            "invalid URL '{trimmed}': missing http(s):// or ws(s):// scheme"
+        ))
     }
 }
 
@@ -1763,7 +1763,9 @@ pub fn resolve_with_fallback(
     canonical: &'static str,
     deprecated_alias: &'static str,
 ) -> Option<ResolvedEnvVar> {
-    let canonical_val = std::env::var(canonical).ok().filter(|v| !v.trim().is_empty());
+    let canonical_val = std::env::var(canonical)
+        .ok()
+        .filter(|v| !v.trim().is_empty());
     let alias_val = std::env::var(deprecated_alias)
         .ok()
         .filter(|v| !v.trim().is_empty());
@@ -1857,29 +1859,29 @@ pub fn resolve_log_filter() -> ResolvedEnvVar {
     }
 
     // ROKO_VERBOSE -> debug (deprecated).
-    if let Ok(val) = std::env::var("ROKO_VERBOSE") {
-        if parse_bool_env(&val) {
-            return ResolvedEnvVar {
-                value: "debug".to_string(),
-                source_name: "ROKO_VERBOSE",
-                deprecation_warning: Some(
-                    "ROKO_VERBOSE is deprecated; use ROKO_LOG=debug instead".to_string(),
-                ),
-            };
-        }
+    if let Ok(val) = std::env::var("ROKO_VERBOSE")
+        && parse_bool_env(&val)
+    {
+        return ResolvedEnvVar {
+            value: "debug".to_string(),
+            source_name: "ROKO_VERBOSE",
+            deprecation_warning: Some(
+                "ROKO_VERBOSE is deprecated; use ROKO_LOG=debug instead".to_string(),
+            ),
+        };
     }
 
     // ROKO_DEBUG -> debug (deprecated).
-    if let Ok(val) = std::env::var("ROKO_DEBUG") {
-        if parse_bool_env(&val) {
-            return ResolvedEnvVar {
-                value: "debug".to_string(),
-                source_name: "ROKO_DEBUG",
-                deprecation_warning: Some(
-                    "ROKO_DEBUG is deprecated; use ROKO_LOG=debug instead".to_string(),
-                ),
-            };
-        }
+    if let Ok(val) = std::env::var("ROKO_DEBUG")
+        && parse_bool_env(&val)
+    {
+        return ResolvedEnvVar {
+            value: "debug".to_string(),
+            source_name: "ROKO_DEBUG",
+            deprecation_warning: Some(
+                "ROKO_DEBUG is deprecated; use ROKO_LOG=debug instead".to_string(),
+            ),
+        };
     }
 
     // RUST_LOG compatibility fallback.
@@ -2040,8 +2042,7 @@ mod tests {
     fn json_output_is_valid() {
         let registry = env_registry();
         let json = serde_json::to_string_pretty(&registry).expect("serialize to JSON");
-        let parsed: Vec<serde_json::Value> =
-            serde_json::from_str(&json).expect("parse JSON back");
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(&json).expect("parse JSON back");
         assert_eq!(parsed.len(), registry.len());
     }
 

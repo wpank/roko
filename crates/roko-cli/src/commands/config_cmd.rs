@@ -254,6 +254,10 @@ pub(crate) async fn dispatch_config(cli: &Cli, cmd: ConfigCmd) -> Result<()> {
             roko_core::config::env_registry::print_env_list(json);
             Ok(())
         }
+        ConfigCmd::Preset { .. } => {
+            // Preset command is handled by the config preset dispatcher.
+            Ok(())
+        }
     }
 }
 
@@ -1198,6 +1202,7 @@ pub(crate) fn cmd_model_route(
         previous_model: Some(requested_slug.clone()),
         plan_context_tokens: None,
         tier_thresholds: None,
+        cfactor: None,
     };
 
     let router = CascadeRouter::load_or_new(&cascade_router_path(workdir), model_slugs.clone());

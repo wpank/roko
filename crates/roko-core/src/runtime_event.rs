@@ -238,6 +238,7 @@ struct RuntimeEventEnvelopeV1 {
     run_id: String,
     seq: u64,
     ts: DateTime<Utc>,
+    #[allow(dead_code)]
     schema_version: u8,
     source: String,
     payload: RuntimeEvent,
@@ -1488,8 +1489,14 @@ mod tests {
 
         for (event, expected_kind) in events {
             let value = serde_json::to_value(&event).expect("serialize v2 event");
-            assert_eq!(value["kind"], expected_kind, "kind mismatch for {expected_kind}");
-            assert!(value.get("data").is_some(), "missing data for {expected_kind}");
+            assert_eq!(
+                value["kind"], expected_kind,
+                "kind mismatch for {expected_kind}"
+            );
+            assert!(
+                value.get("data").is_some(),
+                "missing data for {expected_kind}"
+            );
 
             let decoded: RuntimeEvent =
                 serde_json::from_value(value).expect("deserialize v2 event");
@@ -1735,7 +1742,10 @@ mod tests {
                 chunk: "x".into(),
             },
         );
-        assert_eq!(best_effort_envelope.delivery, RuntimeEventDelivery::BestEffort);
+        assert_eq!(
+            best_effort_envelope.delivery,
+            RuntimeEventDelivery::BestEffort
+        );
 
         let reliable_envelope = RuntimeEventEnvelope::new(
             "r",

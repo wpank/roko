@@ -149,25 +149,27 @@ pub fn render_notifications(
         let (base_border_color, icon, tag, tag_style) = match notif.level {
             NotificationLevel::Info => (
                 theme.info,
-                "\u{2139}",  // i
+                "\u{2139}", // i
                 " INFO ",
                 theme.info(),
             ),
             NotificationLevel::Warn => (
                 theme.warning,
-                "\u{26a0}",  // warning sign
+                "\u{26a0}", // warning sign
                 " WARN ",
                 theme.warning().add_modifier(Modifier::BOLD),
             ),
             NotificationLevel::Error => (
                 theme.danger,
-                "\u{2717}",  // X mark
+                "\u{2717}", // X mark
                 " ERR  ",
-                theme.danger().add_modifier(Modifier::BOLD | Modifier::REVERSED),
+                theme
+                    .danger()
+                    .add_modifier(Modifier::BOLD | Modifier::REVERSED),
             ),
             NotificationLevel::Debug => (
                 theme.muted,
-                "\u{2022}",  // bullet
+                "\u{2022}", // bullet
                 " DBG  ",
                 theme.muted(),
             ),

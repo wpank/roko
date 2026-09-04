@@ -23,6 +23,7 @@ pub struct ExtensionsBundle {
 
 /// Serializable summary of the extensions bundle for diagnostics.
 #[derive(Debug, Serialize, Deserialize)]
+#[allow(missing_docs)]
 pub struct ExtensionsBundleSummary {
     pub has_mcp_runtime: bool,
     pub mcp_tool_count: usize,

@@ -491,13 +491,29 @@ impl ModelCallService {
                 .filter(|effort| !effort.trim().is_empty()),
             ..AgentOptions::default()
         };
-        options.mcp_config = self
+        options.mcp_config = req
             .mcp_config
             .clone()
+            .or_else(|| self.mcp_config.clone())
             .or_else(|| self.config_agent_mcp_config());
         options.pre_discovered_local_tools = self.local_tool_runtime.clone();
         if !req.tools.is_empty() {
             options.pre_discovered_mcp_tools = Some(Arc::new(req.tools.clone()));
+        }
+        // Thread per-request generation settings into extra_args so callers
+        // that use build_agent_options directly get the full override chain.
+        if let Some(ref gen_settings) = req.generation_settings {
+            if let Some(temperature) = gen_settings.temperature {
+                options
+                    .extra_args
+                    .push(format!("--temperature={temperature}"));
+            }
+            if let Some(top_p) = gen_settings.top_p {
+                options.extra_args.push(format!("--top-p={top_p}"));
+            }
+            for stop in &gen_settings.stop_sequences {
+                options.extra_args.push(format!("--stop={stop}"));
+            }
         }
         options
     }
@@ -656,6 +672,7 @@ impl ModelCallService {
         usage: &TokenUsage,
         latency_ms: u64,
         success: bool,
+        error_class: Option<&str>,
     ) -> Result<()> {
         let Some(sink) = &self.feedback_sink else {
             tracing::debug!("feedback sink not configured for model call service; skipping");
@@ -677,6 +694,7 @@ impl ModelCallService {
             cost_usd: usage.cost_usd,
             latency_ms,
             success,
+            error_class: error_class.map(ToOwned::to_owned),
         })
         .await
     }
@@ -2251,6 +2269,7 @@ impl ModelCaller for ModelCallService {
                         &cached.usage,
                         latency_ms,
                         true,
+                        None,
                     )
                     .await?;
                     self.emit_call_metrics(
@@ -2389,19 +2408,19 @@ impl ModelCaller for ModelCallService {
             set_max_tokens_option(&mut options, max_tokens);
         }
         // Thread per-request generation settings through AgentOptions.
-        if let Some(ref gen) = req.generation_settings {
-            if let Some(max_tokens) = gen.max_tokens {
+        if let Some(ref gen_settings) = req.generation_settings {
+            if let Some(max_tokens) = gen_settings.max_tokens {
                 set_max_tokens_option(&mut options, max_tokens);
             }
-            if let Some(temperature) = gen.temperature {
+            if let Some(temperature) = gen_settings.temperature {
                 options
                     .extra_args
                     .push(format!("--temperature={temperature}"));
             }
-            if let Some(top_p) = gen.top_p {
+            if let Some(top_p) = gen_settings.top_p {
                 options.extra_args.push(format!("--top-p={top_p}"));
             }
-            for stop in &gen.stop_sequences {
+            for stop in &gen_settings.stop_sequences {
                 options.extra_args.push(format!("--stop={stop}"));
             }
         }
@@ -2464,6 +2483,7 @@ impl ModelCaller for ModelCallService {
                     &usage,
                     latency_ms,
                     false,
+                    Some(provider_error_kind(&message)),
                 )
                 .await?;
                 let prov = provider.as_deref().unwrap_or("unknown");
@@ -2519,6 +2539,7 @@ impl ModelCaller for ModelCallService {
                 &usage,
                 latency_ms,
                 false,
+                Some("convergence_failure"),
             )
             .await?;
             let convergence_err = RokoError::from(error);
@@ -2579,6 +2600,7 @@ impl ModelCaller for ModelCallService {
             &usage,
             output.latency_ms,
             true,
+            None,
         )
         .await?;
         self.emit_call_metrics(
@@ -2660,6 +2682,8 @@ mod tests {
             routing_hints: Vec::new(),
             cache_policy: roko_core::foundation::CachePolicy::Default,
             tools: Vec::new(),
+            generation_settings: None,
+            mcp_config: None,
         }
     }
 
@@ -2924,6 +2948,8 @@ mod tests {
             routing_hints: Vec::new(),
             cache_policy: roko_core::foundation::CachePolicy::Default,
             tools: Vec::new(),
+            generation_settings: None,
+            mcp_config: None,
         };
         assert_eq!(svc.resolve_model(&req), "claude-sonnet-4-20250514");
     }
@@ -2948,6 +2974,8 @@ mod tests {
             routing_hints: Vec::new(),
             cache_policy: roko_core::foundation::CachePolicy::Default,
             tools: Vec::new(),
+            generation_settings: None,
+            mcp_config: None,
         };
         assert_eq!(svc.resolve_model(&req), "claude-opus-4-20250514");
     }
@@ -2975,6 +3003,8 @@ mod tests {
             routing_hints: Vec::new(),
             cache_policy: roko_core::foundation::CachePolicy::Default,
             tools: Vec::new(),
+            generation_settings: None,
+            mcp_config: None,
         };
 
         assert_eq!(svc.resolve_model(&req), "router-selected-model");
@@ -3050,6 +3080,8 @@ mod tests {
             routing_hints: Vec::new(),
             cache_policy: roko_core::foundation::CachePolicy::Default,
             tools: Vec::new(),
+            generation_settings: None,
+            mcp_config: None,
         };
         let model = svc.resolve_model(&req);
         let config = svc.config_for_model(&model);
@@ -3086,6 +3118,8 @@ mod tests {
             routing_hints: Vec::new(),
             cache_policy: roko_core::foundation::CachePolicy::Default,
             tools: Vec::new(),
+            generation_settings: None,
+            mcp_config: None,
         };
 
         assert_eq!(svc.resolve_model(&req), "claude");
@@ -3142,8 +3176,8 @@ mod tests {
         );
 
         // ── Row 2: AgentConfig.mcp_config used when no explicit override ─
-        let svc_no_explicit = ModelCallService::new("claude".into())
-            .with_config(config_with_agent_mcp);
+        let svc_no_explicit =
+            ModelCallService::new("claude".into()).with_config(config_with_agent_mcp);
 
         let options = svc_no_explicit.build_agent_options(&req, None);
         assert_eq!(
@@ -3173,8 +3207,8 @@ mod tests {
         );
 
         // ── Row 5: non-existent explicit path is threaded, not swallowed ─
-        let svc_missing = ModelCallService::new("claude".into())
-            .with_mcp_config("/does/not/exist/mcp.json");
+        let svc_missing =
+            ModelCallService::new("claude".into()).with_mcp_config("/does/not/exist/mcp.json");
         let options = svc_missing.build_agent_options(&req, None);
         assert_eq!(
             options.mcp_config,
@@ -3202,8 +3236,7 @@ mod tests {
     fn per_request_generation_settings_and_mcp_config_threaded() {
         use roko_core::foundation::GenerationSettings;
 
-        let svc = ModelCallService::new("claude".into())
-            .with_mcp_config("/service/default.json");
+        let svc = ModelCallService::new("claude".into()).with_mcp_config("/service/default.json");
 
         // Per-request overrides should take precedence.
         let req = ModelCallRequest {
@@ -3265,6 +3298,8 @@ mod tests {
             routing_hints: Vec::new(),
             cache_policy: roko_core::foundation::CachePolicy::Default,
             tools: Vec::new(),
+            generation_settings: None,
+            mcp_config: None,
         };
 
         let estimate = svc.cost_predict(&req);
@@ -3308,6 +3343,8 @@ mod tests {
             routing_hints: Vec::new(),
             cache_policy: roko_core::foundation::CachePolicy::Default,
             tools: Vec::new(),
+            generation_settings: None,
+            mcp_config: None,
         };
 
         let estimate = svc.cost_predict(&req);
@@ -3761,6 +3798,7 @@ mod tests {
                     tpm: 40_000,
                     ..Default::default()
                 }),
+                require_confirmation: false,
             },
         );
         config.models.insert(
@@ -3823,6 +3861,7 @@ mod tests {
                     tpm: 100_000,
                     ..Default::default()
                 }),
+                require_confirmation: false,
             },
         );
 
@@ -3925,6 +3964,8 @@ mod tests {
             routing_hints: Vec::new(),
             cache_policy: roko_core::foundation::CachePolicy::Default,
             tools: Vec::new(),
+            generation_settings: None,
+            mcp_config: None,
         };
 
         let estimate = svc.cost_predict(&req);

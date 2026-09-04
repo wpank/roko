@@ -11,7 +11,6 @@ use async_trait::async_trait;
 use tokio::sync::mpsc;
 
 use crate::agent::{Agent, AgentResult};
-use crate::chat_types::FinishReason;
 use crate::harness::acp_client::{
     AcpEvent, AcpNotification, AcpPromptPayload, AcpStdioClient, NewSessionOpts,
 };
@@ -45,6 +44,8 @@ pub struct HermesAcpConfig {
     pub mcp_servers: Option<serde_json::Value>,
     /// Optional OS-enforced limits for the ACP subprocess.
     pub resource_limits: Option<ResourceLimits>,
+    /// Optional system prompt prepended to every prompt.
+    pub system_prompt: Option<String>,
 }
 
 impl Default for HermesAcpConfig {
@@ -57,6 +58,7 @@ impl Default for HermesAcpConfig {
             timeout: Duration::from_secs(120),
             mcp_servers: None,
             resource_limits: None,
+            system_prompt: None,
         }
     }
 }
@@ -261,7 +263,13 @@ fn parse_notification(notif: &AcpNotification) -> Option<AcpEvent> {
 impl Agent for HermesAcpAgent {
     async fn run(&self, input: &Signal, _ctx: &Context) -> AgentResult {
         let started = Instant::now();
-        let prompt = Self::extract_prompt(input);
+        let raw_prompt = Self::extract_prompt(input);
+        let prompt = match &self.config.system_prompt {
+            Some(sp) => {
+                format!("[SYSTEM INSTRUCTIONS]\n{sp}\n[END SYSTEM INSTRUCTIONS]\n\n{raw_prompt}")
+            }
+            None => raw_prompt,
+        };
 
         let mut client = self.client.lock().await;
 
@@ -454,7 +462,13 @@ impl Agent for HermesAcpAgent {
         event_tx: mpsc::Sender<StreamEvent>,
     ) -> AgentResult {
         let started = Instant::now();
-        let prompt = Self::extract_prompt(input);
+        let raw_prompt = Self::extract_prompt(input);
+        let prompt = match &self.config.system_prompt {
+            Some(sp) => {
+                format!("[SYSTEM INSTRUCTIONS]\n{sp}\n[END SYSTEM INSTRUCTIONS]\n\n{raw_prompt}")
+            }
+            None => raw_prompt,
+        };
 
         let mut client = self.client.lock().await;
 
@@ -464,7 +478,11 @@ impl Agent for HermesAcpAgent {
         {
             let msg = format!("hermes ACP connect failed: {e}");
             tracing::error!("{msg}");
-            let _ = event_tx.send(StreamEvent::now(StreamEventKind::Done { finish_reason: format!("error: {}", msg) })).await;
+            let _ = event_tx
+                .send(StreamEvent::now(StreamEventKind::Done {
+                    finish_reason: format!("error: {}", msg),
+                }))
+                .await;
             return AgentResult::fail(self.build_error_output(input, &msg));
         }
 
@@ -483,7 +501,11 @@ impl Agent for HermesAcpAgent {
             Err(e) => {
                 let msg = format!("hermes ACP new_session failed: {e}");
                 tracing::error!("{msg}");
-                let _ = event_tx.send(StreamEvent::now(StreamEventKind::Done { finish_reason: format!("error: {}", msg) })).await;
+                let _ = event_tx
+                    .send(StreamEvent::now(StreamEventKind::Done {
+                        finish_reason: format!("error: {}", msg),
+                    }))
+                    .await;
                 return AgentResult::fail(self.build_error_output(input, &msg));
             }
         };
@@ -514,7 +536,11 @@ impl Agent for HermesAcpAgent {
                 let msg = format!("hermes ACP send_prompt failed: {e}");
                 tracing::error!("{msg}");
                 let _ = client.close_session(&session_id).await;
-                let _ = event_tx.send(StreamEvent::now(StreamEventKind::Done { finish_reason: format!("error: {}", msg) })).await;
+                let _ = event_tx
+                    .send(StreamEvent::now(StreamEventKind::Done {
+                        finish_reason: format!("error: {}", msg),
+                    }))
+                    .await;
                 return AgentResult::fail(self.build_error_output(input, &msg));
             }
         };
@@ -634,7 +660,9 @@ impl Agent for HermesAcpAgent {
                     {
                         output_text.push_str(text);
                         let _ = event_tx
-                            .send(StreamEvent::now(StreamEventKind::TextDelta(text.to_string())))
+                            .send(StreamEvent::now(StreamEventKind::TextDelta(
+                                text.to_string(),
+                            )))
                             .await;
                     }
                 }
@@ -642,7 +670,11 @@ impl Agent for HermesAcpAgent {
                     tracing::warn!("hermes ACP recv_response error: {e}");
                 }
             }
-            let _ = event_tx.send(StreamEvent::now(StreamEventKind::Done { finish_reason: "stop".to_string() })).await;
+            let _ = event_tx
+                .send(StreamEvent::now(StreamEventKind::Done {
+                    finish_reason: "stop".to_string(),
+                }))
+                .await;
         }
 
         // Close session.

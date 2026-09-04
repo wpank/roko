@@ -15,6 +15,7 @@ roko-agent = { path = "../roko-agent" }
 roko-core = { path = "../roko-core" }
 roko-daimon = { path = "../roko-daimon" }
 roko-dreams = { path = "../roko-dreams" }
+roko-graph = { path = "../roko-graph" }
 roko-learn = { path = "../roko-learn" }
 roko-neuro = { path = "../roko-neuro" }
 roko-primitives = { path = "../roko-primitives", optional = true }

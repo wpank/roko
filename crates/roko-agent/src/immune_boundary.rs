@@ -31,8 +31,8 @@ use crate::immune_evidence::{
     AGENT_ISOLATION_CONTROL_KIND as AGENT_ISOLATION_CONTROL_KIND_VALUE, get_agent_control,
     persist_agent_control, persist_evidence_signals, validate_boundary_label,
 };
-use crate::tool_loop::{StreamEvent, StreamEventKind};
 use crate::tool_immune::update_vault;
+use crate::tool_loop::{StreamEvent, StreamEventKind};
 
 /// Relative workspace directory containing the quarantine Store.
 pub const QUARANTINE_STORE_RELATIVE_PATH: &str = ".roko/immune/quarantine";
@@ -774,10 +774,7 @@ fn stream_event_bytes(event: &StreamEvent) -> usize {
     match &event.kind {
         StreamEventKind::ReasoningDelta(text) | StreamEventKind::TextDelta(text) => text.len(),
         StreamEventKind::ToolCallStart { id, name } => id.len() + name.len(),
-        StreamEventKind::ToolCallDelta {
-            id,
-            json_fragment,
-        } => id.len() + json_fragment.len(),
+        StreamEventKind::ToolCallDelta { id, json_fragment } => id.len() + json_fragment.len(),
         StreamEventKind::ToolCallEnd { id, name, args } => {
             id.len() + name.len() + args.to_string().len()
         }
@@ -1379,7 +1376,9 @@ mod tests {
             chunks.push(chunk);
         }
         assert_eq!(chunks.len(), 1);
-        assert!(matches!(&chunks[0].kind, StreamEventKind::Done { finish_reason } if finish_reason.starts_with("error:")));
+        assert!(
+            matches!(&chunks[0].kind, StreamEventKind::Done { finish_reason } if finish_reason.starts_with("error:"))
+        );
     }
 
     struct DivergentStreamingAgent {
@@ -1470,7 +1469,9 @@ mod tests {
             chunks.push(chunk);
         }
         assert_eq!(chunks.len(), 1);
-        assert!(matches!(&chunks[0].kind, StreamEventKind::Done { finish_reason } if finish_reason.starts_with("error:")));
+        assert!(
+            matches!(&chunks[0].kind, StreamEventKind::Done { finish_reason } if finish_reason.starts_with("error:"))
+        );
     }
 
     #[cfg(unix)]

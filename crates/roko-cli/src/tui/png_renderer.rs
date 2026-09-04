@@ -136,10 +136,7 @@ impl PngRenderer {
         // Write the raw pixels as a minimal PNG.
         if let Some(parent) = output_path.parent() {
             std::fs::create_dir_all(parent).with_context(|| {
-                format!(
-                    "failed to create output directory: {}",
-                    parent.display()
-                )
+                format!("failed to create output directory: {}", parent.display())
             })?;
         }
 
@@ -257,9 +254,7 @@ fn builtin_glyph(ch: char) -> GlyphBitmap {
         }
     } else {
         // Non-printable / non-ASCII: filled block placeholder.
-        GlyphBitmap {
-            rows: [0xFF; 16],
-        }
+        GlyphBitmap { rows: [0xFF; 16] }
     }
 }
 
@@ -324,7 +319,11 @@ fn write_minimal_png(path: &Path, width: u32, height: u32, rgb: &[u8]) -> Result
 }
 
 /// Write a single PNG chunk: length (4 BE) + type (4) + data + CRC32 (4 BE).
-fn write_png_chunk(writer: &mut impl std::io::Write, chunk_type: &[u8; 4], data: &[u8]) -> Result<()> {
+fn write_png_chunk(
+    writer: &mut impl std::io::Write,
+    chunk_type: &[u8; 4],
+    data: &[u8],
+) -> Result<()> {
     let length = data.len() as u32;
     writer.write_all(&length.to_be_bytes())?;
     writer.write_all(chunk_type)?;
@@ -412,9 +411,8 @@ fn adler32(data: &[u8]) -> u32 {
 /// Strip ANSI escape sequences and split into a character grid.
 fn parse_grid(buffer: &str) -> Vec<Vec<char>> {
     static ANSI_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let re = ANSI_RE.get_or_init(|| {
-        regex::Regex::new(r"\x1b\[[0-9;]*[A-Za-z]").expect("valid ANSI regex")
-    });
+    let re = ANSI_RE
+        .get_or_init(|| regex::Regex::new(r"\x1b\[[0-9;]*[A-Za-z]").expect("valid ANSI regex"));
 
     buffer
         .lines()

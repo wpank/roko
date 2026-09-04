@@ -61,8 +61,8 @@ pub use profiles::{BundleRequirement, ProfileMatrix, ServiceBundleId};
 
 pub use runtime_services::{
     CostSettlement, CostSettlementError, NonPlanServiceHandle, NonPlanServiceRequest,
-    ServiceConstructionError, ShutdownRegistration, build_non_plan_services,
-    overrides_for_acp, overrides_for_chat, overrides_for_workflow, validate_service_request,
+    ServiceConstructionError, ShutdownRegistration, build_non_plan_services, overrides_for_acp,
+    overrides_for_chat, overrides_for_workflow, validate_service_request,
 };
 
 // ---- Workflow re-exports -----------------------------------------------------

@@ -136,6 +136,7 @@ fn command_backed_config(command: &str, model: &str, kind: ProviderKind) -> Roko
             extra_headers: None,
             max_concurrent: None,
             limits: None,
+            require_confirmation: false,
         },
     );
     config.models.insert(

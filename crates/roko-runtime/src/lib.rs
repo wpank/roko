@@ -114,11 +114,11 @@ pub use roko_core::foundation::{
     GateVerdict, MessageRole, ModelCallRequest, ModelCallResponse, ModelCaller, PromptAssembler,
     PromptSpec, ShellGateCommand, TokenUsage,
 };
-pub use runtime_event_dashboard::{ProjectionResult, RuntimeEventDashboardProjector};
 pub use run_ledger::{
     AgentOutcome, ArtifactOutcome, CancellationOutcome, EffectErrorKind, EventPersistenceHealth,
     GateRunOutcome, PhaseTransitionRecord, RunLedger, TaskTerminalOutcome,
 };
+pub use runtime_event_dashboard::{ProjectionResult, RuntimeEventDashboardProjector};
 pub use state_hub::{
     DEFAULT_PROJECTION_HISTORY_CAPACITY, DEFAULT_PROJECTION_HISTORY_RETENTION, LensOperatorStatus,
     LensQueueSnapshot, LensRuntimeControl, LensRuntimeSnapshot, ProjectionState, SharedStateHub,

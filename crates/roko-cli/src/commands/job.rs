@@ -355,7 +355,10 @@ pub(crate) async fn cmd_job(cli: &Cli, cmd: JobCmd) -> Result<i32> {
                 };
 
                 if !cli.json {
-                    println!("Executing job '{}' locally (run={})...", receipt.job_id, receipt.run_id);
+                    println!(
+                        "Executing job '{}' locally (run={})...",
+                        receipt.job_id, receipt.run_id
+                    );
                 }
 
                 // Build prompt based on job type.

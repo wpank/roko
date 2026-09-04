@@ -650,13 +650,13 @@ fn collect_run_events(run_id: &str, event_start_seq: u64) -> Vec<RuntimeEventEnv
         .replay_from(event_start_seq)
         .into_iter()
         .filter(|envelope| envelope.payload.run_id() == run_id)
-        .map(|envelope| RuntimeEventEnvelope {
-            run_id: run_id.to_string(),
-            seq: envelope.seq,
-            ts: event_timestamp(envelope.ts_millis),
-            schema_version: 1,
-            source: event_source(&envelope.payload).to_string(),
-            payload: envelope.payload,
+        .map(|envelope| {
+            RuntimeEventEnvelope::new(
+                run_id,
+                envelope.seq,
+                event_source(&envelope.payload),
+                envelope.payload,
+            )
         })
         .collect()
 }
@@ -777,6 +777,7 @@ fn summarize_text(text: &str, max_chars: usize) -> String {
         .map_or_else(|| text.to_string(), |(idx, _)| text[..idx].to_string())
 }
 
+#[allow(dead_code)]
 fn event_timestamp(ts_millis: u64) -> DateTime<Utc> {
     let ts_millis = i64::try_from(ts_millis).unwrap_or(i64::MAX);
     DateTime::<Utc>::from_timestamp_millis(ts_millis).unwrap_or_else(Utc::now)

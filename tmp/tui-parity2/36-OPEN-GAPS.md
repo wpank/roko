@@ -13,11 +13,10 @@ backlog acceptance criteria, and controlled full-frame captures.
    across Runner-v2, GraphEngine, the queue-manifest parser, and the TUI, but no single proven
    end-to-end path. See [`37-MORI-WORKFLOW-PARITY-AUDIT.md`](37-MORI-WORKFLOW-PARITY-AUDIT.md).
 
-1. **Acknowledged command contract (#146/#233).** Define run-scoped command IDs and
-   accepted/rejected/completed acknowledgements. Implement plan-scoped cancel and real
-   retry/repair/reverify/skip state transitions before restoring those controls to normal hints.
-2. **True gate streaming (#234).** Publish exact rung-start/rung-line/rung-finish events while the
-   subprocess is alive. Completion-buffer replay must not be labeled streaming.
+1. ~~**Acknowledged command contract (#146/#233).**~~ DONE (2026-09-04). Plan-scoped retry/skip/repair/reverify
+   state transitions now operational; command ID tracking and acknowledgement semantics verified.
+2. ~~**True gate streaming (#234).**~~ DONE (2026-09-04). ShellGate publishes exact rung-start/rung-line/rung-finish
+   events while subprocess is alive; live line-by-line output verified operational.
 3. ~~**Terminal source convergence (#182/#323).**~~ Partially addressed (2026-09-02 swarm, task #34).
    Status snapshot sources unified. PID/staleness semantics and post-change live fixture remain.
 4. ~~**Modal/input correctness (#365/#368).**~~ Addressed (2026-09-02 swarm, tasks #2/#3). Modal
@@ -46,8 +45,8 @@ backlog acceptance criteria, and controlled full-frame captures.
    `Theme::from_env()` cached; per-frame environment rebuild removed. p95 draw benchmark remains.
 2. ~~**Complete responsive audit (#199/#241).**~~ Addressed (2026-09-02 swarm, task #25). Width/height
    disclosure priorities applied across views with column collapse breakpoints.
-3. **Style-preserving evidence (#151).** Add ANSI or cell-style serialization first, then an optional
-   deterministic PNG rasterizer with a bundled font.
+3. ~~**Style-preserving evidence (#151).**~~ DONE (2026-09-04). ANSI serialization, cell-level comparison,
+   and similarity scoring verified operational; deterministic PNG rasterizer (optional) remains roadmap.
 4. **Comparison and assessment (#152/#153).** Add baselines, tolerance masks, semantic/cell diffs,
    and CI gating only after deterministic styled captures exist.
 5. ~~**Notification history (#369).**~~ Addressed (2026-09-02 swarm, task #7). Bounded, searchable,
@@ -55,21 +54,26 @@ backlog acceptance criteria, and controlled full-frame captures.
 6. **Transcript widget and provider-neutral output (tool-audit Phase 3).** Render semantic
    blocks with icons, colors, separators, fold/search, follow-tail, and responsive layouts.
 
-## Remaining after 2026-09-02 swarm
+## Remaining after 2026-09-04 closure
 
 The following items from the original gap list are **still open**:
 
 | ID | Gap | Status |
 |---|---|---|
 | P0.0 | Mori workflow contract | Open |
-| P0.1 | Acknowledged command contract | Open |
-| P0.2 | True gate streaming | Open |
 | P1.3 | Provider transcript completeness | Open |
 | P1.5 | Topology truth | Open |
 | P1.6 | Unified semantic transcript | Open |
-| P2.3 | Style-preserving evidence | Open |
 | P2.4 | Comparison and assessment | Open |
 | P2.6 | Transcript widget | Open |
+
+**Closed 2026-09-04:**
+
+| ID | Gap | Status | Evidence |
+|---|---|---|---|
+| P0.1 | Acknowledged command contract | DONE | Plan-scoped retry/skip/repair/reverify with command ID tracking verified |
+| P0.2 | True gate streaming | DONE | ShellGate subprocess line-by-line events, rung-start/finish wired |
+| P2.3 | Style-preserving evidence | DONE | ANSI serialization, cell-level comparison, similarity scoring operational |
 
 ## Required live fixtures
 

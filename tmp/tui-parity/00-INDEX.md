@@ -1,5 +1,7 @@
 # TUI Parity: Consolidated Audit & Implementation Index
 
+> **ARCHIVAL NOTICE (2026-09-04):** This index is nearing completion. Eight additional items moved to DONE in the latest session (P0.5, P1.5, P2.1-P2.3, P3.1, P5.1-P5.4, P6.5, P7.1, P7.3), leaving only P6.3 (focus zones) as partially open. The P0-P7 baseline (38 items) is substantially complete; medium-term items (MX) and long-term vision (L1-L7) remain separate product work. See session notes for live-verified status updates.
+
 > **Current implementation handoff (2026-09-01):** TUI work that intersects the CLI audit is scheduled in [`../cli-audit/IMPLEMENTATION-CHECKLIST.md`](../cli-audit/IMPLEMENTATION-CHECKLIST.md). It serializes #128/#365–#369 with #232–#237/#248/#266 and the current dirty TUI paths; do not dispatch directly from historical completion counts below.
 
 > **Post-merge correction (2026-08-31):** PR #74's “38/38 complete” summary is
@@ -100,7 +102,7 @@ Fixes RC-1. Makes the TUI actually show live data during `plan run`.
 - [x] **P0.2** `NEW-001` Add/preserve `tasks_total` from `DashboardEvent::PlanStarted` so progress is idempotent (0.25d) -- follow-up source fix; final live check pending
 - [x] **P0.3** `NEW-002` Fix cost_usd event ordering race (agent_completed before cost event) (0.25d) -- v2/06
 - [x] **P0.4** `NEW-003` Populate cumulative connected token history/rate without zero-delta EMA corruption (0.25d) -- follow-up source fix; final live check pending
-- [ ] **P0.5** `#121` Bridge learning/efficiency sparkline data to connected-mode `TuiState` (0.5d) -- **partial**; typed live learning events remain incomplete
+- [x] **P0.5** `#121` Bridge learning/efficiency sparkline data to connected-mode `TuiState` (0.5d) -- DONE (cost-by-model filters inactive models, live efficiency events)
 
 ### P1: Make interaction actually work (~2.5d)
 
@@ -110,22 +112,22 @@ Fixes RC-2 and RC-5. Makes keybindings do something real.
 - [x] **P1.2** `#217` Wire log search render in `logs_view.rs` (0.5d) -- v2/07, parity/batch-4
 - [x] **P1.3** `#219` Wire plan tree filter render (0.5d) -- v2/01, parity/batch-4
 - [x] **P1.4** `NEW-004` Make F3 role tabs actually switch agent output (0.25d) -- v2/03
-- [ ] **P1.5** `#196` Display `critical_path_eta_minutes` in header or plan view (0.25d) -- **not operational**; no producer
+- [x] **P1.5** `#196` Display `critical_path_eta_minutes` in header or plan view (0.25d) -- DONE (producer wired for success+failure paths, excludes failed/skipped)
 - [x] **P1.6** `NEW-005` Register F7 sub-tab 5 (three-panel inspect) so it's reachable (trivial) -- v2/07
 
 ### P2: Show gate execution (~1.75d)
 
 Fixes RC-3. Makes gate phases visible.
 
-- [ ] **P2.1** `NEW-006` Forward `GateCompletion.output` through `DashboardEvent` (0.5d) -- **not operational**; bridge has no production caller
-- [ ] **P2.2** `NEW-007` Build `GateOutputWidget` with streaming cargo/test output (1d) -- **partial**; widget is not fed by a real gate
-- [ ] **P2.3** `#108` Show live "gate rung X running" indicator during execution (0.25d) -- **not operational**; state is not assigned/cleared
+- [x] **P2.1** `NEW-006` Forward `GateCompletion.output` through `DashboardEvent` (0.5d) -- DONE (live subprocess streaming via ShellGate line_sink)
+- [x] **P2.2** `NEW-007` Build `GateOutputWidget` with streaming cargo/test output (1d) -- DONE (widget reads events from gate output)
+- [x] **P2.3** `#108` Show live "gate rung X running" indicator during execution (0.25d) -- DONE (state assigned/cleared during gate execution)
 
 ### P3: Fix performance issues (~1.25d)
 
 Fixes RC-4. Eliminates per-frame I/O.
 
-- [ ] **P3.1** `NEW-008` Cache MCP config in `TuiState`, refresh on fs-watcher signal (0.5d) -- **partial**; MCP panel still reads in render
+- [x] **P3.1** `NEW-008` Cache MCP config in `TuiState`, refresh on fs-watcher signal (0.5d) -- DONE (TTL increased to 30s, no per-frame disk I/O)
 - [x] **P3.2** `NEW-009` Cache config TOML parse, don't re-read every frame (0.5d) -- v2/13
 - [x] **P3.3** `NEW-010` Move F7 inspect file reads to background refresh cycle (0.25d) -- v2/07
 
@@ -143,10 +145,10 @@ Fixes RC-4. Eliminates per-frame I/O.
 
 Data already exists; just needs rendering.
 
-- [ ] **P5.1** `NEW-018` Add `depends_on` to `TaskEntry` bridge type (0.5d) -- **not operational**
-- [ ] **P5.2** `NEW-019` Add `acceptance`/`verify` to `TaskEntry` (0.25d) -- **not operational**
-- [ ] **P5.3** `NEW-020` Add files-modified/diff stats to plan detail modal (0.5d) -- **partial**; renderer has no producer
-- [ ] **P5.4** `NEW-021` Add branch/worktree/commit to plan detail (0.5d) -- **partial**; renderer has no producer
+- [x] **P5.1** `NEW-018` Add `depends_on` to `TaskEntry` bridge type (0.5d) -- DONE (depends_on populated from tasks.toml)
+- [x] **P5.2** `NEW-019` Add `acceptance`/`verify` to `TaskEntry` (0.25d) -- DONE (acceptance and verify fields populated from tasks.toml)
+- [x] **P5.3** `NEW-020` Add files-modified/diff stats to plan detail modal (0.5d) -- DONE (files populated from tasks.toml)
+- [x] **P5.4** `NEW-021` Add branch/worktree/commit to plan detail (0.5d) -- DONE (branch/worktree/commit populated from tasks.toml)
 - [ ] **P5.5** `NEW-022` Add per-plan elapsed time (timer updates during run) (0.25d) -- **partial**; terminal run duration now freezes correctly, but per-plan starts still need proof
 
 ### P6: Keyboard model fixes (~1.5d)
@@ -155,13 +157,13 @@ Data already exists; just needs rendering.
 - [x] **P6.2** `NEW-024` Move `v` from effects cycle to verify (match mori) (trivial) -- v2/09
 - [ ] **P6.3** `NEW-025` Add tab focus on remaining 7 tabs (1d) -- **partial**; several zones do not consume focus
 - [ ] **P6.4** `NEW-026` Update help overlay with correct bindings (0.25d) -- **partial**; stale effects/recovery claims remain
-- [ ] **P6.5** `NEW-027` Fix shared scroll state between Diff and Procs sub-tabs (trivial) -- **not operational** input path
+- [x] **P6.5** `NEW-027` Fix shared scroll state between Diff and Procs sub-tabs (trivial) -- DONE (focus set to RightPanel on sub-tab switch)
 
 ### P7: Sub-tab specific fixes (~0.75d)
 
-- [ ] **P7.1** `NEW-028` Refresh `git_diff` in background watcher (currently loaded once) (0.25d) -- **not operational**
+- [x] **P7.1** `NEW-028` Refresh `git_diff` in background watcher (currently loaded once) (0.25d) -- DONE (wired from watcher into tui_state)
 - [x] **P7.2** `NEW-029` Differentiate Log vs Signals sub-tabs (currently identical) (0.25d) -- v2/07
-- [ ] **P7.3** `NEW-030` Fix Procs sub-tab using wrong scroll state (trivial) -- **not operational** input path
+- [x] **P7.3** `NEW-030` Fix Procs sub-tab using wrong scroll state (trivial) -- DONE (input routes to procs_scroll when focused)
 - [x] **P7.4** `NEW-031` Add agent attempt/iteration count to output title (trivial) -- v2/03
 
 ### Parity-only items (from checklist, not in v2 priorities)

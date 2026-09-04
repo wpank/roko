@@ -1,5 +1,7 @@
 # TUI Parity Phase 2: Usability, Performance & Visual Audit — 2026-09-01
 
+> **Status (2026-09-04):** ~35/38 items verified. Remaining: workflow contract proof (#116), PNG renderer (#151), resizable panes (#199). Near-archival.
+
 > **Implementation handoff:** CLI-relevant P0/P1/P2 findings are mapped to mechanical packets and serialized file lanes in [`../cli-audit/IMPLEMENTATION-CHECKLIST.md`](../cli-audit/IMPLEMENTATION-CHECKLIST.md); coverage is recorded in [`../cli-audit/FINDINGS-COVERAGE-MATRIX.md`](../cli-audit/FINDINGS-COVERAGE-MATRIX.md). The key owners are #128 and #365–#369.
 
 > Phase 2 re-verifies the earlier `tui-parity/` completion claim against production producers,

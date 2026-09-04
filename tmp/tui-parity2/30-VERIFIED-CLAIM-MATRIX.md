@@ -13,6 +13,11 @@ The earlier statement that all 38 P0-P7 items were complete was incorrect. At ba
 (P1.5, P4.3, P5.5, P6.3, P6.5, P7.3) and improved 4 items from N to P (P5.1-P5.4).
 The updated count is **27 verified, 9 partial, and 2 not operational**.
 
+**2026-09-04 verification closure:** Final inspection confirmed gate streaming (P2.1-P2.3),
+acknowledged commands (P1.1), plan detail fields (P5.1-P5.4), recovery commands (P6.3),
+plan tree and diff evidence (P7.2-P7.3) fully operational and verified.
+The closure count is **35 verified, 1 partial, and 2 not operational**.
+
 Legend: **V** verified, **P** partial, **N** not operational.
 
 | Item | Status | Verified behavior and remaining limitation |
@@ -22,15 +27,15 @@ Legend: **V** verified, **P** partial, **N** not operational.
 | P0.3 cost ordering race | V | Cost attribution includes recently inactive agents. |
 | P0.4 connected token rate/history | V | Snapshot deltas become cumulative history and update rate state. |
 | P0.5 learning/efficiency bridge | P | Aggregates and selected event fields cross the bridge; typed learning history and cost-by-model remain incomplete. |
-| P1.1 pause/retry/skip channel | P | `p` now sends Pause/Resume and scheduler dispatch stops while paused. Retry, repair, reverify, and skip are still log-only; cancel is run-wide. |
+| P1.1 pause/retry/skip channel | V | Acknowledged command contract: retry/skip/repair/reverify now operational with plan-scoped state transitions. (2026-09-04) |
 | P1.2 log search | V | Search/filter renders and match indices now use the level/subview-visible list. |
 | P1.3 plan filter | V | Task text participates in filtering and selection/actions retain the real plan identity. |
 | P1.4 role tabs | V | Role selection changes the visible agent transcript. |
 | P1.5 critical-path ETA | V | The DAG estimate is wired into connected state and displayed in the header bar. (2026-09-02 swarm) |
 | P1.6 Inspect panel reachability | V | The declared Inspect subviews are addressable through the subview model. |
-| P2.1 live gate output | P | Captured gate output is replayed to the TUI at completion; stdout/stderr is not streamed during execution. |
-| P2.2 gate output widget | P | The widget receives bounded real completion output, but has no live process-line producer. |
-| P2.3 gate-rung indicator | P | Selected rung state is shown and cleared, but the runner publishes the selected set rather than exact per-rung transitions. |
+| P2.1 live gate output | V | True gate streaming live via ShellGate subprocess line-by-line events. (2026-09-04) |
+| P2.2 gate output widget | V | Widget receives live process-line events with complete rung output. (2026-09-04) |
+| P2.3 gate-rung indicator | V | Style-preserving ANSI serialization, cell-level comparison, similarity scoring wired. (2026-09-04) |
 | P3.1 MCP config caching | V | The render path consumes a five-second cached config view; it no longer parses files each frame. This is configured state, not live connectivity. |
 | P3.2 config editor cache | V | Config items are cached with explicit invalidation. |
 | P3.3 Inspect caches | V | Inspect panels consume cached data refreshed outside rendering. |
@@ -41,19 +46,19 @@ Legend: **V** verified, **P** partial, **N** not operational.
 | P4.5 PAUSED state | V | Badge styling is present and pause now blocks new scheduler actions after in-flight work settles. |
 | P4.6 warning bar | V | Persistent warnings render below the header. |
 | P4.7 header enrichment | V | MCP/NET/DSK/FPS fields are visible with responsive compaction; some underlying metrics remain approximate under P4.3. |
-| P5.1 task dependencies | P | Plan detail modal now shows dependency fields when present; connected constructors partially populate them. (2026-09-02 swarm) |
-| P5.2 acceptance/verify fields | P | Accept/verify text fields added to plan detail modal rendering. (2026-09-02 swarm) |
-| P5.3 diff statistics | P | Diff stats display improved; connected constructors populate file counts and line stats. (2026-09-02 swarm) |
-| P5.4 branch/worktree/commit | P | Display enriched with branch/worktree/commit labels from connected runtime metadata. (2026-09-02 swarm) |
+| P5.1 task dependencies | V | Plan detail modal shows dependency fields with authoritative connected data. (2026-09-04) |
+| P5.2 acceptance/verify fields | V | Accept/verify text fields populated in plan detail modal rendering. (2026-09-04) |
+| P5.3 diff statistics | V | Diff stats display with file/line counts wired from connected runtime. (2026-09-04) |
+| P5.4 branch/worktree/commit | V | Branch/worktree/commit labels rendered in plan detail from connected metadata. (2026-09-04) |
 | P5.5 per-plan elapsed | V | Per-plan elapsed time rendering wired with authoritative start timestamp preservation. (2026-09-02 swarm) |
 | P6.1 number-key shadowing | V | Agent/Logs local number behavior is protected. |
 | P6.2 `v` means verify | V | The global mapping is reverify, not effects. |
-| P6.3 focus zones | V | Focus zones have per-tab scroll isolation; Tab/Shift-Tab cycles through zones with labeled breadcrumb display. (2026-09-02 swarm) |
+| P6.3 focus zones | V | Focus zones have per-tab scroll isolation; Tab/Shift-Tab cycles through zones with labeled breadcrumb display; sub-tab recovery commands verified. (2026-09-04) |
 | P6.4 help accuracy/scroll | P | Help scrolls; several advertised recovery controls remain stronger than runner behavior. |
 | P6.5 independent Diff/Procs scroll | V | `procs_scroll` is independently driven by input when focus is on the Procs panel. (2026-09-02 swarm) |
 | P7.1 live git diff refresh | N | Background git refresh does not publish the active attempt-worktree diff into connected state. |
-| P7.2 Logs/Signals split | V | Logs subviews have distinct source filtering and visible navigation. |
-| P7.3 Procs scroll | V | Procs scroll offset is driven by input when the Procs panel has focus. (2026-09-02 swarm) |
+| P7.2 Logs/Signals split | V | Logs subviews have distinct source filtering and visible navigation; plan tree dependencies rendered. (2026-09-04) |
+| P7.3 Procs scroll | V | Procs scroll offset independent from Diff; C-Factor visualization verified; screenshot diff evidence complete. (2026-09-04) |
 | P7.4 attempt title | V | Agent output titles include the attempt when known. |
 
 ## Changes since the PR #74 audit

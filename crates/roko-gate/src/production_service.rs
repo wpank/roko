@@ -458,6 +458,120 @@ impl Default for ProductionGateService {
     }
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// DefaultGateService — SharedGateEvaluator implementation (#250)
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Production implementation of [`SharedGateEvaluator`] wrapping
+/// [`GatePipelineBuilder`].
+///
+/// This adapter bridges the shared per-rung evaluation contract defined in
+/// `roko-core` to the existing rung dispatch infrastructure. It is the
+/// implementation that `GatePipelineCell` accesses via
+/// `CellContext.resources.gates`.
+#[derive(Debug)]
+pub struct DefaultGateService;
+
+impl DefaultGateService {
+    /// Create a new default gate service.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for DefaultGateService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl roko_core::SharedGateEvaluator for DefaultGateService {
+    async fn verify_rung(
+        &self,
+        request: &roko_core::SharedGateRequest,
+    ) -> std::result::Result<roko_core::SharedGateVerdict, roko_core::SharedGateError> {
+        use roko_core::{SharedGateError, SharedGateVerdict};
+
+        // Parse the rung name.
+        let rung = crate::rung_selector::Rung::from_label(&request.rung).ok_or_else(|| {
+            SharedGateError::UnknownRung {
+                rung: request.rung.clone(),
+            }
+        })?;
+
+        // Build a gate signal from the worktree path.
+        let payload = crate::payload::GatePayload::in_dir(&request.worktree_path);
+        let signal = roko_core::Signal::builder(roko_core::Kind::Task)
+            .body(
+                roko_core::Body::from_json(&payload)
+                    .unwrap_or_else(|_| roko_core::Body::empty()),
+            )
+            .build();
+        let ctx = roko_core::Context::now()
+            .with_attr("workdir", request.worktree_path.to_string_lossy());
+
+        // Execute the rung using canonical dispatch.
+        let verdicts = crate::rung_dispatch::run_canonical_rung(
+            &signal,
+            &ctx,
+            rung,
+            &crate::rung_dispatch::RungExecutionInputs::default(),
+            &crate::rung_dispatch::RungExecutionConfig::default(),
+        )
+        .await;
+
+        // Aggregate inner verdicts into a single SharedGateVerdict.
+        if verdicts.is_empty() {
+            return Ok(SharedGateVerdict::skip(&request.rung));
+        }
+
+        let all_passed = verdicts.iter().all(|v| v.passed || v.skipped);
+        let any_skipped = verdicts.iter().all(|v| v.skipped);
+        let failed_reasons: Vec<String> = verdicts
+            .iter()
+            .filter(|v| !v.passed && !v.skipped)
+            .map(|v| {
+                v.error_digest
+                    .as_deref()
+                    .or(v.detail.as_deref())
+                    .unwrap_or(&v.reason)
+                    .to_string()
+            })
+            .collect();
+
+        let evidence = verdicts
+            .iter()
+            .filter_map(|v| v.detail.as_deref())
+            .next()
+            .map(|s| {
+                if s.len() > 64 * 1024 {
+                    s[..64 * 1024].to_string()
+                } else {
+                    s.to_string()
+                }
+            });
+
+        let duration_ms: u64 = verdicts.iter().map(|v| v.duration_ms).sum();
+
+        if any_skipped && verdicts.len() == 1 {
+            return Ok(SharedGateVerdict::skip(&request.rung));
+        }
+
+        let mut verdict = if all_passed {
+            SharedGateVerdict::pass(&request.rung)
+        } else {
+            SharedGateVerdict::fail(&request.rung, failed_reasons)
+        };
+        verdict.evidence = evidence;
+        // Duration not tracked in cost_micro_usd for deterministic gates.
+        let _ = duration_ms;
+
+        Ok(verdict)
+    }
+}
+
 #[async_trait]
 impl ProductionGateRunner for ProductionGateService {
     async fn run(

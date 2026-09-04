@@ -579,16 +579,30 @@ impl WorkflowServiceAdapter {
         );
 
         // Phase 4: build EffectServices via ServiceFactory, sharing the
-        // health registry from RuntimeServices.
-        let effect_services = build_workflow_effect_services(
-            workdir,
-            config,
-            model_config,
-            selection,
-            overrides.cascade_enabled.unwrap_or(true),
-        )?;
+        // health registry and cascade router from RuntimeServices.
+        let mut effect_model_config = model_config;
+        effect_model_config.agent.default_model = selection.effective_model_key.clone();
+        let service_bundle = ServiceFactory::build_with_runtime_services(
+            ServiceConfig {
+                workdir: workdir.to_path_buf(),
+                roko_dir: workdir.join(".roko"),
+                workspace_config: effect_model_config,
+                model_key: Some(selection.effective_model_key.clone()),
+                mcp_config: config.agent.mcp_config.clone(),
+                feedback_enabled: true,
+                affect_enabled: true,
+                cascade_enabled: overrides.cascade_enabled.unwrap_or(true),
+                run_id: Some(format!("cli_workflow_{}", Utc::now().timestamp_millis())),
+                inference_observer: Some(Arc::new(
+                    crate::inference_observer::RuntimeEventInferenceObserver::new(),
+                )),
+                metrics: None,
+            },
+            &runtime_services,
+        )
+        .map_err(|error| anyhow!("build workflow services: {error}"))?;
 
-        Ok((effect_services, handle, runtime_services))
+        Ok((service_bundle.effect_services(), handle, runtime_services))
     }
 }
 

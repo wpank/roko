@@ -45,6 +45,7 @@ roko-conductor = { path = "../roko-conductor" }
 roko-plugin = { path = "../roko-plugin" }
 roko-daimon = { path = "../roko-daimon" }
 roko-runtime = { path = "../roko-runtime" }
+roko-execution = { path = "../roko-execution" }
 roko-primitives = { path = "../roko-primitives", optional = true }
 
 alloy = { version = "1", features = ["full"], optional = true }

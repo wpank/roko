@@ -4,13 +4,35 @@
 //! instantiated from TOML config via the `CellRegistry` and executed by the
 //! graph engine in topological order.
 
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use roko_core::{PredictionRecord, ProtocolId, Signal, error::Result};
+use roko_core::{PredictionRecord, ProtocolId, SharedGateEvaluator, Signal, error::Result};
 
 /// Semantic version tuple for Cell implementations.
 pub type CellVersion = (u32, u32, u32);
+
+/// Shared service handles injected into `CellContext` by the graph engine.
+///
+/// The engine populates these before each Cell execution. Cells access
+/// services through `ctx.resources` in their `execute` implementation.
+#[derive(Clone, Default)]
+pub struct CellResources {
+    /// Shared gate evaluator for cells that need to run verification.
+    ///
+    /// Populated by the engine from the host-supplied gate service.
+    /// `GatePipelineCell` accesses this as `ctx.resources.gates`.
+    pub gates: Option<Arc<dyn SharedGateEvaluator>>,
+}
+
+impl std::fmt::Debug for CellResources {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CellResources")
+            .field("gates", &self.gates.is_some())
+            .finish()
+    }
+}
 
 /// Runtime context passed to `Cell::execute()`.
 ///
@@ -50,12 +72,18 @@ pub struct CellContext {
     /// sequential execution or when the wave context is not available.
     /// Added by #246; wired by #256.
     pub total_waves: Option<u32>,
+    /// Shared service handles injected by the graph engine (#250).
+    ///
+    /// Cells access specific services through typed fields, e.g.
+    /// `ctx.resources.gates` for gate evaluation.
+    pub resources: CellResources,
 }
 
 impl CellContext {
     /// Construct a new `CellContext` with no trace or budget info.
     #[must_use]
-    pub const fn new() -> Self {
+    #[must_use]
+    pub fn new() -> Self {
         Self {
             trace_id: None,
             run_id: None,
@@ -66,6 +94,7 @@ impl CellContext {
             capabilities: None,
             wave_index: None,
             total_waves: None,
+            resources: CellResources::default(),
         }
     }
 
@@ -138,6 +167,13 @@ impl CellContext {
     #[must_use]
     pub fn with_capabilities(mut self, capabilities: roko_core::CapabilitySet) -> Self {
         self.capabilities = Some(capabilities);
+        self
+    }
+
+    /// Builder: attach shared service resources.
+    #[must_use]
+    pub fn with_resources(mut self, resources: CellResources) -> Self {
+        self.resources = resources;
         self
     }
 }

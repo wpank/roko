@@ -707,19 +707,35 @@ pub async fn run_with_workflow_engine(
         &roko_core::config::loader::LoadOptions::acp(),
     )
     .unwrap_or_default();
-    let services = ServiceFactory::build(ServiceConfig {
-        workdir: workdir.to_path_buf(),
-        roko_dir: workdir.join(".roko"),
-        workspace_config: roko_config,
-        model_key: Some(options.model_key),
-        mcp_config: options.mcp_config,
-        feedback_enabled: true,
-        affect_enabled: false,
-        cascade_enabled: true,
-        run_id: Some(format!("acp_workflow_{session_id}")),
-        inference_observer: None,
-        metrics: None,
-    })
+
+    // #245: Build RuntimeServices via RuntimeServicesBuilder, then share
+    // handles with ServiceFactory instead of constructing them twice.
+    let builder_overrides = roko_execution::overrides::ExecutionOverrides::default();
+    let roko_config_arc = std::sync::Arc::new(roko_config.clone());
+    let runtime_services = roko_execution::RuntimeServicesBuilder::from_config(
+        &roko_config_arc,
+        roko_execution::profiles::RuntimeProfile::Workflow,
+        builder_overrides,
+    )
+    .build(workdir)
+    .map_err(|e| anyhow::anyhow!("RuntimeServicesBuilder: {e}"))?;
+
+    let services = ServiceFactory::build_with_runtime_services(
+        ServiceConfig {
+            workdir: workdir.to_path_buf(),
+            roko_dir: workdir.join(".roko"),
+            workspace_config: roko_config,
+            model_key: Some(options.model_key),
+            mcp_config: options.mcp_config,
+            feedback_enabled: true,
+            affect_enabled: false,
+            cascade_enabled: true,
+            run_id: Some(format!("acp_workflow_{session_id}")),
+            inference_observer: None,
+            metrics: None,
+        },
+        &runtime_services,
+    )
     .map_err(|error| anyhow::anyhow!("build workflow services: {error}"))?
     .effect_services();
 

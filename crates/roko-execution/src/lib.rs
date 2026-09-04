@@ -27,6 +27,7 @@
 //! - [`prompt`] -- Layer-3 prompt assembly handles and cache.
 //! - [`replan_controller`] -- Durable Graph gate-failure replan controller.
 //! - [`runtime_services`] -- Non-plan service construction for workflow/chat/ACP.
+//! - [`plan_generator`] -- Shared PlanGenerator trait and value types (#280).
 //! - [`workflow`] -- Workflow graph cells and templates.
 
 pub mod builder;
@@ -38,6 +39,7 @@ pub mod guards;
 pub mod lifecycle;
 pub mod observation;
 pub mod overrides;
+pub mod plan_generator;
 pub mod profiles;
 pub mod prompt;
 pub mod replan_controller;
@@ -82,5 +84,9 @@ pub use extensions::ExtensionsBundle;
 pub use guards::{CostLedger, GuardsBundle};
 pub use observation::{ObservationBundle, ObservationPublisher};
 pub use overrides::ExecutionOverrides as DetailedExecutionOverrides;
+pub use plan_generator::{
+    PlanGenError, PlanGenerator, PlanGeneratorAdapter, PlanGeneratorOutcome,
+    PlanGeneratorOverrides, PlanGeneratorRequest, PlanSource, ValidatedPlan, ValidationEvidence,
+};
 pub use prompt::builder::PromptBuildHandle;
 pub use prompt::cache::PromptCacheHandle;

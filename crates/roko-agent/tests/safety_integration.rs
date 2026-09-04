@@ -93,7 +93,10 @@ async fn bash_rm_rf_blocked_by_dispatcher() {
                 "error should mention the denied pattern, got: {msg}"
             );
         }
-        other => panic!("expected CommandNotAllowed, got {other:?}"),
+        // The tool selector (TOOL-03) may reject `bash` before the command
+        // allowlist runs; either denial is a correct safety outcome.
+        ToolResult::Err(ToolError::PermissionDenied(_)) => {}
+        other => panic!("expected CommandNotAllowed or PermissionDenied, got {other:?}"),
     }
 }
 
@@ -129,7 +132,10 @@ async fn run_tests_rm_rf_blocked_by_dispatcher() {
                 "error should mention the denied pattern, got: {msg}"
             );
         }
-        other => panic!("expected CommandNotAllowed, got {other:?}"),
+        // The tool selector (TOOL-03) may reject `run_tests` before the
+        // command allowlist runs; either denial is a correct safety outcome.
+        ToolResult::Err(ToolError::PermissionDenied(_)) => {}
+        other => panic!("expected CommandNotAllowed or PermissionDenied, got {other:?}"),
     }
 }
 

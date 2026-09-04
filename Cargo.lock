@@ -6882,6 +6882,7 @@ dependencies = [
  "roko-core",
  "roko-daimon",
  "roko-dreams",
+ "roko-execution",
  "roko-fs",
  "roko-gate",
  "roko-gateway",

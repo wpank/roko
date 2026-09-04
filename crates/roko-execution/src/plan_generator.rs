@@ -1,0 +1,655 @@
+//! Shared `PlanGenerator` service contract (#280).
+//!
+//! This module defines the neutral trait and value types for plan generation.
+//! The trait lives at layer 3 (`roko-execution`) so that CLI, serve, and ACP
+//! callers can depend on the same contract without pulling in CLI internals.
+//!
+//! The canonical `DefaultPlanGenerator` implementation lives in `roko-cli`
+//! where it can use CLI-internal validation helpers (`PlanTemplateKind`,
+//! `repair_toml`, `TasksFile`, `PlanExecutionPolicy`).
+//!
+//! # Call-site manifest
+//!
+//! See [`adapter_keys`] for the canonical list of call sites that will be
+//! migrated by #283.
+
+use std::path::{Path, PathBuf};
+
+use async_trait::async_trait;
+use roko_learn::runtime_feedback::{ArtifactValidationReport, GenerationOutcome};
+use serde::{Deserialize, Serialize};
+
+// ---------------------------------------------------------------------------
+// Call-site manifest (§ "Mechanical Call-Site Manifest" from #280)
+// ---------------------------------------------------------------------------
+
+/// Each row from the #280 manifest. Callers reference these keys to identify
+/// themselves when building adapter implementations for #283.
+pub mod adapter_keys {
+    /// `prd.rs::generate_plan_from_prd` — default PRD path.
+    pub const PRD_DEFAULT: &str = "prd_default";
+    /// `generate_plan_from_prd_with_model` — PRD + explicit model override.
+    pub const PRD_MODEL: &str = "prd_model";
+    /// `generate_plan_from_prd_with_failure_context` — PRD + gate-failure context.
+    pub const PRD_REPLAN: &str = "prd_replan";
+    /// `commands/plan.rs` — plan generate from prompt or file.
+    pub const PLAN_GENERATE: &str = "plan_generate";
+    /// `commands/do_cmd.rs` — direct plan-generation path.
+    pub const DO_STANDARD: &str = "do_standard";
+    /// `do_cmd.rs` — PRD-first path.
+    pub const DO_COMPLEX: &str = "do_complex";
+    /// `serve_runtime.rs::generate_plan_from_prd` (CLI-side).
+    pub const CLI_SERVE_RUNTIME: &str = "cli_serve_runtime";
+    /// `roko-serve/src/runtime.rs::generate_plan_from_prd` + `job_runner.rs`.
+    pub const SERVE_RUNTIME: &str = "serve_runtime";
+    /// `roko-serve/src/routes/plans.rs::generate_plan`.
+    pub const SERVE_HTTP: &str = "serve_http";
+    /// `runner/event_loop.rs::build_gate_failure_plan_revision` —
+    /// owned by #252/#275, never a direct provider call after migration.
+    pub const GATE_REPLAN: &str = "gate_replan";
+}
+
+// ---------------------------------------------------------------------------
+// PlanSource
+// ---------------------------------------------------------------------------
+
+/// Where the generation request originates.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PlanSource {
+    /// Generated from a published PRD file.
+    Prd {
+        /// PRD slug (used as plan directory name).
+        slug: String,
+        /// Path to the PRD markdown file.
+        prd_path: PathBuf,
+    },
+    /// Generated from a user-supplied prompt string.
+    Prompt {
+        /// Freeform prompt text.
+        prompt: String,
+    },
+    /// Generated from a local file (notes, spec, etc.).
+    File {
+        /// Path to the source file.
+        path: PathBuf,
+    },
+    /// Replan: previous generation failed and this is a corrective pass.
+    Replan {
+        /// Original PRD slug.
+        slug: String,
+        /// Path to the PRD file.
+        prd_path: PathBuf,
+        /// Failure context injected into the system prompt.
+        failure_context: String,
+    },
+}
+
+impl PlanSource {
+    /// Canonical slug for plan directory naming.
+    #[must_use]
+    pub fn slug(&self) -> &str {
+        match self {
+            Self::Prd { slug, .. } | Self::Replan { slug, .. } => slug,
+            Self::Prompt { .. } => "prompt",
+            Self::File { path } => path.file_stem().and_then(|s| s.to_str()).unwrap_or("file"),
+        }
+    }
+
+    /// Whether this source carries failure context for replanning.
+    #[must_use]
+    pub fn has_failure_context(&self) -> bool {
+        matches!(self, Self::Replan { .. })
+    }
+
+    /// Failure context text, if present.
+    #[must_use]
+    pub fn failure_context(&self) -> Option<&str> {
+        match self {
+            Self::Replan {
+                failure_context, ..
+            } => Some(failure_context.as_str()),
+            _ => None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Request / Overrides
+// ---------------------------------------------------------------------------
+
+/// Model/role/tool-policy overrides the caller can supply.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PlanGeneratorOverrides {
+    /// Explicit model key (skips cascade routing selection).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Override the default `"strategist"` role.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    /// Allowed tools for the generation agent (comma-separated).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_tools: Option<String>,
+    /// Plan template kind override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
+    /// Maximum USD budget for the generation call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_usd: Option<f64>,
+    /// Maximum repair/retry attempts (defaults to [`DEFAULT_REPAIR_CAP`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repair_cap: Option<u32>,
+}
+
+/// The canonical input to [`PlanGenerator::generate`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanGeneratorRequest {
+    /// Where the plan content originates.
+    pub source: PlanSource,
+    /// Workspace root directory.
+    pub workdir: PathBuf,
+    /// Caller-specific adapter key from [`adapter_keys`].
+    pub adapter_key: String,
+    /// Optional overrides for model, role, tools, template, budget.
+    #[serde(default)]
+    pub overrides: PlanGeneratorOverrides,
+    /// Whether this is a dry-run (no persistence).
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Validation evidence
+// ---------------------------------------------------------------------------
+
+/// Validation evidence produced by the extraction pipeline.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidationEvidence {
+    /// Number of TOML extraction attempts.
+    pub extraction_attempts: u32,
+    /// Whether model escalation was triggered.
+    pub model_escalated: bool,
+    /// Final model used for generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_model: Option<String>,
+    /// Repair operations applied to the TOML.
+    pub repairs_applied: Vec<String>,
+    /// Policy violations detected (may be empty if all passed).
+    pub policy_violations: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Outcome
+// ---------------------------------------------------------------------------
+
+/// The normalized outcome from a generation request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanGeneratorOutcome {
+    /// The validated tasks.toml content (absent on total failure).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tasks_toml: Option<String>,
+    /// Optional plan.md narrative content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_md: Option<String>,
+    /// Slug used for the plan directory.
+    pub slug: String,
+    /// Generation outcome (process + artifact status).
+    pub outcome: GenerationOutcome,
+    /// Validation evidence from the extraction pipeline.
+    pub evidence: ValidationEvidence,
+    /// Task count in the generated plan (0 on failure).
+    pub task_count: usize,
+    /// Estimated complexity label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_complexity: Option<String>,
+    /// Provenance: which adapter key triggered this generation.
+    pub adapter_key: String,
+}
+
+impl PlanGeneratorOutcome {
+    /// True only when generation produced a valid, policy-conforming plan.
+    #[must_use]
+    pub fn is_success(&self) -> bool {
+        self.tasks_toml.is_some() && self.outcome.fully_successful()
+    }
+
+    /// True when the process ran but the artifact failed validation.
+    #[must_use]
+    pub fn is_partial(&self) -> bool {
+        self.outcome.process_success && !self.outcome.artifact_valid
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Adapter trait (host callback contract for #283)
+// ---------------------------------------------------------------------------
+
+/// Contract that each call-site adapter implements for #283.
+///
+/// The `PlanGenerator` service owns generation, repair, validation, and
+/// normalized outcome. Each adapter owns:
+/// - Source loading and authorization
+/// - Persistence destination
+/// - Execution trigger
+/// - User rendering / progress reporting
+///
+/// This trait is object-safe so adapters can be boxed.
+pub trait PlanGeneratorAdapter: Send + Sync {
+    /// Adapter key from [`adapter_keys`].
+    fn adapter_key(&self) -> &str;
+
+    /// Persist the generated plan to disk or storage.
+    ///
+    /// Called only when the outcome contains valid `tasks_toml`.
+    /// Returns the path where the plan was written.
+    fn persist(&self, outcome: &PlanGeneratorOutcome, workdir: &Path) -> anyhow::Result<PathBuf>;
+
+    /// Optional post-generation execution trigger.
+    ///
+    /// Called after successful persistence. Adapters that auto-execute plans
+    /// implement this; others return `Ok(())`.
+    fn on_persisted(
+        &self,
+        _outcome: &PlanGeneratorOutcome,
+        _plan_path: &Path,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Report progress or status to the user.
+    ///
+    /// Called at various stages of generation for adapters that render UI.
+    fn report(&self, _message: &str) {}
+}
+
+// ---------------------------------------------------------------------------
+// Default repair cap
+// ---------------------------------------------------------------------------
+
+/// Default maximum repair/extraction retry attempts.
+pub const DEFAULT_REPAIR_CAP: u32 = 2;
+
+// ---------------------------------------------------------------------------
+// PlanGenerator trait
+// ---------------------------------------------------------------------------
+
+/// Plan generation errors.
+#[derive(Debug, thiserror::Error)]
+pub enum PlanGenError {
+    /// TOML extraction/validation failed after all repair attempts.
+    #[error("plan validation failed: {reason}")]
+    ValidationFailed { reason: String },
+    /// Provider dispatch failed.
+    #[error("provider dispatch failed: {0}")]
+    DispatchFailed(#[from] anyhow::Error),
+    /// Budget exceeded.
+    #[error("budget exceeded: spent ${spent_usd:.4} of ${budget_usd:.4} limit")]
+    BudgetExceeded { spent_usd: f64, budget_usd: f64 },
+}
+
+/// The shared plan-generation service trait.
+///
+/// Implementors encapsulate the extract-validate-repair pipeline that all
+/// callers share. The trait does NOT execute, persist, or render — those are
+/// adapter responsibilities.
+///
+/// The canonical implementation (`DefaultPlanGenerator`) lives in `roko-cli`.
+#[async_trait]
+pub trait PlanGenerator: Send + Sync {
+    /// Generate a plan from the given request.
+    ///
+    /// Returns a normalized outcome with validation evidence. On success the
+    /// outcome contains validated `tasks_toml`; on failure the outcome
+    /// records the error details.
+    async fn generate(
+        &self,
+        request: &PlanGeneratorRequest,
+    ) -> Result<PlanGeneratorOutcome, PlanGenError>;
+
+    /// Validate raw agent output without running a full generation.
+    ///
+    /// Useful for testing and for callers that already have agent output.
+    fn validate_raw(
+        &self,
+        raw_output: &str,
+        slug: &str,
+        template_hint: Option<&str>,
+    ) -> Result<ValidatedPlan, String>;
+
+    /// Return the next-tier model for escalation on validation failures.
+    ///
+    /// Returns `None` if escalation is disabled, the current model is at the
+    /// highest tier, or no configured model is available at a higher tier.
+    fn next_escalation_model(&self, current: Option<&str>) -> Option<String>;
+
+    /// Effective repair cap from overrides or default.
+    fn effective_repair_cap(&self, overrides: &PlanGeneratorOverrides) -> u32 {
+        overrides.repair_cap.unwrap_or(DEFAULT_REPAIR_CAP)
+    }
+}
+
+/// Intermediate result from plan validation.
+#[derive(Debug, Clone)]
+pub struct ValidatedPlan {
+    /// The validated and repaired TOML content.
+    pub tasks_toml: String,
+    /// Optional plan.md narrative.
+    pub plan_md: Option<String>,
+    /// Number of tasks in the plan.
+    pub task_count: usize,
+    /// Repairs applied during validation.
+    pub repairs: Vec<String>,
+    /// Policy violations (empty if all passed).
+    pub policy_violations: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Outcome constructors
+// ---------------------------------------------------------------------------
+
+/// Build a [`PlanGeneratorOutcome`] for a successful generation.
+#[must_use]
+pub fn success_outcome(
+    request: &PlanGeneratorRequest,
+    validated: ValidatedPlan,
+    evidence: ValidationEvidence,
+    validation_report: Option<ArtifactValidationReport>,
+) -> PlanGeneratorOutcome {
+    PlanGeneratorOutcome {
+        tasks_toml: Some(validated.tasks_toml),
+        plan_md: validated.plan_md,
+        slug: request.source.slug().to_string(),
+        outcome: GenerationOutcome {
+            process_success: true,
+            artifact_valid: true,
+            validation_report,
+        },
+        evidence,
+        task_count: validated.task_count,
+        estimated_complexity: None,
+        adapter_key: request.adapter_key.clone(),
+    }
+}
+
+/// Build a [`PlanGeneratorOutcome`] for a failed generation.
+#[must_use]
+pub fn failure_outcome(
+    request: &PlanGeneratorRequest,
+    evidence: ValidationEvidence,
+) -> PlanGeneratorOutcome {
+    PlanGeneratorOutcome {
+        tasks_toml: None,
+        plan_md: None,
+        slug: request.source.slug().to_string(),
+        outcome: GenerationOutcome {
+            process_success: false,
+            artifact_valid: false,
+            validation_report: None,
+        },
+        evidence,
+        task_count: 0,
+        estimated_complexity: None,
+        adapter_key: request.adapter_key.clone(),
+    }
+}
+
+/// Build a [`PlanGeneratorOutcome`] for a partial success (process ran but
+/// artifact validation failed).
+#[must_use]
+pub fn partial_outcome(
+    request: &PlanGeneratorRequest,
+    evidence: ValidationEvidence,
+) -> PlanGeneratorOutcome {
+    PlanGeneratorOutcome {
+        tasks_toml: None,
+        plan_md: None,
+        slug: request.source.slug().to_string(),
+        outcome: GenerationOutcome {
+            process_success: true,
+            artifact_valid: false,
+            validation_report: None,
+        },
+        evidence,
+        task_count: 0,
+        estimated_complexity: None,
+        adapter_key: request.adapter_key.clone(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- PlanSource tests ----
+
+    #[test]
+    fn plan_source_prd_slug() {
+        let source = PlanSource::Prd {
+            slug: "my-feature".to_string(),
+            prd_path: PathBuf::from("/tmp/prd.md"),
+        };
+        assert_eq!(source.slug(), "my-feature");
+        assert!(!source.has_failure_context());
+        assert!(source.failure_context().is_none());
+    }
+
+    #[test]
+    fn plan_source_prompt_slug() {
+        let source = PlanSource::Prompt {
+            prompt: "build a widget".to_string(),
+        };
+        assert_eq!(source.slug(), "prompt");
+    }
+
+    #[test]
+    fn plan_source_file_slug() {
+        let source = PlanSource::File {
+            path: PathBuf::from("/tmp/my-notes.md"),
+        };
+        assert_eq!(source.slug(), "my-notes");
+    }
+
+    #[test]
+    fn plan_source_replan_has_failure_context() {
+        let source = PlanSource::Replan {
+            slug: "my-feature".to_string(),
+            prd_path: PathBuf::from("/tmp/prd.md"),
+            failure_context: "gate failure on T2".to_string(),
+        };
+        assert_eq!(source.slug(), "my-feature");
+        assert!(source.has_failure_context());
+        assert_eq!(source.failure_context(), Some("gate failure on T2"));
+    }
+
+    // ---- PlanGeneratorOutcome tests ----
+
+    fn make_evidence() -> ValidationEvidence {
+        ValidationEvidence {
+            extraction_attempts: 1,
+            model_escalated: false,
+            final_model: None,
+            repairs_applied: vec![],
+            policy_violations: vec![],
+        }
+    }
+
+    #[test]
+    fn outcome_success_requires_toml_and_valid_outcome() {
+        let outcome = PlanGeneratorOutcome {
+            tasks_toml: Some("[meta]\nplan = \"test\"\n".to_string()),
+            plan_md: None,
+            slug: "test".to_string(),
+            outcome: GenerationOutcome {
+                process_success: true,
+                artifact_valid: true,
+                validation_report: None,
+            },
+            evidence: make_evidence(),
+            task_count: 2,
+            estimated_complexity: None,
+            adapter_key: "test".to_string(),
+        };
+        assert!(outcome.is_success());
+        assert!(!outcome.is_partial());
+    }
+
+    #[test]
+    fn outcome_partial_when_process_succeeded_but_artifact_invalid() {
+        let outcome = PlanGeneratorOutcome {
+            tasks_toml: None,
+            plan_md: None,
+            slug: "test".to_string(),
+            outcome: GenerationOutcome {
+                process_success: true,
+                artifact_valid: false,
+                validation_report: None,
+            },
+            evidence: ValidationEvidence {
+                extraction_attempts: 3,
+                model_escalated: true,
+                final_model: Some("claude-opus-4-6".to_string()),
+                repairs_applied: vec![],
+                policy_violations: vec!["too many tasks".to_string()],
+            },
+            task_count: 0,
+            estimated_complexity: None,
+            adapter_key: "test".to_string(),
+        };
+        assert!(!outcome.is_success());
+        assert!(outcome.is_partial());
+    }
+
+    #[test]
+    fn outcome_failure_when_process_failed() {
+        let outcome = PlanGeneratorOutcome {
+            tasks_toml: None,
+            plan_md: None,
+            slug: "test".to_string(),
+            outcome: GenerationOutcome {
+                process_success: false,
+                artifact_valid: false,
+                validation_report: None,
+            },
+            evidence: make_evidence(),
+            task_count: 0,
+            estimated_complexity: None,
+            adapter_key: "test".to_string(),
+        };
+        assert!(!outcome.is_success());
+        assert!(!outcome.is_partial());
+    }
+
+    // ---- Outcome constructor tests ----
+
+    fn make_request(adapter_key: &str) -> PlanGeneratorRequest {
+        PlanGeneratorRequest {
+            source: PlanSource::Prd {
+                slug: "test-slug".to_string(),
+                prd_path: PathBuf::from("/tmp/test.md"),
+            },
+            workdir: PathBuf::from("/tmp/workspace"),
+            adapter_key: adapter_key.to_string(),
+            overrides: PlanGeneratorOverrides::default(),
+            dry_run: false,
+        }
+    }
+
+    #[test]
+    fn success_outcome_has_toml_and_valid_flags() {
+        let request = make_request("prd_default");
+        let validated = ValidatedPlan {
+            tasks_toml: "[meta]\nplan = \"test-slug\"\n".to_string(),
+            plan_md: Some("# Plan".to_string()),
+            task_count: 3,
+            repairs: vec!["fixed slug".to_string()],
+            policy_violations: vec![],
+        };
+        let evidence = make_evidence();
+        let outcome = success_outcome(&request, validated, evidence, None);
+        assert!(outcome.is_success());
+        assert_eq!(outcome.task_count, 3);
+        assert_eq!(outcome.slug, "test-slug");
+        assert_eq!(outcome.adapter_key, "prd_default");
+        assert!(outcome.plan_md.is_some());
+    }
+
+    #[test]
+    fn failure_outcome_has_no_toml() {
+        let request = make_request("do_standard");
+        let evidence = make_evidence();
+        let outcome = failure_outcome(&request, evidence);
+        assert!(!outcome.is_success());
+        assert!(!outcome.is_partial());
+        assert!(outcome.tasks_toml.is_none());
+        assert_eq!(outcome.adapter_key, "do_standard");
+    }
+
+    #[test]
+    fn partial_outcome_process_success_artifact_invalid() {
+        let request = make_request("serve_http");
+        let evidence = make_evidence();
+        let outcome = partial_outcome(&request, evidence);
+        assert!(!outcome.is_success());
+        assert!(outcome.is_partial());
+        assert!(outcome.tasks_toml.is_none());
+    }
+
+    // ---- Default repair cap ----
+
+    #[test]
+    fn default_repair_cap_is_two() {
+        assert_eq!(DEFAULT_REPAIR_CAP, 2);
+    }
+
+    #[test]
+    fn overrides_repair_cap_overrides_default() {
+        let overrides = PlanGeneratorOverrides {
+            repair_cap: Some(5),
+            ..Default::default()
+        };
+        assert_eq!(overrides.repair_cap.unwrap_or(DEFAULT_REPAIR_CAP), 5);
+    }
+
+    // ---- Adapter keys completeness ----
+
+    #[test]
+    fn adapter_keys_are_nonempty_and_unique() {
+        let keys = [
+            adapter_keys::PRD_DEFAULT,
+            adapter_keys::PRD_MODEL,
+            adapter_keys::PRD_REPLAN,
+            adapter_keys::PLAN_GENERATE,
+            adapter_keys::DO_STANDARD,
+            adapter_keys::DO_COMPLEX,
+            adapter_keys::CLI_SERVE_RUNTIME,
+            adapter_keys::SERVE_RUNTIME,
+            adapter_keys::SERVE_HTTP,
+            adapter_keys::GATE_REPLAN,
+        ];
+        let mut seen = std::collections::HashSet::new();
+        for key in &keys {
+            assert!(!key.is_empty(), "adapter key must not be empty");
+            assert!(seen.insert(*key), "duplicate adapter key: {key}");
+        }
+        assert_eq!(keys.len(), 10, "expected 10 adapter keys from manifest");
+    }
+
+    // ---- PlanGenError display ----
+
+    #[test]
+    fn plan_gen_error_display() {
+        let err = PlanGenError::ValidationFailed {
+            reason: "missing [meta]".to_string(),
+        };
+        assert!(err.to_string().contains("missing [meta]"));
+
+        let err = PlanGenError::BudgetExceeded {
+            spent_usd: 1.5,
+            budget_usd: 1.0,
+        };
+        assert!(err.to_string().contains("1.5"));
+    }
+}

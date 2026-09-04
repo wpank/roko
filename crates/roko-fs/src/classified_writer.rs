@@ -46,8 +46,11 @@ pub struct ClassifiedTranscriptWriter {
 /// Statistics from the writer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WriterStats {
+    /// Total classified records written to disk.
     pub records_written: u64,
+    /// Highest transcript sequence number flushed so far.
     pub flushed_through: u64,
+    /// Number of write errors encountered.
     pub write_errors: u64,
 }
 
@@ -475,6 +478,7 @@ mod tests {
             TranscriptEvent::Warning { .. } => "warning",
             TranscriptEvent::Error { .. } => "error",
             TranscriptEvent::RunFinished { .. } => "run_finished",
+            _ => "unknown",
         }
     }
 }

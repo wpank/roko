@@ -727,6 +727,142 @@ pub trait GateRunner: Send + Sync {
     async fn run_gates(&self, config: GateConfig) -> Result<GateReport>;
 }
 
+// -- Shared gate evaluation contract (#250) --
+
+/// Request for a single gate rung evaluation, shared between Runner-v2 and Graph.
+///
+/// This is the executor-neutral contract consumed by `GatePipelineCell` via
+/// `CellContext.resources.gates`. It carries only the data needed to evaluate
+/// one rung — the caller is responsible for orchestrating multi-rung pipelines.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SharedGateRequest {
+    /// Task identifier within the plan.
+    pub task_id: String,
+    /// Attempt number (0-based).
+    pub attempt_id: u32,
+    /// Which rung to evaluate (canonical name: "compile", "lint", "test", etc.).
+    pub rung: String,
+    /// Plan directory (for locating authored verify steps).
+    #[serde(default)]
+    pub plan_dir: String,
+    /// Root workspace / worktree path where gates execute.
+    pub worktree_path: PathBuf,
+    /// Files changed by the task (relative to workspace root).
+    #[serde(default)]
+    pub changed_files: Vec<String>,
+    /// Opaque task context for diagnostic enrichment.
+    #[serde(default)]
+    pub context: std::collections::HashMap<String, String>,
+}
+
+/// Verdict from a single gate rung evaluation.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SharedGateVerdict {
+    /// Which rung was evaluated.
+    pub rung: String,
+    /// Whether the rung passed.
+    pub passed: bool,
+    /// Whether the rung was skipped (not counted as pass or fail).
+    #[serde(default)]
+    pub skipped: bool,
+    /// Reasons the rung failed (empty when passed or skipped).
+    #[serde(default)]
+    pub failed_reasons: Vec<String>,
+    /// Bounded diagnostic evidence.
+    #[serde(default)]
+    pub evidence: Option<String>,
+    /// Cost of this evaluation in micro-USD (1 USD = 1_000_000).
+    #[serde(default)]
+    pub cost_micro_usd: u64,
+}
+
+impl SharedGateVerdict {
+    /// Convenience: create a passing verdict.
+    #[must_use]
+    pub fn pass(rung: impl Into<String>) -> Self {
+        Self {
+            rung: rung.into(),
+            passed: true,
+            skipped: false,
+            failed_reasons: Vec::new(),
+            evidence: None,
+            cost_micro_usd: 0,
+        }
+    }
+
+    /// Convenience: create a failing verdict.
+    #[must_use]
+    pub fn fail(rung: impl Into<String>, reasons: Vec<String>) -> Self {
+        Self {
+            rung: rung.into(),
+            passed: false,
+            skipped: false,
+            failed_reasons: reasons,
+            evidence: None,
+            cost_micro_usd: 0,
+        }
+    }
+
+    /// Convenience: create a skipped verdict.
+    #[must_use]
+    pub fn skip(rung: impl Into<String>) -> Self {
+        Self {
+            rung: rung.into(),
+            passed: false,
+            skipped: true,
+            failed_reasons: Vec::new(),
+            evidence: None,
+            cost_micro_usd: 0,
+        }
+    }
+
+    /// Builder: attach evidence.
+    #[must_use]
+    pub fn with_evidence(mut self, evidence: impl Into<String>) -> Self {
+        self.evidence = Some(evidence.into());
+        self
+    }
+
+    /// Builder: set cost.
+    #[must_use]
+    pub const fn with_cost(mut self, cost_micro_usd: u64) -> Self {
+        self.cost_micro_usd = cost_micro_usd;
+        self
+    }
+}
+
+/// Errors from shared gate evaluation.
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum SharedGateError {
+    /// The requested rung is not recognized.
+    #[error("unknown rung: {rung}")]
+    UnknownRung { rung: String },
+    /// The evaluation timed out.
+    #[error("gate evaluation timed out after {timeout_secs}s")]
+    Timeout { timeout_secs: u64 },
+    /// The evaluation was cancelled.
+    #[error("gate evaluation cancelled")]
+    Cancelled,
+    /// An internal error during evaluation.
+    #[error("gate evaluation error: {reason}")]
+    Internal { reason: String },
+}
+
+/// Shared gate evaluator trait consumed by `GatePipelineCell` via
+/// `CellContext.resources.gates`.
+///
+/// This is the executor-neutral contract that both Runner-v2 and Graph can use.
+/// The `DefaultGateService` in `roko-gate` wraps `GatePipelineBuilder` to
+/// provide the production implementation.
+#[async_trait]
+pub trait SharedGateEvaluator: Send + Sync + 'static {
+    /// Evaluate a single gate rung for the given request.
+    async fn verify_rung(
+        &self,
+        request: &SharedGateRequest,
+    ) -> std::result::Result<SharedGateVerdict, SharedGateError>;
+}
+
 // -- EventConsumer --
 
 /// Consume RuntimeEvents for side-effects (logging, UI updates, etc).

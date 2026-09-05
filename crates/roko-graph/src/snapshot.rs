@@ -302,12 +302,7 @@ impl ExtensionRegistry {
     /// Register an extension namespace.
     ///
     /// `namespace_key` must be in `<namespace>@<version>` format.
-    pub fn register(
-        &mut self,
-        namespace_key: &str,
-        required: bool,
-        owner: &str,
-    ) {
+    pub fn register(&mut self, namespace_key: &str, required: bool, owner: &str) {
         self.known.insert(
             namespace_key.to_string(),
             ExtensionMeta {
@@ -331,7 +326,10 @@ impl ExtensionRegistry {
     }
 
     /// Look up a reconciler for a namespace.
-    pub fn reconciler(&self, namespace: &str) -> Option<&(dyn Fn(&[u8]) -> ReconcileAction + Send + Sync)> {
+    pub fn reconciler(
+        &self,
+        namespace: &str,
+    ) -> Option<&(dyn Fn(&[u8]) -> ReconcileAction + Send + Sync)> {
         self.reconcilers.get(namespace).map(|b| b.as_ref())
     }
 
@@ -608,8 +606,7 @@ mod tests {
         };
 
         let json = serde_json::to_string(&snap).expect("serialize");
-        let deserialized: GraphSnapshotV2 =
-            serde_json::from_str(&json).expect("deserialize");
+        let deserialized: GraphSnapshotV2 = serde_json::from_str(&json).expect("deserialize");
 
         assert_eq!(deserialized.schema_version, GRAPH_SNAPSHOT_SCHEMA_VERSION);
         assert_eq!(deserialized.graph_fingerprint, "abc123");
@@ -635,8 +632,7 @@ mod tests {
             }
         });
 
-        let snap: GraphSnapshotV2 =
-            serde_json::from_value(json).expect("deserialize old format");
+        let snap: GraphSnapshotV2 = serde_json::from_value(json).expect("deserialize old format");
 
         assert_eq!(snap.schema_version, GRAPH_SNAPSHOT_SCHEMA_VERSION);
         assert!(snap.graph_fingerprint.is_empty());
@@ -748,8 +744,7 @@ mod tests {
             }),
         };
         let json = serde_json::to_string(&ext).expect("serialize");
-        let roundtripped: CheckpointExtension =
-            serde_json::from_str(&json).expect("deserialize");
+        let roundtripped: CheckpointExtension = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(roundtripped.value, ext.value);
     }
 
@@ -801,8 +796,8 @@ mod tests {
         assert!(entry.evidence_ref.is_none());
 
         // Commit
-        let entry = commit_receipt(&mut receipts, &key, Some("sha256:abc".into()), 2000)
-            .expect("commit");
+        let entry =
+            commit_receipt(&mut receipts, &key, Some("sha256:abc".into()), 2000).expect("commit");
         assert_eq!(entry.state, ReceiptState::Committed);
         assert_eq!(entry.evidence_ref.as_deref(), Some("sha256:abc"));
 
@@ -817,13 +812,7 @@ mod tests {
         let key = "dup".to_string();
 
         prepare_receipt(&mut receipts, key.clone(), "a".into(), "c1".into(), 1000);
-        let entry = prepare_receipt(
-            &mut receipts,
-            key.clone(),
-            "b".into(),
-            "c2".into(),
-            2000,
-        );
+        let entry = prepare_receipt(&mut receipts, key.clone(), "b".into(), "c2".into(), 2000);
         // Original owner preserved.
         assert_eq!(entry.owner, "a");
         assert_eq!(entry.correlation_id, "c1");
@@ -836,8 +825,8 @@ mod tests {
 
         prepare_receipt(&mut receipts, key.clone(), "o".into(), "c".into(), 1000);
         commit_receipt(&mut receipts, &key, Some("ev1".into()), 2000).expect("first commit");
-        let entry = commit_receipt(&mut receipts, &key, Some("ev2".into()), 3000)
-            .expect("repeat commit");
+        let entry =
+            commit_receipt(&mut receipts, &key, Some("ev2".into()), 3000).expect("repeat commit");
         // Evidence from first commit preserved.
         assert_eq!(entry.evidence_ref.as_deref(), Some("ev1"));
     }
@@ -893,8 +882,7 @@ mod tests {
             last_error: None,
         };
         let json = serde_json::to_string(&entry).expect("serialize");
-        let restored: ReceiptLedgerEntry =
-            serde_json::from_str(&json).expect("deserialize");
+        let restored: ReceiptLedgerEntry = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(restored, entry);
     }
 

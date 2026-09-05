@@ -488,10 +488,11 @@ mod tests {
         let (state, _, _) = setup();
         let snap = state.snapshot();
         assert_eq!(snap.nodes.len(), 3);
-        assert!(snap
-            .nodes
-            .iter()
-            .all(|n| n.status == GraphNodeStatus::Pending));
+        assert!(
+            snap.nodes
+                .iter()
+                .all(|n| n.status == GraphNodeStatus::Pending)
+        );
         assert_eq!(snap.run_id.as_deref(), Some("run-1"));
         assert_eq!(snap.graph_fingerprint, "fp-abc");
     }

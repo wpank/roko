@@ -29,26 +29,15 @@
 //! let report = runner::run(plans, &config, &state_hub, cancel).await?;
 //! ```
 
-pub mod agent_events;
+// ── Public modules (callers outside runner/) ──────────────────────────────
 pub mod agent_stream;
-pub mod attempt_ownership;
-pub mod branch_cleanup;
-pub(crate) mod cargo_command;
 pub mod conductor_adapter;
-pub mod control_adapter;
-pub mod deadlines;
 pub mod event_loop;
 pub mod extension_loader;
 pub mod extension_registry;
-pub mod gate_adapter;
 pub mod gate_dispatch;
-pub(crate) mod gate_input;
-pub mod gate_oracles;
-pub(crate) mod gate_report;
-pub mod github_workflow;
 pub mod graph_tui_bridge;
 pub mod impact_analysis;
-pub mod inline_output;
 pub mod merge;
 pub mod output_sink;
 pub mod persist;
@@ -56,12 +45,8 @@ pub mod plan_dag;
 pub mod plan_loader;
 pub mod preflight;
 pub mod projection;
-pub mod prompt_experiments;
 pub mod queue_manifest;
-pub(crate) mod reflex;
 pub mod resume;
-pub mod screenshot_collector;
-pub mod snapshot_writer;
 pub mod sse_stream;
 pub mod state;
 pub mod status_file;
@@ -69,6 +54,24 @@ pub mod structured_log;
 pub mod task_dag;
 pub mod tui_bridge;
 pub mod types;
+
+// ── Runner-internal modules (no callers outside runner/) ──────────────────
+pub(crate) mod agent_events;
+pub(crate) mod attempt_ownership;
+pub(crate) mod branch_cleanup;
+pub(crate) mod cargo_command;
+pub(crate) mod control_adapter;
+pub(crate) mod deadlines;
+pub(crate) mod gate_adapter;
+pub(crate) mod gate_input;
+pub(crate) mod gate_oracles;
+pub(crate) mod gate_report;
+pub(crate) mod github_workflow;
+pub(crate) mod inline_output;
+pub(crate) mod prompt_experiments;
+pub(crate) mod reflex;
+pub(crate) mod screenshot_collector;
+pub(crate) mod snapshot_writer;
 mod wasm_extension;
 
 // Re-export the primary entry points.

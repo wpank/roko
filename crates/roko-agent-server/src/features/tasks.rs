@@ -10,7 +10,9 @@ use axum::{
     routing::{get, post},
 };
 
-use crate::state::{AgentState, CreateTaskRequest, CreateTaskResult, TaskCompletionRequest, TaskEntry};
+use crate::state::{
+    AgentState, CreateTaskRequest, CreateTaskResult, TaskCompletionRequest, TaskEntry,
+};
 
 /// Task routes.
 pub fn router() -> Router<Arc<AgentState>> {
@@ -29,8 +31,12 @@ async fn create_task(
     Json(request): Json<CreateTaskRequest>,
 ) -> impl IntoResponse {
     match state.create_task(request).await {
-        CreateTaskResult::Created(task) => (StatusCode::CREATED, Json(serde_json::json!(task))).into_response(),
-        CreateTaskResult::Duplicate(task) => (StatusCode::OK, Json(serde_json::json!(task))).into_response(),
+        CreateTaskResult::Created(task) => {
+            (StatusCode::CREATED, Json(serde_json::json!(task))).into_response()
+        }
+        CreateTaskResult::Duplicate(task) => {
+            (StatusCode::OK, Json(serde_json::json!(task))).into_response()
+        }
         CreateTaskResult::Conflict => (
             StatusCode::CONFLICT,
             Json(serde_json::json!({

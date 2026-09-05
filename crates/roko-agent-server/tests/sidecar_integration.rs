@@ -185,8 +185,8 @@ fn all_routes() -> Vec<(Method, &'static str, bool)> {
         // Tasks feature
         (Method::GET, "/tasks", false),
         (Method::POST, "/tasks", false),
-        (Method::POST, "/tasks/1/accept", true),     // handler 404 expected
-        (Method::POST, "/tasks/1/complete", true),    // handler 404 expected
+        (Method::POST, "/tasks/1/accept", true), // handler 404 expected
+        (Method::POST, "/tasks/1/complete", true), // handler 404 expected
     ]
 }
 
@@ -628,7 +628,8 @@ async fn task_create_accept_complete_round_trip() {
     assert_eq!(tasks[0]["id"], task_id);
 
     // Accept the task.
-    let (status, accepted) = post_json(&router, &format!("/tasks/{task_id}/accept"), json!({})).await;
+    let (status, accepted) =
+        post_json(&router, &format!("/tasks/{task_id}/accept"), json!({})).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(accepted["state"], "accepted");
 
@@ -713,7 +714,10 @@ async fn message_rejects_empty_prompt() {
         "empty prompt should return a valid response, got {status}"
     );
     if status.is_success() {
-        assert!(body.get("response").is_some(), "success should include response field");
+        assert!(
+            body.get("response").is_some(),
+            "success should include response field"
+        );
     }
 }
 
@@ -795,12 +799,7 @@ async fn research_active_mode_returns_501() {
 #[tokio::test]
 async fn task_create_rejects_empty_title() {
     let router = all_features_router(None);
-    let (status, body) = post_json(
-        &router,
-        "/tasks",
-        json!({ "title": "" }),
-    )
-    .await;
+    let (status, body) = post_json(&router, "/tasks", json!({ "title": "" })).await;
 
     assert_eq!(
         status,
@@ -1060,7 +1059,13 @@ async fn durable_state_persists_tasks_across_server_instances() {
 async fn concurrent_sidecar_reads_all_succeed() {
     let router = all_features_router(None);
 
-    let endpoints = vec!["/health", "/capabilities", "/stats", "/tasks", "/predictions"];
+    let endpoints = vec![
+        "/health",
+        "/capabilities",
+        "/stats",
+        "/tasks",
+        "/predictions",
+    ];
 
     let handles: Vec<_> = endpoints
         .into_iter()
@@ -1094,7 +1099,13 @@ async fn concurrent_sidecar_reads_all_succeed() {
 async fn sidecar_success_responses_have_json_content_type() {
     let router = all_features_router(None);
 
-    let endpoints = ["/health", "/capabilities", "/stats", "/tasks", "/predictions"];
+    let endpoints = [
+        "/health",
+        "/capabilities",
+        "/stats",
+        "/tasks",
+        "/predictions",
+    ];
 
     for endpoint in endpoints {
         let req = Request::builder()

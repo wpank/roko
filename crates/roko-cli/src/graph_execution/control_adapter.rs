@@ -239,11 +239,7 @@ impl GraphExecutionControlAdapter {
                     reason = %reason,
                     "graph control: command rejected"
                 );
-                let ack = ack_for(
-                    cmd,
-                    CommandAckStatus::Rejected,
-                    Some(reason.clone()),
-                );
+                let ack = ack_for(cmd, CommandAckStatus::Rejected, Some(reason.clone()));
                 let _ = self.ack_tx.send(ack).await;
                 GraphCommandEffect::Rejected {
                     reason,
@@ -778,26 +774,8 @@ mod tests {
         let (sender, mut cmd_rx, adapter, _ack_rx) = test_adapter("run-ten");
 
         // Register an approval for the approve/reject tests.
-        let req1 = build_approval_request(
-            "ap-1",
-            "run-ten",
-            "p",
-            "t",
-            "n",
-            0,
-            "cap",
-            "tool",
-        );
-        let req2 = build_approval_request(
-            "ap-2",
-            "run-ten",
-            "p",
-            "t",
-            "n",
-            0,
-            "cap",
-            "tool",
-        );
+        let req1 = build_approval_request("ap-1", "run-ten", "p", "t", "n", 0, "cap", "tool");
+        let req2 = build_approval_request("ap-2", "run-ten", "p", "t", "n", 0, "cap", "tool");
         adapter.control_service().register_approval(req1);
         adapter.control_service().register_approval(req2);
 
@@ -823,12 +801,7 @@ mod tests {
 
         let mut effects = Vec::new();
         for kind in kinds {
-            let cmd = sender.build_command(
-                kind,
-                Some("p".into()),
-                Some("t".into()),
-                None,
-            );
+            let cmd = sender.build_command(kind, Some("p".into()), Some("t".into()), None);
             sender.try_send(cmd).unwrap();
             let received = cmd_rx.recv().await.unwrap();
             effects.push(adapter.process(&received, &["node-1".into()]).await);
@@ -940,7 +913,9 @@ mod tests {
         };
         let effect = adapter.process(&dup_cmd, &[]).await;
 
-        assert!(matches!(effect, GraphCommandEffect::Rejected { reason, .. } if reason == "duplicate command_id"));
+        assert!(
+            matches!(effect, GraphCommandEffect::Rejected { reason, .. } if reason == "duplicate command_id")
+        );
 
         let acks = ack_rx.drain();
         assert_eq!(acks.len(), 2);
@@ -952,14 +927,7 @@ mod tests {
 
         // Register an approval and process a command.
         let req = build_approval_request(
-            "ap-snap",
-            "run-snap",
-            "plan-1",
-            "task-1",
-            "node-1",
-            0,
-            "cap",
-            "tool",
+            "ap-snap", "run-snap", "plan-1", "task-1", "node-1", 0, "cap", "tool",
         );
         adapter.control_service().register_approval(req);
 

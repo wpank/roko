@@ -2088,7 +2088,6 @@ async fn cmd_plan_queue(cli: &Cli, cmd: QueueCmd) -> Result<i32> {
     }
 }
 
-
 /// Parse and display a plan directory without executing anything.
 pub(crate) async fn cmd_plan_dry_run(plans_dir: &Path, cli: &Cli) -> Result<i32> {
     let plans = roko_cli::orchestrator::discover_plans(plans_dir)
@@ -2723,13 +2722,8 @@ fn warn_graph_unsupported_flags(
              (the graph engine uses the configured default_effort)"
         );
     }
-    if let Some(path) = log_file {
-        eprintln!(
-            "warning: --log-file '{}' is not supported with --engine graph and will be ignored \
-             (structured JSONL logging requires runner-v2 events)",
-            path.display()
-        );
-    }
+    // --log-file is now wired for Graph Engine (#115) -- no warning needed.
+    let _ = log_file;
     if skip_preflight {
         eprintln!(
             "warning: --skip-preflight is not supported with --engine graph and will be ignored \
@@ -2845,7 +2839,7 @@ async fn cmd_plan_run_engine(
     no_budget: bool,
     cli_model_override: Option<String>,
     dangerously_skip_permissions: bool,
-    _log_file: Option<&std::path::Path>,
+    log_file: Option<&std::path::Path>,
 ) -> Result<i32> {
     use std::sync::Arc;
 
@@ -2952,6 +2946,21 @@ async fn cmd_plan_run_engine(
     let graph_tui_bridge = roko_cli::runner::graph_tui_bridge::GraphTuiBridge::new(
         roko_cli::runner::tui_bridge::TuiBridge::new(state_hub_sender),
     );
+
+    // ── Canonical --log-file recorder for Graph Engine (#115) ──
+    let graph_event_logger: Option<Arc<dyn roko_graph::events::GraphEventSink>> = match log_file {
+        Some(path) => {
+            let resolved = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                workdir.join(path)
+            };
+            let logger = roko_cli::runner::structured_log::GraphEventLogger::open(&resolved)
+                .map_err(|e| anyhow!("open --log-file {}: {e}", resolved.display()))?;
+            Some(Arc::new(logger))
+        }
+        None => None,
+    };
 
     let total_tasks: usize = plans.iter().map(|p| p.tasks.tasks.len()).sum();
     let plan_count = plans.len();
@@ -3076,6 +3085,11 @@ async fn cmd_plan_run_engine(
         let mut engine = GraphEngine::new(graph, registry)
             .with_recorder(checkpoint.take_recorder())
             .with_telemetry(Arc::clone(&graph_telemetry));
+        // Wire canonical --log-file recorder (#115): attach the event sink
+        // so every GraphExecutionEvent is written to JSONL.
+        if let Some(ref sink) = graph_event_logger {
+            engine = engine.with_event_sink(Arc::clone(sink));
+        }
         if let Some(replayer) = checkpoint.take_replayer() {
             engine = engine.with_replayer(replayer);
         }

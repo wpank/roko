@@ -382,8 +382,7 @@ impl AgentServerBuilder {
             state = state.with_log_path(log_path);
         }
         if let Some(store_path) = self.state_store_path {
-            state =
-                state.with_state_store(Arc::new(state::FileStateStore::new(store_path)));
+            state = state.with_state_store(Arc::new(state::FileStateStore::new(store_path)));
         }
         if let Some(dispatcher) = self.message_dispatcher {
             state = state.with_message_dispatcher(dispatcher);

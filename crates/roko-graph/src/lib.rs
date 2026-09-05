@@ -133,9 +133,9 @@ pub use profile::{
 
 // Re-export layered snapshot v2, extension ledger, and receipt state machine (#251).
 pub use snapshot::{
-    CheckpointExtension, ExtensionError, ExtensionRegistry, ReconcileAction, ReceiptError,
-    ReceiptLedgerEntry, ReceiptState, commit_receipt, prepare_receipt, register_extension,
-    register_known_namespaces, settle_receipt, EXT_ACTIVITY, EXT_APPROVAL, EXT_CONTROL,
-    EXT_COST, EXT_DELIVERY, EXT_EXPERIMENT, EXT_FEEDBACK, EXT_GATE_HISTORY, EXT_REPLAN,
-    EXT_RUN_CONTEXT, EXT_SAFETY_PROVENANCE,
+    CheckpointExtension, EXT_ACTIVITY, EXT_APPROVAL, EXT_CONTROL, EXT_COST, EXT_DELIVERY,
+    EXT_EXPERIMENT, EXT_FEEDBACK, EXT_GATE_HISTORY, EXT_REPLAN, EXT_RUN_CONTEXT,
+    EXT_SAFETY_PROVENANCE, ExtensionError, ExtensionRegistry, ReceiptError, ReceiptLedgerEntry,
+    ReceiptState, ReconcileAction, commit_receipt, prepare_receipt, register_extension,
+    register_known_namespaces, settle_receipt,
 };

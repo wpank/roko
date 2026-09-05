@@ -240,15 +240,15 @@ fn parse_workflow_config_toml(
                     _ => {}
                 }
             }
-        } else if scope == WorkflowTomlScope::WorkflowStep {
-            if let Some((key, value)) = parse_workflow_kv(line) {
-                let name = unquote(&value);
-                if key == "name" || key == "type" {
-                    if name == "strategy" || name == "strategist" {
-                        steps_have_strategy = true;
-                    } else if name == "review" || name == "reviewer" {
-                        steps_have_review = true;
-                    }
+        } else if scope == WorkflowTomlScope::WorkflowStep
+            && let Some((key, value)) = parse_workflow_kv(line)
+        {
+            let name = unquote(&value);
+            if key == "name" || key == "type" {
+                if name == "strategy" || name == "strategist" {
+                    steps_have_strategy = true;
+                } else if name == "review" || name == "reviewer" {
+                    steps_have_review = true;
                 }
             }
         }
@@ -269,10 +269,7 @@ fn parse_workflow_config_toml(
 fn parse_workflow_toml_scope(
     line: &str,
 ) -> Result<WorkflowTomlScope, Box<dyn std::error::Error + Send + Sync>> {
-    let header = line
-        .trim_start_matches('[')
-        .trim_end_matches(']')
-        .trim();
+    let header = line.trim_start_matches('[').trim_end_matches(']').trim();
     Ok(match header {
         "workflow" => WorkflowTomlScope::Workflow,
         "workflow.steps" | "workflow.step" => WorkflowTomlScope::WorkflowStep,

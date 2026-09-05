@@ -147,10 +147,7 @@ pub enum RawSourceEvent {
     },
 
     /// Subagent started.
-    SubagentStarted {
-        subagent_id: String,
-        task: String,
-    },
+    SubagentStarted { subagent_id: String, task: String },
 
     /// Subagent update.
     SubagentUpdate {
@@ -382,12 +379,10 @@ fn raw_to_transcript_event(raw: &RawSourceEvent) -> TranscriptEvent {
             recoverable: *recoverable,
         },
 
-        RawSourceEvent::SubagentStarted { subagent_id, task } => {
-            TranscriptEvent::SubagentStarted {
-                subagent_id: subagent_id.clone(),
-                task: task.clone(),
-            }
-        }
+        RawSourceEvent::SubagentStarted { subagent_id, task } => TranscriptEvent::SubagentStarted {
+            subagent_id: subagent_id.clone(),
+            task: task.clone(),
+        },
 
         RawSourceEvent::SubagentUpdate {
             subagent_id,
@@ -644,8 +639,13 @@ mod tests {
     use super::*;
 
     fn test_context() -> AdapterContext {
-        AdapterContext::new("run-conformance", "agent-test", "anthropic", "claude-opus-4-6")
-            .with_correlation("task-1", "attempt-0")
+        AdapterContext::new(
+            "run-conformance",
+            "agent-test",
+            "anthropic",
+            "claude-opus-4-6",
+        )
+        .with_correlation("task-1", "attempt-0")
     }
 
     /// Run the conformance fixture through an adapter and return the records.
@@ -692,7 +692,8 @@ mod tests {
 
             for (i, (ref_rec, test_rec)) in reference.iter().zip(records.iter()).enumerate() {
                 assert_eq!(
-                    ref_rec.event, test_rec.event,
+                    ref_rec.event,
+                    test_rec.event,
                     "adapter {:?} diverged at event {i}: {:?} vs {:?}",
                     adapter.source_kind(),
                     event_type_tag(&ref_rec.event),
@@ -878,7 +879,11 @@ mod tests {
 
         let kinds: std::collections::HashSet<_> =
             adapters.iter().map(|a| a.source_kind()).collect();
-        assert_eq!(kinds.len(), 5, "each adapter must have a unique source kind");
+        assert_eq!(
+            kinds.len(),
+            5,
+            "each adapter must have a unique source kind"
+        );
     }
 
     #[test]
@@ -912,10 +917,7 @@ mod tests {
         for (i, event) in fixture.iter().enumerate() {
             let json = serde_json::to_string(event).unwrap();
             let decoded: RawSourceEvent = serde_json::from_str(&json).unwrap();
-            assert_eq!(
-                &decoded, event,
-                "raw event {i} failed serde roundtrip"
-            );
+            assert_eq!(&decoded, event, "raw event {i} failed serde roundtrip");
         }
     }
 

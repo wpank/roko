@@ -286,8 +286,10 @@ impl GatePipelineCell {
         let passed_count = rung_results.iter().filter(|r| r.passed).count() as f64;
         let overall_score = if total > 0.0 {
             passed_count / total
+        } else if verdict.passed() {
+            1.0
         } else {
-            if verdict.passed() { 1.0 } else { 0.0 }
+            0.0
         };
 
         roko_core::GateResult {

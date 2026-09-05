@@ -621,7 +621,10 @@ async fn changed_files_against(
         MAX_GIT_OUTPUT,
     )
     .await?;
-    files.extend(parse_git_paths(&staged, "git diff --name-only -z --cached")?);
+    files.extend(parse_git_paths(
+        &staged,
+        "git diff --name-only -z --cached",
+    )?);
     // Include untracked files
     let untracked = bounded_output(
         workdir,
@@ -1893,7 +1896,9 @@ diff --git a/crates/roko-cli/src/internal.rs b/crates/roko-cli/src/internal.rs
         let report = analyze_against(workdir, "HEAD", &files, &config).await;
         // The file should be in the changed_files
         assert!(
-            report.changed_files.contains(&"crates/roko-core/src/lib.rs".to_string()),
+            report
+                .changed_files
+                .contains(&"crates/roko-core/src/lib.rs".to_string()),
             "explicit file must appear in changed_files: {:?}",
             report.changed_files
         );
@@ -1975,8 +1980,7 @@ diff --git a/crates/roko-cli/src/internal.rs b/crates/roko-cli/src/internal.rs
             reverse_dependents: vec!["cli".into(), "serve".into()],
             ..Default::default()
         };
-        let mut affected: BTreeSet<String> =
-            report.producer_packages.iter().cloned().collect();
+        let mut affected: BTreeSet<String> = report.producer_packages.iter().cloned().collect();
         affected.extend(report.reverse_dependents.iter().cloned());
         assert_eq!(affected.len(), 4);
         assert!(affected.contains("core"));

@@ -253,11 +253,8 @@ impl ReplanCheckpointState {
     pub fn to_extension(&self) -> CheckpointExtension {
         let value = serde_json::to_value(self)
             .unwrap_or_else(|_| serde_json::json!({"error": "serialization_failed"}));
-        let fingerprint = blake3::hash(
-            serde_json::to_string(&value)
-                .unwrap_or_default()
-                .as_bytes(),
-        );
+        let fingerprint =
+            blake3::hash(serde_json::to_string(&value).unwrap_or_default().as_bytes());
 
         // Parse the namespace and version from the constant.
         let parts: Vec<&str> = EXT_REPLAN.split('@').collect();
@@ -1843,8 +1840,7 @@ mod tests {
             .expect("first registration should succeed");
 
         // Idempotent re-registration with the same content should succeed.
-        register_extension(&mut extensions, ext)
-            .expect("idempotent registration should succeed");
+        register_extension(&mut extensions, ext).expect("idempotent registration should succeed");
 
         assert_eq!(extensions.len(), 1);
 

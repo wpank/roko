@@ -127,7 +127,7 @@ pub const VALID_TIERS: &[&str] = &["Unverified", "Verified", "Trusted", "Expert"
 /// Creation metadata persisted alongside the manifest so that `--skills`,
 /// `--tier`, `--reputation`, and `--max-concurrent-jobs` are not lost when
 /// `--serve-url` is absent.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AgentCreationMetadata {
     /// Skill tags (trimmed, deduplicated, order-preserved).
     #[serde(default)]
@@ -141,17 +141,6 @@ pub struct AgentCreationMetadata {
     /// Maximum concurrent jobs (`0` = unspecified/default capacity).
     #[serde(default)]
     pub max_concurrent_jobs: u32,
-}
-
-impl Default for AgentCreationMetadata {
-    fn default() -> Self {
-        Self {
-            skills: Vec::new(),
-            tier: None,
-            reputation: 0,
-            max_concurrent_jobs: 0,
-        }
-    }
 }
 
 /// Full manifest with optional overrides resolved before provisioning.

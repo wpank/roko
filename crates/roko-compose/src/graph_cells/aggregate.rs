@@ -318,9 +318,7 @@ fn collect_enrichment_outputs(
                 }
                 TaskContextSections::PROVIDER_TAG => {
                     if !generic.scope.matches(request_scope) {
-                        warn!(
-                            "AggregateCell: rejecting task_context output with mismatched scope"
-                        );
+                        warn!("AggregateCell: rejecting task_context output with mismatched scope");
                         continue;
                     }
                     has_task_context = true;
@@ -760,7 +758,10 @@ mod tests {
         let episodes_sig = {
             let payload = EpisodeSections::new(
                 scope.clone(),
-                vec![PromptSection::new("error_pattern", "E0277: add trait bound")],
+                vec![PromptSection::new(
+                    "error_pattern",
+                    "E0277: add trait bound",
+                )],
             );
             let body = Body::from_json(&payload).unwrap();
             Signal::builder(Kind::ContextPack).body(body).build()
@@ -784,11 +785,8 @@ mod tests {
         let experiment_sig = {
             let mut exp_section = PromptSection::new("exp_hint", "Try approach B");
             exp_section.experiment_id = Some("exp-42".into());
-            let payload = ExperimentAssignment::new(
-                scope.clone(),
-                vec![exp_section],
-                vec!["exp-42".into()],
-            );
+            let payload =
+                ExperimentAssignment::new(scope.clone(), vec![exp_section], vec!["exp-42".into()]);
             let body = Body::from_json(&payload).unwrap();
             Signal::builder(Kind::ContextPack).body(body).build()
         };
@@ -832,7 +830,10 @@ mod tests {
         assert!(episodes_pos < playbook_pos, "episodes before playbook");
         assert!(playbook_pos < task_pos, "playbook before task");
         assert!(task_pos < modulation_pos, "task before modulation");
-        assert!(modulation_pos < experiment_pos, "modulation before experiment");
+        assert!(
+            modulation_pos < experiment_pos,
+            "modulation before experiment"
+        );
 
         // Experiment IDs propagated.
         assert_eq!(prompt.active_experiment_ids, vec!["exp-42"]);
@@ -851,8 +852,7 @@ mod tests {
         let knowledge_sig = {
             let payload = KnowledgeSections::new(
                 scope.clone(),
-                vec![PromptSection::new("knowledge_fact", "first copy")
-                    .with_section_id(shared_id)],
+                vec![PromptSection::new("knowledge_fact", "first copy").with_section_id(shared_id)],
             );
             let body = Body::from_json(&payload).unwrap();
             Signal::builder(Kind::ContextPack).body(body).build()
@@ -860,8 +860,7 @@ mod tests {
         let episodes_sig = {
             let payload = EpisodeSections::new(
                 scope.clone(),
-                vec![PromptSection::new("error_pattern", "second copy")
-                    .with_section_id(shared_id)],
+                vec![PromptSection::new("error_pattern", "second copy").with_section_id(shared_id)],
             );
             let body = Body::from_json(&payload).unwrap();
             Signal::builder(Kind::ContextPack).body(body).build()

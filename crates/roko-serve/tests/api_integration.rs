@@ -999,7 +999,10 @@ async fn gateway_models_returns_ok() {
     let (status, body) = get_json(&app, "/api/gateway/models").await;
 
     assert_eq!(status, StatusCode::OK);
-    assert!(body.is_object() || body.is_array(), "gateway models should return JSON");
+    assert!(
+        body.is_object() || body.is_array(),
+        "gateway models should return JSON"
+    );
 }
 
 #[tokio::test]
@@ -1058,7 +1061,10 @@ async fn default_workspace_returns_ok() {
     let (status, body) = get_json(&app, "/api/workspaces/default").await;
 
     assert_eq!(status, StatusCode::OK);
-    assert!(body.is_object(), "default workspace should return an object");
+    assert!(
+        body.is_object(),
+        "default workspace should return an object"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1071,7 +1077,10 @@ async fn swe_bench_runs_returns_ok() {
     let (status, body) = get_json(&app, "/api/bench/swe/runs").await;
 
     assert_eq!(status, StatusCode::OK);
-    assert!(body.is_array() || body.is_object(), "swe runs should return JSON");
+    assert!(
+        body.is_array() || body.is_object(),
+        "swe runs should return JSON"
+    );
 }
 
 #[tokio::test]
@@ -1080,7 +1089,10 @@ async fn swe_bench_datasets_returns_ok() {
     let (status, body) = get_json(&app, "/api/bench/swe/datasets").await;
 
     assert_eq!(status, StatusCode::OK);
-    assert!(body.is_array() || body.is_object(), "swe datasets should return JSON");
+    assert!(
+        body.is_array() || body.is_object(),
+        "swe datasets should return JSON"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1093,7 +1105,10 @@ async fn aggregator_agents_returns_ok() {
     let (status, body) = get_json(&app, "/api/agents").await;
 
     assert_eq!(status, StatusCode::OK);
-    assert!(body.is_array() || body.is_object(), "agents should return JSON");
+    assert!(
+        body.is_array() || body.is_object(),
+        "agents should return JSON"
+    );
 }
 
 #[tokio::test]
@@ -1102,7 +1117,10 @@ async fn aggregator_tasks_returns_ok() {
     let (status, body) = get_json(&app, "/api/tasks").await;
 
     assert_eq!(status, StatusCode::OK);
-    assert!(body.is_array() || body.is_object(), "tasks should return JSON");
+    assert!(
+        body.is_array() || body.is_object(),
+        "tasks should return JSON"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1115,7 +1133,10 @@ async fn providers_list_returns_ok() {
     let (status, body) = get_json(&app, "/api/providers").await;
 
     assert_eq!(status, StatusCode::OK);
-    assert!(body.is_array() || body.is_object(), "providers should return JSON");
+    assert!(
+        body.is_array() || body.is_object(),
+        "providers should return JSON"
+    );
 }
 
 #[tokio::test]
@@ -1124,7 +1145,10 @@ async fn models_list_returns_ok() {
     let (status, body) = get_json(&app, "/api/models").await;
 
     assert_eq!(status, StatusCode::OK);
-    assert!(body.is_array() || body.is_object(), "models should return JSON");
+    assert!(
+        body.is_array() || body.is_object(),
+        "models should return JSON"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1166,7 +1190,10 @@ async fn auth_audit_returns_ok() {
     let (status, body) = get_json(&app, "/api/auth/audit").await;
 
     assert_eq!(status, StatusCode::OK);
-    assert!(body.is_array() || body.is_object(), "auth audit should return JSON");
+    assert!(
+        body.is_array() || body.is_object(),
+        "auth audit should return JSON"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1251,7 +1278,10 @@ async fn learning_experiments_returns_ok() {
     let (status, body) = get_json(&app, "/api/learning/experiments").await;
 
     assert_eq!(status, StatusCode::OK);
-    assert!(body.is_object() || body.is_array(), "learning experiments should return JSON");
+    assert!(
+        body.is_object() || body.is_array(),
+        "learning experiments should return JSON"
+    );
 }
 
 #[tokio::test]
@@ -1276,7 +1306,10 @@ async fn extensions_returns_ok() {
     let (status, body) = get_json(&app, "/api/extensions").await;
 
     assert_eq!(status, StatusCode::OK);
-    assert!(body.is_array() || body.is_object(), "extensions should return JSON");
+    assert!(
+        body.is_array() || body.is_object(),
+        "extensions should return JSON"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1289,7 +1322,10 @@ async fn feeds_returns_ok() {
     let (status, body) = get_json(&app, "/api/feeds").await;
 
     assert_eq!(status, StatusCode::OK);
-    assert!(body.is_array() || body.is_object(), "feeds should return JSON");
+    assert!(
+        body.is_array() || body.is_object(),
+        "feeds should return JSON"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1302,7 +1338,10 @@ async fn recipes_returns_ok() {
     let (status, body) = get_json(&app, "/api/recipes").await;
 
     assert_eq!(status, StatusCode::OK);
-    assert!(body.is_array() || body.is_object(), "recipes should return JSON");
+    assert!(
+        body.is_array() || body.is_object(),
+        "recipes should return JSON"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1315,7 +1354,10 @@ async fn groups_returns_ok() {
     let (status, body) = get_json(&app, "/api/groups").await;
 
     assert_eq!(status, StatusCode::OK);
-    assert!(body.is_array() || body.is_object(), "groups should return JSON");
+    assert!(
+        body.is_array() || body.is_object(),
+        "groups should return JSON"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1328,7 +1370,10 @@ async fn triggers_returns_ok() {
     let (status, body) = get_json(&app, "/api/triggers").await;
 
     assert_eq!(status, StatusCode::OK);
-    assert!(body.is_array() || body.is_object(), "triggers should return JSON");
+    assert!(
+        body.is_array() || body.is_object(),
+        "triggers should return JSON"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1341,7 +1386,10 @@ async fn workflows_returns_ok() {
     let (status, body) = get_json(&app, "/api/workflows").await;
 
     assert_eq!(status, StatusCode::OK);
-    assert!(body.is_array() || body.is_object(), "workflows should return JSON");
+    assert!(
+        body.is_array() || body.is_object(),
+        "workflows should return JSON"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1371,7 +1419,10 @@ async fn deployments_returns_ok() {
     let (status, body) = get_json(&app, "/api/deployments").await;
 
     assert_eq!(status, StatusCode::OK);
-    assert!(body.is_array() || body.is_object(), "deployments should return JSON");
+    assert!(
+        body.is_array() || body.is_object(),
+        "deployments should return JSON"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1384,7 +1435,10 @@ async fn integrations_returns_ok() {
     let (status, body) = get_json(&app, "/api/integrations").await;
 
     assert_eq!(status, StatusCode::OK);
-    assert!(body.is_array() || body.is_object(), "integrations should return JSON");
+    assert!(
+        body.is_array() || body.is_object(),
+        "integrations should return JSON"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1397,7 +1451,10 @@ async fn secrets_returns_ok() {
     let (status, body) = get_json(&app, "/api/secrets").await;
 
     assert_eq!(status, StatusCode::OK);
-    assert!(body.is_array() || body.is_object(), "secrets should return JSON");
+    assert!(
+        body.is_array() || body.is_object(),
+        "secrets should return JSON"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1428,7 +1485,10 @@ async fn templates_returns_ok() {
     let (status, body) = get_json(&app, "/api/templates").await;
 
     assert_eq!(status, StatusCode::OK);
-    assert!(body.is_array() || body.is_object(), "templates should return JSON");
+    assert!(
+        body.is_array() || body.is_object(),
+        "templates should return JSON"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1522,7 +1582,10 @@ async fn knowledge_entries_returns_ok() {
     let (status, body) = get_json(&app, "/api/knowledge/entries").await;
 
     assert_eq!(status, StatusCode::OK);
-    assert!(body.is_array() || body.is_object(), "knowledge entries should return JSON");
+    assert!(
+        body.is_array() || body.is_object(),
+        "knowledge entries should return JSON"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1535,7 +1598,10 @@ async fn predictions_sessions_returns_ok() {
     let (status, body) = get_json(&app, "/api/predictions/sessions").await;
 
     assert_eq!(status, StatusCode::OK);
-    assert!(body.is_array() || body.is_object(), "predictions sessions should return JSON");
+    assert!(
+        body.is_array() || body.is_object(),
+        "predictions sessions should return JSON"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1548,7 +1614,11 @@ async fn event_ingest_rejects_empty_body() {
     let (status, _body) = post_json(&app, "/api/events", serde_json::json!({})).await;
 
     // Empty event should be rejected or handled — not 404.
-    assert_ne!(status, StatusCode::NOT_FOUND, "event ingest should be registered");
+    assert_ne!(
+        status,
+        StatusCode::NOT_FOUND,
+        "event ingest should be registered"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1569,7 +1639,11 @@ async fn heartbeat_accepts_post() {
     .await;
 
     // Heartbeats should be accepted (not 404/405).
-    assert_ne!(status, StatusCode::NOT_FOUND, "heartbeat should be registered");
+    assert_ne!(
+        status,
+        StatusCode::NOT_FOUND,
+        "heartbeat should be registered"
+    );
     assert_ne!(status, StatusCode::METHOD_NOT_ALLOWED);
 }
 
@@ -1580,15 +1654,14 @@ async fn heartbeat_accepts_post() {
 #[tokio::test]
 async fn shared_runs_post_returns_non_404() {
     let (_dir, app) = test_app();
-    let (status, _body) = post_json(
-        &app,
-        "/api/runs/test-id/share",
-        serde_json::json!({}),
-    )
-    .await;
+    let (status, _body) = post_json(&app, "/api/runs/test-id/share", serde_json::json!({})).await;
 
     // The route should be registered (share a run).
-    assert_ne!(status, StatusCode::NOT_FOUND, "shared runs should be registered");
+    assert_ne!(
+        status,
+        StatusCode::NOT_FOUND,
+        "shared runs should be registered"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1605,7 +1678,11 @@ async fn webhook_generic_returns_non_404() {
     )
     .await;
 
-    assert_ne!(status, StatusCode::NOT_FOUND, "webhook generic should be registered");
+    assert_ne!(
+        status,
+        StatusCode::NOT_FOUND,
+        "webhook generic should be registered"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1770,8 +1847,14 @@ async fn health_response_includes_required_fields() {
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["status"], "ok");
-    assert!(body["uptime_secs"].is_number(), "health must include uptime_secs");
-    assert!(body["version"].is_string(), "health must include version string");
+    assert!(
+        body["uptime_secs"].is_number(),
+        "health must include uptime_secs"
+    );
+    assert!(
+        body["version"].is_string(),
+        "health must include version string"
+    );
 }
 
 // ---------------------------------------------------------------------------

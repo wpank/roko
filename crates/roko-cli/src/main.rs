@@ -1796,14 +1796,19 @@ pub enum KnowledgeSyncDirection {
 }
 
 /// Execution engine for `roko plan run`.
+///
+/// Since Wave 9 (#260), the Graph Engine is the default. The legacy Runner-v2
+/// engine is retained as `--engine legacy` (alias `--engine runner-v2`) for
+/// one release cycle. To roll back: `roko plan run plans/ --engine legacy`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
 pub enum PlanEngine {
-    /// Graph Engine. Converts plans to graphs and executes via the Engine.
+    /// Graph Engine (default). Converts plans to graphs and executes via the Engine.
+    #[default]
     #[value(name = "graph")]
     Graph,
-    /// Runner v2. Uses the streaming event-loop plan executor.
-    #[default]
-    #[value(name = "runner-v2")]
+    /// Legacy Runner-v2 (deprecated). Uses the streaming event-loop plan executor.
+    /// Retained for one release cycle; will be removed in a future version.
+    #[value(name = "legacy", alias = "runner-v2")]
     RunnerV2,
 }
 
@@ -1868,18 +1873,23 @@ enum PlanCmd {
     /// Run a plan directory through the orchestration loop.
     #[command(after_help = "\
 Examples:
-  roko plan run plans/              Run all plans (runner-v2, default)
+  roko plan run plans/              Run all plans (graph engine, default)
   roko plan run plans/my-plan       Run a specific plan
   roko plan run plans/ --approval   Run with interactive TUI approval
   roko plan run plans/ --dry-run    Preview without executing
   roko plan run plans/ --fresh      Archive old state and start clean
-  roko plan run plans/ --engine runner-v2 --resume-plan .roko/state/state-snapshot.json   Resume Runner v2 from snapshot
-  roko plan run plans/ --engine graph --resume-plan .roko/state/graph                    Resume Graph Activities")]
+  roko plan run plans/ --resume-plan .roko/state/graph                              Resume Graph Activities
+  roko plan run plans/ --engine legacy --resume-plan .roko/state/state-snapshot.json Resume legacy Runner-v2 from snapshot
+
+Rollback: to revert to the legacy Runner-v2 engine, pass --engine legacy (or --engine runner-v2).")]
     Run {
         /// Path to the plans directory.
         plans_dir: PathBuf,
         /// Execution engine to use for plan execution.
-        #[arg(long, default_value = "runner-v2", value_enum)]
+        ///
+        /// Defaults to `graph`. Pass `--engine legacy` (or `--engine runner-v2`)
+        /// to use the deprecated Runner-v2 engine for one release cycle.
+        #[arg(long, default_value = "graph", value_enum)]
         engine: PlanEngine,
         /// Working directory (repo root). Defaults to current directory.
         #[arg(long)]
@@ -3489,7 +3499,17 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
                 )
                 .await;
             }
-            commands::util::cmd_run(cli, workdir, prompt, serve, share, provider, max_retries, None).await
+            commands::util::cmd_run(
+                cli,
+                workdir,
+                prompt,
+                serve,
+                share,
+                provider,
+                max_retries,
+                None,
+            )
+            .await
         }
         Command::Do {
             plan,
@@ -3539,9 +3559,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
         Command::Develop { .. } => {
             // #363: `develop` is removed. Emit a migration error and exit
             // without executing any provider/server/git effects.
-            eprintln!(
-                "error: `roko develop` was removed. Use `roko do --plan <prompt>` instead."
-            );
+            eprintln!("error: `roko develop` was removed. Use `roko do --plan <prompt>` instead.");
             if cli.json {
                 let msg = serde_json::json!({
                     "error": "command_removed",
@@ -3574,9 +3592,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             // #363: --live is a deprecated alias for --dashboard.
             let use_dashboard = dashboard || live;
             if live && !dashboard {
-                eprintln!(
-                    "warning: --live is deprecated; use --dashboard instead"
-                );
+                eprintln!("warning: --live is deprecated; use --dashboard instead");
             }
             commands::show::cmd_show(cli, workdir, use_dashboard, follow, serve_url, subject).await
         }
@@ -3626,10 +3642,8 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
                 }
                 _ => roko_cli::resolved_overrides::ResearchInput::default(),
             };
-            let resolved = ResolvedExecutionOverrides::for_research(
-                &global_cli_flags(cli),
-                &research_input,
-            );
+            let resolved =
+                ResolvedExecutionOverrides::for_research(&global_cli_flags(cli), &research_input);
             tracing::debug!(?resolved, "resolved execution overrides for `research`");
             let result = commands::research::cmd_research(cli, cmd, &resolved).await;
             finish_with_index_rebuild(result, &wd, true)
@@ -3939,7 +3953,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             }
             let plan_cmd = PlanCmd::Run {
                 plans_dir: plan_dir,
-                engine: PlanEngine::RunnerV2,
+                engine: PlanEngine::default(),
                 resume_plan: Some(snapshot),
                 workdir: Some(workdir),
                 approval: false,
@@ -4853,7 +4867,8 @@ async fn cmd_impact(
 
     if json {
         let affected_packages = {
-            let mut all: std::collections::BTreeSet<String> = report.producer_packages.iter().cloned().collect();
+            let mut all: std::collections::BTreeSet<String> =
+                report.producer_packages.iter().cloned().collect();
             all.extend(report.reverse_dependents.iter().cloned());
             all.into_iter().collect::<Vec<_>>()
         };
@@ -4870,7 +4885,10 @@ async fn cmd_impact(
             "fallback_reason": report.fallback_reason,
             "targets": targets,
         });
-        println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output).unwrap_or_default()
+        );
     } else {
         if let Some(reason) = &report.fallback_reason {
             println!("Fallback to full verification: {reason}");
@@ -4915,7 +4933,10 @@ async fn cmd_impact(
             }
             println!();
             // Print a ready-to-use cargo test command
-            let pkg_args: Vec<String> = affected.iter().flat_map(|p| vec!["-p".to_string(), p.clone()]).collect();
+            let pkg_args: Vec<String> = affected
+                .iter()
+                .flat_map(|p| vec!["-p".to_string(), p.clone()])
+                .collect();
             println!("cargo test {}", pkg_args.join(" "));
         }
 
@@ -8147,8 +8168,7 @@ mod tests {
     use roko_cli::resolved_overrides::{
         ApprovalPolicy, BudgetPolicy, CascadePolicy, ConfigEditTarget, ConfigSetInput,
         DevelopInput, DryRunPolicy, GlobalCliFlags, InteractionMode, LearnTuneInput, PlanRunInput,
-        PresentationMode, ReplanPolicy, ResolvedExecutionOverrides, ServePolicy,
-        ValidationPolicy,
+        PresentationMode, ReplanPolicy, ResolvedExecutionOverrides, ServePolicy, ValidationPolicy,
     };
 
     #[test]
@@ -8531,8 +8551,7 @@ mod tests {
 
     #[test]
     fn cli_parses_impact_with_workdir() {
-        let cli =
-            Cli::try_parse_from(["roko", "impact", "--workdir", "/some/path"]).unwrap();
+        let cli = Cli::try_parse_from(["roko", "impact", "--workdir", "/some/path"]).unwrap();
         assert!(matches!(
             cli.command,
             Some(Command::Impact {

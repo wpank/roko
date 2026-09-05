@@ -14,6 +14,7 @@ use roko_agent::claude_cli_agent::build_settings_json;
 use roko_agent::safety::contract::AgentContract;
 use roko_agent::safety::{DispatchSafetyContext, SafetyLayer, SafetyViolation, ViolationSeverity};
 use roko_agent::{Agent as RokoAgent, ClaudeCliAgent};
+use roko_core::RuntimeEvent as RuntimeDriverEvent;
 use roko_core::config::schema::RunnerSandboxLevel;
 use roko_core::foundation::EventConsumer as CoreEventConsumer;
 use roko_core::{
@@ -24,12 +25,8 @@ use roko_gate::{
     AdaptiveThresholds, ClippyGate, CompileGate, GatePayload, TestGate,
     parse_structured_review_verdict, review_verdict::ReviewVerdictContext,
 };
-use roko_runtime::JsonlLogger;
-use roko_core::RuntimeEvent as RuntimeDriverEvent;
 use roko_runtime::event_bus::runtime_event_bus;
-// WorkflowConfig now imported from workflow_contract above.
-use roko_runtime::workflow_contract::{WorkflowConfig, WorkflowRunConfig, WorkflowRunReport};
-use roko_serve::{ServiceConfig, ServiceFactory};
+use roko_runtime::workflow_contract::WorkflowRunReport;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
@@ -604,7 +601,7 @@ impl std::str::FromStr for AcpWorkflowRoute {
 /// [`roko_execution::profiles::ProfileMatrix`] before service construction.
 ///
 /// #243 landed: `run_with_workflow_engine` now uses `RuntimeServicesBuilder`
-/// + `ServiceFactory::build_with_runtime_services` to share handles.
+/// and `ServiceFactory::build_with_runtime_services` to share handles.
 /// This adapter remains as the per-session validation entry point.
 ///
 /// **Spec constraint (Lane D2):** this adapter does not edit
@@ -715,7 +712,13 @@ pub async fn run_with_workflow_engine(
     // #276: WorkflowEngine deleted — resolve template and build report via
     // graph template controller. Full ACP graph execution wiring is product
     // work beyond the #276 deletion scope.
-    let _ = (runtime_services, options, runtime_run_id, event_sender, roko_config);
+    let _ = (
+        runtime_services,
+        options,
+        runtime_run_id,
+        event_sender,
+        roko_config,
+    );
 
     let descriptor = roko_execution::workflow::resolve_template(template)
         .map_err(|e| anyhow::anyhow!("resolve workflow template: {e}"))?;
@@ -745,6 +748,7 @@ pub async fn run_with_workflow_engine(
     ))
 }
 
+#[allow(dead_code)] // Staging for ACP-to-Graph event wiring (#276)
 struct AcpWorkflowEventConsumer {
     run_id: Arc<Mutex<Option<String>>>,
     template: Arc<Mutex<Option<String>>>,
@@ -754,6 +758,7 @@ struct AcpWorkflowEventConsumer {
     accumulated_tokens: Arc<AtomicU64>,
 }
 
+#[allow(dead_code)] // Staging for ACP-to-Graph event wiring (#276)
 impl AcpWorkflowEventConsumer {
     fn new(
         _session_id: String,
@@ -1027,6 +1032,7 @@ impl CoreEventConsumer for AcpWorkflowEventConsumer {
     }
 }
 
+#[allow(dead_code)]
 impl AcpWorkflowEventConsumer {
     fn accepts_run(&self, run_id: &str) -> bool {
         self.run_id
@@ -1037,6 +1043,7 @@ impl AcpWorkflowEventConsumer {
     }
 }
 
+#[allow(dead_code)] // Staging for ACP-to-Graph event wiring (#276)
 fn spawn_runtime_event_bridge(
     session_id: String,
     run_id: Arc<Mutex<Option<String>>>,
@@ -1084,6 +1091,7 @@ fn spawn_runtime_event_bridge(
     })
 }
 
+#[allow(dead_code)]
 fn workflow_plan_entries(template: &str, phase: &str) -> Vec<PlanEntry> {
     let has_strategy = template == "full";
     let has_review = template != "express";
@@ -1155,6 +1163,7 @@ fn workflow_plan_entries(template: &str, phase: &str) -> Vec<PlanEntry> {
     entries
 }
 
+#[allow(dead_code)]
 fn plan_status(phase: &str, active: &[&str], pending: &[&str]) -> PlanStatus {
     if active.contains(&phase) {
         PlanStatus::InProgress
@@ -1165,10 +1174,12 @@ fn plan_status(phase: &str, active: &[&str], pending: &[&str]) -> PlanStatus {
     }
 }
 
+#[allow(dead_code)]
 fn gate_call_id(gate_name: &str) -> String {
     format!("gate-{gate_name}")
 }
 
+#[allow(dead_code)]
 fn inference_call_id(request_id: &str) -> String {
     format!("inference-{request_id}")
 }
@@ -1177,6 +1188,7 @@ fn text_block(text: String) -> ContentBlock {
     ContentBlock::Text { text }
 }
 
+#[allow(dead_code)]
 fn stop_reason_for_core_outcome(outcome: &CoreWorkflowOutcome) -> StopReason {
     match outcome {
         CoreWorkflowOutcome::Cancelled => StopReason::Cancelled,
@@ -1186,10 +1198,12 @@ fn stop_reason_for_core_outcome(outcome: &CoreWorkflowOutcome) -> StopReason {
     }
 }
 
+#[allow(dead_code)]
 fn driver_event_run_id(event: &RuntimeDriverEvent) -> &str {
     event.run_id()
 }
 
+#[allow(dead_code)]
 fn core_runtime_event_from_driver(event: RuntimeDriverEvent) -> CoreRuntimeEvent {
     event
 }

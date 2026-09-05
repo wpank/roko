@@ -73,11 +73,7 @@ impl WorktreeExecutionWorkspaceProvider {
 
     /// Derive the manager worktree ID from an attempt ID.
     fn worktree_id(attempt_id: &WorkspaceAttemptId) -> String {
-        format_attempt_worktree_id(
-            &attempt_id.plan_id,
-            &attempt_id.task_id,
-            attempt_id.attempt,
-        )
+        format_attempt_worktree_id(&attempt_id.plan_id, &attempt_id.task_id, attempt_id.attempt)
     }
 }
 
@@ -90,22 +86,17 @@ impl ExecutionWorkspaceProvider for WorktreeExecutionWorkspaceProvider {
         let wt_id = Self::worktree_id(attempt_id);
 
         // Idempotent: if the attempt is already tracked, return it.
-        if let Some(handle) = self.manager.get_attempt(
-            &attempt_id.plan_id,
-            &attempt_id.task_id,
-            attempt_id.attempt,
-        ) {
+        if let Some(handle) =
+            self.manager
+                .get_attempt(&attempt_id.plan_id, &attempt_id.task_id, attempt_id.attempt)
+        {
             return self.lease_from_handle(attempt_id, &handle);
         }
 
         // Create a fresh attempt worktree.
         let handle = self
             .manager
-            .create_for_attempt(
-                &attempt_id.plan_id,
-                &attempt_id.task_id,
-                attempt_id.attempt,
-            )
+            .create_for_attempt(&attempt_id.plan_id, &attempt_id.task_id, attempt_id.attempt)
             .await
             .map_err(|e| match e {
                 crate::orchestrator::worktree::WorktreeError::BudgetExhausted { max } => {
@@ -114,9 +105,7 @@ impl ExecutionWorkspaceProvider for WorktreeExecutionWorkspaceProvider {
                 crate::orchestrator::worktree::WorktreeError::AlreadyExists(_) => {
                     // Race: another caller created it between our check and create.
                     // Re-fetch and return idempotently.
-                    return WorkspaceError::Io(format!(
-                        "concurrent create for {wt_id}: {e}"
-                    ));
+                    return WorkspaceError::Io(format!("concurrent create for {wt_id}: {e}"));
                 }
                 other => WorkspaceError::Io(other.to_string()),
             })?;
@@ -162,22 +151,14 @@ impl ExecutionWorkspaceProvider for WorktreeExecutionWorkspaceProvider {
         let wt_id = Self::worktree_id(attempt_id);
         match self.manager.isolation_status(&wt_id).await {
             Ok(status) => match status.health {
-                WorktreeHealth::Ok => {
-                    Ok(WorkspaceReconcileResult::Live(lease.clone()))
-                }
-                WorktreeHealth::Missing => {
-                    Ok(WorkspaceReconcileResult::AlreadyReleased)
-                }
-                WorktreeHealth::Detached => {
-                    Ok(WorkspaceReconcileResult::Conflict(
-                        "worktree HEAD is detached from expected branch".to_string(),
-                    ))
-                }
-                WorktreeHealth::StaleLock => {
-                    Ok(WorkspaceReconcileResult::Conflict(
-                        "worktree has a stale index.lock".to_string(),
-                    ))
-                }
+                WorktreeHealth::Ok => Ok(WorkspaceReconcileResult::Live(lease.clone())),
+                WorktreeHealth::Missing => Ok(WorkspaceReconcileResult::AlreadyReleased),
+                WorktreeHealth::Detached => Ok(WorkspaceReconcileResult::Conflict(
+                    "worktree HEAD is detached from expected branch".to_string(),
+                )),
+                WorktreeHealth::StaleLock => Ok(WorkspaceReconcileResult::Conflict(
+                    "worktree has a stale index.lock".to_string(),
+                )),
             },
             Err(e) => {
                 // If health check fails, report as conflict.
@@ -225,8 +206,7 @@ impl ExecutionWorkspaceProvider for WorktreeExecutionWorkspaceProvider {
                 })?;
                 Ok(WorkspaceLeaseState::Released)
             }
-            WorkspaceReleasePolicy::RetainForFailure
-            | WorkspaceReleasePolicy::RetainForReview => {
+            WorkspaceReleasePolicy::RetainForFailure | WorkspaceReleasePolicy::RetainForReview => {
                 // Keep the manager entry without pruning. The worktree stays
                 // on disk for inspection. Touch it to prevent idle reclamation.
                 self.manager.touch(&wt_id);
@@ -257,10 +237,7 @@ mod tests {
     // WorktreeExecutionWorkspaceProvider) must satisfy these invariants.
 
     fn fake_provider() -> InMemoryWorkspaceProvider {
-        InMemoryWorkspaceProvider::new(
-            PathBuf::from("/repo"),
-            PathBuf::from("/repo/.worktrees"),
-        )
+        InMemoryWorkspaceProvider::new(PathBuf::from("/repo"), PathBuf::from("/repo/.worktrees"))
     }
 
     #[tokio::test]
@@ -318,8 +295,7 @@ mod tests {
             .map(|r| r.unwrap())
             .collect();
 
-        let paths: std::collections::HashSet<_> =
-            leases.iter().map(|l| l.path.clone()).collect();
+        let paths: std::collections::HashSet<_> = leases.iter().map(|l| l.path.clone()).collect();
         assert_eq!(paths.len(), 10, "all paths must be unique");
     }
 

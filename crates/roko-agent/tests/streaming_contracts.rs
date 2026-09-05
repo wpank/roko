@@ -62,11 +62,7 @@ async fn done_is_terminal() {
 
     let events = collect_events(rx).await;
     let last = events.last().expect("non-empty event stream");
-    assert_eq!(
-        event_tag(&last.kind),
-        "done",
-        "Done must be the last event"
-    );
+    assert_eq!(event_tag(&last.kind), "done", "Done must be the last event");
 }
 
 /// `TextDelta` events must come before `Done`.
@@ -99,10 +95,7 @@ async fn text_deltas_precede_done() {
         .rposition(|e| matches!(e.kind, StreamEventKind::TextDelta(_)))
         .expect("TextDelta must be present");
 
-    assert!(
-        last_text_idx < done_idx,
-        "all TextDeltas must precede Done"
-    );
+    assert!(last_text_idx < done_idx, "all TextDeltas must precede Done");
 }
 
 /// `ToolCallStart` must precede its `ToolCallDelta` and `ToolCallEnd`.

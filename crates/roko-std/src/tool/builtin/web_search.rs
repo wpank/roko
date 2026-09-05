@@ -349,10 +349,13 @@ pub const Handler: Handler = Handler { backend: None };
 impl std::fmt::Debug for Handler {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Handler")
-            .field("backend", &self.backend.as_ref().map(|b| match b {
-                SearchBackend::Gateway(_) => "gateway",
-                SearchBackend::DirectPerplexity { .. } => "direct_perplexity",
-            }))
+            .field(
+                "backend",
+                &self.backend.as_ref().map(|b| match b {
+                    SearchBackend::Gateway(_) => "gateway",
+                    SearchBackend::DirectPerplexity { .. } => "direct_perplexity",
+                }),
+            )
             .finish()
     }
 }

@@ -1416,10 +1416,7 @@ mod tests {
     #[test]
     fn agent_serve_defaults_resolve_safely() {
         let flags = default_flags();
-        let r = ResolvedExecutionOverrides::for_agent_serve(
-            &flags,
-            &AgentServeInput::default(),
-        );
+        let r = ResolvedExecutionOverrides::for_agent_serve(&flags, &AgentServeInput::default());
         assert_eq!(r.presentation, PresentationMode::Auto);
         assert_eq!(r.approval, ApprovalPolicy::Normal);
         assert!(r.model.is_none());
@@ -1446,10 +1443,7 @@ mod tests {
     #[test]
     fn agent_chat_defaults_resolve_safely() {
         let flags = default_flags();
-        let r = ResolvedExecutionOverrides::for_agent_chat(
-            &flags,
-            &AgentChatInput::default(),
-        );
+        let r = ResolvedExecutionOverrides::for_agent_chat(&flags, &AgentChatInput::default());
         assert!(r.model.is_none());
         assert!(r.provider.is_none());
         assert_eq!(r.presentation, PresentationMode::Auto);
@@ -1487,10 +1481,7 @@ mod tests {
             model: Some("sonnet"),
             ..default_flags()
         };
-        let r = ResolvedExecutionOverrides::for_agent_chat(
-            &flags,
-            &AgentChatInput::default(),
-        );
+        let r = ResolvedExecutionOverrides::for_agent_chat(&flags, &AgentChatInput::default());
         assert_eq!(r.model.as_deref(), Some("sonnet"));
     }
 }

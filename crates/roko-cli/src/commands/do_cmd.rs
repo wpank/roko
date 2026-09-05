@@ -248,10 +248,11 @@ pub(crate) async fn cmd_do(
                     backend: Some("auto".to_string()),
                     deep: auto_deep,
                 };
-                let resolved = roko_cli::resolved_overrides::ResolvedExecutionOverrides::for_research(
-                    &crate::global_cli_flags(cli),
-                    &research_input,
-                );
+                let resolved =
+                    roko_cli::resolved_overrides::ResolvedExecutionOverrides::for_research(
+                        &crate::global_cli_flags(cli),
+                        &research_input,
+                    );
                 return crate::commands::research::cmd_research(cli, research_cmd, &resolved).await;
             }
             PromptIntent::PlanGenerate => {

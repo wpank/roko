@@ -596,10 +596,7 @@ async fn adapter_verify_rung_cancelled() {
         context: Default::default(),
     };
     let result = adapter.verify_rung(&req).await;
-    assert!(
-        result.is_err(),
-        "cancelled pipeline should produce error"
-    );
+    assert!(result.is_err(), "cancelled pipeline should produce error");
     if let Err(err) = result {
         assert!(
             matches!(err, roko_core::SharedGateError::Cancelled),
@@ -733,8 +730,7 @@ async fn graph_cell_matches_fixture_expectations() {
             );
         } else {
             assert_eq!(
-                gate_result.passed,
-                case.expected.passed,
+                gate_result.passed, case.expected.passed,
                 "case '{}': graph cell passed mismatch",
                 case.id
             );
@@ -810,8 +806,7 @@ async fn runner_and_graph_verdicts_converge() {
         // --- Convergence assertions ---
         // Both paths should agree on pass/fail.
         assert_eq!(
-            completion.passed,
-            gate_result.passed,
+            completion.passed, gate_result.passed,
             "case '{}': runner/graph pass convergence mismatch",
             case.id
         );
@@ -836,19 +831,14 @@ async fn runner_and_graph_verdicts_converge() {
 
         // Per-rung pass/fail state must match for non-skipped rungs.
         if case.expected.outcome != "timed_out" {
-            let runner_non_skipped: Vec<_> = completion
-                .verdicts
-                .iter()
-                .filter(|s| !s.skipped)
-                .collect();
+            let runner_non_skipped: Vec<_> =
+                completion.verdicts.iter().filter(|s| !s.skipped).collect();
             for (i, rr) in gate_result.rung_results.iter().enumerate() {
                 if i < runner_non_skipped.len() {
                     assert_eq!(
-                        runner_non_skipped[i].passed,
-                        rr.passed,
+                        runner_non_skipped[i].passed, rr.passed,
                         "case '{}' rung {}: runner/graph passed convergence mismatch",
-                        case.id,
-                        i
+                        case.id, i
                     );
                 }
             }

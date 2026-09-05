@@ -229,8 +229,7 @@ pub use roko_serve as serve;
 
 pub use config::{
     AgentConfig, Config, ConfigPaths, ConfigSources, DreamsConfig, GateConfig, PromptConfig,
-    PromptFile, RepoEntry, RepoRegistry, ResolvedConfig, Source,
-    ToolsConfig, load_resolved_config,
+    PromptFile, RepoEntry, RepoRegistry, ResolvedConfig, Source, ToolsConfig, load_resolved_config,
 };
 
 pub use config_cmd::{EditTarget, WizardInputs, run_init_wizard};

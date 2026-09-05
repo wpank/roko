@@ -97,8 +97,7 @@ pub async fn run_canary_comparison(
             if primary.success != comparison.success {
                 differences.push(format!(
                     "success mismatch: {}={}, {}={}",
-                    primary_template, primary.success,
-                    comparison_template, comparison.success
+                    primary_template, primary.success, comparison_template, comparison.success
                 ));
             }
 

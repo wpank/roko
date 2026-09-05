@@ -660,11 +660,8 @@ mod tests {
             RuntimeProfile::AgentServer => overrides_for_acp("conformance", None, None),
             _ => overrides_for_workflow(None, None, None, None, None),
         };
-        let request = NonPlanServiceRequest::new(
-            profile,
-            PathBuf::from("/tmp/conformance"),
-            overrides,
-        );
+        let request =
+            NonPlanServiceRequest::new(profile, PathBuf::from("/tmp/conformance"), overrides);
         let handle = build_non_plan_services(&request)
             .unwrap_or_else(|e| panic!("profile {profile} should validate: {e}"));
         assert_eq!(handle.profile(), profile);

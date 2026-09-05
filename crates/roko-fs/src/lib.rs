@@ -33,7 +33,10 @@ pub mod atomic;
 pub mod bandit;
 /// Classified persistence for transcript records with redaction and versioning.
 pub mod classified_persistence;
-/// Writer bridging [`TranscriptStore`](roko_core::transcript_store::TranscriptStore) to classified JSONL persistence.
+/// Classified JSONL persistence writer.
+///
+/// Bridges [`TranscriptStore`](roko_core::transcript_store::TranscriptStore)
+/// to classified JSONL persistence.
 pub mod classified_writer;
 /// Archive-backed [`ColdStore`](roko_core::ColdStore) for aged-out signals.
 pub mod cold_substrate;

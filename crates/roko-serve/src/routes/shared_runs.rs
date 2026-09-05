@@ -5,7 +5,6 @@
 
 use std::sync::{Arc, OnceLock};
 
-use crate::service_factory::{ServiceConfig, ServiceFactory};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -15,8 +14,7 @@ use chrono::{DateTime, Duration, Utc};
 use regex::Regex;
 use roko_core::runtime_event::{RuntimeEvent, RuntimeEventEnvelope, WorkflowOutcome};
 use roko_core::{config::schema::RokoConfig, obs::LogScrubber};
-use roko_runtime::JsonlLogger;
-use roko_runtime::workflow_contract::{WorkflowConfig, WorkflowRunConfig, WorkflowRunReport};
+use roko_runtime::workflow_contract::{WorkflowConfig, WorkflowRunReport};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -489,7 +487,7 @@ fn transcript_from_runtime_events(
 }
 
 async fn run_shared_workflow(
-    state: &AppState,
+    _state: &AppState,
     token: &str,
     request: CreateShareRequest,
     workspace_config: Arc<RokoConfig>,
@@ -508,11 +506,8 @@ async fn run_shared_workflow(
         .map_err(|e| format!("resolve workflow template: {e}"))?;
 
     let run_id = format!("shared_{}", chrono::Utc::now().timestamp_millis());
-    let mut controller = roko_execution::workflow::WorkflowGraphController::new(
-        run_id,
-        descriptor,
-        prompt.clone(),
-    );
+    let mut controller =
+        roko_execution::workflow::WorkflowGraphController::new(run_id, descriptor, prompt.clone());
     controller.termination = Some(roko_execution::workflow::WorkflowTermination::Skipped {
         reason: "shared workflow execution requires graph runtime wiring".to_string(),
     });

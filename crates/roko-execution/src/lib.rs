@@ -51,8 +51,8 @@ pub mod workflow;
 // ---- Builder-level re-exports ------------------------------------------------
 
 pub use builder::{
-    BuilderError, FeedbackBundle, PromptBundle, RuntimeServices, RuntimeServicesSummary,
-    RuntimeServicesBuilder,
+    BuilderError, FeedbackBundle, PromptBundle, RuntimeServices, RuntimeServicesBuilder,
+    RuntimeServicesSummary,
 };
 pub use lifecycle::RunnerLifecycleEvent;
 pub use profiles::{ProfileBundleManifest, RuntimeProfile, profile_bundle_manifest};

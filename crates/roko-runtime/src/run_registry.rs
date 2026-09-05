@@ -18,7 +18,7 @@
 //! - [`migrate_legacy_singleton`]: upgrade single-run state to the registry format.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use roko_core::RunId;
@@ -228,8 +228,9 @@ impl ExecutionRunContext {
                 plan_fingerprint: plan_fingerprint.to_string(),
                 status: RunStatus::Running,
             }),
-            RunStartDecision::RejectCorrupt { .. }
-            | RunStartDecision::RejectUnrelated { .. } => None,
+            RunStartDecision::RejectCorrupt { .. } | RunStartDecision::RejectUnrelated { .. } => {
+                None
+            }
         }
     }
 }
@@ -288,11 +289,7 @@ impl RunRegistry {
     }
 
     /// Decide what to do given a caller intent and current plan fingerprint.
-    pub fn decide(
-        &self,
-        intent: &RunIntent,
-        plan_fingerprint: &str,
-    ) -> RunStartDecision {
+    pub fn decide(&self, intent: &RunIntent, plan_fingerprint: &str) -> RunStartDecision {
         match intent {
             RunIntent::New | RunIntent::RerunFresh => {
                 let run_id = RunId::new();
@@ -309,10 +306,7 @@ impl RunRegistry {
                             ),
                         };
                     }
-                    RunStartDecision::Resume(RunScope::new(
-                        &self.plan_id,
-                        manifest.run_id.clone(),
-                    ))
+                    RunStartDecision::Resume(RunScope::new(&self.plan_id, manifest.run_id.clone()))
                 } else {
                     // No active run to resume -- start fresh.
                     let run_id = RunId::new();
@@ -324,7 +318,8 @@ impl RunRegistry {
 
     /// Register a new run manifest.
     pub fn register(&mut self, manifest: RunManifest) {
-        self.runs.insert(manifest.run_id.as_str().to_string(), manifest);
+        self.runs
+            .insert(manifest.run_id.as_str().to_string(), manifest);
     }
 
     /// Transition an existing run to a new status.
@@ -334,20 +329,18 @@ impl RunRegistry {
         status: RunStatus,
     ) -> Result<(), RunRegistryError> {
         let key = run_id.as_str();
-        let manifest = self.runs.get_mut(key).ok_or_else(|| {
-            RunRegistryError::InvalidTransition {
-                run_id: key.to_string(),
-                reason: "run not found in registry".to_string(),
-            }
-        })?;
+        let manifest =
+            self.runs
+                .get_mut(key)
+                .ok_or_else(|| RunRegistryError::InvalidTransition {
+                    run_id: key.to_string(),
+                    reason: "run not found in registry".to_string(),
+                })?;
 
         if manifest.status.is_terminal() {
             return Err(RunRegistryError::InvalidTransition {
                 run_id: key.to_string(),
-                reason: format!(
-                    "run is already terminal ({})",
-                    manifest.status.label()
-                ),
+                reason: format!("run is already terminal ({})", manifest.status.label()),
             });
         }
 
@@ -366,7 +359,7 @@ impl RunRegistry {
     /// Return all runs sorted by creation time (newest first).
     pub fn runs_newest_first(&self) -> Vec<&RunManifest> {
         let mut v: Vec<_> = self.runs.values().collect();
-        v.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
+        v.sort_by_key(|m| std::cmp::Reverse(m.created_at_ms));
         v
     }
 
@@ -436,7 +429,8 @@ impl RunIndex {
 
     /// Sort entries newest-first by creation time.
     pub fn sort_newest_first(&mut self) {
-        self.entries.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
+        self.entries
+            .sort_by_key(|e| std::cmp::Reverse(e.created_at_ms));
     }
 
     /// Persist the index to disk.

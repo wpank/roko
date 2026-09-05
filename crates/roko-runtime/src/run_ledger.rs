@@ -10,7 +10,9 @@ use roko_core::foundation::TokenUsage;
 use roko_core::runtime_event::RuntimeEventEnvelope;
 use serde::{Deserialize, Serialize};
 
-use crate::workflow_contract::{CommitOutcome, GateOutcome, Phase, WorkflowConfig, WorkflowRunReport};
+use crate::workflow_contract::{
+    CommitOutcome, GateOutcome, Phase, WorkflowConfig, WorkflowRunReport,
+};
 
 /// Typed record for a single workflow run.
 #[derive(Debug, Clone)]

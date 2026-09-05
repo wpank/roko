@@ -1,10 +1,8 @@
 //! config_cmd command handlers.
 
 use crate::*;
-use roko_cli::resolved_overrides::{
-    ConfigEditTarget, ConfigSetInput, ResolvedExecutionOverrides,
-};
 use indexmap::IndexMap;
+use roko_cli::resolved_overrides::{ConfigEditTarget, ConfigSetInput, ResolvedExecutionOverrides};
 use roko_core::tool::{ToolRegistry, ToolSource};
 use roko_fs::RokoLayout;
 use serde::Serialize;
@@ -93,9 +91,11 @@ pub(crate) async fn dispatch_config(cli: &Cli, cmd: ConfigCmd) -> Result<()> {
             workdir,
         } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-            let resolved = ResolvedExecutionOverrides::resolve_config_edit_target(
-                &ConfigSetInput { global, project },
-            );
+            let resolved =
+                ResolvedExecutionOverrides::resolve_config_edit_target(&ConfigSetInput {
+                    global,
+                    project,
+                });
             let target = match resolved {
                 ConfigEditTarget::Global => EditTarget::Global,
                 ConfigEditTarget::Project => EditTarget::Project,
@@ -348,7 +348,11 @@ fn cmd_export(workdir: &Path, env: Option<&str>, output: Option<&Path>) -> Resul
             writeln!(buf, "ROKO_MAX_AGENTS={}", config.conductor.max_agents).ok();
             writeln!(buf, "ROKO_PARALLEL={}", config.conductor.parallel_enabled).ok();
             writeln!(buf).ok();
-            writeln!(buf, "# Provider API keys (set to actual values in Railway dashboard):").ok();
+            writeln!(
+                buf,
+                "# Provider API keys (set to actual values in Railway dashboard):"
+            )
+            .ok();
             for (name, provider) in &config.providers {
                 if let Some(ref key_env) = provider.api_key_env {
                     writeln!(buf, "# {name}: {key_env}=<your-key>").ok();
@@ -565,10 +569,7 @@ pub(crate) fn cmd_provider_catalog(workdir: &Path) {
 /// Returns an empty set if config loading fails (e.g. no roko.toml).
 fn workspace_configured_provider_ids(workdir: &Path) -> std::collections::HashSet<String> {
     match roko_core::config::loader::load_config_unified(workdir) {
-        Ok(config) => configured_providers(&config)
-            .keys()
-            .cloned()
-            .collect(),
+        Ok(config) => configured_providers(&config).keys().cloned().collect(),
         Err(_) => std::collections::HashSet::new(),
     }
 }
@@ -3479,12 +3480,10 @@ mod config_scope_tests {
 
     #[test]
     fn config_set_no_flags_resolves_global_via_typed_resolver() {
-        let resolved = ResolvedExecutionOverrides::resolve_config_edit_target(
-            &ConfigSetInput {
-                global: false,
-                project: false,
-            },
-        );
+        let resolved = ResolvedExecutionOverrides::resolve_config_edit_target(&ConfigSetInput {
+            global: false,
+            project: false,
+        });
         let target = match resolved {
             ConfigEditTarget::Global => EditTarget::Global,
             ConfigEditTarget::Project => EditTarget::Project,
@@ -3494,12 +3493,10 @@ mod config_scope_tests {
 
     #[test]
     fn config_set_global_flag_resolves_global() {
-        let resolved = ResolvedExecutionOverrides::resolve_config_edit_target(
-            &ConfigSetInput {
-                global: true,
-                project: false,
-            },
-        );
+        let resolved = ResolvedExecutionOverrides::resolve_config_edit_target(&ConfigSetInput {
+            global: true,
+            project: false,
+        });
         let target = match resolved {
             ConfigEditTarget::Global => EditTarget::Global,
             ConfigEditTarget::Project => EditTarget::Project,
@@ -3509,12 +3506,10 @@ mod config_scope_tests {
 
     #[test]
     fn config_set_project_flag_resolves_project() {
-        let resolved = ResolvedExecutionOverrides::resolve_config_edit_target(
-            &ConfigSetInput {
-                global: false,
-                project: true,
-            },
-        );
+        let resolved = ResolvedExecutionOverrides::resolve_config_edit_target(&ConfigSetInput {
+            global: false,
+            project: true,
+        });
         let target = match resolved {
             ConfigEditTarget::Global => EditTarget::Global,
             ConfigEditTarget::Project => EditTarget::Project,
@@ -3543,8 +3538,7 @@ mod config_scope_tests {
     fn config_set_project_writes_project_file() {
         let dir = tempfile::tempdir().unwrap();
         // No roko.toml exists yet — cmd_set with Project creates it.
-        config_cmd::cmd_set(dir.path(), EditTarget::Project, "agent.model", "test-model")
-            .unwrap();
+        config_cmd::cmd_set(dir.path(), EditTarget::Project, "agent.model", "test-model").unwrap();
         let project_path = dir.path().join("roko.toml");
         assert!(project_path.exists(), "project roko.toml should be created");
         let content = std::fs::read_to_string(&project_path).unwrap();
@@ -3578,11 +3572,7 @@ mod config_scope_tests {
         let dir = tempfile::tempdir().unwrap();
         // Write a minimal roko.toml so config loading succeeds.
         let config_path = dir.path().join("roko.toml");
-        std::fs::write(
-            &config_path,
-            "[agent]\ncommand = \"echo\"\nargs = []\n",
-        )
-        .unwrap();
+        std::fs::write(&config_path, "[agent]\ncommand = \"echo\"\nargs = []\n").unwrap();
         let out_path = dir.path().join("export.env");
         cmd_export(dir.path(), Some("railway"), Some(out_path.as_path())).unwrap();
         assert!(out_path.exists(), "--output file should be created");
@@ -3597,11 +3587,7 @@ mod config_scope_tests {
     fn export_no_output_does_not_create_file() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("roko.toml");
-        std::fs::write(
-            &config_path,
-            "[agent]\ncommand = \"echo\"\nargs = []\n",
-        )
-        .unwrap();
+        std::fs::write(&config_path, "[agent]\ncommand = \"echo\"\nargs = []\n").unwrap();
         // No output path — prints to stdout, no file created.
         cmd_export(dir.path(), Some("railway"), None).unwrap();
         // Verify no extra files were created (only roko.toml).

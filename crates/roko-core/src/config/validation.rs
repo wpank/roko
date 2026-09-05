@@ -387,9 +387,7 @@ fn parse_unknown_field_error(msg: &str) -> Vec<UnknownFieldReport> {
                 let expected_fields: Vec<&str> = expected_rest
                     .split('`')
                     .enumerate()
-                    .filter_map(|(idx, part)| {
-                        if idx % 2 == 1 { Some(part) } else { None }
-                    })
+                    .filter_map(|(idx, part)| if idx % 2 == 1 { Some(part) } else { None })
                     .collect();
                 find_closest(field_name, &expected_fields)
             } else {
@@ -599,7 +597,9 @@ pub fn validate_provider_semantics(config: &RokoConfig) -> Vec<SemanticFinding> 
         // Rule: provider.invalid_base_url
         if let Some(ref url_str) = provider.base_url {
             let trimmed = url_str.trim();
-            if !trimmed.is_empty() && let Err(reason) = validate_base_url(trimmed) {
+            if !trimmed.is_empty()
+                && let Err(reason) = validate_base_url(trimmed)
+            {
                 findings.push(SemanticFinding {
                     code: SemanticFindingCode::ProviderInvalidBaseUrl,
                     severity: InvariantSeverity::Error,
@@ -615,9 +615,7 @@ pub fn validate_provider_semantics(config: &RokoConfig) -> Vec<SemanticFinding> 
                 code: SemanticFindingCode::ProviderInvalidTimeout,
                 severity: InvariantSeverity::Error,
                 path: format!("providers.{name}.timeout_ms"),
-                message: format!(
-                    "provider '{name}' has timeout_ms = 0; must be > 0"
-                ),
+                message: format!("provider '{name}' has timeout_ms = 0; must be > 0"),
             });
         }
         if let Some(0) = provider.max_concurrent {
@@ -625,9 +623,7 @@ pub fn validate_provider_semantics(config: &RokoConfig) -> Vec<SemanticFinding> 
                 code: SemanticFindingCode::ProviderInvalidTimeout,
                 severity: InvariantSeverity::Error,
                 path: format!("providers.{name}.max_concurrent"),
-                message: format!(
-                    "provider '{name}' has max_concurrent = 0; must be > 0"
-                ),
+                message: format!("provider '{name}' has max_concurrent = 0; must be > 0"),
             });
         }
     }
@@ -672,9 +668,7 @@ pub fn validate_provider_semantics(config: &RokoConfig) -> Vec<SemanticFinding> 
                 code: SemanticFindingCode::ModelInvalidContext,
                 severity: InvariantSeverity::Error,
                 path: format!("models.{name}.context_window"),
-                message: format!(
-                    "model '{name}' has context_window = 0; must be > 0"
-                ),
+                message: format!("model '{name}' has context_window = 0; must be > 0"),
             });
         }
         if let Some(max_out) = profile.max_output {
@@ -683,9 +677,7 @@ pub fn validate_provider_semantics(config: &RokoConfig) -> Vec<SemanticFinding> 
                     code: SemanticFindingCode::ModelInvalidContext,
                     severity: InvariantSeverity::Error,
                     path: format!("models.{name}.max_output"),
-                    message: format!(
-                        "model '{name}' has max_output = 0; must be > 0"
-                    ),
+                    message: format!("model '{name}' has max_output = 0; must be > 0"),
                 });
             } else if max_out > profile.context_window {
                 findings.push(SemanticFinding {
@@ -720,9 +712,9 @@ pub fn validate_provider_semantics(config: &RokoConfig) -> Vec<SemanticFinding> 
             // Serde would also accept Custom(x) for any x containing a dot
             // or otherwise not matching a known variant.  We allow those as
             // intentional extensions.
-            let is_custom_extension = !known && serde_json::from_value::<ToolFormat>(
-                serde_json::Value::String(tf.to_string()),
-            ).is_ok();
+            let is_custom_extension = !known
+                && serde_json::from_value::<ToolFormat>(serde_json::Value::String(tf.to_string()))
+                    .is_ok();
 
             if !known && !is_custom_extension {
                 findings.push(SemanticFinding {
@@ -742,9 +734,7 @@ pub fn validate_provider_semantics(config: &RokoConfig) -> Vec<SemanticFinding> 
         // Rule: provider.invalid_search_context (on model, not provider)
         if let Some(ref scs) = profile.search_context_size {
             let scs_trimmed = scs.trim();
-            if !scs_trimmed.is_empty()
-                && !matches!(scs_trimmed, "low" | "medium" | "high")
-            {
+            if !scs_trimmed.is_empty() && !matches!(scs_trimmed, "low" | "medium" | "high") {
                 findings.push(SemanticFinding {
                     code: SemanticFindingCode::ProviderInvalidSearchContext,
                     severity: InvariantSeverity::Error,
@@ -761,10 +751,7 @@ pub fn validate_provider_semantics(config: &RokoConfig) -> Vec<SemanticFinding> 
         // Collect slug for ambiguity check.
         let slug = profile.slug.trim();
         if !slug.is_empty() {
-            slug_owners
-                .entry(slug)
-                .or_default()
-                .push(name.as_str());
+            slug_owners.entry(slug).or_default().push(name.as_str());
         }
     }
 
@@ -841,9 +828,7 @@ pub fn validate_provider_semantics(config: &RokoConfig) -> Vec<SemanticFinding> 
                 code: SemanticFindingCode::RoutingUnresolvedModel,
                 severity: InvariantSeverity::Error,
                 path: format!("agent.tier_models.{tier}"),
-                message: format!(
-                    "agent.tier_models.{tier} references unresolved model '{mk}'"
-                ),
+                message: format!("agent.tier_models.{tier} references unresolved model '{mk}'"),
             });
         }
     }
@@ -854,9 +839,7 @@ pub fn validate_provider_semantics(config: &RokoConfig) -> Vec<SemanticFinding> 
                 code: SemanticFindingCode::RoutingUnresolvedModel,
                 severity: InvariantSeverity::Error,
                 path: field.to_string(),
-                message: format!(
-                    "{field} references unresolved model '{model_ref}'"
-                ),
+                message: format!("{field} references unresolved model '{model_ref}'"),
             });
         }
     }
@@ -1104,7 +1087,10 @@ mod tests {
             max_turn_usdd = 0.5
         "#;
         let reports = detect_unknown_fields(toml_text);
-        assert!(!reports.is_empty(), "should detect unknown field 'max_turn_usdd'");
+        assert!(
+            !reports.is_empty(),
+            "should detect unknown field 'max_turn_usdd'"
+        );
         assert!(reports[0].path.contains("max_turn_usdd"));
     }
 
@@ -1128,7 +1114,10 @@ mod tests {
             bogus_flag = true
         "#;
         let reports = detect_unknown_fields(toml_text);
-        assert!(!reports.is_empty(), "should detect bogus_flag in serve.auth");
+        assert!(
+            !reports.is_empty(),
+            "should detect bogus_flag in serve.auth"
+        );
     }
 
     #[test]
@@ -1206,9 +1195,12 @@ mod tests {
         );
 
         let findings = validate_provider_semantics(&config);
-        assert!(findings.iter().any(|f| f.code
-            == SemanticFindingCode::ProviderEmptyApiKeyEnv
-            && f.severity == InvariantSeverity::Error));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.code == SemanticFindingCode::ProviderEmptyApiKeyEnv
+                    && f.severity == InvariantSeverity::Error)
+        );
     }
 
     #[test]
@@ -1226,8 +1218,11 @@ mod tests {
         );
 
         let findings = validate_provider_semantics(&config);
-        assert!(findings.iter().any(|f| f.code
-            == SemanticFindingCode::ProviderEmptyApiKeyEnv));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.code == SemanticFindingCode::ProviderEmptyApiKeyEnv)
+        );
     }
 
     #[test]
@@ -1245,9 +1240,11 @@ mod tests {
         );
 
         let findings = validate_provider_semantics(&config);
-        assert!(findings
-            .iter()
-            .all(|f| f.code != SemanticFindingCode::ProviderEmptyApiKeyEnv));
+        assert!(
+            findings
+                .iter()
+                .all(|f| f.code != SemanticFindingCode::ProviderEmptyApiKeyEnv)
+        );
     }
 
     #[test]
@@ -1260,8 +1257,11 @@ mod tests {
         config.providers.insert(name, prov);
 
         let findings = validate_provider_semantics(&config);
-        assert!(findings.iter().any(|f| f.code
-            == SemanticFindingCode::ProviderInvalidBaseUrl));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.code == SemanticFindingCode::ProviderInvalidBaseUrl)
+        );
     }
 
     #[test]
@@ -1274,9 +1274,12 @@ mod tests {
         config.providers.insert(name, prov);
 
         let findings = validate_provider_semantics(&config);
-        assert!(findings.iter().any(|f| f.code
-            == SemanticFindingCode::ProviderInvalidBaseUrl
-            && f.message.contains("credentials")));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.code == SemanticFindingCode::ProviderInvalidBaseUrl
+                    && f.message.contains("credentials"))
+        );
     }
 
     #[test]
@@ -1289,9 +1292,11 @@ mod tests {
         config.providers.insert(name, prov);
 
         let findings = validate_provider_semantics(&config);
-        assert!(findings
-            .iter()
-            .all(|f| f.code != SemanticFindingCode::ProviderInvalidBaseUrl));
+        assert!(
+            findings
+                .iter()
+                .all(|f| f.code != SemanticFindingCode::ProviderInvalidBaseUrl)
+        );
     }
 
     #[test]
@@ -1304,8 +1309,11 @@ mod tests {
         config.providers.insert(name, prov);
 
         let findings = validate_provider_semantics(&config);
-        assert!(findings.iter().any(|f| f.code
-            == SemanticFindingCode::ProviderInvalidTimeout));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.code == SemanticFindingCode::ProviderInvalidTimeout)
+        );
     }
 
     #[test]
@@ -1323,8 +1331,11 @@ mod tests {
         );
 
         let findings = validate_provider_semantics(&config);
-        assert!(findings.iter().any(|f| f.code
-            == SemanticFindingCode::ModelUnknownProvider));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.code == SemanticFindingCode::ModelUnknownProvider)
+        );
     }
 
     #[test]
@@ -1344,9 +1355,11 @@ mod tests {
         );
 
         let findings = validate_provider_semantics(&config);
-        assert!(findings
-            .iter()
-            .any(|f| f.code == SemanticFindingCode::ModelEmptySlug));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.code == SemanticFindingCode::ModelEmptySlug)
+        );
     }
 
     #[test]
@@ -1367,9 +1380,11 @@ mod tests {
         );
 
         let findings = validate_provider_semantics(&config);
-        assert!(findings
-            .iter()
-            .any(|f| f.code == SemanticFindingCode::ModelInvalidContext));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.code == SemanticFindingCode::ModelInvalidContext)
+        );
     }
 
     #[test]
@@ -1391,9 +1406,12 @@ mod tests {
         );
 
         let findings = validate_provider_semantics(&config);
-        assert!(findings.iter().any(|f| f.code
-            == SemanticFindingCode::ModelInvalidContext
-            && f.severity == InvariantSeverity::Warning));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.code == SemanticFindingCode::ModelInvalidContext
+                    && f.severity == InvariantSeverity::Warning)
+        );
     }
 
     #[test]
@@ -1435,9 +1453,11 @@ mod tests {
         );
 
         let findings = validate_provider_semantics(&config);
-        assert!(findings
-            .iter()
-            .any(|f| f.code == SemanticFindingCode::ModelAmbiguousSlug));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.code == SemanticFindingCode::ModelAmbiguousSlug)
+        );
     }
 
     #[test]
@@ -1465,9 +1485,11 @@ mod tests {
         );
 
         let findings = validate_provider_semantics(&config);
-        assert!(findings
-            .iter()
-            .all(|f| f.code != SemanticFindingCode::ModelAmbiguousSlug));
+        assert!(
+            findings
+                .iter()
+                .all(|f| f.code != SemanticFindingCode::ModelAmbiguousSlug)
+        );
     }
 
     #[test]
@@ -1479,7 +1501,10 @@ mod tests {
             .iter()
             .filter(|f| f.severity == InvariantSeverity::Error)
             .collect();
-        assert!(errors.is_empty(), "default config should have no errors: {errors:?}");
+        assert!(
+            errors.is_empty(),
+            "default config should have no errors: {errors:?}"
+        );
     }
 
     #[test]

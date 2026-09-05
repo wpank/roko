@@ -211,7 +211,9 @@ async fn network_rfc1918_blocked() {
         }
         // Tool selector (TOOL-03) may reject before network checks.
         ToolResult::Err(ToolError::PermissionDenied(_)) => {}
-        other => panic!("expected NetworkBlocked or PermissionDenied for HTTPS to private IP, got {other:?}"),
+        other => panic!(
+            "expected NetworkBlocked or PermissionDenied for HTTPS to private IP, got {other:?}"
+        ),
     }
 }
 
@@ -249,7 +251,9 @@ async fn git_force_push_blocked() {
         }
         // Tool selector (TOOL-03) may reject `bash` before command checks.
         ToolResult::Err(ToolError::PermissionDenied(_)) => {}
-        other => panic!("expected CommandNotAllowed or PermissionDenied for git force push, got {other:?}"),
+        other => panic!(
+            "expected CommandNotAllowed or PermissionDenied for git force push, got {other:?}"
+        ),
     }
 }
 
@@ -284,7 +288,11 @@ async fn rate_limit_exceeded() {
     // outcome.
     let first = dispatcher
         .dispatch(
-            ToolCall::new("ok-0", "bash", serde_json::json!({ "command": "echo hello" })),
+            ToolCall::new(
+                "ok-0",
+                "bash",
+                serde_json::json!({ "command": "echo hello" }),
+            ),
             &ctx,
         )
         .await;

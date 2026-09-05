@@ -376,7 +376,9 @@ impl RuntimeServicesBuilder {
         };
 
         // -- Extensions -----------------------------------------------------
-        let extensions = self.extensions_bundle.unwrap_or_else(ExtensionsBundle::for_test);
+        let extensions = self
+            .extensions_bundle
+            .unwrap_or_else(ExtensionsBundle::for_test);
 
         // -- Observation ----------------------------------------------------
         let observation = self
@@ -384,9 +386,7 @@ impl RuntimeServicesBuilder {
             .unwrap_or_else(ObservationBundle::for_test);
 
         // -- Guards ---------------------------------------------------------
-        let budget = self
-            .budget_ceiling_usd
-            .or(self.overrides.budget_override);
+        let budget = self.budget_ceiling_usd.or(self.overrides.budget_override);
         let mut guards = GuardsBundle::for_test();
         guards.budget_ceiling_usd = budget;
 
@@ -455,9 +455,7 @@ mod tests {
         let services = RuntimeServicesBuilder::new(RuntimeProfile::FullPlan, overrides)
             .build(workdir.path())
             .unwrap();
-        assert!(
-            (services.guards.budget_ceiling_usd.unwrap() - 5.0).abs() < f64::EPSILON
-        );
+        assert!((services.guards.budget_ceiling_usd.unwrap() - 5.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -499,10 +497,7 @@ mod tests {
         let services = RuntimeServicesBuilder::for_test(RuntimeProfile::FullPlan)
             .build(workdir.path())
             .unwrap();
-        assert!(
-            services.feedback.is_some(),
-            "FullPlan requires feedback"
-        );
+        assert!(services.feedback.is_some(), "FullPlan requires feedback");
     }
 
     #[test]

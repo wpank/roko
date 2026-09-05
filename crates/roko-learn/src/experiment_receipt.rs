@@ -325,9 +325,7 @@ mod tests {
         let mut receipt =
             ExperimentReceipt::prepare(&store_path, &key, None, &["constraints"]).unwrap();
         let ids = receipt.assignment_ids();
-        receipt
-            .mark_dispatched(&store_path, "hash", &ids)
-            .unwrap();
+        receipt.mark_dispatched(&store_path, "hash", &ids).unwrap();
 
         // Abandon instead of settling with success/failure.
         let settled = receipt.abandon(&store_path).unwrap();

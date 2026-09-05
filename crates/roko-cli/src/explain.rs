@@ -179,17 +179,19 @@ pub static TOPICS: &[TopicEntry] = &[
         summary: "Plans are directed acyclic graphs of tasks that roko executes to \
                   accomplish complex goals. Each task has dependencies, an agent role, \
                   and must pass gates to complete.",
-        detail: "Plans are generated from PRDs via `roko prd plan <slug>`. The DAG \
-                 CLI runner executor runs tasks in parallel where \
-                 dependencies allow. Each task is dispatched to an agent with a role \
-                 (implementer, reviewer, architect), runs through gates, and persists \
-                 results. Use `roko plan run <dir>` to execute, `--resume` to \
-                 continue from a snapshot.",
-        internals: "Plan execution lives in `crates/roko-cli/src/runner/event_loop.rs` \
-                    via `PlanRunner` (runner-v2). DAG scheduling is owned by the runner module. \
-                    Snapshots persist at `.roko/state/state-snapshot.json` for resumability. \
-                    The merge queue handles concurrent task outputs. Process \
-                    supervision via `roko-runtime` tracks agent lifecycles.",
+        detail: "Plans are generated from PRDs via `roko prd plan <slug>`. The Graph \
+                 engine converts plans into DAGs of cells and executes tasks in parallel \
+                 where dependencies allow. Each task is dispatched to an agent with a \
+                 role (implementer, reviewer, architect), runs through gates, and \
+                 persists results. Use `roko plan run <dir>` to execute, `--resume-plan` \
+                 to continue from a checkpoint.",
+        internals: "Plan execution uses the Graph engine in `crates/roko-graph/` with \
+                    host services in `crates/roko-cli/src/graph_execution/`. DAG \
+                    scheduling is owned by the graph cell topology. Checkpoints persist \
+                    at `.roko/state/graph/` for resumability. The merge queue handles \
+                    concurrent task outputs. Process supervision via `roko-runtime` \
+                    tracks agent lifecycles. The legacy Runner-v2 event loop in \
+                    `runner/event_loop.rs` is retained for `--engine legacy` fallback.",
     },
     TopicEntry {
         name: "env",

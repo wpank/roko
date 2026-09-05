@@ -169,9 +169,11 @@ fn classify_bad_request(body: &Value) -> ProviderError {
         .pointer("/error/message")
         .and_then(Value::as_str)
         .unwrap_or("");
-    if msg.contains("context_length_exceeded")
-        || msg.contains("maximum context length")
-        || (msg.contains("context") && (msg.contains("token") || msg.contains("length")))
+    let lower = msg.to_ascii_lowercase();
+    if lower.contains("context_length_exceeded")
+        || lower.contains("maximum context length")
+        || lower.contains("token limit")
+        || (lower.contains("context") && (lower.contains("token") || lower.contains("length")))
     {
         ProviderError::ContextOverflow
     } else {

@@ -356,7 +356,9 @@ mod tests {
 
     #[test]
     fn cell_context_with_gates_resource() {
-        use roko_core::{SharedGateEvaluator, SharedGateError, SharedGateRequest, SharedGateVerdict};
+        use roko_core::{
+            SharedGateError, SharedGateEvaluator, SharedGateRequest, SharedGateVerdict,
+        };
 
         struct MockEvaluator;
 

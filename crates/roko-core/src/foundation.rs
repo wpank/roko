@@ -1330,9 +1330,7 @@ mod tests {
 
     #[test]
     fn shared_gate_error_display() {
-        let e = SharedGateError::UnknownRung {
-            rung: "foo".into(),
-        };
+        let e = SharedGateError::UnknownRung { rung: "foo".into() };
         assert!(e.to_string().contains("unknown rung"));
         assert!(e.to_string().contains("foo"));
 

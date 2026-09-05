@@ -15,10 +15,8 @@
 //! 5. Compound correlation IDs (task_id, attempt_id) propagate
 //!    end-to-end.
 
+use roko_core::tool::transcript::{ToolLifecycleStatus, TranscriptEvent, TranscriptRecord};
 use std::collections::{HashMap, HashSet};
-use roko_core::tool::transcript::{
-    ToolLifecycleStatus, TranscriptEvent, TranscriptRecord,
-};
 
 // ─── Fixture loader ──────────────────────────────────────────────────────
 
@@ -172,7 +170,10 @@ fn schema_version_unknown_future_preserved() {
     let records = load_fixture("transcript/unknown-version.jsonl");
     // This fixture has schema_version: 99 at the record level.
     // Only the first record carries the field; the rest default to CURRENT.
-    assert_eq!(records[0].schema_version, 99, "future version should be preserved");
+    assert_eq!(
+        records[0].schema_version, 99,
+        "future version should be preserved"
+    );
     for record in &records[1..] {
         assert_eq!(
             record.schema_version,
@@ -261,7 +262,10 @@ fn full_scenario_has_two_successful_tools_and_one_failed() {
             }
         }
     }
-    assert!(succeeded >= 2, "need at least 2 successful tools, got {succeeded}");
+    assert!(
+        succeeded >= 2,
+        "need at least 2 successful tools, got {succeeded}"
+    );
     assert!(failed >= 1, "need at least 1 failed tool, got {failed}");
 }
 
@@ -319,7 +323,10 @@ fn parallel_tools_paired_by_call_id_not_vector_index() {
         }
     }
 
-    assert!(tool_starts.len() >= 2, "need at least 2 parallel tool starts");
+    assert!(
+        tool_starts.len() >= 2,
+        "need at least 2 parallel tool starts"
+    );
     assert_eq!(tool_starts.len(), tool_finishes.len());
 
     // Verify that finishes are paired by call_id, which may differ from
@@ -330,7 +337,10 @@ fn parallel_tools_paired_by_call_id_not_vector_index() {
     // All started IDs must appear in finished IDs (order may differ).
     let start_set: HashSet<&str> = start_ids.iter().copied().collect();
     let finish_set: HashSet<&str> = finish_ids.iter().copied().collect();
-    assert_eq!(start_set, finish_set, "every started call must have a finish");
+    assert_eq!(
+        start_set, finish_set,
+        "every started call must have a finish"
+    );
 
     // The finish order differs from start order in this fixture (tool_call_2
     // finishes before tool_call_1), proving pairing is by call_id not index.
@@ -384,7 +394,10 @@ fn lag_reconnect_dedup_by_sequence() {
         }
     }
 
-    assert!(dupes > 0, "lag-reconnect fixture should contain duplicate sequences");
+    assert!(
+        dupes > 0,
+        "lag-reconnect fixture should contain duplicate sequences"
+    );
 
     // After dedup, records should be orderable by sequence.
     let mut deduped: Vec<&TranscriptRecord> = Vec::new();
@@ -397,7 +410,10 @@ fn lag_reconnect_dedup_by_sequence() {
     let seqs: Vec<u64> = deduped.iter().map(|r| r.meta.sequence).collect();
     let mut sorted_seqs = seqs.clone();
     sorted_seqs.sort();
-    assert_eq!(seqs, sorted_seqs, "deduped records should be in sequence order");
+    assert_eq!(
+        seqs, sorted_seqs,
+        "deduped records should be in sequence order"
+    );
 }
 
 // ─── Compound correlation IDs (T005) ────────────────────────────────────

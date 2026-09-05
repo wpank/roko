@@ -755,9 +755,11 @@ task_def_json = "{}"
             effort: "focused".to_string(),
             provider: Some("anthropic".to_string()),
             model: Some("claude-4".to_string()),
-            input: vec![Signal::builder(Kind::AgentOutput)
-                .body(Body::text("upstream"))
-                .build()],
+            input: vec![
+                Signal::builder(Kind::AgentOutput)
+                    .body(Body::text("upstream"))
+                    .build(),
+            ],
             workdir: PathBuf::from("/tmp/work"),
             capabilities: Vec::new(),
             deadline_ms: Some(1_000_000),

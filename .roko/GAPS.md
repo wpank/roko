@@ -4,7 +4,7 @@
 > and outstanding work. For agent execution protocols and task-level checklists, see
 > `tmp/status-quo/MASTER-EXECUTION-CHECKLIST.md`.
 >
-> Last updated: 2026-08-31
+> Last updated: 2026-09-05
 
 ---
 
@@ -24,7 +24,7 @@ programme is release-complete: the master checklist still contains **20 unchecke
 markers** and **11 partial markers**, including non-epic plans, documentation convergence,
 dogfood/release proof, and broader product/runtime residuals. Those residuals include E32
 adapter/Component work, E37 renderer and native-source work, native Agent-to-E33 telemetry
-publication, provider-internal security visibility, remaining Runner-v2 Graph parity,
+publication, provider-internal security visibility,
 additional E29 transports and protocol integrations, durable E38 marketplace services,
 deployed/networked E39 registries, the broader E40 eval/flywheel/on-chain system, and live
 E41 DeFi/risk/venue adapters. Loop 4 structural adaptation, ADAS/HGM-style autonomous
@@ -264,10 +264,12 @@ Anthropic native tool loop update the same limiter and exact-provider outcome re
 The native backend accepts those shared runtime hooks explicitly, and focused coverage
 proves per-turn request/token accounting plus success and rate-limit feedback.
 
-### loop_tick.rs architecture claim does not match production -- RESOLVED (2026-08-16)
+### loop_tick.rs architecture claim does not match production -- RESOLVED (2026-08-16; updated 2026-09-05)
 
-The architecture truth is now explicit. Production `roko run` uses `WorkflowEngine`, plan
-execution uses Runner-v2 or Graph, and none claims to call a universal `loop_tick` skeleton.
+The architecture truth is now explicit. Production `roko run` uses graph templates via
+`WorkflowGraphController` (#276 retired `WorkflowEngine`), plan execution uses the Graph
+engine (#260 made Graph the default; Runner-v2 retained as `--engine legacy` for one release
+cycle), and none claims to call a universal `loop_tick` skeleton.
 The core implementation is exported as `select_compose_verify_persist`, accurately scoped to
 query/route/compose/verify/persist/react. It does not claim ACT, BROADCAST, cancellation, or
 resource enforcement. Historical `loop_tick`, `loop_tick_with_config`, `TickConfig`, and
@@ -749,16 +751,33 @@ Requesting `--approval` with Graph now fails before the workspace lock or provid
 instead of warning and dispatching unapproved work; an actual Graph approval channel is still
 required for parity.
 
-The remaining Graph gap is Runner-v2
-gates/replan/approval/worktree/merge/full-state-persistence/cancellation parity. One provider
-call can still report more than its reservation after completion because the provider bridge
-has no enforceable pre-call maximum-cost API; without `max_turn_usd`, calls serialize by
-reserving all remaining capacity.
-See `crates/roko-graph/src/` for details.
+Engine convergence (#260/#276, 2026-09-05): Graph is now the sole production engine.
+`WorkflowEngine` is retired. Runner-v2 is retained as `--engine legacy` for one release
+cycle of snapshot resume compatibility. The `roko-execution` crate provides the shared
+`RuntimeServices` builder (#243) for CLI/serve/ACP. Graph host services live in
+`crates/roko-cli/src/graph_execution/` (control, delivery, feedback, identity map,
+runtime event adapter, view state, workflow caller). One provider call can still report
+more than its reservation after completion because the provider bridge has no enforceable
+pre-call maximum-cost API; without `max_turn_usd`, calls serialize by reserving all
+remaining capacity. See `crates/roko-graph/src/` for details.
 
 ---
 
 ## Recently Resolved
+
+### Batch 2026-09-05 (engine convergence)
+
+- Graph Engine is now the sole production engine (#260 default, #276 retired WorkflowEngine)
+- `roko-execution` crate provides shared `RuntimeServices` builder (#243) for CLI/serve/ACP
+- Runner-v2 retained as `--engine legacy` for one release cycle of snapshot resume compatibility
+- Graph host services module (`graph_execution/`) provides control adapter, delivery service,
+  feedback settlement, identity map, runtime event adapter, view state, and workflow caller
+- `ProductionPlanTopology` and `GuaranteedFinallyController` added to roko-graph
+- `AuthoredGraphConfig` and capability-scoped graph execution for `roko graph run`
+- `StateHubGraphEventSink` wired into all graph execution paths
+- Replan controller, merge/publish lifecycle, and approval/control/cancellation for graph TUI
+- `WorkflowGraphController` with generation-based retry replaces WorkflowEngine for `roko run`
+- 39 workspace members (was 37), ~1M LOC (was ~800K)
 
 ### Batch 2026-08-31 (FAST scheduler/lifecycle)
 

@@ -128,10 +128,7 @@ pub(crate) async fn cmd_research(
     let agent_command = command_from_config(&workdir).unwrap_or_else(|| "claude".to_string());
     let config = roko_core::config::loader::load_config_unified(&workdir).unwrap_or_default();
     // Use resolved role (defaults to "researcher" via for_research); honor explicit --role.
-    let resolved_role = resolved
-        .role
-        .as_deref()
-        .unwrap_or("researcher");
+    let resolved_role = resolved.role.as_deref().unwrap_or("researcher");
     // #181: resolve per-role effort; CLI --effort (via resolved) wins.
     let researcher_effort = resolved
         .effort
@@ -175,8 +172,14 @@ pub(crate) async fn cmd_research(
                                 "auto_deep config"
                             };
                             println!("  Backend: perplexity-deep ({reason})");
-                            return run_perplexity_deep(&workdir, &config, &topic, resume_session, resolved_role)
-                                .await;
+                            return run_perplexity_deep(
+                                &workdir,
+                                &config,
+                                &topic,
+                                resume_session,
+                                resolved_role,
+                            )
+                            .await;
                         }
                         // deep requested but no Perplexity research model configured
                         if deep {
@@ -199,8 +202,14 @@ pub(crate) async fn cmd_research(
                     }
                     if config.perplexity.default_search_model.is_some() {
                         println!("  Backend: perplexity (auto: search model configured)");
-                        return run_perplexity_standard(&workdir, &config, &topic, resume_session, resolved_role)
-                            .await;
+                        return run_perplexity_standard(
+                            &workdir,
+                            &config,
+                            &topic,
+                            resume_session,
+                            resolved_role,
+                        )
+                        .await;
                     }
                     println!("  Backend: agent (auto: fallback)");
                     run_agent_fallback(
@@ -223,8 +232,14 @@ pub(crate) async fn cmd_research(
                             );
                         }
                         println!("  Backend: perplexity-deep (explicit)");
-                        return run_perplexity_deep(&workdir, &config, &topic, resume_session, resolved_role)
-                            .await;
+                        return run_perplexity_deep(
+                            &workdir,
+                            &config,
+                            &topic,
+                            resume_session,
+                            resolved_role,
+                        )
+                        .await;
                     }
                     if config.perplexity.default_search_model.is_none() {
                         anyhow::bail!(
@@ -232,7 +247,14 @@ pub(crate) async fn cmd_research(
                         );
                     }
                     println!("  Backend: perplexity (explicit)");
-                    run_perplexity_standard(&workdir, &config, &topic, resume_session, resolved_role).await
+                    run_perplexity_standard(
+                        &workdir,
+                        &config,
+                        &topic,
+                        resume_session,
+                        resolved_role,
+                    )
+                    .await
                 }
                 ResearchBackend::Gemini => {
                     if config.gemini.grounding_model.is_none() {
@@ -241,7 +263,8 @@ pub(crate) async fn cmd_research(
                         );
                     }
                     println!("  Backend: gemini (explicit)");
-                    run_gemini_grounded(&workdir, &config, &topic, resume_session, resolved_role).await
+                    run_gemini_grounded(&workdir, &config, &topic, resume_session, resolved_role)
+                        .await
                 }
                 ResearchBackend::Agent => {
                     println!("  Backend: agent (explicit)");

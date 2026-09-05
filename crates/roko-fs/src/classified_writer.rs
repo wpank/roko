@@ -178,14 +178,16 @@ impl std::fmt::Debug for ClassifiedTranscriptWriter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ClassifiedTranscriptWriter")
             .field("path", &self.path)
-            .field(
-                "records_written",
-                &self.records_written.load(Ordering::Relaxed),
-            )
+            .field("inner", &"<Mutex<BufWriter<File>>>")
             .field(
                 "flushed_through",
                 &self.flushed_through.load(Ordering::Relaxed),
             )
+            .field(
+                "records_written",
+                &self.records_written.load(Ordering::Relaxed),
+            )
+            .field("write_errors", &self.write_errors.load(Ordering::Relaxed))
             .finish()
     }
 }
@@ -369,7 +371,10 @@ mod tests {
             .iter()
             .map(|r| event_type_name(&r.record.event))
             .collect();
-        assert_eq!(live_types, persisted_types, "live=replay event type mismatch");
+        assert_eq!(
+            live_types, persisted_types,
+            "live=replay event type mismatch"
+        );
     }
 
     #[test]
@@ -422,9 +427,7 @@ mod tests {
             "slack: xoxb-123-456-abc",
         ];
         for (i, secret) in secrets.iter().enumerate() {
-            store
-                .append(delta_record((i + 1) as u64, secret))
-                .unwrap();
+            store.append(delta_record((i + 1) as u64, secret)).unwrap();
         }
         writer.flush_from_store(&store);
 

@@ -537,7 +537,10 @@ mod tests {
         // Legacy JSONL without schema_version should default to CURRENT.
         let json = r#"{"meta":{"run_id":"r","turn_id":0,"agent_id":"a","sequence":1,"timestamp_ms":0,"provider":"p","model":"m"},"event":{"type":"assistant_delta","text":"hi"}}"#;
         let record: TranscriptRecord = serde_json::from_str(json).unwrap();
-        assert_eq!(record.schema_version, TranscriptRecord::CURRENT_SCHEMA_VERSION);
+        assert_eq!(
+            record.schema_version,
+            TranscriptRecord::CURRENT_SCHEMA_VERSION
+        );
     }
 
     #[test]
@@ -771,7 +774,9 @@ mod tests {
                 meta: meta_at(8),
                 event: TranscriptEvent::ToolFinished {
                     call_id: "call-fail".into(),
-                    result: ToolResult::err(crate::tool::call::ToolError::Other("exit code 1".into())),
+                    result: ToolResult::err(crate::tool::call::ToolError::Other(
+                        "exit code 1".into(),
+                    )),
                     status: ToolLifecycleStatus::Failed,
                     execution_ms: Some(500),
                 },
@@ -962,11 +967,8 @@ mod tests {
     fn golden_fixture_dedup_by_sequence() {
         let records = golden_fixture();
         // Duplicate every record.
-        let mut doubled: Vec<TranscriptRecord> = records
-            .iter()
-            .chain(records.iter())
-            .cloned()
-            .collect();
+        let mut doubled: Vec<TranscriptRecord> =
+            records.iter().chain(records.iter()).cloned().collect();
         doubled.sort_by_key(|r| r.meta.sequence);
         // Dedup by sequence.
         let mut seen = std::collections::HashSet::new();
@@ -1026,15 +1028,24 @@ mod tests {
         // Verify terminal statuses match expectations.
         assert!(matches!(
             &finished["call-ok"].event,
-            TranscriptEvent::ToolFinished { status: ToolLifecycleStatus::Succeeded, .. }
+            TranscriptEvent::ToolFinished {
+                status: ToolLifecycleStatus::Succeeded,
+                ..
+            }
         ));
         assert!(matches!(
             &finished["call-fail"].event,
-            TranscriptEvent::ToolFinished { status: ToolLifecycleStatus::Failed, .. }
+            TranscriptEvent::ToolFinished {
+                status: ToolLifecycleStatus::Failed,
+                ..
+            }
         ));
         assert!(matches!(
             &finished["call-cancel"].event,
-            TranscriptEvent::ToolFinished { status: ToolLifecycleStatus::Cancelled, .. }
+            TranscriptEvent::ToolFinished {
+                status: ToolLifecycleStatus::Cancelled,
+                ..
+            }
         ));
     }
 
@@ -1056,9 +1067,7 @@ mod tests {
                     subagent_updated = true;
                     lifecycle_order.push(("update", r.meta.sequence));
                 }
-                TranscriptEvent::SubagentFinished { subagent_id, .. }
-                    if subagent_id == "sub-1" =>
-                {
+                TranscriptEvent::SubagentFinished { subagent_id, .. } if subagent_id == "sub-1" => {
                     subagent_finished = true;
                     lifecycle_order.push(("finished", r.meta.sequence));
                 }

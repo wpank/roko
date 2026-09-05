@@ -966,11 +966,18 @@ mod tests {
 
         assert_eq!(records.len(), 4, "all four signals should be visited");
         assert_eq!(records[0].hash, d_id.to_string(), "root should be first");
-        assert_eq!(records[3].hash, a_id.to_string(), "shared ancestor should be last");
+        assert_eq!(
+            records[3].hash,
+            a_id.to_string(),
+            "shared ancestor should be last"
+        );
 
         // Middle two are B and C in lexicographic hash order.
         let mid: Vec<String> = records[1..3].iter().map(|r| r.hash.clone()).collect();
-        assert!(mid[0] < mid[1], "BFS parents should be lexicographically sorted");
+        assert!(
+            mid[0] < mid[1],
+            "BFS parents should be lexicographically sorted"
+        );
         let bc: HashSet<String> = [b_id.to_string(), c_id.to_string()].into();
         let actual: HashSet<String> = mid.into_iter().collect();
         assert_eq!(bc, actual);
@@ -1068,8 +1075,7 @@ mod tests {
                 // The error should reference one of the phantom parents.
                 // Determinism: the hash in the error must be the lex-first
                 // phantom parent (after sorting).
-                let mut sorted_phantoms =
-                    vec![p1.to_string(), p2.to_string()];
+                let mut sorted_phantoms = vec![p1.to_string(), p2.to_string()];
                 sorted_phantoms.sort();
                 assert_eq!(
                     e.hash, sorted_phantoms[0],
@@ -1165,5 +1171,4 @@ mod tests {
             );
         }
     }
-
 }

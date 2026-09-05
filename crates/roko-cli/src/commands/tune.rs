@@ -485,7 +485,15 @@ mod tests {
         let cmd = TuneCmd::Routing { workdir: None };
         let preset = tune_to_preset(cmd);
         assert!(
-            matches!(preset, ConfigPresetCmd::Routing { yes: true, dry_run: false, global: false, .. }),
+            matches!(
+                preset,
+                ConfigPresetCmd::Routing {
+                    yes: true,
+                    dry_run: false,
+                    global: false,
+                    ..
+                }
+            ),
             "legacy tune routing must forward to config preset routing with --yes"
         );
     }
@@ -495,7 +503,15 @@ mod tests {
         let cmd = TuneCmd::Gates { workdir: None };
         let preset = tune_to_preset(cmd);
         assert!(
-            matches!(preset, ConfigPresetCmd::Gates { yes: true, dry_run: false, global: false, .. }),
+            matches!(
+                preset,
+                ConfigPresetCmd::Gates {
+                    yes: true,
+                    dry_run: false,
+                    global: false,
+                    ..
+                }
+            ),
             "legacy tune gates must forward to config preset gates with --yes"
         );
     }

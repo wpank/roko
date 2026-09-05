@@ -65,7 +65,6 @@ impl RunReport {
     pub fn overall_success(&self) -> bool {
         self.agent_success && self.gate_verdicts.iter().all(|(_, ok)| *ok)
     }
-
 }
 
 pub fn write_shared_workflow_run(
@@ -450,7 +449,10 @@ impl WorkflowServiceAdapter {
         model_config: RokoConfig,
         _selection: &EffectiveModelSelection,
         overrides: &CliOverrides,
-    ) -> anyhow::Result<(roko_execution::NonPlanServiceHandle, roko_execution::RuntimeServices)> {
+    ) -> anyhow::Result<(
+        roko_execution::NonPlanServiceHandle,
+        roko_execution::RuntimeServices,
+    )> {
         use roko_execution::profiles::RuntimeProfile;
 
         let exec_overrides = roko_execution::overrides_for_workflow(
@@ -504,7 +506,9 @@ pub(crate) fn workflow_config_for_template(workflow_template: &str) -> WorkflowC
 }
 
 /// Convert a `PipelineBandConfig` from `roko.toml` into a `WorkflowConfig` for the V2 engine.
-pub(crate) fn workflow_config_from_band(band: &roko_core::config::PipelineBandConfig) -> WorkflowConfig {
+pub(crate) fn workflow_config_from_band(
+    band: &roko_core::config::PipelineBandConfig,
+) -> WorkflowConfig {
     WorkflowConfig {
         has_strategy: band.strategist,
         has_review: band.reviewers,
@@ -1266,106 +1270,7 @@ fn learning_episode_paths(workdir: &Path) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use roko_core::foundation::{
-        FeedbackEvent, FeedbackSink, GateClassification, GateConfig as WorkflowGateConfig,
-        GateReport, GateRunner, GateVerdict, ModelCallRequest, ModelCallResponse, ModelCaller,
-        PromptAssembler, PromptSpec, TokenUsage,
-    };
     use tempfile::TempDir;
-    use tokio::sync::Mutex as TokioMutex;
-
-    struct ShareMockModelCaller;
-
-    #[async_trait::async_trait]
-    impl ModelCaller for ShareMockModelCaller {
-        async fn call(&self, req: ModelCallRequest) -> roko_core::Result<ModelCallResponse> {
-            assert_eq!(req.model, "share-mock-model");
-            let role = req.role.as_deref().unwrap_or("unknown");
-            let content = format!("mock response from {role}");
-            Ok(ModelCallResponse {
-                content,
-                model: req.model,
-                usage: TokenUsage {
-                    input_tokens: 11,
-                    output_tokens: 7,
-                    total_tokens: 18,
-                    cost_usd: 0.001,
-                },
-                stop_reason: Some("stop".to_string()),
-                request_id: Some("share-mock-request".to_string()),
-            })
-        }
-    }
-
-    struct ShareMockPromptAssembler {
-        assembled: TokioMutex<Vec<String>>,
-    }
-
-    #[async_trait::async_trait]
-    impl PromptAssembler for ShareMockPromptAssembler {
-        async fn assemble(&self, spec: PromptSpec) -> roko_core::Result<String> {
-            let role = spec.role.unwrap_or_else(|| "unknown".to_string());
-            let task = spec.task.unwrap_or_else(|| "missing task".to_string());
-            let prompt = format!("assembled prompt for {role}: {task}");
-            self.assembled.lock().await.push(prompt.clone());
-            Ok(prompt)
-        }
-
-        fn last_prompt_section_ids(&self) -> Vec<String> {
-            vec!["share_test_section".to_string()]
-        }
-
-        fn last_knowledge_ids(&self) -> Vec<String> {
-            vec!["share_test_knowledge".to_string()]
-        }
-    }
-
-    struct ShareMockFeedbackSink {
-        events: TokioMutex<Vec<FeedbackEvent>>,
-        flushes: TokioMutex<u32>,
-    }
-
-    #[async_trait::async_trait]
-    impl FeedbackSink for ShareMockFeedbackSink {
-        async fn record(&self, event: FeedbackEvent) -> roko_core::Result<()> {
-            self.events.lock().await.push(event);
-            Ok(())
-        }
-
-        async fn flush(&self) -> roko_core::Result<()> {
-            *self.flushes.lock().await += 1;
-            Ok(())
-        }
-    }
-
-    struct ShareMockGateRunner;
-
-    #[async_trait::async_trait]
-    impl GateRunner for ShareMockGateRunner {
-        async fn run_gates(&self, config: WorkflowGateConfig) -> roko_core::Result<GateReport> {
-            if config.enabled_gates.is_empty() {
-                return Err(roko_core::RokoError::invalid(
-                    "share test expected at least one configured gate",
-                ));
-            }
-
-            Ok(GateReport {
-                verdicts: config
-                    .enabled_gates
-                    .into_iter()
-                    .map(|gate_name| GateVerdict {
-                        gate_name,
-                        classification: GateClassification::default(),
-                        passed: true,
-                        skipped: false,
-                        skip_reason: None,
-                        output: "mock gate passed".to_string(),
-                        duration_ms: 5,
-                    })
-                    .collect(),
-            })
-        }
-    }
 
     #[test]
     fn run_report_overall_success_requires_all_gates() {
@@ -1388,91 +1293,9 @@ mod tests {
         assert!(!r.overall_success());
     }
 
-    #[tokio::test]
-    async fn test_v2_share_produces_real_transcript() {
-        let tempdir = TempDir::new().expect("tempdir");
-        init_git_workdir(tempdir.path());
-        std::fs::write(
-            tempdir.path().join("change.txt"),
-            "share transcript change\n",
-        )
-        .expect("write test change");
-
-        let prompt = "produce a share transcript with real data";
-        let role = "implementer";
-        let agent = "share-mock-provider";
-        let prompt_assembler = Arc::new(ShareMockPromptAssembler {
-            assembled: TokioMutex::new(Vec::new()),
-        });
-        let services = EffectServices {
-            default_model: "share-mock-model".to_string(),
-            model_caller: Arc::new(ShareMockModelCaller),
-            prompt_assembler: prompt_assembler.clone(),
-            feedback_sink: Arc::new(ShareMockFeedbackSink {
-                events: TokioMutex::new(Vec::new()),
-                flushes: TokioMutex::new(0),
-            }),
-            gate_runner: Arc::new(ShareMockGateRunner),
-            affect_policy: None,
-        };
-        let engine = WorkflowEngine::new(services);
-        let report = engine
-            .run(WorkflowRunConfig {
-                prompt: prompt.to_string(),
-                input_messages: Vec::new(),
-                workdir: tempdir.path().to_path_buf(),
-                workflow: WorkflowConfig::express(),
-                enabled_gates: vec!["compile".to_string()],
-                shell_gates: Vec::new(),
-                commit_prefix: Some("test".to_string()),
-            })
-            .await
-            .expect("workflow run succeeds");
-
-        let token = write_shared_workflow_run(tempdir.path(), prompt, agent, role, &report)
-            .expect("shared transcript is written");
-        let path = tempdir
-            .path()
-            .join(".roko")
-            .join("shared")
-            .join(format!("{token}.json"));
-        let transcript: roko_serve::routes::shared_runs::RunTranscript =
-            serde_json::from_str(&std::fs::read_to_string(path).expect("read transcript"))
-                .expect("parse transcript");
-        let assembled_prompts = prompt_assembler.assembled.lock().await;
-
-        assert!(!transcript.agent.trim().is_empty());
-        assert_ne!(transcript.agent, "unknown");
-        assert_eq!(transcript.agent, agent);
-        assert!(!transcript.role.trim().is_empty());
-        assert_eq!(transcript.role, role);
-        assert_eq!(
-            assembled_prompts.first().map(String::as_str),
-            Some("assembled prompt for implementer: produce a share transcript with real data")
-        );
-        assert_eq!(transcript.prompt, prompt);
-        assert_eq!(transcript.model.as_deref(), Some("share-mock-model"));
-        assert_eq!(
-            transcript.output.as_deref(),
-            Some("mock response from implementer")
-        );
-        assert!(transcript.success);
-        // Gate verdicts are surfaced through RuntimeEvent::GatePassed in the
-        // effect driver, so the mock "compile" gate appears in the transcript.
-        assert!(!transcript.gates.is_empty());
-        assert_eq!(transcript.cost_usd, Some(0.001));
-        assert_eq!(
-            transcript.episode_id.as_deref(),
-            Some(report.run_id.as_str())
-        );
-        assert!(report.events.iter().any(|event| matches!(
-            event.payload,
-            roko_core::RuntimeEvent::AgentSpawned { ref agent_id, ref role, ref model, .. }
-                if !agent_id.trim().is_empty()
-                    && role == "implementer"
-                    && model == "share-mock-model"
-        )));
-    }
+    // test_v2_share_produces_real_transcript removed: it referenced
+    // EffectServices and WorkflowEngine which were retired by #276.
+    // Share transcript coverage is provided by the graph workflow path.
 
     #[test]
     fn engine_flag_express_selects_express_config() {
@@ -1652,154 +1475,25 @@ mod tests {
         );
     }
 
-    // ── WorkflowExecutionRoute tests ────────────────────────────────────
+    // ── resolve_engine_flag tests (#300) ──────────────────────────────
 
     #[test]
-    fn workflow_route_default_is_legacy_default() {
-        assert_eq!(
-            WorkflowExecutionRoute::default(),
-            WorkflowExecutionRoute::LegacyDefault
-        );
+    fn resolve_engine_flag_default_is_graph() {
+        assert_eq!(resolve_engine_flag(None), "graph");
     }
 
     #[test]
-    fn workflow_route_serde_round_trip() {
-        let variants = [
-            WorkflowExecutionRoute::LegacyDefault,
-            WorkflowExecutionRoute::GraphCanary,
-            WorkflowExecutionRoute::ReplayOnly,
-            WorkflowExecutionRoute::LiveFallback,
-        ];
-        for route in variants {
-            let json = serde_json::to_string(&route).unwrap();
-            let back: WorkflowExecutionRoute = serde_json::from_str(&json).unwrap();
-            assert_eq!(route, back, "serde round-trip failed for {route}");
-        }
+    fn resolve_engine_flag_accepts_graph_values() {
+        assert_eq!(resolve_engine_flag(Some("graph")), "graph");
+        assert_eq!(resolve_engine_flag(Some("graph_canary")), "graph");
     }
 
     #[test]
-    fn workflow_route_serde_lowercase_strings() {
-        assert_eq!(
-            serde_json::to_string(&WorkflowExecutionRoute::LegacyDefault).unwrap(),
-            "\"legacy_default\""
-        );
-        assert_eq!(
-            serde_json::to_string(&WorkflowExecutionRoute::GraphCanary).unwrap(),
-            "\"graph_canary\""
-        );
-        assert_eq!(
-            serde_json::to_string(&WorkflowExecutionRoute::ReplayOnly).unwrap(),
-            "\"replay_only\""
-        );
-        assert_eq!(
-            serde_json::to_string(&WorkflowExecutionRoute::LiveFallback).unwrap(),
-            "\"live_fallback\""
-        );
-    }
-
-    #[test]
-    fn workflow_route_from_str_accepts_aliases() {
-        use std::str::FromStr;
-
-        // Standard names
-        assert_eq!(
-            WorkflowExecutionRoute::from_str("legacy_default").unwrap(),
-            WorkflowExecutionRoute::LegacyDefault
-        );
-        assert_eq!(
-            WorkflowExecutionRoute::from_str("graph_canary").unwrap(),
-            WorkflowExecutionRoute::GraphCanary
-        );
-        assert_eq!(
-            WorkflowExecutionRoute::from_str("replay_only").unwrap(),
-            WorkflowExecutionRoute::ReplayOnly
-        );
-        assert_eq!(
-            WorkflowExecutionRoute::from_str("live_fallback").unwrap(),
-            WorkflowExecutionRoute::LiveFallback
-        );
-
-        // Dash aliases
-        assert_eq!(
-            WorkflowExecutionRoute::from_str("graph-canary").unwrap(),
-            WorkflowExecutionRoute::GraphCanary
-        );
-        assert_eq!(
-            WorkflowExecutionRoute::from_str("live-fallback").unwrap(),
-            WorkflowExecutionRoute::LiveFallback
-        );
-
-        // Short aliases
-        assert_eq!(
-            WorkflowExecutionRoute::from_str("graph").unwrap(),
-            WorkflowExecutionRoute::GraphCanary
-        );
-        assert_eq!(
-            WorkflowExecutionRoute::from_str("replay").unwrap(),
-            WorkflowExecutionRoute::ReplayOnly
-        );
-        assert_eq!(
-            WorkflowExecutionRoute::from_str("fallback").unwrap(),
-            WorkflowExecutionRoute::LiveFallback
-        );
-
-        // Unknown
-        assert!(WorkflowExecutionRoute::from_str("unknown").is_err());
-    }
-
-    #[test]
-    fn workflow_route_display_matches_serde_value() {
-        let variants = [
-            (WorkflowExecutionRoute::LegacyDefault, "legacy_default"),
-            (WorkflowExecutionRoute::GraphCanary, "graph_canary"),
-            (WorkflowExecutionRoute::ReplayOnly, "replay_only"),
-            (WorkflowExecutionRoute::LiveFallback, "live_fallback"),
-        ];
-        for (route, expected) in variants {
-            assert_eq!(route.to_string(), expected);
-        }
-    }
-
-    #[tokio::test]
-    async fn workflow_route_graph_canary_returns_not_implemented() {
-        let err = run_workflow_report(
-            WorkflowExecutionRoute::GraphCanary,
-            "test prompt",
-            std::path::Path::new("/nonexistent"),
-            "standard",
-            Vec::new(),
-            Vec::new(),
-            None,
-            &CliOverrides::default(),
-        )
-        .await;
-        assert!(err.is_err());
-        let msg = err.unwrap_err().to_string();
-        assert!(
-            msg.contains("GraphCanary"),
-            "error should mention GraphCanary: {msg}"
-        );
-    }
-
-    #[tokio::test]
-    async fn workflow_route_replay_only_returns_not_implemented() {
-        let err = run_workflow_report(
-            WorkflowExecutionRoute::ReplayOnly,
-            "test prompt",
-            std::path::Path::new("/nonexistent"),
-            "standard",
-            Vec::new(),
-            Vec::new(),
-            None,
-            &CliOverrides::default(),
-        )
-        .await;
-        assert!(err.is_err());
-        let msg = err.unwrap_err().to_string();
-        assert!(
-            msg.contains("ReplayOnly"),
-            "error should mention ReplayOnly: {msg}"
-        );
+    fn resolve_engine_flag_unknown_falls_back_to_graph() {
+        // Unknown values warn but do not fail.
+        assert_eq!(resolve_engine_flag(Some("runner-v2")), "graph");
+        assert_eq!(resolve_engine_flag(Some("legacy")), "graph");
+        assert_eq!(resolve_engine_flag(Some("unknown")), "graph");
     }
 
     #[test]
@@ -1903,10 +1597,7 @@ mod tests {
             handle.profile(),
             roko_execution::profiles::RuntimeProfile::AgentServer
         );
-        assert_eq!(
-            handle.instance_id(),
-            "acp_workflow_test-session",
-        );
+        assert_eq!(handle.instance_id(), "acp_workflow_test-session",);
         assert!(handle.cascade_enabled());
     }
 }

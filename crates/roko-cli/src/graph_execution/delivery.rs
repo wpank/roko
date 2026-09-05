@@ -223,7 +223,7 @@ impl DeliveryBackend for GitDeliveryBackend {
             priority: 0,
             retry_count: 0,
         };
-        self.merge_queue.enqueue(merge_req);
+        let _ = self.merge_queue.enqueue(merge_req);
 
         self.git_merge(&request.branch, &request.target_branch)
             .await

@@ -1066,19 +1066,29 @@ pub async fn run(
         } => run_agent_status(&name, workdir.as_deref(), json),
         AgentCmd::Serve(args) => {
             reject_unsupported_serve_flags(&args)?;
-            let default_overrides = roko_cli::resolved_overrides::ResolvedExecutionOverrides::for_agent_serve(
-                &roko_cli::resolved_overrides::GlobalCliFlags {
-                    model: None, role: None, effort: None, resume: None,
-                    json: false, quiet: false, no_replan: false,
-                    skip_validate: false, headless: false, no_serve: false,
-                    color_enabled: true,
-                },
-                &roko_cli::resolved_overrides::AgentServeInput {
-                    allow_stub_cognitive_loop: args.allow_stub_cognitive_loop,
-                },
-            );
+            let default_overrides =
+                roko_cli::resolved_overrides::ResolvedExecutionOverrides::for_agent_serve(
+                    &roko_cli::resolved_overrides::GlobalCliFlags {
+                        model: None,
+                        role: None,
+                        effort: None,
+                        resume: None,
+                        json: false,
+                        quiet: false,
+                        no_replan: false,
+                        skip_validate: false,
+                        headless: false,
+                        no_serve: false,
+                        color_enabled: true,
+                    },
+                    &roko_cli::resolved_overrides::AgentServeInput {
+                        allow_stub_cognitive_loop: args.allow_stub_cognitive_loop,
+                    },
+                );
             let resolved = overrides.unwrap_or(&default_overrides);
-            AgentServeRuntimeConfig::from_args(args, resolved).run().await
+            AgentServeRuntimeConfig::from_args(args, resolved)
+                .run()
+                .await
         }
         AgentCmd::Chat {
             agent,
@@ -1089,12 +1099,9 @@ pub async fn run(
         } => {
             let workdir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             // Use model from resolved overrides if no command-local --model.
-            let effective_model = model.or_else(|| {
-                overrides.and_then(|o| o.model.clone())
-            });
-            let effective_provider = provider.or_else(|| {
-                overrides.and_then(|o| o.provider.clone())
-            });
+            let effective_model = model.or_else(|| overrides.and_then(|o| o.model.clone()));
+            let effective_provider =
+                provider.or_else(|| overrides.and_then(|o| o.provider.clone()));
             let launch = resolve_chat_launch(
                 agent.as_deref(),
                 effective_provider,
@@ -1673,14 +1680,22 @@ pub(crate) fn run_agent_stop(name: &str, force: bool, workdir: Option<&Path>) ->
     // Send initial signal with verified identity.
     let sig = if force {
         #[cfg(unix)]
-        { libc::SIGKILL }
+        {
+            libc::SIGKILL
+        }
         #[cfg(not(unix))]
-        { 9 }
+        {
+            9
+        }
     } else {
         #[cfg(unix)]
-        { libc::SIGTERM }
+        {
+            libc::SIGTERM
+        }
         #[cfg(not(unix))]
-        { 15 }
+        {
+            15
+        }
     };
 
     if !send_signal_verified(entry.pid, sig, entry.process_start_time) {
@@ -1709,9 +1724,13 @@ pub(crate) fn run_agent_stop(name: &str, force: bool, workdir: Option<&Path>) ->
             entry.pid,
             {
                 #[cfg(unix)]
-                { libc::SIGKILL }
+                {
+                    libc::SIGKILL
+                }
                 #[cfg(not(unix))]
-                { 9 }
+                {
+                    9
+                }
             },
             entry.process_start_time,
         );
@@ -1817,10 +1836,7 @@ fn run_agent_status(name: &str, workdir: Option<&Path>, json: bool) -> Result<()
                 .map(|p| p.to_string())
                 .unwrap_or_else(|| "-".to_string())
         );
-        println!(
-            "Bind:     {}",
-            bind_str.unwrap_or_else(|| "-".to_string())
-        );
+        println!("Bind:     {}", bind_str.unwrap_or_else(|| "-".to_string()));
         println!(
             "Started:  {}",
             started_str.unwrap_or_else(|| "-".to_string())
@@ -1981,9 +1997,13 @@ async fn run_agent_delete(name: &str, force: bool, workdir: Option<&Path>) -> Re
                     entry.pid,
                     {
                         #[cfg(unix)]
-                        { libc::SIGKILL }
+                        {
+                            libc::SIGKILL
+                        }
                         #[cfg(not(unix))]
-                        { 9 }
+                        {
+                            9
+                        }
                     },
                     entry.process_start_time,
                 );
@@ -2022,15 +2042,18 @@ async fn run_agent_delete(name: &str, force: bool, workdir: Option<&Path>) -> Re
                 entry.pid,
                 {
                     #[cfg(unix)]
-                    { libc::SIGTERM }
+                    {
+                        libc::SIGTERM
+                    }
                     #[cfg(not(unix))]
-                    { 15 }
+                    {
+                        15
+                    }
                 },
                 entry.process_start_time,
             );
 
-            let deadline =
-                tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+            let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
             while tokio::time::Instant::now() < deadline {
                 if !is_process_alive(entry.pid) {
                     return Ok(());
@@ -2043,9 +2066,13 @@ async fn run_agent_delete(name: &str, force: bool, workdir: Option<&Path>) -> Re
                     entry.pid,
                     {
                         #[cfg(unix)]
-                        { libc::SIGKILL }
+                        {
+                            libc::SIGKILL
+                        }
                         #[cfg(not(unix))]
-                        { 9 }
+                        {
+                            9
+                        }
                     },
                     entry.process_start_time,
                 );
@@ -2096,10 +2123,7 @@ async fn run_agent_delete(name: &str, force: bool, workdir: Option<&Path>) -> Re
                 }
             }
             if backed_up > 0 {
-                println!(
-                    "backed up {backed_up} file(s) to {}",
-                    backup_dir.display()
-                );
+                println!("backed up {backed_up} file(s) to {}", backup_dir.display());
             }
             Ok(())
         }
@@ -2494,7 +2518,11 @@ mod tests {
                 None,
                 Some("A test agent prompt that is long enough to pass validation."),
                 Some(dir.path()),
-                vec!["rust".to_string(), "  rust  ".to_string(), "p2p".to_string()],
+                vec![
+                    "rust".to_string(),
+                    "  rust  ".to_string(),
+                    "p2p".to_string(),
+                ],
                 Some("Verified".to_string()),
                 42,
                 3,
@@ -2506,8 +2534,7 @@ mod tests {
         let manifest_path = dir.path().join(".roko/agents/test-meta/manifest.toml");
         assert!(manifest_path.exists());
         let text = std::fs::read_to_string(&manifest_path).unwrap();
-        let manifest: roko_agent::lifecycle::AgentExtendedManifest =
-            toml::from_str(&text).unwrap();
+        let manifest: roko_agent::lifecycle::AgentExtendedManifest = toml::from_str(&text).unwrap();
         let meta = manifest.creation_metadata.expect("creation_metadata");
         assert_eq!(meta.skills, vec!["rust", "p2p"]);
         assert_eq!(meta.tier.as_deref(), Some("Verified"));

@@ -15,11 +15,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use roko_execution::feedback::receipt::{ChoiceSource, TaskAttemptReceiptV1};
-use roko_execution::feedback::settler::{
-    FeedbackSettler, SettlementSink, SinkError, SINK_KEYS,
-};
 use roko_execution::FeedbackBundle;
+use roko_execution::feedback::receipt::{ChoiceSource, TaskAttemptReceiptV1};
+use roko_execution::feedback::settler::{FeedbackSettler, SINK_KEYS, SettlementSink, SinkError};
 
 // ---------------------------------------------------------------------------
 // Sink factory
@@ -265,10 +263,8 @@ impl SettlementSink for EpisodeSink {
     }
 
     async fn settle(&self, receipt: &TaskAttemptReceiptV1) -> Result<(), SinkError> {
-        let mut episode = roko_learn::episode_logger::Episode::new(
-            &receipt.resolved_provider,
-            &receipt.task_id,
-        );
+        let mut episode =
+            roko_learn::episode_logger::Episode::new(&receipt.resolved_provider, &receipt.task_id);
         episode.success = receipt.succeeded();
         episode.extra.insert(
             "idempotency_key".to_string(),
@@ -454,8 +450,7 @@ impl SettlementSink for PlaybookSink {
     }
 
     async fn settle(&self, receipt: &TaskAttemptReceiptV1) -> Result<(), SinkError> {
-        let store =
-            roko_learn::playbook::PlaybookStore::new(self.learn_dir.join("playbooks"));
+        let store = roko_learn::playbook::PlaybookStore::new(self.learn_dir.join("playbooks"));
         let playbook_id = format!("task-{}", receipt.task_id);
         store
             .record_outcome(&playbook_id, receipt.succeeded())
@@ -608,8 +603,10 @@ impl SettlementSink for ConductorSink {
             self.health_registry
                 .record_success(&receipt.resolved_provider);
         } else {
-            self.health_registry
-                .record_failure(&receipt.resolved_provider, roko_learn::provider_health::ErrorClass::Unknown);
+            self.health_registry.record_failure(
+                &receipt.resolved_provider,
+                roko_learn::provider_health::ErrorClass::Unknown,
+            );
         }
         Ok(())
     }
@@ -713,9 +710,7 @@ pub struct CompletionSinkResult {
 
 impl CompletionSinkResult {
     /// Build from a [`SettlementOutcome`].
-    pub fn from_outcome(
-        outcome: &roko_execution::feedback::settler::SettlementOutcome,
-    ) -> Self {
+    pub fn from_outcome(outcome: &roko_execution::feedback::settler::SettlementOutcome) -> Self {
         use roko_execution::feedback::settler::SettlementOutcome;
         match outcome {
             SettlementOutcome::FullySettled => Self {
@@ -750,9 +745,7 @@ impl CompletionSinkResult {
 mod tests {
     use super::*;
     use roko_execution::feedback::receipt::AttemptTerminalStatus;
-    use roko_execution::feedback::settler::{
-        SettlementOutcome, SinkSettlementState,
-    };
+    use roko_execution::feedback::settler::{SettlementOutcome, SinkSettlementState};
     use tempfile::TempDir;
 
     fn test_receipt() -> TaskAttemptReceiptV1 {
@@ -772,9 +765,7 @@ mod tests {
     fn feedback_bundle(dir: &std::path::Path) -> FeedbackBundle {
         FeedbackBundle {
             learn_dir: dir.to_path_buf(),
-            health_registry: Arc::new(
-                roko_learn::provider_health::ProviderHealthRegistry::new(),
-            ),
+            health_registry: Arc::new(roko_learn::provider_health::ProviderHealthRegistry::new()),
             cascade_router: None,
         }
     }
@@ -917,8 +908,7 @@ mod tests {
         assert!(ledger2.is_complete());
 
         // Receipt file should still have exactly 1 line.
-        let content =
-            std::fs::read_to_string(learn_dir.join("attempt-receipts.jsonl")).unwrap();
+        let content = std::fs::read_to_string(learn_dir.join("attempt-receipts.jsonl")).unwrap();
         assert_eq!(content.lines().count(), 1, "exactly one receipt line");
     }
 

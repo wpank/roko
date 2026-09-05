@@ -962,7 +962,10 @@ mod tests {
 
         assert_eq!(roundtrip.adapter_key, adapter_keys::PRD_REPLAN);
         assert!(roundtrip.dry_run);
-        assert_eq!(roundtrip.overrides.model.as_deref(), Some("claude-opus-4-6"));
+        assert_eq!(
+            roundtrip.overrides.model.as_deref(),
+            Some("claude-opus-4-6")
+        );
         assert_eq!(roundtrip.overrides.repair_cap, Some(4));
         assert_eq!(roundtrip.overrides.budget_usd, Some(5.0));
         assert!(roundtrip.source.has_failure_context());

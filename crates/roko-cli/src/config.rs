@@ -1186,7 +1186,6 @@ impl LearningLayer {
     }
 }
 
-
 /// Partial provider config used for layered merges.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ProviderLayer {
@@ -1496,11 +1495,7 @@ where
 /// This replaces the old typed `ConfigLayer` approach: instead of maintaining a
 /// parallel Option-wrapped schema we operate directly on the raw TOML tree,
 /// preserving sparse serialization (only set keys appear in the file).
-pub(crate) fn set_toml_dotted_key(
-    doc: &mut toml::Value,
-    key: &str,
-    value: &str,
-) -> Result<()> {
+pub(crate) fn set_toml_dotted_key(doc: &mut toml::Value, key: &str, value: &str) -> Result<()> {
     let parsed = parse_value_for_key(key, value)?;
     let segments: Vec<&str> = key.split('.').collect();
     if segments.is_empty() {
@@ -1554,7 +1549,9 @@ fn parse_value_for_key(key: &str, value: &str) -> Result<toml::Value> {
         | ["learning", "replan_on_gate_failure"]
         | ["learning", "auto_playbook_refresh"]
         | ["learning", "use_lookahead_router"] => {
-            let b = value.parse::<bool>().with_context(|| format!("parse {key} as bool"))?;
+            let b = value
+                .parse::<bool>()
+                .with_context(|| format!("parse {key} as bool"))?;
             Ok(toml::Value::Boolean(b))
         }
         // Integers (u64 / usize / u32 — all stored as TOML Integer)
@@ -1573,7 +1570,9 @@ fn parse_value_for_key(key: &str, value: &str) -> Result<toml::Value> {
         | ["learning", "replan_max_per_plan"]
         | ["learning", "replan_gate_attempts"]
         | ["learning", "gate_threshold_flush_interval"] => {
-            let n = value.parse::<i64>().with_context(|| format!("parse {key} as integer"))?;
+            let n = value
+                .parse::<i64>()
+                .with_context(|| format!("parse {key} as integer"))?;
             Ok(toml::Value::Integer(n))
         }
         // Floats
@@ -1581,7 +1580,9 @@ fn parse_value_for_key(key: &str, value: &str) -> Result<toml::Value> {
         | ["dreams", "quality_penalty"]
         | ["executor", "budget_usd"]
         | ["learning", "lookahead_threshold"] => {
-            let f = value.parse::<f64>().with_context(|| format!("parse {key} as float"))?;
+            let f = value
+                .parse::<f64>()
+                .with_context(|| format!("parse {key} as float"))?;
             Ok(toml::Value::Float(f))
         }
         // Plain strings
@@ -1620,10 +1621,9 @@ fn parse_value_for_key(key: &str, value: &str) -> Result<toml::Value> {
         // Provider fields with dynamic name
         ["providers", _, "kind"] => {
             // Validate it's a known ProviderKind by attempting deserialisation.
-            let _kind: ProviderKind = serde_json::from_value(
-                serde_json::Value::String(value.to_string()),
-            )
-            .context("parse provider kind")?;
+            let _kind: ProviderKind =
+                serde_json::from_value(serde_json::Value::String(value.to_string()))
+                    .context("parse provider kind")?;
             Ok(toml::Value::String(value.to_string()))
         }
         ["providers", _, "base_url"]
@@ -1638,7 +1638,9 @@ fn parse_value_for_key(key: &str, value: &str) -> Result<toml::Value> {
         | ["providers", _, "ttft_timeout_ms"]
         | ["providers", _, "connect_timeout_ms"]
         | ["providers", _, "max_concurrent"] => {
-            let n = value.parse::<i64>().with_context(|| format!("parse {key} as integer"))?;
+            let n = value
+                .parse::<i64>()
+                .with_context(|| format!("parse {key} as integer"))?;
             Ok(toml::Value::Integer(n))
         }
         // Model fields with dynamic name
@@ -1650,7 +1652,9 @@ fn parse_value_for_key(key: &str, value: &str) -> Result<toml::Value> {
         ["models", _, "context_window"]
         | ["models", _, "max_output"]
         | ["models", _, "max_tools"] => {
-            let n = value.parse::<i64>().with_context(|| format!("parse {key} as integer"))?;
+            let n = value
+                .parse::<i64>()
+                .with_context(|| format!("parse {key} as integer"))?;
             Ok(toml::Value::Integer(n))
         }
         ["models", _, "supports_tools"]
@@ -1667,7 +1671,9 @@ fn parse_value_for_key(key: &str, value: &str) -> Result<toml::Value> {
         | ["models", _, "supports_async"]
         | ["models", _, "is_embedding_model"]
         | ["models", _, "use_max_completion_tokens"] => {
-            let b = value.parse::<bool>().with_context(|| format!("parse {key} as bool"))?;
+            let b = value
+                .parse::<bool>()
+                .with_context(|| format!("parse {key} as bool"))?;
             Ok(toml::Value::Boolean(b))
         }
         ["models", _, "cost_input_per_m"]
@@ -1678,7 +1684,9 @@ fn parse_value_for_key(key: &str, value: &str) -> Result<toml::Value> {
         | ["models", _, "cost_cache_write_per_m"]
         | ["models", _, "cost_per_request"]
         | ["models", _, "tokenizer_ratio"] => {
-            let f = value.parse::<f64>().with_context(|| format!("parse {key} as float"))?;
+            let f = value
+                .parse::<f64>()
+                .with_context(|| format!("parse {key} as float"))?;
             Ok(toml::Value::Float(f))
         }
         // Model routing sub-keys
@@ -1690,11 +1698,15 @@ fn parse_value_for_key(key: &str, value: &str) -> Result<toml::Value> {
             Ok(toml::Value::Array(arr))
         }
         ["models", _, "provider_routing", "allow_fallbacks"] => {
-            let b = value.parse::<bool>().with_context(|| format!("parse {key} as bool"))?;
+            let b = value
+                .parse::<bool>()
+                .with_context(|| format!("parse {key} as bool"))?;
             Ok(toml::Value::Boolean(b))
         }
         ["models", _, "provider_routing", "max_price"] => {
-            let f = value.parse::<f64>().with_context(|| format!("parse {key} as float"))?;
+            let f = value
+                .parse::<f64>()
+                .with_context(|| format!("parse {key} as float"))?;
             Ok(toml::Value::Float(f))
         }
         _ => Err(anyhow!("unknown key: {key}")),
@@ -1741,8 +1753,8 @@ fn json_to_toml(json: &serde_json::Value) -> Result<toml::Value> {
 /// Read a config file as a raw `toml::Value`, preserving only the keys that
 /// were actually set in the file (no default inflation).
 pub(crate) fn read_toml_file(path: &Path) -> Result<toml::Value> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("read config {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("read config {}", path.display()))?;
     let value: toml::Value =
         toml::from_str(&text).with_context(|| format!("parse config {}", path.display()))?;
     Ok(value)
@@ -1750,14 +1762,11 @@ pub(crate) fn read_toml_file(path: &Path) -> Result<toml::Value> {
 
 /// Write a `toml::Value` back to a file as pretty TOML.
 pub(crate) fn write_toml_file(path: &Path, value: &toml::Value) -> Result<()> {
-    let rendered =
-        toml::to_string_pretty(value).context("serialize config")?;
+    let rendered = toml::to_string_pretty(value).context("serialize config")?;
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("create {}", parent.display()))?;
+        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
-    std::fs::write(path, rendered)
-        .with_context(|| format!("write {}", path.display()))?;
+    std::fs::write(path, rendered).with_context(|| format!("write {}", path.display()))?;
     Ok(())
 }
 
@@ -2955,11 +2964,12 @@ command = "x${ROKO_TEST_MISSING_DEF456:-}y"
             "https://api.z.ai/api/paas/v4"
         );
         assert_eq!(doc["models"]["glm51"]["provider"].as_str().unwrap(), "zai");
-        assert_eq!(
-            doc["models"]["glm51"]["slug"].as_str().unwrap(),
-            "glm-5.1"
+        assert_eq!(doc["models"]["glm51"]["slug"].as_str().unwrap(), "glm-5.1");
+        assert!(
+            doc["models"]["glm51"]["supports_thinking"]
+                .as_bool()
+                .unwrap()
         );
-        assert!(doc["models"]["glm51"]["supports_thinking"].as_bool().unwrap());
         assert_eq!(
             doc["runner"]["plan_timeout_secs"].as_integer().unwrap(),
             1800

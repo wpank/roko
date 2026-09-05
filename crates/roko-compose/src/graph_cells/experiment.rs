@@ -93,11 +93,7 @@ impl<P: ExperimentProvider> roko_graph::Cell for ExperimentCell<P> {
 
         let result = self.provider.assign_experiments(&scope);
 
-        let mut payload = ExperimentAssignment::new(
-            scope,
-            result.sections,
-            result.experiment_ids,
-        );
+        let mut payload = ExperimentAssignment::new(scope, result.sections, result.experiment_ids);
         payload.warnings = result.warnings;
 
         let body = Body::from_json(&payload).map_err(|e| {

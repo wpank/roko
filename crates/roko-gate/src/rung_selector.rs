@@ -580,14 +580,21 @@ mod tests {
         for rung in CANONICAL_ORDER {
             let label = rung.label();
             let parsed = Rung::from_label(label);
-            assert_eq!(parsed, Some(rung), "from_label({label:?}) should return {rung:?}");
+            assert_eq!(
+                parsed,
+                Some(rung),
+                "from_label({label:?}) should return {rung:?}"
+            );
         }
     }
 
     #[test]
     fn from_label_aliases() {
         assert_eq!(Rung::from_label("clippy"), Some(Rung::Lint));
-        assert_eq!(Rung::from_label("generated-test"), Some(Rung::GeneratedTest));
+        assert_eq!(
+            Rung::from_label("generated-test"),
+            Some(Rung::GeneratedTest)
+        );
         assert_eq!(Rung::from_label("property-test"), Some(Rung::PropertyTest));
     }
 

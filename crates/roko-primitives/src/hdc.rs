@@ -229,7 +229,6 @@ impl HdcVector {
     pub fn hamming_similarity(&self, other: &Self) -> f32 {
         self.similarity(other)
     }
-
 }
 
 /// Incremental majority-vote accumulator for HDC bundling.

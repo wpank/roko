@@ -18382,7 +18382,10 @@ async fn stop_all_agents(
         if let CancelAttemptOutcome::Unconfirmed(errors) = &outcome {
             error!(attempt = %attempt.key(), ?errors, "attempt cancellation remains unconfirmed");
         }
-        summaries.push(CancelAttemptSummary { _attempt: attempt, outcome });
+        summaries.push(CancelAttemptSummary {
+            _attempt: attempt,
+            outcome,
+        });
     }
     let survivors = ownership.surviving_agent_metadata();
     state.agent_active = survivors.active;

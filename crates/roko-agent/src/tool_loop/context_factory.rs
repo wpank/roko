@@ -222,8 +222,8 @@ mod tests {
 
     #[test]
     fn factory_build_is_repeatable() {
-        let factory = ToolExecutionContextFactory::new("/tmp/repeat")
-            .with_timeout(Duration::from_secs(10));
+        let factory =
+            ToolExecutionContextFactory::new("/tmp/repeat").with_timeout(Duration::from_secs(10));
 
         let ctx1 = factory.build();
         let ctx2 = factory.build();

@@ -504,13 +504,10 @@ impl roko_core::SharedGateEvaluator for DefaultGateService {
         // Build a gate signal from the worktree path.
         let payload = crate::payload::GatePayload::in_dir(&request.worktree_path);
         let signal = roko_core::Signal::builder(roko_core::Kind::Task)
-            .body(
-                roko_core::Body::from_json(&payload)
-                    .unwrap_or_else(|_| roko_core::Body::empty()),
-            )
+            .body(roko_core::Body::from_json(&payload).unwrap_or_else(|_| roko_core::Body::empty()))
             .build();
-        let ctx = roko_core::Context::now()
-            .with_attr("workdir", request.worktree_path.to_string_lossy());
+        let ctx =
+            roko_core::Context::now().with_attr("workdir", request.worktree_path.to_string_lossy());
 
         // Execute the rung using canonical dispatch.
         let verdicts = crate::rung_dispatch::run_canonical_rung(
@@ -541,17 +538,13 @@ impl roko_core::SharedGateEvaluator for DefaultGateService {
             })
             .collect();
 
-        let evidence = verdicts
-            .iter()
-            .filter_map(|v| v.detail.as_deref())
-            .next()
-            .map(|s| {
-                if s.len() > 64 * 1024 {
-                    s[..64 * 1024].to_string()
-                } else {
-                    s.to_string()
-                }
-            });
+        let evidence = verdicts.iter().find_map(|v| v.detail.as_deref()).map(|s| {
+            if s.len() > 64 * 1024 {
+                s[..64 * 1024].to_string()
+            } else {
+                s.to_string()
+            }
+        });
 
         let duration_ms: u64 = verdicts.iter().map(|v| v.duration_ms).sum();
 

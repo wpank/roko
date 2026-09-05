@@ -72,7 +72,10 @@ fn make_tool_pair(
 fn assert_started(record: &TranscriptRecord, expected_category: ToolCategory, expected_id: &str) {
     match &record.event {
         TranscriptEvent::ToolStarted {
-            call, category, status, ..
+            call,
+            category,
+            status,
+            ..
         } => {
             assert_eq!(call.id, expected_id, "call_id mismatch in ToolStarted");
             assert_eq!(
@@ -173,9 +176,7 @@ fn all_terminal_statuses_produce_valid_finished_events() {
         ),
         (
             ToolLifecycleStatus::Denied,
-            ToolResult::err(ToolError::PermissionDenied(
-                "bash: missing exec".into(),
-            )),
+            ToolResult::err(ToolError::PermissionDenied("bash: missing exec".into())),
         ),
         (
             ToolLifecycleStatus::Panicked,
@@ -409,10 +410,7 @@ fn tool_category_serde_names_are_stable() {
 
     for (cat, expected_json) in cases {
         let json = serde_json::to_string(&cat).unwrap();
-        assert_eq!(
-            json, expected_json,
-            "serde name for {cat:?} must be stable"
-        );
+        assert_eq!(json, expected_json, "serde name for {cat:?} must be stable");
         let rt: ToolCategory = serde_json::from_str(&json).unwrap();
         assert_eq!(rt, cat);
     }

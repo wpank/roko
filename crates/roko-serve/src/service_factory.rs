@@ -11,7 +11,7 @@ use roko_compose::prompt_assembly_service::PromptAssemblyService;
 use roko_core::agent::resolve_model;
 use roko_core::config::schema::{RokoConfig, ToolsConfig};
 use roko_core::foundation::{
-    AffectPolicy, FeedbackEvent, FeedbackSink, GateRunner, ModelCaller, PromptAssembler,
+    AffectPolicy, FeedbackEvent, FeedbackSink, GateRunner, PromptAssembler,
 };
 use roko_core::{AgentRole, Result, RokoError, RuntimeEvent};
 use roko_daimon::policy::DaimonPolicy;
@@ -726,7 +726,9 @@ mod tests {
     use roko_core::agent::ProviderKind;
     use roko_core::config::provider::ProviderConfig;
     use roko_core::config::schema::ModelProfile;
-    use roko_core::foundation::{CachePolicy, ChatMessage, MessageRole, ModelCallRequest};
+    use roko_core::foundation::{
+        CachePolicy, ChatMessage, MessageRole, ModelCallRequest, ModelCaller,
+    };
     use roko_learn::provider_health::ErrorClass;
     use tempfile::TempDir;
 

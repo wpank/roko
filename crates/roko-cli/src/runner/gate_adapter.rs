@@ -349,19 +349,12 @@ impl roko_core::SharedGateEvaluator for RunnerProductionGateAdapter {
             task_id: request.task_id.clone(),
             attempt: request.attempt_id,
             workspace: request.worktree_path.clone(),
-            workspace_fingerprint: format!(
-                "shared:{}:{}",
-                request.task_id, request.attempt_id
-            ),
+            workspace_fingerprint: format!("shared:{}:{}", request.task_id, request.attempt_id),
             changed_files: request.changed_files.clone(),
             verify_steps: Vec::new(),
             gates_config,
             task_context: roko_gate::production_request::GateTaskContextSpec {
-                title: request
-                    .context
-                    .get("title")
-                    .cloned()
-                    .unwrap_or_default(),
+                title: request.context.get("title").cloned().unwrap_or_default(),
                 description: request.context.get("description").cloned(),
                 symbols: Vec::new(),
                 acceptance: Vec::new(),

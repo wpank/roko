@@ -348,9 +348,7 @@ fn check_dead_conductor_config(
         id: "dead_conductor_config".to_string(),
         status: DoctorStatus::Ok,
         message: "conductor config is clean (context_pressure_enabled removed)".to_string(),
-        detail: Some(
-            "conductor.watchers.* threshold overrides are runtime-live".to_string(),
-        ),
+        detail: Some("conductor.watchers.* threshold overrides are runtime-live".to_string()),
         path: None,
         url: None,
         fix: None,

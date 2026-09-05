@@ -1509,8 +1509,13 @@ exit 1
             terminal: AtomicBool::new(true),
         };
 
-        let result = StreamingTaskDispatcher::reconcile_attempt(&*dispatcher, &spec, "prev-attempt-1", &recorder)
-            .await;
+        let result = StreamingTaskDispatcher::reconcile_attempt(
+            &*dispatcher,
+            &spec,
+            "prev-attempt-1",
+            &recorder,
+        )
+        .await;
 
         assert!(
             matches!(result, AttemptReconciliation::ReuseCommitted { .. }),
@@ -1547,8 +1552,13 @@ exit 1
         let (dispatcher, task) = make_streaming_dispatcher(&temp, "#!/bin/sh\nexit 0\n").await;
         let spec = make_spec(&task);
 
-        let result = StreamingTaskDispatcher::reconcile_attempt(&*dispatcher, &spec, "prev-attempt-ambig", &StartedRecorder)
-            .await;
+        let result = StreamingTaskDispatcher::reconcile_attempt(
+            &*dispatcher,
+            &spec,
+            "prev-attempt-ambig",
+            &StartedRecorder,
+        )
+        .await;
 
         assert!(
             matches!(result, AttemptReconciliation::FailAmbiguous { .. }),
@@ -1563,8 +1573,13 @@ exit 1
         let spec = make_spec(&task);
         let recorder = NoopAttemptRecorder;
 
-        let result = StreamingTaskDispatcher::reconcile_attempt(&*dispatcher, &spec, "prev-never-started", &recorder)
-            .await;
+        let result = StreamingTaskDispatcher::reconcile_attempt(
+            &*dispatcher,
+            &spec,
+            "prev-never-started",
+            &recorder,
+        )
+        .await;
 
         match result {
             AttemptReconciliation::AllocateNew { attempt_id } => {

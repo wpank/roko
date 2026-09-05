@@ -6,10 +6,8 @@
 //! global config with one interactive pass.
 
 use crate::config::{
-    ConfigPaths, DetectedCli, GateConfig,
-    ResolvedConfig, Source,
-    detect_clis, global_config_path, load_resolved_config, resolve_paths,
-    set_toml_dotted_key, read_toml_file, write_toml_file,
+    ConfigPaths, DetectedCli, GateConfig, ResolvedConfig, Source, detect_clis, global_config_path,
+    load_resolved_config, read_toml_file, resolve_paths, set_toml_dotted_key, write_toml_file,
 };
 use anyhow::{Context as _, Result, anyhow};
 use roko_core::agent::ProviderKind;
@@ -181,7 +179,6 @@ pub fn run_init_wizard(target: Option<PathBuf>, inputs: &WizardInputs) -> Result
 
     Ok(path)
 }
-
 
 /// Print the effective merged config with `[source]` tags on each field.
 pub fn cmd_show(workdir: &Path) -> Result<()> {
@@ -687,8 +684,7 @@ pub fn cmd_set(workdir: &Path, target: EditTarget, key: &str, value: &str) -> Re
     } else {
         toml::Value::Table(toml::map::Map::new())
     };
-    set_toml_dotted_key(&mut doc, key, value)
-        .with_context(|| format!("set {key} = {value}"))?;
+    set_toml_dotted_key(&mut doc, key, value).with_context(|| format!("set {key} = {value}"))?;
     write_toml_file(&path, &doc)?;
     println!("set {key} = {value} in {}", path.display());
     Ok(())
@@ -869,7 +865,6 @@ fn print_resolved(r: &ResolvedConfig) {
         println!("\nhint: no config files found — run `roko config init` to set one up.");
     }
 }
-
 
 #[derive(Debug)]
 enum ConfigMigrationPlan {
@@ -1685,10 +1680,7 @@ mod tests {
     fn set_dotted_key_sets_agent_command() {
         let mut doc = empty_doc();
         set_toml_dotted_key(&mut doc, "agent.command", "ollama").unwrap();
-        assert_eq!(
-            doc["agent"]["command"].as_str().unwrap(),
-            "ollama"
-        );
+        assert_eq!(doc["agent"]["command"].as_str().unwrap(), "ollama");
     }
 
     #[tokio::test]
@@ -1725,12 +1717,7 @@ scheduled_cron = "invalid cron"
     #[test]
     fn set_dotted_key_sets_tools_global_denied() {
         let mut doc = empty_doc();
-        set_toml_dotted_key(
-            &mut doc,
-            "tools.global_denied",
-            r#"["write_file","bash"]"#,
-        )
-        .unwrap();
+        set_toml_dotted_key(&mut doc, "tools.global_denied", r#"["write_file","bash"]"#).unwrap();
         let arr = doc["tools"]["global_denied"].as_array().unwrap();
         assert_eq!(arr.len(), 2);
         assert_eq!(arr[0].as_str().unwrap(), "write_file");

@@ -111,11 +111,7 @@ impl fmt::Display for AuthoredGraphReport {
         write!(
             f,
             "AuthoredGraphReport(graph={}, success={}, nodes={}/{}, duration={:?})",
-            self.graph_name,
-            self.success,
-            self.nodes_passed,
-            self.node_count,
-            self.total_duration,
+            self.graph_name, self.success, self.nodes_passed, self.node_count, self.total_duration,
         )?;
         if let Some(consumed) = self.budget_consumed_usd {
             write!(f, ", cost=${consumed:.4}")?;
@@ -302,10 +298,7 @@ impl ControllerLifecycle for AuthoredGraphController {
                 for denial in &e.denials {
                     errors.push(PreflightError {
                         category: PreflightCategory::CapabilityDenied,
-                        message: format!(
-                            "graph '{}': {denial}",
-                            config.graph_path.display()
-                        ),
+                        message: format!("graph '{}': {denial}", config.graph_path.display()),
                     });
                 }
                 return errors;
@@ -333,13 +326,13 @@ impl ControllerLifecycle for AuthoredGraphController {
         }
 
         // 5. Budget validation
-        if let Some(budget) = config.budget_usd {
-            if budget <= 0.0 {
-                errors.push(PreflightError {
-                    category: PreflightCategory::BudgetInvalid,
-                    message: format!("budget must be positive, got {budget}"),
-                });
-            }
+        if let Some(budget) = config.budget_usd
+            && budget <= 0.0
+        {
+            errors.push(PreflightError {
+                category: PreflightCategory::BudgetInvalid,
+                message: format!("budget must be positive, got {budget}"),
+            });
         }
 
         errors
@@ -427,11 +420,8 @@ impl ControllerLifecycle for AuthoredGraphController {
             })
             .count();
 
-        let effective_caps: Vec<String> = profile
-            .effective()
-            .iter()
-            .map(|c| c.to_string())
-            .collect();
+        let effective_caps: Vec<String> =
+            profile.effective().iter().map(|c| c.to_string()).collect();
 
         let budget_consumed = budget_tracker.as_ref().map(|t| t.cost_usd());
 
@@ -499,10 +489,7 @@ mod tests {
             String::new()
         } else {
             let items: Vec<String> = caps.iter().map(|c| format!("\"{c}\"")).collect();
-            format!(
-                "\n[graph.policy]\ncapabilities = [{}]\n",
-                items.join(", ")
-            )
+            format!("\n[graph.policy]\ncapabilities = [{}]\n", items.join(", "))
         };
         std::fs::write(
             &path,
@@ -787,11 +774,7 @@ cell_type = "task-executor"
         let dir = tempfile::tempdir().unwrap();
         let path = write_task_executor_graph(dir.path(), "needs-llm");
         // Workspace grants Llm but graph does NOT declare it in policy
-        let ws = CapabilitySet::from([
-            Capability::ReadFs,
-            Capability::Bus,
-            Capability::Llm,
-        ]);
+        let ws = CapabilitySet::from([Capability::ReadFs, Capability::Bus, Capability::Llm]);
         let controller = AuthoredGraphController::new(ws);
 
         // Load graph and build profile -- profile won't have Llm because

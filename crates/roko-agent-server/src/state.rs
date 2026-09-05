@@ -95,7 +95,10 @@ impl std::fmt::Display for StateStoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::AgentMismatch { expected, found } => {
-                write!(f, "state agent mismatch: expected {expected}, found {found}")
+                write!(
+                    f,
+                    "state agent mismatch: expected {expected}, found {found}"
+                )
             }
             Self::NewerSchema { expected, found } => {
                 write!(
@@ -939,8 +942,7 @@ impl AgentState {
                 let task_count = envelope.tasks.len();
                 // Set next_task_id to one past the highest existing task ID.
                 let max_id = envelope.tasks.iter().map(|t| t.id).max().unwrap_or(0);
-                self.next_task_id
-                    .store(max_id + 1, Ordering::Relaxed);
+                self.next_task_id.store(max_id + 1, Ordering::Relaxed);
                 *self.predictions.lock() = envelope.predictions;
                 *self.tasks.lock() = envelope.tasks;
                 *self.idempotency_keys.lock() = envelope.idempotency_keys;
@@ -1255,20 +1257,19 @@ impl AgentState {
             ));
         }
         if request.bounty > MAX_BOUNTY {
-            return CreateTaskResult::Invalid(format!(
-                "bounty exceeds maximum {MAX_BOUNTY}"
-            ));
+            return CreateTaskResult::Invalid(format!("bounty exceeds maximum {MAX_BOUNTY}"));
         }
-        if let Some(ref key) = request.client_request_id {
-            if key.is_empty() || key.len() > MAX_CLIENT_REQUEST_ID_LEN {
-                return CreateTaskResult::Invalid(format!(
-                    "client_request_id must be 1-{MAX_CLIENT_REQUEST_ID_LEN} characters"
-                ));
-            }
+        if let Some(ref key) = request.client_request_id
+            && (key.is_empty() || key.len() > MAX_CLIENT_REQUEST_ID_LEN)
+        {
+            return CreateTaskResult::Invalid(format!(
+                "client_request_id must be 1-{MAX_CLIENT_REQUEST_ID_LEN} characters"
+            ));
         }
 
         // Compute normalized fingerprint for idempotency.
-        let fingerprint = task_request_fingerprint(title, &request.kind, request.priority, request.bounty);
+        let fingerprint =
+            task_request_fingerprint(title, &request.kind, request.priority, request.bounty);
 
         // Check idempotency key.
         if let Some(key) = &request.client_request_id {
@@ -1855,7 +1856,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let state = make_state(Arc::new(FileStateStore::new(dir.path().join("s.json"))));
 
-        let result = state.create_task(make_create_task_request("build feature")).await;
+        let result = state
+            .create_task(make_create_task_request("build feature"))
+            .await;
         assert!(matches!(result, CreateTaskResult::Created(ref t) if t.title == "build feature"));
         assert_eq!(state.list_tasks().await.len(), 1);
     }
@@ -1875,7 +1878,9 @@ mod tests {
         let state = make_state(Arc::new(FileStateStore::new(dir.path().join("s.json"))));
 
         let long_title = "x".repeat(MAX_TASK_TITLE_LEN + 1);
-        let result = state.create_task(make_create_task_request(&long_title)).await;
+        let result = state
+            .create_task(make_create_task_request(&long_title))
+            .await;
         assert!(matches!(result, CreateTaskResult::Invalid(_)));
     }
 
@@ -1900,8 +1905,14 @@ mod tests {
         let first = state.create_task(req.clone()).await;
         let second = state.create_task(req).await;
 
-        let first_id = match &first { CreateTaskResult::Created(t) => t.id, _ => panic!("expected Created") };
-        let second_id = match &second { CreateTaskResult::Duplicate(t) => t.id, _ => panic!("expected Duplicate") };
+        let first_id = match &first {
+            CreateTaskResult::Created(t) => t.id,
+            _ => panic!("expected Created"),
+        };
+        let second_id = match &second {
+            CreateTaskResult::Duplicate(t) => t.id,
+            _ => panic!("expected Duplicate"),
+        };
         assert_eq!(first_id, second_id);
         assert_eq!(state.list_tasks().await.len(), 1);
     }
@@ -1928,16 +1939,25 @@ mod tests {
         let store_path = dir.path().join("s.json");
 
         let state = make_state(Arc::new(FileStateStore::new(store_path.clone())));
-        let task = match state.create_task(make_create_task_request("lifecycle task")).await {
+        let task = match state
+            .create_task(make_create_task_request("lifecycle task"))
+            .await
+        {
             CreateTaskResult::Created(t) => t,
             _ => panic!("expected Created"),
         };
 
         state.accept_task(task.id).await.expect("accept");
-        state.complete_task(task.id, TaskCompletionRequest {
-            artifacts: Vec::new(),
-            summary: Some("done".to_string()),
-        }).await.expect("complete");
+        state
+            .complete_task(
+                task.id,
+                TaskCompletionRequest {
+                    artifacts: Vec::new(),
+                    summary: Some("done".to_string()),
+                },
+            )
+            .await
+            .expect("complete");
 
         // Restart.
         let state2 = make_state(Arc::new(FileStateStore::new(store_path)));

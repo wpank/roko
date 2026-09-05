@@ -101,9 +101,6 @@ pub use lifecycle::{
     ProbeHandler, ProbeSpec, Ready, ResourcesAllocated, RestartBackoff, RoutingConfigured,
     ToolsLoaded, Unvalidated, Validated,
 };
-pub use workflow_contract::{
-    CommitOutcome, Phase, WorkflowConfig, WorkflowOutcome,
-};
 pub use projection::{RunSummary, RuntimeProjection};
 pub use pulse_bus::{PulseBus, PulseBusReceiver};
 pub use roko_core::RuntimeEvent;
@@ -112,14 +109,14 @@ pub use roko_core::foundation::{
     GateVerdict, MessageRole, ModelCallRequest, ModelCallResponse, ModelCaller, PromptAssembler,
     PromptSpec, ShellGateCommand, TokenUsage,
 };
+pub use run_ledger::{
+    AgentOutcome, ArtifactOutcome, CancellationOutcome, EffectErrorKind, EventPersistenceHealth,
+    GateRunOutcome, PhaseTransitionRecord, RunLedger, TaskTerminalOutcome,
+};
 pub use run_registry::{
     ExecutionRunContext, RunIndex, RunIndexEntry, RunIntent, RunManifest, RunRegistry,
     RunRegistryError, RunScope, RunStartDecision, RunStatus, compute_plan_fingerprint,
     compute_task_graph_fingerprint, migrate_legacy_singleton,
-};
-pub use run_ledger::{
-    AgentOutcome, ArtifactOutcome, CancellationOutcome, EffectErrorKind, EventPersistenceHealth,
-    GateRunOutcome, PhaseTransitionRecord, RunLedger, TaskTerminalOutcome,
 };
 pub use runtime_event_dashboard::{ProjectionResult, RuntimeEventDashboardProjector};
 pub use state_hub::{
@@ -134,14 +131,13 @@ pub use state_snapshot::{
     STATE_SNAPSHOT_VERSION, StateSnapshot, load_durable_dashboard_projection,
     load_durable_runner_projection, validate_state_snapshot,
 };
+pub use workflow_contract::{CommitOutcome, Phase, WorkflowConfig, WorkflowOutcome};
 // task_scheduler retired with WorkflowEngine
 pub use telemetry_projection_aggregator::{
     LensPayload, LensSignalEnvelope, ProjectionUpdate, TelemetryProjectionAggregator,
     TelemetryProjectionError, TelemetryProjectionState,
 };
-pub use workflow_contract::{
-    GateOutcome, WorkflowResult, WorkflowRunConfig, WorkflowRunReport,
-};
+pub use workflow_contract::{GateOutcome, WorkflowResult, WorkflowRunConfig, WorkflowRunReport};
 
 #[cfg(test)]
 mod contract_guards {

@@ -14,6 +14,12 @@ use std::time::Instant;
 
 use anyhow::{Context as _, Result as AnyhowResult};
 use roko_agent::AgentRuntimeEvent;
+
+/// Internal framing used when a provider exposes reasoning but the legacy
+/// runtime event enum only has `MessageDelta`. It is removed before normal
+/// transcript/state accumulation and emitted as a semantic StateHub record.
+pub(crate) const REASONING_DELTA_PREFIX: &str = "\u{001f}roko.reasoning.v1 ";
+
 /// Streaming chunk from a provider session, used for agent event bridging.
 #[derive(Debug, Clone)]
 pub(crate) enum StreamChunk {
@@ -2160,11 +2166,7 @@ fn agent_event_from_chunk(chunk: StreamChunk) -> AgentRuntimeEvent {
     match chunk {
         StreamChunk::ContentDelta(text) => AgentRuntimeEvent::MessageDelta { text },
         StreamChunk::ReasoningDelta(text) => AgentRuntimeEvent::MessageDelta {
-            text: format!(
-                "{}{}",
-                crate::runner::agent_events::REASONING_DELTA_PREFIX,
-                text
-            ),
+            text: format!("{}{}", REASONING_DELTA_PREFIX, text),
         },
         StreamChunk::ToolCallDelta {
             id_delta,

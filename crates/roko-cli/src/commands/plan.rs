@@ -2819,6 +2819,51 @@ fn unsatisfied_graph_plan_dependencies(
         .collect()
 }
 
+/// Inline progress telemetry sink that prints per-node lifecycle events to
+/// stderr and delegates to the inner (StateHub) sink. This provides real-time
+/// feedback during Graph engine execution without requiring the full TUI.
+struct InlineProgressTelemetrySink {
+    inner: std::sync::Arc<dyn roko_core::TelemetryEventSink>,
+    show_progress: bool,
+}
+
+#[async_trait::async_trait]
+impl roko_core::TelemetryEventSink for InlineProgressTelemetrySink {
+    async fn emit(
+        &self,
+        event: &roko_core::ObservableEvent,
+        ancestry: &[roko_core::LensScope],
+    ) -> roko_core::error::Result<Vec<roko_core::Signal>> {
+        if self.show_progress {
+            match event {
+                roko_core::ObservableEvent::CellStarted { block, .. } => {
+                    eprintln!("    \u{25b8} executing node '{block}'...");
+                }
+                roko_core::ObservableEvent::CellCompleted {
+                    block,
+                    duration_ms,
+                    cost_usd,
+                    ..
+                } => {
+                    let secs = *duration_ms as f64 / 1000.0;
+                    if *cost_usd > 0.0 {
+                        eprintln!(
+                            "    \u{2713} node '{block}' completed ({secs:.1}s, ${cost_usd:.4})"
+                        );
+                    } else {
+                        eprintln!("    \u{2713} node '{block}' completed ({secs:.1}s)");
+                    }
+                }
+                roko_core::ObservableEvent::CellFailed { block, error, .. } => {
+                    eprintln!("    \u{2717} node '{block}' failed: {error}");
+                }
+                _ => {}
+            }
+        }
+        self.inner.emit(event, ancestry).await
+    }
+}
+
 /// Execute plans via the Graph Engine path.
 ///
 /// Loads plans using the Runner v2 plan_loader, converts each to a Graph
@@ -2936,8 +2981,18 @@ async fn cmd_plan_run_engine(
     );
     let task_dispatcher: Arc<dyn TaskDispatcher> = graph_task_dispatcher.clone();
     let state_hub_sender = roko_cli::state_hub::shared_state_hub().sender();
-    let graph_telemetry: Arc<dyn roko_core::TelemetryEventSink> = Arc::new(
+    let state_hub_sink: Arc<dyn roko_core::TelemetryEventSink> = Arc::new(
         roko_cli::runner::event_loop::StateHubTelemetrySink::new(state_hub_sender.clone()),
+    );
+
+    // Inline progress display: print per-node start/complete/fail to stderr
+    // so the user can see what the Graph engine is doing in real time.
+    let show_progress = !cli.quiet && !cli.json;
+    let graph_telemetry: Arc<dyn roko_core::TelemetryEventSink> = Arc::new(
+        InlineProgressTelemetrySink {
+            inner: state_hub_sink,
+            show_progress,
+        },
     );
 
     // Wire graph engine execution into the TUI dashboard event stream.
@@ -3172,6 +3227,19 @@ async fn cmd_plan_run_engine(
                         output_count,
                         status,
                     );
+                    // Print per-node error details so failures are not silent.
+                    if !execution_succeeded {
+                        for result in &output.node_results {
+                            if let Some(error) = &result.error {
+                                eprintln!(
+                                    "    node '{}' ({:?}): {}",
+                                    result.node_id,
+                                    result.status,
+                                    error,
+                                );
+                            }
+                        }
+                    }
                     if budget.exhausted {
                         let ceiling = budget.ceiling_usd.unwrap_or_default();
                         if budget.dispatch_blocked {

@@ -2415,37 +2415,38 @@ pub fn default_registry() -> CellRegistry {
 
     registry.register_with_descriptor(
         "noop",
-        CellDescriptor {
-            id: "noop".to_string(),
-            version: (0, 1, 0),
-            input_schema: None,
-            output_schema: None,
-            is_stub: true,
-        },
+        CellDescriptor::test_stub("noop"),
         |_config| Box::new(NoopCell::default()),
     );
 
     // Cognitive loop cells (E22-T01): real typed Cell implementations
     // with explicit CellDescriptors for side-effect-free edge validation.
+    // Wave 12 (#268): all cognitive descriptors now carry protocol and predictive metadata.
+    use roko_core::ProtocolId;
 
     registry.register_with_descriptor(
         "sense",
         CellDescriptor::new(
             "sense",
-            (0, 1, 0),
+            (0, 2, 0),
             None,
             Some(TypeSchema::OfKind(Kind::AgentMessage)),
-        ),
+        )
+        .with_protocols(vec![ProtocolId::Observe])
+        .with_display_name("SenseCell"),
         |_config| Box::new(crate::cells::cognitive::SenseCell::new()),
     );
     registry.register_with_descriptor(
         "assess",
         CellDescriptor::new(
             "assess",
-            (0, 1, 0),
+            (0, 2, 0),
             Some(TypeSchema::OfKind(Kind::AgentMessage)),
             Some(TypeSchema::OfKind(Kind::AgentMessage)),
-        ),
+        )
+        .with_protocols(vec![ProtocolId::Score])
+        .with_predictive(true)
+        .with_display_name("AssessCell"),
         |_config| Box::new(crate::cells::cognitive::AssessCell::new()),
     );
     // "score" is an alias for "assess" in legacy graph definitions.
@@ -2453,55 +2454,70 @@ pub fn default_registry() -> CellRegistry {
         "score",
         CellDescriptor::new(
             "score",
-            (0, 1, 0),
+            (0, 2, 0),
             Some(TypeSchema::OfKind(Kind::AgentMessage)),
             Some(TypeSchema::OfKind(Kind::AgentMessage)),
-        ),
+        )
+        .with_protocols(vec![ProtocolId::Score])
+        .with_predictive(true)
+        .with_display_name("AssessCell (score alias)"),
         |_config| Box::new(crate::cells::cognitive::AssessCell::new()),
     );
     registry.register_with_descriptor(
         "compose",
         CellDescriptor::new(
             "compose",
-            (0, 1, 0),
+            (0, 2, 0),
             Some(TypeSchema::OfKind(Kind::AgentMessage)),
             Some(TypeSchema::OfKind(Kind::Prompt)),
-        ),
+        )
+        .with_protocols(vec![ProtocolId::Compose])
+        .with_display_name("CognitiveComposeCell"),
         |_config| Box::new(crate::cells::cognitive::CognitiveComposeCell::new()),
     );
     registry.register_with_descriptor(
         "act",
         CellDescriptor::new(
             "act",
-            (0, 1, 0),
+            (0, 2, 0),
             Some(TypeSchema::OfKind(Kind::Prompt)),
             Some(TypeSchema::OfKind(Kind::Episode)),
-        ),
+        )
+        .with_protocols(vec![ProtocolId::Connect])
+        .with_display_name("ActCell"),
         |_config| Box::new(crate::cells::cognitive::ActCell::new()),
     );
     registry.register_with_descriptor(
         "verify",
         CellDescriptor::new(
             "verify",
-            (0, 1, 0),
+            (0, 2, 0),
             Some(TypeSchema::OfKind(Kind::Episode)),
             Some(TypeSchema::OfKind(Kind::GateVerdict)),
-        ),
+        )
+        .with_protocols(vec![ProtocolId::Verify])
+        .with_display_name("VerifyCell"),
         |_config| Box::new(crate::cells::cognitive::VerifyCell::new()),
     );
     registry.register_with_descriptor(
         "persist",
         CellDescriptor::new(
             "persist",
-            (0, 1, 0),
+            (0, 2, 0),
             Some(TypeSchema::OfKind(Kind::GateVerdict)),
             None,
-        ),
+        )
+        .with_protocols(vec![ProtocolId::Store])
+        .with_display_name("PersistCell"),
         |_config| Box::new(crate::cells::cognitive::PersistCell::new()),
     );
-    registry.register("react", |_config| {
-        Box::new(crate::cells::cognitive::ReactCell::new())
-    });
+    registry.register_with_descriptor(
+        "react",
+        CellDescriptor::new("react", (0, 2, 0), None, None)
+            .with_protocols(vec![ProtocolId::React, ProtocolId::Trigger])
+            .with_display_name("ReactCell"),
+        |_config| Box::new(crate::cells::cognitive::ReactCell::new()),
+    );
 
     // Task executor cell for plan-to-graph converted tasks (task 101).
     registry.register("task-executor", |config| {
@@ -2514,13 +2530,7 @@ pub fn default_registry() -> CellRegistry {
     // graph definitions that still reference old names (signal-reader, etc.).
     for name in crate::cells::stubs::COGNITIVE_LOOP_STUBS {
         let cell_name = (*name).to_string();
-        let desc = CellDescriptor {
-            id: cell_name.clone(),
-            version: (0, 1, 0),
-            input_schema: None,
-            output_schema: None,
-            is_stub: true,
-        };
+        let desc = CellDescriptor::test_stub(cell_name.clone());
         registry.register_with_descriptor(name, desc, move |_config| {
             Box::new(crate::cells::stubs::PassthroughCell::new(cell_name.clone()))
         });

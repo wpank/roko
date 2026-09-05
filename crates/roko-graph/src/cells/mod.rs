@@ -18,7 +18,8 @@ pub mod task_executor;
 
 pub use agent::{AgentCell, AgentCellConfig};
 pub use cognitive::{
-    ActCell, AssessCell, CognitiveComposeCell, PersistCell, ReactCell, SenseCell, VerifyCell,
+    ActCell, AssessCell, CalibrationTracker, CognitiveComposeCell, PersistCell, ReactCell,
+    SenseCell, VerifyCell, build_cognitive_loop_graph,
 };
 pub use compose::{ComposeCell, ComposeCellConfig};
 pub use corrigibility::{

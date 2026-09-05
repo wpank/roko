@@ -288,7 +288,7 @@ fn system_prompt_for(role: AgentRole, profile: &RoleProfile) -> String {
 }
 
 fn default_transition_matrix() -> HashMap<AgentRole, Vec<AgentRole>> {
-    use AgentRole::*;
+    use AgentRole::{Auditor, Architect, Conductor, Critic, Implementer, QuickReviewer, Refactorer, Researcher, Strategist};
 
     HashMap::from([
         (Implementer, vec![QuickReviewer, Auditor, Refactorer]),

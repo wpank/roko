@@ -224,7 +224,7 @@ pub fn apply_resource_limits(cmd: &mut Command, limits: &ResourceLimits) -> io::
                     rlim_cur: cpu_secs as libc::rlim_t,
                     rlim_max: cpu_secs as libc::rlim_t,
                 };
-                if libc::setrlimit(libc::RLIMIT_CPU, &limit) != 0 {
+                if libc::setrlimit(libc::RLIMIT_CPU, &raw const limit) != 0 {
                     return Err(std::io::Error::last_os_error());
                 }
             }
@@ -238,7 +238,7 @@ pub fn apply_resource_limits(cmd: &mut Command, limits: &ResourceLimits) -> io::
                 // RSS can never exceed virtual address space. This gives an
                 // enforceable memory cap even on kernels where RLIMIT_RSS is
                 // merely advisory or ignored.
-                if libc::setrlimit(libc::RLIMIT_AS, &limit) != 0 {
+                if libc::setrlimit(libc::RLIMIT_AS, &raw const limit) != 0 {
                     return Err(std::io::Error::last_os_error());
                 }
             }
@@ -248,7 +248,7 @@ pub fn apply_resource_limits(cmd: &mut Command, limits: &ResourceLimits) -> io::
                     rlim_cur: max_processes as libc::rlim_t,
                     rlim_max: max_processes as libc::rlim_t,
                 };
-                if libc::setrlimit(libc::RLIMIT_NPROC, &limit) != 0 {
+                if libc::setrlimit(libc::RLIMIT_NPROC, &raw const limit) != 0 {
                     return Err(std::io::Error::last_os_error());
                 }
             }

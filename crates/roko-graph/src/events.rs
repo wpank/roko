@@ -552,6 +552,42 @@ pub enum GraphExecutionEvent {
         error: String,
     },
 
+    // ── Predict/publish/correct lifecycle (#269) ──────────────────────────
+    /// A Cell prediction was published before execution.
+    PredictionPublished {
+        #[serde(flatten)]
+        common: CommonFields,
+        /// Node identity and metadata.
+        node: NodeFields,
+        /// Cell identifier that produced the prediction.
+        cell_id: String,
+        /// Confidence of the prediction in `[0.0, 1.0]`, stored as millionths
+        /// (1_000_000 = 1.0) for serde/JSON integer fidelity.
+        confidence_micros: u64,
+        /// Serialized prediction outcome (JSON string).
+        predicted_outcome: String,
+    },
+    /// A Cell calibration error was observed after execution.
+    CalibrationObserved {
+        #[serde(flatten)]
+        common: CommonFields,
+        /// Node identity and metadata.
+        node: NodeFields,
+        /// Cell identifier that was calibrated.
+        cell_id: String,
+        /// Normalized calibration error in `[0.0, 1.0]`, stored as millionths.
+        error_micros: u64,
+    },
+    /// A Cell correction was applied after execution.
+    CorrectionApplied {
+        #[serde(flatten)]
+        common: CommonFields,
+        /// Node identity and metadata.
+        node: NodeFields,
+        /// Cell identifier that received the correction.
+        cell_id: String,
+    },
+
     // ── Delivery/replay ──────────────────────────────────────────────────
     /// Replay of a previous run has started.
     ReplayStarted {
@@ -625,6 +661,9 @@ impl GraphExecutionEvent {
             | Self::DeliveryFailed { common, .. }
             | Self::FeedbackSinkSettled { common, .. }
             | Self::FeedbackSinkFailed { common, .. }
+            | Self::PredictionPublished { common, .. }
+            | Self::CalibrationObserved { common, .. }
+            | Self::CorrectionApplied { common, .. }
             | Self::ReplayStarted { common, .. }
             | Self::ReplayCompleted { common, .. }
             | Self::Gap { common, .. } => common,
@@ -652,7 +691,10 @@ impl GraphExecutionEvent {
             | Self::GateRungCompleted { node, .. }
             | Self::CellProgress { node, .. }
             | Self::FeedbackSinkSettled { node, .. }
-            | Self::FeedbackSinkFailed { node, .. } => Some(node),
+            | Self::FeedbackSinkFailed { node, .. }
+            | Self::PredictionPublished { node, .. }
+            | Self::CalibrationObserved { node, .. }
+            | Self::CorrectionApplied { node, .. } => Some(node),
             _ => None,
         }
     }
@@ -723,6 +765,9 @@ impl GraphExecutionEvent {
             Self::DeliveryFailed { .. } => "DeliveryFailed",
             Self::FeedbackSinkSettled { .. } => "FeedbackSinkSettled",
             Self::FeedbackSinkFailed { .. } => "FeedbackSinkFailed",
+            Self::PredictionPublished { .. } => "PredictionPublished",
+            Self::CalibrationObserved { .. } => "CalibrationObserved",
+            Self::CorrectionApplied { .. } => "CorrectionApplied",
             Self::ReplayStarted { .. } => "ReplayStarted",
             Self::ReplayCompleted { .. } => "ReplayCompleted",
             Self::Gap { .. } => "Gap",

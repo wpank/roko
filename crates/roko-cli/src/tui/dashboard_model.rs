@@ -89,7 +89,7 @@ pub struct TuiDashboardModel {
 
 /// Deserialized cascade router snapshot matching the private `CascadeSnapshot`.
 #[derive(Debug, Clone, serde::Deserialize)]
-struct CascadeSnapshotData {
+pub(super) struct CascadeSnapshotData {
     #[serde(default)]
     model_slugs: Vec<String>,
     #[serde(default)]
@@ -131,7 +131,7 @@ struct LatencyStatsEntryData {
 }
 
 #[derive(Debug, Clone, Default)]
-struct LearningArtifactsSnapshot {
+pub(super) struct LearningArtifactsSnapshot {
     cascade_stamp: FileStamp,
     experiments_stamp: FileStamp,
     gate_thresholds_stamp: FileStamp,
@@ -144,7 +144,7 @@ struct LearningArtifactsSnapshot {
 }
 
 #[derive(Debug, Clone, Default)]
-struct KnowledgeStoreSnapshot {
+pub(super) struct KnowledgeStoreSnapshot {
     total_records: usize,
     last_updated: Option<DateTime<Utc>>,
 }

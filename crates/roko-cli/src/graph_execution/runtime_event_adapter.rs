@@ -538,6 +538,15 @@ impl GraphRuntimeEventAdapter {
                     "run_id": common.run_id,
                 }),
             },
+            // ── Wave 12 cognitive lifecycle (no RuntimeEvent equivalent) ─
+            GraphExecutionEvent::PredictionPublished { .. }
+            | GraphExecutionEvent::CalibrationObserved { .. }
+            | GraphExecutionEvent::CorrectionApplied { .. } => RuntimeEvent::Extension {
+                namespace: "roko.cognitive".to_string(),
+                version: "1".to_string(),
+                value: serde_json::Value::Null,
+            },
+
             GraphExecutionEvent::Gap {
                 common: _,
                 lost_count,

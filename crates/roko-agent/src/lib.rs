@@ -19,26 +19,40 @@
 //! - [`OllamaAgent`] — direct Ollama `/api/chat` adapter
 //! - [`OllamaLlmBackend`] — Ollama tool-loop backend
 
+// Per-item #[allow] is preferred over blanket suppression.
+// These lints are suppressed crate-wide because they are pervasive and stylistic
+// across ~100 modules and ~30K lines of provider/harness/tool-loop code.
 #![allow(
     dead_code,
     missing_docs,
-    unused_assignments,
-    unused_variables,
+    // --- pedantic / nursery lints that are pervasive & intentional ---
     clippy::borrowed_box,
+    clippy::collapsible_if,
+    clippy::collapsible_else_if,
+    clippy::collection_is_never_read,
+    clippy::derive_partial_eq_without_eq,
     clippy::doc_lazy_continuation,
     clippy::double_must_use,
-    clippy::expect_used,
+    clippy::duration_suboptimal_units,
+    clippy::implicit_hasher,
+    clippy::iter_filter_is_ok,
+    clippy::iter_on_single_items,
     clippy::large_enum_variant,
+    clippy::missing_fields_in_debug,
     clippy::module_name_repetitions,
-    clippy::needless_borrow,
+    clippy::needless_collect,
+    clippy::needless_pass_by_ref_mut,
     clippy::never_loop,
-    clippy::nursery,
-    clippy::pedantic,
     clippy::ptr_arg,
+    clippy::ref_option,
+    clippy::struct_field_names,
+    clippy::too_long_first_doc_paragraph,
     clippy::too_many_arguments,
+    clippy::too_many_lines,
     clippy::unnecessary_lazy_evaluations,
+    clippy::unnecessary_literal_bound,
     clippy::unnecessary_sort_by,
-    clippy::unwrap_used
+    clippy::unwrap_used,
 )]
 
 pub mod agent;

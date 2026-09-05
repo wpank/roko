@@ -549,7 +549,7 @@ impl Agent for HermesAcpAgent {
         let mut output_text = String::new();
         let mut usage_input: Option<u64> = None;
         let mut usage_output: Option<u64> = None;
-        let mut tool_call_index: usize = 0;
+        let mut _tool_call_index: usize = 0;
         let timeout = self.config.timeout;
 
         if let (Some(mut n_rx), Some(mut td_rx)) = (notif_rx.take(), turn_done_rx.take()) {
@@ -567,7 +567,7 @@ impl Agent for HermesAcpAgent {
                                                 .await;
                                         }
                                         AcpEvent::ToolCall { id, name, arguments } => {
-                                            let args_str = match &arguments {
+                                            let _args_str = match &arguments {
                                                 serde_json::Value::String(s) => s.clone(),
                                                 other => other.to_string(),
                                             };
@@ -579,7 +579,7 @@ impl Agent for HermesAcpAgent {
                                                     },
                                                 ))
                                                 .await;
-                                            tool_call_index += 1;
+                                            _tool_call_index += 1;
                                         }
                                         AcpEvent::ToolCallUpdate { id, progress } => {
                                             let _ = event_tx

@@ -579,7 +579,7 @@ impl ToolDispatcher {
         result_limit: usize,
     ) -> ToolResult {
         let timeout = ctx.timeout;
-        let timeout_ms = duration_to_ms(timeout);
+        let _timeout_ms = duration_to_ms(timeout);
 
         // 0. Detect translator-salvaged truncated args (translate/openai.rs).
         //    When the model hits its output token limit mid-JSON, the translator

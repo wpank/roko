@@ -1439,7 +1439,7 @@ fn json_loginish_at<'a>(value: &'a Value, path: &[&str]) -> Vec<&'a str> {
     }
 }
 
-fn json_label_candidates<'a>(value: &'a Value) -> Vec<&'a str> {
+fn json_label_candidates(value: &Value) -> Vec<&str> {
     if let Some(label) = value.as_str() {
         return vec![label];
     }
@@ -1451,7 +1451,7 @@ fn json_label_candidates<'a>(value: &'a Value) -> Vec<&'a str> {
         .unwrap_or_default()
 }
 
-fn json_login_candidates<'a>(value: &'a Value) -> Vec<&'a str> {
+fn json_login_candidates(value: &Value) -> Vec<&str> {
     if let Some(login) = value.as_str() {
         return vec![login];
     }

@@ -280,7 +280,7 @@ fn build_efficiency_response_with_evidence(
         };
         let aggregate = tasks
             .entry(key)
-            .or_insert_with(TaskEfficiencyAggregate::default);
+            .or_default();
         aggregate.record(event, index);
     }
 

@@ -93,7 +93,7 @@ impl DefaultPlanGenerator {
     /// 5. Validate against plan policy budgets
     ///
     /// Returns the validated TOML string on success, or an error description.
-    pub fn validate_raw_output(
+    pub(crate) fn validate_raw_output(
         &self,
         raw_output: &str,
         slug: &str,
@@ -187,7 +187,7 @@ impl DefaultPlanGenerator {
 
     /// Resolve the effective template kind from overrides or PRD metadata.
     #[must_use]
-    pub fn resolve_template(
+    pub(crate) fn resolve_template(
         overrides: &PlanGeneratorOverrides,
         prd_template: Option<&str>,
     ) -> PlanTemplateKind {

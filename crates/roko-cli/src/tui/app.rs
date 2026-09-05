@@ -3399,18 +3399,6 @@ impl App {
                 let current = self.tui_state.plan_scroll_offset as i32;
                 self.tui_state.plan_scroll_offset = (current + delta).max(0) as usize;
             }
-            (Tab::Logs, FocusZone::LogDetail) => {
-                let current = self.tui_state.log_detail_scroll as i32;
-                self.tui_state.log_detail_scroll = (current + delta).max(0) as usize;
-            }
-            (Tab::Marketplace, FocusZone::MarketDetail) => {
-                let current = self.tui_state.marketplace_detail_scroll as i32;
-                self.tui_state.marketplace_detail_scroll = (current + delta).max(0) as usize;
-            }
-            (Tab::Atelier, FocusZone::AtelierDetail) => {
-                let current = self.tui_state.atelier_detail_scroll as i32;
-                self.tui_state.atelier_detail_scroll = (current + delta).max(0) as usize;
-            }
             // Exhaustive: any remaining (tab, zone) combination is a no-op
             // rather than leaking into a shared scroll field.
             _ => {}
@@ -3524,15 +3512,6 @@ impl App {
             | (Tab::Inspect, FocusZone::InspectTree)
             | (Tab::Learning, FocusZone::LearningMetrics) => {
                 self.tui_state.plan_scroll_offset = offset;
-            }
-            (Tab::Logs, FocusZone::LogDetail) => {
-                self.tui_state.log_detail_scroll = offset;
-            }
-            (Tab::Marketplace, FocusZone::MarketDetail) => {
-                self.tui_state.marketplace_detail_scroll = offset;
-            }
-            (Tab::Atelier, FocusZone::AtelierDetail) => {
-                self.tui_state.atelier_detail_scroll = offset;
             }
             // Exhaustive: any remaining (tab, zone) combination is a no-op.
             _ => {}

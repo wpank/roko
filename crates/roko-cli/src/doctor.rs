@@ -409,12 +409,10 @@ fn load_active_config(workdir: &Path, config_override: Option<&Path>) -> Result<
 
     let paths = resolve_paths(workdir);
     let mut explicit_serve = false;
-    let mut found_any_config = false;
     let active_path = if let Some(env_path) = &paths.env_override {
         match std::fs::read_to_string(env_path) {
             Ok(text) => {
                 explicit_serve = toml_has_key(&text, "serve");
-                found_any_config = true;
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => {
@@ -425,6 +423,7 @@ fn load_active_config(workdir: &Path, config_override: Option<&Path>) -> Result<
         }
         Some(env_path.clone())
     } else {
+        let mut found_any_config = false;
         let mut active_path = None;
 
         if let Some(ref global_path) = paths.global {

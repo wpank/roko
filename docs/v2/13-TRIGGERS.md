@@ -1,6 +1,6 @@
 # 13 — Trigger System
 
-> Event-driven Graph firing. Triggers listen for events, evaluate filters, and start Flows. Every trigger event is a Pulse on Bus. Triggers are persistent, declarative, and composable. Conductor watchers provide 10 battle-tested detection rules for agent stalls, loops, and resource exhaustion.
+> Event-driven Graph firing. Triggers listen for events, evaluate filters, and start Flows. Every trigger event is a Pulse on Bus. Triggers are persistent, declarative, and composable. Conductor watchers provide 12 battle-tested detection rules for agent stalls, loops, and resource exhaustion.
 > **Implementation status:** IMPLEMENTED -- protocol types, persistent bindings, a
 > long-lived coordinator, all seven sources, authenticated dynamic webhooks, mapped
 > payload-to-root-Cell Signals, live Graph execution, filters, rate/concurrency policy,
@@ -707,11 +707,11 @@ header = "X-Hub-Signature-256"
 
 ---
 
-## 9. Conductor Watchers (10 Rules)
+## 9. Conductor Watchers (12 Rules)
 
-The conductor subsystem provides 10 battle-tested detection rules for agent stalls, loops, and resource exhaustion. These are internal triggers that fire interventions against running agents, distinct from the external Trigger system above but sharing the same Bus-based event model.
+The conductor subsystem provides 12 battle-tested detection rules for agent stalls, loops, and resource exhaustion. These are internal triggers that fire interventions against running agents, distinct from the external Trigger system above but sharing the same Bus-based event model.
 
-Source: `crates/roko-conductor/src/watchers/`. All 10 watchers exist in the codebase.
+Source: `crates/roko-conductor/src/watchers/`. All 12 watchers exist in the codebase.
 
 ### 9.1 Watcher Table
 
@@ -878,7 +878,7 @@ roko trigger history nightly-consolidation --limit 10
 | Crate | Responsibility |
 |---|---|
 | `roko-core` | TriggerProtocol trait, TriggerBinding, TriggerEvent, TriggerSource, ConcurrencyPolicy, TriggerFilter, StoreQuerySpec |
-| `roko-conductor` | 10 watchers, intervention system (BanditPolicy, WorstSeverityPolicy), circuit breaker, cooldown filter |
+| `roko-conductor` | 12 watchers, intervention system (BanditPolicy, WorstSeverityPolicy), circuit breaker, cooldown filter |
 | `roko-runtime` | Trigger engine (arm/disarm, Bus subscription to `trigger:*:fired`, Flow spawning) |
 | `roko-serve` | Webhook HTTP routes, trigger API endpoints |
 | `roko-cli` | `roko trigger` subcommands, trigger configuration in roko.toml |

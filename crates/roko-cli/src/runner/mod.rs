@@ -62,6 +62,7 @@ pub(crate) mod branch_cleanup;
 pub(crate) mod cargo_command;
 pub(crate) mod control_adapter;
 pub(crate) mod deadlines;
+pub(crate) mod extension_hooks;
 pub(crate) mod gate_adapter;
 pub(crate) mod gate_input;
 pub(crate) mod gate_oracles;

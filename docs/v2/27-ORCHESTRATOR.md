@@ -508,11 +508,11 @@ Warm spawning saves steps 1-2 entirely and pre-loads step 3. The `promote_warm()
 - [ ] Timing: promote is <100ms vs 5-15s for cold spawn
 - [ ] No leaked processes on gate failure path
 
-### Gap 7: All 10 Conductor Watchers
+### Gap 7: All 12 Conductor Watchers
 
 **Status**: ALREADY IMPLEMENTED in `roko-conductor/src/watchers/`
 
-All 10 watchers exist: GhostTurn, ReviewLoop, IterationLoop, TestFailureBudget, Silence, CompileFailRepeat, TaskStall, ContextPressure, TimeOverrun, CooldownFilter. Intervention system exists with BanditPolicy and WorstSeverityPolicy. Circuit breaker exists with Holt forecasting.
+All 12 watchers exist: GhostTurn, ReviewLoop, IterationLoop, TestFailureBudget, CompileFailRepeat, StuckPattern, ContextWindowPressure, TimeOverrun, CostOverrun, SpecDrift, DiskPressure, WorktreeCount. Intervention system exists with BanditPolicy and WorstSeverityPolicy. Circuit breaker exists with Holt forecasting.
 
 **Remaining**: Verify watcher thresholds are configurable via `[conductor]` in `roko.toml`:
 
@@ -703,7 +703,7 @@ Gate result: `Admit | Reject { reason }`. Log rejections for debugging.
 - `ProcessSupervisor` from roko-runtime (PID tracking, kill)
 - `StateHub` from roko-core (TUI event publishing)
 - `SafetyLayer` from roko-agent (tool authorization)
-- `Conductor` from roko-conductor (health monitoring, 10 watchers)
+- `Conductor` from roko-conductor (health monitoring, 12 watchers)
 - `RoleSystemPromptSpec` from roko-compose (prompt building)
 - `CascadeRouter` from roko-learn (model selection)
 

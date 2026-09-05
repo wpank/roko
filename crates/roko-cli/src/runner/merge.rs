@@ -177,6 +177,9 @@ pub struct MergeBackendOutcome {
     pub summary: String,
     pub failure_kind: Option<RunnerFailureKind>,
     pub duration_ms: u64,
+    /// G04: Conflicted file paths populated on merge conflict.
+    /// Empty when the merge succeeded or failed for non-conflict reasons.
+    pub conflicted_paths: Vec<String>,
 }
 
 impl MergeBackendOutcome {
@@ -187,6 +190,7 @@ impl MergeBackendOutcome {
             summary: summary.into(),
             failure_kind: None,
             duration_ms,
+            conflicted_paths: Vec::new(),
         }
     }
 
@@ -201,6 +205,25 @@ impl MergeBackendOutcome {
             summary: summary.into(),
             failure_kind: Some(failure_kind),
             duration_ms,
+            conflicted_paths: Vec::new(),
+        }
+    }
+
+    /// Construct a failure outcome that carries the conflicted file paths,
+    /// enabling downstream conflict-aware replan (G04).
+    #[must_use]
+    pub fn fail_with_conflicts(
+        summary: impl Into<String>,
+        failure_kind: RunnerFailureKind,
+        duration_ms: u64,
+        conflicted_paths: Vec<String>,
+    ) -> Self {
+        Self {
+            passed: false,
+            summary: summary.into(),
+            failure_kind: Some(failure_kind),
+            duration_ms,
+            conflicted_paths,
         }
     }
 }
@@ -248,8 +271,10 @@ impl MergeBackend for GitMergeBackend {
         }
 
         // G06: Pre-merge feasibility check via `git merge-tree --write-tree` (git 2.39+).
-        // This predicts conflicts without side effects so we can log early warnings.
-        // Advisory only — we never skip the merge based on the prediction.
+        // This predicts conflicts without side effects — no checkout, no ref updates,
+        // no working tree changes. When conflicts are predicted, we fail closed and
+        // return the conflicted paths so the caller can trigger a conflict-aware replan
+        // (G04) without ever touching the working tree.
         let merge_tree = tokio::process::Command::new("git")
             .args(["merge-tree", "--write-tree", "HEAD", &request.branch_name])
             .current_dir(&config.workdir)
@@ -258,16 +283,29 @@ impl MergeBackend for GitMergeBackend {
             .await;
         match merge_tree {
             Ok(ref out) if !out.status.success() => {
-                // merge-tree reports conflicts; parse conflict markers from stdout.
+                // merge-tree reports conflicts via non-zero exit; parse from stdout.
                 let stdout = String::from_utf8_lossy(&out.stdout);
-                let conflict_paths: Vec<&str> =
-                    stdout.lines().filter(|l| l.contains("CONFLICT")).collect();
-                if !conflict_paths.is_empty() {
-                    tracing::warn!(
-                        "pre-merge check predicted {} conflict(s) for branch `{}`: {}",
-                        conflict_paths.len(),
-                        request.branch_name,
-                        conflict_paths.join("; "),
+                let conflict_lines: Vec<String> = stdout
+                    .lines()
+                    .filter(|l| l.contains("CONFLICT"))
+                    .map(|l| l.to_string())
+                    .collect();
+                if !conflict_lines.is_empty() {
+                    let duration_ms = started.elapsed().as_millis() as u64;
+                    tracing::info!(
+                        branch = %request.branch_name,
+                        conflicts = ?conflict_lines,
+                        "merge-tree predicts conflicts; skipping real merge (G06)"
+                    );
+                    return MergeBackendOutcome::fail_with_conflicts(
+                        format!(
+                            "merge-tree predicts conflicts for `{}`; conflicted paths: {}",
+                            request.branch_name,
+                            conflict_lines.join("; ")
+                        ),
+                        RunnerFailureKind::Structural,
+                        duration_ms,
+                        conflict_lines,
                     );
                 }
             }
@@ -360,13 +398,15 @@ impl MergeBackend for GitMergeBackend {
                 } else {
                     format!("; conflicted paths: {}", conflicted_paths.join(","))
                 };
-                MergeBackendOutcome::fail(
+                // G04: carry conflicted paths through to enable conflict-aware replan.
+                MergeBackendOutcome::fail_with_conflicts(
                     format!(
                         "git merge `{}` failed: {details}{conflict_summary}",
                         request.branch_name
                     ),
                     RunnerFailureKind::Structural,
                     duration_ms,
+                    conflicted_paths,
                 )
             }
             Err(err) => MergeBackendOutcome::fail(
@@ -892,8 +932,18 @@ mod tests {
 
         assert!(!outcome.passed);
         assert_eq!(outcome.failure_kind, Some(RunnerFailureKind::Structural));
-        assert!(outcome.summary.contains("git merge"));
-        assert!(outcome.summary.contains("conflicted paths: state.txt"));
+        // G06: merge-tree pre-check catches conflicts before real merge is attempted.
+        assert!(
+            outcome.summary.contains("merge-tree predicts conflicts")
+                || outcome.summary.contains("git merge"),
+            "expected conflict summary, got: {}",
+            outcome.summary
+        );
+        assert!(
+            outcome.summary.contains("state.txt"),
+            "expected state.txt in conflict summary, got: {}",
+            outcome.summary
+        );
         assert!(
             status.trim().is_empty(),
             "merge conflict should have been aborted, status:\n{status}"
@@ -1199,5 +1249,36 @@ mod tests {
         assert!(launch.generation() > 0);
         tokio::task::yield_now().await;
         assert!(gate.calls.lock().unwrap().is_empty());
+    }
+
+    // ── G04 tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn merge_backend_outcome_fail_with_conflicts_carries_paths() {
+        let outcome = MergeBackendOutcome::fail_with_conflicts(
+            "merge failed",
+            RunnerFailureKind::Structural,
+            42,
+            vec!["src/main.rs".into(), "lib.rs".into()],
+        );
+        assert!(!outcome.passed);
+        assert_eq!(outcome.conflicted_paths.len(), 2);
+        assert_eq!(outcome.conflicted_paths[0], "src/main.rs");
+        assert_eq!(outcome.conflicted_paths[1], "lib.rs");
+        assert_eq!(outcome.duration_ms, 42);
+    }
+
+    #[test]
+    fn merge_backend_outcome_pass_has_empty_conflicts() {
+        let outcome = MergeBackendOutcome::pass("ok", 1);
+        assert!(outcome.passed);
+        assert!(outcome.conflicted_paths.is_empty());
+    }
+
+    #[test]
+    fn merge_backend_outcome_fail_has_empty_conflicts() {
+        let outcome = MergeBackendOutcome::fail("fail", RunnerFailureKind::Structural, 1);
+        assert!(!outcome.passed);
+        assert!(outcome.conflicted_paths.is_empty());
     }
 }

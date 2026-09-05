@@ -714,6 +714,11 @@ impl WorktreeManager {
             return Err(WorktreeError::AlreadyExists(id.to_string()));
         }
 
+        // G08: Copy isolated config directories into the new worktree so
+        // concurrent agents do not contend on shared config files. We copy
+        // (not symlink) to prevent contention. Failure is non-fatal.
+        isolate_worktree_config(&self.config.repo_root, &handle.path);
+
         Ok(handle)
     }
 
@@ -4073,6 +4078,60 @@ fn validate_workspace_file_kinds_with(
         "workspace directory count exceeds input limit",
     ))
 }
+
+/// G08: Copy isolated config directories from the main repo into a new worktree
+/// so concurrent agents do not contend on shared config files.
+///
+/// We copy (not symlink) `.cursor/` so that each worktree has its own MCP
+/// configuration. Failure is non-fatal -- the agent can still run without
+/// isolated config; we just log a debug warning.
+fn isolate_worktree_config(repo_root: &Path, worktree_path: &Path) {
+    // Directories to copy for config isolation.
+    const ISOLATION_DIRS: &[&str] = &[".cursor"];
+
+    for dir_name in ISOLATION_DIRS {
+        let source = repo_root.join(dir_name);
+        let target = worktree_path.join(dir_name);
+        if !source.is_dir() || target.exists() {
+            continue;
+        }
+        if let Err(err) = copy_dir_shallow(&source, &target) {
+            tracing::debug!(
+                dir = %dir_name,
+                error = %err,
+                "failed to copy config directory to worktree (non-fatal)"
+            );
+        }
+    }
+}
+
+/// Shallow copy of a directory: creates the target directory and copies all
+/// regular files (non-recursively). Subdirectories are created but their
+/// contents are not copied -- for `.cursor/` we only need the top-level
+/// `mcp.json` and similar config files.
+fn copy_dir_shallow(source: &Path, target: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(target)?;
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let ft = entry.file_type()?;
+        let dest = target.join(entry.file_name());
+        if ft.is_file() {
+            std::fs::copy(entry.path(), &dest)?;
+        } else if ft.is_dir() {
+            // Create subdirectory and copy its files too (one level deep).
+            std::fs::create_dir_all(&dest)?;
+            if let Ok(sub_entries) = std::fs::read_dir(entry.path()) {
+                for sub_entry in sub_entries.flatten() {
+                    if sub_entry.file_type().map_or(false, |t| t.is_file()) {
+                        let _ = std::fs::copy(sub_entry.path(), dest.join(sub_entry.file_name()));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     //! Tests below each spin up a throwaway git repo in a
@@ -6665,5 +6724,64 @@ mod tests {
         };
         let result = mgr.prune().await;
         assert!(result.is_ok());
+    }
+
+    // ── G08 config isolation tests ─────────────────────────────────────
+
+    #[test]
+    fn isolate_worktree_config_copies_cursor_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        let wt = tmp.path().join("worktree");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(&wt).unwrap();
+
+        // Create .cursor/mcp.json in "repo"
+        let cursor = repo.join(".cursor");
+        std::fs::create_dir_all(&cursor).unwrap();
+        std::fs::write(cursor.join("mcp.json"), r#"{"test": true}"#).unwrap();
+
+        super::isolate_worktree_config(&repo, &wt);
+
+        let wt_mcp = wt.join(".cursor").join("mcp.json");
+        assert!(wt_mcp.exists(), "worktree should have .cursor/mcp.json");
+        assert!(!wt_mcp.is_symlink(), "should be a copy, not a symlink");
+        let content = std::fs::read_to_string(&wt_mcp).unwrap();
+        assert_eq!(content, r#"{"test": true}"#);
+    }
+
+    #[test]
+    fn isolate_worktree_config_skips_when_no_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        let wt = tmp.path().join("worktree");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(&wt).unwrap();
+
+        // No .cursor/ in repo -- should not panic or create anything.
+        super::isolate_worktree_config(&repo, &wt);
+
+        assert!(!wt.join(".cursor").exists());
+    }
+
+    #[test]
+    fn isolate_worktree_config_skips_when_target_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        let wt = tmp.path().join("worktree");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(&wt).unwrap();
+
+        // Create .cursor/ in both
+        std::fs::create_dir_all(repo.join(".cursor")).unwrap();
+        std::fs::write(repo.join(".cursor/mcp.json"), "original").unwrap();
+        std::fs::create_dir_all(wt.join(".cursor")).unwrap();
+        std::fs::write(wt.join(".cursor/mcp.json"), "existing").unwrap();
+
+        super::isolate_worktree_config(&repo, &wt);
+
+        // Should NOT overwrite
+        let content = std::fs::read_to_string(wt.join(".cursor/mcp.json")).unwrap();
+        assert_eq!(content, "existing");
     }
 }

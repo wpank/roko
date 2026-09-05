@@ -15,7 +15,7 @@ What is already built, working, and wired. This is the foundation the roadmap bu
 | Crate | Unified Concepts | Status |
 |---|---|---|
 | `roko-core` | Signal (preferred name; Rust struct is `Engram`, `type Signal = Engram` alias), 6 protocols (Store/Score/Verify/Route/Compose/React) | Kernel, stable |
-| `roko-agent` | Agent specialization: 9-step pipeline, 11 LLM backends (Claude CLI, Anthropic API, OpenAI-compat, Cursor ACP, Perplexity, Gemini API, Gemini CLI, Cerebras, Cursor CLI, Hermes, OpenClaw), MCP, tool loop, safety, bounded meta-agent lineage/grants and exact role morph policy | Dispatch wired; R04 meta lifecycle primitives wired |
+| `roko-agent` | Agent specialization: 9-step pipeline, 12 LLM backends (Claude CLI, Anthropic API, OpenAI-compat, Cursor ACP, Perplexity, Gemini API, Gemini CLI, Cerebras, Cursor CLI, Hermes, OpenClaw, Codex CLI), MCP, tool loop, safety, bounded meta-agent lineage/grants and exact role morph policy | Dispatch wired; R04 meta lifecycle primitives wired |
 | `roko-agent-server` | Agent sidecar plus supervised durable relay client with bounded queues, reconnect, cursor restore, replay/snapshot handling, and ACK-after-handler-commit | Wired |
 | `roko-cli::graph_execution` | Plan state machine, task/worktree isolation, parallel executor, merge queue | Wired via Graph engine (sole engine; Runner-v2 retained as `--engine legacy`; WorkflowEngine retired #276) |
 | `roko-gate` | Verify protocol: 11 gates, 7-rung pipeline, adaptive thresholds | Wired, called per-task |
@@ -23,7 +23,7 @@ What is already built, working, and wired. This is the foundation the roadmap bu
 | `roko-learn` | Learning Loops 1+2: episodes, cascade router, experiments, efficiency, bandits | Fully wired |
 | `roko-neuro` | Memory specialization: knowledge store, tiers, HDC fingerprints, distillation | Wired |
 | `roko-dreams` | Loop 3 phases plus daemon-resident adaptive-idle, cron, and episode-count scheduling | Runtime scheduled; Bus/intensive integration partial |
-| `roko-conductor` | 10 watchers, circuit breaker, diagnosis | Wired into executor |
+| `roko-conductor` | 12 watchers, circuit breaker, diagnosis | Wired into executor |
 | `roko-runtime` | ProcessSupervisor, event bus, cancellation, supervised HTTP JSON connector registry | Wired into PlanRunner and connector control plane |
 | `roko-primitives` | HDC vectors, tier routing | Fully wired |
 | `roko-daimon` | Affect engine, somatic markers, dispatch modulation | Wired per-task |

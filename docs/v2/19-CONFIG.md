@@ -13,7 +13,7 @@
 > **Implementation status:** Aspirational. No `Kind::Config` exists in code. Configuration is loaded from TOML files, not wrapped in Signals.
 
 Configuration is not special-cased infrastructure. It is data that:
-- has a content hash (identical configs produce the same SHA-256),
+- has a content hash (identical configs produce the same BLAKE3 hash),
 - has a version (`schema_version` tracks breaking changes),
 - has lineage (each config derives from its predecessor plus an override source),
 - decays (stale config is worse than no config -- a six-month-old routing weight is probably wrong).

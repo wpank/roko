@@ -41,7 +41,7 @@ Roko is built from **5 primitives**, **9 protocols**, **4 universal patterns**, 
 
 | Primitive | What It Is | Primary Doc |
 |---|---|---|
-| **Signal** | Durable datum. Content-addressed (SHA-256), typed (`Kind`), scored (5 axes), decayed via demurrage (Gesell 1916), lineage-tracked, HDC-fingerprinted (10,240-bit). Lives in **Store**. | [01](01-SIGNAL.md) |
+| **Signal** | Durable datum. Content-addressed (BLAKE3), typed (`Kind`), scored (5 axes), decayed via demurrage (Gesell 1916), lineage-tracked, HDC-fingerprinted (10,240-bit). Lives in **Store**. | [01](01-SIGNAL.md) |
 | **Pulse** | Ephemeral event. Sequence-numbered, ring-buffered, broadcast via **Bus**. Signal's ephemeral sibling. **Graduation** promotes Pulse → Signal — the only path from transport to audit DAG. | [01](01-SIGNAL.md) |
 | **Cell** | Atomic computation. Signals in, Signals out. Declares typed I/O, capabilities, protocol conformance. Every Cell is a learner via **predict-publish-correct** (Friston 2006). | [02](02-CELL.md) |
 | **Graph** | Typed DAG of Cells connected by edges. TOML-defined, serializable, runtime-interpreted. **Hot Graphs** stay resident and re-fire per tick. Graphs are themselves Cells (fractal composition). | [03](03-GRAPH.md) |
@@ -51,7 +51,7 @@ Roko is built from **5 primitives**, **9 protocols**, **4 universal patterns**, 
 
 | Fabric | Medium | Lifetime | Addressing | Access Pattern |
 |---|---|---|---|---|
-| **Store** | Signal (durable) | Persists until pruned by demurrage | Content-addressed (SHA-256) | Put/Get/Query/QuerySimilar |
+| **Store** | Signal (durable) | Persists until pruned by demurrage | Content-addressed (BLAKE3) | Put/Get/Query/QuerySimilar |
 | **Bus** | Pulse (ephemeral) | Ring-buffered, evicted by position | Sequence-numbered | Publish/Subscribe by topic |
 
 These are the only two data transport mechanisms. Nothing else. No ad-hoc state channels, no hidden caches, no side-band communication. Every piece of data in the system flows through one of these two fabrics.
@@ -210,7 +210,7 @@ CaMeL capability-tagged IFC on Extensions. Nayebi 5-head lexicographic corrigibi
 | **[10](10-GROUPS.md)** | Groups and Coordination | Persistent agent collectives as Space specialization. 4 coordination modes (stigmergic, pipeline, broadcast, leader-follower). Membership protocol. Cross-user invitation. Shared knowledge and pheromone fields. |
 | **[11](11-CONNECTIVITY.md)** | Connectivity and Relay | Relay wire protocol (rooms, envelopes, heartbeat, reconnection). Exoskeleton protocols (MCP, A2A, ERC-8004, x402). Multi-chain. WebSocket subscriptions. Backpressure. |
 | **[12](12-EXTENSIONS.md)** | Extension System | 8 layers, 22 hooks. CaMeL IFC. Discovery and dependency resolution. Connector primitive. Extension lifecycle. |
-| **[13](13-TRIGGERS.md)** | Trigger System | Declarative event ingress. Event sources. Trigger bindings. Debounce and filter. Conductor watchers (10 rules). |
+| **[13](13-TRIGGERS.md)** | Trigger System | Declarative event ingress. Event sources. Trigger bindings. Debounce and filter. Conductor watchers (12 rules). |
 | **[14](14-TOOLS.md)** | Tool Catalog | 45+ shipped Cells by protocol. MCP integration. Tool dispatch. Safety hooks. Plugin ecosystem. |
 
 ### Observation and operations
@@ -385,5 +385,5 @@ CaMeL capability-tagged IFC on Extensions. Nayebi 5-head lexicographic corrigibi
 | 1.0 | 2026-04-20 | Initial unified spec (22 docs). |
 | 2.0 | 2026-04-24 | Cell rename from Block, protocol refinements, plan runner v2. |
 | 3.0 | 2026-04-26 | **Major restructure**: 29 docs (00-28). Absorbs `architecture/` (gateway, feeds, groups, auth, payments, DeFi, visual composition, orchestrator gaps). Introduces 4 universal patterns (Pipeline, Loop, Functor, Space). Enforces "everything is a Graph of Cells" universally. All concrete systems expressed as compositions of kernel primitives. Previous unified docs archived to `v2-archive/`. Architecture docs archived to `architecture-archive/`. |
-| 3.2 | 2026-09-05 | Engine convergence update: Graph is the sole engine; WorkflowEngine retired (#276); Runner-v2 retained as `--engine legacy`. Updated 31-ENGINE-CONVERGENCE-CONTRACT, 04-EXECUTION, 27-ORCHESTRATOR, 03-GRAPH, and cross-doc references. |
 | 3.1 | 2026-08-31 | Adds the implemented, opt-in FAST self-development operator lane, including its verification ownership, deadline, evidence, security, and release-boundary contracts. |
+| 3.2 | 2026-09-05 | Engine convergence update: Graph is the sole engine; WorkflowEngine retired (#276); Runner-v2 retained as `--engine legacy`. Updated 31-ENGINE-CONVERGENCE-CONTRACT, 04-EXECUTION, 27-ORCHESTRATOR, 03-GRAPH, and cross-doc references. |

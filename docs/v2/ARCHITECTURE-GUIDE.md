@@ -47,7 +47,7 @@ validate the results, learn from failures, and iterate — autonomously, in a
 loop. The goal is a system sophisticated enough to develop itself.
 
 Roko is not a chat wrapper or a thin LLM client. It is a full orchestration
-runtime: 35 workspace members, a typed event bus, a multi-stage gate pipeline, a
+runtime: 40 workspace members, a typed event bus, a multi-stage gate pipeline, a
 self-improving model router, a durable knowledge store, and an affect engine
 that adjusts agent behavior based on recent history. Every component exists
 because the self-hosting loop needed it.
@@ -304,7 +304,7 @@ the top are foundations.
        │                           │                    │
 ┌──────▼──────┐  ┌─────────────────▼──────┐  ┌────────▼───────┐
 │ roko-agent  │  │   roko-gate            │  │  roko-neuro    │
-│ 11 providers│  │  7-rung pipeline,      │  │  KnowledgeStore│
+│ 12 providers│  │  7-rung pipeline,      │  │  KnowledgeStore│
 │ ToolDisp.,  │  │  AdaptiveThresholds,   │  │  ContextAssemb.│
 │ SafetyLayer,│  │  SPC detectors,        │  │  TierProgress. │
 │ MCP passth. │  │  CompileGate,TestGate, │  │  Admission     │
@@ -321,7 +321,7 @@ the top are foundations.
                                                    │
 ┌──────────────────────────────────────────────────▼──────────┐
 │                      roko-conductor                          │
-│  Conductor, CircuitBreaker, 10 Watchers,                     │
+│  Conductor, CircuitBreaker, 12 Watchers,                     │
 │  DiagnosisEngine, StuckDetector, YerkesDodson                │
 └──────────────────────────────────────────┬──────────────────┘
                                            │
@@ -348,7 +348,7 @@ the top are foundations.
 Additional crates (parallel, not in the main execution stack):
 
 ```
-  roko-serve          HTTP control plane (~317 routes on :6677), durable exact-room
+  roko-serve          HTTP control plane (~376 canonical routes (~421 incl. aliases) on :6677), durable exact-room
                       relay subscription execution, local arena/meta-agent services
   roko-agent-server   Per-agent HTTP sidecar plus supervised durable relay client
   agent-relay         Bounded canonical-envelope relay and atomic recovery server
@@ -448,11 +448,11 @@ sources. The composite `SumScorer` blends multiple scorers.
 <summary>Score trait signature</summary>
 
 ```rust
-pub trait Score: Send + Sync {
+pub trait Score: Cell + Send + Sync {
     /// Score a signal in the given context. Pure function.
     fn score(&self, signal: &Signal, ctx: &Context) -> ScoreValue;
 
-    fn score_signal(&self, signal: &Signal, ctx: &Context) -> ScoreValue;
+    fn score_engram(&self, engram: &Signal, ctx: &Context) -> ScoreValue;
     fn score_pulse(&self, p: &Pulse, ctx: &Context) -> ScoreValue;
     fn score_datum(&self, datum: Datum<'_>, ctx: &Context) -> ScoreValue;
     fn name(&self) -> &'static str;
@@ -482,7 +482,7 @@ diff check, or an LLM judge, and returns whether the output is acceptable.
 
 ```rust
 #[async_trait]
-pub trait Verify: Send + Sync {
+pub trait Verify: Cell + Send + Sync {
     /// Verify the signal and return a verdict.
     async fn verify(&self, signal: &Signal, ctx: &Context) -> Verdict;
 
@@ -511,11 +511,11 @@ knowledge level, the Router picks which knowledge entry to surface.
 <summary>Route trait signature</summary>
 
 ```rust
-pub trait Route: Send + Sync {
+pub trait Route: Cell + Send + Sync {
     /// Select one signal from the candidates. None = no selection made.
     fn select(&self, candidates: &[Signal], ctx: &Context) -> Option<Selection>;
 
-    fn select_signal(&self, candidates: &[Signal], ctx: &Context) -> Option<Selection>;
+    fn select_engram(&self, candidates: &[Signal], ctx: &Context) -> Option<Selection>;
     fn select_pulse(&self, candidates: &[Pulse], ctx: &Context) -> Option<Selection>;
 
     /// Learn from a selection's actual outcome (for bandit updates).
@@ -545,7 +545,7 @@ single system prompt that fits within the model's context window.
 <summary>Compose trait signature</summary>
 
 ```rust
-pub trait Compose: Send + Sync {
+pub trait Compose: Cell + Send + Sync {
     /// Combine input signals into a new composed signal.
     fn compose(
         &self,
@@ -579,7 +579,7 @@ pub trait Compose: Send + Sync {
 
 **What it does in plain English**: A Policy watches the stream of recent
 Signals and decides whether to intervene. The `Conductor` is the primary
-implementation: it runs 10 watchers over the stream and emits `ConductorDecision`
+implementation: it runs 12 watchers over the stream and emits `ConductorDecision`
 events when something is wrong (agent stuck, budget exceeded, quality degrading).
 This is the reactive oversight layer.
 
@@ -587,7 +587,7 @@ This is the reactive oversight layer.
 <summary>React trait signature</summary>
 
 ```rust
-pub trait React: Send + Sync {
+pub trait React: Cell + Send + Sync {
     /// Examine the recent signal stream and produce new signals (interventions).
     fn decide(&self, stream: &[Signal], ctx: &Context) -> Vec<Signal>;
 
@@ -608,7 +608,7 @@ pub trait React: Send + Sync {
 `PolicyOutputs` contains both `signals: Vec<Signal>` (to persist) and
 `pulses: Vec<Pulse>` (to publish on the Bus).
 
-**Implementations**: `Conductor` (composite of 10 watchers), `CircuitBreaker`,
+**Implementations**: `Conductor` (composite of 12 watchers), `CircuitBreaker`,
 individual watcher impls (stuck detection, anomaly, budget, etc.).
 
 ---
@@ -1003,7 +1003,7 @@ auto-connect remain outside these scoped implementations.
 
 ## 8. The Cell Supertrait
 
-Source: `crates/roko-cell.rs`
+Source: `crates/roko-core/src/cell.rs`
 
 Execution-level protocol implementations are Cells. This gives the engine identity,
 cost estimation, and protocol introspection. Lower-level portable contracts, such as
@@ -2714,7 +2714,7 @@ Before dispatching agent for task T:
            ┌───────────────▼──────────────────┐
            │            roko-agent             │
            │  ToolDispatcher + SafetyLayer     │
-           │  11 LLM backends                 │
+           │  12 LLM backends                 │
            └───────┬────────────────┬──────────┘
                    │ outcomes       │ tool calls
            ┌───────▼──────┐  ┌─────▼──────────┐

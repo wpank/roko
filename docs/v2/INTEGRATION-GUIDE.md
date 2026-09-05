@@ -816,7 +816,7 @@ critic = true
 <details>
 <summary>Per-watcher threshold overrides for anomaly detection</summary>
 
-The conductor runs 10 watchers that monitor for anomalous agent behavior. Each watcher has
+The conductor runs 12 watchers that monitor for anomalous agent behavior. Each watcher has
 configurable thresholds. The defaults are reasonable starting points.
 
 ```toml

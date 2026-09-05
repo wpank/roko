@@ -632,8 +632,7 @@ pub fn build_cognitive_loop_graph(
     max_ticks: Option<u64>,
 ) -> crate::types::Graph {
     use crate::types::{
-        Edge, EdgeCondition, ExecutionClass, FailureStrategy, Graph, GraphMetadata, GraphMode,
-        Node,
+        Edge, EdgeCondition, ExecutionClass, FailureStrategy, Graph, GraphMetadata, GraphMode, Node,
     };
 
     let metadata = GraphMetadata {
@@ -770,10 +769,8 @@ impl CalibrationTracker {
     pub fn record(&self, error: f64) {
         let error = error.clamp(0.0, 1.0);
         self.observations.fetch_add(1, Ordering::Relaxed);
-        self.cumulative_error_micros.fetch_add(
-            (error * 1_000_000.0).round() as u64,
-            Ordering::Relaxed,
-        );
+        self.cumulative_error_micros
+            .fetch_add((error * 1_000_000.0).round() as u64, Ordering::Relaxed);
     }
 
     /// Return the number of observations recorded.
@@ -1000,7 +997,10 @@ mod tests {
         tracker.record(-1.0); // should clamp to 0.0
         assert_eq!(tracker.observation_count(), 2);
         let mean = tracker.mean_error().unwrap();
-        assert!((mean - 0.5).abs() < 1e-6, "clamped mean should be 0.5, got {mean}");
+        assert!(
+            (mean - 0.5).abs() < 1e-6,
+            "clamped mean should be 0.5, got {mean}"
+        );
     }
 
     // ── Cognitive loop graph builder tests (#270) ───────────────────────
@@ -1024,23 +1024,22 @@ mod tests {
             .collect();
         assert_eq!(
             cell_types,
-            vec!["sense", "assess", "compose", "act", "verify", "persist", "react"]
+            vec![
+                "sense", "assess", "compose", "act", "verify", "persist", "react"
+            ]
         );
 
         // Check T0 short-circuit edge exists -- look through petgraph edges
-        let has_t0 = graph
-            .inner
-            .edge_indices()
-            .any(|idx| {
-                let edge = &graph.inner[idx];
-                edge.from == "sense"
-                    && edge.to == "react"
-                    && matches!(
-                        &edge.condition,
-                        Some(crate::types::EdgeCondition::OutputEquals { key, value })
-                        if key == "t0_short_circuit" && value == "true"
-                    )
-            });
+        let has_t0 = graph.inner.edge_indices().any(|idx| {
+            let edge = &graph.inner[idx];
+            edge.from == "sense"
+                && edge.to == "react"
+                && matches!(
+                    &edge.condition,
+                    Some(crate::types::EdgeCondition::OutputEquals { key, value })
+                    if key == "t0_short_circuit" && value == "true"
+                )
+        });
         assert!(
             has_t0,
             "T0 short-circuit edge from sense to react must exist"

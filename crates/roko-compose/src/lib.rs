@@ -14,7 +14,6 @@
 //! into `Signal<PromptSection>`s, and passes them to the composer. This is
 //! the strict I/O boundary from `02-anti-patterns.md` (rule #8).
 
-
 // Compose: trait-bound literal returns, float arithmetic, and long assembly functions.
 #![allow(
     clippy::derive_partial_eq_without_eq,

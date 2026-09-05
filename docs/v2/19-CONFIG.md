@@ -690,8 +690,8 @@ Custom rungs replace the built-in compile/lint/test defaults. Each rung is a `{ 
 | `auto_fix_model` | String | `"claude-haiku-4-5"` | Model for auto-fix attempts |
 | `warm_implementers_per_plan` | usize | `1` | Pre-spawned warm agents |
 
-**Live in runner-v2.** Conductor watcher config (`[conductor.watchers.*]`) is
-fully live in the runner-v2 event loop. Watchers run every 5 seconds against
+**Live in the Graph engine.** Conductor watcher config (`[conductor.watchers.*]`) is
+fully live in the execution event loop. Watchers run every 5 seconds against
 the signal ring buffer and can trigger Restart or Fail decisions. When
 watchers detect repeated failures on a model or resource pressure (cost,
 context window, time), the conductor emits a **routing bias** that feeds

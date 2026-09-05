@@ -1,12 +1,12 @@
 # 27 — Orchestrator
 
-> Plan runner v2: event-driven design (~2,400 LOC replacing 21K). 12 mori parity gaps with full specifications. Current state reconciliation showing what exists vs what needs building. Every runner component is a Cell processing Signals through Bus and Store. The orchestrator is the Engine's concrete realization for plan execution.
+> Graph-based plan execution engine. Originally designed as "runner v2" (~2,400 LOC replacing 21K), now converged into the unified Graph engine. 12 mori parity gaps with full specifications. Every runner component is a Cell processing Signals through Bus and Store.
 
-**Status**: IMPLEMENTED; this chapter retains the original migration design for context
-**Replaced**: `crates/roko-cli/src/orchestrate.rs` (deleted by E12-T07)
-**Runtime**: `crates/roko-cli/src/runner/` (runner v2; `event_loop.rs` remains an extraction target)
+**Status**: CONVERGED; Graph is the sole production engine; Runner-v2 retained as `--engine legacy` only; WorkflowEngine deleted (#276)
+**Replaced**: `crates/roko-cli/src/orchestrate.rs` (deleted by E12-T07), `WorkflowEngine` (deleted by #276)
+**Runtime**: `crates/roko-cli/src/graph_execution/` (Graph engine) + `crates/roko-cli/src/runner/` (legacy, deprecated)
 
-> **Implementation status:** IMPLEMENTED — Runner v2 is the sole plan runtime and the legacy engine is gone. Plan-execute-gate-persist works end-to-end; the former E45 mori-parity gap list is complete. The main remaining structural debt is decomposing the roughly 20.5K-line event loop.
+> **Implementation status:** CONVERGED — Graph is the sole production engine (`PlanEngine::Graph`, the `#[default]` variant). The legacy Runner-v2 event loop is retained as `--engine legacy` for one deprecation cycle. WorkflowEngine has been deleted (#276); its serializable contract types are preserved in `roko-runtime::workflow_contract`. Plan-execute-gate-persist works end-to-end via Graph with `ProductionPlanTopology`, `GuaranteedFinallyController`, 12-row `FeedbackSettler`, `CellResources` injection, and `RuntimeServices` (7 `RuntimeProfile` variants).
 
 **Depends on**: [02-CELL](02-CELL.md) (Cell protocol), [03-GRAPH](03-GRAPH.md) (Graph composition), [04-EXECUTION](04-EXECUTION.md) (Engine, Flow, Activity recording), [05-AGENT](05-AGENT.md) (Agent lifecycle), [06-MEMORY](06-MEMORY.md) (Knowledge Store for context injection), [07-LEARNING](07-LEARNING.md) (Episodes, CascadeRouter, efficiency events), [15-TELEMETRY](15-TELEMETRY.md) (StateHub, Lenses)
 
@@ -718,48 +718,44 @@ Gate result: `Admit | Reject { reason }`. Log rejections for debugging.
 
 ---
 
-## 11. Migration Strategy
+## 11. Migration Strategy (completed)
 
-### Phase A: Build runner alongside orchestrate.rs (1-2 days)
-1. Create `crates/roko-cli/src/runner/` module
-2. Implement plan loading, event loop, agent streaming, persistence
-3. Wire to existing crate APIs
-4. Test with a real plan
+All four migration phases are complete:
 
-### Phase B: Wire into CLI (hours)
-1. Add `--runner v2` flag to `roko plan run`
-2. Default to v2, `--runner legacy` falls back to orchestrate.rs
-3. Verify TUI works with new runner
+### Phase A: Build runner alongside orchestrate.rs -- DONE
+Runner-v2 was created in `crates/roko-cli/src/runner/`.
 
-### Phase C: Deprecate orchestrate.rs (after validation)
-1. Rename to `orchestrate_legacy.rs`
-2. Extract useful pieces (CFactorSource, etc.) to separate files
-3. Remove `--runner legacy` after confidence period
+### Phase B: Wire into CLI -- DONE
+`--engine` flag added with `graph` as default, `legacy` (alias `runner-v2`) as fallback.
 
-### Phase D: Align with unified spec (future)
-1. Complete Signal naming migration (`Engram` is the Rust struct; `type Signal = Engram` is the preferred alias) per Phase 1 kernel
-2. Add Activity recording per-node (unified resumability)
-3. Add Pulse-based lifecycle events on Bus
-4. Replace event loop with Engine interpretation of TOML Graphs
+### Phase C: Deprecate orchestrate.rs -- DONE
+`orchestrate.rs` deleted by E12-T07. `WorkflowEngine` deleted by #276.
+
+### Phase D: Align with unified spec -- DONE (engine convergence)
+Graph is the sole engine. `ProductionPlanTopology` builds canonical per-task subgraphs.
+`GuaranteedFinallyController` provides guaranteed cleanup. Activity recording per-node
+is live. `CellResources` injects shared service handles. `RuntimeServices` facade with
+7 `RuntimeProfile` variants provides the shared service contract.
 
 ---
 
-## 12. Relationship to Unified Spec
+## 12. Relationship to Unified Spec (realized)
 
-This plan runner v2 is a **stepping stone** toward the unified Engine:
+The engine convergence has been completed. The Graph engine now realizes these unified spec concepts:
 
-| Unified Engine concept | Plan runner v2 equivalent |
+| Unified Engine concept | Graph engine realization |
 |---|---|
-| Engine interprets Graphs | Event loop dispatches ExecutorActions |
-| Flow lifecycle Pulses | DashboardEvents on StateHub |
-| Activity recording per-node | Episode + efficiency flush per-task |
-| Workflow/Activity split | Executor (pure) / Runner (I/O) split |
-| Failure strategies | Gate retry loop (iteration++) |
-| Budget enforcement | Cost tracking per-plan per-task |
-| Verify protocol | Gate pipeline (run_rung) |
-| Agent type-state lifecycle | Agent spawn -> stream -> exit tracking |
-
-The v2 runner will not implement the full Cell/Graph/Protocol stack, but it is structured so the unified Engine can subsume it incrementally.
+| Engine interprets Graphs | `GraphEngine` executes topological DAGs of Cells |
+| Flow lifecycle Pulses | `StateHubGraphEventSink` publishes DashboardEvents |
+| Activity recording per-node | `ActivityRecorder`/`ActivityReplayer` provide JSONL-based durable replay |
+| Workflow/Activity split | `ExecutionClass::Workflow` vs `ExecutionClass::Activity` on every node |
+| Failure strategies | `GuaranteedFinallyController` + replan controller + autofix |
+| Budget enforcement | Schema-v2 cost sidecar with atomic reservations per dispatch |
+| Verify protocol | `GatePipelineCell` via `CellResources.gates` (`SharedGateEvaluator`) |
+| Agent type-state lifecycle | `ProcessSupervisor` tracking + `RuntimeServices` guards |
+| Feedback settlement | 12-row `FeedbackSettler` with exactly-once idempotency |
+| Plan topology | `ProductionPlanTopology` builds canonical 11-node per-task subgraphs |
+| Service profiles | 7 `RuntimeProfile` variants with `ProfileBundleManifest` |
 
 ---
 
@@ -796,6 +792,7 @@ A plan run with `--approval`:
 
 | Version | Date | Changes |
 |---|---|---|
+| 4.0 | 2026-09-05 | Engine convergence update: Graph is the sole engine; WorkflowEngine retired (#276); Runner-v2 retained as `--engine legacy`. Updated migration strategy (all phases complete), relationship to unified spec (realized), and implementation status. |
 | 3.0 | 2026-04-26 | Unified spec: merged plan runner v2, 12 mori parity gaps with specs, current state reconciliation, migration strategy, relationship to unified Engine. |
 | 2.0 | 2026-04-24 | Plan runner v2 standalone spec + orchestrator gaps doc. |
 | 1.0 | 2026-04-20 | Initial orchestrator gap analysis from mori parity checklist. |

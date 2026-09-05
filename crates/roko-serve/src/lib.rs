@@ -18,7 +18,7 @@
     clippy::struct_field_names,
     clippy::too_many_arguments,
     clippy::too_many_lines,
-    clippy::trait_duplication_in_bounds,
+    clippy::trait_duplication_in_bounds
 )]
 // Re-export StateHub types from their canonical home in roko-runtime.
 // These were previously path-included from roko-core via a fake

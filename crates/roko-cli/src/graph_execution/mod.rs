@@ -29,16 +29,15 @@ pub mod workspaces;
 // Re-export primary public types for convenient access.
 pub use control_adapter::{GraphCommandEffect, GraphExecutionControlAdapter};
 pub use delivery::{
-    CliCompletionDeliveryService, DeliveryBackend, DeliveryMergeOutcome,
+    CliCompletionDeliveryService, DELIVERY_CHECKPOINT_KEY, DeliveryBackend, DeliveryMergeOutcome,
     DeliveryPublicationOutcome, DeliveryRegressionOutcome, GitDeliveryBackend,
-    DELIVERY_CHECKPOINT_KEY,
 };
 pub use feedback::{CompletionSinkResult, build_settler};
 pub use identity_map::{GraphIdentityMap, NodeIdentity};
 pub use runtime_event_adapter::GraphRuntimeEventAdapter;
 pub use view_state::{
-    GraphNodeRow, GraphNodeStatus, GraphStatusSummary, GraphViewState,
-    GraphViewStateProjector, HotGraphStatus, SharedGraphViewState, populate_dependencies,
+    GraphNodeRow, GraphNodeStatus, GraphStatusSummary, GraphViewState, GraphViewStateProjector,
+    HotGraphStatus, SharedGraphViewState, populate_dependencies,
 };
 pub use workflow_caller::{
     CanaryAuthoritative, CanaryComparisonReport, LEGACY_WORKFLOW_ENGINE_FROZEN,

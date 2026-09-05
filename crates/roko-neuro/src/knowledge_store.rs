@@ -2967,6 +2967,17 @@ fn join_replayed_security_labels(
 }
 
 fn normalize_entry_tier(mut entry: KnowledgeEntry) -> KnowledgeEntry {
+    // Mesh-sourced entries have an explicit tier set by the sync protocol's
+    // receive policy.  Do not auto-promote them -- the peer-assigned tier
+    // must be earned through local confirmation/progression instead.
+    let is_mesh = entry
+        .source
+        .as_deref()
+        .is_some_and(|s| s.starts_with("mesh:"));
+    if is_mesh {
+        return entry;
+    }
+
     let inferred = inferred_retention_tier(&entry);
     if inferred.multiplier() > entry.tier.multiplier() {
         entry.tier = inferred;

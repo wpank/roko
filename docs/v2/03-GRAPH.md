@@ -1,26 +1,28 @@
 # 03 — Graph
 
 > The universal composition primitive. Cells wired by typed edges into a directed acyclic (or cyclic) graph. TOML-defined, serializable, runtime-interpreted. **Hot Graphs** stay resident and re-fire per tick. The **Workflow/Activity split** separates deterministic orchestration from non-deterministic execution for replay.
-> **Implementation status:** PARTIAL — Graph struct, Node, Edge, NodeKind, ExecutionClass,
-> GraphPolicy, Workflow/Activity snapshot/replay, and restart-durable Hot Graph mode are
-> implemented. Production execution honors bounded parallel topological waves and can
-> preserve tick outputs plus cumulative budgets across process restarts. Success/failure/always/output-equality edges
-> route consistently in sequential, parallel, resumed, and live-Flow execution, and
-> library snapshot resume re-derives Workflow nodes. The converted plan path injects
-> live TaskExecutor dispatch; unconfigured registries fail closed. Successful plan
-> Activities are synchronously recorded behind a versioned graph fingerprint, and the
-> CLI safely resumes exact matches without redispatch. Hot execution atomically commits a
-> graph-fingerprinted manifest after each successful tick, fsyncs Activities, replays an
-> interrupted Activity without re-execution, rejects drift/corruption, and exposes
-> background persistence failure. Converted plan execution also keeps a shared per-plan
-> schema-v2 ledger from actual provider-reported costs, atomically reserves admission before
-> dispatch, persists spend and in-flight reservations across exact resume, fails closed on
-> missing/corrupt/mismatched/crash-reserved state, fails hard-limit overage, and reports
-> per-plan plus total spend.
+> **Implementation status:** CONVERGED — **Graph is the sole production engine** (default
+> `PlanEngine::Graph`); WorkflowEngine deleted (#276); Runner-v2 retained as `--engine legacy`.
+> Graph struct, Node, Edge, NodeKind, ExecutionClass, GraphPolicy, Workflow/Activity
+> snapshot/replay, and restart-durable Hot Graph mode are implemented. Production execution
+> honors bounded parallel topological waves and preserves tick outputs plus cumulative budgets
+> across process restarts. Success/failure/always/output-equality edges route consistently in
+> sequential, parallel, resumed, and live-Flow execution, and library snapshot resume re-derives
+> Workflow nodes. The converted plan path injects live TaskExecutor dispatch; unconfigured
+> registries fail closed. Successful plan Activities are synchronously recorded behind a
+> versioned graph fingerprint, and the CLI safely resumes exact matches without redispatch.
+> Hot execution atomically commits a graph-fingerprinted manifest after each successful tick,
+> fsyncs Activities, replays an interrupted Activity without re-execution, rejects
+> drift/corruption, and exposes background persistence failure. Schema-v2 cost ledger with
+> atomic reservations, hard-limit overage, and per-plan plus total spend reporting is live.
 > Seven typed cognitive Cells, five literal Verify Cells, and a fixed immune decision Graph
-> are implemented. Parallel aggregate over-admission is closed; a single call can still
-> disclose an actual cost greater than its reservation because the provider bridge has no
-> enforceable pre-call maximum-cost API. Runner-v2 lifecycle parity remains.
+> are implemented. `ProductionPlanTopology` builds the canonical 11-node per-task subgraph
+> (TaskContext + 6 enrichers + Compose + TaskExecutor + Gate + SuccessBoundary).
+> `GuaranteedFinallyController` provides absolute cleanup guarantees. `CellResources`
+> injects shared service handles (e.g., `SharedGateEvaluator`) into `CellContext`.
+> Parallel aggregate over-admission is closed; a single call can still disclose an actual
+> cost greater than its reservation because the provider bridge has no enforceable pre-call
+> maximum-cost API.
 
 **Kernel primitives used**: Signal (data on edges), Cell (computation at nodes), Graph (this document), Bus (lifecycle Pulses), Store (run storage, Activity records), Protocol (Score, Verify, Route, Compose, React, Observe — all invocable from Graph nodes).
 

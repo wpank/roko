@@ -1,8 +1,5 @@
 // Runtime event types and primitives: config structs without Eq, indexed array loops.
-#![allow(
-    clippy::derive_partial_eq_without_eq,
-    clippy::needless_range_loop
-)]
+#![allow(clippy::derive_partial_eq_without_eq, clippy::needless_range_loop)]
 //! `roko-runtime` -- shared async runtime primitives for Roko.
 //!
 //! This crate extracts the foundational runtime concerns that Mori (and other Roko
@@ -25,7 +22,6 @@
 //! 2. **Tokio-native.** All primitives are `Send + Sync + 'static` and designed for
 //!    multi-task Tokio runtimes.
 //! 3. **Zero unsafe.** All concurrency goes through `tokio::sync` or `std::sync::atomic`.
-
 
 pub mod builtin_lenses_derived;
 pub mod builtin_lenses_health;

@@ -19,7 +19,6 @@
 //! - **tree-sitter** (`roko-lang-rust/tree-sitter`): disabled, experimental.
 //! - **HDC search**: library-only per backlog #335.
 
-
 pub mod graph;
 pub mod hdc;
 pub mod parser;

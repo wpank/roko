@@ -430,7 +430,7 @@ mod tests {
 
     #[tokio::test]
     async fn stale_run_rejected() {
-        let (sender, mut cmd_rx, adapter, mut ack_rx) = test_adapter("run-current");
+        let (sender, cmd_rx, adapter, mut ack_rx) = test_adapter("run-current");
 
         // The sender targets "run-current" but the adapter was built for "run-current" --
         // however the sender's build_command uses the sender's run_id ("run-current"),

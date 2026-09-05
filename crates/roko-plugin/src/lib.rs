@@ -7,7 +7,6 @@
 )]
 //! Plugin SDK for Roko event sources and feedback collectors.
 
-
 pub mod dependency;
 pub mod manifest;
 pub mod registry;

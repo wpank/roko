@@ -499,8 +499,7 @@ mod tests {
     #[test]
     fn predictive_cell_types_filter() {
         let mut registry = CellRegistry::new();
-        let pred_desc =
-            CellDescriptor::new("assess", (0, 2, 0), None, None).with_predictive(true);
+        let pred_desc = CellDescriptor::new("assess", (0, 2, 0), None, None).with_predictive(true);
         registry.register_with_descriptor("assess", pred_desc, |_| {
             Box::new(NoopCell {
                 id: "a".to_string(),

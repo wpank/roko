@@ -240,8 +240,7 @@ pub(crate) async fn execute_graph(
     };
 
     let registry = default_registry();
-    let mut engine = GraphEngine::new(graph, registry)
-        .with_allow_test_stubs(cfg!(test));
+    let mut engine = GraphEngine::new(graph, registry).with_allow_test_stubs(cfg!(test));
     if let Some(event) = trigger_event {
         engine = engine.with_root_inputs(vec![trigger_input_signal(event)]);
     }

@@ -23,7 +23,6 @@
 //! bridge adapters. Phases 2-4 (migrating gates to criteria, registry-driven
 //! dispatch, user-authored criteria) are follow-on work.
 
-
 use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;

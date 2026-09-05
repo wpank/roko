@@ -2853,9 +2853,7 @@ mod tests {
         core_config.serve.auth.api_key = config.serve.auth.api_key;
         std::fs::write(
             workdir.join("roko.toml"),
-            core_config
-                .to_toml_pretty()
-                .expect("serialize core config"),
+            core_config.to_toml_pretty().expect("serialize core config"),
         )
         .expect("write roko.toml");
     }

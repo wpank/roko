@@ -13,7 +13,6 @@
 //!   `class`, `interface`, `type`, `const`, `enum`, and `export default`
 //!   symbols, including default-exported classes and functions.
 
-
 use roko_core::build::{BuildCommand, BuildSystem};
 use roko_core::language::{Import, ImportKind, LanguageProvider, Symbol, SymbolKind, Visibility};
 use std::path::Path;

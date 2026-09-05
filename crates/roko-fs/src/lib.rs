@@ -20,7 +20,6 @@
 //! backend (`SQLite`, `sled`) behind the same `Store` trait — the callers
 //! won't change.
 
-
 pub mod archive;
 /// Shared atomic-write helpers (write-tmp-rename pattern).
 pub mod atomic;

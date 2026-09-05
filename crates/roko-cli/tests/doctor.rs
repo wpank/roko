@@ -39,7 +39,7 @@ fn doctor_human_output_succeeds_for_bootstrapped_workspace() {
     let temp = tempdir().unwrap();
     std::fs::write(
         temp.path().join("roko.toml"),
-        "[agent]\ncommand = \"echo\"\n",
+        "[agent]\ncommand = \"echo\"\n\n[serve.auth]\nenabled = false\n",
     )
     .unwrap();
     bootstrap_layout(temp.path());

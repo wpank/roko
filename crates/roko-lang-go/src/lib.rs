@@ -7,7 +7,6 @@
 //!   extracts `func`, `type ... struct`, `type ... interface`, `const`, and
 //!   `var` symbols from Go source text, including grouped `const`/`var` blocks.
 
-
 use roko_core::build::{BuildCommand, BuildSystem};
 use roko_core::language::{Import, ImportKind, LanguageProvider, Symbol, SymbolKind, Visibility};
 use std::path::Path;

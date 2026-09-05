@@ -17,7 +17,6 @@
 //! compatibility metadata for the subsystem surfaces that still live in the
 //! dreams domain.
 
-
 pub mod cycle;
 pub mod hypnagogia;
 pub mod imagination;

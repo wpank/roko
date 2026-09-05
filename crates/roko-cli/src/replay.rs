@@ -57,7 +57,6 @@ impl ReplayFormat {
             // No --format: global --json decides
             (None, true) => Ok(Self::Json),
             (None, false) => Ok(Self::Tree),
-            _ => unreachable!(),
         }
     }
 }
@@ -188,7 +187,7 @@ pub fn traverse_dag(
     queue.push_back((*root_hash, 0));
 
     // Pre-borrow root to avoid double-lookup in the loop.
-    drop(root_signal);
+    let _ = root_signal;
 
     while let Some((id, depth)) = queue.pop_front() {
         if !visited.insert(id) {

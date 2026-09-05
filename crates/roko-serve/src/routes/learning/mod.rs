@@ -278,9 +278,7 @@ fn build_efficiency_response_with_evidence(
             plan_id: event.plan_id.clone(),
             task_id: event.task_id.clone(),
         };
-        let aggregate = tasks
-            .entry(key)
-            .or_default();
+        let aggregate = tasks.entry(key).or_default();
         aggregate.record(event, index);
     }
 

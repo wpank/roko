@@ -1512,9 +1512,8 @@ pub(crate) fn set_toml_dotted_key(doc: &mut toml::Value, key: &str, value: &str)
     let table = doc
         .as_table_mut()
         .ok_or_else(|| anyhow!("config root is not a table"))?;
-    let mut cursor: &mut toml::Value = &mut toml::Value::Table(table.clone());
-    // We need to work in-place on `doc`, so re-borrow.
-    cursor = doc;
+    // Work in-place on `doc` (table validation above guarantees it is a table).
+    let mut cursor: &mut toml::Value = doc;
     for segment in &segments[..segments.len() - 1] {
         let tbl = cursor
             .as_table_mut()
@@ -2382,7 +2381,7 @@ impl ConfigSources {
                     CS::Env => return Source::Env,
                     CS::CliOverride | CS::ApiOverride => return Source::Env,
                     CS::Migration | CS::Evolved | CS::Composed | CS::Default => {
-                        return Source::Default
+                        return Source::Default;
                     }
                     // For File/LocalOverride: fall through to provenance entries
                     // which carry path info for global vs project distinction.

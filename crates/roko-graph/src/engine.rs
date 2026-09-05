@@ -2413,11 +2413,9 @@ pub fn default_registry() -> CellRegistry {
     use crate::registry::CellDescriptor;
     use roko_core::{Kind, TypeSchema};
 
-    registry.register_with_descriptor(
-        "noop",
-        CellDescriptor::test_stub("noop"),
-        |_config| Box::new(NoopCell::default()),
-    );
+    registry.register_with_descriptor("noop", CellDescriptor::test_stub("noop"), |_config| {
+        Box::new(NoopCell::default())
+    });
 
     // Cognitive loop cells (E22-T01): real typed Cell implementations
     // with explicit CellDescriptors for side-effect-free edge validation.

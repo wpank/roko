@@ -38,6 +38,13 @@ pub fn validate_peer_name(name: &str) -> Result<&str> {
             .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-'),
         "peer name contains invalid characters (only ASCII letters, digits, '.', '_', '-' allowed): {name:?}"
     );
+    // Reject path-traversal components.  The character check above already
+    // rejects '/' and '\', but bare "." and ".." are valid character
+    // sequences that must be blocked to prevent directory traversal.
+    ensure!(
+        name != "." && name != "..",
+        "peer name must not be a path traversal component: {name:?}"
+    );
     Ok(name)
 }
 
@@ -1177,11 +1184,13 @@ mod tests {
 
         let result = receive_sync(&workdir, "peer-a", &store);
         assert!(result.is_err());
+        // Use {:#} to render the full anyhow error chain (with_context
+        // wraps the inner error and to_string() only shows the outer
+        // context).
+        let err_msg = format!("{:#}", result.unwrap_err());
         assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("checksum mismatch")
+            err_msg.contains("checksum mismatch"),
+            "expected 'checksum mismatch' in error chain, got: {err_msg}"
         );
     }
 }

@@ -17,7 +17,7 @@ anything else.
 6. [Foundation Service Traits](#6-foundation-service-traits)
 7. [Supporting Protocol Traits](#7-supporting-protocol-traits)
 8. [The Cell Supertrait](#8-the-cell-supertrait)
-9. [WorkflowEngine and PipelineStateV2](#9-workflowengine-and-pipelinestatev2)
+9. [Workflow Contract Types (formerly WorkflowEngine)](#9-workflowengine-and-pipelinestatev2)
 10. [EffectDriver Pattern](#10-effectdriver-pattern)
 11. [Agent Dispatch and ToolDispatcher](#11-agent-dispatch-and-tooldispatcher)
 12. [Gate Pipeline Architecture](#12-gate-pipeline-architecture)
@@ -197,13 +197,12 @@ reconsider the design.
 
 ## 3. Runtime Workflows and the Signal-Selection Helper
 
-Production execution has three explicit owners:
+Production execution has two explicit owners:
 
-- `roko run` uses `roko-runtime::WorkflowEngine` for provider execution,
-  verification, persistence, cancellation, and lifecycle events.
-- `roko plan run --engine runner-v2` uses the durable plan runner.
-- `roko plan run --engine graph` converts tasks into Activities executed by
-  `roko-graph::GraphEngine`.
+- `roko run` and `roko do` use Graph workflow templates (WorkflowEngine was retired by #276;
+  its serializable types are preserved in `roko-runtime::workflow_contract`).
+- `roko plan run` uses the Graph engine (default). The legacy Runner-v2 is available via
+  `--engine legacy` for one deprecation cycle.
 
 `crates/roko-core/src/loop_tick.rs` contains a smaller reusable helper named
 `select_compose_verify_persist`. It queries candidate Signals, routes one,
@@ -1029,32 +1028,31 @@ pub trait Cell: Send + Sync + 'static {
 
 ---
 
-## 9. WorkflowEngine and PipelineStateV2
+## 9. Workflow Contract Types (formerly WorkflowEngine)
+
+> **Note:** WorkflowEngine was deleted by #276 as part of engine convergence. Its serializable
+> contract types (`WorkflowConfig`, `WorkflowRunConfig`, `WorkflowRunReport`, `CommitOutcome`,
+> `Phase`) are preserved in `crates/roko-runtime/src/workflow_contract.rs` for downstream
+> consumers. The Graph engine's `WorkflowGraphController` is the replacement.
 
 Sources:
-- `crates/roko-runtime/src/pipeline_state.rs`
-- `crates/roko-runtime/src/workflow_engine.rs`
+- `crates/roko-runtime/src/workflow_contract.rs` (preserved types)
+- `crates/roko-execution/src/workflow/` (Graph-based workflow controller)
 
 ### The core idea
 
-The WorkflowEngine is the execution engine for a single task. Given a task
-prompt and a set of services, it runs the agent, validates the output, handles
-failures, and commits the result. It coordinates the `PipelineStateV2` state
-machine with the `EffectDriver` that executes real I/O.
+The original WorkflowEngine was a pure state machine + effect driver pattern for single-task
+execution. That engine has been retired; its role is now filled by Graph workflow templates
+that execute through `GraphEngine`. The serializable contract types remain because they define
+the report/config boundary consumed by `roko-cli`, `roko-serve`, and `roko-acp`.
 
-> **Why pure state machine + effect driver?** Because it makes the engine
-> testable — you can feed events to `PipelineStateV2` and verify the outputs
-> without ever spawning a real agent. The state machine has zero side effects.
-> Every decision it makes is expressed as a `PipelineOutput` action that the
-> `EffectDriver` then executes. Swap the driver for a mock and the entire
-> workflow logic is unit-testable.
-
-The separation looks like this:
+The separation in the current Graph-based approach:
 
 ```
-PipelineStateV2       -- PURE state machine, zero side effects
-EffectDriver          -- executes the actions returned by the state machine
-WorkflowEngine        -- ties them together in a run loop
+ProductionPlanTopology    -- builds per-task subgraphs (11 nodes each)
+GraphEngine               -- executes the DAG in topological waves
+GuaranteedFinallyController -- ensures cleanup on any exit path
+FeedbackSettler           -- drives 12 completion sinks with exactly-once semantics
 ```
 
 ### Workflow Templates
@@ -1171,40 +1169,16 @@ let json = sm.checkpoint()?;             // → JSON string
 let sm = PipelineStateV2::from_checkpoint(&json)?; // restore exact state
 ```
 
-This is the in-memory checkpoint primitive for library consumers. Runner-v2
-persists its checksummed envelope to `.roko/state/state-snapshot.json` after
-every task completion; resume it with
-`roko plan run plans/ --engine runner-v2 --resume-plan`.
+This is the in-memory checkpoint primitive for library consumers. The Graph engine
+persists checksummed checkpoints to `.roko/state/graph/` after each task completion;
+resume with `roko plan run plans/ --resume-plan`.
 
-### WorkflowEngine
+### WorkflowEngine (retired)
 
-<details>
-<summary>WorkflowEngine struct and run loop</summary>
-
-```rust
-pub struct WorkflowEngine {
-    services: EffectServices,
-    consumers: Vec<Arc<dyn EventConsumer>>,
-}
-
-impl WorkflowEngine {
-    pub async fn run(&self, config: WorkflowRunConfig) -> Result<WorkflowRunReport>;
-    pub async fn run_with_cancel(
-        &self,
-        config: WorkflowRunConfig,
-        token: CancelToken,
-    ) -> Result<WorkflowRunReport>;
-}
-```
-
-The run loop:
-1. Creates `PipelineStateV2` from config.
-2. Creates `EffectDriver` from services.
-3. Loop: `sm.step(input)` → `effect_driver.execute(output)` → new input → repeat.
-4. Each iteration checks `CancelToken` for cooperative cancellation.
-5. Returns `WorkflowRunReport` with gate outcomes, timing, tokens, cost.
-
-</details>
+> **Note:** WorkflowEngine was deleted by #276. Its serializable report types (`WorkflowRunReport`,
+> `WorkflowRunConfig`, `WorkflowConfig`, `CommitOutcome`, `Phase`) are preserved in
+> `crates/roko-runtime/src/workflow_contract.rs`. The Graph-based `WorkflowGraphController`
+> in `crates/roko-execution/src/workflow/` is the replacement.
 
 ---
 
@@ -2795,9 +2769,10 @@ Before dispatching agent for task T:
 | Affect primitives | `crates/roko-core/src/affect.rs` |
 | Cell supertrait | `crates/roko-core/src/cell.rs` |
 | PipelineStateV2 | `crates/roko-runtime/src/pipeline_state.rs` |
-| WorkflowEngine | `crates/roko-runtime/src/workflow_engine.rs` |
+| Workflow contract types | `crates/roko-runtime/src/workflow_contract.rs` (WorkflowEngine retired #276) |
 | EffectDriver | `crates/roko-runtime/src/effect_driver.rs` |
-| Plan runner v2 | `crates/roko-cli/src/runner/event_loop.rs` |
+| Graph plan execution | `crates/roko-cli/src/graph_execution/` |
+| Legacy plan runner (deprecated) | `crates/roko-cli/src/runner/event_loop.rs` |
 | ToolDispatcher | `crates/roko-agent/src/dispatcher/mod.rs` |
 | Gate pipeline | `crates/roko-gate/src/gate_pipeline.rs` |
 | Adaptive thresholds | `crates/roko-gate/src/adaptive_threshold.rs` |

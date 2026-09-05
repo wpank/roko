@@ -21,7 +21,6 @@
 //! The canonical [`PlanPhase`], [`PhaseKind`], and [`ConductorDecision`]
 //! types live in `roko-core`. This crate re-exports them for convenience.
 
-
 // Conductor: trait-bound literal returns, map iteration, and long watcher functions.
 #![allow(
     clippy::derive_partial_eq_without_eq,

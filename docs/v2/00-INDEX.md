@@ -1,7 +1,7 @@
 # Unified Specification — Index
 
-> **Version**: 3.1
-> **Date**: 2026-08-31
+> **Version**: 3.2
+> **Date**: 2026-09-05
 > **Scope**: Protocol specification for the agent economy. Defines the vocabulary, composition rules, and behavioral contracts for Roko — a system where agents build themselves.
 > **Implementation status:** PARTIAL — Core Signal/Cell/Graph types exist. Protocol trait stack has 9 protocols defined. HDC fingerprints implemented. Demurrage fields exist but mechanics not wired. Bus/Store fabrics implemented. The opt-in FAST self-development operator lane is implemented but remains experimental pending representative benchmarks and release/CI coverage; see [29](29-FAST-DEVELOPMENT.md).
 
@@ -244,11 +244,11 @@ CaMeL capability-tagged IFC on Extensions. Nayebi 5-head lexicographic corrigibi
 |---|---|---|
 | **[25](25-DEPLOYMENT.md)** | Deployment | Railway/Fly/Docker. Daemon lifecycle. Brain export. Merkle-CRDT. WASM+native. Secrets management. |
 | **[26](26-CROSS-CUTS.md)** | Cross-Cut Functors | Memory/Daimon/Dreams as endofunctors. VCG arbitration. Safety wrapper. Natural transformations. Commuting triangle. Gate failure cascade. |
-| **[27](27-ORCHESTRATOR.md)** | Orchestrator | Plan runner v2 (event-driven). Mori parity: structured review, auto-fix, error sharing, reflection loop, context scoping, warm spawn. |
+| **[27](27-ORCHESTRATOR.md)** | Orchestrator | Graph-based plan execution (converged). Mori parity: structured review, auto-fix, error sharing, reflection loop, context scoping, warm spawn. Runner-v2 retained as `--engine legacy` only; WorkflowEngine retired (#276). |
 | **[28](28-ROADMAP.md)** | Roadmap | Phased delivery. Implementation priorities. Phase dependencies. Current state reconciliation. |
 | **[29](29-FAST-DEVELOPMENT.md)** | FAST Development | Opt-in bounded self-development lane: task-owned verification, deadlines, evidence, trust boundaries, validation status, and deferred work. |
 | **[30](30-EVIDENCE-BUNDLES.md)** | Run Evidence Bundles | Run-scoped status/log capture, safe GET and optional visual hooks, metrics, scorecards, deterministic debriefs, and strict portable-bundle validation. |
-| **[31](31-ENGINE-CONVERGENCE-CONTRACT.md)** | Engine Convergence Contract | Frozen boundary types, golden fixture schema, phase/symbol/receipt table, capability matrix, Workflow/Activity classification, cutover invariants. Backlog #242. |
+| **[31](31-ENGINE-CONVERGENCE-CONTRACT.md)** | Engine Convergence Contract | Post-convergence architecture: Graph is the sole engine, WorkflowEngine retired (#276), Runner-v2 as `--engine legacy`. Frozen boundary types, golden fixtures, capability matrix, RuntimeServices (7 profiles), ProductionPlanTopology, GuaranteedFinallyController, 12-row FeedbackSettler, CellResources injection. |
 
 ---
 
@@ -385,4 +385,5 @@ CaMeL capability-tagged IFC on Extensions. Nayebi 5-head lexicographic corrigibi
 | 1.0 | 2026-04-20 | Initial unified spec (22 docs). |
 | 2.0 | 2026-04-24 | Cell rename from Block, protocol refinements, plan runner v2. |
 | 3.0 | 2026-04-26 | **Major restructure**: 29 docs (00-28). Absorbs `architecture/` (gateway, feeds, groups, auth, payments, DeFi, visual composition, orchestrator gaps). Introduces 4 universal patterns (Pipeline, Loop, Functor, Space). Enforces "everything is a Graph of Cells" universally. All concrete systems expressed as compositions of kernel primitives. Previous unified docs archived to `v2-archive/`. Architecture docs archived to `architecture-archive/`. |
+| 3.2 | 2026-09-05 | Engine convergence update: Graph is the sole engine; WorkflowEngine retired (#276); Runner-v2 retained as `--engine legacy`. Updated 31-ENGINE-CONVERGENCE-CONTRACT, 04-EXECUTION, 27-ORCHESTRATOR, 03-GRAPH, and cross-doc references. |
 | 3.1 | 2026-08-31 | Adds the implemented, opt-in FAST self-development operator lane, including its verification ownership, deadline, evidence, security, and release-boundary contracts. |

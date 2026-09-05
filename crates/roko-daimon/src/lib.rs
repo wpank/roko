@@ -15,7 +15,6 @@
 //! stores situation-specific somatic markers, and modulates dispatch
 //! parameters for future task runs.
 
-
 use std::fs;
 use std::path::{Path, PathBuf};
 

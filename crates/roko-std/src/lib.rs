@@ -13,7 +13,6 @@
 //! needs. Concrete domain impls (gates, agents, prompt composers) live in
 //! their own crates.
 
-
 pub mod math;
 pub mod memory;
 pub mod noop;

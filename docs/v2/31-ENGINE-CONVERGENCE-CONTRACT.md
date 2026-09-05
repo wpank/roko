@@ -1,22 +1,33 @@
 # 31 -- Engine Convergence Contract
 
-> **Version**: 1.0
-> **Date**: 2026-09-03
-> **Scope**: Executable contract defining parity between Runner-v2, plan-backed GraphEngine, authored GraphEngine, WorkflowEngine, direct dispatch, agent server, and chat runtimes. This document is the single unambiguous ownership and boundary reference for engine convergence.
-> **Implementation status:** CONTRACT -- this document defines the target, not the current state. Production engine code is unchanged by this item.
+> **Version**: 2.0
+> **Date**: 2026-09-05
+> **Scope**: Executable contract defining the post-convergence engine architecture. Graph is the sole engine; WorkflowEngine is retired (#276); Runner-v2 is retained as `--engine legacy` only. This document is the single unambiguous ownership and boundary reference for the converged engine.
+> **Implementation status:** IMPLEMENTED -- Engine convergence is complete. Graph is the default and sole production engine. WorkflowEngine has been deleted (#276); its serializable contract types are preserved in `roko-runtime::workflow_contract`. Runner-v2 remains available as `--engine legacy` (alias `runner-v2`) for one deprecation cycle. `RuntimeServices` provides the shared service facade across all 7 `RuntimeProfile` variants. `ProductionPlanTopology` builds the canonical per-task subgraph, `GuaranteedFinallyController` provides guaranteed cleanup, and the 12-row `FeedbackSettler` drives completion sinks.
 > **Backlog**: #242
 
 ---
 
 ## Purpose
 
-Before replacing Runner-v2 and `WorkflowEngine` with a unified `GraphEngine`, there must be one verified definition of what "parity" means. This contract:
+This contract defined the parity requirements for replacing Runner-v2 and `WorkflowEngine` with a unified `GraphEngine`. **That migration is now complete.** This contract:
 
-1. Freezes the boundary types that flow between orchestration stages.
+1. Records the frozen boundary types that flow between orchestration stages.
 2. Provides three golden fixtures that load through both plan loading and graph conversion.
 3. Classifies every production stage as Workflow or Activity.
-4. Defines cutover invariants that must hold during shadow runs and migration.
-5. Corrects stale audit claims about the current codebase state.
+4. Records the cutover invariants that held during migration.
+5. Documents the post-convergence architecture.
+
+### Post-convergence summary
+
+- **Graph** is the sole production engine (`PlanEngine::Graph`, the `#[default]` variant).
+- **Runner-v2** is retained as `--engine legacy` (alias `runner-v2`) for one deprecation cycle.
+- **WorkflowEngine** has been deleted (#276). Its serializable types (`WorkflowConfig`, `WorkflowRunConfig`, `WorkflowRunReport`, `CommitOutcome`, `Phase`) are preserved in `roko-runtime::workflow_contract` for downstream consumers.
+- **RuntimeServices** provides the shared service facade. 7 `RuntimeProfile` variants (`FullPlan`, `GraphPlan`, `Workflow`, `DirectLight`, `AgentServer`, `ChatLight`, `AuthoredGraph`) select which of the 6 `ServiceBundleId` bundles (Dispatch, Prompt, Feedback, Extensions, Observation, Guards) are required, optional, or forbidden.
+- **ProductionPlanTopology** (`roko-graph::topology`) builds the canonical 11-node per-task subgraph: TaskContext + 6 enrichers (knowledge, episodes, playbook, modulation, safety, experiment) + Compose + TaskExecutor + Gate + SuccessBoundary.
+- **GuaranteedFinallyController** (`roko-graph::finally`) wraps graph execution with absolute cleanup guarantees (terminal receipt, lease release, agent stop, snapshot flush) regardless of success, failure, panic, or cancellation.
+- **FeedbackSettler** (`roko-execution::feedback::settler`) drives 12 ordered completion sinks with exactly-once idempotency per receipt: attempt_receipt, actual_cost, structured_audit (critical), then episode, efficiency, routing, error_pattern, playbook, knowledge, daimon, conductor, projection (optional).
+- **CellResources** (`roko-graph::cell`) injects shared service handles (e.g., `SharedGateEvaluator`) into `CellContext` for each Cell execution.
 
 ---
 
@@ -167,31 +178,37 @@ Every production stage is classified for replay and idempotency:
 
 ---
 
-## Capability Matrix
+## Capability Matrix (post-convergence)
 
-Each runtime variant is classified for its current support of engine convergence features.
+Each runtime variant is classified for its current support after engine convergence.
 
-| Capability | Runner-v2 | Plan Graph | Authored Graph | WorkflowEngine | Direct Dispatch | Agent Server | Chat |
-|---|---|---|---|---|---|---|---|
-| Task DAG execution | live | live | live | absent | out-of-scope | out-of-scope | out-of-scope |
-| Worktree ownership | live | absent | absent | absent | absent | absent | absent |
-| Graph-native gates | absent | partial | absent | absent | absent | absent | absent |
-| Rich streaming events | live | partial | absent | absent | absent | partial | absent |
-| Terminal learning feedback | live | absent | absent | absent | absent | absent | absent |
-| Structural replan | live | absent | absent | absent | absent | absent | absent |
-| Merge/publish pipeline | live | absent | absent | absent | absent | absent | absent |
-| Interactive control (pause/resume/cancel) | live | absent | absent | absent | absent | absent | absent |
-| Budget enforcement | live | live | live | absent | absent | absent | absent |
-| Snapshot/resume | live | live | live | absent | absent | absent | absent |
-| Activity recording/replay | partial | live | live | absent | absent | absent | absent |
-| Graph fingerprinting | absent | live | live | absent | absent | absent | absent |
-| Edge type-schema validation | absent | live | live | absent | absent | absent | absent |
-| Hot Graph (tick-driven) | absent | absent | live | absent | absent | absent | absent |
-| Telemetry Lens routing | absent | live | live | absent | absent | absent | absent |
-| Plugin/MCP cell dispatch | absent | live | live | absent | absent | absent | absent |
-| Single-prompt compose-gate | absent | absent | absent | live | absent | absent | absent |
-| One-shot LLM dispatch | absent | absent | absent | live | live | live | live |
-| Agent chat REPL | absent | absent | absent | absent | absent | absent | live |
+| Capability | Graph (default) | Authored Graph | Legacy (Runner-v2) | Direct Dispatch | Agent Server | Chat |
+|---|---|---|---|---|---|---|
+| Task DAG execution | live | live | live (deprecated) | out-of-scope | out-of-scope | out-of-scope |
+| Worktree ownership | live | absent | live (deprecated) | absent | absent | absent |
+| Graph-native gates | live | absent | absent | absent | absent | absent |
+| Rich streaming events | live | absent | live (deprecated) | absent | partial | absent |
+| Terminal learning feedback | live | absent | live (deprecated) | absent | absent | absent |
+| Structural replan | live | absent | live (deprecated) | absent | absent | absent |
+| Merge/publish pipeline | live | absent | live (deprecated) | absent | absent | absent |
+| Interactive control (pause/resume/cancel) | live | absent | live (deprecated) | absent | absent | absent |
+| Budget enforcement | live | live | live (deprecated) | absent | absent | absent |
+| Snapshot/resume | live | live | live (deprecated) | absent | absent | absent |
+| Activity recording/replay | live | live | partial (deprecated) | absent | absent | absent |
+| Graph fingerprinting | live | live | absent | absent | absent | absent |
+| Edge type-schema validation | live | live | absent | absent | absent | absent |
+| Hot Graph (tick-driven) | absent | live | absent | absent | absent | absent |
+| Telemetry Lens routing | live | live | absent | absent | absent | absent |
+| Plugin/MCP cell dispatch | live | live | absent | absent | absent | absent |
+| ProductionPlanTopology | live | absent | absent | absent | absent | absent |
+| GuaranteedFinallyController | live | absent | absent | absent | absent | absent |
+| 12-row FeedbackSettler | live | absent | absent | absent | absent | absent |
+| CellResources injection | live | live | absent | absent | absent | absent |
+| Single-prompt compose-gate | live (via template) | absent | absent | live | absent | absent |
+| One-shot LLM dispatch | live (via template) | absent | absent | live | live | live |
+| Agent chat REPL | absent | absent | absent | absent | absent | live |
+
+**WorkflowEngine column removed**: WorkflowEngine was deleted by #276. Its single-prompt compose-gate and one-shot dispatch capabilities are now served by Graph templates (Workflow profile) and direct dispatch respectively.
 
 ### Direct dispatch classification
 
@@ -201,7 +218,7 @@ Direct one-shot dispatch (e.g., `roko run "<prompt>"`, agent sidecar `/message`)
 
 ## Cutover Invariants
 
-These invariants must hold during shadow runs and at the point of engine cutover. Violation of any invariant blocks migration.
+These invariants held during the engine cutover and continue to hold in the converged state.
 
 1. **No duplicate provider calls**: A task-attempt in the new engine must produce exactly one provider dispatch. Shadow runs must not re-invoke providers that were already called by the primary engine.
 
@@ -217,7 +234,7 @@ These invariants must hold during shadow runs and at the point of engine cutover
 
 7. **Resume must not replay completed Activities**: A resumed execution must recognize previously completed Activity nodes from the snapshot/checkpoint and skip them. Only Workflow nodes are re-derived.
 
-8. **Shadow runs must be side-effect-free**: A shadow Graph execution running alongside Runner-v2 must not write to the signal log, episode log, feedback sinks, merge queue, or GitHub. It may only compare its computed outcomes against the primary engine's actual outcomes.
+8. **Shadow runs must be side-effect-free**: A shadow Graph execution running alongside the legacy engine must not write to the signal log, episode log, feedback sinks, merge queue, or GitHub. It may only compare its computed outcomes against the primary engine's actual outcomes. (This invariant applied during the migration period; with convergence complete, shadow runs are no longer needed.)
 
 ---
 
@@ -268,4 +285,5 @@ No fixture invokes a live provider, git operation, feedback sink, or publication
 
 | Version | Date | Changes |
 |---|---|---|
+| 2.0 | 2026-09-05 | Post-convergence update. Graph is the sole engine; WorkflowEngine retired (#276); Runner-v2 retained as `--engine legacy`. Updated capability matrix, implementation status, cutover invariants, and post-convergence architecture summary documenting RuntimeServices (7 profiles), ProductionPlanTopology, GuaranteedFinallyController, 12-row FeedbackSettler, and CellResources injection. |
 | 1.0 | 2026-09-03 | Initial contract. Frozen boundary table, golden schema, three fixtures, capability matrix, cutover invariants. Backlog #242. |

@@ -335,7 +335,9 @@ impl HitZones {
                     .split(body_area);
                 zones.left_pane = h[0];
                 zones.right_pane = h[2];
-                zones.right_content = body_area;
+                // Do NOT set right_content to body_area here -- that would
+                // overlap right_pane at the same z-order, making the
+                // tab-specific scroll target unreachable.
             }
             _ => {
                 // Fallback: full body is right_content.

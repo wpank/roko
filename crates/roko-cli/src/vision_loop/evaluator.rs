@@ -498,8 +498,22 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"{\"score\":8.5,\"n
         )
         .expect("evaluator");
 
+        // Write a minimal 1x1 PNG file for the evaluator to reference.
+        // ClaudeCli cannot accept inline base64 images, so we pass a file path.
+        let screenshot_path = tmp.path().join("screenshot.png");
+        // Minimal valid 1x1 white PNG (67 bytes).
+        let png_data: &[u8] = &[
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00,
+            0x00, 0x90, 0x77, 0x53, 0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, 0x54, 0x08,
+            0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00, 0x00, 0x00, 0x02, 0x00, 0x01, 0xE2, 0x21, 0xBC,
+            0x33, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+        ];
+        std::fs::write(&screenshot_path, png_data).expect("write test png");
+        let screenshot_str = screenshot_path.display().to_string();
+
         let eval = evaluator
-            .evaluate("<div>before</div>", "data:image/png;base64,abc", &[], None)
+            .evaluate("<div>before</div>", &screenshot_str, &[], None)
             .await
             .expect("evaluate");
 
@@ -517,7 +531,8 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"{\"score\":8.5,\"n
         let provider_health =
             std::fs::read_to_string(tmp.path().join(".roko/learn/provider-health.json"))
                 .expect("read provider health");
-        assert!(provider_health.contains("vision-cli"));
+        // The registry normalizes provider keys (hyphens to underscores).
+        assert!(provider_health.contains("vision_cli"));
 
         let cascade_router =
             std::fs::read_to_string(tmp.path().join(".roko/learn/cascade-router.json"))

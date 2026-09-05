@@ -2840,10 +2840,22 @@ mod tests {
         assert!(checks[0].message.contains("budget"));
     }
 
+    /// Write a core-compatible `roko.toml` for doctor tests.
+    ///
+    /// The core config loader uses `deny_unknown_fields` on many struct
+    /// sections, so we must write a core `RokoConfig` rather than the CLI
+    /// `Config` (which has extra fields like `prompt.budgets`,
+    /// `budget.warn_at_percent`, etc.).
     fn write_project_config(workdir: &Path, config: Config) {
+        let mut core_config = roko_core::config::RokoConfig::default();
+        // Forward the serve auth settings the doctor tests rely on.
+        core_config.serve.auth.enabled = config.serve.auth.enabled;
+        core_config.serve.auth.api_key = config.serve.auth.api_key;
         std::fs::write(
             workdir.join("roko.toml"),
-            config.to_toml().expect("serialize config"),
+            core_config
+                .to_toml_pretty()
+                .expect("serialize core config"),
         )
         .expect("write roko.toml");
     }

@@ -5468,6 +5468,10 @@ mod tests {
                 .any(|n| n.message.contains("Pause requested"))
         );
 
+        // Simulate ack completing the pause state change (the real
+        // event loop commits on Completed ack; in tests we do it manually).
+        app.tui_state.is_paused = true;
+
         // Second toggle: should send Resume
         app.dispatch_action(TuiAction::TogglePause);
         let received = cmd_rx.try_recv().unwrap();
@@ -6843,7 +6847,11 @@ mod tests {
     #[test]
     fn tui_event_loop_tick_policy_dormant_on_idle_app() {
         let dir = tempdir().unwrap();
-        let app = App::new(dir.path());
+        let mut app = App::new(dir.path());
+        // Clear welcome modal and disable postfx so the tick policy only
+        // depends on work-related state, not first-run UI chrome.
+        app.tui_state.active_modal = None;
+        app.fx_config.screen_postfx = false;
         let inputs = app.tick_policy_inputs();
         let policy = next_tick_policy(&inputs);
         assert_eq!(
@@ -6872,6 +6880,10 @@ mod tests {
     fn tui_event_loop_tick_policy_idle_with_active_plan() {
         let dir = tempdir().unwrap();
         let mut app = App::new(dir.path());
+        // Clear welcome modal and disable postfx so the tick policy only
+        // depends on work-related state.
+        app.tui_state.active_modal = None;
+        app.fx_config.screen_postfx = false;
         // Add an active plan
         app.tui_state.plans.push(PlanEntry {
             id: "test-plan".to_string(),
@@ -6968,7 +6980,11 @@ mod tests {
     #[test]
     fn tui_event_loop_current_tick_duration_matches_policy() {
         let dir = tempdir().unwrap();
-        let app = App::new(dir.path());
+        let mut app = App::new(dir.path());
+        // Clear welcome modal and disable postfx so the tick policy only
+        // depends on work-related state.
+        app.tui_state.active_modal = None;
+        app.fx_config.screen_postfx = false;
         // Idle app with no active work: should be 250ms (Dormant)
         let dur = app.current_tick_duration();
         assert_eq!(

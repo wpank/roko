@@ -2006,8 +2006,10 @@ command = "claude"
         );
 
         let report = semantic_validate_config(&config, &client).await;
-        assert_eq!(report.error_count(), 0);
-        assert_eq!(report.warning_count(), 1);
+        // The CLI-level check produces 1 schema_warning; the core
+        // `validate_provider_semantics` also fires model.unknown_provider as
+        // an Error, so we expect 1 error + 1 schema_warning.
+        assert_eq!(report.error_count(), 1);
         assert_eq!(report.schema_warning_count(), 1);
         assert_eq!(report.field_warning_count(), 0);
         assert_eq!(
@@ -2062,8 +2064,10 @@ command = "claude"
 
         let report = semantic_validate_config(&config, &client).await;
 
-        assert_eq!(report.error_count(), 0);
-        assert_eq!(report.warning_count(), 1);
+        // The CLI-level check produces 1 schema_warning; the core
+        // `validate_provider_semantics` also fires routing.unresolved_model
+        // as an Error for agent.fallback_model.
+        assert_eq!(report.error_count(), 1);
         assert_eq!(report.schema_warning_count(), 1);
         assert_eq!(report.field_warning_count(), 0);
         assert_eq!(

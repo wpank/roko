@@ -24321,15 +24321,16 @@ depends_on = []
         );
 
         let snapshot = registry.snapshot();
+        // The registry normalizes keys (hyphens to underscores).
         let success = snapshot
-            .get("claude-cli")
+            .get("claude_cli")
             .expect("configured provider identity");
         assert_eq!(success.total_requests, 1);
         assert_eq!(success.total_failures, 0);
-        assert!(!snapshot.contains_key("claude-sonnet"));
+        assert!(!snapshot.contains_key("claude_sonnet"));
 
         let failure = snapshot
-            .get("model-without-provider")
+            .get("model_without_provider")
             .expect("model identity fallback");
         assert_eq!(failure.total_requests, 1);
         assert_eq!(failure.total_failures, 1);

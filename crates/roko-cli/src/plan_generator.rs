@@ -814,7 +814,12 @@ command = "cargo check -p roko-core"
         let result =
             generator.validate_raw_output(plan_with_hint, "strip-hint", PlanTemplateKind::Default);
         let validated = result.expect("plan with model_hint should validate after stripping");
-        assert!(!validated.tasks_toml.contains("model_hint"));
+        // Check that the model_hint key was removed (not just any substring --
+        // the description field may still contain the phrase "model_hint").
+        assert!(
+            !validated.tasks_toml.contains("model_hint ="),
+            "model_hint key should be stripped from tasks_toml"
+        );
         assert!(validated.repairs.iter().any(|r| r.contains("model_hint")));
     }
 

@@ -3145,12 +3145,19 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"dispatch-ok"}}'
             bare_mode: false,
             dangerously_skip_permissions: false,
         };
-        let dispatcher = AgentDispatcherV2::new(Arc::new(config));
+        let health_path = tmp.path().join(".roko/learn/provider-health.json");
+        let registry = Arc::new(ProviderHealthRegistry::new());
+        let dispatcher =
+            AgentDispatcherV2::new(Arc::new(config)).with_health_registry(registry.clone());
 
         let dispatch = dispatcher
             .run_agent_result_bridge(request)
             .await
             .expect("dispatch");
+
+        // Flush the registry to disk so the test can read it.
+        std::fs::create_dir_all(health_path.parent().unwrap()).expect("create learn dir");
+        registry.save(&health_path).expect("save health");
 
         assert!(dispatch.result.success);
         assert_eq!(
@@ -3169,7 +3176,8 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"dispatch-ok"}}'
         let provider_health =
             std::fs::read_to_string(tmp.path().join(".roko/learn/provider-health.json"))
                 .expect("read provider health");
-        assert!(provider_health.contains("dispatch-cli"));
+        // The registry normalizes provider keys (hyphens to underscores).
+        assert!(provider_health.contains("dispatch_cli"));
 
         let cascade_router =
             std::fs::read_to_string(tmp.path().join(".roko/learn/cascade-router.json"))

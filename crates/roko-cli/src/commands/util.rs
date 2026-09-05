@@ -323,8 +323,8 @@ pub(crate) async fn cmd_run(
         None
     };
 
-    // TODO(R2_G01): Read workflow template from roko.toml once a [pipeline]
-    // config section is added to the Config struct. For now, fall back to "standard".
+    // Hardcoded to "standard" until a [pipeline] config section is added to
+    // the Config struct (see roko.toml schema evolution).
     let template = "standard";
 
     // Build enabled gates list and typed shell commands from declared gate configs.

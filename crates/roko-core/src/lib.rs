@@ -34,16 +34,39 @@
 //! New capabilities are added by implementing one of the six traits; no core
 //! changes are needed.
 
+// The kernel defines 800+ public types and trait impls; these specific lints
+// fire across hundreds of items and would require mass-renaming/restructuring.
 #![allow(
     missing_docs,
+    clippy::case_sensitive_file_extension_comparisons,
     clippy::cloned_ref_to_slice_refs,
     clippy::collapsible_str_replace,
     clippy::derivable_impls,
-    clippy::expect_used,
+    clippy::derive_partial_eq_without_eq,
+    clippy::doc_markdown,
+    clippy::duration_subsec,
+    clippy::elidable_lifetime_names,
+    clippy::doc_link_with_quotes,
+    clippy::duration_suboptimal_units,
+    clippy::equatable_if_let,
+    clippy::float_cmp,
+    clippy::implicit_hasher,
+    clippy::manual_is_variant_and,
+    clippy::missing_fields_in_debug,
     clippy::module_name_repetitions,
-    clippy::nursery,
+    clippy::needless_collect,
+    clippy::needless_continue,
+    clippy::needless_lifetimes,
     clippy::obfuscated_if_else,
-    clippy::pedantic
+    clippy::option_if_let_else,
+    clippy::ref_option,
+    clippy::redundant_guards,
+    clippy::too_long_first_doc_paragraph,
+    clippy::too_many_lines,
+    clippy::type_repetition_in_bounds,
+    clippy::unreadable_literal,
+    clippy::unnecessary_literal_bound,
+    clippy::use_self
 )]
 
 /// Generate a short share token: `<unix_millis_hex>-<rand_hex>`.

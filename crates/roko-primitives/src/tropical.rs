@@ -12,7 +12,7 @@
 //! # Core types
 //!
 //! - [`TropicalF64`]: newtype with max-plus operator overloading.
-//! - [`TropicalPolynomial`]: `max_i(c_i + a_i . x)` — a max over affine functions.
+//! - [`TropicalPolynomial`]: `max_i(c_i + a_i . x)` -- a max over affine functions.
 //! - [`TropicalMatrix`]: matrix operations in the tropical semiring.
 //! - [`tropical_attention`]: attention via `max_j(Q_i . K_j + V_j)`.
 //!
@@ -21,6 +21,9 @@
 //! - Maclagan, D. & Sturmfels, B. (2015). *Introduction to Tropical Geometry*.
 //! - Zhang, M. et al. (2018). Tropical geometry of deep neural networks.
 //! - Alfarra, M. et al. (2024). Decision boundaries in tropical geometry.
+
+// Matrix arithmetic loops and algebraic type constructors are idiomatic.
+#![allow(clippy::needless_range_loop, clippy::use_self)]
 
 use std::fmt;
 use std::ops::{Add, Mul};

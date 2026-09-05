@@ -168,6 +168,7 @@ impl SharedGraphViewState {
     }
 
     /// Clone the current state as an owned snapshot.
+    #[must_use]
     pub fn snapshot(&self) -> GraphViewState {
         self.inner.read().clone()
     }
@@ -245,6 +246,7 @@ impl SharedGraphViewState {
     }
 
     /// Build a status summary from the current state.
+    #[must_use]
     pub fn status_summary(&self) -> GraphStatusSummary {
         let state = self.inner.read();
         let mut pending = 0usize;
@@ -284,14 +286,24 @@ impl Default for SharedGraphViewState {
 }
 
 /// Summary counts from a [`GraphViewState`].
+///
+/// Built by [`SharedGraphViewState::status_summary`] for dashboards and
+/// progress reporting.
 #[derive(Debug, Clone)]
 pub struct GraphStatusSummary {
+    /// Total number of graph nodes.
     pub total: usize,
+    /// Nodes not yet started.
     pub pending: usize,
+    /// Nodes currently executing.
     pub running: usize,
+    /// Nodes that completed successfully.
     pub completed: usize,
+    /// Nodes that failed during execution.
     pub failed: usize,
+    /// Nodes skipped due to dependency failure or condition.
     pub skipped: usize,
+    /// Accumulated cost across all nodes, in micro-USD.
     pub total_cost_micro_usd: u64,
 }
 
@@ -305,6 +317,7 @@ pub struct GraphStatusSummary {
 /// adapter converts graph events to runtime envelopes for dashboard/SSE/JSONL,
 /// while this projector updates the graph-specific view state for the TUI
 /// graph tab and HTTP graph routes.
+#[derive(Debug, Clone)]
 pub struct GraphViewStateProjector {
     state: SharedGraphViewState,
 }

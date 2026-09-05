@@ -1,3 +1,5 @@
+// Closures used for error-mapping chaining in I/O code.
+#![allow(clippy::redundant_closure)]
 //! Filesystem-backed [`Store`](roko_core::Store).
 //!
 //! `FileSubstrate` persists signals to an append-only JSONL log under a
@@ -18,14 +20,6 @@
 //! backend (`SQLite`, `sled`) behind the same `Store` trait — the callers
 //! won't change.
 
-#![allow(
-    clippy::missing_const_for_fn,
-    clippy::module_name_repetitions,
-    clippy::redundant_closure,
-    clippy::significant_drop_tightening,
-    clippy::unnecessary_map_or,
-    clippy::unused_async
-)]
 
 pub mod archive;
 /// Shared atomic-write helpers (write-tmp-rename pattern).

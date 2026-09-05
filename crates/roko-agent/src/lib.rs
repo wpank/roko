@@ -53,6 +53,7 @@
     clippy::unnecessary_literal_bound,
     clippy::unnecessary_sort_by,
     clippy::unwrap_used,
+    clippy::use_self,
 )]
 
 pub mod agent;

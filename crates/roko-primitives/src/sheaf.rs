@@ -20,6 +20,13 @@
 //! - Curry, J. (2014). Sheaves, cosheaves and applications.
 //! - Robinson, M. (2014). *Topological Signal Processing*.
 
+// Linear-algebra matrix loops and algebraic type constructors are idiomatic here.
+#![allow(
+    clippy::needless_range_loop,
+    clippy::use_self,
+    clippy::stable_sort_primitive
+)]
+
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------

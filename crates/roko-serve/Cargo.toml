@@ -41,7 +41,6 @@ roko-gateway = { path = "../roko-gateway" }
 roko-fs = { path = "../roko-fs" }
 roko-compose = { path = "../roko-compose" }
 roko-std = { path = "../roko-std" }
-roko-conductor = { path = "../roko-conductor" }
 roko-plugin = { path = "../roko-plugin" }
 roko-daimon = { path = "../roko-daimon" }
 roko-runtime = { path = "../roko-runtime" }

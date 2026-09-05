@@ -10,6 +10,8 @@
 //! Modules that need compact atomic storage (e.g. `CorticalState` in
 //! roko-runtime) should convert at the boundary via `as f32` / `as f64`.
 
+#![allow(clippy::manual_midpoint)]
+
 use serde::{Deserialize, Serialize};
 
 /// Normalized Pleasure-Arousal-Dominance vector.

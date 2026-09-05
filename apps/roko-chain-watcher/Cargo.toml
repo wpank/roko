@@ -15,8 +15,6 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
-roko-core = { path = "../../crates/roko-core" }
-roko-chain = { path = "../../crates/roko-chain" }
 anyhow = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }
@@ -25,5 +23,4 @@ serde_json = { workspace = true }
 clap = { workspace = true, features = ["env"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-uuid = { workspace = true }
 parking_lot = { workspace = true }

@@ -1,12 +1,14 @@
-//! Robust statistics primitives resistant to outliers and adversarial
-//! perturbation.
+//! Robust statistics primitives (TA-10).
 //!
+//! Resistant to outliers and adversarial perturbation.
 //! These replace standard estimators with breakdown-resistant alternatives
 //! (Huber 1964, Hampel 1974):
 //!
-//! - [`trimmed_mean`] — discard extremes before averaging (breakdown = trim_pct)
-//! - [`mad`] — Median Absolute Deviation, robust scale estimator (breakdown 50%)
-//! - [`hodges_lehmann`] — median of pairwise averages (breakdown 29%)
+//! - [`trimmed_mean`] -- discard extremes before averaging (breakdown = trim_pct)
+//! - [`mad`] -- Median Absolute Deviation, robust scale estimator (breakdown 50%)
+//! - [`hodges_lehmann`] -- median of pairwise averages (breakdown 29%)
+
+#![allow(clippy::manual_midpoint)]
 
 /// Compute the trimmed mean, discarding the top and bottom `trim_pct`
 /// fraction of values before averaging.

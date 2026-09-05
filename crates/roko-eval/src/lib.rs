@@ -1,3 +1,4 @@
+#![allow(clippy::missing_fields_in_debug)]
 //! Unified evaluation framework for Roko.
 //!
 //! This crate separates **evidence collection** from **judgment** via two core
@@ -22,15 +23,6 @@
 //! bridge adapters. Phases 2-4 (migrating gates to criteria, registry-driven
 //! dispatch, user-authored criteria) are follow-on work.
 
-#![allow(clippy::module_name_repetitions)]
-// Evaluation crate: many trait objects and structural types; suppress pedantic
-// lints that add noise without improving correctness.
-#![allow(
-    clippy::doc_markdown,
-    clippy::missing_const_for_fn,
-    clippy::missing_fields_in_debug,
-    clippy::redundant_closure_for_method_calls
-)]
 
 use std::collections::HashMap;
 use std::fmt;

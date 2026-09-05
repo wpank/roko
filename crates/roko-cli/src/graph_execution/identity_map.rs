@@ -60,6 +60,7 @@ impl GraphIdentityMap {
     /// `tasks` is the `(node_id, PlanTaskInfo)` pairs from conversion.
     /// `wave_assignments` maps `node_id` to zero-based wave index; nodes without
     /// an assignment default to wave 0.
+    #[must_use]
     pub fn build(
         plan_id: &str,
         tasks: &[(String, PlanTaskInfo)],

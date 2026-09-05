@@ -221,8 +221,8 @@ struct GlyphBitmap {
 /// Printable ASCII characters get a crude but recognizable glyph. Everything
 /// else falls back to a filled rectangle placeholder.
 ///
-/// TODO(#151): Replace with `fontdue` glyph rasterization when image
-/// dependencies are added.
+/// A future iteration can replace this with `fontdue` glyph rasterization
+/// when image dependencies are added to the `tui-png` feature.
 fn builtin_glyph(ch: char) -> GlyphBitmap {
     // For the initial API surface we provide a simple "block" representation:
     // printable characters get a centered dot pattern, non-printable characters
@@ -267,7 +267,7 @@ fn builtin_glyph(ch: char) -> GlyphBitmap {
 /// This avoids an `image` crate dependency. The output is uncompressed
 /// (filter=None, zlib stored blocks) which is larger but correct and fast.
 ///
-/// TODO(#151): Switch to `image::save_buffer` when the image crate is added.
+/// Can switch to `image::save_buffer` when the image crate is added.
 fn write_minimal_png(path: &Path, width: u32, height: u32, rgb: &[u8]) -> Result<()> {
     use std::io::Write;
 

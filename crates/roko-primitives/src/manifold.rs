@@ -26,6 +26,9 @@
 //! - Frechet, M. (1948). Les elements aleatoires de nature quelconque dans un
 //!   espace distancie.
 
+// Numerical linear algebra: indexed matrix loops and midpoint arithmetic are idiomatic.
+#![allow(clippy::needless_range_loop, clippy::manual_midpoint)]
+
 /// Manifold dimension. The cost manifold has 4 axes:
 /// slippage, gas, time, opportunity.
 pub const DIM: usize = 4;

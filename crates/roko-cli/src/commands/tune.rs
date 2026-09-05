@@ -384,6 +384,12 @@ fn ensure_project_config(workdir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Resolve a user-supplied model name to its canonical config key.
+///
+/// Delegates to the canonical `roko_core::agent::resolve_model` which handles
+/// key lookup, slug matching, prefix matching, and builtin registry fallback.
+/// This wrapper adds alias normalization and a user-friendly error when the
+/// model is not found in a non-empty config.
 fn resolve_model_key(workdir: &Path, requested: &str) -> Result<String> {
     let requested = requested.trim();
     if requested.is_empty() {
@@ -392,36 +398,24 @@ fn resolve_model_key(workdir: &Path, requested: &str) -> Result<String> {
 
     let config = roko_core::config::loader::load_config_unified(workdir)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let requested_lower = requested.to_ascii_lowercase();
+
+    // Try the raw input first via the canonical resolver.
+    let resolved = roko_core::agent::resolve_model(&config, requested);
+    if resolved.profile.is_some() {
+        return Ok(resolved.model_key);
+    }
+
+    // Try the normalized alias (e.g. "sonnet" -> "claude-sonnet-4").
     let normalized = roko_cli::task_parser::normalize_model_alias(requested);
-    let normalized_lower = normalized.to_ascii_lowercase();
-
-    if config.models.contains_key(requested) {
-        return Ok(requested.to_string());
-    }
-    if config.models.contains_key(normalized) {
-        return Ok(normalized.to_string());
+    if normalized != requested {
+        let resolved = roko_core::agent::resolve_model(&config, normalized);
+        if resolved.profile.is_some() {
+            return Ok(resolved.model_key);
+        }
     }
 
-    let mut matches = config
-        .models
-        .iter()
-        .filter_map(|(key, profile)| {
-            let key_lower = key.to_ascii_lowercase();
-            let slug_lower = profile.slug.to_ascii_lowercase();
-            (key_lower == requested_lower
-                || key_lower == normalized_lower
-                || slug_lower == requested_lower
-                || slug_lower == normalized_lower)
-                .then(|| key.clone())
-        })
-        .collect::<Vec<_>>();
-    matches.sort();
-    matches.dedup();
-    if let Some(model_key) = matches.into_iter().next() {
-        return Ok(model_key);
-    }
-
+    // No configured models at all: accept the normalized value as-is so that
+    // the caller can write it to config even without a models table.
     if config.models.is_empty() {
         return Ok(normalized.to_string());
     }

@@ -1,4 +1,9 @@
-//! `roko-runtime` — shared async runtime primitives for Roko.
+// Runtime event types and primitives: config structs without Eq, indexed array loops.
+#![allow(
+    clippy::derive_partial_eq_without_eq,
+    clippy::needless_range_loop
+)]
+//! `roko-runtime` -- shared async runtime primitives for Roko.
 //!
 //! This crate extracts the foundational runtime concerns that Mori (and other Roko
 //! applications) depend on:
@@ -21,24 +26,6 @@
 //!    multi-task Tokio runtimes.
 //! 3. **Zero unsafe.** All concurrency goes through `tokio::sync` or `std::sync::atomic`.
 
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_precision_loss,
-    clippy::cast_sign_loss,
-    clippy::cast_lossless,
-    clippy::missing_panics_doc,
-    clippy::must_use_candidate,
-    clippy::missing_const_for_fn,
-    clippy::unnecessary_map_or,
-    clippy::doc_markdown,
-    clippy::too_long_first_doc_paragraph,
-    clippy::suboptimal_flops,
-    clippy::needless_range_loop,
-    clippy::match_same_arms,
-    clippy::derive_partial_eq_without_eq,
-    clippy::return_self_not_must_use,
-    clippy::map_unwrap_or
-)]
 
 pub mod builtin_lenses_derived;
 pub mod builtin_lenses_health;
@@ -131,13 +118,15 @@ pub use state_snapshot::{
     STATE_SNAPSHOT_VERSION, StateSnapshot, load_durable_dashboard_projection,
     load_durable_runner_projection, validate_state_snapshot,
 };
-pub use workflow_contract::{CommitOutcome, Phase, WorkflowConfig, WorkflowOutcome};
+pub use workflow_contract::{
+    CommitOutcome, GateOutcome, Phase, WorkflowConfig, WorkflowOutcome, WorkflowResult,
+    WorkflowRunConfig, WorkflowRunReport,
+};
 // task_scheduler retired with WorkflowEngine
 pub use telemetry_projection_aggregator::{
     LensPayload, LensSignalEnvelope, ProjectionUpdate, TelemetryProjectionAggregator,
     TelemetryProjectionError, TelemetryProjectionState,
 };
-pub use workflow_contract::{GateOutcome, WorkflowResult, WorkflowRunConfig, WorkflowRunReport};
 
 #[cfg(test)]
 mod contract_guards {

@@ -7,8 +7,6 @@
 //!   extracts `func`, `type ... struct`, `type ... interface`, `const`, and
 //!   `var` symbols from Go source text, including grouped `const`/`var` blocks.
 
-#![allow(clippy::module_name_repetitions)]
-#![allow(clippy::unnecessary_literal_bound)]
 
 use roko_core::build::{BuildCommand, BuildSystem};
 use roko_core::language::{Import, ImportKind, LanguageProvider, Symbol, SymbolKind, Visibility};
@@ -20,6 +18,7 @@ use std::path::Path;
 pub struct GoBuildSystem;
 
 impl BuildSystem for GoBuildSystem {
+    #[allow(clippy::unnecessary_literal_bound)]
     fn name(&self) -> &str {
         "go"
     }
@@ -74,6 +73,7 @@ impl BuildSystem for GoBuildSystem {
 pub struct GoLanguageProvider;
 
 impl LanguageProvider for GoLanguageProvider {
+    #[allow(clippy::unnecessary_literal_bound)]
     fn language_name(&self) -> &str {
         "go"
     }

@@ -2720,8 +2720,8 @@ impl App {
                 };
                 if let Some(entry) = entries.get(idx) {
                     let text = format!("[{}] {} {}", entry.timestamp, entry.source, entry.message);
-                    // TODO: clipboard integration (arboard/copypasta)
-                    let _ = text; // Suppress unused warning until clipboard is wired
+                    // Clipboard integration deferred (arboard/copypasta).
+                    let _ = text;
                 }
             }
 

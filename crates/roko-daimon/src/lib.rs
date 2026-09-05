@@ -1,3 +1,13 @@
+// Affect engine: float comparisons and clamp patterns are idiomatic for PAD math.
+#![allow(
+    clippy::explicit_into_iter_loop,
+    clippy::useless_conversion,
+    clippy::float_cmp,
+    clippy::manual_clamp,
+    clippy::ref_option,
+    clippy::too_long_first_doc_paragraph,
+    clippy::too_many_lines
+)]
 //! Daimon affect state, somatic markers, and dispatch modulation.
 //!
 //! This crate provides a standalone affect engine for Roko's plan runner.
@@ -5,28 +15,6 @@
 //! stores situation-specific somatic markers, and modulates dispatch
 //! parameters for future task runs.
 
-#![allow(
-    clippy::cast_lossless,
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::clone_on_copy,
-    clippy::doc_markdown,
-    clippy::expect_used,
-    clippy::float_cmp,
-    clippy::manual_clamp,
-    clippy::map_unwrap_or,
-    clippy::match_same_arms,
-    clippy::missing_const_for_fn,
-    clippy::missing_panics_doc,
-    clippy::option_if_let_else,
-    clippy::ref_option,
-    clippy::suboptimal_flops,
-    clippy::too_many_arguments,
-    clippy::too_many_lines,
-    clippy::too_long_first_doc_paragraph,
-    clippy::useless_conversion
-)]
 
 use std::fs;
 use std::path::{Path, PathBuf};

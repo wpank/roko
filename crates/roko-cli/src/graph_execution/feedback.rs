@@ -710,6 +710,7 @@ pub struct CompletionSinkResult {
 
 impl CompletionSinkResult {
     /// Build from a [`SettlementOutcome`].
+    #[must_use]
     pub fn from_outcome(outcome: &roko_execution::feedback::settler::SettlementOutcome) -> Self {
         use roko_execution::feedback::settler::SettlementOutcome;
         match outcome {

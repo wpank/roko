@@ -45,6 +45,16 @@ pub struct GraphRuntimeEventAdapter {
     run_id: String,
 }
 
+impl std::fmt::Debug for GraphRuntimeEventAdapter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GraphRuntimeEventAdapter")
+            .field("run_id", &self.run_id)
+            .field("next_seq", &self.next_seq.load(Ordering::Relaxed))
+            .field("identity_map_len", &self.identity_map.len())
+            .finish()
+    }
+}
+
 impl GraphRuntimeEventAdapter {
     /// Create a new adapter for a given run.
     pub fn new(run_id: impl Into<String>, identity_map: GraphIdentityMap) -> Self {
@@ -59,6 +69,7 @@ impl GraphRuntimeEventAdapter {
     ///
     /// The match is exhaustive (no wildcard) so adding a new
     /// `GraphExecutionEvent` variant will cause a compile error here.
+    #[must_use]
     pub fn convert(&self, event: &GraphExecutionEvent) -> RuntimeEventEnvelope {
         let common = event.common();
         let node_fields = event.node();
@@ -113,6 +124,7 @@ impl GraphRuntimeEventAdapter {
     }
 
     /// Access the underlying identity map.
+    #[must_use]
     pub fn identity_map(&self) -> &GraphIdentityMap {
         &self.identity_map
     }

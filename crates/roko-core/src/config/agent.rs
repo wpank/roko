@@ -213,8 +213,8 @@ pub struct AgentThresholds {
 /// These are **config-file** overrides, distinct from the CLI flags:
 ///
 /// - `force_backend` here is a **role-scoped** config override. It is
-///   consulted by `resolve_role_model_override` in `config_helpers.rs` and
-///   matches against known provider families (e.g. `"claude"`, `"openai"`).
+///   consulted by the cascade router dispatch path and matches against
+///   known provider families (e.g. `"claude"`, `"openai"`).
 /// - The CLI flags `--model` / `--force-model` / `--force-backend` are
 ///   **operator overrides** that bypass everything, including these config
 ///   overrides, via `DispatchContext.force_backend`.

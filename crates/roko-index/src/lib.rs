@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_lines)]
 //! Code intelligence for Roko: source parsing, symbol graphs, and HDC
 //! fingerprints.
 //!
@@ -18,16 +19,6 @@
 //! - **tree-sitter** (`roko-lang-rust/tree-sitter`): disabled, experimental.
 //! - **HDC search**: library-only per backlog #335.
 
-#![allow(
-    clippy::cast_precision_loss,
-    clippy::doc_markdown,
-    clippy::expect_used,
-    clippy::map_unwrap_or,
-    clippy::missing_const_for_fn,
-    clippy::needless_pass_by_value,
-    clippy::similar_names,
-    clippy::too_many_lines
-)]
 
 pub mod graph;
 pub mod hdc;

@@ -6,7 +6,6 @@
 //! [`InferenceGateway::create_handle`], and start its bounded `process` loop
 //! with [`InferenceGateway::spawn_gateway_loop`].
 
-#![allow(clippy::module_name_repetitions)]
 
 pub mod backpressure;
 pub mod batch;

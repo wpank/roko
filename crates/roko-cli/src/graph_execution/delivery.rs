@@ -566,10 +566,12 @@ impl CompletionDeliveryService for CliCompletionDeliveryService {
             }
         }
 
-        let mut receipt = self
-            .store
-            .get(&request.delivery_id)
-            .expect("receipt was just inserted");
+        let mut receipt = self.store.get(&request.delivery_id).ok_or_else(|| {
+            DeliveryError::Other(format!(
+                "delivery '{}' vanished from store after insert",
+                request.delivery_id
+            ))
+        })?;
 
         // Drive the state machine to terminal.
         let result = self.drive_delivery(&mut receipt).await;
@@ -631,6 +633,8 @@ pub fn build_delivery_checkpoint_extension(
 }
 
 /// The checkpoint extension key used by delivery state persistence.
+///
+/// Callers persist this key in the graph checkpoint to enable resume.
 pub const DELIVERY_CHECKPOINT_KEY: &str = DELIVERY_EXTENSION_KEY;
 
 // ---------------------------------------------------------------------------

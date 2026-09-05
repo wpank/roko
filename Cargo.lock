@@ -6154,7 +6154,6 @@ dependencies = [
  "roko-neuro",
  "roko-runtime",
  "roko-serve",
- "roko-std",
  "serde",
  "serde_json",
  "tempfile",
@@ -6235,7 +6234,6 @@ name = "roko-chain"
 version = "0.1.0"
 dependencies = [
  "alloy",
- "alloy-primitives",
  "anyhow",
  "async-trait",
  "blake3",
@@ -6259,14 +6257,11 @@ dependencies = [
  "clap",
  "parking_lot",
  "reqwest 0.12.28",
- "roko-chain",
- "roko-core",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber 0.3.23",
- "uuid",
 ]
 
 [[package]]
@@ -6338,8 +6333,6 @@ dependencies = [
  "tokio-util",
  "toml",
  "toml_edit 0.22.27",
- "tower 0.5.3",
- "tower-http",
  "tracing",
  "tracing-appender",
  "tracing-subscriber 0.3.23",
@@ -6380,7 +6373,6 @@ dependencies = [
 name = "roko-conductor"
 version = "0.1.0"
 dependencies = [
- "chrono",
  "dashmap",
  "parking_lot",
  "proptest",
@@ -6445,7 +6437,6 @@ name = "roko-demo"
 version = "0.1.0"
 dependencies = [
  "alloy",
- "alloy-primitives",
  "anyhow",
  "async-trait",
  "clap",
@@ -6453,11 +6444,9 @@ dependencies = [
  "futures-util",
  "ratatui",
  "reqwest 0.12.28",
- "roko-chain",
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 2.0.19",
  "tokio",
  "tokio-tungstenite 0.26.2",
  "toml",
@@ -6509,15 +6498,12 @@ dependencies = [
  "parking_lot",
  "roko-agent",
  "roko-compose",
- "roko-conductor",
  "roko-core",
- "roko-daimon",
  "roko-fs",
  "roko-gate",
  "roko-graph",
  "roko-learn",
  "roko-neuro",
- "roko-plugin",
  "roko-runtime",
  "serde",
  "serde_json",
@@ -6527,7 +6513,6 @@ dependencies = [
  "tokio-util",
  "toml",
  "tracing",
- "uuid",
 ]
 
 [[package]]
@@ -6713,7 +6698,6 @@ dependencies = [
  "roko-mcp-stdio",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -6721,12 +6705,10 @@ name = "roko-mcp-scripts"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "glob",
  "roko-mcp-stdio",
  "serde",
  "serde_json",
  "tokio",
- "toml",
  "tracing",
  "tracing-subscriber 0.3.23",
 ]
@@ -6741,7 +6723,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "tracing",
  "tracing-subscriber 0.3.23",
  "wiremock",
 ]
@@ -6882,7 +6863,6 @@ dependencies = [
  "roko-agent-server",
  "roko-chain",
  "roko-compose",
- "roko-conductor",
  "roko-core",
  "roko-daimon",
  "roko-dreams",

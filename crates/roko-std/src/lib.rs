@@ -1,3 +1,5 @@
+// Trait impls return literal &str tied to &self -- the trait contracts mandate this.
+#![allow(clippy::unnecessary_literal_bound)]
 //! Standard trait implementations for Roko.
 //!
 //! This crate provides:
@@ -11,11 +13,6 @@
 //! needs. Concrete domain impls (gates, agents, prompt composers) live in
 //! their own crates.
 
-#![allow(
-    clippy::doc_markdown,
-    clippy::module_name_repetitions,
-    clippy::unnecessary_literal_bound
-)]
 
 pub mod math;
 pub mod memory;

@@ -14,8 +14,16 @@
 //! into `Signal<PromptSection>`s, and passes them to the composer. This is
 //! the strict I/O boundary from `02-anti-patterns.md` (rule #8).
 
-#![allow(clippy::module_name_repetitions)]
-#![allow(clippy::pedantic, clippy::nursery)]
+
+// Compose: trait-bound literal returns, float arithmetic, and long assembly functions.
+#![allow(
+    clippy::derive_partial_eq_without_eq,
+    clippy::float_cmp,
+    clippy::manual_midpoint,
+    clippy::needless_collect,
+    clippy::too_many_lines,
+    clippy::unnecessary_literal_bound
+)]
 
 pub mod error;
 

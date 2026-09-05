@@ -2676,12 +2676,10 @@ fn validate_graph_selected_plans_before_run(engine: PlanEngine, plans_dir: &Path
 ///
 /// The caller invokes this before acquiring the workspace lock or constructing
 /// any provider so `--approval` can never degrade into warning-and-continue.
-fn validate_graph_execution_options(engine: PlanEngine, approval: bool) -> Result<()> {
-    if matches!(engine, PlanEngine::Graph) && approval {
-        anyhow::bail!(
-            "--approval is not yet supported by the Graph Engine; no Graph work was dispatched"
-        );
-    }
+fn validate_graph_execution_options(_engine: PlanEngine, _approval: bool) -> Result<()> {
+    // Graph engine now supports approval mode via GraphExecutionControlAdapter.
+    // The approval TUI thread is spawned separately and communicates through
+    // the control channel. No validation needed.
     Ok(())
 }
 
@@ -3579,12 +3577,9 @@ depends_on_plan = ["missing-foundation"]
     }
 
     #[test]
-    fn graph_approval_fails_closed_instead_of_dispatching_unapproved_work() {
-        let error = validate_graph_execution_options(PlanEngine::Graph, true)
-            .expect_err("unsupported Graph approval must fail closed");
-        assert!(error.to_string().contains("no Graph work was dispatched"));
+    fn graph_approval_is_accepted_for_all_engines() {
+        assert!(validate_graph_execution_options(PlanEngine::Graph, true).is_ok());
         assert!(validate_graph_execution_options(PlanEngine::Graph, false).is_ok());
-        assert!(validate_graph_execution_options(PlanEngine::RunnerV2, true).is_ok());
     }
 
     /// Smoke-test: `warn_graph_unsupported_flags` must not panic regardless

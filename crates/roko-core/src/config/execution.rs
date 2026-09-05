@@ -25,6 +25,7 @@ use super::subscriptions::SubscriptionConfig;
 /// Named `DreamScheduleConfig` to avoid collision with
 /// `learning::DreamsConfig` (which covers `[learning.dreams]`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DreamScheduleConfig {
     /// Enable the automatic dream cycle.
     #[serde(default = "DreamScheduleConfig::default_auto_dream")]
@@ -117,6 +118,7 @@ impl Default for DreamScheduleConfig {
 /// The CLI adapter converts `StrategySpaceConfig` to
 /// `roko_daimon::StrategySpaceDefinition` at runtime construction time.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DaimonConfig {
     /// Domain-specific strategy-space registration for somatic markers.
     #[serde(default)]
@@ -138,6 +140,7 @@ impl Default for DaimonConfig {
 /// `STRATEGY_DIMENSIONS` constant). The CLI adapter validates the length
 /// when converting to `StrategySpaceDefinition`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StrategySpaceConfig {
     /// Domain identifier for this strategy-space mapping.
     #[serde(default = "StrategySpaceConfig::default_domain")]
@@ -185,6 +188,7 @@ impl Default for StrategySpaceConfig {
 /// This is the schema-only definition. Runtime behavior (`RepoEntry`,
 /// `RepoRegistry`, filesystem canonicalization) remains in CLI code.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RepoConfig {
     /// Human-readable repo name.
     pub name: String,

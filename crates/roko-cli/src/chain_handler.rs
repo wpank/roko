@@ -69,10 +69,6 @@ mod abi {
     /// `approve(address,uint256)` selector: `0x095ea7b3`
     pub const APPROVE: [u8; 4] = [0x09, 0x5e, 0xa7, 0xb3];
 
-    /// `balanceOf(address)` selector: `0x70a08231`
-    #[allow(dead_code)]
-    pub const BALANCE_OF: [u8; 4] = [0x70, 0xa0, 0x82, 0x31];
-
     /// Uniswap V3 SwapRouter `exactInputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160))`
     /// selector: `0x414bf389`
     pub const EXACT_INPUT_SINGLE: [u8; 4] = [0x41, 0x4b, 0xf3, 0x89];
@@ -84,11 +80,6 @@ mod abi {
     /// Uniswap V3 NonfungiblePositionManager `decreaseLiquidity((uint256,uint128,uint256,uint256,uint256))`
     /// selector: `0x0c49ccbe`
     pub const DECREASE_LIQUIDITY: [u8; 4] = [0x0c, 0x49, 0xcc, 0xbe];
-
-    /// Uniswap V3 NonfungiblePositionManager `positions(uint256)`
-    /// selector: `0x99fbab88`
-    #[allow(dead_code)]
-    pub const POSITIONS: [u8; 4] = [0x99, 0xfb, 0xab, 0x88];
 
     /// Uniswap V3 Pool `slot0()`
     /// selector: `0x3850c7bd`

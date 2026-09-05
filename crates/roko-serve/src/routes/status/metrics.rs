@@ -952,6 +952,7 @@ fn median(values: &[f64]) -> Option<f64> {
         len => {
             let upper = values.get(len / 2).copied()?;
             let lower = values.get((len / 2).saturating_sub(1)).copied()?;
+            #[allow(clippy::manual_midpoint)]
             Some((lower + upper) / 2.0)
         }
     }

@@ -57,6 +57,7 @@ const fn default_compile_concurrency() -> usize {
 
 /// A single custom gate rung definition.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GateRungConfig {
     /// Human-readable rung identifier (e.g. `"compile"`, `"lint"`, `"test"`).
     pub name: String,
@@ -224,6 +225,7 @@ impl Default for PipelineReviewerMode {
 
 /// Effective pipeline settings for one complexity band.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PipelineBandConfig {
     /// Whether the strategist stage runs before implementation.
     #[serde(default)]

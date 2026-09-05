@@ -285,8 +285,39 @@ pub async fn git_clone(url: &str, workspace: &Path, token: &str) -> Result<()> {
     Ok(())
 }
 
+/// Branches that must never be pushed to directly from a cloud worker.
+const PROTECTED_BRANCHES: &[&str] = &["main", "master", "develop", "release", "production"];
+
+/// Validate that a branch name is safe for cloud worker use.
+///
+/// Rejects protected branch names and names containing shell-unsafe characters.
+/// Cloud workers must always work on `impl/` prefixed branches (#373).
+fn validate_worker_branch(branch: &str) -> Result<()> {
+    if branch.is_empty() {
+        bail!("branch name must not be empty");
+    }
+    if PROTECTED_BRANCHES.contains(&branch) {
+        bail!(
+            "refusing to use protected branch '{branch}'; \
+             cloud workers must use an impl/ prefixed branch"
+        );
+    }
+    // Reject shell-unsafe characters that could be injected through params.
+    if branch
+        .chars()
+        .any(|c| c.is_control() || matches!(c, ' ' | '~' | '^' | ':' | '?' | '*' | '[' | '\\'))
+    {
+        bail!("branch name '{branch}' contains unsafe characters");
+    }
+    Ok(())
+}
+
 /// Create and switch to the implementation branch.
+///
+/// Validates the branch name before creating it (#373).
 pub async fn git_checkout_new_branch(workspace: &Path, branch: &str) -> Result<()> {
+    validate_worker_branch(branch)?;
+
     let output = tokio::process::Command::new("git")
         .args(["checkout", "-b", branch])
         .current_dir(workspace)
@@ -302,7 +333,12 @@ pub async fn git_checkout_new_branch(workspace: &Path, branch: &str) -> Result<(
     Ok(())
 }
 
+/// File patterns that must never be staged by a cloud worker.
+const EXCLUDED_PATTERNS: &[&str] = &[".env", "credentials.json", "secrets.json", ".roko/state/"];
+
 /// Stage and commit the current workspace state.
+///
+/// Uses `git add -A` but then unstages any sensitive file patterns (#373).
 pub async fn git_commit(workspace: &Path, message: &str) -> Result<()> {
     let add_output = tokio::process::Command::new("git")
         .args(["add", "-A"])
@@ -314,6 +350,16 @@ pub async fn git_commit(workspace: &Path, message: &str) -> Result<()> {
 
     if !add_output.status.success() {
         return Err(git_error("git add -A", &add_output, None));
+    }
+
+    // Unstage sensitive files that should never be committed by workers.
+    for pattern in EXCLUDED_PATTERNS {
+        let _ = tokio::process::Command::new("git")
+            .args(["reset", "HEAD", "--", pattern])
+            .current_dir(workspace)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .await;
     }
 
     let diff_output = tokio::process::Command::new("git")
@@ -348,7 +394,12 @@ pub async fn git_commit(workspace: &Path, message: &str) -> Result<()> {
 }
 
 /// Push the implementation branch to origin.
+///
+/// Validates the branch name before pushing (#373). Protected branches
+/// (main, master, etc.) are rejected to prevent accidental force-push
+/// from cloud workers.
 pub async fn git_push(workspace: &Path, branch: &str, token: &str) -> Result<()> {
+    validate_worker_branch(branch)?;
     let origin_output = tokio::process::Command::new("git")
         .args(["remote", "get-url", "origin"])
         .current_dir(workspace)
@@ -554,5 +605,44 @@ mod tests {
         let (owner, repo) = parse_owner_repo("https://github.com/nunchi/roko.git").unwrap();
         assert_eq!(owner, "nunchi");
         assert_eq!(repo, "roko");
+    }
+
+    // ── #373 git safety tests ─────────────────────────────────────────
+
+    #[test]
+    fn validate_worker_branch_rejects_protected() {
+        for branch in PROTECTED_BRANCHES {
+            let err = validate_worker_branch(branch);
+            assert!(err.is_err(), "should reject protected branch: {branch}");
+            let msg = err.unwrap_err().to_string();
+            assert!(
+                msg.contains("protected"),
+                "error should mention 'protected': {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_worker_branch_accepts_impl_prefix() {
+        assert!(validate_worker_branch("impl/p07-autofix").is_ok());
+        assert!(validate_worker_branch("impl/feature-xyz").is_ok());
+        assert!(validate_worker_branch("feature/my-branch").is_ok());
+    }
+
+    #[test]
+    fn validate_worker_branch_rejects_empty() {
+        assert!(validate_worker_branch("").is_err());
+    }
+
+    #[test]
+    fn validate_worker_branch_rejects_unsafe_chars() {
+        assert!(validate_worker_branch("branch name").is_err());
+        assert!(validate_worker_branch("branch~1").is_err());
+        assert!(validate_worker_branch("branch^2").is_err());
+        assert!(validate_worker_branch("branch:ref").is_err());
+        assert!(validate_worker_branch("branch?glob").is_err());
+        assert!(validate_worker_branch("branch*star").is_err());
+        assert!(validate_worker_branch("branch[0]").is_err());
+        assert!(validate_worker_branch("branch\\escape").is_err());
     }
 }

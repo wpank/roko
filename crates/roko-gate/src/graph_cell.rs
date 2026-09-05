@@ -260,9 +260,53 @@ impl GatePipelineCell {
         })
     }
 
+    /// Convert a `ProductionGateVerdictV1` into the graph-consumable `GateResult`.
+    fn verdict_to_gate_result(verdict: &ProductionGateVerdictV1) -> roko_core::GateResult {
+        let rung_results: Vec<roko_core::RungResult> = verdict
+            .rung_verdicts
+            .iter()
+            .filter(|rv| !rv.skipped())
+            .map(|rv| {
+                let score = if rv.passed() { 1.0 } else { 0.0 };
+                let evidence = if rv.diagnostic.is_empty() {
+                    None
+                } else {
+                    Some(rv.diagnostic.clone())
+                };
+                roko_core::RungResult {
+                    rung_name: rv.gate_name.clone(),
+                    passed: rv.passed(),
+                    score,
+                    evidence,
+                }
+            })
+            .collect();
+
+        let total = rung_results.len() as f64;
+        let passed_count = rung_results.iter().filter(|r| r.passed).count() as f64;
+        let overall_score = if total > 0.0 {
+            passed_count / total
+        } else if verdict.passed() {
+            1.0
+        } else {
+            0.0
+        };
+
+        roko_core::GateResult {
+            passed: verdict.passed(),
+            rung_results,
+            overall_score,
+        }
+    }
+
     /// Encode a `ProductionGateVerdictV1` into an output Signal.
+    ///
+    /// The Signal body carries the typed `GateResult` payload for graph
+    /// consumers, while the full `ProductionGateVerdictV1` is the internal
+    /// service contract.
     fn encode_verdict(verdict: &ProductionGateVerdictV1) -> roko_core::Result<Signal> {
-        let body = Body::from_json(verdict).map_err(|e| {
+        let gate_result = Self::verdict_to_gate_result(verdict);
+        let body = Body::from_json(&gate_result).map_err(|e| {
             roko_core::RokoError::Invalid(format!(
                 "GatePipelineCell: failed to encode verdict: {e}"
             ))
@@ -359,7 +403,7 @@ mod tests {
     };
     use crate::rung_selector::Rung;
     use async_trait::async_trait;
-    use roko_core::Cell;
+    use roko_core::{Cell, GateResult};
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -721,8 +765,8 @@ mod tests {
         let signal = GatePipelineCell::encode_verdict(&verdict).expect("encode");
         assert_eq!(signal.kind, Kind::GateVerdict);
 
-        let back: ProductionGateVerdictV1 = signal.body.as_json().expect("decode");
-        assert_eq!(back.outcome, PipelineOutcome::Passed);
+        let back: GateResult = signal.body.as_json().expect("decode");
+        assert!(back.passed);
     }
 
     #[test]
@@ -763,9 +807,9 @@ mod tests {
             adaptive_snapshot: None,
         };
         let signal = GatePipelineCell::encode_verdict(&verdict).expect("encode");
-        let back: ProductionGateVerdictV1 = signal.body.as_json().expect("decode");
-        assert_eq!(back.rung_verdicts.len(), 2);
-        assert_eq!(back.failed_rung_count(), 1);
+        let back: GateResult = signal.body.as_json().expect("decode");
+        assert_eq!(back.rung_results.len(), 2);
+        assert_eq!(back.failed_count(), 1);
     }
 
     // ── Async execution tests ────────────────────────────────────────────
@@ -779,8 +823,8 @@ mod tests {
             .expect("should pass");
         assert_eq!(output.kind, Kind::GateVerdict);
 
-        let verdict: ProductionGateVerdictV1 = output.body.as_json().expect("decode verdict");
-        assert_eq!(verdict.outcome, PipelineOutcome::Passed);
+        let gate_result: GateResult = output.body.as_json().expect("decode verdict");
+        assert!(gate_result.passed);
     }
 
     #[tokio::test]
@@ -791,8 +835,8 @@ mod tests {
             .await
             .expect("should complete");
 
-        let verdict: ProductionGateVerdictV1 = output.body.as_json().expect("decode verdict");
-        assert_eq!(verdict.outcome, PipelineOutcome::Failed);
+        let gate_result: GateResult = output.body.as_json().expect("decode verdict");
+        assert!(!gate_result.passed);
     }
 
     #[tokio::test]
@@ -897,10 +941,10 @@ mod tests {
             }
         ));
 
-        // Verdict Signal should encode a Failed outcome.
-        let verdict: ProductionGateVerdictV1 = output.body.as_json().expect("decode");
-        assert_eq!(verdict.outcome, PipelineOutcome::Failed);
-        assert_eq!(verdict.rung_verdicts.len(), 2);
+        // Verdict Signal should encode a Failed GateResult.
+        let gate_result: GateResult = output.body.as_json().expect("decode");
+        assert!(!gate_result.passed);
+        assert_eq!(gate_result.rung_results.len(), 2);
     }
 
     // ── Cancel token tests ───────────────────────────────────────────────
@@ -934,9 +978,9 @@ mod tests {
             .await
             .expect("should succeed");
 
-        let verdict: ProductionGateVerdictV1 = output.body.as_json().expect("decode");
-        // MockProgressRunner echoes adaptive_thresholds back in the verdict.
-        assert!(verdict.adaptive_snapshot.is_some());
+        let gate_result: GateResult = output.body.as_json().expect("decode");
+        // MockProgressRunner echoes adaptive_thresholds; GateResult should pass.
+        assert!(gate_result.passed);
     }
 
     #[tokio::test]
@@ -949,8 +993,8 @@ mod tests {
             .await
             .expect("should succeed");
 
-        let verdict: ProductionGateVerdictV1 = output.body.as_json().expect("decode");
-        assert!(verdict.adaptive_snapshot.is_none());
+        let gate_result: GateResult = output.body.as_json().expect("decode");
+        assert!(gate_result.passed);
     }
 
     // ── GraphEventProgressSink tests ─────────────────────────────────────
@@ -1100,14 +1144,15 @@ mod tests {
             .execute_gate(input_signal())
             .await
             .expect("should complete");
-        let verdict: ProductionGateVerdictV1 = output.body.as_json().expect("decode");
+        let gate_result: GateResult = output.body.as_json().expect("decode");
 
-        // The verdict outcome is Failed, which the graph engine uses to
+        // The GateResult is Failed, which the graph engine uses to
         // prevent dependent task execution.
-        assert_eq!(verdict.outcome, PipelineOutcome::Failed);
-        assert_eq!(verdict.failed_rung_count(), 1);
-        assert_eq!(verdict.failed_rung_names(), vec!["test"]);
-        assert_eq!(verdict.executed_rung_count(), 3);
+        assert!(!gate_result.passed);
+        assert_eq!(gate_result.failed_count(), 1);
+        assert_eq!(gate_result.failed_rung_names(), vec!["test"]);
+        // Only non-skipped rungs appear in rung_results.
+        assert_eq!(gate_result.rung_results.len(), 3);
     }
 
     // ── Integration: per-rung progress before pipeline finish ────────────
@@ -1173,15 +1218,12 @@ mod tests {
             .execute_gate(input_signal())
             .await
             .expect("should complete");
-        let verdict: ProductionGateVerdictV1 = output.body.as_json().expect("decode");
+        let gate_result: GateResult = output.body.as_json().expect("decode");
 
-        assert_eq!(verdict.outcome, PipelineOutcome::Passed);
-        assert_eq!(verdict.rung_verdicts.len(), 3);
-        assert_eq!(verdict.executed_rung_count(), 2); // compile + test
-        assert!(verdict.rung_verdicts[1].skipped());
-        assert_eq!(
-            verdict.rung_verdicts[1].skip_reason.as_deref(),
-            Some("mock skip")
-        );
+        assert!(gate_result.passed);
+        // Skipped rungs are filtered out of rung_results.
+        assert_eq!(gate_result.rung_results.len(), 2); // compile + test (lint skipped)
+        assert_eq!(gate_result.rung_results[0].rung_name, "compile");
+        assert_eq!(gate_result.rung_results[1].rung_name, "test");
     }
 }

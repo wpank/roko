@@ -162,7 +162,7 @@ tools = ["git-*"]
 }
 
 #[tokio::test]
-async fn no_whitelist_keeps_role_permissive() {
+async fn no_whitelist_denies_tool_call() {
     let dispatcher = dispatcher_for(
         "adhoc",
         r#"
@@ -175,14 +175,14 @@ model = "mock"
 
     let result = dispatcher
         .dispatch(
-            ToolCall::new("allow-adhoc", "bash", json!({ "command": "echo ready" })),
+            ToolCall::new("deny-adhoc", "bash", json!({ "command": "echo ready" })),
             &full_capability_ctx(),
         )
         .await;
 
     assert!(
-        result.is_ok(),
-        "expected missing tools whitelist to stay permissive, got {result:?}"
+        result.is_err(),
+        "expected missing tools whitelist to deny tool call (E34 fail-closed)"
     );
 }
 

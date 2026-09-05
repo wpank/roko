@@ -14,9 +14,14 @@ use std::time::Instant;
 
 use anyhow::{Context as _, Result as AnyhowResult};
 use roko_agent::AgentRuntimeEvent;
+
+/// Internal framing used when a provider exposes reasoning but the legacy
+/// runtime event enum only has `MessageDelta`. It is removed before normal
+/// transcript/state accumulation and emitted as a semantic StateHub record.
+pub(crate) const REASONING_DELTA_PREFIX: &str = "\u{001f}roko.reasoning.v1 ";
+
 /// Streaming chunk from a provider session, used for agent event bridging.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub(crate) enum StreamChunk {
     /// Plain content delta from the agent.
     ContentDelta(String),
@@ -1510,10 +1515,7 @@ impl AgentDispatcherV2 {
     ///
     /// When set, every tool call dispatched through this factory records
     /// scrubbed admit/result lines to `.roko/tool_audit.jsonl`.
-    pub fn with_tool_audit(
-        mut self,
-        adapter: Arc<roko_fs::tool_audit::ScrubAuditAdapter>,
-    ) -> Self {
+    pub fn with_tool_audit(mut self, adapter: Arc<roko_fs::tool_audit::ScrubAuditAdapter>) -> Self {
         self.tool_audit = Some(adapter);
         self
     }
@@ -2164,11 +2166,7 @@ fn agent_event_from_chunk(chunk: StreamChunk) -> AgentRuntimeEvent {
     match chunk {
         StreamChunk::ContentDelta(text) => AgentRuntimeEvent::MessageDelta { text },
         StreamChunk::ReasoningDelta(text) => AgentRuntimeEvent::MessageDelta {
-            text: format!(
-                "{}{}",
-                crate::runner::agent_events::REASONING_DELTA_PREFIX,
-                text
-            ),
+            text: format!("{}{}", REASONING_DELTA_PREFIX, text),
         },
         StreamChunk::ToolCallDelta {
             id_delta,
@@ -3147,12 +3145,19 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"dispatch-ok"}}'
             bare_mode: false,
             dangerously_skip_permissions: false,
         };
-        let dispatcher = AgentDispatcherV2::new(Arc::new(config));
+        let health_path = tmp.path().join(".roko/learn/provider-health.json");
+        let registry = Arc::new(ProviderHealthRegistry::new());
+        let dispatcher =
+            AgentDispatcherV2::new(Arc::new(config)).with_health_registry(registry.clone());
 
         let dispatch = dispatcher
             .run_agent_result_bridge(request)
             .await
             .expect("dispatch");
+
+        // Flush the registry to disk so the test can read it.
+        std::fs::create_dir_all(health_path.parent().unwrap()).expect("create learn dir");
+        registry.save(&health_path).expect("save health");
 
         assert!(dispatch.result.success);
         assert_eq!(
@@ -3171,7 +3176,8 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"dispatch-ok"}}'
         let provider_health =
             std::fs::read_to_string(tmp.path().join(".roko/learn/provider-health.json"))
                 .expect("read provider health");
-        assert!(provider_health.contains("dispatch-cli"));
+        // The registry normalizes provider keys (hyphens to underscores).
+        assert!(provider_health.contains("dispatch_cli"));
 
         let cascade_router =
             std::fs::read_to_string(tmp.path().join(".roko/learn/cascade-router.json"))

@@ -23,6 +23,7 @@ serde_json = { workspace = true }
 chrono = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
+tracing = { workspace = true }
 roko-primitives = { path = "../roko-primitives" }
 cron = "0.12"
 

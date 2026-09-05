@@ -18,7 +18,8 @@ pub mod task_executor;
 
 pub use agent::{AgentCell, AgentCellConfig};
 pub use cognitive::{
-    ActCell, AssessCell, CognitiveComposeCell, PersistCell, ReactCell, SenseCell, VerifyCell,
+    ActCell, AssessCell, CalibrationTracker, CognitiveComposeCell, PersistCell, ReactCell,
+    SenseCell, VerifyCell, build_cognitive_loop_graph,
 };
 pub use compose::{ComposeCell, ComposeCellConfig};
 pub use corrigibility::{
@@ -34,7 +35,9 @@ pub use immune::{
 };
 pub use stubs::PassthroughCell;
 pub use task_executor::{
-    AttemptReconciliation, GraphTaskEvent, NoopAttemptRecorder, ProviderAttemptRecorder,
-    StreamingTaskDispatcher, TaskDispatchOutcome, TaskDispatchOutcomeKind, TaskDispatcher,
-    TaskExecutionSpec, TaskExecutorCell, TaskLease,
+    AttemptReconcileDecision, AttemptReconciliation, GraphTaskEvent, NoopAttemptRecorder,
+    PROGRESS_MESSAGE_MAX_BYTES, ProviderAttemptReceipt, ProviderAttemptRecorder,
+    StreamingTaskDispatcher, TaskDispatchEvent, TaskDispatchOutcome, TaskDispatchOutcomeKind,
+    TaskDispatchRequest, TaskDispatchStatus, TaskDispatcher, TaskExecutionSpec, TaskExecutorCell,
+    TaskLease, truncate_utf8,
 };

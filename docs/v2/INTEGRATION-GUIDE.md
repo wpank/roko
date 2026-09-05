@@ -40,7 +40,7 @@ sections for every configuration option.
 15. [Error Recovery](#15-error-recovery)
 16. [Deployment Guide](#16-deployment-guide)
 17. [Environment Variables Reference](#17-environment-variables-reference)
-18. [WorkflowEngine Integration (Programmatic)](#18-workflowengine-integration-programmatic)
+18. [Workflow Integration (Programmatic)](#18-workflow-integration-programmatic)
 19. [Key File Locations](#19-key-file-locations)
 20. [Known Gaps](#20-known-gaps)
 
@@ -77,7 +77,7 @@ roko init
 roko prd idea "Add input validation to the API handler"
 roko prd draft new "api-validation"
 roko prd plan api-validation
-roko plan run plans/api-validation/ --engine runner-v2
+roko plan run plans/api-validation/
 
 # Watch progress in real time
 roko dashboard
@@ -148,7 +148,7 @@ into what happened.
     section-effects.json Prompt section effectiveness scores
 
   state/                Crash recovery
-    state-snapshot.json Unified runner-v2 checkpoint — resume any interrupted plan run
+    state-snapshot.json Legacy runner checkpoint (deprecated; Graph uses state/graph/)
     events.json         Event log snapshot
 
   prd/                  Product Requirements Documents
@@ -179,7 +179,7 @@ published.
 | `.roko/` | `root()` | Data directory root |
 | `.roko/episodes.jsonl` | `episodes_path()` | Canonical episode log |
 | `.roko/memory/playbook.toml` | `playbook_path()` | Active playbook |
-| `.roko/state/state-snapshot.json` | `PersistPaths::from_workdir(...).state_snapshot_json` | Unified runner-v2 checkpoint |
+| `.roko/state/state-snapshot.json` | `PersistPaths::from_workdir(...).state_snapshot_json` | Legacy runner checkpoint (deprecated) |
 | `.roko/learn/cascade-router.json` | `cascade_router_path()` | Router state |
 | `.roko/learn/experiments.json` | `experiments_path()` | Experiment store |
 | `.roko/learn/efficiency.jsonl` | `efficiency_path()` | Efficiency events |
@@ -363,10 +363,10 @@ roko plan validate plans/knowledge-informed-routing/
 ### Step 7: Execute the plan
 
 ```bash
-roko plan run plans/knowledge-informed-routing/ --engine runner-v2
+roko plan run plans/knowledge-informed-routing/ --engine legacy  # deprecated; Graph is the default
 ```
 
-This starts the runner-v2 event loop (`crates/roko-cli/src/runner/event_loop.rs`). For each task:
+This starts the Graph execution engine (`crates/roko-cli/src/graph_execution/`). For each task:
 
 1. Build the 9-layer system prompt via `PromptAssemblyService`
 2. Route to a model via `CascadeRouter`
@@ -382,7 +382,7 @@ Progress is visible in real time on the TUI.
 
 ```bash
 roko plan run plans/knowledge-informed-routing/ \
-  --engine runner-v2 --resume-plan
+  --engine legacy  # deprecated; Graph is the default --resume-plan
 ```
 
 The unified `.roko/state/state-snapshot.json` checkpoint is written atomically after each
@@ -816,7 +816,7 @@ critic = true
 <details>
 <summary>Per-watcher threshold overrides for anomaly detection</summary>
 
-The conductor runs 10 watchers that monitor for anomalous agent behavior. Each watcher has
+The conductor runs 12 watchers that monitor for anomalous agent behavior. Each watcher has
 configurable thresholds. The defaults are reasonable starting points.
 
 ```toml
@@ -856,7 +856,7 @@ alert_ratio = 0.80          # alert when 80% of time budget is consumed
 
 </details>
 
-**Routing bias behavior (runner-v2).** When conductor watchers detect anomalies
+**Routing bias behavior (Graph engine).** When conductor watchers detect anomalies
 (ghost turns, compile-fail repeats, cost overruns, stuck patterns, etc.), the
 conductor derives a routing bias that is fed into model selection at dispatch
 time. Models involved in recent failures are deprioritized (filtered from the
@@ -1688,7 +1688,7 @@ The code-intelligence MCP server (`roko-mcp-code`) provides these tools to agent
 
 ### Referencing the MCP config
 
-In practice, runner v2 resolves `agent.mcp_config` (including autodiscovery) in
+In practice, the execution engine resolves `agent.mcp_config` (including autodiscovery) in
 `commands/plan.rs` and threads the path through `runner/event_loop.rs` into agent dispatch.
 The referenced file is parsed by `roko-agent` using `McpConfig` and
 `McpServerConfig` structs:
@@ -2279,7 +2279,7 @@ is interrupted (Ctrl-C, process crash, network failure), resume with:
 
 ```bash
 roko plan run plans/my-plan/ \
-  --engine runner-v2 --resume-plan
+  --engine legacy  # deprecated; Graph is the default --resume-plan
 ```
 
 The checkpoint restores the exact pipeline state — phase, iteration count, accumulated review
@@ -2341,7 +2341,7 @@ If the executor checkpoint is corrupt:
 rm .roko/state/state-snapshot.json
 
 # Restart the plan from the beginning
-roko plan run plans/my-plan/ --engine runner-v2
+roko plan run plans/my-plan/ --engine legacy  # deprecated; Graph is the default
 ```
 
 To skip already-completed tasks, use `roko plan show` to inspect which task IDs completed,
@@ -2530,11 +2530,11 @@ Authorization_file = "/run/secrets/api-token"
 
 ---
 
-## 18. WorkflowEngine Integration (Programmatic)
+## 18. Workflow Integration (Programmatic)
 
-This section shows how to wire up a `WorkflowEngine` programmatically, which is what the CLI,
-HTTP server, and ACP adapter all do internally. Use this if you're building a custom integration
-or want to embed Roko in another application.
+> **Note:** WorkflowEngine was retired by #276. The examples below show the preserved contract
+> types from `roko-runtime::workflow_contract` and the Graph-based workflow controller that
+> replaced it. The CLI, HTTP server, and ACP adapter now use Graph workflow templates internally.
 
 ### Instantiate the services
 
@@ -2667,7 +2667,7 @@ let restored = PipelineStateV2::from_checkpoint(&json)?;
 let output = restored.step(PipelineInput::Start);
 ```
 
-The runner-v2 CLI wraps its complete state in a checksummed envelope and writes
+The execution engine wraps its complete state in a checksummed envelope and writes
 `.roko/state/state-snapshot.json` atomically; do not overwrite that file with a raw
 `PipelineStateV2` checkpoint.
 
@@ -2680,7 +2680,8 @@ The runner-v2 CLI wraps its complete state in a checksummed envelope and writes
 | Workspace config | `<project>/roko.toml` |
 | Data directory | `<project>/.roko/` |
 | Layout version | `<project>/.roko/VERSION` |
-| Unified runner-v2 checkpoint | `<project>/.roko/state/state-snapshot.json` |
+| Legacy runner checkpoint (deprecated) | `<project>/.roko/state/state-snapshot.json` |
+| Graph engine checkpoint | `<project>/.roko/state/graph/` |
 | Episode log | `<project>/.roko/episodes.jsonl` |
 | Playbook | `<project>/.roko/memory/playbook.toml` |
 | Cascade router state | `<project>/.roko/learn/cascade-router.json` |

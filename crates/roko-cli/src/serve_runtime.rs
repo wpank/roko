@@ -980,7 +980,6 @@ pub(crate) async fn dispatch_bench_prompt(
 
     Ok(BenchDispatchResult {
         text: response.content,
-        model: response.model,
         input_tokens: response.usage.input_tokens,
         output_tokens: response.usage.output_tokens,
     })
@@ -989,8 +988,6 @@ pub(crate) async fn dispatch_bench_prompt(
 /// Result from dispatching a bench prompt via `ModelCallService`.
 pub(crate) struct BenchDispatchResult {
     pub(crate) text: String,
-    #[allow(dead_code)]
-    pub(crate) model: String,
     pub(crate) input_tokens: u64,
     pub(crate) output_tokens: u64,
 }

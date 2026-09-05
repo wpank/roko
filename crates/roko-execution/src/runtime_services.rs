@@ -119,9 +119,8 @@ impl NonPlanServiceRequest {
 /// lifetime. It carries the profile that was used to construct it, the
 /// validated bundle set, and the original overrides for introspection.
 ///
-/// When #243 lands, this will wrap the concrete `ServiceBundle` from
-/// `roko-serve::ServiceFactory`. Until then, callers use it as a
-/// validation-only type that proves the profile matrix was satisfied.
+/// Callers that need the concrete `RuntimeServices` with constructed
+/// bundles should use `RuntimeServicesBuilder::from_config()` directly.
 #[derive(Debug, Clone)]
 pub struct NonPlanServiceHandle {
     /// Profile used to construct this handle.
@@ -227,16 +226,6 @@ pub enum ServiceConstructionError {
         profile: RuntimeProfile,
         bundle: ServiceBundleId,
     },
-    /// The #243 `RuntimeServicesBuilder` is not yet available.
-    ///
-    /// This is returned by `build_non_plan_services` until the builder is
-    /// implemented. Callers should fall back to their current `ServiceFactory`
-    /// construction path.
-    #[error(
-        "SPEC_DRIFT: RuntimeServicesBuilder not yet available (blocked on #243); \
-             profile={profile}, use ServiceFactory::build as interim"
-    )]
-    BuilderNotAvailable { profile: RuntimeProfile },
 }
 
 // ---------------------------------------------------------------------------
@@ -280,32 +269,26 @@ pub fn validate_service_request(
     })
 }
 
-/// Attempt to build runtime services for a non-plan surface.
+/// Build runtime services for a non-plan surface.
 ///
-/// **Status: blocked on #243.** Returns `Err(BuilderNotAvailable)` until
-/// the `RuntimeServicesBuilder` is implemented. Callers should:
+/// Validates the request against the profile matrix, then constructs
+/// a validated service handle. The `RuntimeServicesBuilder` (#243) is
+/// now available — callers that need the concrete `RuntimeServices`
+/// should use `RuntimeServicesBuilder::from_config()` directly.
 ///
-/// 1. Call `validate_service_request()` to get a validated handle.
-/// 2. Fall back to `ServiceFactory::build(ServiceConfig { ... })` for the
-///    actual bundle construction.
-/// 3. Store the handle for cost settlement and process registration
-///    correlation.
-///
-/// When #243 lands, this function will call `RuntimeServicesBuilder::build()`
-/// directly and return the concrete `ServiceBundle`.
+/// This function remains the recommended entry point for non-plan
+/// surfaces that only need handle validation and instance correlation.
 pub fn build_non_plan_services(
     request: &NonPlanServiceRequest,
 ) -> Result<NonPlanServiceHandle, ServiceConstructionError> {
     // Phase 1: validate the request against the profile matrix.
     let handle = validate_service_request(request)?;
 
-    // Phase 2: actual construction — blocked on #243.
-    // TODO(#243): Replace with RuntimeServicesBuilder::build(request).
     tracing::debug!(
         profile = %request.profile,
         instance_id = %handle.instance_id,
         required = ?handle.required_bundles,
-        "validated non-plan service request (builder pending #243)"
+        "validated non-plan service request"
     );
 
     Ok(handle)
@@ -662,5 +645,99 @@ mod tests {
             ExecutionOverrides::default(),
         );
         assert!(request.validate_non_plan().is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // #245 conformance: one test per non-plan profile proving mandatory
+    // services are declared active.
+    // -----------------------------------------------------------------------
+
+    /// Helper: build a handle and verify it has the mandatory bundles for a
+    /// non-plan profile (Dispatch, Prompt, Observation, Guards).
+    fn assert_mandatory_bundles(profile: RuntimeProfile) {
+        let overrides = match profile {
+            RuntimeProfile::ChatLight => overrides_for_chat(None, None),
+            RuntimeProfile::AgentServer => overrides_for_acp("conformance", None, None),
+            _ => overrides_for_workflow(None, None, None, None, None),
+        };
+        let request =
+            NonPlanServiceRequest::new(profile, PathBuf::from("/tmp/conformance"), overrides);
+        let handle = build_non_plan_services(&request)
+            .unwrap_or_else(|e| panic!("profile {profile} should validate: {e}"));
+        assert_eq!(handle.profile(), profile);
+
+        let required = handle.required_bundles();
+        assert!(
+            required.contains(&ServiceBundleId::Dispatch),
+            "{profile}: Dispatch must be required"
+        );
+        assert!(
+            required.contains(&ServiceBundleId::Prompt),
+            "{profile}: Prompt must be required"
+        );
+        assert!(
+            required.contains(&ServiceBundleId::Observation),
+            "{profile}: Observation must be required"
+        );
+        assert!(
+            required.contains(&ServiceBundleId::Guards),
+            "{profile}: Guards must be required"
+        );
+    }
+
+    #[test]
+    fn conformance_workflow_mandatory_services() {
+        assert_mandatory_bundles(RuntimeProfile::Workflow);
+    }
+
+    #[test]
+    fn conformance_chat_light_mandatory_services() {
+        assert_mandatory_bundles(RuntimeProfile::ChatLight);
+    }
+
+    #[test]
+    fn conformance_agent_server_mandatory_services() {
+        assert_mandatory_bundles(RuntimeProfile::AgentServer);
+    }
+
+    #[test]
+    fn conformance_direct_light_mandatory_services() {
+        assert_mandatory_bundles(RuntimeProfile::DirectLight);
+    }
+
+    #[test]
+    fn conformance_authored_graph_mandatory_services() {
+        assert_mandatory_bundles(RuntimeProfile::AuthoredGraph);
+    }
+
+    /// Verify that RuntimeServicesBuilder produces working services for
+    /// each non-plan profile.
+    #[test]
+    fn conformance_builder_produces_services_for_non_plan_profiles() {
+        let workdir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(workdir.path().join(".roko")).unwrap();
+
+        let non_plan_profiles = [
+            RuntimeProfile::Workflow,
+            RuntimeProfile::ChatLight,
+            RuntimeProfile::AgentServer,
+            RuntimeProfile::DirectLight,
+            RuntimeProfile::AuthoredGraph,
+        ];
+
+        for profile in non_plan_profiles {
+            let services = crate::RuntimeServicesBuilder::for_test(profile)
+                .build(workdir.path())
+                .unwrap_or_else(|e| panic!("builder should succeed for {profile}: {e}"));
+
+            assert_eq!(services.profile, profile);
+            // All six bundle slots are populated for non-plan profiles.
+            // Feedback is optional (may or may not be Some).
+            let summary = services.summary();
+            assert!(summary.has_dispatch, "{profile}: dispatch required");
+            assert!(summary.has_prompt, "{profile}: prompt required");
+            assert!(summary.has_observation, "{profile}: observation required");
+            assert!(summary.has_guards, "{profile}: guards required");
+        }
     }
 }

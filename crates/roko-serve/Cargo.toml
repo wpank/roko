@@ -13,8 +13,9 @@ workspace = true
 [features]
 default = ["chain"]
 # Backend-independent local chain registries, tools, and observation state.
+# Forwards to roko-std so the 17 chain tool handlers compile in.
 # This intentionally does not pull in an RPC provider.
-chain = []
+chain = ["dep:alloy-dyn-abi", "dep:alloy-json-abi", "dep:alloy-primitives", "roko-std/chain"]
 # Real EVM JSON-RPC reads/writes. Keep this out of ordinary self-development
 # builds: Alloy's provider/full graph dominates a cold CLI compile.
 alloy-backend = ["chain", "dep:alloy", "roko-chain/alloy-backend"]
@@ -40,16 +41,16 @@ roko-gateway = { path = "../roko-gateway" }
 roko-fs = { path = "../roko-fs" }
 roko-compose = { path = "../roko-compose" }
 roko-std = { path = "../roko-std" }
-roko-conductor = { path = "../roko-conductor" }
 roko-plugin = { path = "../roko-plugin" }
 roko-daimon = { path = "../roko-daimon" }
 roko-runtime = { path = "../roko-runtime" }
+roko-execution = { path = "../roko-execution" }
 roko-primitives = { path = "../roko-primitives", optional = true }
 
 alloy = { version = "1", features = ["full"], optional = true }
-alloy-dyn-abi = "1"
-alloy-json-abi = "1"
-alloy-primitives = { workspace = true }
+alloy-dyn-abi = { version = "1", optional = true }
+alloy-json-abi = { version = "1", optional = true }
+alloy-primitives = { workspace = true, optional = true }
 anyhow = { workspace = true }
 arc-swap = "1"
 async-trait = { workspace = true }

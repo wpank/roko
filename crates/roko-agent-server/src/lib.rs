@@ -16,6 +16,7 @@ use tokio::time::MissedTickBehavior;
 use tower_http::trace::TraceLayer;
 
 use roko_agent::tool_loop::LlmBackend;
+#[cfg(feature = "chain")]
 use roko_chain::ChainClient;
 use roko_neuro::KnowledgeStore;
 
@@ -31,7 +32,9 @@ pub use registration::{
 };
 pub use state::{
     AgentMetrics, AgentPrediction, AgentPredictionResidual, AgentRuntimeStats, AgentState,
-    DispatchLike, DispatchProfile, MessageContext, PredictionCreateRequest, SidecarDispatchError,
+    AgentStateStore, CreateTaskRequest, CreateTaskResult, DispatchLike, DispatchProfile,
+    FileStateStore, HeartbeatSnapshot, MessageContext, PredictionCreateRequest, ResearchMode,
+    SidecarDispatchError, StateEnvelope, StateStoreError,
 };
 
 type BoxFutureResult = Pin<Box<dyn Future<Output = Result<()>> + Send>>;
@@ -121,6 +124,11 @@ impl AgentServer {
     /// if optional registration or start hooks fail, or if serving the Axum
     /// router fails.
     pub async fn serve(self) -> Result<()> {
+        // Restore durable state before accepting requests.
+        self.state
+            .restore_state()
+            .map_err(|err| anyhow!("restore sidecar state: {err}"))?;
+
         let bind = resolve_addr(&self.bind)?;
         let listener = TcpListener::bind(bind)
             .await
@@ -170,10 +178,12 @@ pub struct AgentServerBuilder {
     bind: Option<String>,
     agent_id: Option<String>,
     log_path: Option<PathBuf>,
+    state_store_path: Option<PathBuf>,
     owner: Option<String>,
     version: Option<String>,
     capabilities: Vec<String>,
     auth: Option<BearerAuth>,
+    #[cfg(feature = "chain")]
     chain_client: Option<Arc<dyn ChainClient>>,
     llm_backend: Option<Arc<dyn LlmBackend>>,
     knowledge_store: Option<Arc<KnowledgeStore>>,
@@ -208,6 +218,13 @@ impl AgentServerBuilder {
         self
     }
 
+    /// Set the path for durable prediction/task state persistence.
+    #[must_use]
+    pub fn state_store_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.state_store_path = Some(path.into());
+        self
+    }
+
     /// Record the logical owner for dashboard surfaces.
     #[must_use]
     pub fn owner(mut self, owner: impl Into<String>) -> Self {
@@ -238,6 +255,7 @@ impl AgentServerBuilder {
     }
 
     /// Attach an optional chain client for downstream use.
+    #[cfg(feature = "chain")]
     #[must_use]
     pub fn chain_client(mut self, client: Arc<dyn ChainClient>) -> Self {
         self.chain_client = Some(client);
@@ -347,17 +365,24 @@ impl AgentServerBuilder {
             .ok_or_else(|| anyhow!("agent_id is required"))?;
         let bind = self.bind.unwrap_or_else(|| "0.0.0.0:0".to_string());
         let capabilities = normalize_capabilities(self.capabilities, self.features);
+        #[cfg(feature = "chain")]
+        let chain_arg = self.chain_client;
+        #[cfg(not(feature = "chain"))]
+        let chain_arg = None;
         let mut state = AgentState::new(
             agent_id,
             self.owner,
             self.version.unwrap_or_else(|| "0.1.0".to_string()),
             capabilities,
-            self.chain_client,
+            chain_arg,
             self.llm_backend,
             self.knowledge_store,
         );
         if let Some(log_path) = self.log_path {
             state = state.with_log_path(log_path);
+        }
+        if let Some(store_path) = self.state_store_path {
+            state = state.with_state_store(Arc::new(state::FileStateStore::new(store_path)));
         }
         if let Some(dispatcher) = self.message_dispatcher {
             state = state.with_message_dispatcher(dispatcher);
@@ -411,6 +436,9 @@ fn capability_is_live(value: &str, features: FeatureFlags) -> bool {
 
 /// Background task that periodically POSTs a [`roko_core::HeartbeatPayload`] to
 /// the roko-serve control plane so that the discovery registry stays fresh.
+///
+/// Payloads are populated from live [`state::AgentState::heartbeat_snapshot`]
+/// data rather than hardcoded zeroes.
 #[allow(clippy::cast_precision_loss)]
 async fn heartbeat_loop(state: Arc<state::AgentState>, url: String, interval_secs: u64) {
     let client = ::reqwest::Client::new();
@@ -420,15 +448,17 @@ async fn heartbeat_loop(state: Arc<state::AgentState>, url: String, interval_sec
     loop {
         interval.tick().await;
 
+        let snapshot = state.heartbeat_snapshot();
+
         let payload = roko_core::HeartbeatPayload {
             sender_id: state.agent_id().to_string(),
             timestamp: chrono::Utc::now().to_rfc3339(),
-            active_tasks: 0,
-            completed_tasks: 0,
-            failed_tasks: 0,
+            active_tasks: snapshot.active_tasks,
+            completed_tasks: snapshot.completed_tasks,
+            failed_tasks: snapshot.failed_tasks,
             active_agents: 1,
             frequency: 1.0 / interval_secs as f64,
-            metrics: std::collections::HashMap::new(),
+            metrics: snapshot.metrics,
         };
 
         match client.post(&url).json(&payload).send().await {
@@ -436,6 +466,8 @@ async fn heartbeat_loop(state: Arc<state::AgentState>, url: String, interval_sec
                 tracing::trace!(
                     agent_id = state.agent_id(),
                     url = %url,
+                    active_tasks = snapshot.active_tasks,
+                    completed_tasks = snapshot.completed_tasks,
                     "heartbeat sent"
                 );
             }

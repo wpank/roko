@@ -166,7 +166,7 @@ impl Default for AgentConfig {
 /// Default agent behavior overrides. All fields are optional config-key references.
 /// Lives under `[agent.defaults]` in `roko.toml`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct AgentDefaults {
     /// Default model key for generic agent dispatch (references `[models.*]`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -179,6 +179,7 @@ pub struct AgentDefaults {
 /// Per-role spend and token caps under `[agent.roles.<role>]`.
 #[allow(clippy::derive_partial_eq_without_eq)] // contains f64 via derived helpers
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentBudget {
     /// Estimated token ceiling for a single turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -200,6 +201,7 @@ impl AgentBudget {
 /// Per-role adaptive-threshold overrides under `[agent.roles.<role>]`.
 #[allow(clippy::derive_partial_eq_without_eq)] // contains f64
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentThresholds {
     /// Minimum pass-rate floor applied over adaptive gate thresholds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -211,8 +213,8 @@ pub struct AgentThresholds {
 /// These are **config-file** overrides, distinct from the CLI flags:
 ///
 /// - `force_backend` here is a **role-scoped** config override. It is
-///   consulted by `resolve_role_model_override` in `config_helpers.rs` and
-///   matches against known provider families (e.g. `"claude"`, `"openai"`).
+///   consulted by the cascade router dispatch path and matches against
+///   known provider families (e.g. `"claude"`, `"openai"`).
 /// - The CLI flags `--model` / `--force-model` / `--force-backend` are
 ///   **operator overrides** that bypass everything, including these config
 ///   overrides, via `DispatchContext.force_backend`.
@@ -224,6 +226,7 @@ pub struct AgentThresholds {
 /// 4. Cascade router
 /// 5. Default model
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RoutingOverrides {
     /// Force routing to a specific backend/provider family for this role.
     ///
@@ -260,6 +263,7 @@ pub struct RoutingOverrides {
 /// ```
 #[allow(clippy::derive_partial_eq_without_eq)] // contains f64
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DataLlmConfig {
     /// Model slug for the Data LLM (can be a smaller/cheaper model).
     #[serde(default = "default_data_llm_model")]

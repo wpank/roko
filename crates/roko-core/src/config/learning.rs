@@ -13,6 +13,7 @@ pub const DEFAULT_GATE_THRESHOLD_FLUSH_INTERVAL: u64 = 10;
 
 /// Configuration for the dreams consolidation subsystem.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DreamsConfig {
     /// Automatically trigger dream consolidation after a plan completes.
     ///

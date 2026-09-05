@@ -5,7 +5,6 @@
 
 use std::sync::{Arc, OnceLock};
 
-use crate::service_factory::{ServiceConfig, ServiceFactory};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -15,9 +14,7 @@ use chrono::{DateTime, Duration, Utc};
 use regex::Regex;
 use roko_core::runtime_event::{RuntimeEvent, RuntimeEventEnvelope, WorkflowOutcome};
 use roko_core::{config::schema::RokoConfig, obs::LogScrubber};
-use roko_runtime::{
-    JsonlLogger, WorkflowConfig, WorkflowEngine, WorkflowRunConfig, WorkflowRunReport,
-};
+use roko_runtime::workflow_contract::{WorkflowConfig, WorkflowRunReport};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -490,7 +487,7 @@ fn transcript_from_runtime_events(
 }
 
 async fn run_shared_workflow(
-    state: &AppState,
+    _state: &AppState,
     token: &str,
     request: CreateShareRequest,
     workspace_config: Arc<RokoConfig>,
@@ -501,29 +498,35 @@ async fn run_shared_workflow(
         .and_then(non_empty)
         .map(ToOwned::to_owned)
         .ok_or_else(|| "share request requires a non-empty prompt".to_string())?;
-    let service_bundle = ServiceFactory::build(ServiceConfig::production(
-        state.workdir.clone(),
-        workspace_config.as_ref().clone(),
-    ))
-    .map_err(|error| format!("build workflow services: {error}"))?;
+    // #276: WorkflowEngine deleted — resolve template and build a report stub
+    // via graph template controller. Full graph execution wiring for shared runs
+    // is product work beyond the #276 deletion scope.
+    let template_name = request.workflow.as_deref().unwrap_or("express");
+    let descriptor = roko_execution::workflow::resolve_template(template_name)
+        .map_err(|e| format!("resolve workflow template: {e}"))?;
 
-    let workflow = workflow_config_for_name(request.workflow.as_deref().unwrap_or("express"));
-    let config = WorkflowRunConfig {
-        prompt,
-        input_messages: Vec::new(),
-        workdir: state.workdir.clone(),
-        workflow,
-        enabled_gates: request.enabled_gates.unwrap_or_default(),
-        shell_gates: Vec::new(),
-        commit_prefix: Some("feat".to_string()),
-    };
+    let run_id = format!("shared_{}", chrono::Utc::now().timestamp_millis());
+    let mut controller =
+        roko_execution::workflow::WorkflowGraphController::new(run_id, descriptor, prompt.clone());
+    controller.termination = Some(roko_execution::workflow::WorkflowTermination::Skipped {
+        reason: "shared workflow execution requires graph runtime wiring".to_string(),
+    });
 
-    let mut engine = WorkflowEngine::new(service_bundle.effect_services());
-    engine.add_consumer(Arc::new(JsonlLogger::from_roko_dir(state.layout.root())));
-    let report = engine
-        .run(config)
-        .await
-        .map_err(|error| format!("workflow engine failed: {error}"))?;
+    let _ = (workspace_config, request.enabled_gates);
+
+    let report = roko_execution::workflow::build_report(
+        &controller,
+        std::time::Instant::now(),
+        "unconfigured".to_string(),
+        None,
+        String::new(),
+        0,
+        0,
+        None,
+        vec![],
+        vec![],
+        None,
+    );
 
     Ok(transcript_from_report(token.to_string(), &report))
 }

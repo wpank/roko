@@ -15,7 +15,7 @@ default = []
 # Enables an alloy-backed `AlloyChainClient` + `AlloyChainWallet` for real JSON-RPC
 # endpoints (e.g. mirage-rs, anvil, live testnets). Pulls in alloy's provider +
 # signer + consensus stacks, so leave this off for pure mock/trait consumers.
-alloy-backend = ["dep:alloy", "dep:alloy-primitives", "dep:reqwest"]
+alloy-backend = ["dep:alloy", "dep:reqwest"]
 
 [dependencies]
 roko-core = { path = "../roko-core" }
@@ -29,7 +29,6 @@ tokio-util = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 parking_lot = { workspace = true }
-alloy-primitives = { workspace = true, optional = true }
 alloy = { version = "1", features = ["full"], optional = true }
 reqwest = { workspace = true, optional = true }
 

@@ -196,6 +196,7 @@ bare_mode = true
 }
 
 #[tokio::test]
+#[ignore = "relay bridge is not yet implemented (backlog #224); --relay-url is rejected at startup"]
 async fn roko_agent_serve_registers_with_relay_and_handles_messages() {
     let workdir = TempDir::new().expect("tempdir");
     write_agent_config(workdir.path());

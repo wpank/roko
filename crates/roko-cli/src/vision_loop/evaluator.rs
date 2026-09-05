@@ -271,34 +271,6 @@ fn find_vision_model(config: &RokoConfig) -> Option<String> {
         .map(|(key, _)| key.clone())
 }
 
-/// Build a proper multimodal `ChatMessage` for providers that support it.
-/// This is not used by the Agent trait path but is available for direct
-/// provider/backend integration.
-#[allow(dead_code)]
-pub fn build_multimodal_messages(
-    system_prompt: &str,
-    user_text: &str,
-    screenshot_data_uri: &str,
-) -> Vec<ChatMessage> {
-    vec![
-        ChatMessage::System {
-            content: system_prompt.to_string(),
-        },
-        ChatMessage::User {
-            content: MessageContent::Blocks(vec![
-                ContentBlock::Text {
-                    text: user_text.to_string(),
-                },
-                ContentBlock::ImageUrl {
-                    image_url: ImageUrl {
-                        url: screenshot_data_uri.to_string(),
-                    },
-                },
-            ]),
-        },
-    ]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -474,34 +446,6 @@ mod tests {
         assert!(matches!(&msgs[0].content[1], ModelInputBlock::Text { .. }));
     }
 
-    #[test]
-    fn multimodal_messages_have_correct_shape() {
-        let msgs = build_multimodal_messages("sys", "code here", "data:image/png;base64,abc");
-        assert_eq!(msgs.len(), 2);
-        match &msgs[0] {
-            ChatMessage::System { content } => assert_eq!(content, "sys"),
-            _ => panic!("expected system message"),
-        }
-        match &msgs[1] {
-            ChatMessage::User {
-                content: MessageContent::Blocks(blocks),
-            } => {
-                assert_eq!(blocks.len(), 2);
-                match &blocks[0] {
-                    ContentBlock::Text { text } => assert_eq!(text, "code here"),
-                    _ => panic!("expected text block"),
-                }
-                match &blocks[1] {
-                    ContentBlock::ImageUrl { image_url } => {
-                        assert!(image_url.url.starts_with("data:image/png;base64,"));
-                    }
-                    _ => panic!("expected image block"),
-                }
-            }
-            _ => panic!("expected user message with blocks"),
-        }
-    }
-
     #[tokio::test]
     async fn evaluate_records_feedback_and_provider_health() {
         let tmp = tempdir().expect("tempdir");
@@ -554,8 +498,22 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"{\"score\":8.5,\"n
         )
         .expect("evaluator");
 
+        // Write a minimal 1x1 PNG file for the evaluator to reference.
+        // ClaudeCli cannot accept inline base64 images, so we pass a file path.
+        let screenshot_path = tmp.path().join("screenshot.png");
+        // Minimal valid 1x1 white PNG (67 bytes).
+        let png_data: &[u8] = &[
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00,
+            0x00, 0x90, 0x77, 0x53, 0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, 0x54, 0x08,
+            0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00, 0x00, 0x00, 0x02, 0x00, 0x01, 0xE2, 0x21, 0xBC,
+            0x33, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+        ];
+        std::fs::write(&screenshot_path, png_data).expect("write test png");
+        let screenshot_str = screenshot_path.display().to_string();
+
         let eval = evaluator
-            .evaluate("<div>before</div>", "data:image/png;base64,abc", &[], None)
+            .evaluate("<div>before</div>", &screenshot_str, &[], None)
             .await
             .expect("evaluate");
 
@@ -573,7 +531,8 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"{\"score\":8.5,\"n
         let provider_health =
             std::fs::read_to_string(tmp.path().join(".roko/learn/provider-health.json"))
                 .expect("read provider health");
-        assert!(provider_health.contains("vision-cli"));
+        // The registry normalizes provider keys (hyphens to underscores).
+        assert!(provider_health.contains("vision_cli"));
 
         let cascade_router =
             std::fs::read_to_string(tmp.path().join(".roko/learn/cascade-router.json"))

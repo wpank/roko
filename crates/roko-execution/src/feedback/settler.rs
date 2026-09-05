@@ -456,7 +456,6 @@ mod tests {
                 call_count: Arc::new(AtomicU32::new(0)),
             }
         }
-
     }
 
     #[async_trait::async_trait]

@@ -47,6 +47,7 @@ pub(crate) fn monotonic_now() -> MonotonicTime {
 ///
 /// Records when the attempt started, when the current phase began, and
 /// when the agent last produced observable output.
+#[allow(clippy::struct_field_names)] // _at suffix is meaningful for timestamps
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OwnershipTiming {
     pub attempt_started_at: MonotonicTime,

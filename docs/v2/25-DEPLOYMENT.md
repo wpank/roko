@@ -114,7 +114,7 @@ roko dashboard
 roko prd idea "Extract runner prompt assembly into a dedicated module"
 roko prd draft new "system-prompt-wiring"
 roko prd plan system-prompt-wiring
-roko plan run plans/ --engine runner-v2
+roko plan run plans/
 ```
 
 ### 2.3 Agent Creation UX

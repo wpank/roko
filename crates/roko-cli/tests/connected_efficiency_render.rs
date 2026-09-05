@@ -147,6 +147,9 @@ fn connected_tui_renders_recorded_codex_efficiency_row() {
     );
 
     // -- 5. F7 → Cost/Model agrees (audit #4 consumer side) ---------------
+    // The Cost/Model widget aggregates only final-turn events (task-level
+    // stats), so mark one event final before switching to the Inspect tab.
+    app.tui_state.efficiency_events[0].is_final_turn = true;
     app.tui_state.inspect_sub_tab = 4; // SubView::CostByModel
     let rendered = app.render_tabs_to_text(160, 50, &[Tab::Inspect]);
     let inspect_text = &rendered[0].1;

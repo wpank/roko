@@ -342,29 +342,16 @@ fn load_conductor_config(
 }
 
 fn check_dead_conductor_config(
-    conductor: &roko_core::config::schema::ConductorConfig,
+    _conductor: &roko_core::config::schema::ConductorConfig,
 ) -> DoctorCheck {
-    let context_pressure_enabled = conductor.context_pressure_enabled;
     DoctorCheck {
         id: "dead_conductor_config".to_string(),
-        status: if context_pressure_enabled {
-            DoctorStatus::Warn
-        } else {
-            DoctorStatus::Ok
-        },
-        message: if context_pressure_enabled {
-            "runtime-dead runner-v2 context-pressure setting is enabled".to_string()
-        } else {
-            "runtime-dead runner-v2 context-pressure setting is inactive".to_string()
-        },
-        detail: Some(
-            "conductor.context_pressure_enabled is retained for compatibility but runner-v2 does not yet feed TokenUsage into its conductor ring; conductor.watchers.* threshold overrides are runtime-live"
-                .to_string(),
-        ),
+        status: DoctorStatus::Ok,
+        message: "conductor config is clean (context_pressure_enabled removed)".to_string(),
+        detail: Some("conductor.watchers.* threshold overrides are runtime-live".to_string()),
         path: None,
         url: None,
-        fix: context_pressure_enabled
-            .then(|| "remove conductor.context_pressure_enabled or set it to false".to_string()),
+        fix: None,
     }
 }
 
@@ -422,12 +409,10 @@ fn load_active_config(workdir: &Path, config_override: Option<&Path>) -> Result<
 
     let paths = resolve_paths(workdir);
     let mut explicit_serve = false;
-    let mut found_any_config = false;
     let active_path = if let Some(env_path) = &paths.env_override {
         match std::fs::read_to_string(env_path) {
             Ok(text) => {
                 explicit_serve = toml_has_key(&text, "serve");
-                found_any_config = true;
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => {
@@ -438,6 +423,7 @@ fn load_active_config(workdir: &Path, config_override: Option<&Path>) -> Result<
         }
         Some(env_path.clone())
     } else {
+        let mut found_any_config = false;
         let mut active_path = None;
 
         if let Some(ref global_path) = paths.global {
@@ -1350,9 +1336,8 @@ fn check_v2_abstractions() -> DoctorCheck {
     let version: CellVersion = (0, 1, 0);
     let version_ok = version.0 == 0 && version.1 == 1 && version.2 == 0;
 
-    // Verify the protocol traits and CellContext are importable and have
-    // the expected shapes. These trait bound assertions are never called at
-    // runtime but ensure the traits exist with the right bounds at compile time.
+    // Compile-time trait bound assertions: never called at runtime but
+    // ensure the protocol traits exist with the expected bounds.
     #[allow(dead_code)]
     fn assert_observe<T: Observe>() {}
     #[allow(dead_code)]
@@ -2855,10 +2840,20 @@ mod tests {
         assert!(checks[0].message.contains("budget"));
     }
 
+    /// Write a core-compatible `roko.toml` for doctor tests.
+    ///
+    /// The core config loader uses `deny_unknown_fields` on many struct
+    /// sections, so we must write a core `RokoConfig` rather than the CLI
+    /// `Config` (which has extra fields like `prompt.budgets`,
+    /// `budget.warn_at_percent`, etc.).
     fn write_project_config(workdir: &Path, config: Config) {
+        let mut core_config = roko_core::config::RokoConfig::default();
+        // Forward the serve auth settings the doctor tests rely on.
+        core_config.serve.auth.enabled = config.serve.auth.enabled;
+        core_config.serve.auth.api_key = config.serve.auth.api_key;
         std::fs::write(
             workdir.join("roko.toml"),
-            config.to_toml().expect("serialize config"),
+            core_config.to_toml_pretty().expect("serialize core config"),
         )
         .expect("write roko.toml");
     }
@@ -3152,18 +3147,14 @@ mod tests {
     }
 
     #[test]
-    fn doctor_dead_config_warns_for_inert_context_pressure_without_deprecating_watchers() {
-        let mut conductor = roko_core::config::schema::ConductorConfig::default();
-        conductor.context_pressure_enabled = true;
+    fn doctor_dead_config_reports_ok_after_context_pressure_removal() {
+        let conductor = roko_core::config::schema::ConductorConfig::default();
 
         let check = check_dead_conductor_config(&conductor);
 
         assert_eq!(check.id, "dead_conductor_config");
-        assert_eq!(check.status, DoctorStatus::Warn);
-        let detail = check.detail.expect("deprecation detail");
-        assert!(detail.contains("context_pressure_enabled"));
-        assert!(detail.contains("runtime-live"));
-        assert!(check.fix.is_some());
+        assert_eq!(check.status, DoctorStatus::Ok);
+        assert!(check.fix.is_none());
     }
 
     #[tokio::test]

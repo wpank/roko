@@ -1,279 +1,50 @@
-//! Shared `PlanGenerator` service — consolidates PRD, prompt, backlog, and
-//! replan plan-generation behind one RuntimeServices-backed,
-//! model/role/tool-policy-aware contract.
+//! CLI-side `PlanGenerator` implementation and re-exports.
 //!
-//! This module owns:
-//! - Request/outcome types with source, role, overrides, tool policy, budget,
-//!   provenance, and validation evidence.
-//! - The extract-validate-repair pipeline (reusing `plan_generate` prompt
-//!   builders, `task_parser::repair_toml`, and `validate_and_fix_generated_plan`).
-//! - Bounded retry with model escalation and a configurable repair cap.
-//! - The adapter contract (`PlanGeneratorAdapter`) that each host implements
-//!   for persistence, execution, and rendering.
-//!
-//! This module does NOT:
-//! - Execute or persist plans (that is the adapter's job).
-//! - Edit any current call site (that is #283's job).
+//! The neutral trait and value types live in `roko_execution::plan_generator`.
+//! This module provides:
+//! - Re-exports of all neutral types for backward compatibility.
+//! - `DefaultPlanGenerator`: the canonical implementation that uses CLI-internal
+//!   validation helpers (`PlanTemplateKind`, `repair_toml`, `TasksFile`,
+//!   `PlanExecutionPolicy`).
 
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Result, anyhow};
 use indexmap::IndexMap;
 use roko_core::config::schema::ModelProfile;
-use roko_learn::runtime_feedback::{ArtifactValidationReport, GenerationOutcome};
-use serde::{Deserialize, Serialize};
 
 use crate::plan_generate::PlanTemplateKind;
 use crate::plan_policy::PlanExecutionPolicy;
 use crate::task_parser::TasksFile;
 
 // ---------------------------------------------------------------------------
-// Call-site manifest (§ "Mechanical Call-Site Manifest" from #280)
+// Re-exports from roko-execution (backward compat)
 // ---------------------------------------------------------------------------
 
-/// Each row from the #280 manifest. Callers reference these keys to identify
-/// themselves when building adapter implementations for #283.
-pub mod adapter_keys {
-    /// `prd.rs::generate_plan_from_prd` — default PRD path.
-    pub const PRD_DEFAULT: &str = "prd_default";
-    /// `generate_plan_from_prd_with_model` — PRD + explicit model override.
-    pub const PRD_MODEL: &str = "prd_model";
-    /// `generate_plan_from_prd_with_failure_context` — PRD + gate-failure context.
-    pub const PRD_REPLAN: &str = "prd_replan";
-    /// `commands/plan.rs` — plan generate from prompt or file.
-    pub const PLAN_GENERATE: &str = "plan_generate";
-    /// `commands/do_cmd.rs` — direct plan-generation path.
-    pub const DO_STANDARD: &str = "do_standard";
-    /// `do_cmd.rs` — PRD-first path.
-    pub const DO_COMPLEX: &str = "do_complex";
-    /// `serve_runtime.rs::generate_plan_from_prd` (CLI-side).
-    pub const CLI_SERVE_RUNTIME: &str = "cli_serve_runtime";
-    /// `roko-serve/src/runtime.rs::generate_plan_from_prd` + `job_runner.rs`.
-    pub const SERVE_RUNTIME: &str = "serve_runtime";
-    /// `roko-serve/src/routes/plans.rs::generate_plan`.
-    pub const SERVE_HTTP: &str = "serve_http";
-    /// `runner/event_loop.rs::build_gate_failure_plan_revision` —
-    /// owned by #252/#275, never a direct provider call after migration.
-    pub const GATE_REPLAN: &str = "gate_replan";
-}
+pub use roko_execution::plan_generator::{
+    DEFAULT_REPAIR_CAP, PlanGenError, PlanGenerator, PlanGeneratorAdapter, PlanGeneratorOutcome,
+    PlanGeneratorOverrides, PlanGeneratorRequest, PlanSource, ValidatedPlan, ValidationEvidence,
+    adapter_keys, failure_outcome, partial_outcome, success_outcome,
+};
 
 // ---------------------------------------------------------------------------
-// Request / Outcome types
+// Default escalation chain
 // ---------------------------------------------------------------------------
-
-/// Where the generation request originates.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PlanSource {
-    /// Generated from a published PRD file.
-    Prd {
-        /// PRD slug (used as plan directory name).
-        slug: String,
-        /// Path to the PRD markdown file.
-        prd_path: PathBuf,
-    },
-    /// Generated from a user-supplied prompt string.
-    Prompt {
-        /// Freeform prompt text.
-        prompt: String,
-    },
-    /// Generated from a local file (notes, spec, etc.).
-    File {
-        /// Path to the source file.
-        path: PathBuf,
-    },
-    /// Replan: previous generation failed and this is a corrective pass.
-    Replan {
-        /// Original PRD slug.
-        slug: String,
-        /// Path to the PRD file.
-        prd_path: PathBuf,
-        /// Failure context injected into the system prompt.
-        failure_context: String,
-    },
-}
-
-impl PlanSource {
-    /// Canonical slug for plan directory naming.
-    #[must_use]
-    pub fn slug(&self) -> &str {
-        match self {
-            Self::Prd { slug, .. } | Self::Replan { slug, .. } => slug,
-            Self::Prompt { .. } => "prompt",
-            Self::File { path } => path.file_stem().and_then(|s| s.to_str()).unwrap_or("file"),
-        }
-    }
-
-    /// Whether this source carries failure context for replanning.
-    #[must_use]
-    pub fn has_failure_context(&self) -> bool {
-        matches!(self, Self::Replan { .. })
-    }
-
-    /// Failure context text, if present.
-    #[must_use]
-    pub fn failure_context(&self) -> Option<&str> {
-        match self {
-            Self::Replan {
-                failure_context, ..
-            } => Some(failure_context.as_str()),
-            _ => None,
-        }
-    }
-}
-
-/// Model/role/tool-policy overrides the caller can supply.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct PlanGeneratorOverrides {
-    /// Explicit model key (skips cascade routing selection).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    /// Override the default `"strategist"` role.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub role: Option<String>,
-    /// Allowed tools for the generation agent (comma-separated).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub allowed_tools: Option<String>,
-    /// Plan template kind override.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub template: Option<String>,
-    /// Maximum USD budget for the generation call.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub budget_usd: Option<f64>,
-    /// Maximum repair/retry attempts (defaults to [`DEFAULT_REPAIR_CAP`]).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub repair_cap: Option<u32>,
-}
-
-/// The canonical input to `PlanGenerator::generate`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PlanGeneratorRequest {
-    /// Where the plan content originates.
-    pub source: PlanSource,
-    /// Workspace root directory.
-    pub workdir: PathBuf,
-    /// Caller-specific adapter key from [`adapter_keys`].
-    pub adapter_key: String,
-    /// Optional overrides for model, role, tools, template, budget.
-    #[serde(default)]
-    pub overrides: PlanGeneratorOverrides,
-    /// Whether this is a dry-run (no persistence).
-    #[serde(default)]
-    pub dry_run: bool,
-}
-
-/// Validation evidence produced by the extraction pipeline.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ValidationEvidence {
-    /// Number of TOML extraction attempts.
-    pub extraction_attempts: u32,
-    /// Whether model escalation was triggered.
-    pub model_escalated: bool,
-    /// Final model used for generation.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub final_model: Option<String>,
-    /// Repair operations applied to the TOML.
-    pub repairs_applied: Vec<String>,
-    /// Policy violations detected (may be empty if all passed).
-    pub policy_violations: Vec<String>,
-}
-
-/// The normalized outcome from a generation request.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PlanGeneratorOutcome {
-    /// The validated tasks.toml content (absent on total failure).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tasks_toml: Option<String>,
-    /// Optional plan.md narrative content.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub plan_md: Option<String>,
-    /// Slug used for the plan directory.
-    pub slug: String,
-    /// Generation outcome (process + artifact status).
-    pub outcome: GenerationOutcome,
-    /// Validation evidence from the extraction pipeline.
-    pub evidence: ValidationEvidence,
-    /// Task count in the generated plan (0 on failure).
-    pub task_count: usize,
-    /// Estimated complexity label.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub estimated_complexity: Option<String>,
-    /// Provenance: which adapter key triggered this generation.
-    pub adapter_key: String,
-}
-
-impl PlanGeneratorOutcome {
-    /// True only when generation produced a valid, policy-conforming plan.
-    #[must_use]
-    pub fn is_success(&self) -> bool {
-        self.tasks_toml.is_some() && self.outcome.fully_successful()
-    }
-
-    /// True when the process ran but the artifact failed validation.
-    #[must_use]
-    pub fn is_partial(&self) -> bool {
-        self.outcome.process_success && !self.outcome.artifact_valid
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Adapter trait (host callback contract for #283)
-// ---------------------------------------------------------------------------
-
-/// Contract that each call-site adapter implements for #283.
-///
-/// The `PlanGenerator` service owns generation, repair, validation, and
-/// normalized outcome. Each adapter owns:
-/// - Source loading and authorization
-/// - Persistence destination
-/// - Execution trigger
-/// - User rendering / progress reporting
-///
-/// This trait is object-safe so adapters can be boxed.
-pub trait PlanGeneratorAdapter: Send + Sync {
-    /// Adapter key from [`adapter_keys`].
-    fn adapter_key(&self) -> &str;
-
-    /// Persist the generated plan to disk or storage.
-    ///
-    /// Called only when the outcome contains valid `tasks_toml`.
-    /// Returns the path where the plan was written.
-    fn persist(&self, outcome: &PlanGeneratorOutcome, workdir: &Path) -> Result<PathBuf>;
-
-    /// Optional post-generation execution trigger.
-    ///
-    /// Called after successful persistence. Adapters that auto-execute plans
-    /// implement this; others return `Ok(())`.
-    fn on_persisted(&self, _outcome: &PlanGeneratorOutcome, _plan_path: &Path) -> Result<()> {
-        Ok(())
-    }
-
-    /// Report progress or status to the user.
-    ///
-    /// Called at various stages of generation for adapters that render UI.
-    fn report(&self, _message: &str) {}
-}
-
-// ---------------------------------------------------------------------------
-// Default repair cap
-// ---------------------------------------------------------------------------
-
-/// Default maximum repair/extraction retry attempts.
-pub const DEFAULT_REPAIR_CAP: u32 = 2;
 
 /// Default escalation chain: haiku -> sonnet -> opus.
 const DEFAULT_ESCALATION_CHAIN: &[&str] =
     &["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-6"];
 
 // ---------------------------------------------------------------------------
-// PlanGenerator service
+// DefaultPlanGenerator — the CLI-side implementation
 // ---------------------------------------------------------------------------
 
-/// The shared plan-generation service.
+/// The default plan-generation service implementation.
 ///
 /// Encapsulates the extract-validate-repair pipeline that all callers share.
-/// Does NOT execute, persist, or render — those are adapter responsibilities.
-pub struct PlanGenerator {
+/// Uses CLI-internal helpers for TOML parsing and policy validation.
+pub struct DefaultPlanGenerator {
     /// Configured model profiles (for escalation filtering).
     configured_models: HashSet<String>,
     /// Tier model overrides from config.
@@ -286,8 +57,8 @@ pub struct PlanGenerator {
     default_model: Option<String>,
 }
 
-impl PlanGenerator {
-    /// Create a new `PlanGenerator` from resolved workspace config.
+impl DefaultPlanGenerator {
+    /// Create a new `DefaultPlanGenerator` from resolved workspace config.
     #[must_use]
     pub fn new(
         model_profiles: IndexMap<String, ModelProfile>,
@@ -322,7 +93,7 @@ impl PlanGenerator {
     /// 5. Validate against plan policy budgets
     ///
     /// Returns the validated TOML string on success, or an error description.
-    pub fn validate_raw_output(
+    pub(crate) fn validate_raw_output(
         &self,
         raw_output: &str,
         slug: &str,
@@ -416,7 +187,7 @@ impl PlanGenerator {
 
     /// Resolve the effective template kind from overrides or PRD metadata.
     #[must_use]
-    pub fn resolve_template(
+    pub(crate) fn resolve_template(
         overrides: &PlanGeneratorOverrides,
         prd_template: Option<&str>,
     ) -> PlanTemplateKind {
@@ -426,87 +197,32 @@ impl PlanGenerator {
 
     /// Build a `PlanGeneratorOutcome` for a successful generation.
     #[must_use]
-    pub fn success_outcome(
+    pub fn build_success_outcome(
         request: &PlanGeneratorRequest,
         validated: ValidatedPlan,
         evidence: ValidationEvidence,
-        validation_report: Option<ArtifactValidationReport>,
+        validation_report: Option<roko_learn::runtime_feedback::ArtifactValidationReport>,
     ) -> PlanGeneratorOutcome {
-        PlanGeneratorOutcome {
-            tasks_toml: Some(validated.tasks_toml),
-            plan_md: validated.plan_md,
-            slug: request.source.slug().to_string(),
-            outcome: GenerationOutcome {
-                process_success: true,
-                artifact_valid: true,
-                validation_report,
-            },
-            evidence,
-            task_count: validated.task_count,
-            estimated_complexity: None,
-            adapter_key: request.adapter_key.clone(),
-        }
+        success_outcome(request, validated, evidence, validation_report)
     }
 
     /// Build a `PlanGeneratorOutcome` for a failed generation.
     #[must_use]
-    pub fn failure_outcome(
+    pub fn build_failure_outcome(
         request: &PlanGeneratorRequest,
         evidence: ValidationEvidence,
     ) -> PlanGeneratorOutcome {
-        PlanGeneratorOutcome {
-            tasks_toml: None,
-            plan_md: None,
-            slug: request.source.slug().to_string(),
-            outcome: GenerationOutcome {
-                process_success: false,
-                artifact_valid: false,
-                validation_report: None,
-            },
-            evidence,
-            task_count: 0,
-            estimated_complexity: None,
-            adapter_key: request.adapter_key.clone(),
-        }
+        failure_outcome(request, evidence)
     }
 
-    /// Build a `PlanGeneratorOutcome` for a partial success (process ran but
-    /// artifact validation failed).
+    /// Build a `PlanGeneratorOutcome` for a partial success.
     #[must_use]
-    pub fn partial_outcome(
+    pub fn build_partial_outcome(
         request: &PlanGeneratorRequest,
         evidence: ValidationEvidence,
     ) -> PlanGeneratorOutcome {
-        PlanGeneratorOutcome {
-            tasks_toml: None,
-            plan_md: None,
-            slug: request.source.slug().to_string(),
-            outcome: GenerationOutcome {
-                process_success: true,
-                artifact_valid: false,
-                validation_report: None,
-            },
-            evidence,
-            task_count: 0,
-            estimated_complexity: None,
-            adapter_key: request.adapter_key.clone(),
-        }
+        partial_outcome(request, evidence)
     }
-}
-
-/// Intermediate result from `validate_raw_output`.
-#[derive(Debug, Clone)]
-pub struct ValidatedPlan {
-    /// The validated and repaired TOML content.
-    pub tasks_toml: String,
-    /// Optional plan.md narrative.
-    pub plan_md: Option<String>,
-    /// Number of tasks in the plan.
-    pub task_count: usize,
-    /// Repairs applied during validation.
-    pub repairs: Vec<String>,
-    /// Policy violations (empty if all passed).
-    pub policy_violations: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -997,215 +713,14 @@ fn make_verify_entry(phase: &str, command: &str, fail_msg: &str) -> toml::Value 
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
-    // ---- PlanSource tests ----
+    // ---- DefaultPlanGenerator tests ----
 
-    #[test]
-    fn plan_source_prd_slug() {
-        let source = PlanSource::Prd {
-            slug: "my-feature".to_string(),
-            prd_path: PathBuf::from("/tmp/prd.md"),
-        };
-        assert_eq!(source.slug(), "my-feature");
-        assert!(!source.has_failure_context());
-        assert!(source.failure_context().is_none());
-    }
-
-    #[test]
-    fn plan_source_prompt_slug() {
-        let source = PlanSource::Prompt {
-            prompt: "build a widget".to_string(),
-        };
-        assert_eq!(source.slug(), "prompt");
-    }
-
-    #[test]
-    fn plan_source_file_slug() {
-        let source = PlanSource::File {
-            path: PathBuf::from("/tmp/my-notes.md"),
-        };
-        assert_eq!(source.slug(), "my-notes");
-    }
-
-    #[test]
-    fn plan_source_replan_has_failure_context() {
-        let source = PlanSource::Replan {
-            slug: "my-feature".to_string(),
-            prd_path: PathBuf::from("/tmp/prd.md"),
-            failure_context: "gate failure on T2".to_string(),
-        };
-        assert_eq!(source.slug(), "my-feature");
-        assert!(source.has_failure_context());
-        assert_eq!(source.failure_context(), Some("gate failure on T2"));
-    }
-
-    // ---- PlanGeneratorOutcome tests ----
-
-    #[test]
-    fn outcome_success_requires_toml_and_valid_outcome() {
-        let outcome = PlanGeneratorOutcome {
-            tasks_toml: Some("[meta]\nplan = \"test\"\n".to_string()),
-            plan_md: None,
-            slug: "test".to_string(),
-            outcome: GenerationOutcome {
-                process_success: true,
-                artifact_valid: true,
-                validation_report: None,
-            },
-            evidence: ValidationEvidence {
-                extraction_attempts: 1,
-                model_escalated: false,
-                final_model: None,
-                repairs_applied: vec![],
-                policy_violations: vec![],
-            },
-            task_count: 2,
-            estimated_complexity: None,
-            adapter_key: "test".to_string(),
-        };
-        assert!(outcome.is_success());
-        assert!(!outcome.is_partial());
-    }
-
-    #[test]
-    fn outcome_partial_when_process_succeeded_but_artifact_invalid() {
-        let outcome = PlanGeneratorOutcome {
-            tasks_toml: None,
-            plan_md: None,
-            slug: "test".to_string(),
-            outcome: GenerationOutcome {
-                process_success: true,
-                artifact_valid: false,
-                validation_report: None,
-            },
-            evidence: ValidationEvidence {
-                extraction_attempts: 3,
-                model_escalated: true,
-                final_model: Some("claude-opus-4-6".to_string()),
-                repairs_applied: vec![],
-                policy_violations: vec!["too many tasks".to_string()],
-            },
-            task_count: 0,
-            estimated_complexity: None,
-            adapter_key: "test".to_string(),
-        };
-        assert!(!outcome.is_success());
-        assert!(outcome.is_partial());
-    }
-
-    #[test]
-    fn outcome_failure_when_process_failed() {
-        let outcome = PlanGeneratorOutcome {
-            tasks_toml: None,
-            plan_md: None,
-            slug: "test".to_string(),
-            outcome: GenerationOutcome {
-                process_success: false,
-                artifact_valid: false,
-                validation_report: None,
-            },
-            evidence: ValidationEvidence {
-                extraction_attempts: 1,
-                model_escalated: false,
-                final_model: None,
-                repairs_applied: vec![],
-                policy_violations: vec![],
-            },
-            task_count: 0,
-            estimated_complexity: None,
-            adapter_key: "test".to_string(),
-        };
-        assert!(!outcome.is_success());
-        assert!(!outcome.is_partial());
-    }
-
-    // ---- extract_fenced_block tests ----
-
-    #[test]
-    fn extract_fenced_block_finds_toml() {
-        let text = "Some text\n```toml\n[meta]\nplan = \"test\"\n```\nMore text";
-        let block = extract_fenced_block(text, "toml").unwrap();
-        assert!(block.contains("[meta]"));
-        assert!(block.contains("plan = \"test\""));
-    }
-
-    #[test]
-    fn extract_fenced_block_returns_none_for_missing() {
-        assert!(extract_fenced_block("no blocks here", "toml").is_none());
-    }
-
-    #[test]
-    fn extract_fenced_block_returns_none_for_empty() {
-        let text = "```toml\n\n```\n";
-        assert!(extract_fenced_block(text, "toml").is_none());
-    }
-
-    #[test]
-    fn extract_fenced_block_handles_angle_bracket_tag() {
-        let text = "Output:\n```<plan.md>\n# My Plan\n\nSteps here.\n```\n";
-        let block = extract_fenced_block(text, "plan.md").unwrap();
-        assert!(block.contains("# My Plan"));
-    }
-
-    // ---- suggest_field_correction tests ----
-
-    #[test]
-    fn suggest_correction_finds_typos() {
-        assert_eq!(
-            suggest_field_correction("pha", KNOWN_VERIFY_FIELDS),
-            Some("phase".to_string())
-        );
-        assert_eq!(
-            suggest_field_correction("stat", KNOWN_TASK_FIELDS),
-            Some("status".to_string())
-        );
-        assert_eq!(
-            suggest_field_correction("zzzzunknown", KNOWN_TASK_FIELDS),
-            None
-        );
-    }
-
-    // ---- next_tier_model tests ----
-
-    #[test]
-    fn next_tier_escalates_from_haiku() {
-        let tier_models = HashMap::new();
-        let configured = HashSet::new();
-        let next = next_tier_model(Some("claude-haiku-4-5"), &tier_models, &configured);
-        assert_eq!(next, Some("claude-sonnet-4-6".to_string()));
-    }
-
-    #[test]
-    fn next_tier_escalates_from_sonnet() {
-        let tier_models = HashMap::new();
-        let configured = HashSet::new();
-        let next = next_tier_model(Some("claude-sonnet-4-6"), &tier_models, &configured);
-        assert_eq!(next, Some("claude-opus-4-6".to_string()));
-    }
-
-    #[test]
-    fn next_tier_returns_none_at_top() {
-        let tier_models = HashMap::new();
-        let configured = HashSet::new();
-        let next = next_tier_model(Some("claude-opus-4-6"), &tier_models, &configured);
-        assert!(next.is_none());
-    }
-
-    #[test]
-    fn next_tier_respects_configured_models() {
-        let tier_models = HashMap::new();
-        let mut configured = HashSet::new();
-        configured.insert("claude-opus-4-6".to_string());
-        // Haiku should skip sonnet (not configured) and go to opus.
-        let next = next_tier_model(Some("claude-haiku-4-5"), &tier_models, &configured);
-        assert_eq!(next, Some("claude-opus-4-6".to_string()));
-    }
-
-    // ---- validate_raw_output golden fixtures ----
-
-    fn test_generator() -> PlanGenerator {
-        PlanGenerator::new(IndexMap::new(), HashMap::new(), true, None)
+    fn test_generator() -> DefaultPlanGenerator {
+        DefaultPlanGenerator::new(IndexMap::new(), HashMap::new(), true, None)
     }
 
     const GOLDEN_VALID_PLAN: &str = r#"```toml
@@ -1299,7 +814,12 @@ command = "cargo check -p roko-core"
         let result =
             generator.validate_raw_output(plan_with_hint, "strip-hint", PlanTemplateKind::Default);
         let validated = result.expect("plan with model_hint should validate after stripping");
-        assert!(!validated.tasks_toml.contains("model_hint"));
+        // Check that the model_hint key was removed (not just any substring --
+        // the description field may still contain the phrase "model_hint").
+        assert!(
+            !validated.tasks_toml.contains("model_hint ="),
+            "model_hint key should be stripped from tasks_toml"
+        );
         assert!(validated.repairs.iter().any(|r| r.contains("model_hint")));
     }
 
@@ -1570,7 +1090,7 @@ This plan adds a widget.
         assert!(validated.plan_md.as_ref().unwrap().contains("widget"));
     }
 
-    // ---- PlanGenerator service tests ----
+    // ---- DefaultPlanGenerator service tests ----
 
     #[test]
     fn generator_new_collects_configured_models() {
@@ -1582,14 +1102,14 @@ This plan adds a widget.
                 ..Default::default()
             },
         );
-        let generator = PlanGenerator::new(profiles, HashMap::new(), true, None);
+        let generator = DefaultPlanGenerator::new(profiles, HashMap::new(), true, None);
         assert!(generator.configured_models.contains("sonnet"));
         assert!(generator.configured_models.contains("claude-sonnet-4-6"));
     }
 
     #[test]
     fn generator_escalation_disabled() {
-        let generator = PlanGenerator::new(IndexMap::new(), HashMap::new(), false, None);
+        let generator = DefaultPlanGenerator::new(IndexMap::new(), HashMap::new(), false, None);
         assert!(
             generator
                 .next_escalation_model(Some("claude-haiku-4-5"))
@@ -1599,7 +1119,7 @@ This plan adds a widget.
 
     #[test]
     fn generator_escalation_enabled() {
-        let generator = PlanGenerator::new(IndexMap::new(), HashMap::new(), true, None);
+        let generator = DefaultPlanGenerator::new(IndexMap::new(), HashMap::new(), true, None);
         let next = generator.next_escalation_model(Some("claude-haiku-4-5"));
         assert_eq!(next, Some("claude-sonnet-4-6".to_string()));
     }
@@ -1610,14 +1130,14 @@ This plan adds a widget.
             repair_cap: Some(5),
             ..Default::default()
         };
-        assert_eq!(PlanGenerator::effective_repair_cap(&overrides), 5);
+        assert_eq!(DefaultPlanGenerator::effective_repair_cap(&overrides), 5);
     }
 
     #[test]
     fn effective_repair_cap_uses_default() {
         let overrides = PlanGeneratorOverrides::default();
         assert_eq!(
-            PlanGenerator::effective_repair_cap(&overrides),
+            DefaultPlanGenerator::effective_repair_cap(&overrides),
             DEFAULT_REPAIR_CAP
         );
     }
@@ -1628,21 +1148,21 @@ This plan adds a widget.
             template: Some("compact".to_string()),
             ..Default::default()
         };
-        let template = PlanGenerator::resolve_template(&overrides, Some("strict"));
+        let template = DefaultPlanGenerator::resolve_template(&overrides, Some("strict"));
         assert_eq!(template, PlanTemplateKind::Compact);
     }
 
     #[test]
     fn resolve_template_falls_back_to_prd() {
         let overrides = PlanGeneratorOverrides::default();
-        let template = PlanGenerator::resolve_template(&overrides, Some("strict"));
+        let template = DefaultPlanGenerator::resolve_template(&overrides, Some("strict"));
         assert_eq!(template, PlanTemplateKind::Strict);
     }
 
     #[test]
     fn resolve_template_defaults_without_any_hint() {
         let overrides = PlanGeneratorOverrides::default();
-        let template = PlanGenerator::resolve_template(&overrides, None);
+        let template = DefaultPlanGenerator::resolve_template(&overrides, None);
         assert_eq!(template, PlanTemplateKind::Default);
     }
 
@@ -1674,7 +1194,8 @@ This plan adds a widget.
             repairs_applied: vec![],
             policy_violations: vec![],
         };
-        let outcome = PlanGenerator::success_outcome(&request, validated, evidence, None);
+        let outcome =
+            DefaultPlanGenerator::build_success_outcome(&request, validated, evidence, None);
         assert!(outcome.is_success());
         assert_eq!(outcome.task_count, 3);
         assert_eq!(outcome.slug, "demo");
@@ -1699,7 +1220,7 @@ This plan adds a widget.
             repairs_applied: vec![],
             policy_violations: vec!["too many tasks".to_string()],
         };
-        let outcome = PlanGenerator::failure_outcome(&request, evidence);
+        let outcome = DefaultPlanGenerator::build_failure_outcome(&request, evidence);
         assert!(!outcome.is_success());
         assert!(!outcome.is_partial());
         assert_eq!(outcome.task_count, 0);
@@ -1724,7 +1245,7 @@ This plan adds a widget.
             repairs_applied: vec![],
             policy_violations: vec![],
         };
-        let outcome = PlanGenerator::partial_outcome(&request, evidence);
+        let outcome = DefaultPlanGenerator::build_partial_outcome(&request, evidence);
         assert!(!outcome.is_success());
         assert!(outcome.is_partial());
     }
@@ -1753,11 +1274,92 @@ This plan adds a widget.
         assert!(result.unwrap_err().contains("budget"));
     }
 
+    // ---- extract_fenced_block tests ----
+
+    #[test]
+    fn extract_fenced_block_finds_toml() {
+        let text = "Some text\n```toml\n[meta]\nplan = \"test\"\n```\nMore text";
+        let block = extract_fenced_block(text, "toml").unwrap();
+        assert!(block.contains("[meta]"));
+        assert!(block.contains("plan = \"test\""));
+    }
+
+    #[test]
+    fn extract_fenced_block_returns_none_for_missing() {
+        assert!(extract_fenced_block("no blocks here", "toml").is_none());
+    }
+
+    #[test]
+    fn extract_fenced_block_returns_none_for_empty() {
+        let text = "```toml\n\n```\n";
+        assert!(extract_fenced_block(text, "toml").is_none());
+    }
+
+    #[test]
+    fn extract_fenced_block_handles_angle_bracket_tag() {
+        let text = "Output:\n```<plan.md>\n# My Plan\n\nSteps here.\n```\n";
+        let block = extract_fenced_block(text, "plan.md").unwrap();
+        assert!(block.contains("# My Plan"));
+    }
+
+    // ---- suggest_field_correction tests ----
+
+    #[test]
+    fn suggest_correction_finds_typos() {
+        assert_eq!(
+            suggest_field_correction("pha", KNOWN_VERIFY_FIELDS),
+            Some("phase".to_string())
+        );
+        assert_eq!(
+            suggest_field_correction("stat", KNOWN_TASK_FIELDS),
+            Some("status".to_string())
+        );
+        assert_eq!(
+            suggest_field_correction("zzzzunknown", KNOWN_TASK_FIELDS),
+            None
+        );
+    }
+
+    // ---- next_tier_model tests ----
+
+    #[test]
+    fn next_tier_escalates_from_haiku() {
+        let tier_models = HashMap::new();
+        let configured = HashSet::new();
+        let next = next_tier_model(Some("claude-haiku-4-5"), &tier_models, &configured);
+        assert_eq!(next, Some("claude-sonnet-4-6".to_string()));
+    }
+
+    #[test]
+    fn next_tier_escalates_from_sonnet() {
+        let tier_models = HashMap::new();
+        let configured = HashSet::new();
+        let next = next_tier_model(Some("claude-sonnet-4-6"), &tier_models, &configured);
+        assert_eq!(next, Some("claude-opus-4-6".to_string()));
+    }
+
+    #[test]
+    fn next_tier_returns_none_at_top() {
+        let tier_models = HashMap::new();
+        let configured = HashSet::new();
+        let next = next_tier_model(Some("claude-opus-4-6"), &tier_models, &configured);
+        assert!(next.is_none());
+    }
+
+    #[test]
+    fn next_tier_respects_configured_models() {
+        let tier_models = HashMap::new();
+        let mut configured = HashSet::new();
+        configured.insert("claude-opus-4-6".to_string());
+        // Haiku should skip sonnet (not configured) and go to opus.
+        let next = next_tier_model(Some("claude-haiku-4-5"), &tier_models, &configured);
+        assert_eq!(next, Some("claude-opus-4-6".to_string()));
+    }
+
     // ---- Adapter key manifest completeness ----
 
     #[test]
     fn adapter_keys_manifest_complete() {
-        // Verify all 10 adapter keys from the #280 manifest exist.
         let keys = [
             adapter_keys::PRD_DEFAULT,
             adapter_keys::PRD_MODEL,
@@ -1771,7 +1373,6 @@ This plan adds a widget.
             adapter_keys::GATE_REPLAN,
         ];
         assert_eq!(keys.len(), 10, "manifest must have exactly 10 adapter keys");
-        // No duplicates.
         let mut seen = HashSet::new();
         for key in &keys {
             assert!(seen.insert(*key), "duplicate adapter key: {key}");

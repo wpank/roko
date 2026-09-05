@@ -484,10 +484,7 @@ impl ToolDispatcher {
     /// When set, every dispatched tool call records a scrubbed admit + result
     /// line to `.roko/tool_audit.jsonl` via the provided adapter.
     #[must_use]
-    pub fn with_file_audit(
-        mut self,
-        adapter: Arc<roko_fs::tool_audit::ScrubAuditAdapter>,
-    ) -> Self {
+    pub fn with_file_audit(mut self, adapter: Arc<roko_fs::tool_audit::ScrubAuditAdapter>) -> Self {
         self.file_audit = Some(adapter);
         self
     }
@@ -554,10 +551,10 @@ impl ToolDispatcher {
             return result;
         }
         // Persistent file audit: record the admitted call before execution.
-        if let Some(fa) = &self.file_audit {
-            if let Err(e) = fa.record_admit(&call).await {
-                tracing::warn!(err = %e, tool = %call.name, "file audit admit write failed");
-            }
+        if let Some(fa) = &self.file_audit
+            && let Err(e) = fa.record_admit(&call).await
+        {
+            tracing::warn!(err = %e, tool = %call.name, "file audit admit write failed");
         }
         let result = self
             .dispatch_unfinalized(&mut call, ctx, result_limit)
@@ -565,10 +562,10 @@ impl ToolDispatcher {
         let result = self.finalize_result_with_limit(result, result_limit);
         self.emit_terminal_audit(ctx, &call, &result, timeout_ms);
         // Persistent file audit: record the terminal result after execution.
-        if let Some(fa) = &self.file_audit {
-            if let Err(e) = fa.record_result(&call, &result).await {
-                tracing::warn!(err = %e, tool = %call.name, "file audit result write failed");
-            }
+        if let Some(fa) = &self.file_audit
+            && let Err(e) = fa.record_result(&call, &result).await
+        {
+            tracing::warn!(err = %e, tool = %call.name, "file audit result write failed");
         }
         result
     }
@@ -582,7 +579,7 @@ impl ToolDispatcher {
         result_limit: usize,
     ) -> ToolResult {
         let timeout = ctx.timeout;
-        let timeout_ms = duration_to_ms(timeout);
+        let _timeout_ms = duration_to_ms(timeout);
 
         // 0. Detect translator-salvaged truncated args (translate/openai.rs).
         //    When the model hits its output token limit mid-JSON, the translator

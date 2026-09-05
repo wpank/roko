@@ -14,7 +14,7 @@ specialization; they are not four currently loaded runtime graphs.
 > (10/10)**. Shipped E25 behavior includes HDC defragmentation with provenance, append-only
 > hindsight adjustments, bounded c-factor governance recommendations, chi-square/Wilson
 > experiment conclusions and archives, Variance Inequality checks, seven autocatalytic
-> metrics, and explicit when/then playbook matching. Runner-v2 injects the top three matches
+> metrics, and explicit when/then playbook matching. The Graph engine injects the top three matches
 > before dispatch and records governance/compounding evidence after completion. The full
 > declarative Loop-Graph realization and autonomous structural L4 evolution described below
 > remain design/roadmap scope rather than claims of shipped runtime behavior.

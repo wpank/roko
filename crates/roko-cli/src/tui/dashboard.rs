@@ -53,19 +53,19 @@ pub use super::dashboard_types::{
     GateSummaryRow, GateThresholdRow, GateTrend, KnowledgeBrowseEntry, PlanExecutionSnapshot,
     PlanExecutionTaskDetail, PlanExecutionTaskRow, ReadFileSnapshot, SignalSummary, TaskSummary,
 };
+use super::dashboard_types::{ParsedPlanTasksFile, PlanTaskRuntimeFields};
 pub(crate) use super::dashboard_types::{
     PlanTaskListSnapshot, PlanTaskSnapshot, build_agent_activity_snapshot,
 };
-use super::dashboard_types::{ParsedPlanTasksFile, PlanTaskRuntimeFields};
 
 // Re-export TuiDashboardModel and import shared functions from dashboard_model.
 pub use super::dashboard_model::TuiDashboardModel;
+#[cfg(test)]
+use super::dashboard_model::load_snapshot_blocking;
 use super::dashboard_model::{
     count_to_f64, load_json_opt, load_knowledge_browse_entries, load_snapshot_best_effort,
     resolve_snapshot_root,
 };
-#[cfg(test)]
-use super::dashboard_model::load_snapshot_blocking;
 
 pub(super) const MEMORY_DIR: &str = ".roko/memory";
 pub(super) const EPISODES_FILE: &str = "episodes.jsonl";
@@ -1170,7 +1170,6 @@ fn run_dashboard_git_diff(root: &Path, staged: bool) -> String {
         .unwrap_or_default()
 }
 
-
 impl SignalSummary {
     pub(crate) fn from_value(value: &Value) -> Option<Self> {
         Some(Self {
@@ -1565,7 +1564,10 @@ fn load_plan_summaries(root: &Path, state: &Value) -> Vec<PlanSummary> {
     summaries
 }
 
-pub(super) fn runner_task_outcomes_for_plan(state: &Value, plan_id: &str) -> Option<Vec<(String, String)>> {
+pub(super) fn runner_task_outcomes_for_plan(
+    state: &Value,
+    plan_id: &str,
+) -> Option<Vec<(String, String)>> {
     let runner = state.get("_runner_projection")?;
     if let Some(tasks) = runner
         .pointer("/lifecycle/tasks")
@@ -2218,6 +2220,7 @@ fn load_agents(state: &Value) -> Vec<AgentSummary> {
 struct RuntimeAgentEntry {
     name: String,
     pid: u32,
+    // Present in agents.json; required for deserialization but not read.
     #[allow(dead_code)]
     bind: String,
 }
@@ -3373,7 +3376,6 @@ impl fmt::Display for DashboardSummary {
         )
     }
 }
-
 
 #[cfg(test)]
 #[allow(deprecated)]

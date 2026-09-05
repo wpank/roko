@@ -408,7 +408,7 @@ impl Agent for HermesHttpAgent {
         &self,
         input: &Signal,
         _ctx: &Context,
-        event_tx: mpsc::Sender<StreamEvent>,
+        _event_tx: mpsc::Sender<StreamEvent>,
     ) -> AgentResult {
         let started = Instant::now();
 

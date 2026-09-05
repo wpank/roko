@@ -94,7 +94,7 @@ Here is the fastest path to seeing Roko do something real.
 # Step 1: Initialize a workspace (if you haven't already)
 roko init
 
-# Step 2: Run a single prompt through the classified WorkflowEngine path
+# Step 2: Run a single prompt through the classified Graph template path
 roko do "Add input validation to the login form"
 
 # Step 3: Check what happened
@@ -105,7 +105,7 @@ roko dashboard
 ```
 
 `roko do` is the preferred intent entry point. It classifies the prompt, selects the matching
-WorkflowEngine template, and then runs the engine. For sustained multi-step work, the
+Graph workflow template, and then runs the engine. For sustained multi-step work, the
 PRD-to-plan-to-run workflow remains available while the full `roko do` pipeline is completed.
 
 You can also run a prompt without a subcommand — these two lines are equivalent:
@@ -151,7 +151,7 @@ The full self-hosting workflow looks like this. Each box is a CLI command.
         ▼
  Execute the plan                (agents run tasks in parallel, gates validate)
  ─────────────────
- roko plan run plans/ --engine runner-v2
+ roko plan run plans/
         │
         ├──► roko dashboard       (watch live in the TUI)
         │
@@ -269,11 +269,11 @@ roko init --demo                   # Initialize and seed demo data
 ### `roko do`
 
 **When to use this:** The default command for "take this intent and do the appropriate amount
-of work." It classifies the prompt and dispatches through the existing WorkflowEngine.
+of work." It classifies the prompt and dispatches through a Graph workflow template.
 
-Current implementation status: `roko do` is wired as a WorkflowEngine template selector. The
-full medium/complex PRD -> plan -> execute pipeline and complete work-item resume semantics
-are still in progress.
+Current implementation status: `roko do` is wired as a Graph workflow template selector
+(WorkflowEngine was retired by #276). The full medium/complex PRD -> plan -> execute pipeline
+and complete work-item resume semantics are still in progress.
 
 ```
 roko do <prompt> [--plan] [--complexity simple|medium|complex] [--dry-run]
@@ -575,13 +575,12 @@ roko plan validate [<dir>] [--strict] [--json]
 
 #### `roko plan run`
 
-**The primary execution command.** Runner-v2 executes tasks through the complete
-agent/gate/replan/worktree/merge/persistence lifecycle. The opt-in `graph` engine dispatches
-real providers over the converted DAG and durably resumes completed Activities, but does
-not yet provide all Runner-v2 lifecycle guarantees.
+**The primary execution command.** The Graph engine (default) executes tasks through the complete
+agent/gate/replan/worktree/merge/persistence lifecycle. The legacy Runner-v2 engine is available
+via `--engine legacy` for one deprecation cycle.
 
 ```
-roko plan run <plans-dir> [--engine runner-v2] [--workdir <path>]
+roko plan run <plans-dir> [--engine graph|legacy] [--workdir <path>]
              [--resume-plan [<snapshot>]] [--approval]
              [--max-retries <n>] [--max-tasks <n>] [--dry-run]
              [--fresh] [--force-resume] [--budget-override <usd>] [--no-budget]
@@ -593,52 +592,49 @@ roko plan run <plans-dir> [--engine runner-v2] [--workdir <path>]
 | Arg/Flag | Default | Description |
 |---|---|---|
 | `<plans-dir>` | required | Path to the plans directory. |
-| `--engine <engine>` | `runner-v2` | `runner-v2` is the complete lifecycle. `graph` is an opt-in live-dispatch path with Activity resume and actual-cost accounting, but incomplete gates/replan, approval, attempt worktree/merge, full persistence, and cancellation parity. |
+| `--engine <engine>` | `graph` | `graph` is the default production engine with full lifecycle. `legacy` (alias `runner-v2`) is the deprecated event-loop engine, retained for one release cycle. |
 | `--workdir <path>` | cwd | Working directory (repo root). |
-| `--resume-plan [<path>]` | — | Runner-v2 accepts its executor/snapshot handoff. Graph accepts a checkpoint root (one directory per plan) or a manifest file for a single-plan run; its default is `.roko/state/graph/`. Alias: `--resume-state`. |
+| `--resume-plan [<path>]` | — | Graph accepts a checkpoint root (one directory per plan) or a manifest file for a single-plan run; its default is `.roko/state/graph/`. Legacy accepts its executor/snapshot handoff. Alias: `--resume-state`. |
 | `--approval` | false | Launch the connected approval TUI while the plan runs. |
 | `--max-retries <n>` | from config | Maximum retry attempts per task (overrides per-task and config values). |
 | `--max-tasks <n>` | config/default | Maximum concurrent tasks per plan; `0` keeps configured behavior. |
 | `--dry-run` | false | Parse and display the plan without executing. Shows tasks, dependencies, and estimates. |
-| `--fresh` | false | Archive existing state for the selected engine and start from scratch. |
-| `--force-resume` | false | Runner-v2 re-queues drifted work; Graph archives a mismatched fingerprint and starts a new run. |
-| `--budget-override <usd>` | config | Override the per-plan cost ceiling for either engine; explicit overrides record and report overage but do not block later dispatches. |
-| `--no-budget` | false | Disable the per-plan cost ceiling for either engine. |
+| `--fresh` | false | Archive existing state and start from scratch. |
+| `--force-resume` | false | Graph archives a mismatched fingerprint and starts a new run; legacy re-queues drifted work. |
+| `--budget-override <usd>` | config | Override the per-plan cost ceiling; explicit overrides record and report overage but do not block later dispatches. |
+| `--no-budget` | false | Disable the per-plan cost ceiling. |
 
 </details>
 
-Graph honors `--resume-plan`, `--fresh`, `--force-resume`, `--max-retries`, and
+The Graph engine honors `--resume-plan`, `--fresh`, `--force-resume`, `--max-retries`,
 `--max-tasks`, `--budget-override`, and `--no-budget`. Its checkpoint manifest binds schema
 version, plan ID, converted-graph fingerprint, run ID, and Activity log; drift fails closed
 unless force-resume archives the old state and starts clean. Graph records actual provider
 cost from both successful and unsuccessful paid calls, routes against the tighter Cell or
 plan remainder, blocks later Activities at a configured ceiling, fails a hard-limit run if
-the last call crosses the ceiling, and reports per-plan and total spend. The current Graph
-ledger is based on completed calls, so parallel admissions can overshoot; it is not yet
-restored from the checkpoint. `--approval` remains Runner-v2-only.
+the last call crosses the ceiling, and reports per-plan and total spend.
 
 <details>
-<summary>How Runner-v2 plan run works (internal execution flow)</summary>
+<summary>How Graph plan run works (internal execution flow)</summary>
 
 1. Plans are loaded from `<plans-dir>`. Each plan is a directory containing `tasks.toml`.
-2. Tasks are arranged into a DAG based on `depends_on` declarations.
-3. Independent tasks execute in parallel (up to `max_concurrent` from config).
-4. Each task runs an agent, collects output, then runs the gate pipeline (compile, test, clippy, diff).
-5. Gate failures trigger the replan loop (unless `--no-replan`). The failure context is
-   fed to a strategist agent which generates a revised tasks.toml.
-6. State is flushed to the checksummed `.roko/state/state-snapshot.json` after every task completion.
-7. Efficiency events, episodes, and C-factor metrics are written to `.roko/learn/`.
+2. `ProductionPlanTopology` builds an 11-node subgraph per task (TaskContext + 6 enrichers + Compose + TaskExecutor + Gate + SuccessBoundary).
+3. The `GraphEngine` executes nodes in bounded parallel topological waves.
+4. Each task runs an agent via `TaskExecutorCell`, then runs gate validation via `GatePipelineCell` (using `CellResources.gates`).
+5. Gate failures trigger the replan controller. Failure context drives revised task generation.
+6. `GuaranteedFinallyController` ensures cleanup (terminal receipt, lease release, agent stop, snapshot flush) regardless of outcome.
+7. The 12-row `FeedbackSettler` settles completion sinks with exactly-once idempotency.
+8. Efficiency events, episodes, and C-factor metrics are written to `.roko/learn/`.
 
 </details>
 
 <details>
 <summary>State persistence and resume</summary>
 
-Runner-v2 writes its authoritative, checksummed snapshot to
-`.roko/state/state-snapshot.json`. To resume:
+The Graph engine writes checksummed checkpoints to `.roko/state/graph/`. To resume:
 
 ```bash
-roko plan run plans/ --engine runner-v2 --resume-plan
+roko plan run plans/ --resume-plan
 ```
 
 </details>
@@ -647,14 +643,14 @@ roko plan run plans/ --engine runner-v2 --resume-plan
 <summary>Examples</summary>
 
 ```bash
-roko plan run plans/ --engine runner-v2                    # Run all plans
-roko plan run plans/my-plan --engine runner-v2             # Run one plan directory
-roko plan run plans/ --engine runner-v2 --approval         # Connected approval TUI
-roko plan run plans/ --engine runner-v2 --dry-run          # Preview without executing
-roko plan run plans/ --engine runner-v2 --fresh            # Archive old state and start clean
-roko plan run plans/ --engine runner-v2 --resume-plan      # Resume from last checkpoint
-roko plan run plans/ --engine runner-v2 --max-retries 3    # Override retry limit
-roko plan run plans/ --engine graph                        # Real provider dispatch; lifecycle parity remains incomplete
+roko plan run plans/                                       # Run all plans (Graph engine, default)
+roko plan run plans/my-plan                                # Run one plan directory
+roko plan run plans/ --approval                            # Connected approval TUI
+roko plan run plans/ --dry-run                             # Preview without executing
+roko plan run plans/ --fresh                               # Archive old state and start clean
+roko plan run plans/ --resume-plan                         # Resume from last checkpoint
+roko plan run plans/ --max-retries 3                       # Override retry limit
+roko plan run plans/ --engine legacy                       # Deprecated Runner-v2 engine
 ```
 
 </details>
@@ -2359,7 +2355,8 @@ All runtime data lives under `.roko/` in the workspace root.
 │       ├── tasks.toml      # Task definitions with DAG
 │       └── plan.md         # Plan description
 ├── state/
-│   └── state-snapshot.json # Checksummed runner-v2 snapshot (resume state)
+│   ├── state-snapshot.json # Legacy runner-v2 snapshot (deprecated)
+│   └── graph/              # Graph engine checkpoints (resume state)
 ├── research/               # Research artifacts (.md files)
 ├── learn/
 │   ├── cascade-router.json # CascadeRouter persistence
@@ -2397,7 +2394,7 @@ Common errors and what to do about them:
 | `plan not found` / `no plans found` | No plan files in the directory | `roko plan list` or `roko plan create` |
 | `connection refused` / `connect error` | roko-serve is not running | `roko serve` in another terminal |
 | Gate failures on every task | Config or code problem, not an agent problem | `roko doctor` then check `.roko/learn/gate-thresholds.json` |
-| Run interrupted, want to continue | Normal state for long plans | `roko plan run plans/ --engine runner-v2 --resume-plan` |
+| Run interrupted, want to continue | Normal state for long plans | `roko plan run plans/ --resume-plan` |
 
 Run `roko doctor` for a comprehensive diagnostic that checks all prerequisites at once.
 

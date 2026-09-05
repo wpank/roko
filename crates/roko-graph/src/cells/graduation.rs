@@ -14,7 +14,7 @@
 //! blocks an `always` policy for the same topic. See
 //! `crates/roko-core/src/config/graduation.rs` for the full precedence rules.
 //!
-//! # TODO
+//! # Future work
 //!
 //! - `roko learn graduation` subcommand for inspecting graduation stats
 //!   (deferred; not part of P3-5/P3-6/P3-7).

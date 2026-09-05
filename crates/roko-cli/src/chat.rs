@@ -255,6 +255,21 @@ pub async fn run_direct_provider_chat(
     use roko_core::{Body, Context, Kind, Signal};
     use roko_learn::model_call_feedback::{ModelCallFeedback, ModelCallFeedbackRecorder};
 
+    // #245: validate against ChatLight profile before constructing services.
+    let chat_overrides = roko_execution::overrides_for_chat(None, Some(provider_name.to_string()));
+    let service_request = roko_execution::NonPlanServiceRequest::new(
+        roko_execution::profiles::RuntimeProfile::ChatLight,
+        workdir.to_path_buf(),
+        chat_overrides,
+    );
+    let service_handle = roko_execution::build_non_plan_services(&service_request)
+        .map_err(|e| anyhow::anyhow!("chat service validation: {e}"))?;
+    tracing::debug!(
+        instance_id = %service_handle.instance_id(),
+        profile = %service_handle.profile(),
+        "validated chat service request"
+    );
+
     let model_key = find_model_for_provider(config, provider_name).ok_or_else(|| {
         anyhow::anyhow!(
             "no model configured for provider '{provider_name}'; add a [[models]] entry with provider = \"{provider_name}\" in roko.toml"

@@ -34,16 +34,39 @@
 //! New capabilities are added by implementing one of the six traits; no core
 //! changes are needed.
 
+// The kernel defines 800+ public types and trait impls; these specific lints
+// fire across hundreds of items and would require mass-renaming/restructuring.
 #![allow(
     missing_docs,
+    clippy::case_sensitive_file_extension_comparisons,
     clippy::cloned_ref_to_slice_refs,
     clippy::collapsible_str_replace,
     clippy::derivable_impls,
-    clippy::expect_used,
+    clippy::derive_partial_eq_without_eq,
+    clippy::doc_markdown,
+    clippy::duration_subsec,
+    clippy::elidable_lifetime_names,
+    clippy::doc_link_with_quotes,
+    clippy::duration_suboptimal_units,
+    clippy::equatable_if_let,
+    clippy::float_cmp,
+    clippy::implicit_hasher,
+    clippy::manual_is_variant_and,
+    clippy::missing_fields_in_debug,
     clippy::module_name_repetitions,
-    clippy::nursery,
+    clippy::needless_collect,
+    clippy::needless_continue,
+    clippy::needless_lifetimes,
     clippy::obfuscated_if_else,
-    clippy::pedantic
+    clippy::option_if_let_else,
+    clippy::ref_option,
+    clippy::redundant_guards,
+    clippy::too_long_first_doc_paragraph,
+    clippy::too_many_lines,
+    clippy::type_repetition_in_bounds,
+    clippy::unreadable_literal,
+    clippy::unnecessary_literal_bound,
+    clippy::use_self
 )]
 
 /// Generate a short share token: `<unix_millis_hex>-<rand_hex>`.
@@ -72,6 +95,8 @@ pub mod capabilities;
 pub mod catalyst;
 /// The Cell trait — universal computation unit for all protocol implementations.
 pub mod cell;
+/// Typed cell payload contracts for graph-level inter-cell communication (#250).
+pub mod cell_payloads;
 pub mod cfactor;
 /// Canonical provider-agnostic chat message types.
 pub mod chat_types;
@@ -186,6 +211,8 @@ pub mod recipe;
 pub mod recipe_store;
 /// Shared retention policy type for all data-management subsystems.
 pub mod retention;
+/// ULID-based plan-scoped run identifier.
+pub mod run_id;
 pub mod runtime_event;
 pub mod score;
 pub mod secrets;
@@ -232,6 +259,7 @@ pub use capabilities::{
 };
 pub use catalyst::{CatalystImpactSummary, CatalystScorer, CatalystSignalSource};
 pub use cell::*;
+pub use cell_payloads::{GateResult, RungResult};
 pub use cfactor::{CFactorPolicy, CFactorSource, CFactorSummary};
 pub use chat_types::{
     ChatMessage, ChatRequest, ChatResponse, ContentBlock, FinishReason, ImageUrl, MessageContent,
@@ -291,7 +319,8 @@ pub use foundation::{
     EventConsumer, FeedbackEvent, FeedbackSink, GateClassification, GateConfig, GateReport,
     GateRunner, GateVerdict, GenerationSettings, KnowledgeQuery, MessageRole, ModelCallRequest,
     ModelCallResponse, ModelCaller, ModelInputBlock, ModelInputImage, ModelInputMessage,
-    ModelStreamEvent, PromptAssembler, PromptSpec, ShellGateCommand, TokenUsage,
+    ModelStreamEvent, PromptAssembler, PromptSpec, SharedGateError, SharedGateEvaluator,
+    SharedGateRequest, SharedGateVerdict, ShellGateCommand, TokenUsage,
     model_call_failure_to_stream, model_call_response_to_stream, validate_model_input_images,
     validate_model_input_messages,
 };
@@ -357,6 +386,7 @@ pub use query::{Budget, Query};
 pub use recipe::{Recipe, RecipeEdge, RecipeNode, ScoreOp};
 pub use recipe_store::RecipeStore;
 pub use roko_primitives::HdcVector;
+pub use run_id::{RunId, RunIdParseError};
 pub use runtime_event::{
     RuntimeEvent, RuntimeEventDelivery, RuntimeEventMode, RuntimeEventProjector,
     RuntimeEventPublishDisposition, RuntimeEventPublisher, ToolCallSummary, WorkflowOutcome,

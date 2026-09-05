@@ -171,11 +171,7 @@ impl Verify for ShellGate {
             (stdout_out, stderr_out, status)
         };
 
-        let result = timeout(
-            Duration::from_millis(self.timeout_ms),
-            stream_output,
-        )
-        .await;
+        let result = timeout(Duration::from_millis(self.timeout_ms), stream_output).await;
 
         #[allow(clippy::cast_possible_truncation)]
         let elapsed = started.elapsed().as_millis() as u64;

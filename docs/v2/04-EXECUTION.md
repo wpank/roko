@@ -1,27 +1,34 @@
 # 04 — Execution Engine
 
 > A single runtime for ALL Graphs. Manages Flow lifecycle, Hot Graph ticking, deterministic replay via the Workflow/Activity split, failure strategies, resumability, budget enforcement, and concurrency. Every lifecycle event is a Pulse on Bus. The cognitive loop is a 7-Cell Hot Graph with T0 short-circuit handling ~80% of ticks at zero cost.
-> **Implementation status:** PARTIAL — GraphEngine provides sequential or bounded parallel
-> DAG execution, output flow between topological waves, Activity replay/recording, and
-> restart-durable Hot tick/output/budget state carry-over. FlowStatus tracking and the full
-> 9-step runner loop exist. Conditional routing is live across sequential, parallel,
-> snapshot-resume, and Flow paths, including normal untaken-branch semantics. Live
-> provider dispatch for converted plan tasks, graph-fingerprinted durable Activity
-> recording/CLI resume, seven typed cognitive Cells, five Verify Cells, a fixed immune
-> decision Graph, and T0 short-circuit are implemented. Hot checkpoints validate the graph
-> fingerprint, fsync Activity state, replay interrupted work without re-execution, restore
-> cumulative budgets, archive exact state on fresh/force, and surface persistence failures.
-> Converted plan execution now accounts for actual paid-call cost, enforces and reports a
-> shared per-plan ceiling, atomically persists reservations before dispatch, and restores an
-> exact schema-v2 cost sidecar on resume. Missing/corrupt/mismatched/crash-reserved state
-> fails closed. Parallel aggregate over-admission is closed; a single provider call can still
-> disclose more cost than its reservation because no provider-side maximum-cost API exists.
-> Runner-v2 gates/replan/approval/worktrees/merge/full-state-
-> persistence/cancellation parity remains incomplete.
+> **Implementation status:** CONVERGED — **Graph is the sole production engine** (default
+> `PlanEngine::Graph`); WorkflowEngine deleted (#276); Runner-v2 retained as `--engine legacy`
+> only. GraphEngine provides sequential or bounded parallel DAG execution, output flow between
+> topological waves, Activity replay/recording, and restart-durable Hot tick/output/budget
+> state carry-over. FlowStatus tracking and the full 9-step runner loop exist. Conditional
+> routing is live across sequential, parallel, snapshot-resume, and Flow paths, including
+> normal untaken-branch semantics. Live provider dispatch for converted plan tasks,
+> graph-fingerprinted durable Activity recording/CLI resume, seven typed cognitive Cells, five
+> Verify Cells, a fixed immune decision Graph, and T0 short-circuit are implemented. Hot
+> checkpoints validate the graph fingerprint, fsync Activity state, replay interrupted work
+> without re-execution, restore cumulative budgets, archive exact state on fresh/force, and
+> surface persistence failures. Converted plan execution accounts for actual paid-call cost,
+> enforces and reports a shared per-plan ceiling, atomically persists reservations before
+> dispatch, and restores an exact schema-v2 cost sidecar on resume. Missing/corrupt/
+> mismatched/crash-reserved state fails closed. Parallel aggregate over-admission is closed;
+> a single provider call can still disclose more cost than its reservation because no
+> provider-side maximum-cost API exists.
+>
+> The converged Graph engine now also provides: `ProductionPlanTopology` for canonical per-task
+> subgraph construction (11 nodes per task); `GuaranteedFinallyController` for absolute
+> cleanup guarantees; 12-row `FeedbackSettler` for ordered completion sinks with exactly-once
+> idempotency; `CellResources` injection for shared service handles; `RuntimeServices` facade
+> with 7 `RuntimeProfile` variants; and full gates/replan/approval/worktrees/merge/
+> persistence/cancellation lifecycle.
 
-Runner-v2 provider dispatch also has a durable prompt-treatment boundary. A prompt
+Provider dispatch has a durable prompt-treatment boundary. A prompt
 experiment replaces its named canonical section before composition, then the exact final
-system/user prompt hash is committed after model/safety admission and before either runtime
+system/user prompt hash is committed after model/safety admission and before the runtime
 launches. Terminal settlement is an idempotent projection of typed lifecycle events;
 startup scans archived and live event generations to repair a crash between terminal
 persistence and learning feedback without replaying the provider effect.
@@ -500,11 +507,14 @@ The worst case is a duplicate LLM call (if ACT completed but the Activity record
 ### CLI integration
 
 ```bash
-# Start a plan
-roko plan run plans/my-plan/ --engine runner-v2
+# Start a plan (Graph is the default engine)
+roko plan run plans/my-plan/
 
-# Resume from the latest snapshot
-roko plan run plans/my-plan/ --engine runner-v2 --resume-plan
+# Resume from the latest checkpoint
+roko plan run plans/my-plan/ --resume-plan
+
+# Use the legacy Runner-v2 engine (deprecated, retained for one release cycle)
+roko plan run plans/my-plan/ --engine legacy
 
 # The canonical crash-recovery snapshot is written here
 jq . .roko/state/state-snapshot.json

@@ -1,3 +1,5 @@
+// Closures used for error-mapping chaining in I/O code.
+#![allow(clippy::redundant_closure)]
 //! Filesystem-backed [`Store`](roko_core::Store).
 //!
 //! `FileSubstrate` persists signals to an append-only JSONL log under a
@@ -18,21 +20,17 @@
 //! backend (`SQLite`, `sled`) behind the same `Store` trait — the callers
 //! won't change.
 
-#![allow(
-    clippy::missing_const_for_fn,
-    clippy::module_name_repetitions,
-    clippy::redundant_closure,
-    clippy::significant_drop_tightening,
-    clippy::unnecessary_map_or,
-    clippy::unused_async
-)]
-
 pub mod archive;
 /// Shared atomic-write helpers (write-tmp-rename pattern).
 pub mod atomic;
 pub mod bandit;
 /// Classified persistence for transcript records with redaction and versioning.
 pub mod classified_persistence;
+/// Classified JSONL persistence writer.
+///
+/// Bridges [`TranscriptStore`](roko_core::transcript_store::TranscriptStore)
+/// to classified JSONL persistence.
+pub mod classified_writer;
 /// Archive-backed [`ColdStore`](roko_core::ColdStore) for aged-out signals.
 pub mod cold_substrate;
 /// Cross-platform disk space checker and runtime monitor.
@@ -61,6 +59,7 @@ pub use classified_persistence::{
     ArtifactDescriptor, CLASSIFIED_SCHEMA_VERSION, Classification, ClassifiedRecord,
     PayloadPointer, RedactedField, RedactionMeta, ResultMeta,
 };
+pub use classified_writer::{ClassifiedTranscriptWriter, WriterStats, read_classified_jsonl};
 pub use cold_substrate::{ArchiveColdSubstrate, SubstrateMigrator};
 pub use disk::{
     DiskError, DiskMonitor, DiskPressureLevel, DiskStatus, DiskUsage, DiskWarning,

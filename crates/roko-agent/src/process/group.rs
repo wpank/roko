@@ -72,7 +72,7 @@ pub fn configure_no_descendant_process(cmd: &mut Command) -> std::io::Result<()>
                 rlim_cur: 0,
                 rlim_max: 0,
             };
-            if libc::setrlimit(libc::RLIMIT_NPROC, &limit) != 0 {
+            if libc::setrlimit(libc::RLIMIT_NPROC, &raw const limit) != 0 {
                 return Err(std::io::Error::last_os_error());
             }
             Ok(())

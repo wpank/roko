@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use roko_core::TypeSchema;
+use roko_core::{ProtocolId, TypeSchema};
 
 use crate::cell::{Cell, CellVersion};
 use crate::types::GraphError;
@@ -18,6 +18,12 @@ pub type CellFactory = Box<dyn Fn(toml::Value) -> Box<dyn Cell> + Send + Sync>;
 /// Used by [`Graph::validate_edges`] to check edge type compatibility without
 /// constructing live Cell instances. Every production registration must provide
 /// a descriptor; test-only registrations may use [`CellDescriptor::test_stub`].
+///
+/// ## Wave 12 (#268) additions
+///
+/// - `protocols`: protocol conformances for side-effect-free introspection.
+/// - `is_predictive`: whether this cell participates in the predict-publish-correct loop.
+/// - `display_name`: optional human-friendly label for dashboards/TUI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CellDescriptor {
     /// Cell type name (matches the registry key).
@@ -31,6 +37,20 @@ pub struct CellDescriptor {
     /// Whether this is a test-only stub. Production starts reject graphs
     /// containing stub descriptors.
     pub is_stub: bool,
+    /// Protocol conformances declared by this cell type.
+    ///
+    /// Mirrors `Cell::protocols()` for side-effect-free introspection without
+    /// constructing a live Cell. Empty for stubs and legacy registrations.
+    pub protocols: Vec<ProtocolId>,
+    /// Whether this cell participates in the predict-publish-correct lifecycle.
+    ///
+    /// When `true`, the graph engine calls `Cell::predict()` before execution
+    /// and `Cell::correct()` after execution for calibration tracking.
+    pub is_predictive: bool,
+    /// Optional human-friendly display name for dashboards and TUI.
+    ///
+    /// Falls back to `id` when `None`.
+    pub display_name: Option<String>,
 }
 
 impl CellDescriptor {
@@ -47,7 +67,43 @@ impl CellDescriptor {
             input_schema,
             output_schema,
             is_stub: false,
+            protocols: Vec::new(),
+            is_predictive: false,
+            display_name: None,
         }
+    }
+
+    /// Builder: set protocol conformances for this descriptor.
+    #[must_use]
+    pub fn with_protocols(mut self, protocols: Vec<ProtocolId>) -> Self {
+        self.protocols = protocols;
+        self
+    }
+
+    /// Builder: mark this cell as participating in the predict-publish-correct loop.
+    #[must_use]
+    pub fn with_predictive(mut self, is_predictive: bool) -> Self {
+        self.is_predictive = is_predictive;
+        self
+    }
+
+    /// Builder: set a human-friendly display name.
+    #[must_use]
+    pub fn with_display_name(mut self, name: impl Into<String>) -> Self {
+        self.display_name = Some(name.into());
+        self
+    }
+
+    /// Return the effective display name (falls back to `id`).
+    #[must_use]
+    pub fn effective_display_name(&self) -> &str {
+        self.display_name.as_deref().unwrap_or(&self.id)
+    }
+
+    /// Check if this descriptor declares a given protocol.
+    #[must_use]
+    pub fn has_protocol(&self, protocol: ProtocolId) -> bool {
+        self.protocols.contains(&protocol)
     }
 
     /// Create a test-only stub descriptor. Production starts reject graphs
@@ -59,6 +115,9 @@ impl CellDescriptor {
             input_schema: None,
             output_schema: None,
             is_stub: true,
+            protocols: Vec::new(),
+            is_predictive: false,
+            display_name: None,
         }
     }
 }
@@ -98,13 +157,7 @@ impl CellRegistry {
     where
         F: Fn(toml::Value) -> Box<dyn Cell> + Send + Sync + 'static,
     {
-        let descriptor = CellDescriptor {
-            id: cell_type.to_string(),
-            version: (0, 1, 0),
-            input_schema: None,
-            output_schema: None,
-            is_stub: false,
-        };
+        let descriptor = CellDescriptor::new(cell_type, (0, 1, 0), None, None);
         self.entries.insert(
             cell_type.to_string(),
             CellEntry {
@@ -180,6 +233,21 @@ impl CellRegistry {
     /// Return an iterator over registered cell type names.
     pub fn cell_types(&self) -> impl Iterator<Item = &str> {
         self.entries.keys().map(String::as_str)
+    }
+
+    /// Return an iterator over all registered descriptors.
+    ///
+    /// Useful for dashboards and introspection without constructing live Cells.
+    pub fn descriptors(&self) -> impl Iterator<Item = &CellDescriptor> {
+        self.entries.values().map(|e| &e.descriptor)
+    }
+
+    /// Return cell type names that participate in the predict-publish-correct loop.
+    pub fn predictive_cell_types(&self) -> impl Iterator<Item = &str> {
+        self.entries
+            .iter()
+            .filter(|(_, e)| e.descriptor.is_predictive)
+            .map(|(name, _)| name.as_str())
     }
 }
 
@@ -379,5 +447,87 @@ mod tests {
     fn descriptor_not_found_returns_none() {
         let registry = CellRegistry::new();
         assert!(registry.descriptor("nonexistent").is_none());
+    }
+
+    // ── Wave 12 (#268) additions ────────────────────────────────────────────
+
+    #[test]
+    fn descriptor_protocol_introspection() {
+        let desc = CellDescriptor::new("sense", (0, 2, 0), None, None)
+            .with_protocols(vec![roko_core::ProtocolId::Observe])
+            .with_display_name("SenseCell");
+
+        assert!(desc.has_protocol(roko_core::ProtocolId::Observe));
+        assert!(!desc.has_protocol(roko_core::ProtocolId::Score));
+        assert_eq!(desc.effective_display_name(), "SenseCell");
+    }
+
+    #[test]
+    fn descriptor_predictive_flag() {
+        let non_pred = CellDescriptor::new("compose", (0, 2, 0), None, None);
+        assert!(!non_pred.is_predictive);
+
+        let pred = CellDescriptor::new("assess", (0, 2, 0), None, None).with_predictive(true);
+        assert!(pred.is_predictive);
+    }
+
+    #[test]
+    fn descriptor_display_name_fallback() {
+        let desc = CellDescriptor::new("my-cell", (1, 0, 0), None, None);
+        assert_eq!(desc.effective_display_name(), "my-cell");
+    }
+
+    #[test]
+    fn descriptors_iterator() {
+        let mut registry = CellRegistry::new();
+        registry.register("alpha", |_| {
+            Box::new(NoopCell {
+                id: "a".to_string(),
+            })
+        });
+        registry.register("beta", |_| {
+            Box::new(NoopCell {
+                id: "b".to_string(),
+            })
+        });
+
+        let mut ids: Vec<&str> = registry.descriptors().map(|d| d.id.as_str()).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn predictive_cell_types_filter() {
+        let mut registry = CellRegistry::new();
+        let pred_desc = CellDescriptor::new("assess", (0, 2, 0), None, None).with_predictive(true);
+        registry.register_with_descriptor("assess", pred_desc, |_| {
+            Box::new(NoopCell {
+                id: "a".to_string(),
+            })
+        });
+        registry.register("compose", |_| {
+            Box::new(NoopCell {
+                id: "c".to_string(),
+            })
+        });
+
+        let predictive: Vec<&str> = registry.predictive_cell_types().collect();
+        assert_eq!(predictive, vec!["assess"]);
+    }
+
+    #[test]
+    fn auto_generated_descriptor_has_defaults_for_new_fields() {
+        let mut registry = CellRegistry::new();
+        registry.register("x", |_| {
+            Box::new(NoopCell {
+                id: "x".to_string(),
+            })
+        });
+
+        let desc = registry.descriptor("x").unwrap();
+        assert!(desc.protocols.is_empty());
+        assert!(!desc.is_predictive);
+        assert!(desc.display_name.is_none());
+        assert_eq!(desc.effective_display_name(), "x");
     }
 }

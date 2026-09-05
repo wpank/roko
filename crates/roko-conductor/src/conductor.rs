@@ -119,7 +119,7 @@ fn configured_watchers_with_resources(
     resources: &ResourcesConfig,
 ) -> Vec<Box<dyn React>> {
     let thresholds = &config.watchers;
-    let mut watchers: Vec<Box<dyn React>> = vec![
+    let watchers: Vec<Box<dyn React>> = vec![
         Box::new(
             thresholds
                 .ghost_turn
@@ -198,19 +198,6 @@ fn configured_watchers_with_resources(
             resources.min_free_disk_mb,
         )),
     ];
-
-    // Context window pressure watcher is only registered when explicitly
-    // enabled in config. The watcher emits conductor.intervention signals
-    // that nothing in the runner event loop subscribes to yet.
-    if config.context_pressure_enabled {
-        watchers.push(Box::new(
-            thresholds
-                .context_window_pressure
-                .as_ref()
-                .map(|cfg| ContextWindowPressureWatcher::new(cfg.critical_threshold))
-                .unwrap_or_default(),
-        ));
-    }
 
     watchers
 }

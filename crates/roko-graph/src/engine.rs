@@ -10,7 +10,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use petgraph::visit::EdgeRef as _;
-use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -31,78 +30,29 @@ pub use crate::delivery::{MergeEnqueuer, MergeRequest};
 
 // ─── GraphSnapshot ──────────────────────────────────────────────────────────
 
-/// Serializable snapshot of a graph execution in progress or completed (v2).
+// Snapshot types are now defined in snapshot.rs (#251). Re-export them here
+// for backward compatibility with existing callers.
+pub use crate::snapshot::{
+    GRAPH_SNAPSHOT_SCHEMA_VERSION, GraphSnapshot, GraphSnapshotV2, SerializableNodeStatus,
+    SerializableSignal,
+};
+
+// Re-export reconciliation helper. The snapshot module returns ReconcileAction;
+// this wrapper preserves the original NodeStatus return for existing callers.
+/// Reconcile an ambiguous `Running` status from a restored snapshot.
 ///
-/// Captures per-node status, Activity node outputs, policy, budget state, and
-/// a stable graph fingerprint so the engine can be resumed safely. Only
-/// Activity node outputs are included -- Workflow node outputs are re-derived
-/// on resume.
-///
-/// V2 adds `schema_version`, `graph_fingerprint`, budget tracking fields, and
-/// `last_event_seq` for monotonic event replay.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GraphSnapshotV2 {
-    /// On-disk schema version. Always `2` for this struct.
-    #[serde(default = "default_snapshot_schema_version")]
-    pub schema_version: u8,
-    /// Name of the graph.
-    pub graph_name: String,
-    /// Graph ID (from metadata).
-    pub graph_id: String,
-    /// Stable BLAKE3 fingerprint of the execution-relevant graph definition.
-    /// Used to reject resume after graph definition or policy drift.
-    #[serde(default)]
-    pub graph_fingerprint: String,
-    /// Per-node execution status at snapshot time.
-    pub node_statuses: HashMap<String, SerializableNodeStatus>,
-    /// Activity node outputs. Workflow nodes are excluded (re-derived on resume).
-    pub node_outputs: HashMap<String, Vec<SerializableSignal>>,
-    /// Hot Graph tick count at snapshot time.
-    pub tick_count: u64,
-    /// Cumulative budget spent in micro-USD (1 USD = 1_000_000).
-    #[serde(default)]
-    pub budget_spent_micro_usd: u64,
-    /// Budget reserved but not yet settled in micro-USD.
-    #[serde(default)]
-    pub budget_reserved_micro_usd: u64,
-    /// Monotonic event sequence number at snapshot time. Replay must not emit
-    /// events with sequence numbers at or below this value.
-    #[serde(default)]
-    pub last_event_seq: u64,
-    /// Unix milliseconds when the snapshot was captured.
-    pub created_at_ms: i64,
-    /// Graph policy preserved for resume.
-    pub policy: GraphPolicy,
+/// Graph callers that do not have a registered reconciliation owner should
+/// call this to convert `Running` to `Pending` before resume. This preserves
+/// backward compatibility for callers that do not implement owner-based
+/// reconciliation.
+pub fn reconcile_running_status(status: SerializableNodeStatus) -> NodeStatus {
+    match status {
+        SerializableNodeStatus::Running => NodeStatus::Pending,
+        other => other.into(),
+    }
 }
 
-/// Current schema version for [`GraphSnapshotV2`].
-pub const GRAPH_SNAPSHOT_SCHEMA_VERSION: u8 = 2;
-
-fn default_snapshot_schema_version() -> u8 {
-    GRAPH_SNAPSHOT_SCHEMA_VERSION
-}
-
-/// Primary snapshot type. Callers use this alias; the underlying versioned
-/// struct name is kept for migration clarity.
-pub type GraphSnapshot = GraphSnapshotV2;
-
-/// Serializable node status (mirrors [`NodeStatus`] but with serde support).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SerializableNodeStatus {
-    /// Not yet started.
-    Pending,
-    /// Currently executing (treated as Pending on resume).
-    Running,
-    /// Completed successfully.
-    Complete,
-    /// Failed during execution.
-    Failed,
-    /// Skipped because an upstream node failed.
-    Skipped,
-    /// Skipped because no incoming conditional route selected this node.
-    ConditionSkipped,
-}
+// ─── SerializableNodeStatus <-> NodeStatus conversions ──────────────────────
 
 impl From<NodeStatus> for SerializableNodeStatus {
     fn from(s: NodeStatus) -> Self {
@@ -130,30 +80,6 @@ impl From<SerializableNodeStatus> for NodeStatus {
             SerializableNodeStatus::ConditionSkipped => Self::ConditionSkipped,
         }
     }
-}
-
-/// Reconcile an ambiguous `Running` status from a restored snapshot.
-///
-/// Graph callers that do not have a registered reconciliation owner should
-/// call this to convert `Running` to `Pending` before resume. This preserves
-/// backward compatibility for callers that do not implement owner-based
-/// reconciliation.
-pub fn reconcile_running_status(status: SerializableNodeStatus) -> NodeStatus {
-    match status {
-        SerializableNodeStatus::Running => NodeStatus::Pending,
-        other => other.into(),
-    }
-}
-
-/// Lightweight serializable signal reference for snapshots.
-///
-/// Full [`roko_core::Signal`] is already serde-compatible, but we wrap the
-/// JSON representation to keep the snapshot format stable even if Signal
-/// internals change.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SerializableSignal {
-    /// JSON-serialized signal.
-    pub json: serde_json::Value,
 }
 
 // ─── Node types ─────────────────────────────────────────────────────────────
@@ -402,6 +328,10 @@ pub struct GraphEngine {
     /// Set to `true` after [`validate_for_start`] succeeds, so Hot Graph tick
     /// loops do not re-validate on every iteration.
     pre_validated: std::sync::atomic::AtomicBool,
+    /// When `true`, test-stub descriptors are allowed in the graph. Production
+    /// starts set this to `false` (the default) and reject any graph containing
+    /// stub descriptors.
+    allow_test_stubs: bool,
 }
 
 impl GraphEngine {
@@ -420,6 +350,7 @@ impl GraphEngine {
             event_seq: crate::events::EventSeqCounter::new(),
             tick_state: parking_lot::Mutex::new(HashMap::new()),
             pre_validated: std::sync::atomic::AtomicBool::new(false),
+            allow_test_stubs: false,
         }
     }
 
@@ -515,6 +446,17 @@ impl GraphEngine {
         self
     }
 
+    /// Allow test-stub descriptors to pass validation.
+    ///
+    /// By default, `validate_for_start` rejects graphs containing nodes whose
+    /// registry descriptors have `is_stub = true`. Call this method with `true`
+    /// to permit stubs (test environments only).
+    #[must_use]
+    pub fn with_allow_test_stubs(mut self, allow: bool) -> Self {
+        self.allow_test_stubs = allow;
+        self
+    }
+
     /// Return a reference to the graph event sequence counter.
     ///
     /// Useful for callers that need to pre-allocate sequence numbers or
@@ -547,6 +489,30 @@ impl GraphEngine {
         // Skip if already validated (Hot Graph tick loops call this path once).
         if self.pre_validated.load(Ordering::Acquire) {
             return Ok(ValidatedGraph { _private: () });
+        }
+
+        // Reject test-stub descriptors in production mode.
+        if !self.allow_test_stubs {
+            let stub_nodes: Vec<String> = self
+                .graph
+                .inner
+                .node_weights()
+                .filter_map(|node| {
+                    self.registry
+                        .descriptor(&node.cell_type)
+                        .filter(|d| d.is_stub)
+                        .map(|_| node.id.clone())
+                })
+                .collect();
+            if !stub_nodes.is_empty() {
+                return Err(GraphError::InvalidGraph {
+                    reason: format!(
+                        "graph contains {} test-stub node(s): {}",
+                        stub_nodes.len(),
+                        stub_nodes.join(", ")
+                    ),
+                });
+            }
         }
 
         // Validate edge type compatibility using descriptor introspection.
@@ -1443,6 +1409,27 @@ impl GraphEngine {
         registry: CellRegistry,
         ctx: &CellContext,
     ) -> Result<GraphOutput, GraphError> {
+        // Reject test-stub descriptors (resume is always a production path).
+        let stub_nodes: Vec<String> = graph
+            .inner
+            .node_weights()
+            .filter_map(|node| {
+                registry
+                    .descriptor(&node.cell_type)
+                    .filter(|d| d.is_stub)
+                    .map(|_| node.id.clone())
+            })
+            .collect();
+        if !stub_nodes.is_empty() {
+            return Err(GraphError::InvalidGraph {
+                reason: format!(
+                    "graph contains {} test-stub node(s): {}",
+                    stub_nodes.len(),
+                    stub_nodes.join(", ")
+                ),
+            });
+        }
+
         // Validate edges before any resumption work.
         let edge_errors = graph.validate_edges(&registry);
         if !edge_errors.is_empty() {
@@ -2426,39 +2413,38 @@ pub fn default_registry() -> CellRegistry {
     use crate::registry::CellDescriptor;
     use roko_core::{Kind, TypeSchema};
 
-    registry.register_with_descriptor(
-        "noop",
-        CellDescriptor {
-            id: "noop".to_string(),
-            version: (0, 1, 0),
-            input_schema: None,
-            output_schema: None,
-            is_stub: true,
-        },
-        |_config| Box::new(NoopCell::default()),
-    );
+    registry.register_with_descriptor("noop", CellDescriptor::test_stub("noop"), |_config| {
+        Box::new(NoopCell::default())
+    });
 
     // Cognitive loop cells (E22-T01): real typed Cell implementations
     // with explicit CellDescriptors for side-effect-free edge validation.
+    // Wave 12 (#268): all cognitive descriptors now carry protocol and predictive metadata.
+    use roko_core::ProtocolId;
 
     registry.register_with_descriptor(
         "sense",
         CellDescriptor::new(
             "sense",
-            (0, 1, 0),
+            (0, 2, 0),
             None,
             Some(TypeSchema::OfKind(Kind::AgentMessage)),
-        ),
+        )
+        .with_protocols(vec![ProtocolId::Observe])
+        .with_display_name("SenseCell"),
         |_config| Box::new(crate::cells::cognitive::SenseCell::new()),
     );
     registry.register_with_descriptor(
         "assess",
         CellDescriptor::new(
             "assess",
-            (0, 1, 0),
+            (0, 2, 0),
             Some(TypeSchema::OfKind(Kind::AgentMessage)),
             Some(TypeSchema::OfKind(Kind::AgentMessage)),
-        ),
+        )
+        .with_protocols(vec![ProtocolId::Score])
+        .with_predictive(true)
+        .with_display_name("AssessCell"),
         |_config| Box::new(crate::cells::cognitive::AssessCell::new()),
     );
     // "score" is an alias for "assess" in legacy graph definitions.
@@ -2466,55 +2452,70 @@ pub fn default_registry() -> CellRegistry {
         "score",
         CellDescriptor::new(
             "score",
-            (0, 1, 0),
+            (0, 2, 0),
             Some(TypeSchema::OfKind(Kind::AgentMessage)),
             Some(TypeSchema::OfKind(Kind::AgentMessage)),
-        ),
+        )
+        .with_protocols(vec![ProtocolId::Score])
+        .with_predictive(true)
+        .with_display_name("AssessCell (score alias)"),
         |_config| Box::new(crate::cells::cognitive::AssessCell::new()),
     );
     registry.register_with_descriptor(
         "compose",
         CellDescriptor::new(
             "compose",
-            (0, 1, 0),
+            (0, 2, 0),
             Some(TypeSchema::OfKind(Kind::AgentMessage)),
             Some(TypeSchema::OfKind(Kind::Prompt)),
-        ),
+        )
+        .with_protocols(vec![ProtocolId::Compose])
+        .with_display_name("CognitiveComposeCell"),
         |_config| Box::new(crate::cells::cognitive::CognitiveComposeCell::new()),
     );
     registry.register_with_descriptor(
         "act",
         CellDescriptor::new(
             "act",
-            (0, 1, 0),
+            (0, 2, 0),
             Some(TypeSchema::OfKind(Kind::Prompt)),
             Some(TypeSchema::OfKind(Kind::Episode)),
-        ),
+        )
+        .with_protocols(vec![ProtocolId::Connect])
+        .with_display_name("ActCell"),
         |_config| Box::new(crate::cells::cognitive::ActCell::new()),
     );
     registry.register_with_descriptor(
         "verify",
         CellDescriptor::new(
             "verify",
-            (0, 1, 0),
+            (0, 2, 0),
             Some(TypeSchema::OfKind(Kind::Episode)),
             Some(TypeSchema::OfKind(Kind::GateVerdict)),
-        ),
+        )
+        .with_protocols(vec![ProtocolId::Verify])
+        .with_display_name("VerifyCell"),
         |_config| Box::new(crate::cells::cognitive::VerifyCell::new()),
     );
     registry.register_with_descriptor(
         "persist",
         CellDescriptor::new(
             "persist",
-            (0, 1, 0),
+            (0, 2, 0),
             Some(TypeSchema::OfKind(Kind::GateVerdict)),
             None,
-        ),
+        )
+        .with_protocols(vec![ProtocolId::Store])
+        .with_display_name("PersistCell"),
         |_config| Box::new(crate::cells::cognitive::PersistCell::new()),
     );
-    registry.register("react", |_config| {
-        Box::new(crate::cells::cognitive::ReactCell::new())
-    });
+    registry.register_with_descriptor(
+        "react",
+        CellDescriptor::new("react", (0, 2, 0), None, None)
+            .with_protocols(vec![ProtocolId::React, ProtocolId::Trigger])
+            .with_display_name("ReactCell"),
+        |_config| Box::new(crate::cells::cognitive::ReactCell::new()),
+    );
 
     // Task executor cell for plan-to-graph converted tasks (task 101).
     registry.register("task-executor", |config| {
@@ -2527,13 +2528,7 @@ pub fn default_registry() -> CellRegistry {
     // graph definitions that still reference old names (signal-reader, etc.).
     for name in crate::cells::stubs::COGNITIVE_LOOP_STUBS {
         let cell_name = (*name).to_string();
-        let desc = CellDescriptor {
-            id: cell_name.clone(),
-            version: (0, 1, 0),
-            input_schema: None,
-            output_schema: None,
-            is_stub: true,
-        };
+        let desc = CellDescriptor::test_stub(cell_name.clone());
         registry.register_with_descriptor(name, desc, move |_config| {
             Box::new(crate::cells::stubs::PassthroughCell::new(cell_name.clone()))
         });
@@ -4249,7 +4244,7 @@ to = "b"
         }
 
         #[test]
-        fn graph_validation_test_stub_descriptor() {
+        fn graph_validation_rejects_stub_descriptors_by_default() {
             let mut registry = CellRegistry::new();
             registry.register_with_descriptor(
                 "stub-cell",
@@ -4266,8 +4261,61 @@ to = "b"
             graph.add_edge(make_edge("a", "b")).unwrap();
 
             let engine = GraphEngine::new(graph, registry);
-            // Stub descriptors have no schemas, so edge validation passes.
-            assert!(engine.validate_for_start().is_ok());
+            let err = engine.validate_for_start().unwrap_err();
+            assert!(
+                matches!(err, GraphError::InvalidGraph { ref reason } if reason.contains("test-stub")),
+                "expected InvalidGraph with stub mention, got: {err:?}"
+            );
+        }
+
+        #[test]
+        fn graph_validation_allows_stubs_when_flag_set() {
+            let mut registry = CellRegistry::new();
+            registry.register_with_descriptor(
+                "stub-cell",
+                CellDescriptor::test_stub("stub-cell"),
+                |_| Box::new(NoopCell::default()),
+            );
+
+            let mut graph = Graph::new(GraphMetadata {
+                name: "stub-allowed".to_string(),
+                ..Default::default()
+            });
+            graph.add_node(make_node("a", "stub-cell")).unwrap();
+            graph.add_node(make_node("b", "stub-cell")).unwrap();
+            graph.add_edge(make_edge("a", "b")).unwrap();
+
+            let engine = GraphEngine::new(graph, registry).with_allow_test_stubs(true);
+            assert!(
+                engine.validate_for_start().is_ok(),
+                "stubs should pass when allow_test_stubs is true"
+            );
+        }
+
+        #[test]
+        fn graph_validation_stub_error_lists_node_ids() {
+            let mut registry = CellRegistry::new();
+            registry.register_with_descriptor(
+                "stub-cell",
+                CellDescriptor::test_stub("stub-cell"),
+                |_| Box::new(NoopCell::default()),
+            );
+
+            let mut graph = Graph::new(GraphMetadata {
+                name: "stub-names".to_string(),
+                ..Default::default()
+            });
+            graph.add_node(make_node("my-stub-a", "stub-cell")).unwrap();
+            graph.add_node(make_node("my-stub-b", "stub-cell")).unwrap();
+            graph.add_edge(make_edge("my-stub-a", "my-stub-b")).unwrap();
+
+            let engine = GraphEngine::new(graph, registry);
+            let err = engine.validate_for_start().unwrap_err();
+            let msg = err.to_string();
+            assert!(
+                msg.contains("my-stub-a") && msg.contains("my-stub-b"),
+                "error should list stub node IDs: {msg}"
+            );
         }
 
         #[test]
@@ -4344,6 +4392,109 @@ to = "b"
                 result.is_ok(),
                 "default registry cognitive loop should validate: {:?}",
                 result.err()
+            );
+        }
+
+        #[test]
+        fn graph_validation_conditional_edge_type_mismatch() {
+            let registry = typed_registry();
+            let mut graph = Graph::new(GraphMetadata {
+                name: "conditional-mismatch".to_string(),
+                ..Default::default()
+            });
+            graph
+                .add_node(make_node("src", "agent-msg-source"))
+                .unwrap();
+            graph.add_node(make_node("tgt", "episode-sink")).unwrap();
+            graph
+                .add_edge(crate::types::Edge {
+                    from: "src".to_string(),
+                    to: "tgt".to_string(),
+                    condition: Some(crate::types::EdgeCondition::OutputEquals {
+                        key: "status".to_string(),
+                        value: "ok".to_string(),
+                    }),
+                })
+                .unwrap();
+
+            let engine = GraphEngine::new(graph, registry).with_allow_test_stubs(true);
+            let result = engine.validate_for_start();
+            assert!(
+                result.is_err(),
+                "conditional edges with incompatible schemas should still fail"
+            );
+        }
+
+        #[test]
+        fn graph_validation_conditional_edge_compatible_passes() {
+            let registry = typed_registry();
+            let mut graph = Graph::new(GraphMetadata {
+                name: "conditional-ok".to_string(),
+                ..Default::default()
+            });
+            graph
+                .add_node(make_node("src", "agent-msg-source"))
+                .unwrap();
+            graph.add_node(make_node("tgt", "agent-msg-sink")).unwrap();
+            graph
+                .add_edge(crate::types::Edge {
+                    from: "src".to_string(),
+                    to: "tgt".to_string(),
+                    condition: Some(crate::types::EdgeCondition::Success),
+                })
+                .unwrap();
+
+            let engine = GraphEngine::new(graph, registry).with_allow_test_stubs(true);
+            assert!(
+                engine.validate_for_start().is_ok(),
+                "conditional edge with compatible schemas should pass"
+            );
+        }
+
+        #[test]
+        fn graph_validation_mixed_stub_and_production_rejected() {
+            let mut registry = typed_registry();
+            registry.register_with_descriptor(
+                "stub-cell",
+                CellDescriptor::test_stub("stub-cell"),
+                |_| Box::new(NoopCell::default()),
+            );
+
+            let mut graph = Graph::new(GraphMetadata {
+                name: "mixed".to_string(),
+                ..Default::default()
+            });
+            graph
+                .add_node(make_node("prod", "agent-msg-source"))
+                .unwrap();
+            graph.add_node(make_node("stub", "stub-cell")).unwrap();
+            graph.add_edge(make_edge("prod", "stub")).unwrap();
+
+            let engine = GraphEngine::new(graph, registry);
+            let err = engine.validate_for_start().unwrap_err();
+            assert!(
+                matches!(err, GraphError::InvalidGraph { ref reason } if reason.contains("stub")),
+                "mixed graph should be rejected: {err:?}"
+            );
+        }
+
+        #[test]
+        fn graph_validation_production_only_descriptors_pass() {
+            let registry = typed_registry();
+            let mut graph = Graph::new(GraphMetadata {
+                name: "production-only".to_string(),
+                ..Default::default()
+            });
+            graph
+                .add_node(make_node("src", "agent-msg-source"))
+                .unwrap();
+            graph.add_node(make_node("tgt", "agent-msg-sink")).unwrap();
+            graph.add_edge(make_edge("src", "tgt")).unwrap();
+
+            let engine = GraphEngine::new(graph, registry);
+            assert!(
+                engine.validate_for_start().is_ok(),
+                "production-only graph should pass"
             );
         }
     }

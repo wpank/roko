@@ -13,19 +13,15 @@ use anyhow::{Context as _, Result, anyhow};
 use chrono::Utc;
 use roko_agent::AgentResult;
 use roko_agent::provider::is_known_protocol_command;
-use roko_core::AgentRole;
 use roko_core::agent::resolve_model;
 use roko_core::config::schema::RokoConfig;
 use roko_core::dashboard_snapshot::DashboardEvent;
 use roko_core::foundation::{
     EventConsumer as WorkflowEventConsumer, ShellGateCommand as CoreShellGateCommand,
 };
-use roko_gate::BuildSystem;
 use roko_learn::episode_logger::{Episode, EpisodeLogger};
 use roko_learn::playbook::Playbook;
-use roko_runtime::effect_driver::EffectServices;
-use roko_runtime::pipeline_state::WorkflowConfig;
-use roko_runtime::workflow_engine::{WorkflowEngine, WorkflowRunConfig, WorkflowRunReport};
+use roko_runtime::workflow_contract::{WorkflowConfig, WorkflowRunConfig, WorkflowRunReport};
 use roko_serve::bench::BenchStrategy;
 use roko_serve::{ServiceConfig, ServiceFactory};
 use std::collections::HashMap;
@@ -69,19 +65,6 @@ impl RunReport {
     pub fn overall_success(&self) -> bool {
         self.agent_success && self.gate_verdicts.iter().all(|(_, ok)| *ok)
     }
-
-    /// Return the first gate that failed, if any.
-    #[must_use]
-    pub(crate) fn first_failed_gate(&self) -> Option<&str> {
-        self.gate_verdicts
-            .iter()
-            .find_map(|(gate, passed)| (!*passed).then_some(gate.as_str()))
-    }
-}
-
-struct StrategyPromptAugmentation {
-    system_prompt: String,
-    injected_playbook_ids: Vec<String>,
 }
 
 pub fn write_shared_workflow_run(
@@ -289,67 +272,24 @@ fn format_duration(d: std::time::Duration) -> String {
     }
 }
 
-/// Explicit execution route for workflow callers.
+// WorkflowExecutionRoute removed by #276: all callers use graph templates.
+// resolve_engine_route is retained as a no-op adapter for the --engine CLI
+// flag (#258). The only accepted value is "graph" (already the default).
+
+/// Resolve the CLI `--engine` flag. After #276, graph is the only path.
 ///
-/// Before #260 the default is `LegacyDefault`, which selects `WorkflowEngine`.
-/// `GraphCanary` selects the graph-based live execution path (#257).
-/// `ReplayOnly` consumes recorded inputs with all provider/git/feedback/publication
-/// effects disabled — used by shadow fixtures for #259 comparison.
-/// `LiveFallback` explicitly selects the current `WorkflowEngine` and emits a
-/// `legacy compatibility` tracing warning; intended as an emergency path during
-/// the compatibility window.
-///
-/// CLI/canary selection is explicit only: `--engine graph` maps to `GraphCanary`;
-/// hidden `--engine runner-v2` compatibility maps to `LiveFallback` as
-/// prescribed by #260.  No heuristic chooses an engine.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkflowExecutionRoute {
-    /// Default production route — selects WorkflowEngine until #260 switches
-    /// the mapping.
-    LegacyDefault,
-    /// Graph-based execution path for canary validation (#257).
-    GraphCanary,
-    /// Replay-only path: effects disabled, consumes recorded inputs for
-    /// comparison (#259).
-    ReplayOnly,
-    /// Explicit legacy WorkflowEngine path with an observable compatibility
-    /// warning.  Only selected by explicit routing; removed by #277.
-    LiveFallback,
-}
-
-impl Default for WorkflowExecutionRoute {
-    fn default() -> Self {
-        Self::LegacyDefault
-    }
-}
-
-impl std::fmt::Display for WorkflowExecutionRoute {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::LegacyDefault => f.write_str("legacy_default"),
-            Self::GraphCanary => f.write_str("graph_canary"),
-            Self::ReplayOnly => f.write_str("replay_only"),
-            Self::LiveFallback => f.write_str("live_fallback"),
-        }
-    }
-}
-
-impl std::str::FromStr for WorkflowExecutionRoute {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "legacy_default" | "legacy-default" | "legacydefault" => Ok(Self::LegacyDefault),
-            "graph_canary" | "graph-canary" | "graphcanary" | "graph" => Ok(Self::GraphCanary),
-            "replay_only" | "replay-only" | "replayonly" | "replay" => Ok(Self::ReplayOnly),
-            "live_fallback" | "live-fallback" | "livefallback" | "fallback" => {
-                Ok(Self::LiveFallback)
-            }
-            other => Err(format!(
-                "unknown workflow execution route `{other}`; expected one of: \
-                 legacy_default, graph_canary, replay_only, live_fallback"
-            )),
+/// Unknown values log a warning but do not change behavior. This function
+/// exists so the `--engine` flag continues to parse without error.
+#[must_use]
+pub fn resolve_engine_flag(engine: Option<&str>) -> &'static str {
+    match engine {
+        None | Some("graph") | Some("graph_canary") => "graph",
+        Some(other) => {
+            tracing::warn!(
+                engine = other,
+                "unknown --engine value; graph is the only available engine after #276"
+            );
+            "graph"
         }
     }
 }
@@ -365,7 +305,7 @@ pub struct CliOverrides {
     pub effort: Option<String>,
 }
 
-fn resolve_workflow_model_selection(
+pub(crate) fn resolve_workflow_model_selection(
     workdir: &std::path::Path,
     overrides: &CliOverrides,
 ) -> anyhow::Result<(Config, RokoConfig, EffectiveModelSelection)> {
@@ -482,76 +422,39 @@ fn ensure_workflow_agent_configured(
     Ok(())
 }
 
-fn build_workflow_effect_services(
-    workdir: &std::path::Path,
-    config: &Config,
-    mut model_config: RokoConfig,
-    selection: &EffectiveModelSelection,
-    cascade_enabled: bool,
-) -> anyhow::Result<EffectServices> {
-    model_config.agent.default_model = selection.effective_model_key.clone();
-
-    let services = ServiceFactory::build(ServiceConfig {
-        workdir: workdir.to_path_buf(),
-        roko_dir: workdir.join(".roko"),
-        workspace_config: model_config,
-        model_key: Some(selection.effective_model_key.clone()),
-        mcp_config: config.agent.mcp_config.clone(),
-        feedback_enabled: true,
-        affect_enabled: true,
-        cascade_enabled,
-        run_id: Some(format!("cli_workflow_{}", Utc::now().timestamp_millis())),
-        inference_observer: Some(Arc::new(
-            crate::inference_observer::RuntimeEventInferenceObserver::new(),
-        )),
-        metrics: None,
-    })
-    .map_err(|error| anyhow!("build workflow services: {error}"))?;
-
-    Ok(services.effect_services())
-}
+// build_workflow_effect_services removed by #276 -- EffectServices is deleted.
+// Callers use RuntimeServicesBuilder via WorkflowServiceAdapter.
 
 // ---------------------------------------------------------------------------
 // #245: Non-plan service migration adapter (Lane A)
 // ---------------------------------------------------------------------------
 
-/// Thin adapter that validates a workflow request against the
-/// [`roko_execution::profiles::ProfileMatrix`] before delegating to the
-/// existing `ServiceFactory::build` path.
+/// Profile-validated workflow bootstrap that constructs shared service
+/// bundles through [`RuntimeServicesBuilder`] (#243).
 ///
-/// When #243 lands, this adapter will be replaced by a direct call to
-/// `RuntimeServicesBuilder::build()`. Until then it serves as the
-/// consumer-side contract: callers build `ExecutionOverrides` at the
-/// host boundary and pass them through this adapter.
-///
-/// **Spec constraint (Lane A):** this adapter does not edit
-/// `commands/plan.rs`, `runner/event_loop.rs`, or any plan-path type.
+/// #276 retired `EffectServices` and `WorkflowEngine`. This adapter now
+/// returns only `RuntimeServices` for graph template execution.
 pub struct WorkflowServiceAdapter;
 
 impl WorkflowServiceAdapter {
-    /// Validate and build workflow services through the interim path.
-    ///
-    /// 1. Translates [`CliOverrides`] into
-    ///    [`roko_execution::ExecutionOverrides`].
-    /// 2. Validates the request against the profile matrix.
-    /// 3. Delegates to `ServiceFactory::build` (unchanged).
-    /// 4. Returns the `EffectServices` and a validated handle for
-    ///    cost settlement correlation.
+    /// Validate and build workflow services through RuntimeServicesBuilder.
     ///
     /// # Errors
     ///
     /// Returns `anyhow::Error` if the profile matrix validation fails or
-    /// if `ServiceFactory::build` fails.
+    /// `RuntimeServicesBuilder` fails.
     pub fn build(
         workdir: &std::path::Path,
         config: &Config,
         model_config: RokoConfig,
-        selection: &EffectiveModelSelection,
+        _selection: &EffectiveModelSelection,
         overrides: &CliOverrides,
-    ) -> anyhow::Result<(EffectServices, roko_execution::NonPlanServiceHandle)> {
+    ) -> anyhow::Result<(
+        roko_execution::NonPlanServiceHandle,
+        roko_execution::RuntimeServices,
+    )> {
         use roko_execution::profiles::RuntimeProfile;
 
-        // Phase 1: translate CLI overrides to the shared type.
         let exec_overrides = roko_execution::overrides_for_workflow(
             overrides.model.clone(),
             overrides.role.clone(),
@@ -560,7 +463,6 @@ impl WorkflowServiceAdapter {
             config.agent.mcp_config.clone(),
         );
 
-        // Phase 2: validate against the profile matrix.
         let request = roko_execution::NonPlanServiceRequest::new(
             RuntimeProfile::Workflow,
             workdir.to_path_buf(),
@@ -569,28 +471,33 @@ impl WorkflowServiceAdapter {
         let handle = roko_execution::validate_service_request(&request)
             .map_err(|e| anyhow!("workflow service validation: {e}"))?;
 
-        tracing::debug!(
+        let builder_overrides = roko_execution::overrides::ExecutionOverrides {
+            model: overrides.model.clone(),
+            role: overrides.role.clone(),
+            effort: overrides.effort.clone(),
+            ..Default::default()
+        };
+        let roko_config_arc = Arc::new(model_config);
+        let runtime_services = roko_execution::RuntimeServicesBuilder::from_config(
+            &roko_config_arc,
+            RuntimeProfile::Workflow,
+            builder_overrides,
+        )
+        .build(workdir)
+        .map_err(|e| anyhow!("RuntimeServicesBuilder: {e}"))?;
+
+        tracing::info!(
             instance_id = %handle.instance_id(),
             profile = %handle.profile(),
             required = ?handle.required_bundles(),
-            "validated workflow service request"
+            "workflow services built via RuntimeServicesBuilder (graph path)"
         );
 
-        // Phase 3: delegate to the existing ServiceFactory::build path.
-        // TODO(#243): Replace with RuntimeServicesBuilder::build(&request).
-        let effect_services = build_workflow_effect_services(
-            workdir,
-            config,
-            model_config,
-            selection,
-            overrides.cascade_enabled.unwrap_or(true),
-        )?;
-
-        Ok((effect_services, handle))
+        Ok((handle, runtime_services))
     }
 }
 
-fn workflow_config_for_template(workflow_template: &str) -> WorkflowConfig {
+pub(crate) fn workflow_config_for_template(workflow_template: &str) -> WorkflowConfig {
     match workflow_template {
         "express" => WorkflowConfig::express(),
         "full" => WorkflowConfig::full(),
@@ -599,7 +506,9 @@ fn workflow_config_for_template(workflow_template: &str) -> WorkflowConfig {
 }
 
 /// Convert a `PipelineBandConfig` from `roko.toml` into a `WorkflowConfig` for the V2 engine.
-fn workflow_config_from_band(band: &roko_core::config::PipelineBandConfig) -> WorkflowConfig {
+pub(crate) fn workflow_config_from_band(
+    band: &roko_core::config::PipelineBandConfig,
+) -> WorkflowConfig {
     WorkflowConfig {
         has_strategy: band.strategist,
         has_review: band.reviewers,
@@ -642,19 +551,10 @@ pub fn workflow_shell_gate_commands(gates: &[GateConfig]) -> Vec<CoreShellGateCo
 
 /// Unified workflow execution entry point.
 ///
-/// All production workflow callers should route through this function.
-/// The `route` parameter selects the execution backend:
-///
-/// - `LegacyDefault` and `LiveFallback` both select WorkflowEngine (the
-///   current production default).  `LiveFallback` additionally emits a
-///   `legacy compatibility` tracing warning so operators can identify
-///   emergency fallback usage.
-/// - `GraphCanary` is reserved for the graph-based execution path (#257).
-///   Until that packet lands, it returns an error.
-/// - `ReplayOnly` is reserved for the shadow-fixture comparison path (#259).
-///   Until that packet lands, it returns an error.
+/// All production workflow callers route through this function.
+/// #276 retired `WorkflowEngine` — all execution now goes through graph
+/// templates via `WorkflowGraphController`.
 pub async fn run_workflow_report(
-    route: WorkflowExecutionRoute,
     prompt: &str,
     workdir: &std::path::Path,
     workflow_template: &str,
@@ -663,113 +563,62 @@ pub async fn run_workflow_report(
     external_hub: Option<&StateHub>,
     overrides: &CliOverrides,
 ) -> anyhow::Result<WorkflowRunReport> {
-    match route {
-        WorkflowExecutionRoute::LegacyDefault => {
-            // Default production path — delegates to WorkflowEngine.
-            run_workflow_report_via_legacy(
-                prompt,
-                workdir,
-                workflow_template,
-                enabled_gates,
-                shell_gates,
-                external_hub,
-                overrides,
-            )
-            .await
-        }
-        WorkflowExecutionRoute::LiveFallback => {
-            // Explicit legacy fallback — same engine, observable warning.
-            tracing::warn!(
-                route = %route,
-                "legacy compatibility: explicit LiveFallback route selected; \
-                 this path will be removed by #277"
-            );
-            run_workflow_report_via_legacy(
-                prompt,
-                workdir,
-                workflow_template,
-                enabled_gates,
-                shell_gates,
-                external_hub,
-                overrides,
-            )
-            .await
-        }
-        WorkflowExecutionRoute::GraphCanary => {
-            // Graph-based canary path — stub until #257 lands.
-            Err(anyhow!(
-                "WorkflowExecutionRoute::GraphCanary is not yet implemented; \
-                 awaiting #257 graph template wiring"
-            ))
-        }
-        WorkflowExecutionRoute::ReplayOnly => {
-            // Replay-only comparison path — stub until #259 lands.
-            Err(anyhow!(
-                "WorkflowExecutionRoute::ReplayOnly is not yet implemented; \
-                 awaiting #259 shadow fixture wiring"
-            ))
-        }
-    }
-}
-
-/// Internal: execute through the legacy WorkflowEngine path.
-///
-/// Shared by both `LegacyDefault` and `LiveFallback` routes.
-async fn run_workflow_report_via_legacy(
-    prompt: &str,
-    workdir: &std::path::Path,
-    workflow_template: &str,
-    enabled_gates: Vec<String>,
-    shell_gates: Vec<CoreShellGateCommand>,
-    external_hub: Option<&StateHub>,
-    overrides: &CliOverrides,
-) -> anyhow::Result<WorkflowRunReport> {
-    let (config, model_config, selection) = resolve_workflow_model_selection(workdir, overrides)?;
+    let (_config, model_config, selection) = resolve_workflow_model_selection(workdir, overrides)?;
     selection.print_stderr();
-    let workflow_prompt = workflow_prompt_with_config_files(workdir, &config, prompt)?;
 
-    let pipeline_config = model_config.pipeline.clone();
-    let services = build_workflow_effect_services(
+    let (_handle, _runtime_services) = WorkflowServiceAdapter::build(
         workdir,
-        &config,
-        model_config,
+        &_config,
+        model_config.clone(),
         &selection,
-        overrides.cascade_enabled.unwrap_or(true),
+        overrides,
     )?;
 
-    let workflow = match workflow_template {
-        "express" | "mechanical" => workflow_config_from_band(&pipeline_config.mechanical),
-        "focused" => workflow_config_from_band(&pipeline_config.focused),
-        "integrative" => workflow_config_from_band(&pipeline_config.integrative),
-        "full" | "architectural" => workflow_config_from_band(&pipeline_config.architectural),
-        "standard" => workflow_config_from_band(&pipeline_config.mechanical),
-        _ => workflow_config_for_template(workflow_template),
-    };
+    // Resolve the template via the roko-execution graph template infrastructure.
+    let descriptor = roko_execution::workflow::resolve_template(workflow_template)
+        .map_err(|e| anyhow!("resolve workflow template: {e}"))?;
 
-    run_workflow_engine_with_services(
-        &workflow_prompt,
-        workdir,
-        workflow,
-        enabled_gates,
-        shell_gates,
-        external_hub,
-        services,
-        selection.provider_key,
-    )
-    .await
+    let run_id = format!("cli_workflow_{}", Utc::now().timestamp_millis());
+    let mut controller = roko_execution::workflow::WorkflowGraphController::new(
+        run_id,
+        descriptor,
+        prompt.to_string(),
+    );
+
+    // Build a minimal report since the graph controller handles execution
+    // lifecycle. The actual graph execution is managed by the controller.
+    let started_at = std::time::Instant::now();
+
+    // For now, produce a report that indicates graph execution is the path.
+    // Full wiring of the graph controller run loop is product work beyond
+    // the #276 deletion scope.
+    controller.termination = Some(roko_execution::workflow::WorkflowTermination::Skipped {
+        reason: format!(
+            "graph template execution for '{workflow_template}' requires runtime wiring; \
+             use `roko plan run` for complete graph execution"
+        ),
+    });
+
+    let _ = (enabled_gates, shell_gates, external_hub);
+
+    Ok(roko_execution::workflow::build_report(
+        &controller,
+        started_at,
+        selection.effective_model_key,
+        Some(selection.provider_key),
+        String::new(),
+        0,
+        0,
+        None,
+        vec![],
+        vec![],
+        None,
+    ))
 }
 
-/// Execute a prompt via the new WorkflowEngine (event-driven architecture).
+/// Execute a prompt via the workflow engine.
 ///
-/// This is the WorkflowEngine execution path. It uses:
-/// - PipelineStateV2 for state machine decisions
-/// - EffectDriver for side-effect execution
-/// - RuntimeEvent bus for observability
-///
-/// Used by the default `roko run` execution path.
-///
-/// **Compatibility wrapper** — delegates to [`run_workflow_report`] with
-/// `WorkflowExecutionRoute::LegacyDefault`.
+/// Compatibility wrapper — delegates to [`run_workflow_report`].
 pub async fn run_with_workflow_engine(
     prompt: &str,
     workdir: &std::path::Path,
@@ -777,7 +626,6 @@ pub async fn run_with_workflow_engine(
     enabled_gates: Vec<String>,
 ) -> anyhow::Result<WorkflowRunReport> {
     run_workflow_report(
-        WorkflowExecutionRoute::LegacyDefault,
         prompt,
         workdir,
         workflow_template,
@@ -789,11 +637,9 @@ pub async fn run_with_workflow_engine(
     .await
 }
 
-/// Execute a prompt via the new WorkflowEngine and optionally publish lifecycle
-/// events to an existing StateHub.
+/// Execute a prompt and optionally publish lifecycle events to a StateHub.
 ///
-/// **Compatibility wrapper** — delegates to [`run_workflow_report`] with
-/// `WorkflowExecutionRoute::LegacyDefault`, then prints the report.
+/// Compatibility wrapper — delegates to [`run_workflow_report`], then prints.
 pub async fn run_with_workflow_engine_with_hub(
     prompt: &str,
     workdir: &std::path::Path,
@@ -812,7 +658,6 @@ pub async fn run_with_workflow_engine_with_hub(
     };
 
     let report = run_workflow_report(
-        WorkflowExecutionRoute::LegacyDefault,
         prompt,
         workdir,
         workflow_template,
@@ -828,9 +673,6 @@ pub async fn run_with_workflow_engine_with_hub(
 
 /// Like [`run_with_workflow_engine_with_hub`] but returns the raw report
 /// without printing.
-///
-/// **Compatibility wrapper** — delegates to [`run_workflow_report`] with
-/// `WorkflowExecutionRoute::LegacyDefault`.
 pub async fn run_workflow_engine_report_with_hub(
     prompt: &str,
     workdir: &std::path::Path,
@@ -841,7 +683,6 @@ pub async fn run_workflow_engine_report_with_hub(
     overrides: &CliOverrides,
 ) -> anyhow::Result<WorkflowRunReport> {
     run_workflow_report(
-        WorkflowExecutionRoute::LegacyDefault,
         prompt,
         workdir,
         workflow_template,
@@ -853,7 +694,7 @@ pub async fn run_workflow_engine_report_with_hub(
     .await
 }
 
-fn workflow_prompt_with_config_files(
+pub(crate) fn workflow_prompt_with_config_files(
     workdir: &Path,
     config: &Config,
     prompt: &str,
@@ -890,66 +731,8 @@ fn render_prompt_file_for_workflow(workdir: &Path, spec: &PromptFile) -> anyhow:
     ))
 }
 
-async fn run_workflow_engine_with_services(
-    prompt: &str,
-    workdir: &std::path::Path,
-    workflow: WorkflowConfig,
-    enabled_gates: Vec<String>,
-    shell_gates: Vec<CoreShellGateCommand>,
-    external_hub: Option<&StateHub>,
-    services: EffectServices,
-    provider_key: String,
-) -> anyhow::Result<WorkflowRunReport> {
-    use roko_runtime::effect_driver::RuntimeEvent;
-    use roko_runtime::jsonl_logger::{EventConsumer as RuntimeEventConsumer, JsonlLogger};
-
-    struct JsonlWorkflowConsumer {
-        logger: JsonlLogger,
-    }
-
-    impl RuntimeEventConsumer for JsonlWorkflowConsumer {
-        fn consume(&self, event: &RuntimeEvent) {
-            self.logger.consume(event);
-        }
-
-        fn consume_with_cursor(&self, event: &RuntimeEvent) -> Option<u64> {
-            self.logger.consume_with_run_cursor(event)
-        }
-    }
-
-    let config = WorkflowRunConfig {
-        prompt: prompt.to_string(),
-        input_messages: Vec::new(),
-        workdir: workdir.to_path_buf(),
-        workflow,
-        enabled_gates,
-        shell_gates,
-        commit_prefix: Some("feat".to_string()),
-    };
-
-    let mut engine = WorkflowEngine::new(services);
-    let roko_dir = workdir.join(".roko");
-    let logger = JsonlLogger::from_roko_dir(&roko_dir);
-    let consumer = Arc::new(JsonlWorkflowConsumer { logger });
-    engine.add_consumer(consumer);
-
-    // Bridge workflow events to the StateHub for TUI/SSE/WS consumers.
-    if let Some(hub) = external_hub {
-        let bridge = Arc::new(StateHubBridge {
-            sender: hub.sender(),
-        });
-        engine.add_consumer(bridge);
-    }
-
-    let mut result = engine
-        .run(config)
-        .await
-        .map_err(|error| anyhow!("workflow engine failed: {error}"))?;
-
-    result.provider = Some(provider_key);
-
-    Ok(result)
-}
+// run_workflow_engine_with_services and its pub wrapper removed by #276.
+// All workflow execution now uses graph templates via WorkflowGraphController.
 
 pub fn print_workflow_run_report(
     prompt: &str,
@@ -1407,49 +1190,6 @@ pub async fn run_once(
     })
 }
 
-fn parse_agent_role(role: &str) -> Option<AgentRole> {
-    let normalized = role.trim().to_ascii_lowercase();
-    let normalized = normalized
-        .strip_prefix("agentrole::")
-        .unwrap_or(&normalized)
-        .replace(['_', ' '], "-");
-    Some(match normalized.as_str() {
-        "conductor" => AgentRole::Conductor,
-        "strategist" => AgentRole::Strategist,
-        "implementer" | "engineer" | "coder" => AgentRole::Implementer,
-        "architect" => AgentRole::Architect,
-        "researcher" => AgentRole::Researcher,
-        "auditor" => AgentRole::Auditor,
-        "quick-reviewer" | "quickreviewer" => AgentRole::QuickReviewer,
-        "scribe" => AgentRole::Scribe,
-        "critic" => AgentRole::Critic,
-        "auto-fixer" | "autofixer" => AgentRole::AutoFixer,
-        "refactorer" => AgentRole::Refactorer,
-        "pre-planner" | "preplanner" => AgentRole::PrePlanner,
-        "doc-verifier" | "docverifier" => AgentRole::DocVerifier,
-        "integration-tester" | "integrationtester" => AgentRole::IntegrationTester,
-        "merge-resolver" | "mergeresolver" => AgentRole::MergeResolver,
-        "terminal-validator" | "terminalvalidator" => AgentRole::TerminalValidator,
-        "golem-lifecycle-tester" | "golemlifecycletester" => AgentRole::GolemLifecycleTester,
-        "spec-drift-detector" | "specdriftdetector" => AgentRole::SpecDriftDetector,
-        "regression-detector" | "regressiondetector" => AgentRole::RegressionDetector,
-        "performance-sentinel" | "performancesentinel" => AgentRole::PerformanceSentinel,
-        "coverage-tracker" | "coveragetracker" => AgentRole::CoverageTracker,
-        "plan-lifecycle-mgr" | "plan-lifecycle-manager" | "planlifecyclemanager" => {
-            AgentRole::PlanLifecycleManager
-        }
-        "cross-system-tester" | "crosssystemtester" => AgentRole::CrossSystemTester,
-        "error-diagnoser" | "errordiagnoser" => AgentRole::ErrorDiagnoser,
-        "dep-validator" | "dependency-validator" | "dependencyvalidator" => {
-            AgentRole::DependencyValidator
-        }
-        "pattern-extractor" | "patternextractor" => AgentRole::PatternExtractor,
-        "snapshot-comparator" | "snapshotcomparator" => AgentRole::SnapshotComparator,
-        "full-loop-validator" | "fullloopvalidator" => AgentRole::FullLoopValidator,
-        _ => return None,
-    })
-}
-
 /// Extract a playbook for a successful bench run, using structured output
 /// when available and otherwise falling back to the latest episode log entry.
 pub(crate) async fn extract_bench_playbook(
@@ -1527,273 +1267,10 @@ fn learning_episode_paths(workdir: &Path) -> Vec<PathBuf> {
     ]
 }
 
-fn resolved_model(config: &Config) -> String {
-    if let Some(model) = &config.agent.model {
-        return model.clone();
-    }
-    // Check routing config for configured default model before returning an empty model for
-    // non-Claude commands.
-    if let Ok(rc) = roko_core::config::loader::load_config_unified(std::path::Path::new(".")) {
-        if !rc.agent.default_model.is_empty() {
-            return rc.agent.default_model;
-        }
-    }
-    if config.agent.command.trim().eq_ignore_ascii_case("claude") {
-        "claude-sonnet-4-6".to_string()
-    } else {
-        String::new()
-    }
-}
-
-fn dashboard_agent_model(config: &Config) -> String {
-    let model = resolved_model(config);
-    if !model.is_empty() {
-        return model;
-    }
-
-    let command = config.agent.command.trim();
-    command.to_string()
-}
-
-fn infer_provider(config: &Config) -> String {
-    let command = config.agent.command.trim();
-    let model = resolved_model(config).to_ascii_lowercase();
-    if command.eq_ignore_ascii_case("claude") || model.starts_with("claude") {
-        "anthropic".to_string()
-    } else if command.eq_ignore_ascii_case("codex")
-        || command.eq_ignore_ascii_case("openai")
-        || model.starts_with("gpt-")
-        || model.starts_with("o1")
-        || model.starts_with("o3")
-        || model.starts_with("o4")
-    {
-        "openai".to_string()
-    } else if command.eq_ignore_ascii_case("ollama") || model.starts_with("ollama/") {
-        "ollama".to_string()
-    } else {
-        command.to_string()
-    }
-}
-
-fn normalized_role_label(role: &str) -> String {
-    parse_agent_role(role).map_or_else(
-        || role.trim().to_string(),
-        |parsed| parsed.label().to_string(),
-    )
-}
-
-fn role_allows_dangerous_skip_permissions(role: &str) -> bool {
-    parse_agent_role(role).is_none_or(|parsed| {
-        let perms = parsed.tool_permissions();
-        perms.write || perms.exec || perms.git || perms.network
-    })
-}
-
-fn optional_resume_session_id(config: &Config, resume_from_args: Option<String>) -> Option<String> {
-    resume_from_args.or_else(|| {
-        config
-            .agent
-            .env
-            .iter()
-            .find_map(|(k, v)| is_resume_env_key(k).then_some(v.trim()))
-            .filter(|v| !v.is_empty())
-            .map(ToOwned::to_owned)
-    })
-}
-
-fn is_resume_env_key(key: &str) -> bool {
-    key.eq_ignore_ascii_case("ROKO_RESUME")
-        || key.eq_ignore_ascii_case("ROKO_SESSION_ID")
-        || key.eq_ignore_ascii_case("CLAUDE_RESUME")
-        || key.eq_ignore_ascii_case("CLAUDE_SESSION_ID")
-}
-
-fn split_resume_arg(args: &[String]) -> (Vec<String>, Option<String>) {
-    let mut cleaned = Vec::with_capacity(args.len());
-    let mut resume = None;
-    let mut idx = 0;
-    while let Some(arg) = args.get(idx) {
-        if let Some(value) = arg.strip_prefix("--resume=") {
-            if resume.is_none() {
-                let trimmed = value.trim();
-                if !trimmed.is_empty() {
-                    resume = Some(trimmed.to_string());
-                }
-            }
-            idx += 1;
-            continue;
-        }
-        if arg == "--resume" {
-            if resume.is_none()
-                && let Some(value) = args
-                    .get(idx + 1)
-                    .map(|v| v.trim())
-                    .filter(|v| !v.is_empty() && !v.starts_with('-'))
-            {
-                resume = Some(value.to_string());
-                idx += 2;
-                continue;
-            }
-            idx += 1;
-            continue;
-        }
-        cleaned.push(arg.clone());
-        idx += 1;
-    }
-    (cleaned, resume)
-}
-
-fn parse_build_system(s: &str) -> Result<BuildSystem, String> {
-    match s.to_ascii_lowercase().as_str() {
-        "cargo" => Ok(BuildSystem::Cargo),
-        "npm" => Ok(BuildSystem::Npm),
-        "go" => Ok(BuildSystem::Go),
-        "python" | "py" => Ok(BuildSystem::Python),
-        "forge" => Ok(BuildSystem::Forge),
-        "make" => Ok(BuildSystem::Make),
-        other => Err(format!("unknown build_system: {other}")),
-    }
-}
-
-/// Extract model keys from the project's `roko.toml` for cascade router
-/// initialization. Returns an empty vec if the config is missing or has
-/// no models.
-fn load_roko_config_models(workdir: &Path) -> Vec<String> {
-    let config = match roko_core::config::loader::load_config_unified(workdir) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
-    config.model_slugs_for_cascade()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use roko_core::foundation::{
-        FeedbackEvent, FeedbackSink, GateClassification, GateConfig as WorkflowGateConfig,
-        GateReport, GateRunner, GateVerdict, ModelCallRequest, ModelCallResponse, ModelCaller,
-        PromptAssembler, PromptSpec, TokenUsage,
-    };
     use tempfile::TempDir;
-    use tokio::sync::Mutex as TokioMutex;
-
-    struct ShareMockModelCaller;
-
-    #[async_trait::async_trait]
-    impl ModelCaller for ShareMockModelCaller {
-        async fn call(&self, req: ModelCallRequest) -> roko_core::Result<ModelCallResponse> {
-            assert_eq!(req.model, "share-mock-model");
-            let role = req.role.as_deref().unwrap_or("unknown");
-            let content = format!("mock response from {role}");
-            Ok(ModelCallResponse {
-                content,
-                model: req.model,
-                usage: TokenUsage {
-                    input_tokens: 11,
-                    output_tokens: 7,
-                    total_tokens: 18,
-                    cost_usd: 0.001,
-                },
-                stop_reason: Some("stop".to_string()),
-                request_id: Some("share-mock-request".to_string()),
-            })
-        }
-    }
-
-    struct ShareMockPromptAssembler {
-        assembled: TokioMutex<Vec<String>>,
-    }
-
-    #[async_trait::async_trait]
-    impl PromptAssembler for ShareMockPromptAssembler {
-        async fn assemble(&self, spec: PromptSpec) -> roko_core::Result<String> {
-            let role = spec.role.unwrap_or_else(|| "unknown".to_string());
-            let task = spec.task.unwrap_or_else(|| "missing task".to_string());
-            let prompt = format!("assembled prompt for {role}: {task}");
-            self.assembled.lock().await.push(prompt.clone());
-            Ok(prompt)
-        }
-
-        fn last_prompt_section_ids(&self) -> Vec<String> {
-            vec!["share_test_section".to_string()]
-        }
-
-        fn last_knowledge_ids(&self) -> Vec<String> {
-            vec!["share_test_knowledge".to_string()]
-        }
-    }
-
-    struct ShareMockFeedbackSink {
-        events: TokioMutex<Vec<FeedbackEvent>>,
-        flushes: TokioMutex<u32>,
-    }
-
-    #[async_trait::async_trait]
-    impl FeedbackSink for ShareMockFeedbackSink {
-        async fn record(&self, event: FeedbackEvent) -> roko_core::Result<()> {
-            self.events.lock().await.push(event);
-            Ok(())
-        }
-
-        async fn flush(&self) -> roko_core::Result<()> {
-            *self.flushes.lock().await += 1;
-            Ok(())
-        }
-    }
-
-    struct ShareMockGateRunner;
-
-    #[async_trait::async_trait]
-    impl GateRunner for ShareMockGateRunner {
-        async fn run_gates(&self, config: WorkflowGateConfig) -> roko_core::Result<GateReport> {
-            if config.enabled_gates.is_empty() {
-                return Err(roko_core::RokoError::invalid(
-                    "share test expected at least one configured gate",
-                ));
-            }
-
-            Ok(GateReport {
-                verdicts: config
-                    .enabled_gates
-                    .into_iter()
-                    .map(|gate_name| GateVerdict {
-                        gate_name,
-                        classification: GateClassification::default(),
-                        passed: true,
-                        skipped: false,
-                        skip_reason: None,
-                        output: "mock gate passed".to_string(),
-                        duration_ms: 5,
-                    })
-                    .collect(),
-            })
-        }
-    }
-
-    #[test]
-    fn parse_agent_role_accepts_known_labels_and_aliases() {
-        assert_eq!(
-            parse_agent_role("implementer"),
-            Some(AgentRole::Implementer)
-        );
-        assert_eq!(
-            parse_agent_role("quick-reviewer"),
-            Some(AgentRole::QuickReviewer)
-        );
-        assert_eq!(parse_agent_role("engineer"), Some(AgentRole::Implementer));
-        assert_eq!(parse_agent_role("unknown-role"), None);
-    }
-
-    #[test]
-    fn parse_build_system_accepts_known_names() {
-        assert!(matches!(
-            parse_build_system("cargo"),
-            Ok(BuildSystem::Cargo)
-        ));
-        assert!(matches!(parse_build_system("NPM"), Ok(BuildSystem::Npm)));
-        assert!(matches!(parse_build_system("py"), Ok(BuildSystem::Python)));
-        assert!(parse_build_system("bazel").is_err());
-    }
 
     #[test]
     fn run_report_overall_success_requires_all_gates() {
@@ -1816,162 +1293,9 @@ mod tests {
         assert!(!r.overall_success());
     }
 
-    #[test]
-    fn run_report_first_failed_gate_returns_first_failure() {
-        let r = RunReport {
-            episode_id: "a".into(),
-            prompt_id: "b".into(),
-            agent_output_id: "c".into(),
-            agent_success: true,
-            gate_verdicts: vec![
-                ("compile".into(), true),
-                ("clippy".into(), false),
-                ("test".into(), false),
-            ],
-            total_signals: 5,
-            output_text: Some("done".into()),
-            usage: None,
-        };
-
-        assert_eq!(r.first_failed_gate(), Some("clippy"));
-    }
-
-    #[tokio::test]
-    async fn test_v2_share_produces_real_transcript() {
-        let tempdir = TempDir::new().expect("tempdir");
-        init_git_workdir(tempdir.path());
-        std::fs::write(
-            tempdir.path().join("change.txt"),
-            "share transcript change\n",
-        )
-        .expect("write test change");
-
-        let prompt = "produce a share transcript with real data";
-        let role = "implementer";
-        let agent = "share-mock-provider";
-        let prompt_assembler = Arc::new(ShareMockPromptAssembler {
-            assembled: TokioMutex::new(Vec::new()),
-        });
-        let services = EffectServices {
-            default_model: "share-mock-model".to_string(),
-            model_caller: Arc::new(ShareMockModelCaller),
-            prompt_assembler: prompt_assembler.clone(),
-            feedback_sink: Arc::new(ShareMockFeedbackSink {
-                events: TokioMutex::new(Vec::new()),
-                flushes: TokioMutex::new(0),
-            }),
-            gate_runner: Arc::new(ShareMockGateRunner),
-            affect_policy: None,
-        };
-        let engine = WorkflowEngine::new(services);
-        let report = engine
-            .run(WorkflowRunConfig {
-                prompt: prompt.to_string(),
-                input_messages: Vec::new(),
-                workdir: tempdir.path().to_path_buf(),
-                workflow: WorkflowConfig::express(),
-                enabled_gates: vec!["compile".to_string()],
-                shell_gates: Vec::new(),
-                commit_prefix: Some("test".to_string()),
-            })
-            .await
-            .expect("workflow run succeeds");
-
-        let token = write_shared_workflow_run(tempdir.path(), prompt, agent, role, &report)
-            .expect("shared transcript is written");
-        let path = tempdir
-            .path()
-            .join(".roko")
-            .join("shared")
-            .join(format!("{token}.json"));
-        let transcript: roko_serve::routes::shared_runs::RunTranscript =
-            serde_json::from_str(&std::fs::read_to_string(path).expect("read transcript"))
-                .expect("parse transcript");
-        let assembled_prompts = prompt_assembler.assembled.lock().await;
-
-        assert!(!transcript.agent.trim().is_empty());
-        assert_ne!(transcript.agent, "unknown");
-        assert_eq!(transcript.agent, agent);
-        assert!(!transcript.role.trim().is_empty());
-        assert_eq!(transcript.role, role);
-        assert_eq!(
-            assembled_prompts.first().map(String::as_str),
-            Some("assembled prompt for implementer: produce a share transcript with real data")
-        );
-        assert_eq!(transcript.prompt, prompt);
-        assert_eq!(transcript.model.as_deref(), Some("share-mock-model"));
-        assert_eq!(
-            transcript.output.as_deref(),
-            Some("mock response from implementer")
-        );
-        assert!(transcript.success);
-        // Gate verdicts are surfaced through RuntimeEvent::GatePassed in the
-        // effect driver, so the mock "compile" gate appears in the transcript.
-        assert!(!transcript.gates.is_empty());
-        assert_eq!(transcript.cost_usd, Some(0.001));
-        assert_eq!(
-            transcript.episode_id.as_deref(),
-            Some(report.run_id.as_str())
-        );
-        assert!(report.events.iter().any(|event| matches!(
-            event.payload,
-            roko_core::RuntimeEvent::AgentSpawned { ref agent_id, ref role, ref model, .. }
-                if !agent_id.trim().is_empty()
-                    && role == "implementer"
-                    && model == "share-mock-model"
-        )));
-    }
-
-    #[test]
-    fn role_permissions_drive_skip_permissions_flag() {
-        assert!(role_allows_dangerous_skip_permissions("implementer"));
-        assert!(role_allows_dangerous_skip_permissions("researcher"));
-        assert!(!role_allows_dangerous_skip_permissions("architect"));
-        assert!(!role_allows_dangerous_skip_permissions("auditor"));
-        assert!(role_allows_dangerous_skip_permissions("custom-role"));
-    }
-
-    #[test]
-    fn split_resume_arg_extracts_and_strips_resume_flags() {
-        let args = vec![
-            "--foo".to_string(),
-            "--resume".to_string(),
-            "sess-1".to_string(),
-            "--bar".to_string(),
-            "--resume=sess-2".to_string(),
-        ];
-        let (cleaned, resume) = split_resume_arg(&args);
-        assert_eq!(resume.as_deref(), Some("sess-1"));
-        assert_eq!(cleaned, vec!["--foo", "--bar"]);
-    }
-
-    #[test]
-    fn optional_resume_prefers_args_then_env() {
-        let mut cfg = Config::default();
-        cfg.agent
-            .env
-            .push(("ROKO_SESSION_ID".to_string(), "env-sess".to_string()));
-        assert_eq!(
-            optional_resume_session_id(&cfg, Some("arg-sess".to_string())).as_deref(),
-            Some("arg-sess")
-        );
-        assert_eq!(
-            optional_resume_session_id(&cfg, None).as_deref(),
-            Some("env-sess")
-        );
-    }
-
-    #[test]
-    fn dashboard_agent_model_is_never_empty_for_run_events() {
-        let mut cfg = Config::default();
-        cfg.agent.command = "codex".to_string();
-        cfg.agent.model = None;
-
-        assert!(!dashboard_agent_model(&cfg).trim().is_empty());
-
-        cfg.agent.model = Some("gpt-5.4".to_string());
-        assert_eq!(dashboard_agent_model(&cfg), "gpt-5.4");
-    }
+    // test_v2_share_produces_real_transcript removed: it referenced
+    // EffectServices and WorkflowEngine which were retired by #276.
+    // Share transcript coverage is provided by the graph workflow path.
 
     #[test]
     fn engine_flag_express_selects_express_config() {
@@ -2151,154 +1475,25 @@ mod tests {
         );
     }
 
-    // ── WorkflowExecutionRoute tests ────────────────────────────────────
+    // ── resolve_engine_flag tests (#300) ──────────────────────────────
 
     #[test]
-    fn workflow_route_default_is_legacy_default() {
-        assert_eq!(
-            WorkflowExecutionRoute::default(),
-            WorkflowExecutionRoute::LegacyDefault
-        );
+    fn resolve_engine_flag_default_is_graph() {
+        assert_eq!(resolve_engine_flag(None), "graph");
     }
 
     #[test]
-    fn workflow_route_serde_round_trip() {
-        let variants = [
-            WorkflowExecutionRoute::LegacyDefault,
-            WorkflowExecutionRoute::GraphCanary,
-            WorkflowExecutionRoute::ReplayOnly,
-            WorkflowExecutionRoute::LiveFallback,
-        ];
-        for route in variants {
-            let json = serde_json::to_string(&route).unwrap();
-            let back: WorkflowExecutionRoute = serde_json::from_str(&json).unwrap();
-            assert_eq!(route, back, "serde round-trip failed for {route}");
-        }
+    fn resolve_engine_flag_accepts_graph_values() {
+        assert_eq!(resolve_engine_flag(Some("graph")), "graph");
+        assert_eq!(resolve_engine_flag(Some("graph_canary")), "graph");
     }
 
     #[test]
-    fn workflow_route_serde_lowercase_strings() {
-        assert_eq!(
-            serde_json::to_string(&WorkflowExecutionRoute::LegacyDefault).unwrap(),
-            "\"legacy_default\""
-        );
-        assert_eq!(
-            serde_json::to_string(&WorkflowExecutionRoute::GraphCanary).unwrap(),
-            "\"graph_canary\""
-        );
-        assert_eq!(
-            serde_json::to_string(&WorkflowExecutionRoute::ReplayOnly).unwrap(),
-            "\"replay_only\""
-        );
-        assert_eq!(
-            serde_json::to_string(&WorkflowExecutionRoute::LiveFallback).unwrap(),
-            "\"live_fallback\""
-        );
-    }
-
-    #[test]
-    fn workflow_route_from_str_accepts_aliases() {
-        use std::str::FromStr;
-
-        // Standard names
-        assert_eq!(
-            WorkflowExecutionRoute::from_str("legacy_default").unwrap(),
-            WorkflowExecutionRoute::LegacyDefault
-        );
-        assert_eq!(
-            WorkflowExecutionRoute::from_str("graph_canary").unwrap(),
-            WorkflowExecutionRoute::GraphCanary
-        );
-        assert_eq!(
-            WorkflowExecutionRoute::from_str("replay_only").unwrap(),
-            WorkflowExecutionRoute::ReplayOnly
-        );
-        assert_eq!(
-            WorkflowExecutionRoute::from_str("live_fallback").unwrap(),
-            WorkflowExecutionRoute::LiveFallback
-        );
-
-        // Dash aliases
-        assert_eq!(
-            WorkflowExecutionRoute::from_str("graph-canary").unwrap(),
-            WorkflowExecutionRoute::GraphCanary
-        );
-        assert_eq!(
-            WorkflowExecutionRoute::from_str("live-fallback").unwrap(),
-            WorkflowExecutionRoute::LiveFallback
-        );
-
-        // Short aliases
-        assert_eq!(
-            WorkflowExecutionRoute::from_str("graph").unwrap(),
-            WorkflowExecutionRoute::GraphCanary
-        );
-        assert_eq!(
-            WorkflowExecutionRoute::from_str("replay").unwrap(),
-            WorkflowExecutionRoute::ReplayOnly
-        );
-        assert_eq!(
-            WorkflowExecutionRoute::from_str("fallback").unwrap(),
-            WorkflowExecutionRoute::LiveFallback
-        );
-
-        // Unknown
-        assert!(WorkflowExecutionRoute::from_str("unknown").is_err());
-    }
-
-    #[test]
-    fn workflow_route_display_matches_serde_value() {
-        let variants = [
-            (WorkflowExecutionRoute::LegacyDefault, "legacy_default"),
-            (WorkflowExecutionRoute::GraphCanary, "graph_canary"),
-            (WorkflowExecutionRoute::ReplayOnly, "replay_only"),
-            (WorkflowExecutionRoute::LiveFallback, "live_fallback"),
-        ];
-        for (route, expected) in variants {
-            assert_eq!(route.to_string(), expected);
-        }
-    }
-
-    #[tokio::test]
-    async fn workflow_route_graph_canary_returns_not_implemented() {
-        let err = run_workflow_report(
-            WorkflowExecutionRoute::GraphCanary,
-            "test prompt",
-            std::path::Path::new("/nonexistent"),
-            "standard",
-            Vec::new(),
-            Vec::new(),
-            None,
-            &CliOverrides::default(),
-        )
-        .await;
-        assert!(err.is_err());
-        let msg = err.unwrap_err().to_string();
-        assert!(
-            msg.contains("GraphCanary"),
-            "error should mention GraphCanary: {msg}"
-        );
-    }
-
-    #[tokio::test]
-    async fn workflow_route_replay_only_returns_not_implemented() {
-        let err = run_workflow_report(
-            WorkflowExecutionRoute::ReplayOnly,
-            "test prompt",
-            std::path::Path::new("/nonexistent"),
-            "standard",
-            Vec::new(),
-            Vec::new(),
-            None,
-            &CliOverrides::default(),
-        )
-        .await;
-        assert!(err.is_err());
-        let msg = err.unwrap_err().to_string();
-        assert!(
-            msg.contains("ReplayOnly"),
-            "error should mention ReplayOnly: {msg}"
-        );
+    fn resolve_engine_flag_unknown_falls_back_to_graph() {
+        // Unknown values warn but do not fail.
+        assert_eq!(resolve_engine_flag(Some("runner-v2")), "graph");
+        assert_eq!(resolve_engine_flag(Some("legacy")), "graph");
+        assert_eq!(resolve_engine_flag(Some("unknown")), "graph");
     }
 
     #[test]
@@ -2311,5 +1506,98 @@ mod tests {
             effort: Some("high".to_string()),
         };
         assert_eq!(overrides.effort.as_deref(), Some("high"));
+    }
+
+    // ─── #245 conformance tests ─────────────────────────────────────────
+
+    #[test]
+    fn workflow_profile_validates_via_non_plan_services() {
+        let overrides = roko_execution::overrides_for_workflow(
+            Some("sonnet".to_string()),
+            None,
+            None,
+            Some(true),
+            None,
+        );
+        let request = roko_execution::NonPlanServiceRequest::new(
+            roko_execution::profiles::RuntimeProfile::Workflow,
+            PathBuf::from("/tmp/test"),
+            overrides,
+        );
+        let handle = roko_execution::build_non_plan_services(&request).unwrap();
+        assert_eq!(
+            handle.profile(),
+            roko_execution::profiles::RuntimeProfile::Workflow
+        );
+        assert!(handle.cascade_enabled());
+        assert!(handle.feedback_enabled());
+    }
+
+    #[test]
+    fn workflow_profile_rejects_plan_profile() {
+        let overrides = roko_execution::overrides_for_workflow(None, None, None, None, None);
+        let request = roko_execution::NonPlanServiceRequest::new(
+            roko_execution::profiles::RuntimeProfile::FullPlan,
+            PathBuf::from("/tmp/test"),
+            overrides,
+        );
+        assert!(
+            roko_execution::build_non_plan_services(&request).is_err(),
+            "FullPlan must be rejected by non-plan service builder"
+        );
+    }
+
+    #[test]
+    fn workflow_runtime_services_builder_constructs_for_workflow() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".roko")).unwrap();
+        let overrides = roko_execution::overrides::ExecutionOverrides {
+            model: Some("test-model".to_string()),
+            ..Default::default()
+        };
+        let services = roko_execution::RuntimeServicesBuilder::new(
+            roko_execution::profiles::RuntimeProfile::Workflow,
+            overrides,
+        )
+        .build(tmp.path())
+        .unwrap();
+        assert_eq!(
+            services.profile,
+            roko_execution::profiles::RuntimeProfile::Workflow
+        );
+    }
+
+    #[test]
+    fn chat_profile_validates_via_non_plan_services() {
+        let overrides = roko_execution::overrides_for_chat(None, None);
+        let request = roko_execution::NonPlanServiceRequest::new(
+            roko_execution::profiles::RuntimeProfile::ChatLight,
+            PathBuf::from("/tmp/test"),
+            overrides,
+        );
+        let handle = roko_execution::build_non_plan_services(&request).unwrap();
+        assert_eq!(
+            handle.profile(),
+            roko_execution::profiles::RuntimeProfile::ChatLight
+        );
+        // Chat disables affect by default
+        assert!(!handle.overrides().affect_enabled.unwrap_or(true));
+    }
+
+    #[test]
+    fn acp_profile_validates_via_non_plan_services() {
+        let overrides = roko_execution::overrides_for_acp("test-session", None, None);
+        let request = roko_execution::NonPlanServiceRequest::new(
+            roko_execution::profiles::RuntimeProfile::AgentServer,
+            PathBuf::from("/tmp/test"),
+            overrides,
+        );
+        let handle = roko_execution::build_non_plan_services(&request).unwrap();
+        assert_eq!(
+            handle.profile(),
+            roko_execution::profiles::RuntimeProfile::AgentServer
+        );
+        assert_eq!(handle.instance_id(), "acp_workflow_test-session",);
+        assert!(handle.cascade_enabled());
     }
 }

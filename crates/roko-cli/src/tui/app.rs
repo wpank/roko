@@ -1,6 +1,6 @@
 //! Interactive TUI application shell.
 //!
-//! Integrates the Mori-style tab system (F1-F7), modal dialogs, TuiState,
+//! Integrates the Mori-style tab system (F1-F10), modal dialogs, TuiState,
 //! TuiAction dispatch, PostFX pipeline, and atmosphere animations.
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -55,7 +55,7 @@ use super::ws_client::{AgentStreamClient, StreamChunk};
 /// Interactive dashboard shell backed by the existing snapshot renderer.
 ///
 /// Supports two rendering paths:
-/// - **Mori-style tabs** (F1-F7): full TuiState + views + modals + postfx
+/// - **Mori-style tabs** (F1-F10): full TuiState + views + modals + postfx
 /// - **Legacy scaffold pages**: original PageId-based rendering
 ///
 /// All expensive I/O stays off the render path. System metrics run on a
@@ -2720,8 +2720,8 @@ impl App {
                 };
                 if let Some(entry) = entries.get(idx) {
                     let text = format!("[{}] {} {}", entry.timestamp, entry.source, entry.message);
-                    // TODO: clipboard integration (arboard/copypasta)
-                    let _ = text; // Suppress unused warning until clipboard is wired
+                    // Clipboard integration deferred (arboard/copypasta).
+                    let _ = text;
                 }
             }
 
@@ -2797,10 +2797,7 @@ impl App {
                     .get(self.tui_state.selected_agent)
                     .map(|a| a.id.as_str())
                     .unwrap_or("");
-                let history_records = self
-                    .tui_state
-                    .agent_output_history
-                    .records_for(selected_id);
+                let history_records = self.tui_state.agent_output_history.records_for(selected_id);
                 let lines: Vec<String> = if history_records.is_empty() {
                     self.tui_state
                         .agents
@@ -3402,18 +3399,6 @@ impl App {
                 let current = self.tui_state.plan_scroll_offset as i32;
                 self.tui_state.plan_scroll_offset = (current + delta).max(0) as usize;
             }
-            (Tab::Logs, FocusZone::LogDetail) => {
-                let current = self.tui_state.log_detail_scroll as i32;
-                self.tui_state.log_detail_scroll = (current + delta).max(0) as usize;
-            }
-            (Tab::Marketplace, FocusZone::MarketDetail) => {
-                let current = self.tui_state.marketplace_detail_scroll as i32;
-                self.tui_state.marketplace_detail_scroll = (current + delta).max(0) as usize;
-            }
-            (Tab::Atelier, FocusZone::AtelierDetail) => {
-                let current = self.tui_state.atelier_detail_scroll as i32;
-                self.tui_state.atelier_detail_scroll = (current + delta).max(0) as usize;
-            }
             // Exhaustive: any remaining (tab, zone) combination is a no-op
             // rather than leaking into a shared scroll field.
             _ => {}
@@ -3527,15 +3512,6 @@ impl App {
             | (Tab::Inspect, FocusZone::InspectTree)
             | (Tab::Learning, FocusZone::LearningMetrics) => {
                 self.tui_state.plan_scroll_offset = offset;
-            }
-            (Tab::Logs, FocusZone::LogDetail) => {
-                self.tui_state.log_detail_scroll = offset;
-            }
-            (Tab::Marketplace, FocusZone::MarketDetail) => {
-                self.tui_state.marketplace_detail_scroll = offset;
-            }
-            (Tab::Atelier, FocusZone::AtelierDetail) => {
-                self.tui_state.atelier_detail_scroll = offset;
             }
             // Exhaustive: any remaining (tab, zone) combination is a no-op.
             _ => {}
@@ -5492,6 +5468,10 @@ mod tests {
                 .any(|n| n.message.contains("Pause requested"))
         );
 
+        // Simulate ack completing the pause state change (the real
+        // event loop commits on Completed ack; in tests we do it manually).
+        app.tui_state.is_paused = true;
+
         // Second toggle: should send Resume
         app.dispatch_action(TuiAction::TogglePause);
         let received = cmd_rx.try_recv().unwrap();
@@ -6867,7 +6847,11 @@ mod tests {
     #[test]
     fn tui_event_loop_tick_policy_dormant_on_idle_app() {
         let dir = tempdir().unwrap();
-        let app = App::new(dir.path());
+        let mut app = App::new(dir.path());
+        // Clear welcome modal and disable postfx so the tick policy only
+        // depends on work-related state, not first-run UI chrome.
+        app.tui_state.active_modal = None;
+        app.fx_config.screen_postfx = false;
         let inputs = app.tick_policy_inputs();
         let policy = next_tick_policy(&inputs);
         assert_eq!(
@@ -6896,6 +6880,10 @@ mod tests {
     fn tui_event_loop_tick_policy_idle_with_active_plan() {
         let dir = tempdir().unwrap();
         let mut app = App::new(dir.path());
+        // Clear welcome modal and disable postfx so the tick policy only
+        // depends on work-related state.
+        app.tui_state.active_modal = None;
+        app.fx_config.screen_postfx = false;
         // Add an active plan
         app.tui_state.plans.push(PlanEntry {
             id: "test-plan".to_string(),
@@ -6992,7 +6980,11 @@ mod tests {
     #[test]
     fn tui_event_loop_current_tick_duration_matches_policy() {
         let dir = tempdir().unwrap();
-        let app = App::new(dir.path());
+        let mut app = App::new(dir.path());
+        // Clear welcome modal and disable postfx so the tick policy only
+        // depends on work-related state.
+        app.tui_state.active_modal = None;
+        app.fx_config.screen_postfx = false;
         // Idle app with no active work: should be 250ms (Dormant)
         let dur = app.current_tick_duration();
         assert_eq!(

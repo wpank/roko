@@ -12,7 +12,7 @@
 > payload, path, and time limits through a typed JSON ABI for every current Rust hook.
 > Required fetch/load/validation/init failures abort runner and serve startup before work
 > or bind; optional failures are isolated and disabled. Claude/Codex CLI, Cursor/Hermes
-> ACP, and Runner-v2 Gemini CLI paths expose canonical handlers through authenticated
+> ACP, and Gemini CLI paths expose canonical handlers through authenticated
 > per-call MCP; Gemini uses native stream-JSON and task-scoped system settings. The relay accepts
 > allowlisted Ed25519 publishers and stores immutable signed versions atomically. Signed
 > schema-v2 packages bind semantic-version dependency ranges; relay backtracking selects

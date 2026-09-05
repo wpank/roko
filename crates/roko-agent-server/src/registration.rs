@@ -5,10 +5,12 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 
+#[cfg(feature = "chain")]
 use alloy_primitives::{U256, keccak256};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use base64::Engine;
+#[cfg(feature = "chain")]
 use roko_chain::{ChainWallet, TxHash, TxRequest};
 use serde::{Deserialize, Serialize};
 
@@ -83,6 +85,7 @@ pub struct AgentRegistration {
     /// Optional passport identifier used for `updateAgentCardUri`.
     pub passport_id: Option<String>,
     /// Optional signing wallet.
+    #[cfg(feature = "chain")]
     pub wallet: Option<Arc<dyn ChainWallet>>,
     /// Optional callback for non-wallet discovery registration.
     pub discovery_callback:
@@ -109,6 +112,7 @@ impl Default for AgentRegistration {
             relay: None,
             identity_registry_address: None,
             passport_id: None,
+            #[cfg(feature = "chain")]
             wallet: None,
             discovery_callback: None,
             domain_tags: vec!["roko".to_string()],
@@ -142,7 +146,11 @@ impl AgentRegistration {
         addr: SocketAddr,
     ) -> Result<RegistrationOutcome> {
         let mut outcome = self.publish_card(Arc::clone(&state), addr).await?;
-        outcome.tx_hash = self.update_identity_registry(&outcome.card_uri).await?;
+
+        #[cfg(feature = "chain")]
+        {
+            outcome.tx_hash = self.update_identity_registry(&outcome.card_uri).await?;
+        }
 
         if outcome.tx_hash.is_none() {
             self.publish_wallet_free_registration(outcome.clone())
@@ -175,6 +183,7 @@ impl AgentRegistration {
         })
     }
 
+    #[cfg(feature = "chain")]
     async fn update_identity_registry(&self, card_uri: &str) -> Result<Option<String>> {
         let Some((wallet, registry, passport_id)) = self.chain_update_config() else {
             return Ok(None);
@@ -191,6 +200,7 @@ impl AgentRegistration {
         Ok(Some(tx_hash_string(&hash)))
     }
 
+    #[cfg(feature = "chain")]
     fn chain_update_config(&self) -> Option<(&dyn ChainWallet, &str, &str)> {
         Some((
             self.wallet.as_deref()?,
@@ -207,10 +217,12 @@ impl AgentRegistration {
     }
 }
 
+#[cfg(feature = "chain")]
 fn tx_hash_string(hash: &TxHash) -> String {
     hash.as_str().to_string()
 }
 
+#[cfg(feature = "chain")]
 fn build_update_agent_card_uri_calldata(passport_id: &str, card_uri: &str) -> Result<Vec<u8>> {
     let selector = &keccak256("updateAgentCardUri(uint256,string)".as_bytes())[..4];
     let encoded_passport = encode_passport_id_word(passport_id)?;
@@ -223,6 +235,7 @@ fn build_update_agent_card_uri_calldata(passport_id: &str, card_uri: &str) -> Re
     Ok(data)
 }
 
+#[cfg(feature = "chain")]
 fn encode_passport_id_word(passport_id: &str) -> Result<[u8; 32]> {
     let trimmed = passport_id.trim();
     let value = if let Some(hex) = trimmed.strip_prefix("0x") {
@@ -233,6 +246,7 @@ fn encode_passport_id_word(passport_id: &str) -> Result<[u8; 32]> {
     Ok(value.to_be_bytes::<32>())
 }
 
+#[cfg(feature = "chain")]
 fn abi_encode_string(value: &str) -> Vec<u8> {
     let bytes = value.as_bytes();
     let padded = bytes.len().next_multiple_of(32);
@@ -243,13 +257,14 @@ fn abi_encode_string(value: &str) -> Vec<u8> {
     encoded
 }
 
+#[cfg(feature = "chain")]
 fn encode_word(value: u64) -> [u8; 32] {
     let mut out = [0_u8; 32];
     out[24..].copy_from_slice(&value.to_be_bytes());
     out
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "chain"))]
 mod tests {
     use super::*;
 

@@ -115,7 +115,7 @@ fn file_mtime(path: &PathBuf) -> Duration {
         .and_then(|m| m.modified())
         .and_then(|t| {
             t.duration_since(std::time::UNIX_EPOCH)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                .map_err(std::io::Error::other)
         })
         .unwrap_or(Duration::ZERO)
 }

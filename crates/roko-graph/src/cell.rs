@@ -4,13 +4,36 @@
 //! instantiated from TOML config via the `CellRegistry` and executed by the
 //! graph engine in topological order.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use roko_core::{PredictionRecord, ProtocolId, Signal, error::Result};
+use roko_core::{PredictionRecord, ProtocolId, SharedGateEvaluator, Signal, error::Result};
 
 /// Semantic version tuple for Cell implementations.
 pub type CellVersion = (u32, u32, u32);
+
+/// Shared service handles injected into `CellContext` by the graph engine.
+///
+/// The engine populates these before each Cell execution. Cells access
+/// services through `ctx.resources` in their `execute` implementation.
+#[derive(Clone, Default)]
+pub struct CellResources {
+    /// Shared gate evaluator for cells that need to run verification.
+    ///
+    /// Populated by the engine from the host-supplied gate service.
+    /// `GatePipelineCell` accesses this as `ctx.resources.gates`.
+    pub gates: Option<Arc<dyn SharedGateEvaluator>>,
+}
+
+impl std::fmt::Debug for CellResources {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CellResources")
+            .field("gates", &self.gates.is_some())
+            .finish()
+    }
+}
 
 /// Runtime context passed to `Cell::execute()`.
 ///
@@ -50,12 +73,27 @@ pub struct CellContext {
     /// sequential execution or when the wave context is not available.
     /// Added by #246; wired by #256.
     pub total_waves: Option<u32>,
+    /// Shared service handles injected by the graph engine (#250).
+    ///
+    /// Cells access specific services through typed fields, e.g.
+    /// `ctx.resources.gates` for gate evaluation.
+    pub resources: CellResources,
+    /// Shared cancellation flag for cooperative cell shutdown (#255).
+    ///
+    /// When `Some` and the inner `AtomicBool` is `true`, the cell should
+    /// abort work as soon as practical. Checked via [`CellContext::is_cancelled`].
+    pub cancel_flag: Option<Arc<AtomicBool>>,
+    /// Shared pause flag for cooperative cell suspension (#255).
+    ///
+    /// When `Some` and the inner `AtomicBool` is `true`, the cell should
+    /// pause new work and yield. Checked via [`CellContext::is_paused`].
+    pub pause_flag: Option<Arc<AtomicBool>>,
 }
 
 impl CellContext {
     /// Construct a new `CellContext` with no trace or budget info.
     #[must_use]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             trace_id: None,
             run_id: None,
@@ -66,6 +104,9 @@ impl CellContext {
             capabilities: None,
             wave_index: None,
             total_waves: None,
+            resources: CellResources::default(),
+            cancel_flag: None,
+            pause_flag: None,
         }
     }
 
@@ -139,6 +180,55 @@ impl CellContext {
     pub fn with_capabilities(mut self, capabilities: roko_core::CapabilitySet) -> Self {
         self.capabilities = Some(capabilities);
         self
+    }
+
+    /// Builder: attach shared service resources.
+    #[must_use]
+    pub fn with_resources(mut self, resources: CellResources) -> Self {
+        self.resources = resources;
+        self
+    }
+
+    /// Builder: attach a shared cancellation flag (#255).
+    ///
+    /// When the flag is set to `true`, [`is_cancelled`](Self::is_cancelled)
+    /// will return `true` and the cell should abort work.
+    #[must_use]
+    pub fn with_cancel_flag(mut self, flag: Arc<AtomicBool>) -> Self {
+        self.cancel_flag = Some(flag);
+        self
+    }
+
+    /// Builder: attach a shared pause flag (#255).
+    ///
+    /// When the flag is set to `true`, [`is_paused`](Self::is_paused)
+    /// will return `true` and the cell should yield.
+    #[must_use]
+    pub fn with_pause_flag(mut self, flag: Arc<AtomicBool>) -> Self {
+        self.pause_flag = Some(flag);
+        self
+    }
+
+    /// Returns `true` if cancellation has been requested (#255).
+    ///
+    /// Returns `false` when no cancel flag is set. Cells should check
+    /// this periodically during long-running operations and abort if true.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel_flag
+            .as_ref()
+            .is_some_and(|f| f.load(Ordering::Acquire))
+    }
+
+    /// Returns `true` if the executor is paused (#255).
+    ///
+    /// Returns `false` when no pause flag is set. Cells should check
+    /// this to delay starting new work until unpaused.
+    #[must_use]
+    pub fn is_paused(&self) -> bool {
+        self.pause_flag
+            .as_ref()
+            .is_some_and(|f| f.load(Ordering::Acquire))
     }
 }
 
@@ -231,4 +321,64 @@ pub trait Cell: Send + Sync + 'static {
     /// The graph engine calls this in topological order, feeding outputs from
     /// upstream cells as inputs to downstream cells.
     async fn execute(&self, input: Vec<Signal>, ctx: &CellContext) -> Result<Vec<Signal>>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cell_resources_default_has_no_gates() {
+        let r = CellResources::default();
+        assert!(r.gates.is_none());
+    }
+
+    #[test]
+    fn cell_resources_debug_shows_presence() {
+        let r = CellResources::default();
+        let debug = format!("{r:?}");
+        assert!(debug.contains("gates: false"));
+    }
+
+    #[test]
+    fn cell_context_new_has_default_resources() {
+        let ctx = CellContext::new();
+        assert!(ctx.resources.gates.is_none());
+    }
+
+    #[test]
+    fn cell_context_with_resources() {
+        // Verify the builder method works.
+        let r = CellResources::default();
+        let ctx = CellContext::new().with_resources(r);
+        assert!(ctx.resources.gates.is_none());
+    }
+
+    #[test]
+    fn cell_context_with_gates_resource() {
+        use roko_core::{
+            SharedGateError, SharedGateEvaluator, SharedGateRequest, SharedGateVerdict,
+        };
+
+        struct MockEvaluator;
+
+        #[async_trait]
+        impl SharedGateEvaluator for MockEvaluator {
+            async fn verify_rung(
+                &self,
+                _request: &SharedGateRequest,
+            ) -> std::result::Result<SharedGateVerdict, SharedGateError> {
+                Ok(SharedGateVerdict::pass("mock"))
+            }
+        }
+
+        let r = CellResources {
+            gates: Some(Arc::new(MockEvaluator)),
+        };
+        let ctx = CellContext::new().with_resources(r);
+        assert!(ctx.resources.gates.is_some());
+
+        let debug = format!("{:?}", ctx.resources);
+        assert!(debug.contains("gates: true"));
+    }
 }

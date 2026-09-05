@@ -103,11 +103,15 @@ impl ComposeRequest {
 ///
 /// Each enrichment payload carries the identity scope, a list of prompt
 /// sections produced by that provider, and any warnings generated.
+/// The `provider` field acts as a discriminator tag so that serde
+/// deserialization can distinguish structurally-identical payloads.
 macro_rules! enrichment_payload {
-    ($(#[$meta:meta])* $name:ident) => {
+    ($(#[$meta:meta])* $name:ident, $cell_id:expr) => {
         $(#[$meta])*
         #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
         pub struct $name {
+            /// Discriminator tag matching the Cell ID that produced this payload.
+            pub provider: String,
             /// Identity scope for this enrichment output.
             pub scope: ComposeScope,
             /// Prompt sections produced by this enrichment provider.
@@ -117,10 +121,14 @@ macro_rules! enrichment_payload {
         }
 
         impl $name {
+            /// The Cell ID this payload is associated with.
+            pub const PROVIDER_TAG: &'static str = $cell_id;
+
             /// Convenience constructor with no warnings.
             #[must_use]
             pub fn new(scope: ComposeScope, sections: Vec<PromptSection>) -> Self {
                 Self {
+                    provider: $cell_id.to_string(),
                     scope,
                     sections,
                     warnings: Vec::new(),
@@ -131,6 +139,7 @@ macro_rules! enrichment_payload {
             #[must_use]
             pub fn degraded(scope: ComposeScope, warning: impl Into<String>) -> Self {
                 Self {
+                    provider: $cell_id.to_string(),
                     scope,
                     sections: Vec::new(),
                     warnings: vec![warning.into()],
@@ -144,21 +153,21 @@ enrichment_payload!(
     /// Output from the knowledge enrichment Cell (`compose.knowledge@1`).
     ///
     /// Provides scoped memory, knowledge store, and code-index context.
-    KnowledgeSections
+    KnowledgeSections, "compose.knowledge@1"
 );
 
 enrichment_payload!(
     /// Output from the episodes enrichment Cell (`compose.episodes@1`).
     ///
     /// Provides relevant episode summaries and error-pattern context.
-    EpisodeSections
+    EpisodeSections, "compose.episodes@1"
 );
 
 enrichment_payload!(
     /// Output from the playbook enrichment Cell (`compose.playbook@1`).
     ///
     /// Provides playbook/skill/Dreams context.
-    PlaybookSections
+    PlaybookSections, "compose.playbook@1"
 );
 
 enrichment_payload!(
@@ -166,14 +175,14 @@ enrichment_payload!(
     ///
     /// Provides dependency-output and task-context sections. **Required** --
     /// absence or error fails the aggregate.
-    TaskContextSections
+    TaskContextSections, "compose.task_context@1"
 );
 
 enrichment_payload!(
     /// Output from the modulation enrichment Cell (`compose.modulation@1`).
     ///
     /// Provides Daimon/cortical/routing modulation context.
-    ModulationSections
+    ModulationSections, "compose.modulation@1"
 );
 
 enrichment_payload!(
@@ -181,7 +190,7 @@ enrichment_payload!(
     ///
     /// Provides safety and capability context. **Required** -- absence or
     /// error fails the aggregate.
-    SafetySections
+    SafetySections, "compose.safety@1"
 );
 
 // ---------------------------------------------------------------------------
@@ -194,6 +203,8 @@ enrichment_payload!(
 /// because experiment sections may modify or replace existing sections.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExperimentAssignment {
+    /// Discriminator tag matching the Cell ID that produced this payload.
+    pub provider: String,
     /// Identity scope for this experiment output.
     pub scope: ComposeScope,
     /// Prompt sections injected by the experiment (may replace canonical ones).
@@ -205,6 +216,9 @@ pub struct ExperimentAssignment {
 }
 
 impl ExperimentAssignment {
+    /// The Cell ID this payload is associated with.
+    pub const PROVIDER_TAG: &'static str = "compose.experiment@1";
+
     /// Convenience constructor with no warnings.
     #[must_use]
     pub fn new(
@@ -213,6 +227,7 @@ impl ExperimentAssignment {
         active_experiment_ids: Vec<String>,
     ) -> Self {
         Self {
+            provider: Self::PROVIDER_TAG.to_string(),
             scope,
             sections,
             warnings: Vec::new(),
@@ -224,6 +239,7 @@ impl ExperimentAssignment {
     #[must_use]
     pub fn degraded(scope: ComposeScope, warning: impl Into<String>) -> Self {
         Self {
+            provider: Self::PROVIDER_TAG.to_string(),
             scope,
             sections: Vec::new(),
             warnings: vec![warning.into()],

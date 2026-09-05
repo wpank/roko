@@ -1,6 +1,6 @@
 # Roko
 
-Roko is a Rust toolkit for building agents that build themselves. 35 workspace members, ~800K LOC, 9,900+ tests.
+Roko is a Rust toolkit for building agents that build themselves. 39 workspace members, ~1M LOC, 10,300+ tests.
 
 **Goal**: roko develops itself — it reads PRDs, generates implementation plans, executes tasks
 via Claude agents, validates with gates, and persists results. The core loop is wired. Your job
@@ -22,25 +22,25 @@ are checked; DOC reconciliation is 3/71 done. Direct TUI/show/API/workspace Runn
 share the verified canonical snapshot loader, while StateHub overlay/SSE cursor atomicity and
 single-generation resume remain explicit partial work.
 
-## Current state (2026-08-17)
+## Current state (2026-09-05)
 
 The plan-execute-gate-persist loop **works end-to-end**, and so do the HTTP
 control plane, per-agent sidecar, and interactive TUI:
 
 | Component | Status | Where |
 |---|---|---|
-| Plan discovery + DAG executor | **Wired** | `crates/roko-cli/src/runner/event_loop.rs` (runner-v2; legacy `orchestrate.rs` removed) |
+| Plan discovery + DAG executor | **Wired** | Graph engine is the sole executor; `roko-graph` cells, `graph_execution/` host services, legacy Runner-v2 event loop retained for snapshot resume only |
 | Agent dispatch (CLI + HTTP providers) | **Wired** | Provider-neutral runner dispatch plus `roko-agent` adapters |
 | Safety layer (role auth, pre/post checks) | **Complete (E34 8/8 strict)** | Trust-origin IFC, exact Cell × Graph × Space capabilities, five-head corrigibility, sandbox/process policy, and mandatory audited hooks are live. Canonical provider primary outputs and every host-visible tool result traverse the five-stage immune Graph; bounded workspace-rooted authority persists provider isolation, tool cooldown/isolation, evidence, and reciprocal incident links independently of attempt worktrees. Provider-owned internal calls/results, provider trace Signals, broad semantic/adaptive immune memory, and externally anchored whole-ledger authenticity remain product residuals |
 | Gate pipeline (compile, test, clippy, diff) | **Wired** | `runner/gate_dispatch.rs` with enriched rung inputs |
 | Release verification | **P34 4/4 historical checkpoint (2026-08-16)** | Formatting, workspace check, strict default-target/default-feature workspace clippy, the default package/integration/doctest suite, optimized release build, release CLI startup/doctor/plan validation, and focused strict plan validation passed at that checkpoint. Subsequent dirty-tree changes require fresh verification; the stricter all-target/all-feature final gate remains separate |
-| Session persistence (snapshot + resume) | **Wired** | `.roko/state/state-snapshot.json` (authoritative runner-v2 snapshot) |
+| Session persistence (snapshot + resume) | **Wired** | `.roko/state/graph/` (Graph checkpoints); `.roko/state/state-snapshot.json` (legacy Runner-v2 snapshot) |
 | PRD lifecycle (idea/draft/plan) | **Wired** | `roko prd` subcommands |
 | Research agent | **Wired** | `roko research` subcommands |
 | Plan generation from PRD | **Wired** | `roko prd plan <slug>` → agent generates tasks.toml |
 | SystemPromptBuilder (9-layer prompts) | **Wired** | `RoleSystemPromptSpec` in runner/ |
 | EpisodeLogger (agent turn recording) | **Wired** | `.roko/episodes.jsonl` via runner/ |
-| Resource lifecycle + disk admission | **Wired** | Ordered runner-v2 cleanup, bounded JSONL generations, disk-aware worktree admission, `roko doctor disk` |
+| Resource lifecycle + disk admission | **Wired** | Ordered cleanup, bounded JSONL generations, disk-aware worktree admission, `roko doctor disk` |
 | Periodic telemetry sampling | **Wired** | `roko-serve` samples shared metrics every 30s through `PeriodicObserver` and writes rotation-bounded JSONL |
 | Telemetry Lens runtime | **Complete (E33 9/9; 39/39 ingress)** | All 11 built-ins, bounded queued delivery, breaker controls, typed StateHub aggregation, REST/SSE, restart-durable history, resolution queries, configurable 7-day retention, and all 39 production variants are live. Registered agents commit the final six through a typed, durable, identity-bound observation boundary; direct native Agent publication remains separate product integration scope |
 | Agent cognitive autonomy | **Complete (E23 10/10 manifest)** | Lifecycle type-state, behavioral vitality, CorticalState energy fields, energy accounting, adaptive timescales, energy/affect coupling, EFE routing, GoalTree, SlotManager, revisioned mode owners, and phase-aware runner dispatch are live. Native Agent-to-E33 observation publication remains broader integration scope |
@@ -48,7 +48,7 @@ control plane, per-agent sidecar, and interactive TUI:
 | Tool/plugin ecosystem | **Complete (E32 8/8 manifest)** | Signed dependency graphs, bounded typed WASM hooks, strict plugin admission, verified relay/install, and current CLI/MCP targets satisfy the manifest. WIT/Component hostcalls and OpenClaw/legacy adapter parity remain separate roadmap work |
 | Named surfaces | **Complete (E37 9/9 contract/backend manifest)** | Typed Workbench/Inbox/Canvas/Minimap/Autonomy projections, five dedicated StateHub-backed routes, OpenAPI, events, object types, and legacy-tab mapping are live. Full named-surface TUI rendering and several native runtime sources remain product residuals |
 | Cold substrate archival | **Wired** | Configurable server timer archives aged signals before pruning the hot substrate |
-| Provider outcome feedback | **Wired** | Live workflow attempts plus runner-v2 CLI/bridge outcomes update one persisted health registry; unhealthy providers are filtered during learned routing |
+| Provider outcome feedback | **Wired** | Live workflow attempts plus CLI/bridge outcomes update one persisted health registry; unhealthy providers are filtered during learned routing |
 | Worker callback authentication | **Wired** | Deployment-scoped opaque IDs and hashed token verifiers compose with the global serve-auth middleware |
 | GitHub workflow integration | **Wired (E46 12/12)** | Draft plan PRs, terminal comments/issues, exact accepted-commit publication, local-regression + CI merge ordering, webhook trigger graduation, and `roko github status` |
 | ProcessSupervisor (lifecycle mgmt) | **Wired** | `PlanRunner` tracks + shuts down agents |
@@ -93,6 +93,7 @@ control plane, per-agent sidecar, and interactive TUI:
 | TUI file watcher | **Wired** | `notify::RecommendedWatcher` in `tui/fs_watch.rs` |
 | Engram-to-Signal rename (2026-08-12) | **Done** | `Signal` is the primary name across the workspace; `Engram` kept as underlying struct with `pub type Signal = Engram` |
 | Code hygiene batch (2026-08-15) | **Done for E12** | E12 is 9/9: the obsolete orchestrator island is removed after live contracts/tests were ported, and the plugin consumer audit ratified `roko-plugin` as the canonical E30/E32 SDK. Broader `eprintln!`/`.expect()` cleanup remains separately tracked. |
+| Engine convergence (2026-09-05) | **Done** | Graph is the sole engine (#260 default, #276 retired WorkflowEngine). Runner-v2 retained as `--engine legacy` for one release cycle. `roko-execution` RuntimeServices builder (#243) provides shared service facade |
 | End-to-end dogfood (2026-08-13) | **Fixes landed; rerun pending** | The first run exposed config merge, stale-state, fsmonitor, and enrichment-transition defects; each now has a regression fix. See `tmp/dogfood-2026-08-13/DOGFOOD-DEBRIEF.md` |
 
 ### Remaining release/product work
@@ -127,8 +128,10 @@ The primary protocol noun is `Signal`, backed by the `Engram` struct and its
 (Store, ColdStore, Score, Verify, Route, Compose, React, Bus, Observe, Connect, Trigger,
 Substrate). Missing or unknown safety contracts fail closed: unsupported tool use is denied.
 The conceptual workflow is query -> score -> route -> compose -> act -> verify -> write ->
-react. Production ownership is explicit: `roko run` uses `WorkflowEngine`, plans use
-Runner-v2 or Graph, and the core `select_compose_verify_persist` helper covers only the
+react. Production ownership is explicit: `roko run` uses graph templates via
+`WorkflowGraphController` (#276 retired `WorkflowEngine`), plans use the Graph engine
+(#260 made Graph the default, Runner-v2 retained as `--engine legacy` for one release
+cycle), and the core `select_compose_verify_persist` helper covers only the
 non-ACT/non-BROADCAST signal-selection subset.
 
 ## Self-hosting workflow
@@ -149,10 +152,10 @@ cargo run -p roko-cli -- research enhance-prd system-prompt-wiring
 cargo run -p roko-cli -- prd plan system-prompt-wiring
 
 # 5. Execute the plan (agents run tasks, gates validate, state persists)
-cargo run -p roko-cli -- plan run plans/ --engine runner-v2
+cargo run -p roko-cli -- plan run plans/
 
 # 6. Resume if interrupted
-cargo run -p roko-cli -- plan run plans/ --engine runner-v2 --resume-plan
+cargo run -p roko-cli -- plan run plans/ --resume-plan
 
 # 7. Watch progress
 cargo run -p roko-cli -- dashboard
@@ -181,24 +184,39 @@ pre-commit checks in the Building section.
 | Command | What it does |
 |---|---|
 | `roko init` | Create `.roko/` directory and `roko.toml` |
-| `roko run "<prompt>"` | Single prompt through `WorkflowEngine` (compose -> provider -> gate -> persist) |
+| `roko setup` | Interactive setup wizard: detect providers, init workspace, verify |
+| `roko run "<prompt>"` | Single prompt through graph templates (compose -> provider -> gate -> persist) |
 | `roko do "<prompt>"` | Execute a task via agent dispatch (used internally by `roko run`) |
+| `roko develop "<prompt>"` | Plan-first development: generate plan, approve, execute |
+| `roko show [subject]` | Inspect workspace state: costs, agents, knowledge, plans, learning, history |
 | `roko status` | Query signals, report counts and episodes |
 | `roko doctor` | Diagnose workspace bootstrap state |
-| `roko doctor disk` | Report free space, stale targets, worktrees, and oversized JSONL logs |
+| `roko doctor disk/network` | Report free space, stale targets, worktrees, or network reachability |
+| `roko diagnose <plan-id>` | Diagnose why a plan failed (structured JSON output) |
+| `roko resume [run-id]` | Resume a plan execution from its last checkpoint |
 | `roko github status` | Inspect GitHub config, authentication, plan PR/CI state, and failure issues |
+| `roko think "<question>"` | Research a question without executing agents or changing files |
+| `roko note "<text>"` | Capture a quick note (no LLM, instant, with optional tags) |
+| `roko login [url]` | Authenticate with a roko-serve instance (browser or API key) |
+| `roko logout` | Remove stored credentials |
+| `roko whoami` | Show current authentication status |
+| `roko vision-loop <file>` | Iterative vision-guided UI refinement loop |
+| `roko history [id]` | List or show past chat session summaries |
+| `roko cache status/prune` | Inspect and safely prune workspace-local build/evidence caches |
 
 ### Planning & PRDs
 | Command | What it does |
 |---|---|
 | `roko plan list/show/create` | Manage plans |
-| `roko plan run <dir> --engine runner-v2` | Execute plans through the live runner-v2 loop |
+| `roko plan run <dir>` | Execute plans through the Graph engine (default; `--engine legacy` for Runner-v2 fallback) |
 | `roko plan generate/regenerate` | Generate or regenerate plans from prompts/PRDs |
+| `roko plan index` | Rebuild or verify the deterministic plans index |
 | `roko plan pause/resume/cancel` | Pause, resume, or cancel a running plan |
 | `roko plan retry <dir>` | Retry failed tasks in a plan |
 | `roko plan status <dir>` | Show execution status for a plan |
-| `roko plan queue` | List queued plans awaiting execution |
+| `roko plan queue show/validate/init` | Queue manifest operations |
 | `roko plan validate <dir>` | Lint tasks.toml without executing |
+| `roko backlog import/list/audit` | Import backlog specs as PRD ideas, list items, reconcile status |
 | `roko prd idea "<text>"` | Capture a work item idea |
 | `roko prd list/status` | List PRDs, coverage report |
 | `roko prd draft new/edit/promote/list` | Draft lifecycle |
@@ -209,6 +227,7 @@ pre-commit checks in the Building section.
 | Command | What it does |
 |---|---|
 | `roko agent create --name X --domain Y` | Create agent from manifest |
+| `roko agent delete --name X` | Delete an agent and clean up its state (ordered 8-step shutdown) |
 | `roko agent start --name X` | Start a long-running agent |
 | `roko agent stop --name X` | Stop a running agent |
 | `roko agent list` | List agents with status |
@@ -223,6 +242,7 @@ pre-commit checks in the Building section.
 | `roko research search "<query>"` | Direct web search (Perplexity) |
 | `roko research enhance-prd/plan/tasks` | Enhance documents with research |
 | `roko research analyze` | Analyze execution data |
+| `roko research list` | List all research artifacts |
 
 ### Knowledge (neuro + dreams + custody + archive)
 | Command | What it does |
@@ -242,6 +262,9 @@ pre-commit checks in the Building section.
 | Command | What it does |
 |---|---|
 | `roko learn all/router/experiments/efficiency/episodes` | Inspect learning state |
+| `roko learn reflexes` | Show T0 reflex rules (count, top five by hits, recent demotions) |
+| `roko learn gates` | Show adaptive gate threshold state |
+| `roko learn knowledge-stats` | Show durable knowledge entry counts |
 | `roko learn inspect gates/routing/budget` | Read-only subsystem inspection (thresholds, routing, budget) |
 | `roko learn tune gates/routing/budget` | (deprecated) Alias for `learn inspect` |
 
@@ -255,24 +278,38 @@ pre-commit checks in the Building section.
 | Command | What it does |
 |---|---|
 | `roko config init/show/path/edit/set` | Core config management |
+| `roko config doctor` | Print basic config health without modifying files |
 | `roko config validate/migrate` | Schema validation, legacy migration |
 | `roko config set-secret/check-secrets` | Secret management |
+| `roko config export` | Export config as environment variables for a deployment target |
+| `roko config env` | List all recognized environment variables with descriptions |
 | `roko config providers list/health/test` | LLM provider inspection |
+| `roko config providers available/discover/add/catalog/validate` | Provider discovery and setup |
 | `roko config models list/route` | Model inspection and routing |
 | `roko config subscriptions list/add/remove` | Event subscriptions |
 | `roko config events` | Configured event sources |
 | `roko config experiments` | Model A/B experiments |
-| `roko config plugins list/install/remove/audit` | Plugin management |
+| `roko config plugins list/install/remove/audit/publish` | Plugin management |
 | `roko config secrets set/get/list/rotate` | Profile-aware secrets |
+| `roko config mcp list/test/add` | MCP server configuration |
 | `roko config preset gates/routing/budget/model` | Apply validated config presets (with --dry-run, --yes) |
 
 ### Server & deployment
 | Command | What it does |
 |---|---|
 | `roko serve` | Start HTTP control plane (~376 canonical routes on :6677) |
+| `roko acp` | Start ACP (Agent Client Protocol) server for editor integration |
 | `roko daemon start/stop/status/logs/install` | Daemon lifecycle |
 | `roko deploy railway/fly/docker` | Cloud deployment |
 | `roko worker` | Run as deployed worker |
+
+### Graph, feeds, recipes, and triggers
+| Command | What it does |
+|---|---|
+| `roko graph run/validate/inspect` | Execute, validate, and inspect graph definitions (DAGs of cells) |
+| `roko feed list/status/start/stop` | Inspect and manage runtime data feeds |
+| `roko recipe list/show/validate/run` | Manage and evaluate pure-data feed recipes |
+| `roko trigger list/show/create/fire` | Manage trigger bindings |
 
 ### Utilities
 | Command | What it does |
@@ -280,7 +317,9 @@ pre-commit checks in the Building section.
 | `roko dashboard` | Interactive ratatui TUI (F1–F10 tabs) |
 | `roko replay <hash>` | Walk signal DAG by hash |
 | `roko inject <session> <payload>` | Signal injection |
-| `roko index build/search/stats` | Code intelligence index |
+| `roko index build/rebuild/search/stats` | Code intelligence index |
+| `roko run-index repair` | Inspect or rebuild derived per-run event indexes |
+| `roko bench demo/swe` | Run benchmark evaluations and write learning telemetry |
 | `roko new <type> <name>` | Scaffold boilerplate |
 | `roko explain <topic>` | Concept explainer (3 depth levels) |
 | `roko completions <shell>` | Shell completion scripts |
@@ -300,7 +339,8 @@ pre-commit checks in the Building section.
 | roko-cli | `crates/roko-cli/` | CLI, plan DAG/runner, merge queue, worktree manager, ratatui TUI | Main execution entry point |
 | roko-fs | `crates/roko-fs/` | FileSubstrate (JSONL), GC, layout | Stable |
 | roko-std | `crates/roko-std/` | 35 definitions by default (16 executable local + 19 GitHub MCP); 52 with typed optional-chain placeholders; HTTP MCP clients/resolvers retained at runtime | Partial because optional-chain entries remain typed placeholders |
-| roko-runtime | `crates/roko-runtime/` | ProcessSupervisor, event bus, cancellation | Wired into PlanRunner |
+| roko-execution | `crates/roko-execution/` | RuntimeServices builder, diagnostic service, execution control, feedback settlement | Profile-driven shared service facade for CLI/serve/ACP (#243) |
+| roko-runtime | `crates/roko-runtime/` | ProcessSupervisor, event bus, cancellation, workflow contract | Wired into PlanRunner and graph execution |
 | roko-primitives | `crates/roko-primitives/` | HDC vectors, tier routing | Fully wired (tier routing + HDC fingerprint-per-episode) |
 | roko-neuro | `crates/roko-neuro/` | Durable knowledge store, distillation, tier progression | Wired |
 | roko-mcp-code | `crates/roko-mcp-code/` | Code-intelligence MCP server | Wired |
@@ -311,7 +351,7 @@ pre-commit checks in the Building section.
 | roko-daimon | `crates/roko-daimon/` | Affect engine, somatic markers, dispatch modulation | Wired (DaimonState loaded + used per-task in runner/) |
 | roko-acp | `crates/roko-acp/` | ACP (Agent Client Protocol) server for Cursor/external agent integration | E17 8/8; 180 ACP tests pass |
 | roko-plugin | `crates/roko-plugin/` | Plugin manifests, executable declarative tools, canonical tier/capability policy, semantic-version/dependency resolution | 8/8 manifest; signed dependency ranges, range-aware relay/CLI graph validation, strict admission, kernel confinement, verified registry install/publish, fail-fast startup, bounded all-23-hook WASM, Claude/Codex MCP, Cursor/Hermes ACP, and native authenticated Gemini CLI MCP are live. Component-model Store/Bus hostcalls plus OpenClaw/legacy one-shot parity are open |
-| roko-graph | `crates/roko-graph/` | Graph data structures, DAG operations | Partial runtime: bounded parallel waves, conditional routing, live provider dispatch, actual paid-failure-aware provider-cost enforcement/reporting, atomic reservations, resume-durable schema-v2 cost state, exact graph-fingerprinted Activity resume, restart-durable Hot tick/output/budget checkpoints, seven cognitive Cells, five Verify Cells, and the immune decision Graph are wired. Runner-v2 gates/replan/approval/worktree/merge/full-persistence/cancellation parity remains; a single call can report more than its reservation because providers expose exact cost only after completion |
+| roko-graph | `crates/roko-graph/` | Graph engine, DAG cells, topology, cost state | Sole execution engine since #260. Bounded parallel waves, conditional routing, live provider dispatch, paid-failure-aware cost enforcement, atomic reservations, resume-durable schema-v2 cost state, graph-fingerprinted Activity resume, restart-durable Hot tick/output/budget checkpoints, seven cognitive Cells, five Verify Cells, immune decision Graph, ProductionPlanTopology, and GuaranteedFinallyController are wired. WorkflowEngine retired by #276; Runner-v2 retained as `--engine legacy` for one release cycle |
 | roko-demo | `crates/roko-demo/` | Demo/example binary for showcasing features | Built |
 | roko-chain | `crates/roko-chain/` | Optional chain client/runtime primitives plus tested local registry, marketplace, arena, and DeFi state machines. daeji owns node/BFT/precompiles in a separate repo. | Production transport, persistence, authorization, indexing, and execution adapters remain Phase 2+; legacy rate-oracle vertical removed |
 
@@ -409,5 +449,8 @@ learn from failures, and iterate. Remaining work:
 20. ~~**Find `--bare` equivalent**~~ → Done. Claude CLI's supported `--system-prompt`
     replaces its built-in prompt when `bare_mode = true`; full mode continues to use
     `--append-system-prompt`. MCP and tool policy remain independent.
+21. ~~**Engine convergence**~~ → Done. Graph is the sole engine (#260 default, #276 retired
+    WorkflowEngine). Runner-v2 retained as `--engine legacy` for one release cycle.
+    `roko-execution` provides the shared `RuntimeServices` builder (#243).
 
 For detailed implementation status and product/release residuals, see `.roko/GAPS.md`.

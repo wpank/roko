@@ -1,16 +1,11 @@
-//! Plugin SDK for Roko event sources and feedback collectors.
-
+// Plugin types: trait-bound literal returns and config structs without Eq.
 #![allow(
     clippy::derive_partial_eq_without_eq,
     clippy::double_must_use,
     clippy::explicit_into_iter_loop,
-    clippy::ignored_unit_patterns,
-    clippy::missing_const_for_fn,
-    clippy::option_if_let_else,
-    clippy::return_self_not_must_use,
-    clippy::trivially_copy_pass_by_ref,
     clippy::unnecessary_literal_bound
 )]
+//! Plugin SDK for Roko event sources and feedback collectors.
 
 pub mod dependency;
 pub mod manifest;

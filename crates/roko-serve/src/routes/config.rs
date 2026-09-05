@@ -428,13 +428,12 @@ fn validate_references(config: &RokoConfig) -> Vec<String> {
     let mut warnings: Vec<String> = config
         .models
         .iter()
-        .filter_map(|(model_key, profile)| {
-            (!providers.contains_key(&profile.provider)).then(|| {
-                format!(
-                    "model `{model_key}` references provider `{}` which is not configured",
-                    profile.provider
-                )
-            })
+        .filter(|(_, profile)| !providers.contains_key(&profile.provider))
+        .map(|(model_key, profile)| {
+            format!(
+                "model `{model_key}` references provider `{}` which is not configured",
+                profile.provider
+            )
         })
         .collect();
     warnings.sort();

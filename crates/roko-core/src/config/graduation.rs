@@ -35,6 +35,7 @@ use crate::pulse::{Topic, TopicFilter};
 
 /// A single graduation policy: watch these topics, apply these criteria.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GraduationPolicy {
     /// Bus topic(s) to watch.
     pub watch: TopicFilter,
@@ -70,6 +71,7 @@ impl GraduationPolicy {
 ///
 /// See module-level docs for policy precedence rules.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GraduationConfig {
     /// The list of graduation policies, evaluated in order.
     #[serde(default)]

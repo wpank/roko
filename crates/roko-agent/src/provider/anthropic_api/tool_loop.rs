@@ -46,7 +46,8 @@ pub(super) fn create_tool_loop_agent(
     options: &AgentOptions,
 ) -> Result<Box<dyn Agent>, AgentCreationError> {
     let (registry, tools, resolver) = tool_registry_for_options(model, options)?;
-    let dispatcher = build_tool_dispatcher_with_audit(registry, resolver, options.tool_audit.clone());
+    let dispatcher =
+        build_tool_dispatcher_with_audit(registry, resolver, options.tool_audit.clone());
     let translator: Arc<dyn Translator> = Arc::new(AnthropicTranslator);
     let backend = create_tool_loop_backend_with_api_key(
         api_key,

@@ -407,7 +407,7 @@ mod tests {
         assert!(assignment.contains("T2"));
         assert!(assignment.contains("agent-lifecycle"));
         assert!(assignment.contains("Implement Gompertz formula"));
-        assert!(assignment.contains("mortality.rs"));
+        assert!(assignment.contains("lifecycle.rs"));
         assert!(assignment.contains("Acceptance Criteria"));
     }
 

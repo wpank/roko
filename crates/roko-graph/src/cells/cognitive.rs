@@ -603,6 +603,200 @@ impl Cell for ReactCell {
     }
 }
 
+// ─── Production Cognitive Loop Builder (#270) ────────────────────────────
+
+/// Build a production cognitive loop `Graph` with the 7 cognitive cells
+/// and T0 short-circuit wiring.
+///
+/// The returned Graph has the following topology:
+///
+/// ```text
+///   Sense
+///     |
+///     |---(t0_short_circuit == true)---> React  (T0 path)
+///     |
+///     |---(default)---> Assess -> Compose -> Act -> Verify -> Persist -> React
+/// ```
+///
+/// The graph is configured as Hot with the given tick interval.
+///
+/// ## T0 Short-Circuit
+///
+/// The conditional edge from Sense to React fires when SenseCell emits
+/// a signal tagged `t0_short_circuit=true` (no actionable input). This
+/// skips the expensive middle cells (~80% of ticks in steady state).
+#[must_use]
+pub fn build_cognitive_loop_graph(
+    name: &str,
+    tick_interval_ms: u64,
+    max_ticks: Option<u64>,
+) -> crate::types::Graph {
+    use crate::types::{
+        Edge, EdgeCondition, ExecutionClass, FailureStrategy, Graph, GraphMetadata, GraphMode, Node,
+    };
+
+    let metadata = GraphMetadata {
+        name: name.to_string(),
+        version: Some("1.0.0".to_string()),
+        description: Some(format!(
+            "{name}: cognitive loop (sense-assess-compose-act-verify-persist-react)"
+        )),
+        labels: Default::default(),
+    };
+
+    let mut graph = Graph::new(metadata);
+
+    // Set hot policy
+    let hot_policy = crate::hot::HotPolicy {
+        tick_interval_ms,
+        max_ticks,
+        persist_tick_state: true,
+        loop_level: None,
+    };
+    graph.policy.mode = GraphMode::Hot;
+    graph.policy.failure_strategy = FailureStrategy::FailFast;
+    graph.policy.max_concurrent_nodes = 1; // cognitive loop is sequential
+    graph.policy.hot = Some(hot_policy);
+
+    // Add the 7 cognitive nodes
+    let node_specs: &[(&str, &str, ExecutionClass)] = &[
+        ("sense", "sense", ExecutionClass::Workflow),
+        ("assess", "assess", ExecutionClass::Workflow),
+        ("compose", "compose", ExecutionClass::Workflow),
+        ("act", "act", ExecutionClass::Activity),
+        ("verify", "verify", ExecutionClass::Workflow),
+        ("persist", "persist", ExecutionClass::Workflow),
+        ("react", "react", ExecutionClass::Workflow),
+    ];
+
+    for &(id, cell_type, execution_class) in node_specs {
+        let node = Node {
+            id: id.to_string(),
+            cell_type: cell_type.to_string(),
+            config: toml::Value::Table(toml::map::Map::new()),
+            inputs: vec![],
+            outputs: vec![],
+            execution_class,
+        };
+        graph
+            .add_node(node)
+            .unwrap_or_else(|err| panic!("failed to add cognitive node {id}: {err}"));
+    }
+
+    // Full cognitive path edges
+    let edges = vec![
+        // Sense -> Assess (full path, default condition)
+        Edge {
+            from: "sense".to_string(),
+            to: "assess".to_string(),
+            condition: Some(EdgeCondition::OutputEquals {
+                key: "t0_short_circuit".to_string(),
+                value: "false".to_string(),
+            }),
+        },
+        Edge {
+            from: "assess".to_string(),
+            to: "compose".to_string(),
+            condition: None,
+        },
+        Edge {
+            from: "compose".to_string(),
+            to: "act".to_string(),
+            condition: None,
+        },
+        Edge {
+            from: "act".to_string(),
+            to: "verify".to_string(),
+            condition: None,
+        },
+        Edge {
+            from: "verify".to_string(),
+            to: "persist".to_string(),
+            condition: None,
+        },
+        Edge {
+            from: "persist".to_string(),
+            to: "react".to_string(),
+            condition: None,
+        },
+        // T0 short-circuit: Sense -> React (skip middle cells)
+        Edge {
+            from: "sense".to_string(),
+            to: "react".to_string(),
+            condition: Some(EdgeCondition::OutputEquals {
+                key: "t0_short_circuit".to_string(),
+                value: "true".to_string(),
+            }),
+        },
+    ];
+
+    for edge in edges {
+        graph
+            .add_edge(edge)
+            .unwrap_or_else(|err| panic!("failed to add cognitive edge: {err}"));
+    }
+
+    graph
+}
+
+// ─── CalibrationTracker ──────────────────────────────────────────────────
+
+/// Online calibration tracking for predictive Cells.
+///
+/// Tracks cumulative prediction accuracy across the predict-publish-correct
+/// lifecycle. Cells that implement `predict()` use this to maintain a running
+/// average calibration error for dashboard and Bus reporting (#269).
+pub struct CalibrationTracker {
+    /// Total observations received.
+    observations: AtomicU64,
+    /// Cumulative error stored as millionths (1_000_000 = 1.0).
+    cumulative_error_micros: AtomicU64,
+}
+
+impl CalibrationTracker {
+    /// Create a new tracker with zero observations.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            observations: AtomicU64::new(0),
+            cumulative_error_micros: AtomicU64::new(0),
+        }
+    }
+
+    /// Record a single calibration observation.
+    ///
+    /// `error` must be in `[0.0, 1.0]` (clamped).
+    pub fn record(&self, error: f64) {
+        let error = error.clamp(0.0, 1.0);
+        self.observations.fetch_add(1, Ordering::Relaxed);
+        self.cumulative_error_micros
+            .fetch_add((error * 1_000_000.0).round() as u64, Ordering::Relaxed);
+    }
+
+    /// Return the number of observations recorded.
+    #[must_use]
+    pub fn observation_count(&self) -> u64 {
+        self.observations.load(Ordering::Relaxed)
+    }
+
+    /// Return the mean calibration error, or `None` if no observations.
+    #[must_use]
+    pub fn mean_error(&self) -> Option<f64> {
+        let n = self.observations.load(Ordering::Relaxed);
+        if n == 0 {
+            return None;
+        }
+        let total = self.cumulative_error_micros.load(Ordering::Relaxed);
+        Some(total as f64 / (n as f64 * 1_000_000.0))
+    }
+}
+
+impl Default for CalibrationTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -775,5 +969,92 @@ mod tests {
         assert_eq!(cell.calibration_error(&prediction, &input), Some(0.0));
         cell.correct(&prediction, &input);
         assert_eq!(cell.calibration_observations(), 1);
+    }
+
+    // ── CalibrationTracker tests (#269) ─────────────────────────────────
+
+    #[test]
+    fn calibration_tracker_empty() {
+        let tracker = CalibrationTracker::new();
+        assert_eq!(tracker.observation_count(), 0);
+        assert!(tracker.mean_error().is_none());
+    }
+
+    #[test]
+    fn calibration_tracker_records_and_averages() {
+        let tracker = CalibrationTracker::new();
+        tracker.record(0.0);
+        tracker.record(1.0);
+        assert_eq!(tracker.observation_count(), 2);
+        let mean = tracker.mean_error().unwrap();
+        assert!((mean - 0.5).abs() < 1e-6, "mean should be 0.5, got {mean}");
+    }
+
+    #[test]
+    fn calibration_tracker_clamps() {
+        let tracker = CalibrationTracker::new();
+        tracker.record(2.0); // should clamp to 1.0
+        tracker.record(-1.0); // should clamp to 0.0
+        assert_eq!(tracker.observation_count(), 2);
+        let mean = tracker.mean_error().unwrap();
+        assert!(
+            (mean - 0.5).abs() < 1e-6,
+            "clamped mean should be 0.5, got {mean}"
+        );
+    }
+
+    // ── Cognitive loop graph builder tests (#270) ───────────────────────
+
+    #[test]
+    fn build_cognitive_loop_graph_has_correct_topology() {
+        let graph = build_cognitive_loop_graph("test-loop", 1000, Some(10));
+
+        assert_eq!(graph.metadata.name, "test-loop");
+        assert_eq!(graph.node_map.len(), 7);
+        assert_eq!(graph.inner.edge_count(), 7);
+
+        // Check all 7 cell types
+        let cell_types: Vec<&str> = graph
+            .node_map
+            .keys()
+            .map(|id| {
+                let idx = graph.node_map[id];
+                graph.inner[idx].cell_type.as_str()
+            })
+            .collect();
+        assert_eq!(
+            cell_types,
+            vec![
+                "sense", "assess", "compose", "act", "verify", "persist", "react"
+            ]
+        );
+
+        // Check T0 short-circuit edge exists -- look through petgraph edges
+        let has_t0 = graph.inner.edge_indices().any(|idx| {
+            let edge = &graph.inner[idx];
+            edge.from == "sense"
+                && edge.to == "react"
+                && matches!(
+                    &edge.condition,
+                    Some(crate::types::EdgeCondition::OutputEquals { key, value })
+                    if key == "t0_short_circuit" && value == "true"
+                )
+        });
+        assert!(
+            has_t0,
+            "T0 short-circuit edge from sense to react must exist"
+        );
+
+        // Check hot policy
+        let hot = graph.policy.hot.as_ref().expect("hot policy");
+        assert_eq!(hot.tick_interval_ms, 1000);
+        assert_eq!(hot.max_ticks, Some(10));
+        assert!(hot.persist_tick_state);
+    }
+
+    #[test]
+    fn build_cognitive_loop_graph_sequential() {
+        let graph = build_cognitive_loop_graph("seq", 500, None);
+        assert_eq!(graph.policy.max_concurrent_nodes, 1);
     }
 }

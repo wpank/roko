@@ -38,6 +38,9 @@ pub const WORKSPACE_ATTEMPT_EXTENSION: &str = "roko.workspace.attempt@1";
 /// Known extension namespace for structured gate verdicts (#250).
 pub const GATE_VERDICT_EXTENSION: &str = "roko.gate.verdict@1";
 
+/// Known extension namespace for completion delivery state (#254).
+pub const DELIVERY_EXTENSION: &str = roko_graph::delivery::DELIVERY_EXTENSION_KEY;
+
 /// Lifecycle state persisted beside a Graph Activity recording.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

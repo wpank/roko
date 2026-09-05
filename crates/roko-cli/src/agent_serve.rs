@@ -92,6 +92,9 @@ pub enum AgentCmd {
         /// Output as JSON for scripting.
         #[arg(long)]
         json: bool,
+        /// Filter by agent name.
+        #[arg(long)]
+        name: Option<String>,
     },
     /// Start a previously created agent.
     Start {
@@ -125,6 +128,9 @@ pub enum AgentCmd {
         /// Working directory (default: cwd).
         #[arg(long)]
         workdir: Option<PathBuf>,
+        /// Output as JSON for scripting.
+        #[arg(long)]
+        json: bool,
     },
     /// Start a per-agent HTTP runtime.
     Serve(AgentServeArgs),
@@ -441,15 +447,21 @@ struct AgentServeRuntimeConfig {
     bind: String,
     serve_url: String,
     allow_stub_cognitive_loop: bool,
+    /// Optional model override from resolved CLI flags (`--model`).
+    model_override: Option<String>,
 }
 
 impl AgentServeRuntimeConfig {
-    fn from_args(args: AgentServeArgs) -> Self {
+    fn from_args(
+        args: AgentServeArgs,
+        overrides: &roko_cli::resolved_overrides::ResolvedExecutionOverrides,
+    ) -> Self {
         Self {
             agent_id: args.agent_id,
             bind: args.bind,
             serve_url: args.serve_url,
             allow_stub_cognitive_loop: args.allow_stub_cognitive_loop,
+            model_override: overrides.model.clone(),
         }
     }
 
@@ -717,7 +729,14 @@ impl AgentServeRuntimeConfig {
         let config = roko_core::config::loader::load_config_unified(&workdir)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-        let model = config.agent.default_model.trim().to_string();
+        // Use model override from resolved CLI flags if present,
+        // otherwise fall back to config default.
+        let model = self
+            .model_override
+            .as_deref()
+            .filter(|m| !m.trim().is_empty())
+            .map(|m| m.to_string())
+            .unwrap_or_else(|| config.agent.default_model.trim().to_string());
         if model.is_empty() {
             return Ok(None);
         }
@@ -940,7 +959,14 @@ async fn run_chat_with_launch(launch: ChatLaunchConfig) -> Result<()> {
 }
 
 /// Run `roko agent ...`.
-pub async fn run(cmd: AgentCmd) -> Result<()> {
+///
+/// The optional `overrides` parameter provides resolved CLI flags for the
+/// serve and chat surfaces. When `None`, defaults are used (backward compat
+/// for lifecycle commands that don't need resolved overrides).
+pub async fn run(
+    cmd: AgentCmd,
+    overrides: Option<&roko_cli::resolved_overrides::ResolvedExecutionOverrides>,
+) -> Result<()> {
     match cmd {
         AgentCmd::Create {
             name,
@@ -960,6 +986,10 @@ pub async fn run(cmd: AgentCmd) -> Result<()> {
                 template.as_deref(),
                 prompt.as_deref(),
                 workdir.as_deref(),
+                skills.clone(),
+                tier.clone(),
+                reputation,
+                max_concurrent_jobs,
             )
             .await?;
 
@@ -1014,7 +1044,11 @@ pub async fn run(cmd: AgentCmd) -> Result<()> {
             force,
             workdir,
         } => run_agent_delete(&name, force, workdir.as_deref()).await,
-        AgentCmd::List { workdir, json } => run_agent_list(workdir.as_deref(), json),
+        AgentCmd::List {
+            workdir,
+            json,
+            name,
+        } => run_agent_list(workdir.as_deref(), json, name.as_deref()),
         AgentCmd::Start {
             name,
             bind,
@@ -1025,10 +1059,36 @@ pub async fn run(cmd: AgentCmd) -> Result<()> {
             force,
             workdir,
         } => run_agent_stop(&name, force, workdir.as_deref()),
-        AgentCmd::Status { name, workdir } => run_agent_status(&name, workdir.as_deref()),
+        AgentCmd::Status {
+            name,
+            workdir,
+            json,
+        } => run_agent_status(&name, workdir.as_deref(), json),
         AgentCmd::Serve(args) => {
             reject_unsupported_serve_flags(&args)?;
-            AgentServeRuntimeConfig::from_args(args).run().await
+            let default_overrides =
+                roko_cli::resolved_overrides::ResolvedExecutionOverrides::for_agent_serve(
+                    &roko_cli::resolved_overrides::GlobalCliFlags {
+                        model: None,
+                        role: None,
+                        effort: None,
+                        resume: None,
+                        json: false,
+                        quiet: false,
+                        no_replan: false,
+                        skip_validate: false,
+                        headless: false,
+                        no_serve: false,
+                        color_enabled: true,
+                    },
+                    &roko_cli::resolved_overrides::AgentServeInput {
+                        allow_stub_cognitive_loop: args.allow_stub_cognitive_loop,
+                    },
+                );
+            let resolved = overrides.unwrap_or(&default_overrides);
+            AgentServeRuntimeConfig::from_args(args, resolved)
+                .run()
+                .await
         }
         AgentCmd::Chat {
             agent,
@@ -1038,8 +1098,18 @@ pub async fn run(cmd: AgentCmd) -> Result<()> {
             text,
         } => {
             let workdir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            let launch =
-                resolve_chat_launch(agent.as_deref(), provider, model, text, serve_url, &workdir)?;
+            // Use model from resolved overrides if no command-local --model.
+            let effective_model = model.or_else(|| overrides.and_then(|o| o.model.clone()));
+            let effective_provider =
+                provider.or_else(|| overrides.and_then(|o| o.provider.clone()));
+            let launch = resolve_chat_launch(
+                agent.as_deref(),
+                effective_provider,
+                effective_model,
+                text,
+                serve_url,
+                &workdir,
+            )?;
             run_chat_with_launch(launch).await
         }
     }
@@ -1055,6 +1125,9 @@ struct AgentEntry {
     bind: String,
     domain: String,
     started_at: String, // RFC 3339
+    /// Process start time for PID reuse detection (absent in old entries).
+    #[serde(default)]
+    process_start_time: Option<u64>,
 }
 
 /// Path to the structured agent tracking file.
@@ -1094,6 +1167,7 @@ fn upsert_agent_entry(workdir: &Path, agent_id: &str, bind: &str) {
         bind: bind.to_string(),
         domain: "general".to_string(),
         started_at: chrono::Utc::now().to_rfc3339(),
+        process_start_time: current_process_start_time(),
     });
     if let Err(e) = save_agent_entries(workdir, &entries) {
         warn!(error = %e, "failed to write agent entry to agents.json");
@@ -1139,6 +1213,74 @@ fn send_signal(pid: u32, sig: i32) {
 #[cfg(not(unix))]
 fn send_signal(_pid: u32, _sig: i32) {}
 
+/// Verify that the process at `pid` was started at the recorded time.
+///
+/// Returns `true` if the process is alive AND its start time matches.
+/// When `recorded_start_time` is `None` (old entries), falls back to
+/// a plain existence check.
+fn verify_process_identity(pid: u32, recorded_start_time: Option<u64>) -> bool {
+    if !is_process_alive(pid) {
+        return false;
+    }
+    let Some(recorded) = recorded_start_time else {
+        return true;
+    };
+    match get_process_start_time(pid) {
+        Some(current) => current == recorded,
+        None => false,
+    }
+}
+
+/// Get the start time of a process by PID.
+/// On macOS, uses `ps -o lstart=` and hashes the output.
+/// On Linux, reads /proc/<pid>/stat field 22.
+#[cfg(target_os = "macos")]
+fn get_process_start_time(pid: u32) -> Option<u64> {
+    let output = std::process::Command::new("ps")
+        .args(["-o", "lstart=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let lstart = String::from_utf8_lossy(&output.stdout);
+    let trimmed = lstart.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    trimmed.hash(&mut hasher);
+    Some(hasher.finish())
+}
+
+#[cfg(target_os = "linux")]
+fn get_process_start_time(pid: u32) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let after_comm = stat.rfind(')')? + 2;
+    let fields: Vec<&str> = stat[after_comm..].split_whitespace().collect();
+    fields.get(19)?.parse::<u64>().ok()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn get_process_start_time(_pid: u32) -> Option<u64> {
+    None
+}
+
+/// Get the start time of the current process.
+fn current_process_start_time() -> Option<u64> {
+    get_process_start_time(std::process::id())
+}
+
+/// Send a signal only after verifying process identity.
+fn send_signal_verified(pid: u32, sig: i32, recorded_start_time: Option<u64>) -> bool {
+    if !verify_process_identity(pid, recorded_start_time) {
+        return false;
+    }
+    send_signal(pid, sig);
+    true
+}
+
 /// Extract the domain string from a manifest TOML on disk.
 fn read_domain_from_manifest(manifest_path: &Path) -> String {
     let Ok(text) = std::fs::read_to_string(manifest_path) else {
@@ -1172,7 +1314,7 @@ fn format_duration(dur: chrono::Duration) -> String {
 
 // ─── Agent list ─────────────────────────────────────────────────────────
 
-fn run_agent_list(workdir: Option<&Path>, json: bool) -> Result<()> {
+fn run_agent_list(workdir: Option<&Path>, json: bool, name_filter: Option<&str>) -> Result<()> {
     let wd = workdir
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
@@ -1201,6 +1343,13 @@ fn run_agent_list(workdir: Option<&Path>, json: bool) -> Result<()> {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().to_string();
         let agent_path = entry.path();
+
+        // Apply name filter if provided.
+        if let Some(filter) = name_filter {
+            if name != filter {
+                continue;
+            }
+        }
 
         // Skip deleted agents.
         if agent_path.join("DELETED").exists() {
@@ -1455,6 +1604,16 @@ pub(crate) fn run_agent_start(name: &str, bind: &str, workdir: Option<&Path>) ->
 
     let domain = read_domain_from_manifest(&manifest_path);
 
+    // Set up log capture directory.
+    let log_dir = wd.join(".roko").join("runtime").join("agents").join(name);
+    std::fs::create_dir_all(&log_dir)
+        .with_context(|| format!("create agent log directory at {}", log_dir.display()))?;
+
+    let stdout_file = std::fs::File::create(log_dir.join("stdout.log"))
+        .with_context(|| format!("create stdout log at {}", log_dir.display()))?;
+    let stderr_file = std::fs::File::create(log_dir.join("stderr.log"))
+        .with_context(|| format!("create stderr log at {}", log_dir.display()))?;
+
     // Spawn `roko agent serve --agent-id <name> --bind <bind>` as detached child.
     let roko_bin = std::env::current_exe().context("determine roko binary path")?;
     let child = std::process::Command::new(&roko_bin)
@@ -1465,8 +1624,8 @@ pub(crate) fn run_agent_start(name: &str, bind: &str, workdir: Option<&Path>) ->
         .arg("--bind")
         .arg(bind)
         .current_dir(&wd)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(stdout_file)
+        .stderr(stderr_file)
         .spawn()
         .with_context(|| format!("spawn agent serve for '{}'", name))?;
 
@@ -1480,10 +1639,12 @@ pub(crate) fn run_agent_start(name: &str, bind: &str, workdir: Option<&Path>) ->
         bind: bind.to_string(),
         domain,
         started_at: now,
+        process_start_time: get_process_start_time(pid),
     });
     save_agent_entries(&wd, &entries)?;
 
     println!("Agent '{}' started (pid {}, bind {}).", name, pid, bind);
+    println!("  logs: {}", log_dir.display());
     Ok(())
 }
 
@@ -1503,25 +1664,49 @@ pub(crate) fn run_agent_stop(name: &str, force: bool, workdir: Option<&Path>) ->
     };
 
     let entry = entries[idx].clone();
-    if !is_process_alive(entry.pid) {
-        println!("Agent '{}' is not running (stale entry cleaned up).", name);
+
+    // Verify process identity before signaling to prevent PID reuse.
+    if !verify_process_identity(entry.pid, entry.process_start_time) {
+        println!(
+            "Agent '{}' is not running (stale entry cleaned up; PID {} dead or reused).",
+            name, entry.pid
+        );
         entries.remove(idx);
         save_agent_entries(&wd, &entries)?;
         unregister_pid(entry.pid);
         return Ok(());
     }
 
-    // Send initial signal.
-    if force {
+    // Send initial signal with verified identity.
+    let sig = if force {
         #[cfg(unix)]
-        send_signal(entry.pid, libc::SIGKILL);
+        {
+            libc::SIGKILL
+        }
         #[cfg(not(unix))]
-        send_signal(entry.pid, 9);
+        {
+            9
+        }
     } else {
         #[cfg(unix)]
-        send_signal(entry.pid, libc::SIGTERM);
+        {
+            libc::SIGTERM
+        }
         #[cfg(not(unix))]
-        send_signal(entry.pid, 15);
+        {
+            15
+        }
+    };
+
+    if !send_signal_verified(entry.pid, sig, entry.process_start_time) {
+        println!(
+            "Agent '{}': PID {} identity mismatch; refusing to signal.",
+            name, entry.pid
+        );
+        entries.remove(idx);
+        save_agent_entries(&wd, &entries)?;
+        unregister_pid(entry.pid);
+        return Ok(());
     }
 
     // Wait up to 5 seconds for exit.
@@ -1535,10 +1720,20 @@ pub(crate) fn run_agent_stop(name: &str, force: bool, workdir: Option<&Path>) ->
 
     // If still alive after timeout and not force, escalate to SIGKILL.
     if is_process_alive(entry.pid) && !force {
-        #[cfg(unix)]
-        send_signal(entry.pid, libc::SIGKILL);
-        #[cfg(not(unix))]
-        send_signal(entry.pid, 9);
+        send_signal_verified(
+            entry.pid,
+            {
+                #[cfg(unix)]
+                {
+                    libc::SIGKILL
+                }
+                #[cfg(not(unix))]
+                {
+                    9
+                }
+            },
+            entry.process_start_time,
+        );
 
         // Brief wait for SIGKILL to take effect.
         std::thread::sleep(std::time::Duration::from_millis(200));
@@ -1566,7 +1761,7 @@ pub(crate) fn run_agent_stop(name: &str, force: bool, workdir: Option<&Path>) ->
 
 // ─── Agent status ───────────────────────────────────────────────────────
 
-fn run_agent_status(name: &str, workdir: Option<&Path>) -> Result<()> {
+fn run_agent_status(name: &str, workdir: Option<&Path>, json: bool) -> Result<()> {
     let wd = workdir
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
@@ -1589,8 +1784,9 @@ fn run_agent_status(name: &str, workdir: Option<&Path>) -> Result<()> {
     let entries = load_agent_entries(&wd);
     let rt = entries.iter().find(|e| e.name == name);
 
-    let (status, pid_str, bind_str, started_str) = match rt {
-        Some(entry) if is_process_alive(entry.pid) => {
+    // Use verified process identity for status reporting.
+    let (status, pid_val, bind_str, started_str) = match rt {
+        Some(entry) if verify_process_identity(entry.pid, entry.process_start_time) => {
             let ago = chrono::DateTime::parse_from_rfc3339(&entry.started_at)
                 .ok()
                 .map(|started| {
@@ -1598,19 +1794,59 @@ fn run_agent_status(name: &str, workdir: Option<&Path>) -> Result<()> {
                     format!("{} ({} ago)", entry.started_at, format_duration(dur))
                 })
                 .unwrap_or_else(|| entry.started_at.clone());
-            ("running", entry.pid.to_string(), entry.bind.clone(), ago)
+            (
+                "running",
+                Some(entry.pid),
+                Some(entry.bind.clone()),
+                Some(ago),
+            )
         }
-        Some(_) => ("stopped", "-".to_string(), "-".to_string(), "-".to_string()),
-        None => ("created", "-".to_string(), "-".to_string(), "-".to_string()),
+        Some(_) => ("stopped", None, None, None),
+        None => ("created", None, None, None),
     };
 
-    println!("Agent:    {}", name);
-    println!("Status:   {}", status);
-    println!("Domain:   {}", domain);
-    println!("PID:      {}", pid_str);
-    println!("Bind:     {}", bind_str);
-    println!("Started:  {}", started_str);
-    println!("Manifest: {}", manifest_path.display());
+    if json {
+        let mut obj = serde_json::json!({
+            "name": name,
+            "status": status,
+            "domain": domain,
+            "manifest": manifest_path.display().to_string(),
+        });
+        if let Some(p) = pid_val {
+            obj["pid"] = serde_json::json!(p);
+        }
+        if let Some(ref b) = bind_str {
+            obj["bind"] = serde_json::json!(b);
+        }
+        if let Some(ref s) = started_str {
+            obj["started_at"] = serde_json::json!(s);
+        }
+        let log_dir = wd.join(".roko").join("runtime").join("agents").join(name);
+        if log_dir.exists() {
+            obj["log_dir"] = serde_json::json!(log_dir.display().to_string());
+        }
+        println!("{}", serde_json::to_string_pretty(&obj).unwrap_or_default());
+    } else {
+        println!("Agent:    {}", name);
+        println!("Status:   {}", status);
+        println!("Domain:   {}", domain);
+        println!(
+            "PID:      {}",
+            pid_val
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        );
+        println!("Bind:     {}", bind_str.unwrap_or_else(|| "-".to_string()));
+        println!(
+            "Started:  {}",
+            started_str.unwrap_or_else(|| "-".to_string())
+        );
+        println!("Manifest: {}", manifest_path.display());
+        let log_dir = wd.join(".roko").join("runtime").join("agents").join(name);
+        if log_dir.exists() {
+            println!("Logs:     {}", log_dir.display());
+        }
+    }
 
     Ok(())
 }
@@ -1628,10 +1864,30 @@ pub(crate) async fn run_agent_create(
     template: Option<&str>,
     prompt: Option<&str>,
     workdir: Option<&Path>,
+    skills: Vec<String>,
+    tier: Option<String>,
+    reputation: u32,
+    max_concurrent_jobs: u32,
 ) -> Result<()> {
     let wd = workdir
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
+
+    // Validate tier against allowed values.
+    if let Some(ref t) = tier {
+        if !roko_agent::lifecycle::VALID_TIERS.contains(&t.as_str()) {
+            bail!(
+                "invalid tier '{}'; expected one of: {}",
+                t,
+                roko_agent::lifecycle::VALID_TIERS.join(", ")
+            );
+        }
+    }
+
+    // Validate reputation range.
+    if reputation > 100 {
+        bail!("reputation must be in 0..=100, got {reputation}");
+    }
 
     // Step 1: Build the core manifest from user input.
     let agent_prompt = prompt.unwrap_or(DEFAULT_AGENT_PROMPT);
@@ -1656,9 +1912,27 @@ pub(crate) async fn run_agent_create(
         schema_version: 1,
     };
 
+    // Build creation metadata from CLI flags (trimmed, deduplicated skills).
+    let mut deduped_skills = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for skill in &skills {
+        let trimmed = skill.trim().to_string();
+        if !trimmed.is_empty() && seen.insert(trimmed.clone()) {
+            deduped_skills.push(trimmed);
+        }
+    }
+
+    let creation_meta = roko_agent::lifecycle::AgentCreationMetadata {
+        skills: deduped_skills,
+        tier: tier.clone(),
+        reputation,
+        max_concurrent_jobs,
+    };
+
     let mut manifest = AgentExtendedManifest::new(core);
     manifest.name = Some(name.to_string());
     manifest.template_id = template.map(String::from);
+    manifest.creation_metadata = Some(creation_meta);
 
     // Step 2: Resolve defaults and validate.
     let manifest = resolve_manifest(manifest);
@@ -1690,17 +1964,14 @@ pub(crate) async fn run_agent_create(
 
 // ─── LIFE-06: Agent deletion ────────────────────────────────────────────
 
-/// 8-step agent deletion with per-step 30-second timeout.
+/// Five-phase agent deletion with Tokio-enforced per-phase timeouts.
 ///
-/// Steps:
-///   1. Stop processing (cancel current task, drain queue)
-///   2. Flush pending (complete in-flight tool calls)
-///   3. Backup knowledge (auto-invoke neuro backup)
-///   4. Deregister from mesh
-///   5. Release resources
-///   6. Archive signals (compress JSONL logs)
-///   7. Clean state (remove executor.json and transient files)
-///   8. Confirm (write DELETED marker)
+/// Phases:
+///   1. Verify and stop the recorded sidecar process; wait for exit.
+///   2. Stage canonical backup (engrams, episodes, knowledge).
+///   3. Remove runtime registry entry from agents.json.
+///   4. Clean agent-owned transient state.
+///   5. Write DELETED marker (only on full success).
 async fn run_agent_delete(name: &str, force: bool, workdir: Option<&Path>) -> Result<()> {
     let wd = workdir
         .map(PathBuf::from)
@@ -1711,133 +1982,224 @@ async fn run_agent_delete(name: &str, force: bool, workdir: Option<&Path>) -> Re
         bail!("agent '{}' not found at {}", name, agent_dir.display());
     }
 
+    let mut entries = load_agent_entries(&wd);
+    let live_entry = entries.iter().find(|e| e.name == name).cloned();
+
     if force {
         println!("Force-deleting agent '{name}'...");
-        // Force mode: skip ordered shutdown, remove everything immediately.
+        println!("  WARNING: backup is skipped in force mode.");
+
+        // Stop the live process if it exists.
+        if let Some(ref entry) = live_entry {
+            if verify_process_identity(entry.pid, entry.process_start_time) {
+                print!("  [Stop process] ");
+                send_signal_verified(
+                    entry.pid,
+                    {
+                        #[cfg(unix)]
+                        {
+                            libc::SIGKILL
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            9
+                        }
+                    },
+                    entry.process_start_time,
+                );
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                println!("ok (pid {})", entry.pid);
+            }
+            unregister_pid(entry.pid);
+        }
+
+        entries.retain(|e| e.name != name);
+        save_agent_entries(&wd, &entries)?;
+
         std::fs::remove_dir_all(&agent_dir)
             .with_context(|| format!("remove agent directory at {}", agent_dir.display()))?;
+
         println!("Agent '{name}' force-deleted.");
         return Ok(());
     }
 
-    // Ordered 8-step shutdown, each step has a 30-second budget.
-    let step_timeout = std::time::Duration::from_secs(30);
+    // ── Ordered 5-phase shutdown ──
 
-    // Step 1: Stop processing.
-    run_deletion_step("Stop processing", step_timeout, || {
-        info!(agent = name, "stopping agent processing");
-        Ok(())
-    });
+    let phase_timeout = std::time::Duration::from_secs(30);
+    let mut completed_phases: Vec<&str> = Vec::new();
 
-    // Step 2: Flush pending.
-    run_deletion_step("Flush pending", step_timeout, || {
-        info!(agent = name, "flushing pending operations");
-        Ok(())
-    });
+    // Phase 1: Stop the sidecar process.
+    let phase1_ok = run_deletion_phase("Stop sidecar", phase_timeout, {
+        let entry = live_entry.clone();
+        async move {
+            let Some(entry) = entry else {
+                return Ok(());
+            };
+            if !verify_process_identity(entry.pid, entry.process_start_time) {
+                return Ok(());
+            }
+            send_signal_verified(
+                entry.pid,
+                {
+                    #[cfg(unix)]
+                    {
+                        libc::SIGTERM
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        15
+                    }
+                },
+                entry.process_start_time,
+            );
 
-    // Step 3: Backup knowledge.
-    run_deletion_step("Backup knowledge", step_timeout, || {
-        let neuro_dir = wd.join(".roko").join("neuro");
-        if neuro_dir.exists() {
+            let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+            while tokio::time::Instant::now() < deadline {
+                if !is_process_alive(entry.pid) {
+                    return Ok(());
+                }
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            }
+
+            if is_process_alive(entry.pid) {
+                send_signal_verified(
+                    entry.pid,
+                    {
+                        #[cfg(unix)]
+                        {
+                            libc::SIGKILL
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            9
+                        }
+                    },
+                    entry.process_start_time,
+                );
+                tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+            }
+            Ok(())
+        }
+    })
+    .await;
+    if phase1_ok {
+        completed_phases.push("Stop sidecar");
+    } else {
+        println!("  Deletion aborted: failed to stop sidecar.");
+        bail!("agent deletion failed at phase 'Stop sidecar'");
+    }
+    if let Some(ref entry) = live_entry {
+        unregister_pid(entry.pid);
+    }
+
+    // Phase 2: Stage canonical backup (correct paths).
+    let phase2_ok = run_deletion_phase("Backup", phase_timeout, {
+        let wd = wd.clone();
+        let name = name.to_string();
+        async move {
             let backup_dir = wd.join(".roko").join("backups").join(format!(
                 "{}-{}",
                 name,
                 chrono::Utc::now().format("%Y%m%d-%H%M%S")
             ));
             std::fs::create_dir_all(&backup_dir)?;
-            // Copy knowledge files into the backup directory.
-            let knowledge_src = neuro_dir.join("knowledge.jsonl");
-            if knowledge_src.exists() {
-                std::fs::copy(&knowledge_src, backup_dir.join("knowledge.jsonl"))?;
-                println!("  knowledge backed up to {}", backup_dir.display());
+
+            let backup_sources = [
+                wd.join(".roko").join("engrams.jsonl"),
+                wd.join(".roko").join("episodes.jsonl"),
+                wd.join(".roko").join("neuro").join("knowledge.jsonl"),
+                wd.join(".roko")
+                    .join("neuro")
+                    .join("knowledge-confirmations.jsonl"),
+            ];
+
+            let mut backed_up = 0u32;
+            for src in &backup_sources {
+                if src.exists() {
+                    if let Some(fname) = src.file_name() {
+                        std::fs::copy(src, backup_dir.join(fname))?;
+                        backed_up += 1;
+                    }
+                }
             }
-            let confirmations_src = neuro_dir.join("knowledge-confirmations.jsonl");
-            if confirmations_src.exists() {
-                std::fs::copy(
-                    &confirmations_src,
-                    backup_dir.join("knowledge-confirmations.jsonl"),
-                )?;
+            if backed_up > 0 {
+                println!("backed up {backed_up} file(s) to {}", backup_dir.display());
             }
-        } else {
-            println!("  no neuro store to backup");
+            Ok(())
         }
-        Ok(())
-    });
+    })
+    .await;
+    if phase2_ok {
+        completed_phases.push("Backup");
+    }
 
-    // Step 4: Deregister from mesh.
-    run_deletion_step("Deregister from mesh", step_timeout, || {
-        info!(agent = name, "deregistering from mesh");
-        // Mesh deregistration would happen here if mesh is enabled.
-        Ok(())
-    });
-
-    // Step 5: Release resources.
-    run_deletion_step("Release resources", step_timeout, || {
-        info!(agent = name, "releasing allocated resources");
-        Ok(())
-    });
-
-    // Step 6: Archive signals.
-    run_deletion_step("Archive signals", step_timeout, || {
-        let signals_path = wd.join(".roko").join("signals.jsonl");
-        let episodes_path = wd.join(".roko").join("episodes.jsonl");
-        let archive_dir = agent_dir.join("archived");
-        std::fs::create_dir_all(&archive_dir)?;
-        if signals_path.exists() {
-            std::fs::copy(&signals_path, archive_dir.join("signals.jsonl"))?;
+    // Phase 3: Remove runtime registry entry.
+    let phase3_ok = run_deletion_phase("Remove registry", phase_timeout, {
+        let wd = wd.clone();
+        let name = name.to_string();
+        async move {
+            let mut entries = load_agent_entries(&wd);
+            entries.retain(|e| e.name != name);
+            save_agent_entries(&wd, &entries)?;
+            Ok(())
         }
-        if episodes_path.exists() {
-            std::fs::copy(&episodes_path, archive_dir.join("episodes.jsonl"))?;
-        }
-        Ok(())
-    });
+    })
+    .await;
+    if phase3_ok {
+        completed_phases.push("Remove registry");
+    }
 
-    // Step 7: Clean state.
-    run_deletion_step("Clean state", step_timeout, || {
-        let executor_state = wd.join(".roko").join("state").join("executor.json");
-        if executor_state.exists() {
-            std::fs::remove_file(&executor_state)?;
+    // Phase 4: Clean transient state.
+    let phase4_ok = run_deletion_phase("Clean state", phase_timeout, {
+        let agent_dir = agent_dir.clone();
+        async move {
+            let _ = std::fs::remove_dir_all(agent_dir.join("tmp"));
+            let _ = std::fs::remove_dir_all(agent_dir.join("logs"));
+            Ok(())
         }
-        // Remove transient files in the agent directory.
-        let _ = std::fs::remove_dir_all(agent_dir.join("tmp"));
-        Ok(())
-    });
+    })
+    .await;
+    if phase4_ok {
+        completed_phases.push("Clean state");
+    }
 
-    // Step 8: Confirm deletion.
-    run_deletion_step("Confirm deletion", step_timeout, || {
-        // Write a DELETED marker in the agent directory.
+    // Phase 5: Write DELETED marker only on full success.
+    let all_ok = phase1_ok && phase2_ok && phase3_ok && phase4_ok;
+    if all_ok {
         let marker = agent_dir.join("DELETED");
         let ts = chrono::Utc::now().to_rfc3339();
-        std::fs::write(&marker, format!("deleted_at={ts}\nagent={name}\n"))?;
-        Ok(())
-    });
-
-    println!("Agent '{name}' deleted (ordered shutdown complete).");
-    println!("  Archived signals and DELETED marker remain at:");
-    println!("  {}", agent_dir.display());
+        std::fs::write(&marker, format!("deleted_at={ts}\nagent={name}\n"))
+            .with_context(|| "write DELETED marker")?;
+        completed_phases.push("Confirm");
+        println!("Agent '{name}' deleted (ordered shutdown complete).");
+        println!("  DELETED marker at: {}", agent_dir.display());
+    } else {
+        println!("Agent '{name}' deletion incomplete.");
+        println!("  Completed: {}", completed_phases.join(", "));
+        println!("  The DELETED marker was NOT written.");
+    }
 
     Ok(())
 }
 
-/// Run a single deletion step with a wall-clock timeout. If the step panics
-/// or exceeds the timeout, it is skipped and the next step proceeds.
-fn run_deletion_step(label: &str, timeout: std::time::Duration, f: impl FnOnce() -> Result<()>) {
+/// Run a single deletion phase with a Tokio timeout.
+async fn run_deletion_phase<F>(label: &str, timeout: std::time::Duration, f: F) -> bool
+where
+    F: std::future::Future<Output = Result<()>>,
+{
     print!("  [{label}] ");
-    let start = std::time::Instant::now();
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+    match tokio::time::timeout(timeout, f).await {
         Ok(Ok(())) => {
-            let elapsed = start.elapsed();
-            if elapsed > timeout {
-                println!("ok (exceeded {timeout:?}, continuing)");
-            } else {
-                println!("ok");
-            }
+            println!("ok");
+            true
         }
         Ok(Err(err)) => {
-            println!("skipped: {err}");
+            println!("failed: {err}");
+            false
         }
         Err(_) => {
-            println!("skipped (panicked)");
+            println!("timed out ({timeout:?})");
+            false
         }
     }
 }
@@ -2110,22 +2472,354 @@ mod tests {
 
     #[test]
     fn chat_agent_field_is_optional() {
-        // Verify that the clap definition no longer has a default_value.
-        // When --agent is not passed, the field should be None.
         use clap::Subcommand;
-
-        // Build the AgentCmd parser from clap metadata.
         let app = AgentCmd::augment_subcommands(clap::Command::new("agent"));
         let chat_cmd = app.find_subcommand("chat").expect("chat subcommand");
         let agent_arg = chat_cmd
             .get_arguments()
             .find(|a| a.get_id() == "agent")
             .expect("agent argument");
-        // Should not have any default value.
         assert!(
             agent_arg.get_default_values().is_empty(),
             "agent should not have a default value (was: {:?})",
             agent_arg.get_default_values()
         );
+    }
+
+    // ── Agent lifecycle integration tests ─────────────────────────────
+
+    fn setup_agent(dir: &std::path::Path, name: &str) {
+        let agent_dir = dir.join(".roko").join("agents").join(name);
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        let manifest = roko_agent::lifecycle::AgentExtendedManifest::new(
+            roko_agent::lifecycle::AgentCoreManifest::new(
+                "Test agent prompt that is long enough to pass validation checks.",
+            ),
+        );
+        let toml = toml::to_string_pretty(&manifest).unwrap();
+        std::fs::write(agent_dir.join("manifest.toml"), &toml).unwrap();
+    }
+
+    fn write_entries(dir: &std::path::Path, entries: &[AgentEntry]) {
+        let runtime_dir = dir.join(".roko").join("runtime");
+        std::fs::create_dir_all(&runtime_dir).unwrap();
+        let json = serde_json::to_string(entries).unwrap();
+        std::fs::write(runtime_dir.join("agents.json"), json).unwrap();
+    }
+
+    #[test]
+    fn agent_lifecycle_create_persists_creation_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            run_agent_create(
+                "test-meta",
+                "general",
+                None,
+                Some("A test agent prompt that is long enough to pass validation."),
+                Some(dir.path()),
+                vec![
+                    "rust".to_string(),
+                    "  rust  ".to_string(),
+                    "p2p".to_string(),
+                ],
+                Some("Verified".to_string()),
+                42,
+                3,
+            )
+            .await
+            .unwrap();
+        });
+
+        let manifest_path = dir.path().join(".roko/agents/test-meta/manifest.toml");
+        assert!(manifest_path.exists());
+        let text = std::fs::read_to_string(&manifest_path).unwrap();
+        let manifest: roko_agent::lifecycle::AgentExtendedManifest = toml::from_str(&text).unwrap();
+        let meta = manifest.creation_metadata.expect("creation_metadata");
+        assert_eq!(meta.skills, vec!["rust", "p2p"]);
+        assert_eq!(meta.tier.as_deref(), Some("Verified"));
+        assert_eq!(meta.reputation, 42);
+        assert_eq!(meta.max_concurrent_jobs, 3);
+    }
+
+    #[test]
+    fn agent_lifecycle_create_rejects_invalid_tier() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(run_agent_create(
+            "bad-tier",
+            "general",
+            None,
+            Some("A test agent prompt that is long enough to pass validation."),
+            Some(dir.path()),
+            vec![],
+            Some("SuperAdmin".to_string()),
+            0,
+            0,
+        ));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("invalid tier"));
+    }
+
+    #[test]
+    fn agent_lifecycle_create_rejects_reputation_over_100() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(run_agent_create(
+            "bad-rep",
+            "general",
+            None,
+            Some("A test agent prompt that is long enough to pass validation."),
+            Some(dir.path()),
+            vec![],
+            None,
+            101,
+            0,
+        ));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("reputation"));
+    }
+
+    #[test]
+    fn agent_lifecycle_stop_cleans_stale_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        setup_agent(dir.path(), "stale-agent");
+
+        write_entries(
+            dir.path(),
+            &[AgentEntry {
+                name: "stale-agent".to_string(),
+                pid: 999_999_999,
+                bind: "http://127.0.0.1:0".to_string(),
+                domain: "general".to_string(),
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                process_start_time: Some(12345),
+            }],
+        );
+
+        run_agent_stop("stale-agent", false, Some(dir.path())).unwrap();
+        let entries = load_agent_entries(dir.path());
+        assert!(entries.is_empty(), "stale entry should be removed");
+    }
+
+    #[test]
+    fn agent_lifecycle_status_json_output() {
+        let dir = tempfile::tempdir().unwrap();
+        setup_agent(dir.path(), "json-agent");
+        run_agent_status("json-agent", Some(dir.path()), true).unwrap();
+    }
+
+    #[test]
+    fn agent_lifecycle_start_rejects_deleted_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        setup_agent(dir.path(), "deleted-agent");
+        let marker = dir.path().join(".roko/agents/deleted-agent/DELETED");
+        std::fs::write(&marker, "deleted_at=2026-01-01T00:00:00Z\n").unwrap();
+        let result = run_agent_start("deleted-agent", "127.0.0.1:0", Some(dir.path()));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("deleted"));
+    }
+
+    #[test]
+    fn agent_lifecycle_start_rejects_missing_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = run_agent_start("nonexistent", "127.0.0.1:0", Some(dir.path()));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn agent_lifecycle_delete_writes_marker_and_removes_registry() {
+        let dir = tempfile::tempdir().unwrap();
+        setup_agent(dir.path(), "del-agent");
+        run_agent_delete("del-agent", false, Some(dir.path()))
+            .await
+            .unwrap();
+        assert!(dir.path().join(".roko/agents/del-agent/DELETED").exists());
+        let entries = load_agent_entries(dir.path());
+        assert!(!entries.iter().any(|e| e.name == "del-agent"));
+    }
+
+    #[tokio::test]
+    async fn agent_lifecycle_force_delete_removes_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        setup_agent(dir.path(), "force-del");
+        run_agent_delete("force-del", true, Some(dir.path()))
+            .await
+            .unwrap();
+        assert!(!dir.path().join(".roko/agents/force-del").exists());
+    }
+
+    #[tokio::test]
+    async fn agent_lifecycle_delete_backs_up_canonical_files() {
+        let dir = tempfile::tempdir().unwrap();
+        setup_agent(dir.path(), "backup-agent");
+
+        let roko_dir = dir.path().join(".roko");
+        std::fs::write(roko_dir.join("engrams.jsonl"), "test signal\n").unwrap();
+        std::fs::write(roko_dir.join("episodes.jsonl"), "test episode\n").unwrap();
+        let neuro_dir = roko_dir.join("neuro");
+        std::fs::create_dir_all(&neuro_dir).unwrap();
+        std::fs::write(neuro_dir.join("knowledge.jsonl"), "test knowledge\n").unwrap();
+
+        run_agent_delete("backup-agent", false, Some(dir.path()))
+            .await
+            .unwrap();
+
+        let backups_dir = roko_dir.join("backups");
+        assert!(backups_dir.exists());
+        let backup_entries: Vec<_> = std::fs::read_dir(&backups_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .collect();
+        assert_eq!(backup_entries.len(), 1);
+        let backup_dir = backup_entries[0].path();
+        assert!(backup_dir.join("engrams.jsonl").exists());
+        assert!(backup_dir.join("episodes.jsonl").exists());
+        assert!(backup_dir.join("knowledge.jsonl").exists());
+    }
+
+    #[test]
+    fn agent_lifecycle_list_name_filter() {
+        let dir = tempfile::tempdir().unwrap();
+        setup_agent(dir.path(), "agent-alpha");
+        setup_agent(dir.path(), "agent-beta");
+        run_agent_list(Some(dir.path()), false, None).unwrap();
+        run_agent_list(Some(dir.path()), true, Some("agent-alpha")).unwrap();
+    }
+
+    #[test]
+    fn agent_entry_serde_backward_compat() {
+        let json = r#"[{"name":"old-agent","pid":1234,"bind":"http://127.0.0.1:8080","domain":"general","started_at":"2026-01-01T00:00:00Z"}]"#;
+        let entries: Vec<AgentEntry> = serde_json::from_str(json).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].process_start_time.is_none());
+    }
+
+    #[test]
+    fn agent_entry_serde_with_start_time() {
+        let entries = vec![AgentEntry {
+            name: "new-agent".to_string(),
+            pid: 5678,
+            bind: "http://127.0.0.1:9090".to_string(),
+            domain: "coding".to_string(),
+            started_at: "2026-09-01T00:00:00Z".to_string(),
+            process_start_time: Some(1725148800),
+        }];
+        let json = serde_json::to_string(&entries).unwrap();
+        let parsed: Vec<AgentEntry> = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed[0].process_start_time, Some(1725148800));
+    }
+
+    #[test]
+    fn verify_process_identity_dead_pid() {
+        assert!(!verify_process_identity(999_999_999, Some(12345)));
+        assert!(!verify_process_identity(999_999_999, None));
+    }
+
+    #[test]
+    fn verify_process_identity_own_process() {
+        let pid = std::process::id();
+        let start_time = get_process_start_time(pid);
+        assert!(verify_process_identity(pid, start_time));
+    }
+
+    #[test]
+    fn verify_process_identity_wrong_start_time() {
+        let pid = std::process::id();
+        assert!(!verify_process_identity(pid, Some(1)));
+    }
+
+    #[test]
+    fn creation_metadata_old_manifest_compat() {
+        let toml_text = r#"
+prompt = "A test agent prompt that is definitely long enough for validation"
+mode = "self-hosted"
+schema_version = 1
+generation = 0
+"#;
+        let manifest: roko_agent::lifecycle::AgentExtendedManifest =
+            toml::from_str(toml_text).unwrap();
+        assert!(manifest.creation_metadata.is_none());
+    }
+
+    // ── Resolved overrides integration (#305) ─────────────────────────
+
+    #[test]
+    fn serve_runtime_config_from_args_picks_up_model_override() {
+        let args = minimal_serve_args();
+        let overrides = roko_cli::resolved_overrides::ResolvedExecutionOverrides::for_agent_serve(
+            &roko_cli::resolved_overrides::GlobalCliFlags {
+                model: Some("custom-model"),
+                role: None,
+                effort: None,
+                resume: None,
+                json: false,
+                quiet: false,
+                no_replan: false,
+                skip_validate: false,
+                headless: false,
+                no_serve: false,
+                color_enabled: true,
+            },
+            &roko_cli::resolved_overrides::AgentServeInput {
+                allow_stub_cognitive_loop: false,
+            },
+        );
+        let config = AgentServeRuntimeConfig::from_args(args, &overrides);
+        assert_eq!(config.model_override.as_deref(), Some("custom-model"));
+    }
+
+    #[test]
+    fn serve_runtime_config_from_args_no_model_override() {
+        let args = minimal_serve_args();
+        let overrides = roko_cli::resolved_overrides::ResolvedExecutionOverrides::for_agent_serve(
+            &roko_cli::resolved_overrides::GlobalCliFlags {
+                model: None,
+                role: None,
+                effort: None,
+                resume: None,
+                json: false,
+                quiet: false,
+                no_replan: false,
+                skip_validate: false,
+                headless: false,
+                no_serve: false,
+                color_enabled: true,
+            },
+            &roko_cli::resolved_overrides::AgentServeInput::default(),
+        );
+        let config = AgentServeRuntimeConfig::from_args(args, &overrides);
+        assert!(config.model_override.is_none());
+    }
+
+    #[test]
+    fn chat_launch_uses_overrides_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        let launch = resolve_chat_launch(
+            Some("test-agent"),
+            Some("openai_compat".to_string()), // from overrides
+            None,
+            false,
+            "http://localhost:6677".to_string(),
+            dir.path(),
+        )
+        .unwrap();
+        assert_eq!(launch.provider.as_deref(), Some("openai_compat"));
+    }
+
+    #[test]
+    fn chat_launch_uses_overrides_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let launch = resolve_chat_launch(
+            Some("test-agent"),
+            None,
+            Some("opus-4".to_string()), // from overrides
+            false,
+            "http://localhost:6677".to_string(),
+            dir.path(),
+        )
+        .unwrap();
+        assert_eq!(launch.model.as_deref(), Some("opus-4"));
     }
 }

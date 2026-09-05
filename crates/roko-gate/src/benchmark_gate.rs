@@ -2,7 +2,7 @@
 //!
 //! Compares current benchmark results against a baseline to detect
 //! performance regressions. Uses `cargo bench` output when available.
-//! Currently a stub that passes through; will be filled in when baseline
+//! Currently returns `Verdict::skip` (not-applicable) until baseline
 //! infrastructure is added.
 
 use async_trait::async_trait;
@@ -71,13 +71,17 @@ impl Verify for BenchmarkRegressionGate {
             u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
         };
 
-        // Stub: no baseline infrastructure yet. Pass through.
-        Verdict::pass(&self.name)
-            .with_detail(format!(
-                "benchmark regression gate (stub); threshold={:.1}%; no baseline available",
+        // No baseline infrastructure yet. Return skip/not-applicable rather
+        // than always-pass, so the gate pipeline doesn't treat an unwired
+        // gate as a genuine verification success.
+        Verdict::skip(
+            &self.name,
+            format!(
+                "requires explicit baseline: no benchmark baseline available (threshold={:.1}%)",
                 self.threshold_pct
-            ))
-            .with_duration(elapsed_ms())
+            ),
+        )
+        .with_duration(elapsed_ms())
     }
 
     fn name(&self) -> &str {
@@ -99,20 +103,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn benchmark_gate_passes_as_stub() {
+    async fn benchmark_gate_skips_without_baseline() {
         let gate = BenchmarkRegressionGate::new();
         let verdict = gate.verify(&signal(), &ctx()).await;
-        assert!(verdict.passed);
+        assert!(!verdict.passed, "should not pass without baseline");
+        assert!(verdict.skipped, "should be skipped (not applicable)");
         assert_eq!(verdict.gate, "benchmark_regression");
+        let reason = &verdict.reason;
+        assert!(
+            reason.contains("no benchmark baseline"),
+            "reason should explain missing baseline: {reason}"
+        );
     }
 
     #[tokio::test]
-    async fn benchmark_gate_custom_threshold() {
+    async fn benchmark_gate_custom_threshold_in_skip_reason() {
         let gate = BenchmarkRegressionGate::new().with_threshold_pct(5.0);
         let verdict = gate.verify(&signal(), &ctx()).await;
-        assert!(verdict.passed);
-        let detail = verdict.detail.unwrap_or_default();
-        assert!(detail.contains("5.0%"));
+        assert!(verdict.skipped, "should be skipped without baseline");
+        assert!(verdict.reason.contains("5.0%"));
     }
 
     #[tokio::test]

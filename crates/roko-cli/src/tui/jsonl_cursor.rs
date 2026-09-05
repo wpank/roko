@@ -85,7 +85,6 @@ impl JsonlCursor {
     }
 
     /// Count of committed lines read since the last reset.
-    #[allow(dead_code)]
     pub fn last_line(&self) -> usize {
         self.last_line
     }

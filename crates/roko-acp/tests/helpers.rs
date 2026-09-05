@@ -495,7 +495,7 @@ async fn collect_notifications(client_output: DuplexStream) -> Result<Vec<JsonRp
 
     loop {
         let mut line = String::new();
-        match timeout(Duration::from_millis(50), reader.read_line(&mut line)).await {
+        match timeout(Duration::from_millis(200), reader.read_line(&mut line)).await {
             Ok(Ok(0)) | Err(_) => break,
             Ok(Ok(_)) => {
                 if line.trim().is_empty() {

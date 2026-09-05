@@ -351,6 +351,7 @@ fn episode_experiment_variant(episode: &Episode) -> Option<String> {
         .filter(|variant| !variant.is_empty())
 }
 
+#[allow(clippy::manual_midpoint)]
 fn sentiment_to_metric_value(sentiment: f64) -> f64 {
     ((sentiment.clamp(-1.0, 1.0) + 1.0) / 2.0).clamp(0.0, 1.0)
 }

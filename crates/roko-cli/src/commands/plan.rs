@@ -2088,28 +2088,6 @@ async fn cmd_plan_queue(cli: &Cli, cmd: QueueCmd) -> Result<i32> {
     }
 }
 
-#[allow(dead_code)]
-fn resolve_effective_model_key(
-    workdir: &Path,
-    cli_model: Option<String>,
-    role: Option<&str>,
-    context: &str,
-) -> Result<String> {
-    let config = roko_core::config::loader::load_config_unified(workdir)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let selection = roko_cli::model_selection::resolve_effective_model(
-        cli_model,
-        None,
-        role.map(str::to_string),
-        None,
-        &config,
-        None,
-    )
-    .map_err(|err| anyhow!("resolve model selection for {context}: {err}"))?;
-    eprintln!("[{context}] effective selection: {}", selection.reason);
-    Ok(selection.effective_model_key)
-}
-
 /// Parse and display a plan directory without executing anything.
 pub(crate) async fn cmd_plan_dry_run(plans_dir: &Path, cli: &Cli) -> Result<i32> {
     let plans = roko_cli::orchestrator::discover_plans(plans_dir)
@@ -2698,12 +2676,10 @@ fn validate_graph_selected_plans_before_run(engine: PlanEngine, plans_dir: &Path
 ///
 /// The caller invokes this before acquiring the workspace lock or constructing
 /// any provider so `--approval` can never degrade into warning-and-continue.
-fn validate_graph_execution_options(engine: PlanEngine, approval: bool) -> Result<()> {
-    if matches!(engine, PlanEngine::Graph) && approval {
-        anyhow::bail!(
-            "--approval is not yet supported by the Graph Engine; no Graph work was dispatched"
-        );
-    }
+fn validate_graph_execution_options(_engine: PlanEngine, _approval: bool) -> Result<()> {
+    // Graph engine now supports approval mode via GraphExecutionControlAdapter.
+    // The approval TUI thread is spawned separately and communicates through
+    // the control channel. No validation needed.
     Ok(())
 }
 
@@ -2744,13 +2720,8 @@ fn warn_graph_unsupported_flags(
              (the graph engine uses the configured default_effort)"
         );
     }
-    if let Some(path) = log_file {
-        eprintln!(
-            "warning: --log-file '{}' is not supported with --engine graph and will be ignored \
-             (structured JSONL logging requires runner-v2 events)",
-            path.display()
-        );
-    }
+    // --log-file is now wired for Graph Engine (#115) -- no warning needed.
+    let _ = log_file;
     if skip_preflight {
         eprintln!(
             "warning: --skip-preflight is not supported with --engine graph and will be ignored \
@@ -2866,7 +2837,7 @@ async fn cmd_plan_run_engine(
     no_budget: bool,
     cli_model_override: Option<String>,
     dangerously_skip_permissions: bool,
-    _log_file: Option<&std::path::Path>,
+    log_file: Option<&std::path::Path>,
 ) -> Result<i32> {
     use std::sync::Arc;
 
@@ -2973,6 +2944,21 @@ async fn cmd_plan_run_engine(
     let graph_tui_bridge = roko_cli::runner::graph_tui_bridge::GraphTuiBridge::new(
         roko_cli::runner::tui_bridge::TuiBridge::new(state_hub_sender),
     );
+
+    // ── Canonical --log-file recorder for Graph Engine (#115) ──
+    let graph_event_logger: Option<Arc<dyn roko_graph::events::GraphEventSink>> = match log_file {
+        Some(path) => {
+            let resolved = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                workdir.join(path)
+            };
+            let logger = roko_cli::runner::structured_log::GraphEventLogger::open(&resolved)
+                .map_err(|e| anyhow!("open --log-file {}: {e}", resolved.display()))?;
+            Some(Arc::new(logger))
+        }
+        None => None,
+    };
 
     let total_tasks: usize = plans.iter().map(|p| p.tasks.tasks.len()).sum();
     let plan_count = plans.len();
@@ -3097,6 +3083,11 @@ async fn cmd_plan_run_engine(
         let mut engine = GraphEngine::new(graph, registry)
             .with_recorder(checkpoint.take_recorder())
             .with_telemetry(Arc::clone(&graph_telemetry));
+        // Wire canonical --log-file recorder (#115): attach the event sink
+        // so every GraphExecutionEvent is written to JSONL.
+        if let Some(ref sink) = graph_event_logger {
+            engine = engine.with_event_sink(Arc::clone(sink));
+        }
         if let Some(replayer) = checkpoint.take_replayer() {
             engine = engine.with_replayer(replayer);
         }
@@ -3586,12 +3577,9 @@ depends_on_plan = ["missing-foundation"]
     }
 
     #[test]
-    fn graph_approval_fails_closed_instead_of_dispatching_unapproved_work() {
-        let error = validate_graph_execution_options(PlanEngine::Graph, true)
-            .expect_err("unsupported Graph approval must fail closed");
-        assert!(error.to_string().contains("no Graph work was dispatched"));
+    fn graph_approval_is_accepted_for_all_engines() {
+        assert!(validate_graph_execution_options(PlanEngine::Graph, true).is_ok());
         assert!(validate_graph_execution_options(PlanEngine::Graph, false).is_ok());
-        assert!(validate_graph_execution_options(PlanEngine::RunnerV2, true).is_ok());
     }
 
     /// Smoke-test: `warn_graph_unsupported_flags` must not panic regardless

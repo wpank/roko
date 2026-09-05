@@ -1,47 +1,21 @@
+// Dream consolidation: numeric patterns, vec construction, and long cycle functions.
+#![allow(
+    clippy::cloned_ref_to_slice_refs,
+    clippy::derivable_impls,
+    clippy::derive_partial_eq_without_eq,
+    clippy::double_must_use,
+    clippy::iter_with_drain,
+    clippy::manual_midpoint,
+    clippy::missing_fields_in_debug,
+    clippy::needless_borrows_for_generic_args,
+    clippy::too_many_lines,
+    clippy::vec_init_then_push
+)]
 //! Dreams subsystem crate.
 //!
 //! This package owns the shipping dream-cycle runtime, heartbeat helpers, and
 //! compatibility metadata for the subsystem surfaces that still live in the
 //! dreams domain.
-
-#![allow(
-    clippy::assigning_clones,
-    clippy::bool_to_int_with_if,
-    clippy::cast_lossless,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_precision_loss,
-    clippy::cast_sign_loss,
-    clippy::clone_on_copy,
-    clippy::cloned_ref_to_slice_refs,
-    clippy::derivable_impls,
-    clippy::derive_partial_eq_without_eq,
-    clippy::double_must_use,
-    clippy::expect_used,
-    clippy::format_push_string,
-    clippy::if_not_else,
-    clippy::iter_with_drain,
-    clippy::manual_let_else,
-    clippy::manual_midpoint,
-    clippy::map_unwrap_or,
-    clippy::missing_const_for_fn,
-    clippy::needless_pass_by_value,
-    clippy::option_if_let_else,
-    clippy::or_fun_call,
-    clippy::redundant_closure_for_method_calls,
-    clippy::similar_names,
-    clippy::suboptimal_flops,
-    clippy::too_many_lines,
-    clippy::uninlined_format_args,
-    clippy::unnecessary_wraps,
-    clippy::unused_async,
-    clippy::unused_self,
-    clippy::items_after_statements,
-    clippy::match_same_arms,
-    clippy::missing_fields_in_debug,
-    clippy::needless_borrows_for_generic_args,
-    clippy::vec_init_then_push
-)]
 
 pub mod cycle;
 pub mod hypnagogia;

@@ -170,6 +170,21 @@ impl Rung {
             Self::Integration => "integration",
         }
     }
+
+    /// Parse a rung from its canonical label string.
+    #[must_use]
+    pub fn from_label(label: &str) -> Option<Self> {
+        match label {
+            "compile" => Some(Self::Compile),
+            "lint" | "clippy" => Some(Self::Lint),
+            "test" => Some(Self::Test),
+            "symbol" => Some(Self::Symbol),
+            "gen-test" | "generated-test" => Some(Self::GeneratedTest),
+            "prop-test" | "property-test" => Some(Self::PropertyTest),
+            "integration" => Some(Self::Integration),
+            _ => None,
+        }
+    }
 }
 
 // ─── Rung capabilities ──────────────────────────────────────────────────
@@ -556,5 +571,36 @@ mod tests {
         for rung in CANONICAL_ORDER {
             assert!(!rung.label().is_empty(), "{rung:?} has empty label");
         }
+    }
+
+    // ── Rung from_label ─────────────────────────────────────────────
+
+    #[test]
+    fn from_label_round_trips_all_canonical_rungs() {
+        for rung in CANONICAL_ORDER {
+            let label = rung.label();
+            let parsed = Rung::from_label(label);
+            assert_eq!(
+                parsed,
+                Some(rung),
+                "from_label({label:?}) should return {rung:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn from_label_aliases() {
+        assert_eq!(Rung::from_label("clippy"), Some(Rung::Lint));
+        assert_eq!(
+            Rung::from_label("generated-test"),
+            Some(Rung::GeneratedTest)
+        );
+        assert_eq!(Rung::from_label("property-test"), Some(Rung::PropertyTest));
+    }
+
+    #[test]
+    fn from_label_unknown_returns_none() {
+        assert_eq!(Rung::from_label("nonexistent"), None);
+        assert_eq!(Rung::from_label(""), None);
     }
 }

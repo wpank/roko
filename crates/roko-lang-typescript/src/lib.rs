@@ -13,9 +13,6 @@
 //!   `class`, `interface`, `type`, `const`, `enum`, and `export default`
 //!   symbols, including default-exported classes and functions.
 
-#![allow(clippy::module_name_repetitions)]
-#![allow(clippy::unnecessary_literal_bound)]
-
 use roko_core::build::{BuildCommand, BuildSystem};
 use roko_core::language::{Import, ImportKind, LanguageProvider, Symbol, SymbolKind, Visibility};
 use std::path::Path;
@@ -26,6 +23,7 @@ use std::path::Path;
 pub struct NpmBuildSystem;
 
 impl BuildSystem for NpmBuildSystem {
+    #[allow(clippy::unnecessary_literal_bound)]
     fn name(&self) -> &str {
         "npm"
     }
@@ -75,6 +73,7 @@ impl BuildSystem for NpmBuildSystem {
 pub struct PnpmBuildSystem;
 
 impl BuildSystem for PnpmBuildSystem {
+    #[allow(clippy::unnecessary_literal_bound)]
     fn name(&self) -> &str {
         "pnpm"
     }
@@ -124,6 +123,7 @@ impl BuildSystem for PnpmBuildSystem {
 pub struct YarnBuildSystem;
 
 impl BuildSystem for YarnBuildSystem {
+    #[allow(clippy::unnecessary_literal_bound)]
     fn name(&self) -> &str {
         "yarn"
     }
@@ -179,6 +179,7 @@ impl BuildSystem for YarnBuildSystem {
 pub struct TypeScriptLanguageProvider;
 
 impl LanguageProvider for TypeScriptLanguageProvider {
+    #[allow(clippy::unnecessary_literal_bound)]
     fn language_name(&self) -> &str {
         "typescript"
     }

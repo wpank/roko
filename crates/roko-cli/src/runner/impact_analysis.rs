@@ -413,6 +413,236 @@ pub async fn analyze(
     report
 }
 
+/// Analyze impact against a specific base ref, or from an explicit file list.
+///
+/// When `explicit_files` is non-empty, those paths are used as the changed set
+/// instead of running git diff. When empty, git diff against `base` is used.
+pub async fn analyze_against(
+    workdir: &Path,
+    base: &str,
+    explicit_files: &[String],
+    config: &GatesConfig,
+) -> ImpactReport {
+    let started = Instant::now();
+    let mut report = ImpactReport::default();
+    let limit = Duration::from_millis(config.impact_timeout_ms.max(100));
+
+    let changed = if explicit_files.is_empty() {
+        match changed_files_against(workdir, base, limit).await {
+            Ok(changed) => changed,
+            Err(error) => {
+                report.fallback_reason = Some(error);
+                report.analysis_ms = elapsed_ms(started);
+                return report;
+            }
+        }
+    } else {
+        explicit_files
+            .iter()
+            .map(|p| normalize_relative(p))
+            .filter(|p| !p.is_empty())
+            .collect::<BTreeSet<_>>()
+    };
+    report.changed_files = changed.into_iter().collect();
+
+    if report.changed_files.is_empty() || report.is_structural_only() {
+        report.analysis_ms = elapsed_ms(started);
+        return report;
+    }
+    if report
+        .changed_files
+        .iter()
+        .any(|path| workspace_build_input(path))
+    {
+        report.fallback_reason =
+            Some("workspace Cargo/build input changed; focused target selection is unsafe".into());
+        report.analysis_ms = elapsed_ms(started);
+        return report;
+    }
+
+    let metadata = match cargo_metadata(workdir, limit).await {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            report.fallback_reason = Some(error);
+            report.analysis_ms = elapsed_ms(started);
+            return report;
+        }
+    };
+    let workspace_ids = metadata
+        .workspace_members
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let packages = metadata
+        .packages
+        .iter()
+        .filter(|package| workspace_ids.contains(&package.id))
+        .collect::<Vec<_>>();
+
+    let mut targets = BTreeSet::new();
+    let mut producers = BTreeSet::new();
+    for changed in &report.changed_files {
+        if structural_only_path(changed) {
+            continue;
+        }
+        let Some(package) = package_for_path(workdir, changed, &packages) else {
+            report.fallback_reason = Some(format!(
+                "changed path `{changed}` is not owned by one Cargo workspace package"
+            ));
+            report.analysis_ms = elapsed_ms(started);
+            return report;
+        };
+        let package_name = package.name.to_string();
+        producers.insert(package_name.clone());
+        if changed.ends_with("Cargo.toml") || changed.ends_with("build.rs") {
+            report.high_impact = true;
+            report
+                .high_impact_reasons
+                .push(format!("package build contract changed: {changed}"));
+            targets.insert(ImpactedTarget {
+                package: package_name,
+                selector: CargoTargetSelector::AllTargets,
+                required_features: Vec::new(),
+            });
+            continue;
+        }
+        if !changed.ends_with(".rs") {
+            continue; // Non-Rust files are informational in CLI mode
+        }
+        let selected = targets_for_path(workdir, changed, package);
+        if !selected.is_empty() {
+            targets.extend(selected);
+        }
+    }
+    report.producer_packages = producers.into_iter().collect();
+
+    if targets
+        .iter()
+        .any(|target| target.selector == CargoTargetSelector::Lib)
+    {
+        report.high_impact = true;
+        report.high_impact_reasons.push(
+            "library source changed; downstream contract impact cannot be ruled out".to_string(),
+        );
+    }
+    if targets.len() > config.impact_max_targets.max(1) {
+        report.fallback_reason = Some(format!(
+            "{} impacted Cargo targets exceed configured cap {}",
+            targets.len(),
+            config.impact_max_targets.max(1)
+        ));
+        report.analysis_ms = elapsed_ms(started);
+        return report;
+    }
+
+    if report.high_impact {
+        for package in packages
+            .iter()
+            .filter(|package| report.producer_packages.contains(&package.name.to_string()))
+        {
+            for target in &package.targets {
+                if let Some(selector) = target_selector(target) {
+                    targets.insert(ImpactedTarget {
+                        package: package.name.to_string(),
+                        selector,
+                        required_features: target.required_features.clone(),
+                    });
+                }
+            }
+        }
+        let (reverse, overflow) = reverse_dependents(
+            &metadata,
+            &report.producer_packages,
+            config.impact_max_reverse_dependents.max(1),
+        );
+        report.reverse_dependents = reverse.clone();
+        if overflow {
+            report.fallback_reason = Some(format!(
+                "public/high-impact change exceeds reverse-dependent cap {}; full verification required",
+                config.impact_max_reverse_dependents.max(1)
+            ));
+            report.analysis_ms = elapsed_ms(started);
+            return report;
+        }
+        for package in reverse {
+            targets.insert(ImpactedTarget {
+                package,
+                selector: CargoTargetSelector::Package,
+                required_features: Vec::new(),
+            });
+        }
+    }
+    if targets.len() > config.impact_max_targets.max(1) {
+        report.fallback_reason = Some(format!(
+            "{} producer and reverse-dependent Cargo targets exceed configured cap {}",
+            targets.len(),
+            config.impact_max_targets.max(1)
+        ));
+        report.analysis_ms = elapsed_ms(started);
+        return report;
+    }
+    report.targets = targets.into_iter().collect();
+    report.confidence = ConfidenceLevel::Medium;
+    report.analysis_ms = elapsed_ms(started);
+    info!(
+        changed_files = report.changed_files.len(),
+        targets = report.targets.len(),
+        high_impact = report.high_impact,
+        reverse_dependents = report.reverse_dependents.len(),
+        confidence = %report.confidence,
+        analysis_ms = report.analysis_ms,
+        "CLI change-impact analysis complete"
+    );
+    report
+}
+
+/// Diff changed files against an arbitrary base ref.
+async fn changed_files_against(
+    workdir: &Path,
+    base: &str,
+    limit: Duration,
+) -> Result<BTreeSet<String>, String> {
+    // Use three-dot diff (merge-base) for branch refs, direct for HEAD/commits
+    let tracked = bounded_output(
+        workdir,
+        "git",
+        &["diff", "--name-only", "-z", base, "--"],
+        limit,
+        MAX_GIT_OUTPUT,
+    )
+    .await?;
+    let mut files = parse_git_paths(&tracked, &format!("git diff --name-only -z {base}"))?;
+    // Also include uncommitted changes (staged + unstaged)
+    let staged = bounded_output(
+        workdir,
+        "git",
+        &["diff", "--name-only", "-z", "--cached", "--"],
+        limit,
+        MAX_GIT_OUTPUT,
+    )
+    .await?;
+    files.extend(parse_git_paths(
+        &staged,
+        "git diff --name-only -z --cached",
+    )?);
+    // Include untracked files
+    let untracked = bounded_output(
+        workdir,
+        "git",
+        &["ls-files", "-z", "--others", "--exclude-standard"],
+        limit,
+        MAX_GIT_OUTPUT,
+    )
+    .await?;
+    files.extend(parse_git_paths(&untracked, "git ls-files --others -z")?);
+    if files.len() > MAX_CHANGED_FILES {
+        return Err(format!(
+            "combined changed path count exceeded {MAX_CHANGED_FILES}"
+        ));
+    }
+    Ok(files)
+}
+
 fn elapsed_ms(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
@@ -1648,5 +1878,114 @@ diff --git a/crates/roko-cli/src/internal.rs b/crates/roko-cli/src/internal.rs
         // But a non-Cargo TOML file should be detected.
         assert!(is_schema_file("config/roko.toml"));
         assert!(is_schema_file("settings.toml"));
+    }
+
+    // ─── analyze_against tests ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn analyze_against_explicit_files_sets_producers() {
+        // Explicit files that map to real workspace crate paths should
+        // populate producer_packages even when git is not available.
+        let workdir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+        let config = GatesConfig::default();
+        let files = vec!["crates/roko-core/src/lib.rs".to_string()];
+        let report = analyze_against(workdir, "HEAD", &files, &config).await;
+        // The file should be in the changed_files
+        assert!(
+            report
+                .changed_files
+                .contains(&"crates/roko-core/src/lib.rs".to_string()),
+            "explicit file must appear in changed_files: {:?}",
+            report.changed_files
+        );
+        // roko-core should be identified as a producer
+        if report.fallback_reason.is_none() {
+            assert!(
+                report.producer_packages.contains(&"roko-core".to_string()),
+                "roko-core must be a producer: {:?}",
+                report.producer_packages
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn analyze_against_empty_files_no_crash() {
+        let workdir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+        let config = GatesConfig::default();
+        // Empty explicit file list means use git diff; HEAD diff may or may not
+        // have changes but should not crash.
+        let report = analyze_against(workdir, "HEAD", &[], &config).await;
+        // Should not panic; analysis_ms should be set.
+        assert!(report.analysis_ms > 0 || report.changed_files.is_empty());
+    }
+
+    #[tokio::test]
+    async fn analyze_against_structural_files_are_skipped() {
+        let workdir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+        let config = GatesConfig::default();
+        let files = vec!["docs/README.md".to_string()];
+        let report = analyze_against(workdir, "HEAD", &files, &config).await;
+        // Documentation-only changes produce no targets.
+        assert!(report.is_structural_only() || report.changed_files.is_empty());
+        assert!(report.targets.is_empty());
+        assert!(report.producer_packages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn analyze_against_workspace_cargo_toml_triggers_fallback() {
+        let workdir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+        let config = GatesConfig::default();
+        let files = vec!["Cargo.toml".to_string()];
+        let report = analyze_against(workdir, "HEAD", &files, &config).await;
+        assert!(
+            report.fallback_reason.is_some(),
+            "workspace Cargo.toml change must trigger fallback"
+        );
+    }
+
+    #[test]
+    fn reverse_dependents_overflow_cap() {
+        // When the reverse-dependent set exceeds the cap, overflow is reported.
+        let metadata = mock_workspace_metadata(&[
+            ("base", &[]),
+            ("a", &["base"]),
+            ("b", &["base"]),
+            ("c", &["base"]),
+        ]);
+        let (deps, overflow) = reverse_dependents(&metadata, &["base".to_string()], 2);
+        assert!(overflow, "3 dependents with cap 2 must overflow");
+        assert_eq!(deps.len(), 2, "only 2 should be returned under the cap");
+    }
+
+    #[test]
+    fn impact_report_affected_packages_combines_producers_and_reverse_deps() {
+        let report = ImpactReport {
+            producer_packages: vec!["core".into(), "gate".into()],
+            reverse_dependents: vec!["cli".into(), "serve".into()],
+            ..Default::default()
+        };
+        let mut affected: BTreeSet<String> = report.producer_packages.iter().cloned().collect();
+        affected.extend(report.reverse_dependents.iter().cloned());
+        assert_eq!(affected.len(), 4);
+        assert!(affected.contains("core"));
+        assert!(affected.contains("gate"));
+        assert!(affected.contains("cli"));
+        assert!(affected.contains("serve"));
     }
 }

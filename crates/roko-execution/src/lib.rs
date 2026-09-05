@@ -25,10 +25,13 @@
 //! - [`overrides`] -- Layer-safe ExecutionOverrides value object with policy enums.
 //! - [`profiles`] -- RuntimeProfile enum and profile bundle matrix.
 //! - [`prompt`] -- Layer-3 prompt assembly handles and cache.
+//! - [`authored_graph`] -- AuthoredGraph controller lifecycle and config (#267).
 //! - [`replan_controller`] -- Durable Graph gate-failure replan controller.
 //! - [`runtime_services`] -- Non-plan service construction for workflow/chat/ACP.
+//! - [`plan_generator`] -- Shared PlanGenerator trait and value types (#280).
 //! - [`workflow`] -- Workflow graph cells and templates.
 
+pub mod authored_graph;
 pub mod builder;
 pub mod diagnostics;
 pub mod dispatch;
@@ -38,6 +41,7 @@ pub mod guards;
 pub mod lifecycle;
 pub mod observation;
 pub mod overrides;
+pub mod plan_generator;
 pub mod profiles;
 pub mod prompt;
 pub mod replan_controller;
@@ -47,8 +51,8 @@ pub mod workflow;
 // ---- Builder-level re-exports ------------------------------------------------
 
 pub use builder::{
-    BuilderError, DispatchBundle, ExecutionOverrides, ExtensionsBundle, FeedbackBundle,
-    GuardsBundle, ObservationBundle, PromptBundle, RuntimeServices, RuntimeServicesBuilder,
+    BuilderError, FeedbackBundle, PromptBundle, RuntimeServices, RuntimeServicesBuilder,
+    RuntimeServicesSummary,
 };
 pub use lifecycle::RunnerLifecycleEvent;
 pub use profiles::{ProfileBundleManifest, RuntimeProfile, profile_bundle_manifest};
@@ -73,13 +77,25 @@ pub use workflow::{
     build_report, idempotency_key, parse_review, resolve_template,
 };
 
-// ---- Detailed service bundle re-exports --------------------------------------
+// ---- Module-level bundle re-exports ------------------------------------------
 
 pub use dispatch::factory::DispatchFactory;
 pub use dispatch::model_resolver::ModelResolverHandle;
 pub use dispatch::request::DispatchRequest;
-pub use guards::CostLedger;
-pub use observation::ObservationPublisher;
+pub use extensions::ExtensionsBundle;
+pub use guards::{CostLedger, GuardsBundle};
+pub use observation::{ObservationBundle, ObservationPublisher};
 pub use overrides::ExecutionOverrides as DetailedExecutionOverrides;
+pub use plan_generator::{
+    PlanGenError, PlanGenerator, PlanGeneratorAdapter, PlanGeneratorOutcome,
+    PlanGeneratorOverrides, PlanGeneratorRequest, PlanSource, ValidatedPlan, ValidationEvidence,
+};
 pub use prompt::builder::PromptBuildHandle;
 pub use prompt::cache::PromptCacheHandle;
+
+// ---- Authored graph controller re-exports (#267) ----------------------------
+
+pub use authored_graph::{
+    AuthoredGraphConfig, AuthoredGraphController, AuthoredGraphReport, ControllerError,
+    ControllerLifecycle, PreflightCategory, PreflightError, drive_controller,
+};

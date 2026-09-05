@@ -32,7 +32,7 @@ fn doctor_human_output_contains_v2_abstractions() {
     let temp = tempdir().unwrap();
     std::fs::write(
         temp.path().join("roko.toml"),
-        "[agent]\ncommand = \"echo\"\n",
+        "[agent]\ncommand = \"echo\"\n\n[serve.auth]\nenabled = false\n",
     )
     .unwrap();
     bootstrap_layout(temp.path());
@@ -52,7 +52,7 @@ fn doctor_json_output_contains_v2_abstractions() {
     let temp = tempdir().unwrap();
     std::fs::write(
         temp.path().join("roko.toml"),
-        "[agent]\ncommand = \"echo\"\n",
+        "[agent]\ncommand = \"echo\"\n\n[serve.auth]\nenabled = false\n",
     )
     .unwrap();
     bootstrap_layout(temp.path());

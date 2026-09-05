@@ -121,7 +121,7 @@ and may add a few seconds.
 
 ## Work FAST Skips
 
-The wrapper uses the existing binary and enables headless runner-v2 with preflight disabled. The
+The wrapper uses the existing binary and enables headless Graph execution with preflight disabled. The
 FAST runtime also skips or defers:
 
 - startup workspace Cargo cache warming;

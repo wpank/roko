@@ -693,6 +693,7 @@ fn default_thinking_medium() -> String {
 
 /// Gemini-specific model and request settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GeminiConfig {
     /// Default model for standard Gemini chat requests.
     pub default_model: Option<String>,
@@ -748,6 +749,7 @@ fn default_recency() -> String {
 
 /// Perplexity-specific search and model settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PerplexityConfig {
     /// Default model for search-grounded queries.
     pub default_search_model: Option<String>,
@@ -774,7 +776,7 @@ pub struct PerplexityConfig {
     pub return_related_questions: bool,
     /// When true, `auto` backend selection prefers Perplexity deep research
     /// over standard search for `research topic`. Default `false`.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub auto_deep: bool,
 }
 

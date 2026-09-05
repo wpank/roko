@@ -2466,11 +2466,7 @@ mod tests {
         // total_requests).
         let loaded = ProviderHealthRegistry::load_or_new(&path);
         let snap = loaded.snapshot();
-        assert_eq!(
-            snap.len(),
-            1,
-            "duplicate keys must be collapsed on load"
-        );
+        assert_eq!(snap.len(), 1, "duplicate keys must be collapsed on load");
         let entry = snap.get("claude_cli").expect("normalized key must exist");
         assert_eq!(entry.provider_id, "claude_cli");
         assert_eq!(entry.total_requests, 10, "higher-traffic entry should win");

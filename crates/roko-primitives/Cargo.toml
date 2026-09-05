@@ -12,17 +12,10 @@ description = "10,240-bit hyperdimensional computing vectors, inference tier rou
 [lints]
 workspace = true
 
-[features]
-default = []
-# Dormant: guarded in hdc.rs but never enabled by any workspace member.
-rkyv = ["dep:rkyv"]
-hdc-advanced-math = []
-
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
-rkyv = { version = "0.8", optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

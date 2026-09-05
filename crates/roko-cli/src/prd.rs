@@ -2428,15 +2428,6 @@ fn strsim_distance(a: &str, b: &str) -> usize {
     prev[n]
 }
 
-/// Check whether a model identifier is present in the config model table.
-#[allow(dead_code)]
-fn model_in_config(
-    model: &str,
-    models: &IndexMap<String, roko_core::config::schema::ModelProfile>,
-) -> bool {
-    models.contains_key(model) || models.values().any(|p| p.slug == model)
-}
-
 /// Validate and fix a generated plan TOML string.
 ///
 /// Checks:

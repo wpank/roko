@@ -18,60 +18,27 @@
 //! - [`pareto`] — cost-quality Pareto frontier computation for models
 
 #![deny(missing_docs)]
-#![allow(clippy::module_name_repetitions)]
-// The learning crate is numerics- and telemetry-heavy; several pedantic lints
-// create high-churn noise here without improving correctness for the current
-// implementation style.
+// Learning crate: numerics/telemetry-heavy with many trait impls returning literal &str,
+// collapsible if chains in analysis code, and long aggregation functions.
 #![allow(
-    clippy::assigning_clones,
-    clippy::bool_to_int_with_if,
-    clippy::cast_lossless,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_precision_loss,
-    clippy::cast_sign_loss,
-    clippy::clone_on_copy,
     clippy::collapsible_if,
     clippy::collection_is_never_read,
     clippy::derivable_impls,
-    clippy::doc_markdown,
-    clippy::expect_used,
-    clippy::explicit_iter_loop,
+    clippy::derive_partial_eq_without_eq,
     clippy::float_cmp,
-    clippy::if_not_else,
     clippy::implicit_hasher,
-    clippy::items_after_statements,
     clippy::iter_cloned_collect,
-    clippy::manual_let_else,
     clippy::many_single_char_names,
-    clippy::map_unwrap_or,
-    clippy::match_same_arms,
-    clippy::missing_const_for_fn,
-    clippy::missing_panics_doc,
     clippy::needless_borrow,
     clippy::needless_collect,
     clippy::needless_continue,
-    clippy::needless_pass_by_value,
     clippy::needless_range_loop,
-    clippy::option_if_let_else,
-    clippy::or_fun_call,
-    clippy::question_mark,
-    clippy::redundant_clone,
     clippy::redundant_closure,
-    clippy::redundant_closure_for_method_calls,
-    clippy::return_self_not_must_use,
-    clippy::significant_drop_tightening,
-    clippy::similar_names,
     clippy::struct_field_names,
-    clippy::suboptimal_flops,
     clippy::too_long_first_doc_paragraph,
-    clippy::too_many_arguments,
     clippy::too_many_lines,
-    clippy::uninlined_format_args,
     clippy::unnecessary_literal_bound,
-    clippy::unnecessary_map_or,
-    clippy::unused_self,
-    clippy::unwrap_used,
+    clippy::question_mark,
     clippy::use_self
 )]
 
@@ -114,6 +81,8 @@ pub mod error_pattern_store;
 pub mod event_subscriber;
 /// Unified learning events emitted by routing, evaluation, and runtime feedback.
 pub mod events;
+/// Crash-durable prompt-experiment receipt shared across all dispatch surfaces.
+pub mod experiment_receipt;
 /// Concrete feedback sink for workflow learning telemetry.
 pub mod feedback_service;
 pub mod hdc_clustering;

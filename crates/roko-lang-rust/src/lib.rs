@@ -8,11 +8,6 @@
 //!   `fn`/`struct`/`enum`/`trait`/`impl`/`const`/`type`/`mod` symbols from Rust
 //!   source text.
 
-#![allow(clippy::module_name_repetitions)]
-// The trait signatures use `&str` returns; clippy suggests `&'static str` but the
-// trait contract binds the lifetime to `&self`. Allow it here.
-#![allow(clippy::unnecessary_literal_bound)]
-
 use roko_core::build::{BuildCommand, BuildSystem};
 use roko_core::language::{Import, ImportKind, LanguageProvider, Symbol, SymbolKind, Visibility};
 use std::path::Path;
@@ -29,6 +24,7 @@ pub use tree_sitter_parser::TreeSitterRustProvider;
 pub struct CargoBuildSystem;
 
 impl BuildSystem for CargoBuildSystem {
+    #[allow(clippy::unnecessary_literal_bound)]
     fn name(&self) -> &str {
         "cargo"
     }
@@ -96,6 +92,7 @@ impl BuildSystem for CargoBuildSystem {
 pub struct RustLanguageProvider;
 
 impl LanguageProvider for RustLanguageProvider {
+    #[allow(clippy::unnecessary_literal_bound)]
     fn language_name(&self) -> &str {
         "rust"
     }

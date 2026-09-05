@@ -61,7 +61,6 @@ fn anthropic_model(supports_tools: bool) -> ModelProfile {
     }
 }
 
-
 // ─── Happy path ─────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -226,8 +225,15 @@ async fn anthropic_tool_call_round_trip() {
         .iter()
         .find(|m| m["role"] == "assistant")
         .expect("assistant message in second request");
-    assert_eq!(assistant["content"][0]["type"], "tool_use");
-    assert_eq!(assistant["content"][0]["name"], "ls");
+    // The assistant response contains [text, tool_use]; find the tool_use block.
+    let tool_use_block = assistant["content"]
+        .as_array()
+        .expect("assistant content array")
+        .iter()
+        .find(|b| b["type"] == "tool_use")
+        .expect("tool_use block in assistant content");
+    assert_eq!(tool_use_block["type"], "tool_use");
+    assert_eq!(tool_use_block["name"], "ls");
 
     let tool_result = messages
         .iter()

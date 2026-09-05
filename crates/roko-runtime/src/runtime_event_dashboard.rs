@@ -546,9 +546,7 @@ impl Default for RuntimeEventDashboardProjector {
 mod tests {
     use chrono::Utc;
 
-    use roko_core::runtime_event::{
-        RuntimeEvent, RuntimeEventEnvelope, RuntimeEventMode,
-    };
+    use roko_core::runtime_event::{RuntimeEvent, RuntimeEventEnvelope, RuntimeEventMode};
 
     use super::*;
 

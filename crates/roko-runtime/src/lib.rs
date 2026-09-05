@@ -1,4 +1,6 @@
-//! `roko-runtime` — shared async runtime primitives for Roko.
+// Runtime event types and primitives: config structs without Eq, indexed array loops.
+#![allow(clippy::derive_partial_eq_without_eq, clippy::needless_range_loop)]
+//! `roko-runtime` -- shared async runtime primitives for Roko.
 //!
 //! This crate extracts the foundational runtime concerns that Mori (and other Roko
 //! applications) depend on:
@@ -21,25 +23,6 @@
 //!    multi-task Tokio runtimes.
 //! 3. **Zero unsafe.** All concurrency goes through `tokio::sync` or `std::sync::atomic`.
 
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_precision_loss,
-    clippy::cast_sign_loss,
-    clippy::cast_lossless,
-    clippy::missing_panics_doc,
-    clippy::must_use_candidate,
-    clippy::missing_const_for_fn,
-    clippy::unnecessary_map_or,
-    clippy::doc_markdown,
-    clippy::too_long_first_doc_paragraph,
-    clippy::suboptimal_flops,
-    clippy::needless_range_loop,
-    clippy::match_same_arms,
-    clippy::derive_partial_eq_without_eq,
-    clippy::return_self_not_must_use,
-    clippy::map_unwrap_or
-)]
-
 pub mod builtin_lenses_derived;
 pub mod builtin_lenses_health;
 pub mod builtin_lenses_performance;
@@ -47,7 +30,6 @@ pub mod cancel;
 pub mod connector_runtime;
 pub mod delta_consumer;
 pub mod demurrage_consumer;
-pub mod effect_driver;
 /// Cognitive energy model -- metabolic costs for cognitive operations.
 pub mod energy;
 pub mod event_bus;
@@ -59,19 +41,19 @@ pub mod jsonl_logger;
 pub mod lens_executor;
 pub mod lifecycle;
 pub mod metrics;
-pub mod pipeline_state;
 pub mod process;
 pub mod projection;
 pub mod pulse_bus;
 pub mod resource;
 pub mod run_ledger;
+/// Plan-scoped run registry: tracks all runs for a plan with state.
+pub mod run_registry;
 pub mod runtime_event_dashboard;
 pub mod state_hub;
 pub mod state_snapshot;
-pub mod task_scheduler;
 pub mod telemetry_projection_aggregator;
 pub mod theta_consumer;
-pub mod workflow_engine;
+pub mod workflow_contract;
 
 pub use builtin_lenses_derived::{
     AnomalyLens, CFactorLens, CollectiveIntelligenceLens, TrendLens, UsageLens,
@@ -86,7 +68,7 @@ pub use connector_runtime::{
     MAX_MANAGED_CONNECTORS, MAX_OPERATION_BYTES, MAX_QUERY_BYTES, MAX_RECONNECT_ATTEMPTS,
     MAX_RECONNECT_DELAY_MS, SharedConnectorRegistry,
 };
-pub use effect_driver::{EffectDriver, EffectServices};
+// EffectServices retired with WorkflowEngine (#276)
 pub use http_event_sink::HttpEventSink;
 // Foundation types re-exported from roko-core for backwards compatibility
 pub use jsonl_logger::JsonlLogger;
@@ -102,10 +84,6 @@ pub use lifecycle::{
     ProbeHandler, ProbeSpec, Ready, ResourcesAllocated, RestartBackoff, RoutingConfigured,
     ToolsLoaded, Unvalidated, Validated,
 };
-pub use pipeline_state::{
-    CommitOutcome, Phase, PipelineInput, PipelineOutput, PipelineStateV2, WorkflowConfig,
-    WorkflowOutcome,
-};
 pub use projection::{RunSummary, RuntimeProjection};
 pub use pulse_bus::{PulseBus, PulseBusReceiver};
 pub use roko_core::RuntimeEvent;
@@ -117,6 +95,11 @@ pub use roko_core::foundation::{
 pub use run_ledger::{
     AgentOutcome, ArtifactOutcome, CancellationOutcome, EffectErrorKind, EventPersistenceHealth,
     GateRunOutcome, PhaseTransitionRecord, RunLedger, TaskTerminalOutcome,
+};
+pub use run_registry::{
+    ExecutionRunContext, RunIndex, RunIndexEntry, RunIntent, RunManifest, RunRegistry,
+    RunRegistryError, RunScope, RunStartDecision, RunStatus, compute_plan_fingerprint,
+    compute_task_graph_fingerprint, migrate_legacy_singleton,
 };
 pub use runtime_event_dashboard::{ProjectionResult, RuntimeEventDashboardProjector};
 pub use state_hub::{
@@ -131,13 +114,14 @@ pub use state_snapshot::{
     STATE_SNAPSHOT_VERSION, StateSnapshot, load_durable_dashboard_projection,
     load_durable_runner_projection, validate_state_snapshot,
 };
-pub use task_scheduler::{SchedulableTask, TaskScheduler, TaskStatus};
+pub use workflow_contract::{
+    CommitOutcome, GateOutcome, Phase, WorkflowConfig, WorkflowOutcome, WorkflowResult,
+    WorkflowRunConfig, WorkflowRunReport,
+};
+// task_scheduler retired with WorkflowEngine
 pub use telemetry_projection_aggregator::{
     LensPayload, LensSignalEnvelope, ProjectionUpdate, TelemetryProjectionAggregator,
     TelemetryProjectionError, TelemetryProjectionState,
-};
-pub use workflow_engine::{
-    GateOutcome, WorkflowEngine, WorkflowResult, WorkflowRunConfig, WorkflowRunReport,
 };
 
 #[cfg(test)]

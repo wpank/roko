@@ -313,3 +313,114 @@ impl GeneratedArtifactStore for FsGeneratedArtifactStore {
         std::fs::read(self.artifact_dir().join(relative)).ok()
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SharedGateEvaluator implementation (#275)
+//
+// Makes RunnerProductionGateAdapter consumable from the Graph side as
+// `CellContext.resources.gates`. Both Runner-v2 and Graph can now use
+// the exact same adapter instance to evaluate gate rungs.
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[async_trait::async_trait]
+impl roko_core::SharedGateEvaluator for RunnerProductionGateAdapter {
+    async fn verify_rung(
+        &self,
+        request: &roko_core::SharedGateRequest,
+    ) -> std::result::Result<roko_core::SharedGateVerdict, roko_core::SharedGateError> {
+        use roko_core::{SharedGateError, SharedGateVerdict};
+
+        // Parse the rung name to validate it.
+        let rung = roko_gate::rung_selector::Rung::from_label(&request.rung).ok_or_else(|| {
+            SharedGateError::UnknownRung {
+                rung: request.rung.clone(),
+            }
+        })?;
+
+        // Build a minimal ProductionGateRequest from the shared request.
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let mut gates_config = roko_core::config::GatesConfig::default();
+        // Restrict to the single requested rung by setting max_rung.
+        gates_config.max_rung = Some(rung.as_index() as u8);
+
+        let production_request = roko_gate::ProductionGateRequest {
+            run_id: format!("shared:{}:{}", request.task_id, request.attempt_id),
+            plan_id: request.plan_dir.clone(),
+            task_id: request.task_id.clone(),
+            attempt: request.attempt_id,
+            workspace: request.worktree_path.clone(),
+            workspace_fingerprint: format!("shared:{}:{}", request.task_id, request.attempt_id),
+            changed_files: request.changed_files.clone(),
+            verify_steps: Vec::new(),
+            gates_config,
+            task_context: roko_gate::production_request::GateTaskContextSpec {
+                title: request.context.get("title").cloned().unwrap_or_default(),
+                description: request.context.get("description").cloned(),
+                symbols: Vec::new(),
+                acceptance: Vec::new(),
+            },
+            timeout_secs: 600,
+            cancel,
+            baseline_fingerprint: None,
+            adaptive_thresholds: None,
+        };
+
+        let progress = Arc::new(roko_gate::production_service::NoopProgressSink);
+        let verdict_v1 = self
+            .service
+            .run(production_request, progress)
+            .await
+            .map_err(|err| SharedGateError::Internal {
+                reason: err.to_string(),
+            })?;
+
+        // Convert the production verdict into a SharedGateVerdict.
+        // Find the verdict for the specific requested rung.
+        let rung_verdict = verdict_v1.rung_verdicts.iter().find(|rv| rv.rung == rung);
+
+        match rung_verdict {
+            Some(rv) => {
+                if rv.skipped() {
+                    Ok(SharedGateVerdict::skip(&request.rung))
+                } else if rv.passed() {
+                    let mut v = SharedGateVerdict::pass(&request.rung);
+                    if !rv.diagnostic.is_empty() {
+                        v.evidence = Some(rv.diagnostic.clone());
+                    }
+                    Ok(v)
+                } else {
+                    let reasons: Vec<String> = rv
+                        .failure_classification
+                        .as_ref()
+                        .map(|fc| vec![format!("{:?}: {}", fc.primary, rv.diagnostic)])
+                        .unwrap_or_else(|| vec![rv.diagnostic.clone()]);
+                    let mut v = SharedGateVerdict::fail(&request.rung, reasons);
+                    if !rv.diagnostic.is_empty() {
+                        v.evidence = Some(rv.diagnostic.clone());
+                    }
+                    Ok(v)
+                }
+            }
+            None => {
+                // No verdict for the requested rung -- may have been skipped
+                // or short-circuited by an earlier rung failure.
+                if verdict_v1.rung_verdicts.is_empty() {
+                    // Pipeline was cancelled or timed out before any rung ran.
+                    match verdict_v1.outcome {
+                        roko_gate::production_verdict::PipelineOutcome::Cancelled => {
+                            Err(SharedGateError::Cancelled)
+                        }
+                        roko_gate::production_verdict::PipelineOutcome::TimedOut => {
+                            Err(SharedGateError::Timeout { timeout_secs: 600 })
+                        }
+                        _ => Ok(SharedGateVerdict::skip(&request.rung)),
+                    }
+                } else {
+                    // Earlier rung failed and short-circuited before reaching
+                    // the requested rung. Report as skip with context.
+                    Ok(SharedGateVerdict::skip(&request.rung))
+                }
+            }
+        }
+    }
+}

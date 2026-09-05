@@ -23,11 +23,14 @@ fn meta(seq: u64) -> TranscriptEventMeta {
         provider: "anthropic".into(),
         model: "claude-opus-4-6".into(),
         parent_event_id: None,
+        task_id: None,
+        attempt_id: None,
     }
 }
 
 fn record(seq: u64, event: TranscriptEvent) -> TranscriptRecord {
     TranscriptRecord {
+        schema_version: TranscriptRecord::CURRENT_SCHEMA_VERSION,
         meta: meta(seq),
         event,
     }

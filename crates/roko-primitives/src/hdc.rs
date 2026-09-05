@@ -23,10 +23,6 @@ const fn splitmix64(state: &mut u64) -> u64 {
 /// All operations are CPU-cache-friendly bit manipulation — no floating point,
 /// no matrix multiply, no GPU required.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg_attr(
-    feature = "rkyv",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
 pub struct HdcVector {
     bits: [u64; 160],
 }
@@ -232,22 +228,6 @@ impl HdcVector {
     /// Alias for [`HdcVector::similarity`] using the TA docs' Hamming name.
     pub fn hamming_similarity(&self, other: &Self) -> f32 {
         self.similarity(other)
-    }
-
-    /// Returns Hamming similarity against an rkyv-archived vector (zero-copy).
-    ///
-    /// On little-endian platforms, the archived representation of `[u64; 160]`
-    /// is identical to the in-memory layout, so this reads directly from the
-    /// mmap'd buffer with no deserialization.
-    #[cfg(feature = "rkyv")]
-    pub fn similarity_archived(&self, archived: &ArchivedHdcVector) -> f32 {
-        let mut differing_bits = 0u32;
-        for (left, right) in self.bits.iter().zip(archived.bits.iter()) {
-            let right_u64: u64 = (*right).into();
-            differing_bits += (left ^ right_u64).count_ones();
-        }
-        let differing_bits = u16::try_from(differing_bits).unwrap_or(u16::MAX);
-        1.0_f32 - (f32::from(differing_bits) / 10_240.0_f32)
     }
 }
 

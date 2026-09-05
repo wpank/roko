@@ -265,6 +265,7 @@ pub(crate) async fn cmd_run(
     share: bool,
     provider: Option<String>,
     max_retries: Option<u32>,
+    engine: Option<String>,
 ) -> Result<i32> {
     // Build CLI overrides from clap-parsed args instead of re-parsing
     // process args or laundering through env vars.
@@ -322,17 +323,17 @@ pub(crate) async fn cmd_run(
         None
     };
 
-    // TODO(R2_G01): Read workflow template from roko.toml once a [pipeline]
-    // config section is added to the Config struct. For now, fall back to "standard".
+    // Hardcoded to "standard" until a [pipeline] config section is added to
+    // the Config struct (see roko.toml schema evolution).
     let template = "standard";
 
     // Build enabled gates list and typed shell commands from declared gate configs.
     let enabled_gates = roko_cli::run::workflow_enabled_gate_names(&config.gates);
     let shell_gates = roko_cli::run::workflow_shell_gate_commands(&config.gates);
 
-    let route = roko_cli::run::WorkflowExecutionRoute::LegacyDefault;
+    // #258: --engine flag is accepted but graph is now the only engine.
+    let _engine_label = roko_cli::run::resolve_engine_flag(engine.as_deref());
     let result = roko_cli::run::run_workflow_report(
-        route,
         &prompt,
         &workdir,
         template,
@@ -1206,7 +1207,7 @@ pub(crate) async fn cmd_replay(
     forensic: bool,
     from_event: Option<String>,
     as_of: Option<String>,
-    format: String,
+    format: Option<String>,
 ) -> Result<i32> {
     use roko_cli::replay::{self, REPLAY_EXIT_SUCCESS, ReplayFormat, ReplayResult};
 
@@ -1226,7 +1227,8 @@ pub(crate) async fn cmd_replay(
     let event_filter = replay::parse_event_filter(filter_value);
 
     // Resolve output format: global --json and --format must agree.
-    let output_format = ReplayFormat::resolve(&format, cli.json).map_err(|msg| anyhow!("{msg}"))?;
+    let output_format =
+        ReplayFormat::resolve(format.as_deref(), cli.json).map_err(|msg| anyhow!("{msg}"))?;
 
     // Validate and parse the root hash.
     let start = ContentHash::from_hex(&hash)

@@ -155,10 +155,7 @@ fn write_tools() -> HashSet<String> {
 // ── Exec tools (agents that run commands) ───────────────────────────────
 
 fn exec_tools() -> HashSet<String> {
-    ["bash"]
-        .iter()
-        .map(|s| (*s).to_string())
-        .collect()
+    ["bash"].iter().map(|s| (*s).to_string()).collect()
 }
 
 // ── Git tools ───────────────────────────────────────────────────────────
@@ -515,15 +512,20 @@ mod tests {
         assert_eq!(canonicalize_tool_name("run_command"), "bash");
         assert_eq!(canonicalize_tool_name("execute_command"), "bash");
         assert_eq!(canonicalize_tool_name("shell"), "bash");
-        assert_eq!(
-            canonicalize_tool_name("filesystem__read_file"),
-            "read_file"
-        );
+        assert_eq!(canonicalize_tool_name("filesystem__read_file"), "read_file");
     }
 
     #[test]
     fn canonicalize_passes_through_canonical_names() {
-        for name in ["read_file", "write_file", "edit_file", "grep", "ls", "bash", "glob"] {
+        for name in [
+            "read_file",
+            "write_file",
+            "edit_file",
+            "grep",
+            "ls",
+            "bash",
+            "glob",
+        ] {
             assert_eq!(canonicalize_tool_name(name), name);
         }
     }

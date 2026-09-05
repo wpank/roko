@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 /// serde uses `default_true()` → chain is enabled. When no `[chain]` section
 /// exists at all, `ChainConfig::default()` sets `enabled: false`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ChainConfig {
     /// Whether the chain subsystem is active. Default: `false` (no `[chain]`
     /// section = chain off). When `[chain]` is present, defaults to `true`.
@@ -63,7 +64,7 @@ pub struct ChainConfig {
 /// workspace_name = "will-dev"
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RelayConfig {
     /// Relay WebSocket URL (e.g. `wss://relay.nunchi.dev`).
     /// If unset, workspace registration is disabled.
@@ -108,7 +109,7 @@ const fn default_ring_buffer_size() -> usize {
 /// `[feed_agents]` section in roko.toml — controls whether the 10 built-in
 /// feed agents are spawned at serve startup.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct FeedAgentsConfig {
     /// Whether feed agents are enabled (default: false).
     pub enabled: bool,

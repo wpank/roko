@@ -95,7 +95,6 @@ impl SseAdapter {
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         tracing::warn!(n, "workflow SSE runtime event bridge lagged");
-                        continue;
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
                 }

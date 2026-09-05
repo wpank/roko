@@ -231,7 +231,7 @@ mod tests {
             task_enhancements: Some(TaskEnhancements {
                 types_to_define: vec!["MortalityRate".into()],
                 formulas: vec!["lambda(t) = a * e^(b*t)".into()],
-                imports: vec!["use golem_core::mortality::*".into()],
+                imports: vec!["use roko_core::signal::*".into()],
                 example_pattern: Some("match rate { .. }".into()),
                 test_invariants: vec!["INV-001".into()],
             }),

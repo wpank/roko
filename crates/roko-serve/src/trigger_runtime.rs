@@ -10,8 +10,11 @@ use std::str::FromStr;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+#[cfg(feature = "chain")]
 use alloy_dyn_abi::{DynSolValue, EventExt};
+#[cfg(feature = "chain")]
 use alloy_json_abi::Event as AbiEvent;
+#[cfg(feature = "chain")]
 use alloy_primitives::B256;
 use anyhow::{Context, Result};
 use base64::Engine as _;
@@ -2285,6 +2288,16 @@ fn chain_event_matches(signature: &str, event_name: &str) -> bool {
             .is_some_and(|(name, _)| name == event_name)
 }
 
+#[cfg(not(feature = "chain"))]
+fn decode_chain_log(
+    _config: &roko_core::trigger::ChainEventTrigger,
+    _topics: &[String],
+    _data: &str,
+) -> Result<Option<Value>> {
+    anyhow::bail!("chain event decoding requires the `chain` feature")
+}
+
+#[cfg(feature = "chain")]
 fn decode_chain_log(
     config: &roko_core::trigger::ChainEventTrigger,
     topics: &[String],
@@ -2338,6 +2351,7 @@ fn decode_chain_log(
     Ok(Some(Value::Object(object)))
 }
 
+#[cfg(feature = "chain")]
 fn find_abi_event(abi: &Value, selector: B256) -> Option<AbiEvent> {
     let values = abi
         .get("abi")
@@ -2354,6 +2368,7 @@ fn find_abi_event(abi: &Value, selector: B256) -> Option<AbiEvent> {
         .filter(|event| event.selector() == selector)
 }
 
+#[cfg(feature = "chain")]
 fn dyn_sol_value_json(value: DynSolValue) -> Value {
     match value {
         DynSolValue::Bool(value) => Value::Bool(value),

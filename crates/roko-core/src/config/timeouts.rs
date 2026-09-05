@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Serialized under `[timeouts]` in `roko.toml`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TimeoutConfig {
     /// Hard cap for the whole run. `None` preserves legacy plan-timeout fallback.
     #[serde(default, skip_serializing_if = "Option::is_none")]

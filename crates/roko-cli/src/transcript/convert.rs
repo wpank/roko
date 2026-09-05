@@ -65,8 +65,6 @@ struct ToolBlockState {
     call_id: String,
     tool_name: String,
     arguments_preview: Option<String>,
-    #[allow(dead_code)]
-    status: ToolBlockStatus,
 }
 
 struct SubagentState {
@@ -126,7 +124,7 @@ impl BlockBuilder {
                 self.reasoning_streaming = true;
             }
 
-            TranscriptEvent::ToolStarted { call, status, .. } => {
+            TranscriptEvent::ToolStarted { call, .. } => {
                 self.flush_assistant();
                 self.flush_reasoning();
                 let args_preview = if call.arguments.is_null() {
@@ -142,7 +140,6 @@ impl BlockBuilder {
                         call_id: call.id.clone(),
                         tool_name: call.name.clone(),
                         arguments_preview: args_preview,
-                        status: map_tool_status(*status),
                     },
                 );
             }

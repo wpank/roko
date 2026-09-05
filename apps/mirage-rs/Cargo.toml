@@ -92,11 +92,6 @@ default = ["binary", "chain"]
 # Binary entry point (src/main.rs).
 binary = []
 
-# Library-only usage (no binary).
-library = []
-
-# Use revm's gas accounting path.
-sim-gas = []
 
 # Chain extensions: HDC index, InsightEntry knowledge layer, stigmergy pheromones.
 # Adds chain_* JSON-RPC methods and --enable-hdc / --enable-knowledge /

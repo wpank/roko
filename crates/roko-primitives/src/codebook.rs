@@ -1,4 +1,6 @@
-//! HDC Codebook — deterministic symbol allocation and role-filler composition (TA-05).
+//! HDC Codebook -- deterministic symbol allocation (TA-05).
+//!
+//! Role-filler composition for structured knowledge.
 //!
 //! A [`Codebook`] maps symbolic names to deterministic [`HdcVector`]s using
 //! seeded generation. Role-filler binding encodes structured knowledge:
@@ -66,6 +68,7 @@ impl Codebook {
     }
 
     /// Get or allocate a symbol.
+    #[allow(clippy::unwrap_used)] // Just inserted above; always present
     pub fn get_or_allocate(&mut self, name: &str) -> &HdcVector {
         if !self.symbols.contains_key(name) {
             self.allocate(name.to_string());

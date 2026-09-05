@@ -17,6 +17,9 @@
 //! - Bubenik, P. (2015). Statistical topological data analysis using persistence
 //!   landscapes. *JMLR*, 16, 77-102.
 
+// Distance matrix loops and struct constructors are idiomatic in TDA code.
+#![allow(clippy::needless_range_loop, clippy::use_self)]
+
 /// A (birth, death) pair representing a topological feature.
 ///
 /// Connected components (H0) are born at ε=0 and die when they merge.

@@ -1,6 +1,6 @@
-//! Shared in-memory state for per-agent routes.
+//! Shared state for per-agent routes with optional disk persistence.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -16,7 +16,15 @@ use roko_agent::chat_types::{
 };
 use roko_agent::tool_loop::{LlmBackend, StreamEvent, TurnConfig, collect_stream_to_response};
 use roko_agent::translate::{BackendResponse, RenderedTools, normalize_finish_reason};
+#[cfg(feature = "chain")]
 use roko_chain::ChainClient;
+
+/// Type alias so that the chain client parameter compiles with or without
+/// the `chain` feature. When the feature is off, callers pass `None::<()>`.
+#[cfg(feature = "chain")]
+type OptionalChainClient = Option<Arc<dyn ChainClient>>;
+#[cfg(not(feature = "chain"))]
+type OptionalChainClient = Option<()>;
 use roko_core::obs::LogScrubber;
 use roko_core::obs::metrics::{MetricSnapshot, MetricValue};
 use roko_core::obs::schema::{self, CanonicalMetricSchema, MetricDescriptor, MetricSchema};
@@ -27,6 +35,197 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::registration::{AgentCard, AgentEndpoints};
+
+// ---------------------------------------------------------------------------
+// Durable state store
+// ---------------------------------------------------------------------------
+
+/// Current schema version for the persisted state envelope.
+const STATE_SCHEMA_VERSION: u32 = 1;
+
+/// Versioned on-disk envelope for agent sidecar state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StateEnvelope {
+    /// Agent identifier that owns this state.
+    pub agent_id: String,
+    /// Schema version for forward-compatibility rejection.
+    pub schema_version: u32,
+    /// Persisted predictions.
+    pub predictions: Vec<AgentPrediction>,
+    /// Persisted task queue.
+    pub tasks: VecDeque<TaskEntry>,
+    /// Idempotency keys for task creation (key -> fingerprint + task_id).
+    #[serde(default)]
+    pub idempotency_keys: HashMap<String, IdempotencyEntry>,
+}
+
+/// Persisted idempotency record for task creation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IdempotencyEntry {
+    /// Fingerprint of the normalized request body.
+    pub fingerprint: String,
+    /// Task ID that was created for this key.
+    pub task_id: u64,
+}
+
+/// Errors produced by state store operations.
+#[derive(Debug)]
+pub enum StateStoreError {
+    /// The state file belongs to a different agent.
+    AgentMismatch {
+        /// Expected agent identifier.
+        expected: String,
+        /// Agent identifier found in the file.
+        found: String,
+    },
+    /// The state file uses a newer schema version.
+    NewerSchema {
+        /// Maximum supported schema version.
+        expected: u32,
+        /// Schema version found in the file.
+        found: u32,
+    },
+    /// The state file could not be deserialized.
+    Corrupt(String),
+    /// An I/O error occurred.
+    Io(io::Error),
+}
+
+impl std::fmt::Display for StateStoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AgentMismatch { expected, found } => {
+                write!(
+                    f,
+                    "state agent mismatch: expected {expected}, found {found}"
+                )
+            }
+            Self::NewerSchema { expected, found } => {
+                write!(
+                    f,
+                    "state schema version {found} is newer than supported {expected}"
+                )
+            }
+            Self::Corrupt(msg) => write!(f, "corrupt state file: {msg}"),
+            Self::Io(err) => write!(f, "state store I/O error: {err}"),
+        }
+    }
+}
+
+impl std::error::Error for StateStoreError {}
+
+impl From<io::Error> for StateStoreError {
+    fn from(err: io::Error) -> Self {
+        Self::Io(err)
+    }
+}
+
+/// Trait for durable agent state persistence.
+pub trait AgentStateStore: Send + Sync {
+    /// Load persisted state for the given agent, returning `None` if no
+    /// state file exists.
+    fn load(&self, agent_id: &str) -> Result<Option<StateEnvelope>, StateStoreError>;
+
+    /// Persist the current predictions, tasks, and idempotency keys atomically.
+    fn persist(
+        &self,
+        agent_id: &str,
+        predictions: &[AgentPrediction],
+        tasks: &VecDeque<TaskEntry>,
+        idempotency_keys: &HashMap<String, IdempotencyEntry>,
+    ) -> Result<(), StateStoreError>;
+}
+
+/// File-backed state store using atomic write-then-rename.
+pub struct FileStateStore {
+    path: PathBuf,
+}
+
+impl FileStateStore {
+    /// Create a new file-backed store writing to `path`.
+    #[must_use]
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+
+    /// Return the configured state file path.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl AgentStateStore for FileStateStore {
+    fn load(&self, agent_id: &str) -> Result<Option<StateEnvelope>, StateStoreError> {
+        let data = match fs::read(&self.path) {
+            Ok(data) => data,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(StateStoreError::Io(err)),
+        };
+
+        let envelope: StateEnvelope = serde_json::from_slice(&data)
+            .map_err(|err| StateStoreError::Corrupt(err.to_string()))?;
+
+        if envelope.agent_id != agent_id {
+            return Err(StateStoreError::AgentMismatch {
+                expected: agent_id.to_string(),
+                found: envelope.agent_id,
+            });
+        }
+
+        if envelope.schema_version > STATE_SCHEMA_VERSION {
+            return Err(StateStoreError::NewerSchema {
+                expected: STATE_SCHEMA_VERSION,
+                found: envelope.schema_version,
+            });
+        }
+
+        Ok(Some(envelope))
+    }
+
+    fn persist(
+        &self,
+        agent_id: &str,
+        predictions: &[AgentPrediction],
+        tasks: &VecDeque<TaskEntry>,
+        idempotency_keys: &HashMap<String, IdempotencyEntry>,
+    ) -> Result<(), StateStoreError> {
+        let envelope = StateEnvelope {
+            agent_id: agent_id.to_string(),
+            schema_version: STATE_SCHEMA_VERSION,
+            predictions: predictions.to_vec(),
+            tasks: tasks.clone(),
+            idempotency_keys: idempotency_keys.clone(),
+        };
+
+        let json = serde_json::to_string_pretty(&envelope)
+            .map_err(|err| StateStoreError::Corrupt(err.to_string()))?;
+
+        roko_fs::atomic_write_bytes(&self.path, json.as_bytes())?;
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Heartbeat snapshot
+// ---------------------------------------------------------------------------
+
+/// Consistent snapshot of task/metric state for heartbeat payloads.
+#[derive(Debug, Clone)]
+pub struct HeartbeatSnapshot {
+    /// Tasks in Open or Accepted state.
+    pub active_tasks: usize,
+    /// Tasks in Completed state.
+    pub completed_tasks: usize,
+    /// Always zero: the current `TaskState` enum has no failed variant.
+    pub failed_tasks: usize,
+    /// Bounded allowlisted metric counters.
+    pub metrics: HashMap<String, f64>,
+}
+
+// ---------------------------------------------------------------------------
+// Existing types (unchanged)
+// ---------------------------------------------------------------------------
 
 /// Opaque message context payload that round-trips caller JSON as-is.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -333,6 +532,9 @@ pub struct ResearchRequest {
     /// Depth hint.
     #[serde(default = "default_research_depth")]
     pub depth: String,
+    /// Research mode. Defaults to `local_knowledge`.
+    #[serde(default)]
+    pub mode: ResearchMode,
 }
 
 fn default_research_depth() -> String {
@@ -342,6 +544,8 @@ fn default_research_depth() -> String {
 /// Research response payload.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchResponse {
+    /// Research mode used for this response.
+    pub mode: ResearchMode,
     /// Main findings.
     pub findings: Vec<String>,
     /// Source descriptors.
@@ -447,6 +651,64 @@ pub struct TaskCompletionRequest {
     pub summary: Option<String>,
 }
 
+/// Maximum length for task title.
+const MAX_TASK_TITLE_LEN: usize = 512;
+
+/// Maximum length for task kind.
+const MAX_TASK_KIND_LEN: usize = 128;
+
+/// Maximum length for client request ID (idempotency key).
+const MAX_CLIENT_REQUEST_ID_LEN: usize = 128;
+
+/// Maximum bounty value.
+const MAX_BOUNTY: u64 = 1_000_000;
+
+/// Request payload for `POST /tasks`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateTaskRequest {
+    /// Client-provided idempotency key. Repeated identical requests
+    /// return the same task; same key with different body returns 409.
+    #[serde(default)]
+    pub client_request_id: Option<String>,
+    /// Task title (required, max 512 chars).
+    pub title: String,
+    /// Task kind (optional, max 128 chars).
+    #[serde(default)]
+    pub kind: String,
+    /// Priority (defaults to medium).
+    #[serde(default)]
+    pub priority: TaskPriority,
+    /// Bounty amount (optional, max 1_000_000).
+    #[serde(default)]
+    pub bounty: u64,
+}
+
+/// Result of a task creation attempt.
+#[derive(Debug)]
+pub enum CreateTaskResult {
+    /// A new task was created and persisted.
+    Created(TaskEntry),
+    /// The idempotency key matched an identical prior request.
+    Duplicate(TaskEntry),
+    /// The idempotency key was reused with a different body.
+    Conflict,
+    /// The request failed validation.
+    Invalid(String),
+    /// No durable state store is attached; task creation is unavailable.
+    Unavailable,
+}
+
+/// Research mode labels.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ResearchMode {
+    /// Local knowledge store lookup only.
+    #[default]
+    LocalKnowledge,
+    /// Active web/LLM research (not yet supported).
+    Active,
+}
+
 /// Resolved dispatch profile injected once at server construction (#283).
 ///
 /// Captures model/role/cost parameters that were previously resolved inline
@@ -490,7 +752,7 @@ pub struct AgentState {
     routes: Vec<String>,
     started_at: Instant,
     registered_at: u64,
-    chain_client: Option<Arc<dyn ChainClient>>,
+    chain_client: OptionalChainClient,
     #[allow(dead_code)]
     llm_backend: Option<Arc<dyn LlmBackend>>,
     message_dispatcher: Option<Arc<dyn DispatchLike>>,
@@ -499,8 +761,11 @@ pub struct AgentState {
     dispatch_profile: DispatchProfile,
     predictions: Mutex<Vec<AgentPrediction>>,
     tasks: Mutex<VecDeque<TaskEntry>>,
+    idempotency_keys: Mutex<HashMap<String, IdempotencyEntry>>,
+    next_task_id: AtomicU64,
     stats: Mutex<AgentRuntimeStats>,
     metrics: AgentMetrics,
+    state_store: Option<Arc<dyn AgentStateStore>>,
 }
 
 impl AgentState {
@@ -511,7 +776,7 @@ impl AgentState {
         owner: Option<String>,
         version: String,
         capabilities: Vec<String>,
-        chain_client: Option<Arc<dyn ChainClient>>,
+        chain_client: OptionalChainClient,
         llm_backend: Option<Arc<dyn LlmBackend>>,
         knowledge_store: Option<Arc<KnowledgeStore>>,
     ) -> Self {
@@ -536,8 +801,11 @@ impl AgentState {
             dispatch_profile: DispatchProfile::default(),
             predictions: Mutex::new(Vec::new()),
             tasks: Mutex::new(VecDeque::new()),
+            idempotency_keys: Mutex::new(HashMap::new()),
+            next_task_id: AtomicU64::new(1),
             stats: Mutex::new(AgentRuntimeStats::default()),
             metrics: AgentMetrics::default(),
+            state_store: None,
         }
     }
 
@@ -645,6 +913,99 @@ impl AgentState {
         self
     }
 
+    /// Attach a durable state store for prediction/task persistence.
+    #[must_use]
+    pub fn with_state_store(mut self, store: Arc<dyn AgentStateStore>) -> Self {
+        self.state_store = Some(store);
+        self
+    }
+
+    /// Restore persisted predictions and tasks from the attached store.
+    ///
+    /// Must be called before serving routes. Returns the number of
+    /// restored predictions and tasks, or an error if the state is
+    /// corrupt/mismatched.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the store returns `AgentMismatch`,
+    /// `NewerSchema`, or `Corrupt`. Missing state (first boot) is not
+    /// an error.
+    pub fn restore_state(&self) -> Result<(usize, usize), StateStoreError> {
+        let store = match &self.state_store {
+            Some(s) => s,
+            None => return Ok((0, 0)),
+        };
+        match store.load(&self.agent_id)? {
+            Some(envelope) => {
+                let pred_count = envelope.predictions.len();
+                let task_count = envelope.tasks.len();
+                // Set next_task_id to one past the highest existing task ID.
+                let max_id = envelope.tasks.iter().map(|t| t.id).max().unwrap_or(0);
+                self.next_task_id.store(max_id + 1, Ordering::Relaxed);
+                *self.predictions.lock() = envelope.predictions;
+                *self.tasks.lock() = envelope.tasks;
+                *self.idempotency_keys.lock() = envelope.idempotency_keys;
+                tracing::info!(
+                    agent_id = %self.agent_id,
+                    predictions = pred_count,
+                    tasks = task_count,
+                    "restored durable sidecar state"
+                );
+                Ok((pred_count, task_count))
+            }
+            None => Ok((0, 0)),
+        }
+    }
+
+    /// Persist current predictions, tasks, and idempotency keys to the attached store.
+    fn persist_state(&self) {
+        if let Some(store) = &self.state_store {
+            let predictions = self.predictions.lock().clone();
+            let tasks = self.tasks.lock().clone();
+            let idem_keys = self.idempotency_keys.lock().clone();
+            if let Err(err) = store.persist(&self.agent_id, &predictions, &tasks, &idem_keys) {
+                tracing::warn!(
+                    agent_id = %self.agent_id,
+                    error = %err,
+                    "failed to persist sidecar state"
+                );
+            }
+        }
+    }
+
+    /// Take a consistent snapshot for heartbeat payloads.
+    ///
+    /// Active = Open + Accepted; Completed = Completed; Failed = 0
+    /// (no failed state exists in the current `TaskState` enum).
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
+    pub fn heartbeat_snapshot(&self) -> HeartbeatSnapshot {
+        let tasks = self.tasks.lock();
+        let mut active: usize = 0;
+        let mut completed: usize = 0;
+        for task in tasks.iter() {
+            match task.state {
+                TaskState::Open | TaskState::Accepted => active += 1,
+                TaskState::Completed => completed += 1,
+            }
+        }
+        drop(tasks);
+
+        let request_count = self.metrics.request_count.load(Ordering::Relaxed);
+        let message_count = self.metrics.message_count.load(Ordering::Relaxed);
+        let mut metrics = HashMap::new();
+        metrics.insert("requests_total".to_string(), request_count as f64);
+        metrics.insert("message_requests_total".to_string(), message_count as f64);
+
+        HeartbeatSnapshot {
+            active_tasks: active,
+            completed_tasks: completed,
+            failed_tasks: 0,
+            metrics,
+        }
+    }
+
     /// Build the public capabilities manifest.
     #[must_use]
     pub fn capabilities_manifest(&self) -> serde_json::Value {
@@ -677,6 +1038,17 @@ impl AgentState {
     #[must_use]
     pub fn stats_payload(&self) -> serde_json::Value {
         let stats = self.stats.lock().clone();
+
+        #[cfg(feature = "chain")]
+        let chain_backend = self
+            .chain_client
+            .as_ref()
+            .map(|client| client.name().to_string());
+        #[cfg(not(feature = "chain"))]
+        let chain_backend: Option<String> = None;
+
+        let freq = operating_frequency(stats.tasks_completed + stats.tasks_failed);
+        let metrics_snap = self.metrics.snapshot();
         serde_json::json!({
             "agent_id": self.agent_id,
             "owner": self.owner,
@@ -690,9 +1062,9 @@ impl AgentState {
             "total_cost_usd": stats.total_cost_usd,
             "total_tokens": stats.total_tokens,
             "registered_at": self.registered_at,
-            "operating_frequency": operating_frequency(stats.tasks_completed + stats.tasks_failed),
-            "metrics": self.metrics.snapshot(),
-            "chain_backend": self.chain_client.as_ref().map(|client| client.name().to_string()),
+            "operating_frequency": freq,
+            "metrics": metrics_snap,
+            "chain_backend": chain_backend,
         })
     }
 
@@ -720,7 +1092,7 @@ impl AgentState {
         }
     }
 
-    /// Create a prediction entry.
+    /// Create a prediction entry. Persists to disk before returning.
     #[allow(clippy::unused_async)]
     pub async fn create_prediction(&self, request: PredictionCreateRequest) -> AgentPrediction {
         self.metrics.record_request();
@@ -737,6 +1109,7 @@ impl AgentState {
             ts: now_secs(),
         };
         self.predictions.lock().push(prediction.clone());
+        self.persist_state();
         prediction
     }
 
@@ -804,9 +1177,17 @@ impl AgentState {
     }
 
     /// Run a sidecar-local research lookup against the attached knowledge store.
+    ///
+    /// Only `local_knowledge` mode is supported. `active` mode returns `None`
+    /// to signal 501.
     #[allow(clippy::unused_async)]
-    pub async fn research(&self, request: ResearchRequest) -> ResearchResponse {
+    pub async fn research(&self, request: ResearchRequest) -> Option<ResearchResponse> {
         self.metrics.record_request();
+
+        if request.mode == ResearchMode::Active {
+            return None;
+        }
+
         let topic = request.topic.trim();
         let mut findings = Vec::new();
         let mut sources = Vec::new();
@@ -838,7 +1219,101 @@ impl AgentState {
             ));
         }
 
-        ResearchResponse { findings, sources }
+        Some(ResearchResponse {
+            mode: ResearchMode::LocalKnowledge,
+            findings,
+            sources,
+        })
+    }
+
+    /// Whether a durable state store is attached (controls route availability).
+    #[must_use]
+    pub fn has_state_store(&self) -> bool {
+        self.state_store.is_some()
+    }
+
+    /// Create a validated task entry with optional idempotency.
+    ///
+    /// If `client_request_id` is provided, repeated identical requests return
+    /// `Duplicate` and mismatched bodies return `Conflict`. Persists before
+    /// returning `Created`.
+    #[allow(clippy::unused_async)]
+    pub async fn create_task(&self, request: CreateTaskRequest) -> CreateTaskResult {
+        self.metrics.record_request();
+
+        // Validate fields.
+        let title = request.title.trim();
+        if title.is_empty() {
+            return CreateTaskResult::Invalid("title must not be empty".to_string());
+        }
+        if title.len() > MAX_TASK_TITLE_LEN {
+            return CreateTaskResult::Invalid(format!(
+                "title exceeds {MAX_TASK_TITLE_LEN} characters"
+            ));
+        }
+        if request.kind.len() > MAX_TASK_KIND_LEN {
+            return CreateTaskResult::Invalid(format!(
+                "kind exceeds {MAX_TASK_KIND_LEN} characters"
+            ));
+        }
+        if request.bounty > MAX_BOUNTY {
+            return CreateTaskResult::Invalid(format!("bounty exceeds maximum {MAX_BOUNTY}"));
+        }
+        if let Some(ref key) = request.client_request_id
+            && (key.is_empty() || key.len() > MAX_CLIENT_REQUEST_ID_LEN)
+        {
+            return CreateTaskResult::Invalid(format!(
+                "client_request_id must be 1-{MAX_CLIENT_REQUEST_ID_LEN} characters"
+            ));
+        }
+
+        // Compute normalized fingerprint for idempotency.
+        let fingerprint =
+            task_request_fingerprint(title, &request.kind, request.priority, request.bounty);
+
+        // Check idempotency key.
+        if let Some(key) = &request.client_request_id {
+            let idem = self.idempotency_keys.lock();
+            if let Some(entry) = idem.get(key) {
+                if entry.fingerprint == fingerprint {
+                    // Identical request -- return the existing task.
+                    let tasks = self.tasks.lock();
+                    if let Some(task) = tasks.iter().find(|t| t.id == entry.task_id) {
+                        return CreateTaskResult::Duplicate(task.clone());
+                    }
+                }
+                return CreateTaskResult::Conflict;
+            }
+        }
+
+        // Allocate ID and create entry.
+        let id = self.next_task_id.fetch_add(1, Ordering::Relaxed);
+        let entry = TaskEntry {
+            id,
+            title: title.to_string(),
+            kind: request.kind,
+            priority: request.priority,
+            state: TaskState::Open,
+            bounty: request.bounty,
+            assignee: None,
+            created_at: now_secs(),
+            completed_at: None,
+            artifacts: Vec::new(),
+            summary: None,
+        };
+
+        self.tasks.lock().push_back(entry.clone());
+        if let Some(key) = request.client_request_id {
+            self.idempotency_keys.lock().insert(
+                key,
+                IdempotencyEntry {
+                    fingerprint,
+                    task_id: id,
+                },
+            );
+        }
+        self.persist_state();
+        CreateTaskResult::Created(entry)
     }
 
     /// List the in-memory sidecar task queue.
@@ -849,17 +1324,30 @@ impl AgentState {
     }
 
     /// Mark a queued task as accepted by this agent.
+    ///
+    /// Idempotent: re-accepting an already-accepted task returns the same
+    /// entry. Accepting a completed task returns `None` (conflict).
     #[allow(clippy::unused_async, clippy::significant_drop_tightening)]
     pub async fn accept_task(&self, id: u64) -> Option<TaskEntry> {
         self.metrics.record_request();
         let mut tasks = self.tasks.lock();
         let task = tasks.iter_mut().find(|task| task.id == id)?;
+        match task.state {
+            TaskState::Accepted => return Some(task.clone()),
+            TaskState::Completed => return None,
+            TaskState::Open => {}
+        }
         task.state = TaskState::Accepted;
         task.assignee = Some(self.agent_id.clone());
-        Some(task.clone())
+        let result = task.clone();
+        drop(tasks);
+        self.persist_state();
+        Some(result)
     }
 
     /// Mark a queued task as completed and attach its artifacts.
+    ///
+    /// Idempotent: re-completing with the same payload returns the entry.
     #[allow(clippy::unused_async, clippy::significant_drop_tightening)]
     pub async fn complete_task(
         &self,
@@ -869,12 +1357,37 @@ impl AgentState {
         self.metrics.record_request();
         let mut tasks = self.tasks.lock();
         let task = tasks.iter_mut().find(|task| task.id == id)?;
+        if task.state == TaskState::Completed {
+            return Some(task.clone());
+        }
         task.state = TaskState::Completed;
         task.completed_at = Some(now_secs());
         task.artifacts = request.artifacts;
         task.summary = request.summary;
-        Some(task.clone())
+        let result = task.clone();
+        drop(tasks);
+        self.persist_state();
+        Some(result)
     }
+}
+
+/// Compute a deterministic fingerprint from the normalized request fields.
+fn task_request_fingerprint(
+    title: &str,
+    kind: &str,
+    priority: TaskPriority,
+    bounty: u64,
+) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(title.as_bytes());
+    hasher.update(b"\x00");
+    hasher.update(kind.as_bytes());
+    hasher.update(b"\x00");
+    hasher.update(format!("{priority:?}").as_bytes());
+    hasher.update(b"\x00");
+    hasher.update(bounty.to_le_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 fn build_routes(capabilities: &[String]) -> Vec<String> {
@@ -945,4 +1458,590 @@ fn append_log_line_sync(path: &Path, line: &str) -> io::Result<()> {
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     writeln!(file, "{scrubbed}")?;
     file.flush()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_state(store: Arc<dyn AgentStateStore>) -> AgentState {
+        AgentState::new(
+            "test-agent".to_string(),
+            None,
+            "0.1.0".to_string(),
+            vec!["predictions".to_string(), "tasks".to_string()],
+            None,
+            None,
+            None,
+        )
+        .with_state_store(store)
+    }
+
+    fn make_prediction_request() -> PredictionCreateRequest {
+        PredictionCreateRequest {
+            market: "ETH-USD".to_string(),
+            direction: "up".to_string(),
+            confidence: 0.85,
+            category: String::new(),
+            predicted_value: 3000.0,
+            interval_width: 0.0,
+            actual_value: None,
+        }
+    }
+
+    fn seed_task(state: &AgentState, title: &str) -> u64 {
+        let id = now_secs();
+        let entry = TaskEntry {
+            id,
+            title: title.to_string(),
+            kind: String::new(),
+            priority: TaskPriority::Medium,
+            state: TaskState::Open,
+            bounty: 0,
+            assignee: None,
+            created_at: now_secs(),
+            completed_at: None,
+            artifacts: Vec::new(),
+            summary: None,
+        };
+        state.tasks.lock().push_back(entry);
+        state.persist_state();
+        id
+    }
+
+    // -----------------------------------------------------------------------
+    // FileStateStore unit tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn state_store_persist_and_load_round_trip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = FileStateStore::new(dir.path().join("state.json"));
+
+        let predictions = vec![AgentPrediction {
+            id: "pred-1".to_string(),
+            agent_id: "test-agent".to_string(),
+            market: "BTC-USD".to_string(),
+            category: String::new(),
+            direction: "up".to_string(),
+            confidence: 0.9,
+            predicted_value: 50_000.0,
+            interval_width: 0.0,
+            actual_value: None,
+            ts: 1,
+        }];
+        let mut tasks = VecDeque::new();
+        tasks.push_back(TaskEntry {
+            id: 42,
+            title: "test task".to_string(),
+            kind: String::new(),
+            priority: TaskPriority::High,
+            state: TaskState::Open,
+            bounty: 0,
+            assignee: None,
+            created_at: 1,
+            completed_at: None,
+            artifacts: Vec::new(),
+            summary: None,
+        });
+
+        store
+            .persist("test-agent", &predictions, &tasks, &HashMap::new())
+            .expect("persist");
+        let envelope = store.load("test-agent").expect("load").expect("some");
+
+        assert_eq!(envelope.agent_id, "test-agent");
+        assert_eq!(envelope.schema_version, STATE_SCHEMA_VERSION);
+        assert_eq!(envelope.predictions.len(), 1);
+        assert_eq!(envelope.predictions[0].id, "pred-1");
+        assert_eq!(envelope.tasks.len(), 1);
+        assert_eq!(envelope.tasks[0].id, 42);
+    }
+
+    #[test]
+    fn state_store_load_missing_returns_none() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = FileStateStore::new(dir.path().join("nonexistent.json"));
+        assert!(store.load("test-agent").expect("load").is_none());
+    }
+
+    #[test]
+    fn state_store_rejects_agent_mismatch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = FileStateStore::new(dir.path().join("state.json"));
+
+        store
+            .persist("agent-a", &[], &VecDeque::new(), &HashMap::new())
+            .expect("persist");
+        let err = store.load("agent-b").expect_err("mismatch");
+        assert!(
+            matches!(err, StateStoreError::AgentMismatch { .. }),
+            "expected AgentMismatch, got: {err}"
+        );
+    }
+
+    #[test]
+    fn state_store_rejects_newer_schema() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        let envelope = serde_json::json!({
+            "agent_id": "test-agent",
+            "schema_version": STATE_SCHEMA_VERSION + 1,
+            "predictions": [],
+            "tasks": [],
+        });
+        fs::write(&path, serde_json::to_string(&envelope).unwrap()).unwrap();
+
+        let store = FileStateStore::new(path);
+        let err = store.load("test-agent").expect_err("newer schema");
+        assert!(
+            matches!(err, StateStoreError::NewerSchema { .. }),
+            "expected NewerSchema, got: {err}"
+        );
+    }
+
+    #[test]
+    fn state_store_rejects_corrupt_data() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        fs::write(&path, "not valid json {{{{").unwrap();
+
+        let store = FileStateStore::new(path);
+        let err = store.load("test-agent").expect_err("corrupt");
+        assert!(
+            matches!(err, StateStoreError::Corrupt(_)),
+            "expected Corrupt, got: {err}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // AgentState integration tests with FileStateStore
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn state_store_prediction_survives_restart() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store_path = dir.path().join("state.json");
+
+        // Create state, add a prediction.
+        let state = make_state(Arc::new(FileStateStore::new(store_path.clone())));
+        let pred = state.create_prediction(make_prediction_request()).await;
+
+        // Simulate restart: new state, same store path.
+        let state2 = make_state(Arc::new(FileStateStore::new(store_path)));
+        let (preds, _tasks) = state2.restore_state().expect("restore");
+        assert_eq!(preds, 1);
+
+        let restored = state2.list_predictions().await;
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].id, pred.id);
+        assert_eq!(restored[0].market, "ETH-USD");
+    }
+
+    #[tokio::test]
+    async fn state_store_task_transitions_survive_restart() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store_path = dir.path().join("state.json");
+
+        let state = make_state(Arc::new(FileStateStore::new(store_path.clone())));
+        let task_id = seed_task(&state, "implement feature");
+        state.accept_task(task_id).await.expect("accept");
+
+        // Restart.
+        let state2 = make_state(Arc::new(FileStateStore::new(store_path)));
+        state2.restore_state().expect("restore");
+
+        let tasks = state2.list_tasks().await;
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].state, TaskState::Accepted);
+        assert_eq!(tasks[0].assignee.as_deref(), Some("test-agent"));
+    }
+
+    #[tokio::test]
+    async fn state_store_accept_is_idempotent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store_path = dir.path().join("state.json");
+
+        let state = make_state(Arc::new(FileStateStore::new(store_path)));
+        let task_id = seed_task(&state, "idempotent task");
+
+        let first = state.accept_task(task_id).await.expect("first accept");
+        let second = state.accept_task(task_id).await.expect("second accept");
+        assert_eq!(first.state, TaskState::Accepted);
+        assert_eq!(second.state, TaskState::Accepted);
+    }
+
+    #[tokio::test]
+    async fn state_store_complete_is_idempotent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store_path = dir.path().join("state.json");
+
+        let state = make_state(Arc::new(FileStateStore::new(store_path)));
+        let task_id = seed_task(&state, "complete task");
+
+        state.accept_task(task_id).await;
+        let req = TaskCompletionRequest {
+            artifacts: Vec::new(),
+            summary: Some("done".to_string()),
+        };
+        let first = state
+            .complete_task(task_id, req.clone())
+            .await
+            .expect("first complete");
+        let second = state
+            .complete_task(task_id, req)
+            .await
+            .expect("second complete");
+        assert_eq!(first.state, TaskState::Completed);
+        assert_eq!(second.state, TaskState::Completed);
+    }
+
+    #[tokio::test]
+    async fn state_store_accept_completed_task_returns_none() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store_path = dir.path().join("state.json");
+
+        let state = make_state(Arc::new(FileStateStore::new(store_path)));
+        let task_id = seed_task(&state, "done task");
+
+        state.accept_task(task_id).await;
+        state
+            .complete_task(
+                task_id,
+                TaskCompletionRequest {
+                    artifacts: Vec::new(),
+                    summary: None,
+                },
+            )
+            .await;
+
+        assert!(
+            state.accept_task(task_id).await.is_none(),
+            "accepting a completed task must return None"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Heartbeat snapshot tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn heartbeat_snapshot_counts_tasks_correctly() {
+        let state = AgentState::new(
+            "hb-agent".to_string(),
+            None,
+            "0.1.0".to_string(),
+            vec!["tasks".to_string()],
+            None,
+            None,
+            None,
+        );
+
+        // Empty state.
+        let snap = state.heartbeat_snapshot();
+        assert_eq!(snap.active_tasks, 0);
+        assert_eq!(snap.completed_tasks, 0);
+        assert_eq!(snap.failed_tasks, 0);
+
+        // Add tasks in various states.
+        {
+            let mut tasks = state.tasks.lock();
+            tasks.push_back(TaskEntry {
+                id: 1,
+                title: "open".to_string(),
+                kind: String::new(),
+                priority: TaskPriority::Medium,
+                state: TaskState::Open,
+                bounty: 0,
+                assignee: None,
+                created_at: 1,
+                completed_at: None,
+                artifacts: Vec::new(),
+                summary: None,
+            });
+            tasks.push_back(TaskEntry {
+                id: 2,
+                title: "accepted".to_string(),
+                kind: String::new(),
+                priority: TaskPriority::Medium,
+                state: TaskState::Accepted,
+                bounty: 0,
+                assignee: Some("hb-agent".to_string()),
+                created_at: 1,
+                completed_at: None,
+                artifacts: Vec::new(),
+                summary: None,
+            });
+            tasks.push_back(TaskEntry {
+                id: 3,
+                title: "completed".to_string(),
+                kind: String::new(),
+                priority: TaskPriority::Medium,
+                state: TaskState::Completed,
+                bounty: 0,
+                assignee: Some("hb-agent".to_string()),
+                created_at: 1,
+                completed_at: Some(2),
+                artifacts: Vec::new(),
+                summary: None,
+            });
+        }
+
+        let snap = state.heartbeat_snapshot();
+        assert_eq!(snap.active_tasks, 2, "open + accepted = active");
+        assert_eq!(snap.completed_tasks, 1);
+        assert_eq!(snap.failed_tasks, 0, "no failed state exists");
+    }
+
+    #[test]
+    fn heartbeat_snapshot_includes_bounded_metrics() {
+        let state = AgentState::new(
+            "hb-agent".to_string(),
+            None,
+            "0.1.0".to_string(),
+            Vec::new(),
+            None,
+            None,
+            None,
+        );
+
+        state.metrics.record_request();
+        state.metrics.record_request();
+        state.metrics.record_message();
+
+        let snap = state.heartbeat_snapshot();
+        assert_eq!(snap.metrics.get("requests_total"), Some(&3.0));
+        assert_eq!(snap.metrics.get("message_requests_total"), Some(&1.0));
+        assert_eq!(snap.metrics.len(), 2, "only allowlisted metrics");
+    }
+
+    // -----------------------------------------------------------------------
+    // No-store mode (backward compat)
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn state_without_store_still_works() {
+        let state = AgentState::new(
+            "no-store-agent".to_string(),
+            None,
+            "0.1.0".to_string(),
+            vec!["predictions".to_string()],
+            None,
+            None,
+            None,
+        );
+
+        let pred = state.create_prediction(make_prediction_request()).await;
+        assert!(!pred.id.is_empty());
+        assert_eq!(state.list_predictions().await.len(), 1);
+        assert_eq!(state.restore_state().unwrap(), (0, 0));
+    }
+
+    // -----------------------------------------------------------------------
+    // Task creation tests (#348)
+    // -----------------------------------------------------------------------
+
+    fn make_create_task_request(title: &str) -> CreateTaskRequest {
+        CreateTaskRequest {
+            client_request_id: None,
+            title: title.to_string(),
+            kind: String::new(),
+            priority: TaskPriority::Medium,
+            bounty: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn create_task_returns_created() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = make_state(Arc::new(FileStateStore::new(dir.path().join("s.json"))));
+
+        let result = state
+            .create_task(make_create_task_request("build feature"))
+            .await;
+        assert!(matches!(result, CreateTaskResult::Created(ref t) if t.title == "build feature"));
+        assert_eq!(state.list_tasks().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn create_task_rejects_empty_title() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = make_state(Arc::new(FileStateStore::new(dir.path().join("s.json"))));
+
+        let result = state.create_task(make_create_task_request("")).await;
+        assert!(matches!(result, CreateTaskResult::Invalid(_)));
+    }
+
+    #[tokio::test]
+    async fn create_task_rejects_oversized_title() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = make_state(Arc::new(FileStateStore::new(dir.path().join("s.json"))));
+
+        let long_title = "x".repeat(MAX_TASK_TITLE_LEN + 1);
+        let result = state
+            .create_task(make_create_task_request(&long_title))
+            .await;
+        assert!(matches!(result, CreateTaskResult::Invalid(_)));
+    }
+
+    #[tokio::test]
+    async fn create_task_rejects_excessive_bounty() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = make_state(Arc::new(FileStateStore::new(dir.path().join("s.json"))));
+
+        let mut req = make_create_task_request("task");
+        req.bounty = MAX_BOUNTY + 1;
+        let result = state.create_task(req).await;
+        assert!(matches!(result, CreateTaskResult::Invalid(_)));
+    }
+
+    #[tokio::test]
+    async fn create_task_idempotency_returns_duplicate() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = make_state(Arc::new(FileStateStore::new(dir.path().join("s.json"))));
+
+        let mut req = make_create_task_request("idempotent task");
+        req.client_request_id = Some("req-1".to_string());
+        let first = state.create_task(req.clone()).await;
+        let second = state.create_task(req).await;
+
+        let first_id = match &first {
+            CreateTaskResult::Created(t) => t.id,
+            _ => panic!("expected Created"),
+        };
+        let second_id = match &second {
+            CreateTaskResult::Duplicate(t) => t.id,
+            _ => panic!("expected Duplicate"),
+        };
+        assert_eq!(first_id, second_id);
+        assert_eq!(state.list_tasks().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn create_task_idempotency_conflict_on_different_body() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = make_state(Arc::new(FileStateStore::new(dir.path().join("s.json"))));
+
+        let mut req1 = make_create_task_request("task A");
+        req1.client_request_id = Some("req-1".to_string());
+        state.create_task(req1).await;
+
+        let mut req2 = make_create_task_request("task B");
+        req2.client_request_id = Some("req-1".to_string());
+        let result = state.create_task(req2).await;
+        assert!(matches!(result, CreateTaskResult::Conflict));
+        assert_eq!(state.list_tasks().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn create_accept_complete_lifecycle_survives_restart() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store_path = dir.path().join("s.json");
+
+        let state = make_state(Arc::new(FileStateStore::new(store_path.clone())));
+        let task = match state
+            .create_task(make_create_task_request("lifecycle task"))
+            .await
+        {
+            CreateTaskResult::Created(t) => t,
+            _ => panic!("expected Created"),
+        };
+
+        state.accept_task(task.id).await.expect("accept");
+        state
+            .complete_task(
+                task.id,
+                TaskCompletionRequest {
+                    artifacts: Vec::new(),
+                    summary: Some("done".to_string()),
+                },
+            )
+            .await
+            .expect("complete");
+
+        // Restart.
+        let state2 = make_state(Arc::new(FileStateStore::new(store_path)));
+        state2.restore_state().expect("restore");
+
+        let tasks = state2.list_tasks().await;
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].state, TaskState::Completed);
+        assert_eq!(tasks[0].summary.as_deref(), Some("done"));
+    }
+
+    #[tokio::test]
+    async fn create_task_idempotency_survives_restart() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store_path = dir.path().join("s.json");
+
+        let state = make_state(Arc::new(FileStateStore::new(store_path.clone())));
+        let mut req = make_create_task_request("restart idem");
+        req.client_request_id = Some("idem-key".to_string());
+        state.create_task(req.clone()).await;
+
+        // Restart, replay same key.
+        let state2 = make_state(Arc::new(FileStateStore::new(store_path)));
+        state2.restore_state().expect("restore");
+
+        let result = state2.create_task(req).await;
+        assert!(matches!(result, CreateTaskResult::Duplicate(_)));
+        assert_eq!(state2.list_tasks().await.len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Research mode tests (#348)
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn research_local_knowledge_returns_response() {
+        let state = AgentState::new(
+            "r-agent".to_string(),
+            None,
+            "0.1.0".to_string(),
+            vec!["research".to_string()],
+            None,
+            None,
+            None,
+        );
+
+        let result = state
+            .research(ResearchRequest {
+                topic: "test topic".to_string(),
+                depth: "shallow".to_string(),
+                mode: ResearchMode::LocalKnowledge,
+            })
+            .await;
+        let resp = result.expect("should return Some for local_knowledge");
+        assert_eq!(resp.mode, ResearchMode::LocalKnowledge);
+        assert!(!resp.findings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn research_active_mode_returns_none() {
+        let state = AgentState::new(
+            "r-agent".to_string(),
+            None,
+            "0.1.0".to_string(),
+            vec!["research".to_string()],
+            None,
+            None,
+            None,
+        );
+
+        let result = state
+            .research(ResearchRequest {
+                topic: "test topic".to_string(),
+                depth: "deep".to_string(),
+                mode: ResearchMode::Active,
+            })
+            .await;
+        assert!(result.is_none(), "active mode must return None for 501");
+    }
+
+    #[tokio::test]
+    async fn research_default_mode_is_local_knowledge() {
+        let req: ResearchRequest =
+            serde_json::from_str(r#"{"topic":"test"}"#).expect("deserialize");
+        assert_eq!(req.mode, ResearchMode::LocalKnowledge);
+    }
 }

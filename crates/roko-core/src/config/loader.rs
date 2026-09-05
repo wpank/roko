@@ -54,7 +54,7 @@ use super::provenance::{
     ValidatedConfig,
 };
 use super::schema::RokoConfig;
-use super::validation::{InvariantSeverity, validate_invariants};
+use super::validation::{InvariantSeverity, validate_invariants, validate_provider_semantics};
 
 /// One in-place schema migration from version N to N+1.
 pub type MigrationFn = fn(&mut toml::Value) -> Result<(), String>;
@@ -774,6 +774,32 @@ fn resolve_runtime_layers_with_context(
         );
     }
 
+    // Post-merge provider/model semantic validation (#370).
+    // The loader warns rather than hard-errors so that inspection commands
+    // (config show, config validate) still work. Dispatch preflight checks
+    // are the authority for blocking.
+    let semantic_findings = validate_provider_semantics(&config);
+    for finding in &semantic_findings {
+        match finding.severity {
+            InvariantSeverity::Error => {
+                tracing::warn!(
+                    code = %finding.code,
+                    path = %finding.path,
+                    "provider/model semantic error: {}",
+                    finding.message
+                );
+            }
+            InvariantSeverity::Warning => {
+                tracing::debug!(
+                    code = %finding.code,
+                    path = %finding.path,
+                    "provider/model semantic warning: {}",
+                    finding.message
+                );
+            }
+        }
+    }
+
     Ok((config, merge_context))
 }
 
@@ -1320,14 +1346,28 @@ fn collect_diagnostics(config: &RokoConfig) -> Vec<ConfigDiagnostic> {
 }
 
 fn invariant_diagnostics(config: &RokoConfig) -> Vec<ConfigDiagnostic> {
-    validate_invariants(config)
+    let mut diags: Vec<ConfigDiagnostic> = validate_invariants(config)
         .into_iter()
         .filter(|result| result.severity == InvariantSeverity::Warning)
         .map(|result| ConfigDiagnostic {
             key: format!("invariant.{}.{}", result.invariant_id, result.config_path),
             message: result.message,
         })
-        .collect()
+        .collect();
+
+    // Provider/model semantic warnings (errors are handled by the explicit
+    // `roko config validate` CLI path, not here).
+    diags.extend(
+        super::validation::validate_provider_semantics(config)
+            .into_iter()
+            .filter(|f| f.severity == InvariantSeverity::Warning)
+            .map(|f| ConfigDiagnostic {
+                key: format!("semantic.{}", f.path),
+                message: format!("[{}] {}", f.code, f.message),
+            }),
+    );
+
+    diags
 }
 
 /// Sections whose keys are user-defined names (dynamic maps).
@@ -1402,6 +1442,7 @@ fn build_schema_tree() -> toml::Value {
         api_key_env: Some(String::new()),
         command: Some(String::new()),
         args: Some(Vec::new()),
+        require_confirmation: true,
         ..ProviderConfig::default()
     };
     config
@@ -1489,10 +1530,7 @@ fn build_schema_tree() -> toml::Value {
                     "bloom_intensity",
                     "vignette_intensity",
                 ] {
-                    effects.insert(
-                        (*key).to_string(),
-                        toml::Value::String(String::new()),
-                    );
+                    effects.insert((*key).to_string(), toml::Value::String(String::new()));
                 }
                 toml::Value::Table(effects)
             });
@@ -1584,11 +1622,17 @@ fn walk_config_paths(
                     }
                 }
                 // Empty schema arrays (no template element) accept all entries.
-            } else if is_likely_enum_table(schema_val, val) {
+            } else if is_likely_enum_table(schema_val, val)
+                && !DYNAMIC_MAP_SECTIONS.iter().any(|s| *s == child_path)
+            {
                 // Serde-tagged enums serialize as single-key tables (e.g.
                 // `{ "Prefix": "..." }`). When the schema has one variant
                 // and the input has a different variant, accept it rather
                 // than flagging the variant name as unknown.
+                //
+                // Dynamic map sections (providers, models, etc.) are excluded
+                // because their schema sentinel key always differs from the
+                // user-defined key, which would falsely trigger this heuristic.
             } else {
                 walk_config_paths(val, schema_val, &child_path, diagnostics);
             }
@@ -3384,6 +3428,7 @@ bogus_field = "x"
 "#
         .parse()
         .unwrap();
+
         let diags = validate_known_config_paths(&value);
         assert!(
             diags
@@ -3434,10 +3479,9 @@ bogus_field = "x"
     }
 
     #[test]
-    fn context_pressure_enabled_still_parses_with_deprecation_info() {
-        // The field remains in ConductorConfig for compatibility; it must
-        // parse without error. The deprecation diagnostic comes from doctor,
-        // not from path validation (the key is still in the schema).
+    fn context_pressure_enabled_removed_from_schema() {
+        // The field was removed from ConductorConfig. Config files that still
+        // contain it should now report it as an unknown key via path validation.
         let value: toml::Value = r#"
 schema_version = 2
 config_version = 2
@@ -3447,18 +3491,14 @@ context_pressure_enabled = true
         .parse()
         .unwrap();
         let diags = validate_known_config_paths(&value);
-        // context_pressure_enabled is a valid schema field (deprecated but parseable).
-        let unexpected: Vec<_> = diags
+        let flagged: Vec<_> = diags
             .iter()
             .filter(|d| d.key.contains("context_pressure_enabled"))
             .collect();
         assert!(
-            unexpected.is_empty(),
-            "context_pressure_enabled must remain parseable, got: {unexpected:?}"
+            !flagged.is_empty(),
+            "context_pressure_enabled should be flagged as unknown after removal"
         );
-        // Also confirm it actually deserializes.
-        let config: RokoConfig = value.try_into().expect("must deserialize");
-        assert!(config.conductor.context_pressure_enabled);
     }
 
     #[test]

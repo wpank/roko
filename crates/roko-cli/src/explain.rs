@@ -42,7 +42,7 @@ pub static TOPICS: &[TopicEntry] = &[
                     `GatePipeline` struct runs gates sequentially or in parallel. \
                     Adaptive thresholds persist at `.roko/learn/gate-thresholds.json` \
                     and use exponential moving averages (alpha=0.1 by default). The \
-                    `HotellingGate` uses Hotelling's T-squared statistic for \
+                    `HotellingDetector` uses Hotelling's T-squared statistic for \
                     multivariate anomaly detection. Verify verdicts emit \
                     `DashboardEvent::GateVerdict` for real-time TUI updates.",
     },
@@ -68,16 +68,19 @@ pub static TOPICS: &[TopicEntry] = &[
         name: "cognitive",
         title: "Cognitive Architecture",
         summary: "Roko's cognitive architecture is built around one noun (Signal) and \
-                  six verb traits: Store, Score, Verify, Route, Compose, and \
-                  React. Every operation follows the universal loop: query, score, \
-                  route, compose, act, verify, write, react.",
-        detail: "The six traits define the contract for each phase of processing. \
-                 `Store` handles storage, `Score` evaluates quality, `Verify` \
-                 validates correctness, `Route` selects models/agents, `Compose` \
-                 assembles prompts, and `React` governs agent behavior. The \
-                 `SystemPromptBuilder` in `roko-compose` assembles 9-layer prompts \
+                  12 kernel traits: Store, ColdStore, Score, Verify, Route, Compose, \
+                  React, Bus, Observe, Connect, Trigger, and Substrate. Every \
+                  operation follows the universal loop: query, score, route, compose, \
+                  act, verify, write, react.",
+        detail: "The 12 traits define the contract for each phase of processing. \
+                 `Store`/`ColdStore` handle hot and archival storage, `Score` evaluates \
+                 quality, `Verify` validates correctness, `Route` selects models/agents, \
+                 `Compose` assembles prompts, `React` governs agent behavior, `Bus` \
+                 delivers events, `Observe` emits telemetry, `Connect` manages relay, \
+                 `Trigger` fires declarative rules, and `Substrate` unifies storage. \
+                 The `SystemPromptBuilder` in `roko-compose` assembles 9-layer prompts \
                  from role templates, domain context, and runtime state.",
-        internals: "Trait definitions live in `crates/roko-core/src/lib.rs`. The \
+        internals: "Trait definitions live in `crates/roko-core/src/traits.rs`. The \
                     universal loop is wired in `crates/roko-cli/src/run.rs` via \
                     `run_once()`. Prompt assembly uses `RoleSystemPromptSpec` in \
                     the runner module (`runner/event_loop.rs`). Templates are in \
@@ -125,7 +128,7 @@ pub static TOPICS: &[TopicEntry] = &[
                   parameters. They run when the system is idle, like sleep for AI.",
         detail: "A dream cycle has three phases: hypnagogia (light review of recent \
                  episodes), imagination (creative recombination of patterns), and \
-                 deep sleep (parameter consolidation). Use `roko dream run` to \
+                 deep sleep (parameter consolidation). Use `roko knowledge dream run` to \
                  trigger a cycle manually, or configure automatic scheduling in \
                  `roko.toml` under `[dreams]`.",
         internals: "Implementation lives in `crates/roko-dreams/`. The \
@@ -146,7 +149,7 @@ pub static TOPICS: &[TopicEntry] = &[
                  every decision and action. Use `roko replay <hash>` to walk the \
                  lineage DAG from any signal. Signals persist in `.roko/engrams.jsonl` \
                  via the `FileSubstrate` in `roko-fs`.",
-        internals: "The `Signal` type in `crates/roko-core/src/lib.rs` is the base \
+        internals: "The `Signal` type in `crates/roko-core/src/engram.rs` is the base \
                     signal structure. `FileSubstrate` in `crates/roko-fs/` handles \
                     JSONL persistence with append-only semantics. GC runs periodically \
                     to compact old entries. The DAG walker in `crates/roko-cli/` \
@@ -176,24 +179,62 @@ pub static TOPICS: &[TopicEntry] = &[
         summary: "Plans are directed acyclic graphs of tasks that roko executes to \
                   accomplish complex goals. Each task has dependencies, an agent role, \
                   and must pass gates to complete.",
-        detail: "Plans are generated from PRDs via `roko prd plan <slug>`. The DAG \
-                 CLI runner executor runs tasks in parallel where \
-                 dependencies allow. Each task is dispatched to an agent with a role \
-                 (implementer, reviewer, architect), runs through gates, and persists \
-                 results. Use `roko plan run <dir>` to execute, `--resume` to \
-                 continue from a snapshot.",
-        internals: "Plan execution lives in `crates/roko-cli/src/runner/event_loop.rs` \
-                    via `PlanRunner` (runner-v2). DAG scheduling is owned by the runner module. \
-                    Snapshots persist at `.roko/state/state-snapshot.json` for resumability. \
-                    The merge queue handles concurrent task outputs. Process \
-                    supervision via `roko-runtime` tracks agent lifecycles.",
+        detail: "Plans are generated from PRDs via `roko prd plan <slug>`. The Graph \
+                 engine converts plans into DAGs of cells and executes tasks in parallel \
+                 where dependencies allow. Each task is dispatched to an agent with a \
+                 role (implementer, reviewer, architect), runs through gates, and \
+                 persists results. Use `roko plan run <dir>` to execute, `--resume-plan` \
+                 to continue from a checkpoint.",
+        internals: "Plan execution uses the Graph engine in `crates/roko-graph/` with \
+                    host services in `crates/roko-cli/src/graph_execution/`. DAG \
+                    scheduling is owned by the graph cell topology. Checkpoints persist \
+                    at `.roko/state/graph/` for resumability. The merge queue handles \
+                    concurrent task outputs. Process supervision via `roko-runtime` \
+                    tracks agent lifecycles. The legacy Runner-v2 event loop in \
+                    `runner/event_loop.rs` is retained for `--engine legacy` fallback.",
+    },
+    TopicEntry {
+        name: "env",
+        title: "Environment Variables",
+        summary: "Roko reads ~105 environment variables across the workspace. The most \
+                  important are the CLI overrides (ROKO_MODEL, ROKO_EFFORT, ROKO_ROLE, \
+                  ROKO_QUIET, ROKO_LOG_FORMAT), provider API keys (ANTHROPIC_API_KEY, \
+                  OPENAI_API_KEY, GEMINI_API_KEY, PERPLEXITY_API_KEY), and the config \
+                  override ROKO_CONFIG. Run `roko config env list` for the full registry.",
+        detail: "Environment variables are organized into categories: \
+                 (1) CLI overrides: ROKO_MODEL, ROKO_EFFORT, ROKO_ROLE, ROKO_QUIET, \
+                 ROKO_LOG_FORMAT override CLI flags and config values. \
+                 (2) Logging: ROKO_LOG (or RUST_LOG), ROKO_TIMING, ROKO_LOG_RAW, \
+                 ROKO_VERBOSE, ROKO_DEBUG control verbosity and diagnostics. \
+                 (3) TUI/accessibility: ROKO_REDUCED_MOTION, ROKO_HIGH_CONTRAST, \
+                 ROKO_VIEWPORT_HEIGHT, ROKO_NO_MOUSE, NO_COLOR, CLICOLOR. \
+                 (4) Config schema: ROKO_PROVIDER, ROKO_BACKEND, ROKO_BUDGET_USD, \
+                 ROKO_MAX_AGENTS, ROKO_PARALLEL, ROKO_SKIP_TESTS, ROKO_CLIPPY. \
+                 (5) Server: ROKO_SERVE_URL, ROKO_SERVER_AUTH_TOKEN, PORT. \
+                 (6) Provider keys: ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, \
+                 PERPLEXITY_API_KEY, CEREBRAS_API_KEY, and 8 more via the provider \
+                 catalog. (7) Hierarchical config: ROKO__SECTION__FIELD sets any config \
+                 field (lowercased, __ becomes .). Use `roko config env list --json` for \
+                 machine-readable output.",
+        internals: "The authoritative registry lives in \
+                    `crates/roko-core/src/config/env_registry.rs`. Each variable has an \
+                    `EnvVarSpec` with name, owner, purpose, value type, default, \
+                    precedence, scope, sensitivity (Public/Secret), and stability \
+                    (Stable/Unstable/Deprecated/TestOnly/BuildTime/DemoOnly/System). \
+                    Secret-sensitivity vars are redacted in output. CLI overrides are \
+                    applied in `apply_env_overrides()` in main.rs. The generic ROKO__* \
+                    mechanism is in `config/loader.rs`. Provider keys are resolved \
+                    dynamically via the `api_key_env` field in provider config. \
+                    Build-time variables (ROKO_GIT_HASH, ROKO_RUSTC_VERSION, ROKO_TARGET) \
+                    are set in `roko-cli/build.rs`.",
     },
     TopicEntry {
         name: "agents",
         title: "Agent System",
-        summary: "Roko supports multiple LLM backends (Claude CLI, Claude API, Codex, \
-                  Cursor, OpenAI-compatible, Ollama, Gemini, Perplexity) and manages \
-                  agent lifecycles including spawning, health monitoring, and shutdown.",
+        summary: "Roko supports 12 LLM provider kinds (AnthropicApi, ClaudeCli, CodexCli, \
+                  OpenAiCompat, CursorAcp, CursorCli, PerplexityApi, GeminiApi, \
+                  GeminiCli, CerebrasApi, Hermes, OpenClaw) and manages agent \
+                  lifecycles including spawning, health monitoring, and shutdown.",
         detail: "Agents are dispatched via the `AgentDispatcher` in `roko-agent`, which \
                  selects the appropriate backend based on configuration. Each agent runs \
                  in a supervised process with MCP tool access. The tool loop validates \
@@ -328,6 +369,7 @@ fn global_flag_is_bool(flag: &str) -> bool {
 pub fn resolve_topic_alias(name: &str) -> &str {
     match name {
         "signal" | "signals" | "engrams" => "engram",
+        "environment-variables" | "env-vars" | "envvars" | "environment" => "env",
         other => other,
     }
 }

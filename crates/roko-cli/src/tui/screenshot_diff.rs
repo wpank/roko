@@ -49,7 +49,8 @@ pub enum DiffMode {
     Text,
     /// Pixel-by-pixel comparison of PNG images.
     ///
-    /// TODO(#152): Implement when image dependencies are added.
+    /// Currently uses raw byte comparison as a coarse approximation.
+    /// Full decoded-pixel comparison requires image dependencies.
     Pixel,
     /// Cell-by-cell comparison of ratatui `Buffer`s (content + style).
     Buffer,
@@ -185,12 +186,11 @@ pub fn compare_text(baseline: &str, candidate: &str) -> ScreenshotDiff {
 // PNG comparison (stub)
 // ---------------------------------------------------------------------------
 
-/// Compare two PNG screenshots pixel by pixel.
+/// Compare two PNG screenshots at the byte level.
 ///
-/// TODO(#152): Implement proper pixel comparison when image dependencies are
-/// added. For now, this falls back to reading the files and comparing raw
-/// bytes, which is a correct but coarse approximation (any metadata or
-/// compression difference counts as a diff).
+/// This is a coarse approximation: any metadata or compression difference
+/// counts as a diff. Full decoded-pixel comparison requires image
+/// dependencies (tracked as future work for the `tui-png` feature).
 fn compare_png(baseline: &Path, candidate: &Path) -> Result<ScreenshotDiff> {
     let baseline_bytes = std::fs::read(baseline)
         .with_context(|| format!("read baseline PNG: {}", baseline.display()))?;
@@ -220,8 +220,8 @@ fn compare_png(baseline: &Path, candidate: &Path) -> Result<ScreenshotDiff> {
         diff_count,
         total_cells,
         diff_percentage: (diff_count as f64) / (total_cells as f64) * 100.0,
-        regions: Vec::new(), // TODO(#152): region extraction from decoded pixels
-        dimensions: (0, 0),  // TODO(#152): actual image dimensions
+        regions: Vec::new(), // Region extraction requires decoded pixel data
+        dimensions: (0, 0),  // Image dimensions require a PNG decoder
     })
 }
 
@@ -827,14 +827,8 @@ mod tests {
             .set_fg(Color::Rgb(255, 128, 0))
             .set_bg(Color::Rgb(10, 20, 30));
         let ansi = buffer_to_ansi(&buf);
-        assert!(
-            ansi.contains(";38;2;255;128;0"),
-            "missing RGB fg: {ansi}"
-        );
-        assert!(
-            ansi.contains(";48;2;10;20;30"),
-            "missing RGB bg: {ansi}"
-        );
+        assert!(ansi.contains(";38;2;255;128;0"), "missing RGB fg: {ansi}");
+        assert!(ansi.contains(";48;2;10;20;30"), "missing RGB bg: {ansi}");
     }
 
     #[test]
@@ -848,14 +842,8 @@ mod tests {
             .set_fg(Color::Indexed(208))
             .set_bg(Color::Indexed(235));
         let ansi = buffer_to_ansi(&buf);
-        assert!(
-            ansi.contains(";38;5;208"),
-            "missing indexed fg: {ansi}"
-        );
-        assert!(
-            ansi.contains(";48;5;235"),
-            "missing indexed bg: {ansi}"
-        );
+        assert!(ansi.contains(";38;5;208"), "missing indexed fg: {ansi}");
+        assert!(ansi.contains(";48;5;235"), "missing indexed bg: {ansi}");
     }
 
     #[test]
@@ -1056,9 +1044,8 @@ mod tests {
     /// Helper: strip ANSI escapes from a string (for test assertions).
     fn strip_ansi(s: &str) -> String {
         static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-        let re = RE.get_or_init(|| {
-            regex::Regex::new(r"\x1b\[[0-9;]*[A-Za-z]").expect("valid ANSI regex")
-        });
+        let re = RE
+            .get_or_init(|| regex::Regex::new(r"\x1b\[[0-9;]*[A-Za-z]").expect("valid ANSI regex"));
         re.replace_all(s, "").into_owned()
     }
 }

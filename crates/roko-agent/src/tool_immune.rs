@@ -189,7 +189,7 @@ fn detect_tool_result_anomaly_from_payload(
     };
 
     let ToolResult::Ok {
-        content,
+        content: _content,
         is_structured,
         artifacts,
     } = result

@@ -3,54 +3,22 @@
 //! The [`ServerBuilder`] type is the main entrypoint for embedding the HTTP
 //! server. [`run_server`] remains as a convenience wrapper for the current
 //! CLI flow.
-#![allow(missing_docs)]
+// Per-item #[allow] is preferred over blanket suppression.
+// These lints are suppressed crate-wide because they are pervasive and stylistic
+// across ~100 route modules and ~40K lines of HTTP handler code.
 #![allow(
     dead_code,
-    clippy::assigning_clones,
-    clippy::cast_lossless,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_precision_loss,
-    clippy::cast_sign_loss,
-    clippy::default_trait_access,
+    missing_docs,
     clippy::derivable_impls,
-    clippy::doc_markdown,
-    clippy::expect_used,
-    clippy::filter_map_bool_then,
-    clippy::format_push_string,
-    clippy::future_not_send,
-    clippy::ignored_unit_patterns,
-    clippy::items_after_statements,
     clippy::large_enum_variant,
     clippy::let_underscore_future,
-    clippy::manual_let_else,
-    clippy::manual_midpoint,
-    clippy::map_unwrap_or,
-    clippy::missing_const_for_fn,
-    clippy::needless_raw_string_hashes,
+    clippy::module_name_repetitions,
     clippy::needless_continue,
-    clippy::needless_lifetimes,
     clippy::needless_pass_by_ref_mut,
-    clippy::needless_pass_by_value,
-    clippy::option_if_let_else,
-    clippy::or_fun_call,
-    clippy::redundant_clone,
-    clippy::redundant_closure_for_method_calls,
-    clippy::redundant_pub_crate,
-    clippy::semicolon_if_nothing_returned,
-    clippy::significant_drop_tightening,
-    clippy::similar_names,
-    clippy::single_match_else,
     clippy::struct_field_names,
-    clippy::suboptimal_flops,
     clippy::too_many_arguments,
     clippy::too_many_lines,
-    clippy::trait_duplication_in_bounds,
-    clippy::uninlined_format_args,
-    clippy::unnested_or_patterns,
-    clippy::unused_async,
-    clippy::unwrap_or_default,
-    clippy::io_other_error
+    clippy::trait_duplication_in_bounds
 )]
 // Re-export StateHub types from their canonical home in roko-runtime.
 // These were previously path-included from roko-core via a fake

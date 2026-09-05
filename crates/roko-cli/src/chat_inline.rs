@@ -581,7 +581,6 @@ impl InputState {
     }
 
     /// Number of lines in the buffer.
-    #[allow(dead_code)]
     fn line_count(&self) -> usize {
         self.buffer.lines().count().max(1)
     }
@@ -713,11 +712,8 @@ enum DispatchMode {
         client: reqwest::Client,
         backend_url: String,
         is_sidecar: bool,
-        #[allow(dead_code)]
-        serve_url: String,
     },
     /// Deprecated direct fallback. Kept only to make stale paths fail visibly.
-    #[allow(dead_code)]
     Direct { auth: AuthMethod },
     /// Full agent session with system prompt, tools, MCP, safety.
     Session,
@@ -1270,7 +1266,6 @@ pub async fn run_chat_inline(agent_id: &str, serve_url: &str) -> Result<()> {
             client,
             backend_url,
             is_sidecar,
-            serve_url: serve_url.to_string(),
         },
         response_rx: None,
         streaming_event_rx: None,

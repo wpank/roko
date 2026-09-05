@@ -159,7 +159,7 @@ impl ChildProcessRunner {
         args: &[&str],
         stdin_data: Option<&[u8]>,
         parser: &mut dyn EventParser,
-        cancel: Option<mpsc::Receiver<()>>,
+        _cancel: Option<mpsc::Receiver<()>>,
     ) -> Result<Vec<HarnessEvent>, HarnessError> {
         let started = Instant::now();
 

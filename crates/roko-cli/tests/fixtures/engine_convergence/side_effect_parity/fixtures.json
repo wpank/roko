@@ -1,0 +1,134 @@
+{
+  "schema_version": 1,
+  "description": "Side-effect-safe parity test fixtures (#259). Verifies that a Graph-replay of recorded execution events produces zero duplicate side-effect mutations (provider calls, git operations, feedback sink writes).",
+  "acceptable_differences": [
+    {
+      "kind": "presentation_timing",
+      "description": "Graph events carry wall-clock timestamps; replay preserves original seq but uses current wall-clock time. TUI/CLI presentation timestamps may differ."
+    },
+    {
+      "kind": "event_id_uniqueness",
+      "description": "RuntimeEventEnvelope.event_id is a fresh UUID on every conversion. Replay envelopes have distinct event_ids from the original run."
+    },
+    {
+      "kind": "best_effort_delivery",
+      "description": "BestEffort events (NodeProgress, AgentText, CellProgress, GateRungOutput) may be coalesced or dropped under load. Replay may deliver a different count."
+    }
+  ],
+  "cases": [
+    {
+      "id": "simple_two_task_plan",
+      "description": "A plan with two sequential tasks (compile, test) that both succeed. Verifies no provider dispatch or feedback mutation is duplicated on replay.",
+      "tasks": [
+        {
+          "id": "T01",
+          "title": "Compile the project",
+          "role": "implementer",
+          "depends_on": []
+        },
+        {
+          "id": "T02",
+          "title": "Run tests",
+          "role": "reviewer",
+          "depends_on": ["T01"]
+        }
+      ],
+      "recorded_events": [
+        {"kind": "graph_started", "seq": 1},
+        {"kind": "wave_started", "seq": 2, "wave_index": 0},
+        {"kind": "node_started", "seq": 3, "node_id": "T01"},
+        {"kind": "agent_started", "seq": 4, "node_id": "T01", "provider": "test", "model": "test-model"},
+        {"kind": "agent_completed", "seq": 5, "node_id": "T01", "elapsed_ms": 100},
+        {"kind": "node_completed", "seq": 6, "node_id": "T01", "elapsed_ms": 150},
+        {"kind": "wave_completed", "seq": 7, "wave_index": 0, "elapsed_ms": 200},
+        {"kind": "wave_started", "seq": 8, "wave_index": 1},
+        {"kind": "node_started", "seq": 9, "node_id": "T02"},
+        {"kind": "agent_started", "seq": 10, "node_id": "T02", "provider": "test", "model": "test-model"},
+        {"kind": "agent_completed", "seq": 11, "node_id": "T02", "elapsed_ms": 80},
+        {"kind": "node_completed", "seq": 12, "node_id": "T02", "elapsed_ms": 120},
+        {"kind": "wave_completed", "seq": 13, "wave_index": 1, "elapsed_ms": 150},
+        {"kind": "graph_completed", "seq": 14, "elapsed_ms": 400}
+      ],
+      "expected": {
+        "provider_dispatch_count": 2,
+        "git_mutation_count": 0,
+        "feedback_sink_count": 0,
+        "replay_provider_dispatch_count": 0,
+        "replay_git_mutation_count": 0,
+        "replay_feedback_sink_count": 0
+      }
+    },
+    {
+      "id": "task_with_gate_failure",
+      "description": "A single-task plan where the gate fails. Verifies gate failure events are replayed without re-running the gate.",
+      "tasks": [
+        {
+          "id": "T01",
+          "title": "Implement feature",
+          "role": "implementer",
+          "depends_on": []
+        }
+      ],
+      "recorded_events": [
+        {"kind": "graph_started", "seq": 1},
+        {"kind": "wave_started", "seq": 2, "wave_index": 0},
+        {"kind": "node_started", "seq": 3, "node_id": "T01"},
+        {"kind": "agent_started", "seq": 4, "node_id": "T01", "provider": "test", "model": "test-model"},
+        {"kind": "agent_completed", "seq": 5, "node_id": "T01", "elapsed_ms": 200},
+        {"kind": "gate_rung_started", "seq": 6, "node_id": "T01", "rung_index": 0, "rung_name": "compile"},
+        {"kind": "gate_rung_completed", "seq": 7, "node_id": "T01", "rung_index": 0, "rung_name": "compile", "pass": false},
+        {"kind": "node_failed", "seq": 8, "node_id": "T01", "elapsed_ms": 300, "error": "compile gate failed"},
+        {"kind": "wave_completed", "seq": 9, "wave_index": 0, "elapsed_ms": 350},
+        {"kind": "graph_failed", "seq": 10, "elapsed_ms": 400, "error": "1 task failed"}
+      ],
+      "expected": {
+        "provider_dispatch_count": 1,
+        "git_mutation_count": 0,
+        "feedback_sink_count": 0,
+        "replay_provider_dispatch_count": 0,
+        "replay_git_mutation_count": 0,
+        "replay_feedback_sink_count": 0
+      }
+    },
+    {
+      "id": "parallel_tasks_no_duplicate_mutations",
+      "description": "Two independent tasks running in a single wave (parallel). Verifies that parallel dispatch does not produce duplicate provider calls.",
+      "tasks": [
+        {
+          "id": "T01",
+          "title": "Frontend changes",
+          "role": "implementer",
+          "depends_on": []
+        },
+        {
+          "id": "T02",
+          "title": "Backend changes",
+          "role": "implementer",
+          "depends_on": []
+        }
+      ],
+      "recorded_events": [
+        {"kind": "graph_started", "seq": 1},
+        {"kind": "wave_started", "seq": 2, "wave_index": 0},
+        {"kind": "node_started", "seq": 3, "node_id": "T01"},
+        {"kind": "node_started", "seq": 4, "node_id": "T02"},
+        {"kind": "agent_started", "seq": 5, "node_id": "T01", "provider": "test", "model": "test-model"},
+        {"kind": "agent_started", "seq": 6, "node_id": "T02", "provider": "test", "model": "test-model"},
+        {"kind": "agent_completed", "seq": 7, "node_id": "T01", "elapsed_ms": 100},
+        {"kind": "agent_completed", "seq": 8, "node_id": "T02", "elapsed_ms": 120},
+        {"kind": "node_completed", "seq": 9, "node_id": "T01", "elapsed_ms": 150},
+        {"kind": "node_completed", "seq": 10, "node_id": "T02", "elapsed_ms": 170},
+        {"kind": "wave_completed", "seq": 11, "wave_index": 0, "elapsed_ms": 200},
+        {"kind": "graph_completed", "seq": 12, "elapsed_ms": 250}
+      ],
+      "expected": {
+        "provider_dispatch_count": 2,
+        "git_mutation_count": 0,
+        "feedback_sink_count": 0,
+        "replay_provider_dispatch_count": 0,
+        "replay_git_mutation_count": 0,
+        "replay_feedback_sink_count": 0
+      }
+    }
+  ]
+}

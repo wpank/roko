@@ -23,7 +23,6 @@ use serde::{Deserialize, Serialize};
 /// any spend cap for that dimension.
 #[allow(clippy::derive_partial_eq_without_eq)] // contains f32
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct BudgetConfig {
     /// Per-plan cost ceiling in USD. `0.0` means unlimited.
     #[serde(default)]
@@ -58,6 +57,7 @@ pub struct BudgetConfig {
 /// Per-task budget multipliers for the four canonical plan tiers.
 #[allow(clippy::derive_partial_eq_without_eq)] // contains f32
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TaskBudgetMultipliers {
     /// Mechanical tasks normally use a cheap/fast model.
     #[serde(default = "default_mechanical_multiplier")]

@@ -11,7 +11,7 @@ use roko_compose::prompt_assembly_service::PromptAssemblyService;
 use roko_core::agent::resolve_model;
 use roko_core::config::schema::{RokoConfig, ToolsConfig};
 use roko_core::foundation::{
-    AffectPolicy, FeedbackEvent, FeedbackSink, GateRunner, ModelCaller, PromptAssembler,
+    AffectPolicy, FeedbackEvent, FeedbackSink, GateRunner, PromptAssembler,
 };
 use roko_core::{AgentRole, Result, RokoError, RuntimeEvent};
 use roko_daimon::policy::DaimonPolicy;
@@ -23,7 +23,7 @@ use roko_learn::playbook::PlaybookStore;
 use roko_learn::provider_health::ProviderHealthRegistry;
 use roko_learn::section_effect::SectionEffectivenessRegistry;
 use roko_neuro::knowledge_store::KnowledgeStore;
-use roko_runtime::{JsonlLogger, effect_driver::EffectServices};
+use roko_runtime::JsonlLogger;
 
 #[derive(Debug, Default)]
 struct RuntimeBusInferenceObserver;
@@ -209,19 +209,8 @@ pub struct ServiceBundle {
 }
 
 impl ServiceBundle {
-    /// Build the `EffectServices` value consumed by `WorkflowEngine`.
-    #[must_use]
-    pub fn effect_services(&self) -> EffectServices {
-        let model_caller: Arc<dyn ModelCaller> = self.model_call_service.clone();
-        EffectServices {
-            default_model: self.model.clone(),
-            model_caller,
-            prompt_assembler: Arc::clone(&self.prompt_assembler),
-            feedback_sink: Arc::clone(&self.feedback_sink),
-            gate_runner: Arc::clone(&self.gate_runner),
-            affect_policy: self.affect_policy.clone(),
-        }
-    }
+    // effect_services() removed by #276 -- EffectServices/WorkflowEngine are deleted.
+    // Callers access individual service handles directly from the bundle.
 }
 
 /// Factory for constructing the shared service bundle.
@@ -379,6 +368,182 @@ impl ServiceFactory {
                 let legacy = config.roko_dir.join("state").join("daimon.json");
                 if legacy.exists() {
                     // Migrate: copy legacy to canonical location.
+                    if let Some(parent) = canonical.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    let _ = std::fs::copy(&legacy, &canonical);
+                    canonical
+                } else {
+                    canonical
+                }
+            };
+            Arc::new(tokio::sync::Mutex::new(DaimonPolicy::new(state_path)))
+                as Arc<tokio::sync::Mutex<dyn AffectPolicy>>
+        });
+
+        Ok(ServiceBundle {
+            model,
+            model_call_service,
+            provider_health_registry,
+            prompt_assembler,
+            feedback_sink,
+            gate_runner,
+            affect_policy,
+        })
+    }
+
+    /// Build services using pre-built handles from [`RuntimeServices`].
+    ///
+    /// This is the #245 migration path: callers construct `RuntimeServices`
+    /// via `RuntimeServicesBuilder` once, then pass the shared handles here.
+    /// The health registry, cascade router, and prompt cache are shared
+    /// rather than reconstructed per call.
+    pub fn build_with_runtime_services(
+        config: ServiceConfig,
+        runtime_services: &roko_execution::RuntimeServices,
+    ) -> Result<ServiceBundle> {
+        let mut workspace_config = config.workspace_config;
+        let model_key = config
+            .model_key
+            .clone()
+            .unwrap_or_else(|| workspace_config.agent.default_model.clone());
+        if model_key.trim().is_empty() {
+            return Err(RokoError::invalid(
+                "model is not configured for service factory",
+            ));
+        }
+        let resolved_model = resolve_model(&workspace_config, &model_key);
+        let model_context_window_tokens = context_window_tokens_from_resolved(&resolved_model);
+        let model = resolved_model.slug;
+        if model.trim().is_empty() {
+            return Err(RokoError::invalid(format!(
+                "model key {model_key:?} resolved to an empty model slug"
+            )));
+        }
+        workspace_config.agent.default_model = model.clone();
+        let prompt_token_budget = workspace_config.budget.prompt_token_budget;
+        let tool_instructions = tool_instructions_for_config(&workspace_config.tools);
+
+        // Share the health registry from RuntimeServices.
+        let provider_health_registry = Arc::clone(&runtime_services.dispatch.health_registry);
+
+        // Share the cascade router from RuntimeServices.
+        let cascade_router = if config.cascade_enabled {
+            runtime_services.dispatch.cascade_router.clone()
+        } else {
+            None
+        };
+
+        let knowledge_store = Arc::new(KnowledgeStore::for_roko_dir(&config.roko_dir));
+
+        let feedback_sink: Arc<dyn FeedbackSink> = if config.feedback_enabled {
+            let feedback_service = FeedbackService::from_roko_dir_with_episodes(&config.roko_dir);
+            match &cascade_router {
+                Some(router) => Arc::new(feedback_service.with_cascade_router(Arc::clone(router))),
+                None => Arc::new(feedback_service),
+            }
+        } else {
+            Arc::new(MemoryFeedbackSink::default())
+        };
+
+        let gateway_knowledge_query: Arc<dyn roko_core::KnowledgeQuery> =
+            knowledge_store.clone() as Arc<dyn roko_core::KnowledgeQuery>;
+        let cost_table = roko_agent::CostTable::from_config_with_defaults(&workspace_config.models);
+        let health_checker: Arc<dyn roko_agent::ProviderHealthChecker> =
+            provider_health_registry.clone();
+        let rate_limiter = Arc::new(
+            ProviderRateLimiter::from_provider_configs(
+                60,
+                workspace_config.effective_providers().iter(),
+            )
+            .with_health_registry(health_checker),
+        );
+        let routing_config = workspace_config.clone();
+        let routing_health_registry = Arc::clone(&provider_health_registry);
+        let prompt_model_router = cascade_router.clone();
+        let prompt_routing_config = workspace_config.clone();
+        let prompt_health_registry = Arc::clone(&provider_health_registry);
+        let mut model_call_service = ModelCallService::new(model.clone())
+            .with_config(workspace_config)
+            .with_working_dir(&config.workdir)
+            .with_immune_root(&config.workdir)
+            .with_cost_table(cost_table)
+            .with_feedback_sink(Arc::clone(&feedback_sink))
+            .with_gateway_event_writer(Arc::new(GatewayEventWriter::for_workdir(&config.workdir)))
+            .with_event_consumer(Arc::new(JsonlLogger::from_roko_dir(&config.roko_dir)))
+            .with_knowledge_store(gateway_knowledge_query)
+            .with_provider_outcome_recorder(Arc::clone(&provider_health_registry))
+            .with_rate_limiter(rate_limiter)
+            .with_run_id(config.run_id.unwrap_or_else(default_run_id));
+        if let Some(cascade_router) = cascade_router {
+            let model_router = Some(Arc::clone(&cascade_router));
+            model_call_service = model_call_service
+                .with_cascade_router(cascade_router)
+                .with_model_router(move |role| {
+                    routed_model_for_role(
+                        &routing_config,
+                        model_router.as_ref(),
+                        Some(routing_health_registry.as_ref()),
+                        agent_role_from_label(role.unwrap_or("implementer")),
+                    )
+                });
+        }
+        if let Some(observer) = config.inference_observer {
+            model_call_service = model_call_service.with_inference_observer(observer);
+        }
+        let has_mcp = config.mcp_config.is_some();
+        if let Some(mcp_config) = config.mcp_config {
+            model_call_service = model_call_service.with_mcp_config(mcp_config);
+        }
+        if let Some(metrics) = config.metrics {
+            model_call_service = model_call_service.with_metrics(metrics);
+        }
+        let model_call_service = Arc::new(model_call_service);
+
+        let playbook_store = Arc::new(PlaybookStore::new(
+            config.roko_dir.join("learn").join("playbooks"),
+        ));
+        let section_effectiveness = SectionEffectivenessRegistry::load_or_new(
+            &config.roko_dir.join("learn").join("section-effects.json"),
+        )
+        .lift_weights();
+
+        let mut prompt_service = PromptAssemblyService::new()
+            .with_model_context_window(model_context_window_tokens)
+            .with_model_context_window_resolver(move |role| {
+                let selected_model = routed_model_for_role(
+                    &prompt_routing_config,
+                    prompt_model_router.as_ref(),
+                    Some(prompt_health_registry.as_ref()),
+                    role,
+                );
+                context_window_tokens_for_model(&prompt_routing_config, &selected_model)
+            })
+            .with_knowledge_store(knowledge_store)
+            .with_episodes(config.roko_dir.join("episodes.jsonl"))
+            .with_playbooks(playbook_store);
+        if prompt_token_budget > 0 {
+            prompt_service = prompt_service.with_token_budget(prompt_token_budget);
+        }
+        if let Some(tools) = tool_instructions {
+            prompt_service = prompt_service.with_tool_instructions(tools);
+        }
+        if has_mcp {
+            prompt_service = prompt_service.with_mcp_tools();
+        }
+        if !section_effectiveness.is_empty() {
+            prompt_service = prompt_service.with_section_effectiveness(section_effectiveness);
+        }
+
+        let prompt_assembler: Arc<dyn PromptAssembler> = Arc::new(prompt_service);
+        let gate_runner: Arc<dyn GateRunner> = Arc::new(GateService::new());
+        let affect_policy = config.affect_enabled.then(|| {
+            let canonical = config.roko_dir.join("daimon").join("affect.json");
+            let state_path = if canonical.exists() {
+                canonical
+            } else {
+                let legacy = config.roko_dir.join("state").join("daimon.json");
+                if legacy.exists() {
                     if let Some(parent) = canonical.parent() {
                         let _ = std::fs::create_dir_all(parent);
                     }
@@ -561,7 +726,9 @@ mod tests {
     use roko_core::agent::ProviderKind;
     use roko_core::config::provider::ProviderConfig;
     use roko_core::config::schema::ModelProfile;
-    use roko_core::foundation::{CachePolicy, ChatMessage, MessageRole, ModelCallRequest};
+    use roko_core::foundation::{
+        CachePolicy, ChatMessage, MessageRole, ModelCallRequest, ModelCaller,
+    };
     use roko_learn::provider_health::ErrorClass;
     use tempfile::TempDir;
 

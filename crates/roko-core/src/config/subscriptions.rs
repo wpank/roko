@@ -56,6 +56,7 @@ where
 
 /// Subscription configuration loaded from `roko.toml` and `.roko/subscriptions/*.toml`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SubscriptionConfig {
     /// Agent template name associated with this subscription.
     pub template: String,
@@ -151,6 +152,7 @@ impl SubscriptionTrigger {
 
 /// Optional filter applied after the trigger pattern matches.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SubscriptionFilterConfig {
     /// Repo glob(s) to match against webhook payload repository fields.
     #[serde(
@@ -213,6 +215,7 @@ impl SubscriptionFilterConfig {
 /// Each watch path can narrow the observed file set with include/exclude
 /// glob patterns.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WatcherConfig {
     /// Watch roots configured by the user.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -229,6 +232,7 @@ impl WatcherConfig {
 
 /// One watched directory and its path filters.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WatcherPathConfig {
     /// Directory to watch recursively.
     pub directory: PathBuf,

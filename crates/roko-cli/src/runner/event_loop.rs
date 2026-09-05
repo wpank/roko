@@ -125,8 +125,7 @@ use super::types::{
     PromptAssemblyDiagnostics, ResumeMarker, ResumeOutcome, RetryAction, RetryDecision, RunConfig,
     RunOutcome, RunTotals, RunnerEvent, RunnerFailureKind, RunnerRunStatus, TaskAttemptOutcome,
     TaskAttemptRef, TaskAttemptStatus, TaskLifecycleStatus, TaskPhaseDurations, TaskRunCategory,
-    TaskRunSummary, TimeoutAgentSnapshot, TimeoutEvent, TimeoutKind,
-    effective_plan_timeout_secs,
+    TaskRunSummary, TimeoutAgentSnapshot, TimeoutEvent, TimeoutKind, effective_plan_timeout_secs,
 };
 use crate::execution_control::{CommandAckStatus, ExecutionCommand, ExecutionCommandKind, ack_for};
 
@@ -605,7 +604,6 @@ pub(crate) fn gate_timeout(config: &RunConfig, rung: u32) -> Duration {
 }
 
 /// Resolve HTTP request timeout from `TimeoutConfig`.
-#[allow(dead_code)]
 pub(crate) fn http_request_timeout(config: &RunConfig) -> Duration {
     config.roko_config.as_deref().map_or_else(
         || roko_core::config::TimeoutConfig::default().http_request(),
@@ -614,7 +612,6 @@ pub(crate) fn http_request_timeout(config: &RunConfig) -> Duration {
 }
 
 /// Resolve health check timeout from `TimeoutConfig`.
-#[allow(dead_code)]
 pub(crate) fn health_check_timeout(config: &RunConfig) -> Duration {
     config.roko_config.as_deref().map_or_else(
         || roko_core::config::TimeoutConfig::default().health_check(),
@@ -1740,15 +1737,15 @@ struct RunContext<'a> {
     worktrees: &'a WorktreeManager,
     gate_thresholds: &'a GateThresholds,
     snapshot_writer: &'a SnapshotWriter,
-    #[allow(dead_code)]
-    prompt_cache: &'a Arc<PromptCache>,
+    // Stored for future use; not currently read from the struct.
+    _prompt_cache: &'a Arc<PromptCache>,
     factory: &'a SharedAgentFactory,
     task_capacity: &'a TaskCapacity,
     disk_budget: &'a mut DiskBudgetTracker,
     gate_sem: Arc<tokio::sync::Semaphore>,
     task_runtime_states: &'a mut HashMap<String, TaskRuntimeState>,
-    #[allow(dead_code)]
-    legacy_gate_attempts: &'a mut HashMap<String, TaskAttemptRef>,
+    // Retained for legacy gate reconciliation; not currently read.
+    _legacy_gate_attempts: &'a mut HashMap<String, TaskAttemptRef>,
     preflight_attempted: &'a mut HashSet<TaskAttemptRef>,
     baseline_gate_failures: &'a mut HashMap<TaskAttemptRef, Vec<GateVerdictSummary>>,
     /// Prompt section diagnostics per attempt key — populated at dispatch,
@@ -2118,7 +2115,6 @@ async fn run_candidate_replay(
     }
 }
 
-#[allow(dead_code)]
 fn default_runner_worktree_manager(workdir: &Path) -> WorktreeManager {
     default_runner_worktree_manager_with_ttl(workdir, RUNNER_WORKTREE_IDLE_TTL_SECS)
 }
@@ -3197,10 +3193,8 @@ pub async fn run_with_tui_commands(
         ),
     ));
     // Wire persistent JSONL tool audit so every tool call is recorded to disk.
-    match roko_fs::tool_audit::ToolAuditLog::open_at(
-        config.layout.root().join("tool_audit.jsonl"),
-    )
-    .await
+    match roko_fs::tool_audit::ToolAuditLog::open_at(config.layout.root().join("tool_audit.jsonl"))
+        .await
     {
         Ok(log) => {
             let scrubber = std::sync::Arc::new(roko_core::obs::LogScrubber::new());
@@ -5283,6 +5277,7 @@ pub async fn run_with_tui_commands(
                         &worktrees,
                         &github_ops,
                         &github_workflow,
+                        &mut task_index,
                     )
                     .await;
                     continue;
@@ -6394,13 +6389,13 @@ pub async fn run_with_tui_commands(
                         worktrees: &worktrees,
                         gate_thresholds: &gate_thresholds,
                         snapshot_writer: &snapshot_writer,
-                        prompt_cache: &prompt_cache,
+                        _prompt_cache: &prompt_cache,
                         factory: &factory,
                         task_capacity: &task_capacity,
                         disk_budget: &mut disk_budget,
                         gate_sem: gate_sem.clone(),
                         task_runtime_states: &mut task_runtime_states,
-                        legacy_gate_attempts: &mut legacy_gate_attempts,
+                        _legacy_gate_attempts: &mut legacy_gate_attempts,
                         preflight_attempted: &mut preflight_attempted,
                         baseline_gate_failures: &mut baseline_gate_failures,
                         section_diagnostics: &mut section_diagnostics,
@@ -8509,6 +8504,7 @@ async fn handle_merge_completion(
     worktrees: &WorktreeManager,
     github_ops: &Arc<dyn GitHubOps>,
     github_workflow: &GitHubWorkflow,
+    task_index: &mut HashMap<String, HashMap<String, TaskDef>>,
 ) {
     if completion.passed {
         match executor.apply_event(&completion.plan_id, &ExecutorEvent::MergeSucceeded) {
@@ -8552,6 +8548,47 @@ async fn handle_merge_completion(
         }
     } else {
         let reason = format!("merge failed: {}", completion.output);
+
+        // G04: Extract conflict paths from the merge output and attempt
+        // conflict-aware replan before marking the plan as terminal.
+        let conflict_paths = conflict_paths_from_merge_output(&completion.output);
+        if !conflict_paths.is_empty() && gate_failure_replan_enabled(config) {
+            let conflict_context = format!(
+                "Merge conflict detected. The following files had merge conflicts when \
+                 merging into the target branch:\n\n{}\n\n\
+                 Resolve these conflicts by modifying the conflicting files so they \
+                 integrate cleanly with the current target branch state.",
+                conflict_paths
+                    .iter()
+                    .map(|p| format!("- `{p}`"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+            // Attempt a task revision so the agent can retry with conflict awareness.
+            // The task_id for merge completions is `merge:<branch>`, so we extract
+            // the original task from the attempt ref on the completion.
+            if let Some(attempt) = &completion.attempt {
+                info!(
+                    plan_id = %completion.plan_id,
+                    task_id = %attempt.task_id,
+                    conflicts = ?conflict_paths,
+                    "attempting conflict-aware replan for merge failure (G04)"
+                );
+                maybe_apply_gate_failure_plan_revision(
+                    config,
+                    paths,
+                    state,
+                    task_index,
+                    &completion.plan_id,
+                    &attempt.task_id,
+                    attempt.attempt,
+                    &completion.verdicts,
+                    &completion.output,
+                    &conflict_context,
+                );
+            }
+        }
+
         match executor.apply_event(&completion.plan_id, &ExecutorEvent::MergeFailed) {
             Ok(phase) => {
                 tui.phase_transition(&completion.plan_id, "merging", &format!("{phase:?}"));
@@ -9040,7 +9077,6 @@ fn emit_runner_event(
 /// runner-level emits still cover the lifecycle events these helpers
 /// produce because the helpers themselves only emit on their plan's
 /// completion which is also republished from `run()`.
-#[allow(dead_code)]
 fn emit_runner_event_facadeless(
     paths: &PersistPaths,
     state: &mut RunState,
@@ -12276,12 +12312,8 @@ async fn dispatch_action(
                             pipeline_rung,
                         ),
                     );
-                    let gate_line_sink = spawn_gate_line_forwarder(
-                        ctx.tui,
-                        &plan_id,
-                        &task_id,
-                        "preflight",
-                    );
+                    let gate_line_sink =
+                        spawn_gate_line_forwarder(ctx.tui, &plan_id, &task_id, "preflight");
                     let (gate_handle, start_tx) = gate_dispatch::spawn_gate(
                         preflight_effect.clone(),
                         plan_id.clone(),
@@ -14085,9 +14117,11 @@ async fn dispatch_action(
                             .await
                     } else {
                         Ok(crate::dispatch::factory::StartedSharedAgentBridge {
-                            handle: ctx
-                                .factory
-                                .spawn_shared_agent_bridge(request, raw_agent_tx, bridge_cancel_token),
+                            handle: ctx.factory.spawn_shared_agent_bridge(
+                                request,
+                                raw_agent_tx,
+                                bridge_cancel_token,
+                            ),
                         })
                     };
                     let bridge = match bridge_start {
@@ -14418,12 +14452,8 @@ async fn dispatch_action(
                     gate_plan_complexity_for_task_with_files(task_def, changed_files.as_deref());
                 let target_crates = task_target_crates(task_def);
                 {
-                    let gate_line_sink = spawn_gate_line_forwarder(
-                        ctx.tui,
-                        &plan_id,
-                        &task_id,
-                        "gate",
-                    );
+                    let gate_line_sink =
+                        spawn_gate_line_forwarder(ctx.tui, &plan_id, &task_id, "gate");
                     gate_dispatch::spawn_gate(
                         gate_effect.clone(),
                         plan_id.clone(),
@@ -14668,12 +14698,8 @@ async fn dispatch_action(
                 task_count = verify_steps.len(),
                 "dispatching plan verify"
             );
-            let plan_verify_line_sink = spawn_gate_line_forwarder(
-                ctx.tui,
-                &plan_id,
-                "plan-verify",
-                "plan-verify",
-            );
+            let plan_verify_line_sink =
+                spawn_gate_line_forwarder(ctx.tui, &plan_id, "plan-verify", "plan-verify");
             let (gate_handle, start_tx) = gate_dispatch::spawn_plan_verify(
                 gate_effect.clone(),
                 plan_id.clone(),
@@ -15454,186 +15480,13 @@ fn knowledge_bias_weight(config: &RunConfig) -> f64 {
 }
 
 // ─── Extension Chain Hooks ───────────────────────────────────────────────
-
-/// Fire pre_inference extension hook (non-blocking try_lock to avoid stalling select).
-async fn fire_pre_inference_hook(
-    config: &RunConfig,
-    plan_id: &str,
-    task_id: &str,
-    model: &str,
-    role: &str,
-    tui: &TuiBridge,
-) {
-    let Some(ext_chain) = &config.extension_chain else {
-        return;
-    };
-    let Ok(chain) = ext_chain.try_lock() else {
-        warn!("extension chain lock contended, skipping pre_inference hook");
-        return;
-    };
-    let mut req = roko_core::extension::InferenceRequest {
-        plan_id: plan_id.to_string(),
-        task: task_id.to_string(),
-        role: role.to_string(),
-        model: model.to_string(),
-        prompt_tokens: 0,
-        extra: serde_json::Value::Null,
-    };
-    let success = chain.run_pre_inference(&mut req).await.is_ok();
-    if !success {
-        warn!("extension pre_inference hook failed");
-    }
-    tui.extension_hook(plan_id, task_id, "pre_inference", success);
-}
-
-/// Fire post_inference extension hook.
-async fn fire_post_inference_hook(
-    config: &RunConfig,
-    plan_id: &str,
-    task_id: &str,
-    model: &str,
-    role: &str,
-    success: bool,
-    cost_usd: f64,
-    wall_ms: u64,
-    tui: &TuiBridge,
-) {
-    let Some(ext_chain) = &config.extension_chain else {
-        return;
-    };
-    let Ok(chain) = ext_chain.try_lock() else {
-        warn!("extension chain lock contended, skipping post_inference hook");
-        return;
-    };
-    let mut resp = roko_core::extension::InferenceResponse {
-        plan_id: plan_id.to_string(),
-        task: task_id.to_string(),
-        role: role.to_string(),
-        model: model.to_string(),
-        success,
-        cost_usd,
-        wall_ms,
-        extra: serde_json::Value::Null,
-    };
-    let hook_ok = chain.run_post_inference(&mut resp).await.is_ok();
-    if !hook_ok {
-        warn!("extension post_inference hook failed");
-    }
-    tui.extension_hook(plan_id, task_id, "post_inference", hook_ok);
-}
-
-/// Fire on_gate extension hook.
-async fn fire_on_gate_hook(config: &RunConfig, completion: &GateCompletion, tui: &TuiBridge) {
-    let Some(ext_chain) = &config.extension_chain else {
-        return;
-    };
-    let Ok(chain) = ext_chain.try_lock() else {
-        warn!("extension chain lock contended, skipping on_gate hook");
-        return;
-    };
-    for verdict in &completion.verdicts {
-        let mut event = roko_core::extension::GateEvent {
-            plan_id: completion.plan_id.clone(),
-            gate_name: verdict.gate_name.clone(),
-            passed: verdict.passed,
-            rung: format!("rung-{}", completion.rung),
-            duration_ms: completion.duration_ms,
-            details: serde_json::Value::Null,
-        };
-        let hook_ok = chain.run_on_gate(&mut event).await.is_ok();
-        if !hook_ok {
-            warn!(gate = %verdict.gate_name, "extension on_gate hook failed");
-        }
-        tui.extension_hook(
-            &completion.plan_id,
-            &completion.task_id,
-            &format!("on_gate:{}", verdict.gate_name),
-            hook_ok,
-        );
-    }
-}
-
-/// Fire on_error extension hook.
-async fn fire_on_error_hook(
-    config: &RunConfig,
-    message: &str,
-    source: &str,
-    tui: &TuiBridge,
-    plan_id: &str,
-    task_id: &str,
-) {
-    let Some(ext_chain) = &config.extension_chain else {
-        return;
-    };
-    let Ok(chain) = ext_chain.try_lock() else {
-        warn!("extension chain lock contended, skipping on_error hook");
-        return;
-    };
-    let event = roko_core::extension::ErrorEvent {
-        error_message: message.to_string(),
-        source: source.to_string(),
-        extra: serde_json::Value::Null,
-    };
-    let hook_ok = chain.run_on_error(&event).await.is_ok();
-    tui.extension_hook(plan_id, task_id, "on_error", hook_ok);
-}
-
-pub async fn initialize_extensions(
-    extension_chain: Option<&Arc<tokio::sync::Mutex<roko_core::extension::ExtensionChain>>>,
-) -> Result<()> {
-    let Some(extension_chain) = extension_chain else {
-        return Ok(());
-    };
-    let mut chain = extension_chain.lock().await;
-    let optional_by_name = chain
-        .metadata()
-        .into_iter()
-        .map(|meta| (meta.name, meta.optional))
-        .collect::<HashMap<_, _>>();
-    let errors = chain.init_all().await;
-    let mut required_errors = Vec::new();
-    for (name, error) in errors {
-        if optional_by_name.get(&name).copied().unwrap_or(false) {
-            warn!(extension = %name, error = %error, "optional extension init failed; continuing");
-            chain.disable_extension(&name);
-        } else {
-            required_errors.push(format!("{name}: {error}"));
-        }
-    }
-    if required_errors.is_empty() {
-        return Ok(());
-    }
-    for (name, error) in chain.shutdown_all().await {
-        warn!(extension = %name, error = %error, "extension shutdown after startup failure failed");
-    }
-    Err(anyhow::anyhow!(
-        "required extension initialization failed: {}",
-        required_errors.join("; ")
-    ))
-}
-
-/// Shutdown extension chain + persist cascade router.
-async fn shutdown_subsystems(config: &RunConfig, tui: &TuiBridge) {
-    // Extension chain shutdown.
-    if let Some(ext_chain) = &config.extension_chain {
-        let mut chain = ext_chain.lock().await;
-        let errors = chain.shutdown_all().await;
-        for (name, err) in &errors {
-            warn!(extension = %name, error = %err, "extension shutdown failed");
-        }
-    }
-
-    // Persist cascade router learned state.
-    if let Some(router) = &config.cascade_router {
-        let router_path = config.layout.cascade_router_path();
-        if let Err(err) = router.save(&router_path) {
-            warn!(error = %err, "failed to persist cascade router");
-        } else {
-            info!("cascade router state persisted");
-            tui.cascade_router_updated(&router.snapshot_json());
-        }
-    }
-}
+//
+// Extracted to `runner/extension_hooks.rs`. Re-export for local use.
+pub use super::extension_hooks::initialize_extensions;
+use super::extension_hooks::{
+    fire_on_error_hook, fire_on_gate_hook, fire_post_inference_hook, fire_pre_inference_hook,
+    shutdown_subsystems,
+};
 
 /// Format similar-episode results into a human-readable prompt section.
 ///
@@ -15919,7 +15772,6 @@ fn format_discovered_patterns_section(
 /// Collect playbook rule IDs whose file-glob triggers match any of the given
 /// files in scope. Used during context assembly to surface relevant playbook
 /// rules in the agent system prompt.
-#[allow(dead_code)]
 pub(crate) fn collect_plan_playbook_scope(
     files_in_scope: &[String],
     playbook_rules: &[roko_learn::playbook_rules::Rule],
@@ -17262,8 +17114,8 @@ enum AttemptCleanupTerminal {
 
 #[derive(Debug)]
 struct CancelAttemptSummary {
-    #[allow(dead_code)]
-    attempt: TaskAttemptRef,
+    // Retained for Debug formatting; not read directly.
+    _attempt: TaskAttemptRef,
     outcome: CancelAttemptOutcome,
 }
 
@@ -18367,7 +18219,7 @@ async fn stop_all_agents(
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
                 summaries.push(CancelAttemptSummary {
-                    attempt,
+                    _attempt: attempt,
                     outcome: CancelAttemptOutcome::Unconfirmed(vec![
                         "global settlement budget exhausted before cleanup".to_string(),
                     ]),
@@ -18400,7 +18252,10 @@ async fn stop_all_agents(
         if let CancelAttemptOutcome::Unconfirmed(errors) = &outcome {
             error!(attempt = %attempt.key(), ?errors, "attempt cancellation remains unconfirmed");
         }
-        summaries.push(CancelAttemptSummary { attempt, outcome });
+        summaries.push(CancelAttemptSummary {
+            _attempt: attempt,
+            outcome,
+        });
     }
     let survivors = ownership.surviving_agent_metadata();
     state.agent_active = survivors.active;
@@ -21100,6 +20955,7 @@ fn record_agent_event_to_transcript(
     };
 
     let record = TranscriptRecord {
+        schema_version: TranscriptRecord::CURRENT_SCHEMA_VERSION,
         meta: TranscriptEventMeta {
             run_id: run_id.to_string(),
             turn_id: 0,
@@ -21109,6 +20965,8 @@ fn record_agent_event_to_transcript(
             provider: state.agent_provider.clone(),
             model: state.agent_model.clone(),
             parent_event_id: None,
+            task_id: Some(state.current_task.clone()),
+            attempt_id: None,
         },
         event: transcript_event,
     };
@@ -22640,13 +22498,13 @@ slug = "fixture-model"
             worktrees: &worktrees,
             gate_thresholds: &thresholds,
             snapshot_writer: &writer,
-            prompt_cache: &prompt_cache,
+            _prompt_cache: &prompt_cache,
             factory: &factory,
             task_capacity: &task_capacity,
             disk_budget: &mut disk_budget,
             gate_sem: Arc::new(tokio::sync::Semaphore::new(1)),
             task_runtime_states: &mut runtimes,
-            legacy_gate_attempts: &mut legacy,
+            _legacy_gate_attempts: &mut legacy,
             preflight_attempted: &mut preflight,
             baseline_gate_failures: &mut baseline_gate_failures,
             section_diagnostics: &mut diagnostics,
@@ -22884,13 +22742,13 @@ slug = "fixture-model"
                 worktrees: &worktrees,
                 gate_thresholds: &thresholds,
                 snapshot_writer: &writer,
-                prompt_cache: &prompt_cache,
+                _prompt_cache: &prompt_cache,
                 factory: &factory,
                 task_capacity: &task_capacity,
                 disk_budget: &mut disk_budget,
                 gate_sem: Arc::new(tokio::sync::Semaphore::new(1)),
                 task_runtime_states: &mut runtimes,
-                legacy_gate_attempts: &mut legacy,
+                _legacy_gate_attempts: &mut legacy,
                 preflight_attempted: &mut preflight,
                 baseline_gate_failures: &mut baseline_gate_failures,
                 section_diagnostics: &mut diagnostics,
@@ -24333,15 +24191,16 @@ depends_on = []
         );
 
         let snapshot = registry.snapshot();
+        // The registry normalizes keys (hyphens to underscores).
         let success = snapshot
-            .get("claude-cli")
+            .get("claude_cli")
             .expect("configured provider identity");
         assert_eq!(success.total_requests, 1);
         assert_eq!(success.total_failures, 0);
-        assert!(!snapshot.contains_key("claude-sonnet"));
+        assert!(!snapshot.contains_key("claude_sonnet"));
 
         let failure = snapshot
-            .get("model-without-provider")
+            .get("model_without_provider")
             .expect("model identity fallback");
         assert_eq!(failure.total_requests, 1);
         assert_eq!(failure.total_failures, 1);
@@ -25205,7 +25064,7 @@ depends_on = []
     fn cancellation_summary_requires_every_attempt_and_quarantine_to_settle() {
         let attempt = TaskAttemptRef::new("plan", "task", 1);
         let confirmed = CancelAttemptSummary {
-            attempt: attempt.clone(),
+            _attempt: attempt.clone(),
             outcome: CancelAttemptOutcome::Confirmed(TaskAttemptOutcome::Cancelled),
         };
         assert!(
@@ -25219,7 +25078,7 @@ depends_on = []
         assert!(
             !CancelAllSummary {
                 attempts: vec![CancelAttemptSummary {
-                    attempt: attempt.clone(),
+                    _attempt: attempt.clone(),
                     outcome: CancelAttemptOutcome::Unconfirmed(vec!["kill not confirmed".into()]),
                 }],
                 quarantined: Vec::new(),

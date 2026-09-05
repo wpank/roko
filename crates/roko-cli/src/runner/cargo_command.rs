@@ -7,8 +7,8 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use roko_core::config::{GateRungConfig, GatesConfig};
-use roko_gate::rung_dispatch::GatePipelineBuilder;
 use roko_gate::PlanComplexity;
+use roko_gate::rung_dispatch::GatePipelineBuilder;
 
 use crate::task_parser::VerifyStep;
 

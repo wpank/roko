@@ -237,7 +237,6 @@ impl PluginConfinement {
         }
     }
 
-    #[allow(dead_code)]
     fn is_supported(&self) -> bool {
         !matches!(self, Self::Unsupported { .. })
     }
@@ -1666,14 +1665,23 @@ timeout_ms = 1000
             )
         }));
 
+        // Use DenyExplicit (fail-open) with empty deny list so all
+        // tools are permitted. The default AllowExplicit policy would
+        // deny the declarative test tool since it's not in a prod allowlist.
+        let test_safety = roko_agent::SafetyLayer::with_defaults().with_tool_permission_policy(
+            roko_agent::safety::ToolPermissionPolicy::DenyExplicit,
+            Vec::new(),
+        );
         let dispatcher = ToolDispatcher::new(
             Arc::clone(catalog.registry()) as Arc<dyn ToolRegistry>,
             catalog.resolver(),
-        );
+        )
+        .with_safety(test_safety);
+        let ctx = ToolContext::testing(tmp.path());
         let result = dispatcher
             .dispatch(
                 ToolCall::new("plugin-call", "example.echo", serde_json::json!({})),
-                &ToolContext::testing(tmp.path()),
+                &ctx,
             )
             .await;
         match &result {

@@ -29,7 +29,6 @@ pub struct Theme {
     pub selection_foreground: Color,
 }
 
-#[allow(dead_code)]
 impl Theme {
     // -- Primaries (ROSEDUST v2 canonical) --
     pub(crate) const VOID: Color = Color::Rgb(0, 0, 0); // true black, matching Mori's canvas
@@ -608,7 +607,6 @@ pub(crate) fn gradient_ocean() -> Gradient {
 ///
 /// Used for sparklines and data visualization fills.
 #[must_use]
-#[allow(dead_code)]
 pub(crate) fn gradient_rose() -> Gradient {
     Gradient {
         start: (65.0, 36.0, 52.0),  // ROSE_DEEP

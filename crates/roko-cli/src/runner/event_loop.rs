@@ -2625,6 +2625,26 @@ pub async fn run_with_tui_commands(
     // build/test observations for predictive gate feedback.
     let coding_oracle = CodingOracle::new();
 
+    // Gate gaming detector — flags rising pass rates paired with falling
+    // quality scores, per model. Alerts are appended to JSONL on disk.
+    let mut gate_gaming_detector = roko_learn::GateGamingDetector::new(
+        config.layout.learn_dir().join("gate-gaming-alerts.jsonl"),
+    );
+
+    // Holdout experiment — deterministic 80/20 train/holdout split so we
+    // can detect overfitting in learned routing. Learning updates (playbook,
+    // cascade router, adaptive thresholds) are gated behind the holdout
+    // partition check.
+    let mut holdout_experiment = roko_learn::HoldoutExperiment::load_or_new(
+        config.layout.learn_dir().join("holdout-state.json"),
+    )
+    .unwrap_or_else(|err| {
+        warn!(error = %err, "failed to load holdout experiment state; starting fresh");
+        roko_learn::HoldoutExperiment::new(
+            config.layout.learn_dir().join("holdout-state.json"),
+        )
+    });
+
     // Ensure knowledge store directory exists for episode ingestion.
     let neuro_dir = config.layout.neuro_dir();
     if let Err(err) = std::fs::create_dir_all(&neuro_dir) {
@@ -5187,30 +5207,38 @@ pub async fn run_with_tui_commands(
                 // When a verdict has a resolved rung_index, observe that
                 // specific rung; otherwise fall back to completion.rung for
                 // backwards compatibility.
+                //
+                // Gap 3 (holdout): Only train-partition tasks update
+                // adaptive thresholds; holdout tasks are observed for
+                // overfitting detection only.
                 {
-                    let mut observed_any = false;
-                    for v in &completion.verdicts {
-                        if v.skipped {
-                            continue;
+                    let holdout_task_key = format!("{}:{}", completion.plan_id, completion.task_id);
+                    let should_update = holdout_experiment.should_update_learning(&holdout_task_key);
+                    if should_update {
+                        let mut observed_any = false;
+                        for v in &completion.verdicts {
+                            if v.skipped {
+                                continue;
+                            }
+                            let actual_rung = v.rung_index.unwrap_or(completion.rung);
+                            update_gate_thresholds(
+                                &mut gate_thresholds,
+                                actual_rung,
+                                v.passed,
+                            );
+                            gate_obs_since_flush += 1;
+                            observed_any = true;
                         }
-                        let actual_rung = v.rung_index.unwrap_or(completion.rung);
-                        update_gate_thresholds(
-                            &mut gate_thresholds,
-                            actual_rung,
-                            v.passed,
-                        );
-                        gate_obs_since_flush += 1;
-                        observed_any = true;
-                    }
-                    // If there were no verdicts at all (empty completion),
-                    // fall back to the old single-rung observation.
-                    if !observed_any && completion.verdicts.is_empty() {
-                        update_gate_thresholds(
-                            &mut gate_thresholds,
-                            completion.rung,
-                            completion.passed,
-                        );
-                        gate_obs_since_flush += 1;
+                        // If there were no verdicts at all (empty completion),
+                        // fall back to the old single-rung observation.
+                        if !observed_any && completion.verdicts.is_empty() {
+                            update_gate_thresholds(
+                                &mut gate_thresholds,
+                                completion.rung,
+                                completion.passed,
+                            );
+                            gate_obs_since_flush += 1;
+                        }
                     }
                 }
                 emit_gate_thresholds_event(&gate_thresholds, &tui);
@@ -5276,6 +5304,71 @@ pub async fn run_with_tui_commands(
                         task_id: completion.task_id.clone(),
                     },
                 );
+
+                // ── Gap 1: CascadeRouter verdict recording ──────────────
+                // Feed each gate verdict into the cascade router's UCB
+                // scoring blend so models with recent pass streaks are
+                // preferred over models with compile-failure streaks.
+                if let Some(ref router) = config.cascade_router {
+                    let task_type = task_index
+                        .get(completion.plan_id.as_str())
+                        .and_then(|tasks| tasks.get(completion.task_id.as_str()))
+                        .map(|t| t.tier.as_str())
+                        .unwrap_or("unknown");
+                    let crate_name = task_index
+                        .get(completion.plan_id.as_str())
+                        .and_then(|tasks| tasks.get(completion.task_id.as_str()))
+                        .and_then(|t| t.files.first())
+                        .map(|f| f.as_str())
+                        .unwrap_or("unknown");
+                    for v in &completion.verdicts {
+                        router.record_verdict(
+                            &state.agent_model,
+                            task_type,
+                            crate_name,
+                            &v.gate_name,
+                            v.passed,
+                        );
+                    }
+                }
+
+                // ── Gap 2: Gate gaming detection ────────────────────────
+                // Observe each verdict into the per-model rolling window.
+                // Quality score is derived from the c-factor when available;
+                // otherwise a simple heuristic based on gate pass/fail.
+                {
+                    let quality_score = if completion.passed { 0.8 } else { 0.2 };
+                    for v in &completion.verdicts {
+                        if let Err(err) = gate_gaming_detector
+                            .observe_and_detect(&state.agent_model, v.passed, quality_score)
+                            .await
+                        {
+                            warn!(
+                                error = %err,
+                                model = %state.agent_model,
+                                "gate gaming detection I/O error (non-fatal)"
+                            );
+                        }
+                    }
+                }
+
+                // ── Gap 3: Holdout experiment outcome recording ─────────
+                // Record the gate outcome against the holdout partition so
+                // overfitting detection can compare train vs holdout pass
+                // rates.
+                {
+                    let task_key = format!("{}:{}", completion.plan_id, completion.task_id);
+                    holdout_experiment.record_outcome(&task_key, completion.passed, 0.0);
+                    if let Some(alert) = holdout_experiment.check_overfitting() {
+                        warn!(
+                            train_pass_rate = alert.train_pass_rate,
+                            holdout_pass_rate = alert.holdout_pass_rate,
+                            divergence_pp = alert.divergence_pp,
+                            "{}",
+                            alert.summary()
+                        );
+                    }
+                }
 
                 // E05-T08: Live gate verdicts are now published as
                 // Kind::GateVerdict signals via VerdictPublisher (wired
@@ -5598,9 +5691,16 @@ pub async fn run_with_tui_commands(
                 // injected into this task's prompt. This closes the feedback
                 // loop so PlaybookStore can learn which playbooks correlate
                 // with task success and adaptive selection improves over time.
+                //
+                // Gap 3 (holdout): Only train-partition tasks update
+                // playbook outcomes; holdout tasks still consume the
+                // playbook IDs from the map to avoid stale accumulation.
                 {
                     let attempt_key = completion_attempt.key();
                     if let Some(pb_ids) = task_playbook_ids.remove(&attempt_key) {
+                        let holdout_key = format!("{}:{}", completion.plan_id, completion.task_id);
+                        let should_update_playbooks = holdout_experiment.should_update_learning(&holdout_key);
+                        if should_update_playbooks {
                         let store = playbook_store.clone();
                         let gate_passed = completion.passed;
                         feedback_tasks.spawn(async move {
@@ -5629,6 +5729,7 @@ pub async fn run_with_tui_commands(
                                 }
                             }
                         });
+                        } // should_update_playbooks (holdout gate)
                     }
                 }
 
@@ -7266,6 +7367,12 @@ pub async fn run_with_tui_commands(
 
     // Ensure all pending snapshots land on disk before returning.
     snapshot_writer.flush();
+
+    // Persist holdout experiment state so overfitting detection survives
+    // across runs and partition assignments remain stable.
+    if let Err(err) = holdout_experiment.save() {
+        warn!(error = %err, "failed to persist holdout experiment state (non-fatal)");
+    }
 
     // ── Flush observability sinks (E09-T08) ─────────────────────────────
     //

@@ -9,7 +9,7 @@
 > **Cross-references:** [02-skill-library-voyager](02-skill-library-voyager.md), [13-8-missing-feedback-loops](13-8-missing-feedback-loops.md), [15-collective-calibration-31x](15-collective-calibration-31x.md)
 
 
-> **Implementation**: Shipping
+> **Implementation**: Planned — ADAS is not yet implemented. R04 delivers bounded meta-agent lifecycle but explicitly does not implement ADAS, Loop 4, or autonomous agent generation. The autocatalytic thesis describes the design aspiration; see `.roko/GAPS.md` for current status.
 
 ---
 

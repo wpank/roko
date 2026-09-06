@@ -1,13 +1,60 @@
 //! Life review pipeline for narrative arc classification (P0-23).
 //!
-//! Implements Butler's (1963) life review adapted for computational agents:
-//! 1. Retrieve top-20 emotional memories by arousal magnitude
-//! 2. Detect turning points (PAD distance > 0.5 between consecutive memories)
-//! 3. Classify narrative arc (McAdams typology)
+//! # Overview
 //!
-//! Used during agent shutdown (Thanatopsis) and for periodic self-reflection.
-//! The output feeds into the EmotionalDeathTestament for knowledge transfer
-//! to successor agents.
+//! [`review`] implements Robert Butler's (1963) life review process adapted for
+//! computational agents. It analyses an agent's emotional history to classify
+//! the narrative arc of its experience — providing structured self-knowledge
+//! that can be transferred to successor agents at the end of an agent's
+//! lifecycle.
+//!
+//! # Three-Stage Pipeline
+//!
+//! 1. **Memory selection** — retrieves the top-N emotional memories ranked by
+//!    arousal magnitude, filtered by a minimum arousal threshold
+//!    ([`LifeReviewConfig::min_arousal`]). High-arousal events (both positive
+//!    and negative) are the most formative and carry the most learning value.
+//!
+//! 2. **Turning point detection** — scans consecutive memories for PAD
+//!    (Pleasure-Arousal-Dominance) shifts that exceed a configurable Euclidean
+//!    distance threshold ([`LifeReviewConfig::turning_point_threshold`], default
+//!    0.5). Each qualifying shift is recorded as a [`TurningPoint`] with a
+//!    direction (improvement, decline, or mixed).
+//!
+//! 3. **Narrative arc classification** — classifies the overall trajectory into
+//!    one of five [`NarrativeArc`] types from McAdams' (2001) typology:
+//!    - `Redemptive` — started negative, ended positive
+//!    - `Contaminating` — started positive, ended negative
+//!    - `Progressive` — steady upward trajectory
+//!    - `Tragic` — steady downward trajectory
+//!    - `Stable` — no clear direction
+//!
+//! # Use Cases
+//!
+//! - **Agent shutdown (Thanatopsis)**: when an agent is terminated, its life
+//!   review output populates the `EmotionalDeathTestament`, transferring
+//!   distilled experiential knowledge to successor agents via the neuro store.
+//! - **Periodic self-reflection**: a scheduled life review can surface early
+//!   warning signs (e.g. a `Tragic` or `Contaminating` arc) for the conductor
+//!   to act on.
+//!
+//! # Relationship to DaimonState
+//!
+//! `LifeReview` operates on `ReviewMemory` slices derived from the agent's
+//! episode log and knowledge store. It is stateless: given the same memories
+//! it always produces the same review. [`DaimonState`](super::DaimonState)
+//! owns the live PAD trajectory and is the source for the memories passed here.
+//!
+//! # Example
+//!
+//! ```rust,ignore
+//! use roko_daimon::life_review::{review, LifeReviewConfig, ReviewMemory};
+//!
+//! let memories: Vec<ReviewMemory> = load_from_episodes();
+//! let config = LifeReviewConfig::default();
+//! let result = review(&memories, &config);
+//! println!("Narrative arc: {:?}", result.narrative_arc);
+//! ```
 
 use roko_core::affect::{EmotionalTag, PadVector};
 use serde::{Deserialize, Serialize};

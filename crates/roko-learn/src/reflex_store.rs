@@ -1,8 +1,54 @@
 //! T0 reflex store — condition-action pairs learned from successful T2 episodes.
 //!
-//! Before an LLM is selected, callers can check this store for an already
-//! learned deterministic action. Rules are held in insertion order for fast,
-//! predictable matching and persisted as a JSONL snapshot.
+//! # Overview
+//!
+//! [`ReflexStore`] implements the T0 fast lane in Roko's dual-process cognition
+//! model. Before an LLM is selected (T2), callers can check this store for a
+//! deterministic condition-action rule that was promoted from a past episode.
+//! If a rule matches, the action is executed directly without invoking an LLM.
+//!
+//! # Relationship to PlaybookStore and PostGateReflectionStore
+//!
+//! The three learning stores operate at different latencies and abstraction levels:
+//!
+//! | Store | Latency | Abstraction | Entry type |
+//! |-------|---------|-------------|------------|
+//! | `ReflexStore` | T0 (sub-ms) | Concrete condition-action pair | `ReflexRule` |
+//! | `PlaybookStore` | T2 (prompt injection) | When/then narrative hint | `PlaybookRule` |
+//! | `PostGateReflectionStore` | Async (post-gate) | Lesson candidate awaiting admission | `PostGateReflectionRecord` |
+//!
+//! Rules flow upward through the promotion pipeline:
+//!
+//! 1. An agent takes an action that leads to a gate pass (`PostGateReflectionStore` records the evidence).
+//! 2. After enough repetitions, `PostGateReflectionStore` marks the lesson `Admissible`.
+//! 3. A promotion step creates a `PromotionCandidate` and calls `ReflexStore::try_promote`.
+//! 4. Once the rule's gate-pass confidence exceeds `PROMOTE_MIN_CONFIDENCE` (0.90) with at
+//!    least `PROMOTE_MIN_HITS` (3) observations, it becomes a live `ReflexRule`.
+//! 5. Rules that perform poorly (gate-fail rate too high) are demoted via
+//!    `ReflexStore::record_gate_fail_for` and deleted when confidence drops below
+//!    `DEMOTE_DELETE_THRESHOLD` (0.50).
+//!
+//! `PlaybookStore` entries are narrative hints that operate through the T2 prompt path
+//! rather than the T0 reflex path. Reflexes are more deterministic and bypass LLM selection;
+//! playbooks are probabilistic and guide the LLM's reasoning.
+//!
+//! # Persistence
+//!
+//! Rules are persisted as a JSONL snapshot at `.roko/learn/reflexes.jsonl`. Writes use
+//! atomic tmp-rename to prevent corruption on crash. The store holds at most
+//! [`MAX_RULES`] (200) rules; excess rules are dropped by descending confidence.
+//!
+//! # Example
+//!
+//! ```rust,ignore
+//! use roko_learn::reflex_store::{ReflexStore, ReflexObservation};
+//!
+//! let store = ReflexStore::load(&path).unwrap();
+//! let obs = ReflexObservation { tool: Some("bash".into()), ..Default::default() };
+//! if let Some(m) = store.match_observation(&obs) {
+//!     // Execute m.action deterministically (T0 path).
+//! }
+//! ```
 
 use std::collections::HashMap;
 use std::io;

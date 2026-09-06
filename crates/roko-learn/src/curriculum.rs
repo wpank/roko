@@ -1,10 +1,55 @@
 //! Curriculum helpers for task ordering.
 //!
-//! The curriculum model is intentionally lightweight: it reorders already
-//! scheduled tasks using static difficulty heuristics plus a small adaptive
-//! per-category skill map. That keeps the implementation concrete and easy to
-//! wire into existing scheduling code later without introducing a separate
-//! planner.
+//! # Overview
+//!
+//! [`CurriculumScheduler`] reorders an existing task set so that agents encounter
+//! tasks in an order that maximises learning transfer. It does **not** create new
+//! tasks; it only sorts them.
+//!
+//! The scheduler uses a lightweight [`DifficultyModel`] that combines a static
+//! difficulty estimate (derived from `complexity_band`, file count, dependency
+//! count, and estimated minutes) with a small adaptive per-category skill map
+//! updated via exponential moving average after each observed task outcome.
+//!
+//! # Modes
+//!
+//! | Mode | Strategy |
+//! |------|----------|
+//! | `EasyFirst` | Front-load simpler tasks to build early confidence and surface blockers cheaply |
+//! | `HardFirst` | Front-load harder tasks while the agent has maximum cognitive energy |
+//! | `Interleaved` | Alternate easy and hard tasks to prevent monotony |
+//! | `Adaptive` | Order by skill-adjusted difficulty; falls back to `EasyFirst` logic |
+//!
+//! # Tool Usage Profiles
+//!
+//! [`RoleToolProfile`] and [`ToolUsageProfile`] complement the task scheduler by
+//! mining episode data for effective tool sequences. Episodes are grouped by
+//! `(role, category)`, and for each group the module computes:
+//!
+//! - Per-tool success rate and calls-per-episode
+//! - Contribution to success (delta pass-rate with vs. without each tool)
+//! - Trigram patterns with lift > 1.0 (sequences correlated with task success)
+//! - Warnings for tools that are called frequently but contribute little
+//!
+//! Profiles are formatted as natural-language hints via
+//! [`RoleToolProfile::format_hints`] and can be injected into agent system
+//! prompts (LEARN-12).
+//!
+//! # Persistence
+//!
+//! The scheduler itself is stateless between plan runs. The [`DifficultyModel`]
+//! is reconstructed each time from observed episodes and is therefore naturally
+//! consistent with the current episode log. Profiles are mined on demand from
+//! `.roko/episodes.jsonl`.
+//!
+//! # Example
+//!
+//! ```rust,ignore
+//! use roko_learn::curriculum::{CurriculumMode, CurriculumScheduler};
+//!
+//! let scheduler = CurriculumScheduler::new(CurriculumMode::Adaptive);
+//! let ordered = scheduler.schedule(&pending_tasks);
+//! ```
 
 use std::cmp::Ordering;
 use std::collections::HashMap;

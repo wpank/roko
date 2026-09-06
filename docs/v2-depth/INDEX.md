@@ -14,14 +14,16 @@
 
 ## Implementation Status (approximate)
 
+> **Last reconciled:** 2026-09-06 — updated to reflect E23-E48 closures.
+
 | Section | Depth dirs | Status |
 |---|---|---|
-| Kernel | 00-04 | ~75% implemented |
-| Cognition | 05-07 | ~30% implemented |
-| Infrastructure | 08-14 | ~40% implemented |
-| Operations | 15-19 | ~35% implemented |
-| Economy | 20-24 | ~15% implemented (ISFR deprecated) |
-| Meta | 25-28 | ~55% implemented |
+| Kernel | 00-04 | ~80% implemented |
+| Cognition | 05-07 | ~55% implemented |
+| Infrastructure | 08-14 | ~55% implemented |
+| Operations | 15-19 | ~50% implemented |
+| Economy | 20-24 | ~25% implemented (ISFR deprecated) |
+| Meta | 25-28 | ~65% implemented |
 
 ---
 

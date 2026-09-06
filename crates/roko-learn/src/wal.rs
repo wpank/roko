@@ -1,8 +1,57 @@
 //! Synchronous Write-Ahead Log for learning state durability (S16.7, S19.1).
 //!
-//! WAL lives at `.roko/learn/wal.jsonl`. Each line is a JSON-serialized
-//! [`WalEntry`]. Entries are appended with `sync_data()` for durability.
-//! After a successful snapshot save, the WAL is truncated to zero.
+//! # Overview
+//!
+//! [`WalWriter`] provides crash-safe durability for learning state that would
+//! otherwise be lost if the process exits between in-memory updates and the
+//! next periodic snapshot flush.
+//!
+//! The WAL file lives at `.roko/learn/wal.jsonl`. Each line is a
+//! JSON-serialised [`WalEntry`] appended with `sync_data()` before returning,
+//! guaranteeing that the entry reaches durable storage even on power loss.
+//!
+//! # Write-Ahead Protocol
+//!
+//! ```text
+//! in-memory update
+//!      │
+//!      ├──► WalWriter::append(entry)   // durable before returning
+//!      │
+//! ... process may crash here ...
+//!      │
+//! next startup
+//!      │
+//!      ├──► replay_wal(path)           // recover entries since last snapshot
+//!      │
+//!      └──► apply to in-memory state
+//! ```
+//!
+//! After a successful snapshot save (e.g. writing `cascade-router.json` or
+//! `gate-thresholds.json`), callers must call [`WalWriter::truncate`] to reset
+//! the WAL to zero. This is the "checkpoint" step: the durable snapshot now
+//! covers all state that was in the WAL, so the WAL is safe to clear.
+//!
+//! # Entry Types
+//!
+//! | Variant | What it records |
+//! |---------|----------------|
+//! | `CascadeObservation` | One cascade router LinUCB arm update (model slug, context features, reward) |
+//! | `ExperimentOutcome` | One A/B prompt experiment trial (variant ID, success flag) |
+//! | `GateThresholdUpdate` | One gate rung EMA update (rung index, passed flag) |
+//!
+//! Each variant carries exactly the fields needed to replay the in-memory update,
+//! not a full snapshot. This keeps entries small (~100-400 bytes each).
+//!
+//! # Crash Safety
+//!
+//! - `WalWriter` opens the file in append mode and calls `sync_data()` after
+//!   each entry. **Do not wrap in `BufWriter`** — buffering defeats the
+//!   crash-safety guarantee.
+//! - [`replay_wal`] skips malformed lines (e.g. a truncated tail write from a
+//!   crash during `write_all`) rather than returning an error, so a partial
+//!   entry never blocks recovery.
+//! - If the WAL file is absent, `replay_wal` returns an empty `Vec` and
+//!   `WalWriter::open` creates it fresh.
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};

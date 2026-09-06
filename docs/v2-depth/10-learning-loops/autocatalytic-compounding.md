@@ -115,6 +115,8 @@ impl DemurrageRetrievalLoop {
 
 **Compounding mechanism**: More usage produces more reinforcement evidence. Better evidence improves the demurrage curve. A sharper demurrage curve makes retrieval more selective. More selective retrieval improves the quality of the next episode. The KPI is median tokens per task (should decrease monotonically for a given difficulty bucket).
 
+> **Implementation note (2026-09-06):** The `DemurrageRetrievalLoop` struct and `tick()` method above represent the **target architecture** — a future Graph topology where demurrage is a first-class Cell. The **current implementation** distributes the same mechanics across `roko-neuro/src/knowledge_store.rs` (`KnowledgeStore::apply_demurrage_sweep`) and `roko-core/src/config/knowledge.rs` (`DemurrageConfig`). The flat tax, retrieval bonus, cited bonus, and freeze threshold are all present in the live code; the difference is that they run as imperative Rust inside `KnowledgeStore` rather than as a declarative Graph Loop. The KPI and feedback semantics are unchanged.
+
 ### 2.2 Loop 2: Heuristic Calibration
 
 Heuristics only compound if they can be falsified. A heuristic that never sees a counterexample does not get better; it just gets older. The predict-publish-correct pattern ([10-LEARNING-LOOPS.md](../../unified/10-LEARNING-LOOPS.md) SS2) makes falsification structural.

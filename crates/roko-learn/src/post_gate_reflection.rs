@@ -1,8 +1,57 @@
 //! Structured post-gate reflections and playbook candidate extraction.
 //!
-//! Reflections are durable audit records derived from gate outcomes. They can
-//! accumulate repeated evidence into playbook candidates, but they do not
-//! mutate active prompt or playbook policy by themselves.
+//! # Overview
+//!
+//! [`PostGateReflectionStore`] captures structured audit records each time a
+//! gate verdict is observed. Over time, repeated evidence for the same lesson
+//! raises its confidence until the record is marked `Admissible`, at which
+//! point a human or automated admission step can promote it into `PlaybookStore`
+//! or `ReflexStore`.
+//!
+//! # Relationship to ReflexStore and PlaybookStore
+//!
+//! See [`reflex_store`](super::reflex_store) for the full three-store promotion
+//! pipeline. In brief:
+//!
+//! - `PostGateReflectionStore` is the **intake layer**: it records every gate
+//!   outcome with a bounded lesson string, clusters repeated observations by
+//!   content hash, and tracks evidence counts.
+//! - Once `evidence_count` exceeds the admission threshold the record moves to
+//!   [`ReflectionAdmissionStatus::Admissible`], signalling that promotion is safe.
+//! - The store never directly modifies prompt policy or playbook rules; it only
+//!   produces candidates for the layer above it.
+//!
+//! # Admission Pipeline
+//!
+//! ```text
+//! gate verdict
+//!      │
+//!      ▼
+//! PostGateReflectionStore::record()
+//!      │  clusters by hash of (gate × outcome × lesson)
+//!      ▼
+//! ReflectionAdmissionStatus::Candidate
+//!      │  after N identical observations
+//!      ▼
+//! ReflectionAdmissionStatus::Admissible
+//!      │  promotion step (external)
+//!      ├──► PlaybookStore (narrative T2 hint)
+//!      └──► ReflexStore::try_promote() (deterministic T0 rule)
+//! ```
+//!
+//! # Persistence
+//!
+//! Records are stored at `.roko/learn/post-gate-reflections.jsonl`. The store
+//! is capped at [`MAX_RECORDS`] (1 000) records and [`MAX_CANDIDATES`] (256)
+//! admissible candidates. Candidates are compacted periodically to discard
+//! low-evidence duplicates.
+//!
+//! # Bounded Lessons
+//!
+//! Lesson strings are truncated to [`MAX_LESSON_CHARS`] (600) characters and
+//! evidence items to [`MAX_EVIDENCE_ITEMS`] (10) items of [`MAX_EVIDENCE_CHARS`]
+//! (160) characters each, keeping the store size predictable even under high
+//! gate failure rates.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};

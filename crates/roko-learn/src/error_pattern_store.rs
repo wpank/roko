@@ -1,13 +1,55 @@
 //! Persistent storage for error patterns discovered during plan execution.
 //!
-//! Agents accumulate compiler and test errors across tasks. This module
-//! normalizes each error into a stable digest, upserts it into an
-//! append-friendly store, and exposes the most frequent patterns so that
-//! agent prompts can include "known pitfalls" context — enabling agents to
-//! learn from each other's failures.
+//! # Overview
 //!
-//! The store is a single JSON file. Writes use atomic tmp-rename to avoid
-//! corruption on crash.
+//! [`ErrorPatternStore`] accumulates compiler and test errors across tasks and
+//! plan runs, normalises each error into a stable `key` digest, and exposes
+//! the most frequent patterns so that agent prompts can include "known pitfalls"
+//! context. This enables agents to learn from each other's failures across
+//! different tasks and even different plan runs.
+//!
+//! # Entry Lifecycle
+//!
+//! 1. A gate produces a [`GateFailureObservation`] (from a compiler error,
+//!    review verdict, or retry classifier).
+//! 2. `ErrorPatternStore::upsert_observation` normalises the observation to a
+//!    stable `key` (e.g. `E0425::src/lib.rs`) and merges it into an existing
+//!    [`ErrorPattern`] or inserts a new one.
+//! 3. `occurrences`, `plan_ids`, and `task_ids` are updated atomically.
+//! 4. `ErrorPatternStore::top_patterns` returns the most frequent unresolved
+//!    patterns for prompt injection.
+//! 5. After a fix is confirmed, `ErrorPatternStore::mark_resolved` annotates the
+//!    pattern with a resolution string and removes it from future prompt context.
+//!
+//! # Pattern Categorisation
+//!
+//! Patterns are classified into coarse categories such as `"unresolved_import"`,
+//! `"type_mismatch"`, `"lifetime"`, and `"test_failure"`. Categories are
+//! determined by the gate or parser that produced the observation and stored in
+//! [`ErrorPattern::category`].
+//!
+//! # Similarity Matching
+//!
+//! [`ErrorPatternStore::similar_patterns`] finds patterns whose digest is close
+//! to a query string. This allows the store to surface patterns that are not
+//! exact matches but describe the same class of error — useful for prompting
+//! before a new compile gate runs.
+//!
+//! # Relationship to PostGateReflectionStore
+//!
+//! `ErrorPatternStore` tracks **what** went wrong (concrete error signatures).
+//! `PostGateReflectionStore` captures **what to do about it** (lessons and
+//! playbook candidates). They are complementary:
+//!
+//! - `ErrorPatternStore` patterns are injected as factual "known errors" context.
+//! - `PostGateReflectionStore` lessons are injected as actionable "lessons learned" context.
+//!
+//! # Persistence
+//!
+//! The store is a single JSON file at `.roko/learn/error-patterns.json`. Writes
+//! use atomic tmp-rename (`error-patterns.json.tmp` → rename) to avoid corruption
+//! on crash. There is no upper bound on pattern count, but `mark_resolved` and
+//! periodic GC remove stale entries.
 
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;

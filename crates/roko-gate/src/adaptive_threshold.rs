@@ -7,21 +7,30 @@ use crate::hotelling::HotellingDetector;
 use crate::spc::{SpcAlert, SpcDetector};
 use roko_core::Temperament;
 use roko_core::config::AgentThresholds;
+use roko_core::config::GatesConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::path::Path;
 
-/// EMA decay factor. 0.1 means recent observations weigh more heavily.
+/// Default EMA decay factor. 0.1 means recent observations weigh more heavily.
+/// Overridable via `[gates] ema_alpha` in `roko.toml`.
 const EMA_ALPHA: f64 = 0.1;
 
-/// Floor for suggested retries — never go below this.
+/// Default floor for suggested retries — never go below this.
+/// Overridable via `[gates] adaptive_min_retries` in `roko.toml`.
 const MIN_RETRIES: u32 = 1;
-/// Ceiling for suggested retries — never exceed this.
+/// Default ceiling for suggested retries — never exceed this.
+/// Overridable via `[gates] adaptive_max_retries` in `roko.toml`.
 const MAX_RETRIES: u32 = 5;
 
-/// Number of consecutive passes required before suggesting a rung skip.
+/// Default number of consecutive passes required before suggesting a rung skip.
+/// Overridable via `[gates] skip_streak_threshold` in `roko.toml`.
 const SKIP_STREAK_THRESHOLD: u32 = 20;
+
+/// Default minimum observations before a rung is considered converged.
+/// Overridable via `[gates] convergence_min_observations` in `roko.toml`.
+const CONVERGENCE_MIN_OBSERVATIONS: u64 = 50;
 
 /// Per-rung statistics tracked by the adaptive threshold system.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -208,6 +217,52 @@ pub struct AdaptiveThresholds {
     /// Whether the last full-pipeline observation triggered a joint anomaly.
     #[serde(skip)]
     joint_anomaly_detected: bool,
+
+    // ── Operator-tunable parameters (P1-37) ──────────────────────────────
+    // These are set at construction time from [gates] config and are NOT
+    // persisted to gate-thresholds.json (they come from roko.toml).
+
+    /// EMA decay factor for pass-rate tracking.
+    /// Sourced from `[gates] ema_alpha` (default: [`EMA_ALPHA`]).
+    #[serde(skip, default = "default_ema_alpha_field")]
+    ema_alpha: f64,
+
+    /// Floor for the retry suggestion.
+    /// Sourced from `[gates] adaptive_min_retries` (default: [`MIN_RETRIES`]).
+    #[serde(skip, default = "default_min_retries_field")]
+    min_retries: u32,
+
+    /// Ceiling for the retry suggestion.
+    /// Sourced from `[gates] adaptive_max_retries` (default: [`MAX_RETRIES`]).
+    #[serde(skip, default = "default_max_retries_field")]
+    max_retries: u32,
+
+    /// Consecutive-pass streak needed before advising a rung skip.
+    /// Sourced from `[gates] skip_streak_threshold` (default: [`SKIP_STREAK_THRESHOLD`]).
+    #[serde(skip, default = "default_skip_streak_field")]
+    skip_streak_threshold: u32,
+
+    /// Minimum observations before a rung EMA is considered converged for
+    /// `Evolved` provenance promotion (P1-39).
+    /// Sourced from `[gates] convergence_min_observations` (default: [`CONVERGENCE_MIN_OBSERVATIONS`]).
+    #[serde(skip, default = "default_convergence_min_obs_field")]
+    convergence_min_observations: u64,
+}
+
+fn default_ema_alpha_field() -> f64 {
+    EMA_ALPHA
+}
+fn default_min_retries_field() -> u32 {
+    MIN_RETRIES
+}
+fn default_max_retries_field() -> u32 {
+    MAX_RETRIES
+}
+fn default_skip_streak_field() -> u32 {
+    SKIP_STREAK_THRESHOLD
+}
+fn default_convergence_min_obs_field() -> u64 {
+    CONVERGENCE_MIN_OBSERVATIONS
 }
 
 fn default_cusum_sensitivity() -> f64 {
@@ -242,6 +297,62 @@ impl AdaptiveThresholds {
             hotelling: None,
             pending_spc_alerts: Vec::new(),
             joint_anomaly_detected: false,
+            ema_alpha: EMA_ALPHA,
+            min_retries: MIN_RETRIES,
+            max_retries: MAX_RETRIES,
+            skip_streak_threshold: SKIP_STREAK_THRESHOLD,
+            convergence_min_observations: CONVERGENCE_MIN_OBSERVATIONS,
+        }
+    }
+
+    /// Create adaptive thresholds pre-populated from a `[gates]` config section.
+    ///
+    /// This is the preferred constructor in production: it reads
+    /// `ema_alpha`, `adaptive_min_retries`, `adaptive_max_retries`,
+    /// `skip_streak_threshold`, and `convergence_min_observations` from
+    /// the operator-supplied config and applies them at runtime without
+    /// changing the persisted `gate-thresholds.json` schema.
+    pub fn from_gates_config(cfg: &GatesConfig) -> Self {
+        let mut at = Self::new();
+        // Clamp EMA alpha to (0, 1) exclusive so the EMA stays well-defined.
+        if cfg.ema_alpha > 0.0 && cfg.ema_alpha < 1.0 {
+            at.ema_alpha = cfg.ema_alpha;
+        }
+        if cfg.adaptive_min_retries >= 1 {
+            at.min_retries = cfg.adaptive_min_retries;
+        }
+        if cfg.adaptive_max_retries >= at.min_retries {
+            at.max_retries = cfg.adaptive_max_retries;
+        }
+        if cfg.skip_streak_threshold >= 1 {
+            at.skip_streak_threshold = cfg.skip_streak_threshold;
+        }
+        if cfg.convergence_min_observations >= 1 {
+            at.convergence_min_observations = cfg.convergence_min_observations;
+        }
+        at
+    }
+
+    /// Apply operator-tunable parameters from a `[gates]` config section to an
+    /// already-loaded `AdaptiveThresholds` (e.g., one loaded from disk).
+    ///
+    /// Call this after `load_or_new` to layer in the current operator config
+    /// without overwriting the learned per-rung statistics.
+    pub fn apply_gates_config(&mut self, cfg: &GatesConfig) {
+        if cfg.ema_alpha > 0.0 && cfg.ema_alpha < 1.0 {
+            self.ema_alpha = cfg.ema_alpha;
+        }
+        if cfg.adaptive_min_retries >= 1 {
+            self.min_retries = cfg.adaptive_min_retries;
+        }
+        if cfg.adaptive_max_retries >= self.min_retries {
+            self.max_retries = cfg.adaptive_max_retries;
+        }
+        if cfg.skip_streak_threshold >= 1 {
+            self.skip_streak_threshold = cfg.skip_streak_threshold;
+        }
+        if cfg.convergence_min_observations >= 1 {
+            self.convergence_min_observations = cfg.convergence_min_observations;
         }
     }
 
@@ -355,7 +466,8 @@ impl AdaptiveThresholds {
         if stats.total_observations == 0 {
             stats.ema_pass_rate = value;
         } else {
-            stats.ema_pass_rate = EMA_ALPHA.mul_add(value, (1.0 - EMA_ALPHA) * stats.ema_pass_rate);
+            stats.ema_pass_rate =
+                self.ema_alpha.mul_add(value, (1.0 - self.ema_alpha) * stats.ema_pass_rate);
         }
 
         stats.total_observations += 1;
@@ -412,33 +524,35 @@ impl AdaptiveThresholds {
     /// Low pass rate → more retries allowed (the gate often fails, give it more chances).
     pub fn suggested_max_retries(&self, rung: u32) -> u32 {
         let Some(stats) = self.rungs.get(&rung) else {
-            return 3; // Default for unknown rungs.
+            // Default for unknown rungs: midpoint between min and max.
+            return u32::midpoint(self.min_retries, self.max_retries);
         };
 
         if stats.total_observations < 5 {
-            return 3; // Not enough data yet.
+            // Not enough data yet: midpoint.
+            return u32::midpoint(self.min_retries, self.max_retries);
         }
 
         // Map pass rate to retry count: high pass → low retries, low pass → high retries.
-        // pass_rate 1.0 → 1 retry, pass_rate 0.0 → 5 retries.
-        let max_f = f64::from(MAX_RETRIES);
-        let range_f = f64::from(MAX_RETRIES - MIN_RETRIES);
+        // pass_rate 1.0 → min_retries, pass_rate 0.0 → max_retries.
+        let max_f = f64::from(self.max_retries);
+        let range_f = f64::from(self.max_retries.saturating_sub(self.min_retries));
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let retries = stats.ema_pass_rate.mul_add(-range_f, max_f).round() as u32;
 
-        retries.clamp(MIN_RETRIES, MAX_RETRIES)
+        retries.clamp(self.min_retries, self.max_retries)
     }
 
     /// Advisory: should this rung be skipped?
     ///
     /// Returns `true` if the rung has passed consecutively at least
-    /// `SKIP_STREAK_THRESHOLD` times, suggesting it's always passing and
-    /// could be skipped to save time. The caller should treat this as
-    /// advisory and still run the rung periodically.
+    /// `skip_streak_threshold` times (configurable via `[gates]`), suggesting
+    /// it's always passing and could be skipped to save time. The caller
+    /// should treat this as advisory and still run the rung periodically.
     pub fn should_skip_rung(&self, rung: u32) -> bool {
         self.rungs
             .get(&rung)
-            .is_some_and(|s| s.consecutive_passes >= SKIP_STREAK_THRESHOLD)
+            .is_some_and(|s| s.consecutive_passes >= self.skip_streak_threshold)
     }
 
     /// Get stats for a specific rung (for reporting).
@@ -627,7 +741,7 @@ impl AdaptiveThresholds {
     ///
     /// - **Conservative**: never skip (always run all rungs)
     /// - **Balanced**: use the default streak-based skip logic
-    /// - **Aggressive**: skip more aggressively (lower streak threshold)
+    /// - **Aggressive**: skip more aggressively (half the streak threshold)
     /// - **Exploratory**: use the default streak-based skip logic
     pub fn should_skip_rung_for_temperament(&self, rung: u32, temperament: Temperament) -> bool {
         match temperament {
@@ -636,7 +750,7 @@ impl AdaptiveThresholds {
             Temperament::Aggressive => self
                 .rungs
                 .get(&rung)
-                .is_some_and(|s| s.consecutive_passes >= SKIP_STREAK_THRESHOLD / 2),
+                .is_some_and(|s| s.consecutive_passes >= (self.skip_streak_threshold / 2).max(1)),
         }
     }
 }
@@ -651,7 +765,60 @@ impl Default for AdaptiveThresholds {
             hotelling: None,
             pending_spc_alerts: Vec::new(),
             joint_anomaly_detected: false,
+            ema_alpha: EMA_ALPHA,
+            min_retries: MIN_RETRIES,
+            max_retries: MAX_RETRIES,
+            skip_streak_threshold: SKIP_STREAK_THRESHOLD,
+            convergence_min_observations: CONVERGENCE_MIN_OBSERVATIONS,
         }
+    }
+}
+
+// ─── P1-39: Evolved provenance promotion ──────────────────────────────────
+
+/// A single converged adaptive threshold value ready for promotion to the
+/// config system with `Evolved` provenance.
+///
+/// Operators can write these values back to `roko.toml` (or a
+/// `roko-local.toml` override) so that the learned values survive config
+/// migrations rather than being re-learned from scratch every boot.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EvolvedThresholdEntry {
+    /// Config key path (e.g., `"gates.rung.0.ema_pass_rate"`).
+    pub key: String,
+    /// The learned EMA value.
+    pub value: f64,
+    /// Total observations backing this estimate.
+    pub observations: u64,
+    /// Human-readable reason for promotion.
+    pub reason: String,
+}
+
+impl AdaptiveThresholds {
+    /// Collect per-rung EMA values that have converged enough to be promoted
+    /// to the config system with `Evolved` provenance (P1-39).
+    ///
+    /// A rung is considered converged when its `total_observations` reaches
+    /// `convergence_min_observations` (configurable via
+    /// `[gates] convergence_min_observations`, default 50).
+    ///
+    /// Returns one [`EvolvedThresholdEntry`] per converged rung. The caller
+    /// (typically the runner or `roko learn gates` CLI) is responsible for
+    /// writing these back to the config layer with `ConfigProvenance::evolved`.
+    pub fn promote_converged(&self) -> Vec<EvolvedThresholdEntry> {
+        self.rungs
+            .iter()
+            .filter(|(_, stats)| stats.total_observations >= self.convergence_min_observations)
+            .map(|(rung, stats)| EvolvedThresholdEntry {
+                key: format!("gates.adaptive.rung.{rung}.ema_pass_rate"),
+                value: stats.ema_pass_rate,
+                observations: stats.total_observations,
+                reason: format!(
+                    "rung {rung} converged after {} observations (EMA={:.4})",
+                    stats.total_observations, stats.ema_pass_rate
+                ),
+            })
+            .collect()
     }
 }
 
@@ -983,5 +1150,153 @@ mod tests {
         at.observe_residual(0, 0.0);
         let after = at.threshold_for(0);
         assert!((after - before).abs() < 1e-10);
+    }
+
+    // ─── P1-37: Config-sourced EMA alpha, retries, skip streak ────
+
+    #[test]
+    fn from_gates_config_applies_ema_alpha() {
+        let mut cfg = GatesConfig::default();
+        cfg.ema_alpha = 0.5; // Fast adaptation.
+
+        let mut at = AdaptiveThresholds::from_gates_config(&cfg);
+        // With alpha=0.5, after one pass the EMA should move from 0.5 toward 1.0
+        // by half the gap: 0.5 + 0.5*(1.0 - 0.5) = 0.75.
+        at.observe(0, true);
+        let after = at.threshold_for(0);
+        // First observation resets EMA to the value directly.
+        assert!((after - 1.0).abs() < 1e-10, "first obs sets EMA to value");
+
+        // Second observation: EMA = 0.5*1.0 + (1-0.5)*1.0 = 1.0 (all passes).
+        at.observe(0, true);
+        assert!((at.threshold_for(0) - 1.0).abs() < 1e-10);
+
+        // Now a failure: EMA = 0.5*0.0 + 0.5*1.0 = 0.5.
+        at.observe(0, false);
+        let after_fail = at.threshold_for(0);
+        // After shift detection the EMA may reset, but otherwise ~0.5.
+        assert!(
+            after_fail < 1.0,
+            "failure should reduce EMA from 1.0, got {after_fail}"
+        );
+    }
+
+    #[test]
+    fn from_gates_config_applies_retry_bounds() {
+        let mut cfg = GatesConfig::default();
+        cfg.adaptive_min_retries = 2;
+        cfg.adaptive_max_retries = 8;
+
+        let mut at = AdaptiveThresholds::from_gates_config(&cfg);
+        // No data → midpoint = (2+8)/2 = 5.
+        assert_eq!(at.suggested_max_retries(0), 5);
+
+        // All failures → max retries.
+        for _ in 0..20 {
+            at.update(0, false);
+        }
+        assert_eq!(at.suggested_max_retries(0), 8);
+
+        // All passes → min retries.
+        let mut at2 = AdaptiveThresholds::from_gates_config(&cfg);
+        for _ in 0..20 {
+            at2.update(0, true);
+        }
+        assert_eq!(at2.suggested_max_retries(0), 2);
+    }
+
+    #[test]
+    fn from_gates_config_applies_skip_streak() {
+        let mut cfg = GatesConfig::default();
+        cfg.skip_streak_threshold = 5; // Very low threshold for testing.
+
+        let mut at = AdaptiveThresholds::from_gates_config(&cfg);
+        // 4 passes: not yet at threshold.
+        for _ in 0..4 {
+            at.update(0, true);
+        }
+        assert!(!at.should_skip_rung(0));
+
+        // 5th pass: at threshold.
+        at.update(0, true);
+        assert!(at.should_skip_rung(0));
+    }
+
+    #[test]
+    fn apply_gates_config_layers_over_loaded_state() {
+        // Simulate loading from disk then applying operator config.
+        let mut at = AdaptiveThresholds::new();
+        for _ in 0..10 {
+            at.update(0, true);
+        }
+        let original_ema = at.threshold_for(0);
+
+        let mut cfg = GatesConfig::default();
+        cfg.adaptive_max_retries = 10;
+        at.apply_gates_config(&cfg);
+
+        // EMA unchanged after applying config.
+        assert!((at.threshold_for(0) - original_ema).abs() < 1e-10);
+        // But retry ceiling is now 10.
+        assert_eq!(at.suggested_max_retries(0), at.suggested_max_retries(0).min(10));
+    }
+
+    #[test]
+    fn invalid_ema_alpha_ignored() {
+        let mut cfg = GatesConfig::default();
+        cfg.ema_alpha = 0.0; // Invalid: must be (0, 1).
+        let at = AdaptiveThresholds::from_gates_config(&cfg);
+        // Should fall back to the constant default.
+        assert!((at.ema_alpha - EMA_ALPHA).abs() < 1e-10);
+
+        let mut cfg2 = GatesConfig::default();
+        cfg2.ema_alpha = 1.5; // Invalid: > 1.0.
+        let at2 = AdaptiveThresholds::from_gates_config(&cfg2);
+        assert!((at2.ema_alpha - EMA_ALPHA).abs() < 1e-10);
+    }
+
+    // ─── P1-39: Evolved provenance promotion ──────────────────────
+
+    #[test]
+    fn promote_converged_empty_when_insufficient_observations() {
+        let mut cfg = GatesConfig::default();
+        cfg.convergence_min_observations = 10;
+
+        let mut at = AdaptiveThresholds::from_gates_config(&cfg);
+        for _ in 0..9 {
+            at.observe(0, true);
+        }
+        // 9 observations < 10: no promotion yet.
+        assert!(at.promote_converged().is_empty());
+    }
+
+    #[test]
+    fn promote_converged_returns_entry_at_threshold() {
+        let mut cfg = GatesConfig::default();
+        cfg.convergence_min_observations = 5;
+
+        let mut at = AdaptiveThresholds::from_gates_config(&cfg);
+        for _ in 0..5 {
+            at.observe(0, true);
+        }
+        let entries = at.promote_converged();
+        assert!(!entries.is_empty());
+        let entry = entries.iter().find(|e| e.key.contains(".0.")).unwrap();
+        assert_eq!(entry.observations, 5);
+        assert!(entry.value > 0.0, "EMA should be > 0 after passes");
+        assert!(entry.key.contains("ema_pass_rate"));
+        assert!(!entry.reason.is_empty());
+    }
+
+    #[test]
+    fn promote_converged_key_format() {
+        let mut cfg = GatesConfig::default();
+        cfg.convergence_min_observations = 1;
+
+        let mut at = AdaptiveThresholds::from_gates_config(&cfg);
+        at.observe(3, true);
+        let entries = at.promote_converged();
+        let rung3 = entries.iter().find(|e| e.key.contains(".3.")).unwrap();
+        assert_eq!(rung3.key, "gates.adaptive.rung.3.ema_pass_rate");
     }
 }

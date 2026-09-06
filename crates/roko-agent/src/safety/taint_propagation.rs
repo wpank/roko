@@ -1,16 +1,26 @@
 //! Monotonic trust-origin taint propagation across signal lineage.
 
+use std::collections::HashMap;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, BufWriter, Read, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use parking_lot::Mutex;
 use roko_core::{ContentHash, Signal, Taint};
-use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
 
 pub use roko_core::provenance::TrustOriginTaintLevel;
 
 /// Compatibility name used by the E34 trust-origin IFC contract.
 pub type TaintLevel = TrustOriginTaintLevel;
 
+/// Strict maximum serialized size accepted for a taint-tracker snapshot.
+const MAX_TAINT_TRACKER_BYTES: u64 = 4 * 1024 * 1024;
+
 /// Why a hash is tracked as tainted, independent of its lattice level.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TaintReason {
     ExternalSource { detail: String },
     UserInput { detail: String },
@@ -65,7 +75,7 @@ impl TaintReason {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct TaintEntry {
     level: TaintLevel,
     reason: TaintReason,
@@ -73,17 +83,40 @@ struct TaintEntry {
 }
 
 /// Durable-in-memory evidence emitted for each successful propagation.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PropagationAudit {
     pub hash: ContentHash,
     pub parents: Vec<ContentHash>,
     pub resulting_level: TaintLevel,
 }
 
+/// Serializable snapshot of [`TaintTracker`] state for durable persistence.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct TaintTrackerSnapshot {
+    taints: HashMap<ContentHash, TaintEntry>,
+    audit: Vec<PropagationAudit>,
+}
+
 #[derive(Debug, Default)]
 struct TrackerState {
     taints: HashMap<ContentHash, TaintEntry>,
     audit: Vec<PropagationAudit>,
+}
+
+impl TrackerState {
+    fn to_snapshot(&self) -> TaintTrackerSnapshot {
+        TaintTrackerSnapshot {
+            taints: self.taints.clone(),
+            audit: self.audit.clone(),
+        }
+    }
+
+    fn from_snapshot(snap: TaintTrackerSnapshot) -> Self {
+        Self {
+            taints: snap.taints,
+            audit: snap.audit,
+        }
+    }
 }
 
 /// Thread-safe tracker for taint across a derived-signal DAG.
@@ -240,6 +273,90 @@ impl TaintTracker {
     pub fn is_empty(&self) -> bool {
         self.state.lock().taints.is_empty()
     }
+
+    /// Atomically persist the tracker's current state to disk.
+    ///
+    /// The snapshot captures all taint entries and the propagation audit log.
+    /// A temporary file is written and renamed atomically so a partial write
+    /// never overwrites the last good snapshot.
+    pub fn save(&self, path: impl AsRef<Path>) -> io::Result<()> {
+        let snapshot = self.state.lock().to_snapshot();
+        let path = path.as_ref();
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+        fs::create_dir_all(&parent)?;
+        let file_name = path.file_name().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "taint-tracker path has no file name",
+            )
+        })?;
+        static SAVE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        let sequence = SAVE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let temporary = parent.join(format!(
+            ".{}.{}.{}.tmp",
+            file_name.to_string_lossy(),
+            std::process::id(),
+            sequence,
+        ));
+        let result = (|| {
+            let file = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&temporary)?;
+            let mut writer = BufWriter::new(file);
+            serde_json::to_writer_pretty(&mut writer, &snapshot)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            writer.write_all(b"\n")?;
+            writer.flush()?;
+            writer.get_ref().sync_all()?;
+            drop(writer);
+            fs::rename(&temporary, path)?;
+            #[cfg(unix)]
+            File::open(&parent)?.sync_all()?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result
+    }
+
+    /// Restore a previously persisted tracker snapshot from disk.
+    ///
+    /// Returns a new [`TaintTracker`] with the saved taint entries and audit
+    /// log. If the file does not exist the returned tracker starts empty
+    /// (equivalent to [`TaintTracker::new`]). Other IO and parse errors are
+    /// returned as errors.
+    pub fn load(path: impl AsRef<Path>) -> io::Result<Self> {
+        let path = path.as_ref();
+        if !path.exists() {
+            return Ok(Self::new());
+        }
+        let file = File::open(path)?;
+        if file.metadata()?.len() > MAX_TAINT_TRACKER_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "taint-tracker snapshot exceeds its byte limit",
+            ));
+        }
+        let mut bytes = Vec::new();
+        file.take(MAX_TAINT_TRACKER_BYTES.saturating_add(1))
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_TAINT_TRACKER_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "taint-tracker snapshot exceeds its byte limit",
+            ));
+        }
+        let snapshot: TaintTrackerSnapshot = serde_json::from_slice(&bytes)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        Ok(Self {
+            state: Mutex::new(TrackerState::from_snapshot(snapshot)),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -305,5 +422,38 @@ mod tests {
             .build();
         assert!(tracker.observe_signal(&signal));
         assert_eq!(tracker.get_level(&signal.id), Some(TaintLevel::External));
+    }
+
+    #[test]
+    fn tracker_save_and_load_roundtrips_state() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("taint-tracker.json");
+
+        let tracker = TaintTracker::new();
+        let a = hash(b"source-a");
+        let b = hash(b"source-b");
+        let child = hash(b"child");
+        tracker.mark_tainted(a, TaintReason::external("webhook"), TaintLevel::External);
+        tracker.mark_tainted(b, TaintReason::user_input("cli"), TaintLevel::Local);
+        // join(External, Local) = External (External > Local in the lattice)
+        assert!(tracker.propagate(&[a, b], child));
+
+        tracker.save(&path).expect("save tracker");
+
+        let restored = TaintTracker::load(&path).expect("load tracker");
+        assert_eq!(restored.get_level(&a), Some(TaintLevel::External));
+        assert_eq!(restored.get_level(&b), Some(TaintLevel::Local));
+        assert_eq!(restored.get_level(&child), Some(TaintLevel::External));
+        assert_eq!(restored.derived_from(&child), vec![a, b]);
+        assert_eq!(restored.audit_log().len(), 1);
+    }
+
+    #[test]
+    fn tracker_load_returns_empty_when_file_missing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("nonexistent.json");
+        let tracker = TaintTracker::load(&path).expect("load from missing file returns empty");
+        assert!(tracker.is_empty());
+        assert!(tracker.audit_log().is_empty());
     }
 }

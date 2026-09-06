@@ -35,23 +35,33 @@ pub const TOKENS_TOTAL_TAG: &str = "tokens_total";
 /// Tag key on token-usage signals for the model slug.
 pub const MODEL_TAG: &str = "model";
 
-const SMALL_CONTEXT_WINDOW_TOKENS: u64 = 200_000;
-const OPUS_CONTEXT_WINDOW_TOKENS: u64 = 1_000_000;
+/// Default fallback context window size for most models (haiku, sonnet, etc.).
+/// Overridable via `[conductor] context_window_small_tokens` in `roko.toml`.
+pub const SMALL_CONTEXT_WINDOW_TOKENS: u64 = 200_000;
+/// Default context window size for Opus-family models.
+/// Overridable via `[conductor] context_window_opus_tokens` in `roko.toml`.
+pub const OPUS_CONTEXT_WINDOW_TOKENS: u64 = 1_000_000;
 
-/// Recent `TokenUsage` signal lookback window size.
+/// Default recent `TokenUsage` signal lookback window size.
 ///
-/// Uses the maximum utilization over this window to prevent noisy
-/// alternating high/low utilization from triggering repeatedly.
+/// The watcher takes the maximum utilization ratio over this many recent
+/// signals, preventing noisy alternating high/low readings from triggering
+/// repeatedly.
+/// Overridable via `[conductor] context_pressure_lookback` in `roko.toml`.
 pub const PRESSURE_LOOKBACK: usize = 3;
 
 /// Fires when context window usage exceeds [`MAX_CONTEXT_USAGE_RATIO`].
 ///
-/// Examines the last [`PRESSURE_LOOKBACK`] `TokenUsage` signals and takes
+/// Examines the last `pressure_lookback` `TokenUsage` signals and takes
 /// the maximum utilization ratio. If it exceeds the threshold, fires a warning.
 ///
 /// Optionally carries a precomputed map of model slug to context window size
 /// (populated from `ModelProfile.context_window` at construction time) so that
 /// non-Anthropic models can also be monitored.
+///
+/// The fallback window sizes for Anthropic models are configurable via
+/// `[conductor] context_window_small_tokens` and `context_window_opus_tokens`.
+/// The lookback window is configurable via `[conductor] context_pressure_lookback`.
 #[derive(Debug, Clone)]
 pub struct ContextWindowPressureWatcher {
     /// Maximum ratio before firing.
@@ -59,6 +69,15 @@ pub struct ContextWindowPressureWatcher {
     /// Precomputed map: model slug (lowercased) -> context window tokens.
     /// Built from `RokoConfig.models` at conductor construction time.
     configured_windows: HashMap<String, u64>,
+    /// Fallback window size for non-Opus Anthropic models.
+    /// Sourced from `[conductor] context_window_small_tokens` (default: [`SMALL_CONTEXT_WINDOW_TOKENS`]).
+    small_context_window_tokens: u64,
+    /// Fallback window size for Opus-family models.
+    /// Sourced from `[conductor] context_window_opus_tokens` (default: [`OPUS_CONTEXT_WINDOW_TOKENS`]).
+    opus_context_window_tokens: u64,
+    /// Number of recent `TokenUsage` signals to inspect.
+    /// Sourced from `[conductor] context_pressure_lookback` (default: [`PRESSURE_LOOKBACK`]).
+    pressure_lookback: usize,
 }
 
 impl Default for ContextWindowPressureWatcher {
@@ -66,17 +85,20 @@ impl Default for ContextWindowPressureWatcher {
         Self {
             max_ratio: MAX_CONTEXT_USAGE_RATIO,
             configured_windows: HashMap::new(),
+            small_context_window_tokens: SMALL_CONTEXT_WINDOW_TOKENS,
+            opus_context_window_tokens: OPUS_CONTEXT_WINDOW_TOKENS,
+            pressure_lookback: PRESSURE_LOOKBACK,
         }
     }
 }
 
 impl ContextWindowPressureWatcher {
-    /// Create with a custom threshold.
+    /// Create with a custom pressure threshold.
     #[must_use]
     pub fn new(max_ratio: f64) -> Self {
         Self {
             max_ratio,
-            configured_windows: HashMap::new(),
+            ..Self::default()
         }
     }
 
@@ -90,6 +112,41 @@ impl ContextWindowPressureWatcher {
         Self {
             max_ratio,
             configured_windows: windows,
+            ..Self::default()
+        }
+    }
+
+    /// Create with full operator-configurable parameters.
+    ///
+    /// All three fallback constants (`small_context_window_tokens`,
+    /// `opus_context_window_tokens`, `pressure_lookback`) come from the
+    /// `[conductor]` config section (P1-38).
+    #[must_use]
+    pub fn with_config(
+        max_ratio: f64,
+        windows: HashMap<String, u64>,
+        small_context_window_tokens: u64,
+        opus_context_window_tokens: u64,
+        pressure_lookback: usize,
+    ) -> Self {
+        Self {
+            max_ratio,
+            configured_windows: windows,
+            small_context_window_tokens: if small_context_window_tokens > 0 {
+                small_context_window_tokens
+            } else {
+                SMALL_CONTEXT_WINDOW_TOKENS
+            },
+            opus_context_window_tokens: if opus_context_window_tokens > 0 {
+                opus_context_window_tokens
+            } else {
+                OPUS_CONTEXT_WINDOW_TOKENS
+            },
+            pressure_lookback: if pressure_lookback > 0 {
+                pressure_lookback
+            } else {
+                PRESSURE_LOOKBACK
+            },
         }
     }
 }
@@ -116,7 +173,7 @@ impl React for ContextWindowPressureWatcher {
             .iter()
             .rev()
             .filter(|s| s.kind == Kind::TokenUsage)
-            .take(PRESSURE_LOOKBACK)
+            .take(self.pressure_lookback)
             .collect();
 
         if recent.is_empty() {
@@ -196,7 +253,10 @@ impl ContextWindowPressureWatcher {
     ///
     /// Resolution order:
     /// 1. Precomputed map from `ModelProfile.context_window` config entries.
-    /// 2. Hardcoded fallback for Anthropic models (opus, sonnet, haiku).
+    /// 2. Configurable fallback for Anthropic Opus-family models
+    ///    (`[conductor] context_window_opus_tokens`, default 1 000 000).
+    /// 3. Configurable fallback for other Anthropic models (haiku, sonnet)
+    ///    (`[conductor] context_window_small_tokens`, default 200 000).
     fn context_window_tokens(&self, model: &str) -> Option<u64> {
         let model_lower = model.to_ascii_lowercase();
 
@@ -205,11 +265,11 @@ impl ContextWindowPressureWatcher {
             return Some(ctx);
         }
 
-        // Fallback: hardcoded Anthropic models.
+        // Fallback: configurable Anthropic model defaults.
         if model_lower.contains("opus") {
-            Some(OPUS_CONTEXT_WINDOW_TOKENS)
+            Some(self.opus_context_window_tokens)
         } else if model_lower.contains("haiku") || model_lower.contains("sonnet") {
-            Some(SMALL_CONTEXT_WINDOW_TOKENS)
+            Some(self.small_context_window_tokens)
         } else {
             None
         }

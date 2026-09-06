@@ -190,6 +190,26 @@ fn configured_watchers_with_resources(
                 .map(|cfg| WorktreeCountWatcher::new(cfg.max_live.max(1)))
                 .unwrap_or_default(),
         ),
+        // ContextWindowPressureWatcher: the per-watcher threshold for warn_threshold
+        // comes from [conductor.watchers.context_window_pressure], while the
+        // context-window token sizes and lookback window come from [conductor]
+        // (P1-38). Both are optional; hardcoded spec defaults apply when absent.
+        Box::new({
+            let max_ratio = thresholds
+                .context_window_pressure
+                .as_ref()
+                .map(|cfg| cfg.warn_threshold)
+                .unwrap_or(
+                    crate::watchers::context_window_pressure::MAX_CONTEXT_USAGE_RATIO,
+                );
+            ContextWindowPressureWatcher::with_config(
+                max_ratio,
+                std::collections::HashMap::new(),
+                config.context_window_small_tokens,
+                config.context_window_opus_tokens,
+                config.context_pressure_lookback,
+            )
+        }),
         // DiskPressureWatcher thresholds come from ResourcesConfig, not from
         // a per-watcher schema. No parallel [conductor.watchers.disk_pressure]
         // section is defined or needed.

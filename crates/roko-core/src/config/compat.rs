@@ -214,6 +214,11 @@ fn convert_gates(m: &MoriConfig) -> GatesConfig {
         domain_gates: HashMap::new(),
         custom_rungs: Vec::new(),
         max_rung: None,
+        ema_alpha: d.ema_alpha,
+        adaptive_min_retries: d.adaptive_min_retries,
+        adaptive_max_retries: d.adaptive_max_retries,
+        skip_streak_threshold: d.skip_streak_threshold,
+        convergence_min_observations: d.convergence_min_observations,
     }
 }
 
@@ -249,6 +254,9 @@ fn convert_conductor(m: &MoriConfig) -> ConductorConfig {
         task_stall_secs: d.task_stall_secs,
         context_pressure_pct: d.context_pressure_pct,
         phase_timeout_secs: d.phase_timeout_secs,
+        context_window_small_tokens: d.context_window_small_tokens,
+        context_window_opus_tokens: d.context_window_opus_tokens,
+        context_pressure_lookback: d.context_pressure_lookback,
     }
 }
 

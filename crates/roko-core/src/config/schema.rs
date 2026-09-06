@@ -1686,6 +1686,31 @@ pub struct ConductorConfig {
     /// Seconds before a phase timeout escalation (default 1800).
     #[serde(default = "default_phase_timeout_secs")]
     pub phase_timeout_secs: u64,
+
+    // ── ContextWindowPressureWatcher tuning (P1-38) ──────────────────────
+
+    /// Fallback context window token budget for most models (default 200 000).
+    ///
+    /// Used by `ContextWindowPressureWatcher` when a model's window size is not
+    /// listed in `[models]` and the model slug does not contain "opus".
+    /// Set this to match the smallest context window in your model fleet.
+    #[serde(default = "default_context_window_small_tokens")]
+    pub context_window_small_tokens: u64,
+
+    /// Context window token budget for Opus-family models (default 1 000 000).
+    ///
+    /// Used by `ContextWindowPressureWatcher` when a model slug contains "opus"
+    /// and no per-model override is configured.
+    #[serde(default = "default_context_window_opus_tokens")]
+    pub context_window_opus_tokens: u64,
+
+    /// Number of recent `TokenUsage` signals inspected by the context-pressure
+    /// watcher (default 3).
+    ///
+    /// The watcher takes the maximum utilization ratio over this window so that
+    /// brief high-pressure spikes are not masked by subsequent low readings.
+    #[serde(default = "default_context_pressure_lookback")]
+    pub context_pressure_lookback: usize,
 }
 const fn default_max_agents() -> usize {
     8
@@ -1714,6 +1739,15 @@ const fn default_context_pressure_pct() -> u8 {
 const fn default_phase_timeout_secs() -> u64 {
     1800
 }
+const fn default_context_window_small_tokens() -> u64 {
+    200_000
+}
+const fn default_context_window_opus_tokens() -> u64 {
+    1_000_000
+}
+const fn default_context_pressure_lookback() -> usize {
+    3
+}
 
 impl Default for ConductorConfig {
     fn default() -> Self {
@@ -1730,6 +1764,9 @@ impl Default for ConductorConfig {
             task_stall_secs: default_task_stall_secs(),
             context_pressure_pct: default_context_pressure_pct(),
             phase_timeout_secs: default_phase_timeout_secs(),
+            context_window_small_tokens: default_context_window_small_tokens(),
+            context_window_opus_tokens: default_context_window_opus_tokens(),
+            context_pressure_lookback: default_context_pressure_lookback(),
         }
     }
 }

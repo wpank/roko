@@ -55,6 +55,28 @@ const fn default_compile_concurrency() -> usize {
     1
 }
 
+// ---- [gates.adaptive] defaults -------------------------------------------
+
+const fn default_ema_alpha() -> f64 {
+    0.1
+}
+
+const fn default_min_retries() -> u32 {
+    1
+}
+
+const fn default_max_retries() -> u32 {
+    5
+}
+
+const fn default_skip_streak_threshold() -> u32 {
+    20
+}
+
+const fn default_convergence_min_observations() -> u64 {
+    50
+}
+
 /// A single custom gate rung definition.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -85,7 +107,7 @@ impl GateRungConfig {
 }
 
 /// Verify (verification) settings.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GatesConfig {
     /// Explicit verification breadth. Defaults to the historical full lane.
@@ -130,6 +152,38 @@ pub struct GatesConfig {
     /// Optional ceiling rung index. Rungs above this index are skipped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_rung: Option<u8>,
+
+    // ── Adaptive threshold tuning ─────────────────────────────────────────
+
+    /// EMA decay factor for pass-rate tracking.
+    ///
+    /// Controls how quickly the exponential moving average adapts to new
+    /// observations. Smaller values weight recent observations more heavily.
+    /// Range: (0.0, 1.0). Default: 0.1 (the tuned spec value from
+    /// docs/04-verification/06-adaptive-thresholds.md).
+    #[serde(default = "default_ema_alpha")]
+    pub ema_alpha: f64,
+
+    /// Floor for the adaptive retry suggestion — never suggest fewer than
+    /// this many retries for any rung. Default: 1.
+    #[serde(default = "default_min_retries")]
+    pub adaptive_min_retries: u32,
+
+    /// Ceiling for the adaptive retry suggestion — never suggest more than
+    /// this many retries for any rung. Default: 5.
+    #[serde(default = "default_max_retries")]
+    pub adaptive_max_retries: u32,
+
+    /// Consecutive passes required before the adaptive system advises
+    /// skipping a rung entirely. Default: 20.
+    #[serde(default = "default_skip_streak_threshold")]
+    pub skip_streak_threshold: u32,
+
+    /// Minimum observations on a rung before its learned EMA is considered
+    /// converged and eligible for promotion to `Evolved` config provenance.
+    /// Default: 50.
+    #[serde(default = "default_convergence_min_observations")]
+    pub convergence_min_observations: u64,
 }
 
 const fn default_max_iterations() -> u32 {
@@ -151,6 +205,11 @@ impl Default for GatesConfig {
             domain_gates: HashMap::new(),
             custom_rungs: Vec::new(),
             max_rung: None,
+            ema_alpha: default_ema_alpha(),
+            adaptive_min_retries: default_min_retries(),
+            adaptive_max_retries: default_max_retries(),
+            skip_streak_threshold: default_skip_streak_threshold(),
+            convergence_min_observations: default_convergence_min_observations(),
         }
     }
 }

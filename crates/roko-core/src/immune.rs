@@ -20,16 +20,10 @@
 
 use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::fs::File;
-use std::io::{self, Read};
-use std::path::Path;
-#[cfg(test)]
-use std::{
-    fs::{self, OpenOptions},
-    io::{BufWriter, Write},
-    path::PathBuf,
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, BufWriter, Read, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -723,8 +717,7 @@ impl QuarantineVault {
     }
 
     /// Atomically persist the complete vault, including configuration and links.
-    #[cfg(test)]
-    fn save(&self, path: impl AsRef<Path>) -> io::Result<()> {
+    pub fn save(&self, path: impl AsRef<Path>) -> io::Result<()> {
         self.validate_integrity()?;
         let path = path.as_ref();
         let parent = path

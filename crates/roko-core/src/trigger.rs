@@ -72,6 +72,8 @@ pub enum TriggerEventKind {
     Disarmed,
     FlowStarted,
     FlowCompleted,
+    /// A trigger has graduated from provisional to confirmed status.
+    Graduated,
 }
 
 impl TriggerEventKind {
@@ -89,12 +91,13 @@ impl TriggerEventKind {
             Self::Disarmed => "disarmed",
             Self::FlowStarted => "flow.started",
             Self::FlowCompleted => "flow.completed",
+            Self::Graduated => "graduated",
         }
     }
 }
 
 /// Lifecycle events promoted from ephemeral Pulses to durable Signals.
-pub const GRADUATION_EVENTS: [TriggerEventKind; 8] = [
+pub const GRADUATION_EVENTS: [TriggerEventKind; 9] = [
     TriggerEventKind::Armed,
     TriggerEventKind::Fired,
     TriggerEventKind::Skipped,
@@ -103,6 +106,7 @@ pub const GRADUATION_EVENTS: [TriggerEventKind; 8] = [
     TriggerEventKind::Disarmed,
     TriggerEventKind::FlowStarted,
     TriggerEventKind::FlowCompleted,
+    TriggerEventKind::Graduated,
 ];
 
 /// Durable/auditable description of a trigger lifecycle transition.

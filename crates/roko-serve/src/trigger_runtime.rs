@@ -290,6 +290,8 @@ struct ActiveBinding {
     rate_queue: VecDeque<TriggerEvent>,
     rate_generation: u64,
     signal_history: VecDeque<(u64, String, String)>,
+    /// Consecutive successful flow completions for graduation evaluation.
+    consecutive_successes: u32,
 }
 
 struct RunningFlow {
@@ -333,6 +335,7 @@ impl ActiveBinding {
             rate_queue: VecDeque::new(),
             rate_generation: 0,
             signal_history: VecDeque::new(),
+            consecutive_successes: 0,
         }
     }
 }
@@ -907,7 +910,37 @@ impl TriggerCoordinator {
             detail,
         )
         .await;
-        if !success {
+        // Track consecutive successes and evaluate graduation policy.
+        if success {
+            active.consecutive_successes = active.consecutive_successes.saturating_add(1);
+            match &active.binding.graduation_policy {
+                TriggerGraduationPolicy::AfterSuccesses { count }
+                    if active.consecutive_successes >= *count =>
+                {
+                    debug!(
+                        trigger = %active.binding.name,
+                        consecutive = active.consecutive_successes,
+                        threshold = count,
+                        "trigger graduated: promoting from provisional to confirmed"
+                    );
+                    self.emit_lifecycle(
+                        &active.binding,
+                        TriggerEventKind::Graduated,
+                        None,
+                        json!({
+                            "policy": "after_successes",
+                            "consecutive_successes": active.consecutive_successes,
+                            "threshold": count,
+                        }),
+                    )
+                    .await;
+                    // Reset counter after graduation to avoid re-emitting.
+                    active.consecutive_successes = 0;
+                }
+                _ => {}
+            }
+        } else {
+            active.consecutive_successes = 0;
             debug!(trigger = %active.binding.name, "trigger flow did not succeed");
         }
         if active.running.is_empty()

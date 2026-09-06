@@ -43,7 +43,8 @@ use std::time::Duration;
 use parking_lot::RwLock;
 use roko_compose::{
     AttentionBidder, CompositionManifest, CompositionStrategy, ContextChunk, ContextSource,
-    LearningBidder, PromptComposer, PromptSection as CanonicalPromptSection, RoleSystemPromptSpec,
+    LearningBidder, MultiPatchForager, PromptComposer,
+    PromptSection as CanonicalPromptSection, RoleSystemPromptSpec, SourceForagingProfile,
     TaskContext,
 };
 use roko_core::config::schema::ConfigCompositionStrategy;
@@ -59,6 +60,50 @@ use crate::task_parser::TaskDef;
 /// dropping kicks in. Roughly mirrors a 200K-context-window providers'
 /// budget for system + user combined.
 const DEFAULT_TOKEN_BUDGET: u32 = 64_000;
+
+/// Construct a default [`MultiPatchForager`] with baseline source profiles.
+///
+/// The profiles assign diminishing-returns curves to the three context
+/// sources that the prompt composer evaluates: knowledge entries, episodes,
+/// and inline files. The active-inference bias defaults to 0.3, encouraging
+/// moderate exploration across patches.
+fn default_forager() -> MultiPatchForager {
+    MultiPatchForager {
+        source_profiles: vec![
+            SourceForagingProfile {
+                source: ContextSource::KnowledgeEntry {
+                    entry_id: String::new(),
+                    kind: String::new(),
+                    source: None,
+                },
+                g_max: 0.9,
+                lambda: 0.3,
+                travel_cost: 0.1,
+            },
+            SourceForagingProfile {
+                source: ContextSource::Episode {
+                    episode_id: String::new(),
+                    plan_id: String::new(),
+                    task_id: String::new(),
+                },
+                g_max: 0.7,
+                lambda: 0.4,
+                travel_cost: 0.15,
+            },
+            SourceForagingProfile {
+                source: ContextSource::InlineFile {
+                    path: String::new(),
+                    lines: None,
+                },
+                g_max: 0.8,
+                lambda: 0.5,
+                travel_cost: 0.05,
+            },
+        ],
+        environment_rate: 0.1,
+        active_inference_bias: 0.3,
+    }
+}
 
 // ─── Inputs ────────────────────────────────────────────────────────────
 
@@ -1443,7 +1488,8 @@ impl PromptAssembler {
         let composer = PromptComposer::new()
             .with_strategy(self.composition_strategy)
             .with_vcg_warmup_observations(self.vcg_warmup_observations)
-            .with_learning_bidders(self.learning_bidders());
+            .with_learning_bidders(self.learning_bidders())
+            .with_foraging(default_forager());
         let mut canonical_sections = if let Some(registry) = section_effectiveness.as_ref() {
             spec.build_sections_with_section_effectiveness(registry)
         } else {

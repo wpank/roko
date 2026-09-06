@@ -44,7 +44,9 @@ pub(crate) mod registries;
 mod research;
 mod route_permissions;
 mod run;
+mod affect;
 mod runs;
+mod safety;
 mod secrets;
 pub mod shared_runs;
 pub(crate) mod sse;
@@ -376,6 +378,8 @@ pub fn build_router(
         .merge(history::routes())
         .merge(cache::routes())
         .merge(doctor::routes())
+        .merge(safety::routes())
+        .merge(affect::routes())
         .merge(shared_runs::auth_routes())
         .merge(webhooks::authenticated_routes())
         .nest("/providers", providers::router())

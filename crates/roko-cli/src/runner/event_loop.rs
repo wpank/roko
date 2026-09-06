@@ -17555,6 +17555,18 @@ async fn post_plan_cleanup(
         let _ = before; // no new error signal available
     }
 
+    // ── 5. Orphaned temp file cleanup ─────────────────────────────────
+    {
+        let max_age = Duration::from_secs(u64::from(res.target_max_age_days) * 86400);
+        let removed = cleanup_orphan_temp_files(workdir, max_age).await;
+        if removed > 0 {
+            info!(
+                removed,
+                "post-plan cleanup: removed orphaned temp files/dirs"
+            );
+        }
+    }
+
     // ── Summary log ──────────────────────────────────────────────────────
     info!(
         logs_rotated = summary.logs_rotated,
@@ -17567,6 +17579,52 @@ async fn post_plan_cleanup(
     );
 
     summary
+}
+
+/// Remove orphaned temp files and directories older than `max_age`.
+///
+/// Scans `.roko/worktrees/`, `generated-tests/`, and `.roko/tmp/` for
+/// leftover artifacts from previous runs. Only removes entries whose
+/// last modification time exceeds `max_age`.
+async fn cleanup_orphan_temp_files(workdir: &Path, max_age: Duration) -> usize {
+    let candidates = [
+        workdir.join("generated-tests"),
+        workdir.join(".roko").join("tmp"),
+    ];
+
+    let mut removed = 0usize;
+    let now = std::time::SystemTime::now();
+
+    for dir in &candidates {
+        if !dir.is_dir() {
+            continue;
+        }
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let modified = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(now);
+            let age = now.duration_since(modified).unwrap_or_default();
+            if age < max_age {
+                continue;
+            }
+            if path.is_dir() {
+                if std::fs::remove_dir_all(&path).is_ok() {
+                    info!(path = %path.display(), "removed orphaned temp directory");
+                    removed += 1;
+                }
+            } else if std::fs::remove_file(&path).is_ok() {
+                info!(path = %path.display(), "removed orphaned temp file");
+                removed += 1;
+            }
+        }
+    }
+    removed
 }
 
 fn runtime_timeout_kind(kind: TimeoutKind) -> TimeoutTerminalKind {

@@ -41,7 +41,8 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
         | LearnCmd::KnowledgeStats { workdir }
         | LearnCmd::Playbooks { workdir }
         | LearnCmd::Sections { workdir }
-        | LearnCmd::Reflections { workdir, .. } => {
+        | LearnCmd::Reflections { workdir, .. }
+        | LearnCmd::Tools { workdir } => {
             workdir.clone().unwrap_or_else(|| resolve_workdir(cli))
         }
         LearnCmd::Experiments { workdir, cmd: sub } => {
@@ -159,6 +160,10 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
         LearnCmd::Reflections { workdir, limit } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             cmd_learn_reflections(&wd, limit).await
+        }
+        LearnCmd::Tools { workdir } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            cmd_learn_tools(&wd, json).await
         }
         LearnCmd::Inspect { subsystem } => {
             let wd = inspect_workdir(cli, &subsystem);
@@ -281,7 +286,13 @@ fn inspect_gates(workdir: &std::path::Path, json: bool) -> Result<i32> {
                     .get("observation_count")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0);
-                println!("    rung {rung_key}: EMA pass rate={ema}, observations={count}");
+                let display_name = rung_key
+                    .parse::<u32>()
+                    .ok()
+                    .and_then(roko_gate::Rung::from_index)
+                    .map(|r| r.label())
+                    .unwrap_or(rung_key.as_str());
+                println!("    {display_name} (rung {rung_key}): EMA pass rate={ema}, observations={count}");
             }
         }
     }
@@ -1871,6 +1882,137 @@ fn cmd_learn_reflections(workdir: &std::path::Path, limit: usize) -> impl std::f
 
         Ok(EXIT_SUCCESS)
     }
+}
+
+// ── Tool usage statistics ──────────────────────────────────────────────
+
+/// `roko learn tools` — show tool usage statistics from the tool audit log.
+#[allow(clippy::cast_precision_loss)]
+async fn cmd_learn_tools(workdir: &std::path::Path, json: bool) -> Result<i32> {
+    let path = workdir.join(".roko").join("tool_audit.jsonl");
+    if !path.exists() {
+        if json {
+            println!("{{\"tools\":[]}}");
+        } else {
+            println!("Tool audit: no data at {}", path.display());
+        }
+        return Ok(EXIT_SUCCESS);
+    }
+
+    let content = tokio::fs::read_to_string(&path).await.unwrap_or_default();
+
+    // Accumulate per-tool stats from audit lines.
+    let mut stats: std::collections::HashMap<String, ToolStats> = std::collections::HashMap::new();
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(entry) = serde_json::from_str::<roko_fs::tool_audit::AuditLine>(line) else {
+            continue;
+        };
+        match entry {
+            roko_fs::tool_audit::AuditLine::Admit { call_name, ts_ms, .. } => {
+                let tool = stats.entry(call_name).or_default();
+                tool.calls += 1;
+                if ts_ms > tool.last_seen_ms {
+                    tool.last_seen_ms = ts_ms;
+                }
+            }
+            roko_fs::tool_audit::AuditLine::Result { call_name, ok, ts_ms, .. } => {
+                let tool = stats.entry(call_name).or_default();
+                tool.results += 1;
+                if ok {
+                    tool.successes += 1;
+                }
+                if ts_ms > tool.last_seen_ms {
+                    tool.last_seen_ms = ts_ms;
+                }
+            }
+        }
+    }
+
+    // Sort by call count descending.
+    let mut rows: Vec<_> = stats.into_iter().collect();
+    rows.sort_by(|a, b| b.1.calls.cmp(&a.1.calls));
+
+    if json {
+        let json_rows: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(name, s)| {
+                let rate = if s.results > 0 {
+                    s.successes as f64 / s.results as f64
+                } else {
+                    0.0
+                };
+                serde_json::json!({
+                    "name": name,
+                    "calls": s.calls,
+                    "results": s.results,
+                    "successes": s.successes,
+                    "success_rate": (rate * 100.0).round() / 100.0,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({ "tools": json_rows }))?
+        );
+    } else {
+        println!("Tool usage statistics ({})", path.display());
+        println!();
+        if rows.is_empty() {
+            println!("  (no tool calls recorded)");
+        } else {
+            println!(
+                "  {:<30} {:>6} {:>8} {:>8} {:>10}",
+                "Tool", "Calls", "Results", "Success", "Rate"
+            );
+            println!("  {}", "-".repeat(66));
+            for (name, s) in &rows {
+                let rate = if s.results > 0 {
+                    format!("{:.0}%", s.successes as f64 / s.results as f64 * 100.0)
+                } else {
+                    "n/a".to_string()
+                };
+                println!(
+                    "  {:<30} {:>6} {:>8} {:>8} {:>10}",
+                    truncate_str(name, 30),
+                    s.calls,
+                    s.results,
+                    s.successes,
+                    rate
+                );
+            }
+            println!();
+            let total_calls: u64 = rows.iter().map(|(_, s)| s.calls).sum();
+            let total_results: u64 = rows.iter().map(|(_, s)| s.results).sum();
+            let total_successes: u64 = rows.iter().map(|(_, s)| s.successes).sum();
+            let overall_rate = if total_results > 0 {
+                format!(
+                    "{:.0}%",
+                    total_successes as f64 / total_results as f64 * 100.0
+                )
+            } else {
+                "n/a".to_string()
+            };
+            println!(
+                "  {:<30} {:>6} {:>8} {:>8} {:>10}",
+                "TOTAL", total_calls, total_results, total_successes, overall_rate
+            );
+        }
+    }
+
+    Ok(EXIT_SUCCESS)
+}
+
+#[derive(Default)]
+struct ToolStats {
+    calls: u64,
+    results: u64,
+    successes: u64,
+    last_seen_ms: i64,
 }
 
 // ── Shared helpers ────────────────────────────────────────────────────

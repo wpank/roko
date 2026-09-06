@@ -38,7 +38,6 @@ use super::{Dispatcher, PromptAssembler, PromptCache, ResolvedAgentRuntime, Warm
 /// - **`mcp_runtime`** — MCP definitions and initialized execution clients discovered once.
 /// - **`Dispatcher`** — model routing + prompt assembly + warm pool (stateless, reusable).
 /// - **`ProviderDispatchResolver`** — model → provider resolution.
-#[derive(Debug)]
 pub struct SharedAgentFactory {
     config: Arc<RokoConfig>,
     semaphores: Arc<ProviderSemaphores>,
@@ -67,6 +66,9 @@ pub struct SharedAgentFactory {
     pub health_registry: Arc<ProviderHealthRegistry>,
     /// Persistent JSONL tool audit adapter shared across all dispatches.
     tool_audit: Option<Arc<roko_fs::tool_audit::ScrubAuditAdapter>>,
+    /// Runtime-scoped format selection bandit. Shared across all dispatches
+    /// so tool-format selection learns from cumulative feedback within a run.
+    pub format_bandit: Arc<dyn roko_core::tool::bandit::FormatBandit>,
 }
 
 /// Bridge task returned only after its worker reaches the provider boundary.
@@ -79,6 +81,15 @@ pub enum SharedBridgeStartupError {
     Deadline,
     Cancelled,
     WorkerExited,
+}
+
+impl std::fmt::Debug for SharedAgentFactory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SharedAgentFactory")
+            .field("config", &"...")
+            .field("format_bandit", &self.format_bandit.name())
+            .finish()
+    }
 }
 
 impl SharedAgentFactory {
@@ -184,6 +195,9 @@ impl SharedAgentFactory {
             rate_limiter,
             health_registry,
             tool_audit: None,
+            format_bandit: Arc::new(
+                roko_core::tool::bandit::ProfileBandit::with_static_profiles(),
+            ),
         }
     }
 
@@ -509,5 +523,10 @@ impl SharedAgentFactory {
     /// Pre-discovered MCP tools, if available.
     pub fn mcp_tools(&self) -> Option<&Arc<Vec<ToolDef>>> {
         self.mcp_runtime.as_ref().map(|runtime| runtime.tools())
+    }
+
+    /// Shared format-selection bandit for adaptive tool format decisions.
+    pub fn format_bandit(&self) -> &Arc<dyn roko_core::tool::bandit::FormatBandit> {
+        &self.format_bandit
     }
 }

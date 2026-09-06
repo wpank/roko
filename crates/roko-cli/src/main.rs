@@ -1508,6 +1508,12 @@ enum LearnCmd {
         #[command(subcommand)]
         subsystem: InspectSubsystem,
     },
+    /// Show tool usage statistics from the tool audit log.
+    Tools {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
     /// (deprecated: use `roko learn inspect`) Tune adaptive thresholds and model routing parameters.
     #[command(hide = true)]
     Tune {

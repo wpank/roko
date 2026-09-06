@@ -1837,6 +1837,19 @@ pub enum AffectEvent {
         /// Number of episodes that were processed.
         episodes_processed: usize,
     },
+    /// Agent shutdown event (P1-31).
+    ///
+    /// Triggers mortality-related emotional processing when the agent is
+    /// shutting down. The vitality phase determines which mortality emotions
+    /// are active and how they modulate the final PAD state.
+    Shutdown {
+        /// Current vitality at shutdown time (0.0-1.0).
+        vitality: f64,
+        /// Total episodes processed during lifetime.
+        total_episodes: usize,
+        /// Whether shutdown was graceful or forced.
+        graceful: bool,
+    },
 }
 
 // ─── OCC Appraisal Dimensions (P0-19) ───────────────────────────────
@@ -1997,6 +2010,32 @@ impl AppraisalResult {
                     coping_potential: confidence.clamp(0.0, 1.0),
                     trigger: AppraisalTrigger::Dream,
                     novel: *knowledge_entries > 0 || *regressions_detected > 0,
+                }
+            }
+            AffectEvent::Shutdown {
+                vitality,
+                total_episodes,
+                graceful,
+            } => {
+                // P1-31: Mortality-aware emotional processing at shutdown.
+                // Use the mortality module's VitalityPhase to determine the
+                // emotional signature. Low vitality (Child phase) produces
+                // creative acceptance; high vitality (Camel) produces duty
+                // fulfillment; Lion produces existential urgency.
+                use crate::mortality::{MortalityEmotion, VitalityPhase};
+                let phase = VitalityPhase::from_vitality(*vitality);
+                let phase_pad = phase.pad_baseline();
+                // Blend Stochastic Dread intensity with the outcome quality.
+                let dread_intensity =
+                    MortalityEmotion::StochasticDread.intensity(0.0, 24.0, 0.0);
+                let life_quality = (*total_episodes as f64).sqrt().min(10.0) / 10.0;
+                Self {
+                    desirability: phase_pad.pleasure - dread_intensity * 0.3
+                        + if *graceful { life_quality * 0.2 } else { -0.3 },
+                    likelihood: if *graceful { 0.8 } else { 0.2 },
+                    coping_potential: *vitality,
+                    trigger: AppraisalTrigger::TaskOutcome,
+                    novel: true, // Shutdown is always novel
                 }
             }
         }
@@ -2821,6 +2860,24 @@ impl AffectEngine for DaimonState {
                 let dominance = (positive * 0.02 - negative * 0.03).clamp(-0.15, 0.10) * scale;
                 // Confidence: net positive -> boost, net negative -> drop.
                 let confidence = (positive * 0.02 - negative * 0.05).clamp(-0.20, 0.10) * scale;
+                self.state
+                    .apply_delta(pleasure, arousal, dominance, confidence, now);
+            }
+            // P1-31: Agent shutdown triggers mortality-aware emotional processing.
+            AffectEvent::Shutdown {
+                vitality,
+                total_episodes: _,
+                graceful,
+            } => {
+                // Graceful shutdown carries acceptance; forced shutdown carries distress.
+                let pleasure = if graceful {
+                    vitality * 0.05 - 0.03
+                } else {
+                    -0.15
+                };
+                let arousal = if graceful { -0.05 } else { 0.10 };
+                let dominance = if graceful { 0.05 } else { -0.10 };
+                let confidence = vitality * 0.05 - 0.02;
                 self.state
                     .apply_delta(pleasure, arousal, dominance, confidence, now);
             }

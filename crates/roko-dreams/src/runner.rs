@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 use crate::cycle::{AgentDispatcher, DreamCycle, DreamCycleReport};
 use crate::imagination::ImaginationMode;
 use crate::phase2::advanced::{DreamJournal, DreamJournalEntry};
-use crate::replay::{DreamReplayBatch, DreamReplayPolicy, select_replay_episodes};
+use crate::replay::{DreamReplayBatch, DreamReplayPolicy, select_replay_episodes_with_affect};
 
 /// Public alias for the replay input episodes.
 pub type Episode = roko_learn::episode_logger::Episode;
@@ -808,6 +808,8 @@ pub struct DreamRunner {
     config: DreamLoopConfig,
     controls: DreamRuntimeControls,
     model_caller: Option<Arc<dyn ModelCaller>>,
+    /// Optional current affect state for modulating replay selection (P1-33).
+    affect_pad: Option<roko_core::affect::PadVector>,
 }
 
 impl std::fmt::Debug for DreamRunner {
@@ -834,6 +836,7 @@ impl DreamRunner {
             config,
             controls,
             model_caller: None,
+            affect_pad: None,
         }
     }
 
@@ -849,6 +852,7 @@ impl DreamRunner {
             config,
             controls,
             model_caller: None,
+            affect_pad: None,
         }
     }
 
@@ -856,6 +860,15 @@ impl DreamRunner {
     #[must_use]
     pub fn with_model_caller(mut self, model_caller: Arc<dyn ModelCaller>) -> Self {
         self.model_caller = Some(model_caller);
+        self
+    }
+
+    /// Set the current affect state for affect-modulated replay (P1-33).
+    ///
+    /// When set, `plan_replay` will preferentially select high-affect episodes.
+    #[must_use]
+    pub fn with_affect(mut self, pad: roko_core::affect::PadVector) -> Self {
+        self.affect_pad = Some(pad);
         self
     }
 
@@ -875,9 +888,36 @@ impl DreamRunner {
     }
 
     /// Select a replay batch using the configured NREM mode.
+    ///
+    /// When an affect PAD vector has been set via [`with_affect`](Self::with_affect),
+    /// high-affect episodes are preferentially replayed (P1-33).
     #[must_use]
     pub fn plan_replay(&self, episodes: &[Episode]) -> DreamReplayBatch {
-        select_replay_episodes(episodes, &self.controls.replay, Utc::now())
+        select_replay_episodes_with_affect(
+            episodes,
+            &self.controls.replay,
+            Utc::now(),
+            self.affect_pad.as_ref(),
+        )
+    }
+
+    /// Select a replay batch with optional affect modulation (P1-33).
+    ///
+    /// When `emotional_context` is `Some`, high-affect episodes are
+    /// preferentially replayed: negative pleasure biases toward failure
+    /// episodes, and high arousal increases the replay batch size.
+    #[must_use]
+    pub fn plan_replay_with_affect(
+        &self,
+        episodes: &[Episode],
+        emotional_context: Option<&roko_core::affect::PadVector>,
+    ) -> DreamReplayBatch {
+        select_replay_episodes_with_affect(
+            episodes,
+            &self.controls.replay,
+            Utc::now(),
+            emotional_context,
+        )
     }
 
     /// Load the latest persisted dream report from `.roko/dreams/`.

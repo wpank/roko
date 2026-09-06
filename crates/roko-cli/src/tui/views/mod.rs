@@ -130,6 +130,12 @@ pub enum SubView {
     LearningEfficiency,
     /// Playbook matches from most recent dispatch (P2-05).
     LearningPlaybooks,
+    /// Active prompt experiments panel (P2-04).
+    LearningExperiments,
+
+    // ── Region 5 additions ──
+    /// Safety incident viewer (quarantine / taint propagation) (P2-06).
+    SafetyIncidents,
 }
 
 impl SubView {
@@ -158,6 +164,7 @@ impl SubView {
                 SubView::FilteredLog,
                 SubView::SignalStream,
                 SubView::ErrorDigest,
+                SubView::SafetyIncidents,
             ],
             Tab::Config => &[
                 SubView::ConfigEditor,
@@ -181,6 +188,7 @@ impl SubView {
                 SubView::LearningHistory,
                 SubView::LearningEfficiency,
                 SubView::LearningPlaybooks,
+                SubView::LearningExperiments,
             ],
         }
     }
@@ -221,6 +229,8 @@ impl SubView {
             Self::LearningHistory => "History",
             Self::LearningEfficiency => "Efficiency",
             Self::LearningPlaybooks => "Playbooks",
+            Self::LearningExperiments => "Experiments",
+            Self::SafetyIncidents => "Safety",
         }
     }
 

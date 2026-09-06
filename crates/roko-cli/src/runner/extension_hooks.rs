@@ -175,8 +175,29 @@ pub async fn initialize_extensions(
     ))
 }
 
-/// Shutdown extension chain + persist cascade router.
+/// Shutdown extension chain + persist cascade router + mortality appraisal.
 pub(crate) async fn shutdown_subsystems(config: &RunConfig, tui: &TuiBridge) {
+    // P1-31: Trigger mortality-aware emotional processing at shutdown.
+    // The daimon appraises the shutdown event using the current vitality
+    // phase, blending Stochastic Dread with the agent's life quality.
+    if let Some(daimon_state) = &config.daimon_state {
+        if let Ok(mut guard) = daimon_state.lock() {
+            let vitality = guard.vitality_tracker.vitality();
+            let total_episodes = guard.state.tick_count as usize;
+            let event = roko_daimon::AffectEvent::Shutdown {
+                vitality,
+                total_episodes,
+                graceful: true,
+            };
+            guard.appraise_if_novel(event);
+            info!(
+                vitality,
+                total_episodes,
+                "P1-31: mortality shutdown appraisal completed"
+            );
+        }
+    }
+
     // Extension chain shutdown.
     if let Some(ext_chain) = &config.extension_chain {
         let mut chain = ext_chain.lock().await;

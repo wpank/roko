@@ -42,6 +42,23 @@ pub struct PendingApproval {
     pub description: String,
     /// The raw command or tool call.
     pub command: String,
+    /// Optional graph execution run ID (P1-40: SurfaceEvent command path).
+    pub run_id: Option<String>,
+    /// Optional approval identifier (P1-40: SurfaceEvent command path).
+    pub approval_id: Option<String>,
+}
+
+/// Safety incident record for the F5 Logs safety sub-tab (P2-06).
+#[derive(Debug, Clone)]
+pub struct SafetyIncident {
+    /// Milliseconds since UNIX epoch.
+    pub timestamp_ms: u64,
+    /// Event category: quarantine, taint, immune, denial, etc.
+    pub event_type: String,
+    /// Severity: info, warning, critical.
+    pub severity: String,
+    /// Human-readable description.
+    pub description: String,
 }
 
 /// Cached MCP configuration used by the dashboard's MCP panel.
@@ -2226,6 +2243,10 @@ pub struct TuiState {
     pub inbox_items: Vec<roko_core::dashboard_snapshot::InboxItemState>,
     /// Scroll offset for the Inbox sub-tab on the F1 Dashboard.
     pub inbox_scroll: usize,
+
+    // -- safety incidents (P2-06) --
+    /// Safety incidents loaded from `.roko/immune/` or extracted from log entries.
+    pub safety_incidents: Vec<SafetyIncident>,
 }
 
 impl Default for TuiState {
@@ -2457,6 +2478,7 @@ impl Default for TuiState {
 
             inbox_items: Vec::new(),
             inbox_scroll: 0,
+            safety_incidents: Vec::new(),
         }
     }
 }
@@ -4505,6 +4527,55 @@ impl TuiState {
                     self.experiment_winners = store.winner_summaries();
                 }
             }
+        }
+
+        // P2-06: Load safety incidents from `.roko/immune/` directory.
+        let immune_dir = self.workdir.join(".roko").join("immune");
+        if immune_dir.is_dir() {
+            let mut incidents = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(&immune_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().is_some_and(|ext| ext == "json" || ext == "jsonl") {
+                        if let Ok(text) = std::fs::read_to_string(&path) {
+                            for line in text.lines() {
+                                if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+                                    let incident = SafetyIncident {
+                                        timestamp_ms: val
+                                            .get("timestamp_ms")
+                                            .or_else(|| val.get("ts"))
+                                            .and_then(|v| v.as_u64())
+                                            .unwrap_or(0),
+                                        event_type: val
+                                            .get("event_type")
+                                            .or_else(|| val.get("kind"))
+                                            .or_else(|| val.get("type"))
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("unknown")
+                                            .to_string(),
+                                        severity: val
+                                            .get("severity")
+                                            .or_else(|| val.get("level"))
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("info")
+                                            .to_string(),
+                                        description: val
+                                            .get("description")
+                                            .or_else(|| val.get("message"))
+                                            .or_else(|| val.get("summary"))
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("")
+                                            .to_string(),
+                                    };
+                                    incidents.push(incident);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            incidents.sort_by(|a, b| b.timestamp_ms.cmp(&a.timestamp_ms));
+            self.safety_incidents = incidents;
         }
     }
 

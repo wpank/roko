@@ -5256,6 +5256,27 @@ pub async fn run_with_tui_commands(
                     record_daimon_gate_result(config, &completion);
                 }
 
+                // P1-23: Publish inbox items for gate failures that need
+                // human attention.  Only real gate failures (not merge or
+                // skipped verdicts) produce inbox items, and only when the
+                // overall gate rung failed.
+                if completion.kind == GateCompletionKind::Gate && !completion.passed {
+                    let item_id = format!(
+                        "gate-{}:{}-rung{}",
+                        completion.plan_id, completion.task_id, completion.rung,
+                    );
+                    let summary = format!(
+                        "Gate rung {} failed for task {} in plan {}",
+                        completion.rung, completion.task_id, completion.plan_id,
+                    );
+                    tui.inbox_item(
+                        &item_id,
+                        roko_core::dashboard_snapshot::InboxCategory::GateVerdict,
+                        roko_core::dashboard_snapshot::UrgencyLevel::Review,
+                        &summary,
+                    );
+                }
+
                 // P1-13: Deposit a stigmergic pheromone signal for every
                 // real gate completion.  This records which task/files were
                 // touched, whether the gate passed, and which model was used
@@ -10761,6 +10782,12 @@ fn spawn_cross_cut_gate_failure_cascade(
                 },
             };
             let mut runner = roko_dreams::DreamRunner::new(workdir, dream_config);
+            // P1-33: Pass current affect state so dream replay
+            // preferentially selects high-affect episodes.
+            if let Ok(guard) = daimon_state.lock() {
+                let pad = guard.query_state().pad;
+                runner = runner.with_affect(pad);
+            }
             let report = runner
                 .consolidate_now()
                 .map_err(|error| format!("delta dream failed: {error}"))?;

@@ -190,6 +190,12 @@ pub struct App {
     git_bg_generation: u64,
     /// Highest generation that has been applied to the TUI state.
     git_applied_generation: u64,
+    /// P1-40: Broadcast sender for SurfaceEvent commands produced by TUI actions.
+    ///
+    /// TUI actions (approve, reject, pause, cancel, etc.) emit SurfaceEvent
+    /// objects through this channel so external consumers (serve, runner) can
+    /// translate them into execution effects.
+    surface_event_tx: tokio::sync::broadcast::Sender<roko_core::runtime_event::SurfaceEvent>,
 }
 
 /// Bundle of git data collected by the watcher-driven git refresh path.
@@ -804,6 +810,7 @@ impl App {
             git_bg_rx: None,
             git_bg_generation: 0,
             git_applied_generation: 0,
+            surface_event_tx: tokio::sync::broadcast::channel(64).0,
         };
         app.fx_config = EffectsConfig::load_from_root(&app.workdir);
         // Verdicts aggregator starts as None and is populated on the first
@@ -1039,6 +1046,23 @@ impl App {
     /// Install a live process supervisor used for per-agent process metrics.
     pub fn set_process_supervisor(&mut self, supervisor: Arc<ProcessSupervisor>) {
         self.process_supervisor = Some(supervisor);
+    }
+
+    /// Subscribe to the SurfaceEvent broadcast channel (P1-40).
+    ///
+    /// Returns a receiver that yields every `SurfaceEvent` produced by TUI
+    /// actions (approve, reject, pause, cancel, etc.).
+    pub fn subscribe_surface_events(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<roko_core::runtime_event::SurfaceEvent> {
+        self.surface_event_tx.subscribe()
+    }
+
+    /// Emit a `SurfaceEvent` from a TUI action (P1-40).
+    ///
+    /// Best-effort: drops the event silently if no receivers are subscribed.
+    fn emit_surface_event(&self, event: roko_core::runtime_event::SurfaceEvent) {
+        let _ = self.surface_event_tx.send(event);
     }
 
     /// Return the active page (legacy).
@@ -2022,16 +2046,44 @@ impl App {
                 }
             }
             TuiAction::ApproveCommand => {
+                // P1-40: Emit SurfaceEvent for the approval action.
+                if let Some(approval) = &self.tui_state.pending_approval {
+                    self.emit_surface_event(
+                        roko_core::runtime_event::SurfaceEvent::HumanRespond {
+                            run_id: approval.run_id.clone().unwrap_or_default(),
+                            cell_id: approval.approval_id.clone().unwrap_or_default(),
+                            response: serde_json::json!({"approved": true}),
+                        },
+                    );
+                }
                 if !self.resolve_active_approval(true) {
                     self.tui_state.pending_approval = None;
                 }
             }
             TuiAction::ApproveAll => {
+                if let Some(approval) = &self.tui_state.pending_approval {
+                    self.emit_surface_event(
+                        roko_core::runtime_event::SurfaceEvent::HumanRespond {
+                            run_id: approval.run_id.clone().unwrap_or_default(),
+                            cell_id: approval.approval_id.clone().unwrap_or_default(),
+                            response: serde_json::json!({"approved": true, "all": true}),
+                        },
+                    );
+                }
                 if !self.resolve_active_approval(true) {
                     self.tui_state.pending_approval = None;
                 }
             }
             TuiAction::RejectCommand => {
+                if let Some(approval) = &self.tui_state.pending_approval {
+                    self.emit_surface_event(
+                        roko_core::runtime_event::SurfaceEvent::HumanRespond {
+                            run_id: approval.run_id.clone().unwrap_or_default(),
+                            cell_id: approval.approval_id.clone().unwrap_or_default(),
+                            response: serde_json::json!({"approved": false}),
+                        },
+                    );
+                }
                 if !self.resolve_active_approval(false) {
                     self.tui_state.pending_approval = None;
                 }
@@ -2932,6 +2984,8 @@ impl App {
             agent_id: role.clone(),
             description: approval_id,
             command: command.clone(),
+            run_id: None,
+            approval_id: None,
         });
         self.pending_approval_response = Some(response_tx);
         self.tui_state.input_mode = InputMode::Confirm;

@@ -541,6 +541,25 @@ impl TuiBridge {
         });
     }
 
+    /// Publish an inbox item requiring human attention (P1-23).
+    ///
+    /// Called when a task outcome or gate verdict needs human review, budget
+    /// alerts fire, or a security event is detected.
+    pub fn inbox_item(
+        &self,
+        item_id: &str,
+        category: roko_core::dashboard_snapshot::InboxCategory,
+        urgency: roko_core::dashboard_snapshot::UrgencyLevel,
+        summary: &str,
+    ) {
+        self.sender.publish(DashboardEvent::InboxItemReceived {
+            item_id: item_id.to_string(),
+            category,
+            urgency,
+            summary: summary.to_string(),
+        });
+    }
+
     /// A gate rung started execution (item 108).
     ///
     /// Published before each rung in the gate pipeline so the TUI can show

@@ -86,6 +86,12 @@ pub(crate) fn render(
         return;
     }
 
+    // Sub-tab 3 = Safety incidents (P2-06).
+    if view_state.sub_tab == 3 {
+        render_safety_incidents(frame, area, tui_state, theme);
+        return;
+    }
+
     let all_entries = tui_state.unified_log_entries();
 
     // Sub-tab 1 ("Signals") shows only signal: and episode: sources.
@@ -1094,4 +1100,117 @@ mod tests {
         assert!(text.contains("claude-3"), "should extract model");
         assert!(text.contains("my-plan"), "should extract plan ID");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Sub-view 4: Safety Incidents (P2-06)
+// ---------------------------------------------------------------------------
+
+fn render_safety_incidents(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    tui_state: &TuiState,
+    theme: &Theme,
+) {
+    use ratatui::widgets::{Cell, Row, Table};
+
+    let incidents = &tui_state.safety_incidents;
+
+    if incidents.is_empty() {
+        let block = Block::bordered()
+            .title(Span::styled(" Safety Incidents ", theme.section_header()))
+            .border_style(theme.muted());
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        let lines = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "No safety incidents recorded.",
+                theme.muted(),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Quarantine events, taint propagation, and immune pipeline",
+                theme.muted(),
+            )),
+            Line::from(Span::styled(
+                "incidents will appear here when detected.",
+                theme.muted(),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Source: .roko/immune/",
+                theme.muted(),
+            )),
+        ];
+        frame.render_widget(
+            Paragraph::new(lines)
+                .alignment(Alignment::Center)
+                .wrap(Wrap { trim: false }),
+            inner,
+        );
+        return;
+    }
+
+    let header = Row::new(vec![
+        Cell::from(Span::styled("Time", theme.label())),
+        Cell::from(Span::styled("Type", theme.label())),
+        Cell::from(Span::styled("Severity", theme.label())),
+        Cell::from(Span::styled("Description", theme.label())),
+    ])
+    .style(Style::default().add_modifier(Modifier::BOLD));
+
+    let rows: Vec<Row> = incidents
+        .iter()
+        .map(|incident| {
+            let time_str = if incident.timestamp_ms > 0 {
+                let ts = chrono::DateTime::from_timestamp_millis(incident.timestamp_ms as i64);
+                ts.map_or_else(
+                    || incident.timestamp_ms.to_string(),
+                    |ts| ts.format("%m-%d %H:%M:%S").to_string(),
+                )
+            } else {
+                "\u{2014}".to_string()
+            };
+
+            let severity_style = match incident.severity.as_str() {
+                "critical" => Style::default().fg(Theme::EMBER),
+                "warning" | "warn" => Style::default().fg(Theme::WARNING),
+                _ => theme.muted(),
+            };
+
+            Row::new(vec![
+                Cell::from(Span::styled(time_str, theme.value())),
+                Cell::from(Span::styled(
+                    truncate_middle(&incident.event_type, 18),
+                    theme.value(),
+                )),
+                Cell::from(Span::styled(incident.severity.clone(), severity_style)),
+                Cell::from(Span::styled(
+                    truncate_middle(&incident.description, 60),
+                    theme.value(),
+                )),
+            ])
+        })
+        .collect();
+
+    let widths = [
+        Constraint::Length(15),
+        Constraint::Length(18),
+        Constraint::Length(10),
+        Constraint::Min(20),
+    ];
+
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(
+            Block::bordered()
+                .title(Span::styled(
+                    format!(" Safety Incidents ({}) ", incidents.len()),
+                    theme.section_header(),
+                ))
+                .border_style(theme.muted()),
+        );
+
+    frame.render_widget(table, area);
 }

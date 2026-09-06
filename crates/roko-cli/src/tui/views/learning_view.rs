@@ -43,6 +43,7 @@ pub(crate) fn render(
         SubView::LearningHistory => render_history(frame, rows[1], tui_state, theme),
         SubView::LearningEfficiency => render_efficiency(frame, rows[1], tui_state, theme),
         SubView::LearningPlaybooks => render_playbooks(frame, rows[1], tui_state, theme),
+        SubView::LearningExperiments => render_experiments(frame, rows[1], tui_state, theme),
         _ => render_router(frame, rows[1], tui_state, theme),
     }
 }
@@ -980,5 +981,137 @@ mod tests {
             text.contains("No efficiency events recorded yet"),
             "placeholder missing:\n{text}"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sub-view 5: Active Experiments (P2-04)
+// ---------------------------------------------------------------------------
+
+fn render_experiments(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme: &Theme) {
+    let experiments = &tui_state.experiments;
+
+    if experiments.is_empty() {
+        let block = Block::bordered()
+            .title(Span::styled(" Experiments ", theme.section_header()))
+            .border_style(theme.muted());
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        let lines = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "No prompt experiments configured yet.",
+                theme.muted(),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Experiments A/B-test prompt sections and model routing.",
+                theme.muted(),
+            )),
+            Line::from(Span::styled(
+                "Source: .roko/learn/experiments.json",
+                theme.muted(),
+            )),
+        ];
+        frame.render_widget(
+            Paragraph::new(lines)
+                .alignment(Alignment::Center)
+                .wrap(Wrap { trim: false }),
+            inner,
+        );
+        return;
+    }
+
+    let header = Row::new(vec![
+        Cell::from(Span::styled("Experiment", theme.label())),
+        Cell::from(Span::styled("Section", theme.label())),
+        Cell::from(
+            Line::from(Span::styled("Variants", theme.label())).alignment(Alignment::Right),
+        ),
+        Cell::from(
+            Line::from(Span::styled("Trials", theme.label())).alignment(Alignment::Right),
+        ),
+        Cell::from(Span::styled("Status", theme.label())),
+        Cell::from(Span::styled("Leader", theme.label())),
+    ])
+    .style(Style::default().add_modifier(Modifier::BOLD));
+
+    let rows: Vec<Row> = experiments
+        .iter()
+        .map(|exp| {
+            let status_style = match exp.status.as_str() {
+                "active" => Style::default().fg(Theme::SAGE),
+                "concluded" => Style::default().fg(Theme::DREAM),
+                _ => theme.muted(),
+            };
+            let leader = exp
+                .winner_id
+                .as_deref()
+                .unwrap_or("\u{2014}");
+            Row::new(vec![
+                Cell::from(Span::styled(
+                    truncate_str(&exp.experiment_id, 24),
+                    theme.value(),
+                )),
+                Cell::from(Span::styled(
+                    truncate_str(&exp.section_name, 18),
+                    theme.value(),
+                )),
+                Cell::from(
+                    Line::from(Span::styled(
+                        exp.active_variants.to_string(),
+                        theme.value(),
+                    ))
+                    .alignment(Alignment::Right),
+                ),
+                Cell::from(
+                    Line::from(Span::styled(
+                        exp.total_trials.to_string(),
+                        theme.value(),
+                    ))
+                    .alignment(Alignment::Right),
+                ),
+                Cell::from(Span::styled(exp.status.clone(), status_style)),
+                Cell::from(Span::styled(
+                    truncate_str(leader, 16),
+                    theme.value(),
+                )),
+            ])
+        })
+        .collect();
+
+    let widths = [
+        Constraint::Min(20),
+        Constraint::Length(18),
+        Constraint::Length(9),
+        Constraint::Length(8),
+        Constraint::Length(11),
+        Constraint::Min(12),
+    ];
+
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(
+            Block::bordered()
+                .title(Span::styled(
+                    format!(" Experiments ({}) ", experiments.len()),
+                    theme.section_header(),
+                ))
+                .border_style(theme.muted()),
+        )
+        .row_highlight_style(
+            Style::default()
+                .bg(Theme::DREAM)
+                .add_modifier(Modifier::BOLD),
+        );
+
+    frame.render_widget(table, area);
+}
+
+fn truncate_str(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}\u{2026}", &s[..max_len.saturating_sub(1)])
     }
 }

@@ -7888,6 +7888,16 @@ pub async fn run_with_tui_commands(
             run_advanced_learning_completion(config, &paths.episodes_jsonl).await;
         }
 
+        // P1-30: Run life review at shutdown to summarize what was learned.
+        if !cancel.is_cancelled() {
+            run_life_review_at_shutdown(config, &paths.episodes_jsonl);
+        }
+
+        // P1-41: Deprecate underperforming playbooks at plan completion.
+        if !cancel.is_cancelled() {
+            deprecate_underperforming_playbooks(config).await;
+        }
+
         // P0-02: Persist EFE belief state at plan end.
         if !cancel.is_cancelled() {
             save_efe_belief(&config.workdir, &efe_router);
@@ -10207,10 +10217,13 @@ struct CognitiveDispatchPolicy {
     vitality: f64,
     max_model_tier: Option<ModelTier>,
     cost_weight_multiplier: f64,
+    /// P1-43: Yerkes-Dodson complexity ceiling derived from arousal.
+    /// Values in `[0.25, 1.0]` where 1.0 = any complexity is acceptable.
+    yerkes_dodson_ceiling: f64,
 }
 
 impl CognitiveDispatchPolicy {
-    fn new(phase: roko_daimon::BehavioralPhase, vitality: f64) -> Self {
+    fn new(phase: roko_daimon::BehavioralPhase, vitality: f64, arousal: f64) -> Self {
         let vitality = vitality.clamp(0.0, 1.0);
         let max_model_tier = match phase.max_efe_tier() {
             Some(0) => Some(ModelTier::Fast),
@@ -10223,6 +10236,20 @@ impl CognitiveDispatchPolicy {
             vitality,
             max_model_tier,
             cost_weight_multiplier: if vitality < 0.5 { 1.5 } else { 1.0 },
+            yerkes_dodson_ceiling: roko_daimon::yerkes_dodson_complexity_ceiling(arousal),
+        }
+    }
+
+    /// P1-43: Return the Yerkes-Dodson recommended max complexity band.
+    fn max_complexity_band(&self) -> &'static str {
+        if self.yerkes_dodson_ceiling >= 0.85 {
+            "complex"
+        } else if self.yerkes_dodson_ceiling >= 0.6 {
+            "standard"
+        } else if self.yerkes_dodson_ceiling >= 0.4 {
+            "simple"
+        } else {
+            "trivial"
         }
     }
 }
@@ -10250,7 +10277,12 @@ fn with_daimon_state<T>(
 
 fn cognitive_dispatch_policy(config: &RunConfig) -> Option<CognitiveDispatchPolicy> {
     with_daimon_state(config, |daimon| {
-        CognitiveDispatchPolicy::new(daimon.behavioral_phase(), daimon.cognitive_energy.current)
+        let arousal = daimon.query().pad.arousal;
+        CognitiveDispatchPolicy::new(
+            daimon.behavioral_phase(),
+            daimon.cognitive_energy.current,
+            arousal,
+        )
     })
 }
 
@@ -10879,6 +10911,118 @@ fn deposit_gate_pheromone(
             %error,
             "pheromone deposit failed (non-fatal)"
         );
+    }
+}
+
+// ─── P1-30: Life review at shutdown ──────────────────────────────────────
+
+/// Run the life review pipeline on recent episodes and persist the result
+/// to `.roko/learn/life-review.jsonl`.
+///
+/// Converts recent episodes with emotional tags into `ReviewMemory` objects,
+/// runs the Butler/McAdams life review pipeline, and appends a summary
+/// record for later retrieval by successors.
+fn run_life_review_at_shutdown(config: &RunConfig, episodes_path: &Path) {
+    use roko_daimon::life_review::{LifeReviewConfig, ReviewMemory, review};
+
+    // Read episodes synchronously (the async reader requires a tokio runtime).
+    let episodes: Vec<roko_learn::episode_logger::Episode> = match std::fs::read_to_string(episodes_path) {
+        Ok(text) => text
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect(),
+        Err(_) => {
+            debug!("no episodes file for life review");
+            return;
+        }
+    };
+    if episodes.is_empty() {
+        debug!("no episodes for life review");
+        return;
+    }
+
+    // Convert episodes with emotional tags to ReviewMemory objects.
+    let memories: Vec<ReviewMemory> = episodes
+        .iter()
+        .filter_map(|episode| {
+            let tag = episode.emotional_tag.clone()?;
+            Some(ReviewMemory {
+                id: episode.id.clone(),
+                content: format!(
+                    "task={} model={} success={} {}",
+                    episode.task_id,
+                    episode.model,
+                    episode.success,
+                    episode.failure_reason.as_deref().unwrap_or(""),
+                ),
+                emotional_tag: tag,
+                timestamp: episode.timestamp.to_rfc3339(),
+                kind: episode.kind.clone(),
+            })
+        })
+        .collect();
+
+    if memories.is_empty() {
+        debug!("no emotionally-tagged episodes for life review");
+        return;
+    }
+
+    let life_review = review(&memories, &LifeReviewConfig::default());
+
+    let record = serde_json::json!({
+        "ts": chrono::Utc::now().to_rfc3339(),
+        "narrative_arc": format!("{:?}", life_review.narrative_arc),
+        "arc_description": life_review.narrative_arc.description(),
+        "total_memories": life_review.memories.len(),
+        "turning_points": life_review.turning_points.len(),
+        "trajectory": {
+            "mean_pleasure": life_review.trajectory.mean_pleasure,
+            "mean_arousal": life_review.trajectory.mean_arousal,
+            "mean_dominance": life_review.trajectory.mean_dominance,
+            "start_pleasure": life_review.trajectory.start_pleasure,
+            "end_pleasure": life_review.trajectory.end_pleasure,
+        },
+    });
+
+    let path = config.layout.learn_dir().join("life-review.jsonl");
+    if let Err(error) = super::persist::append_jsonl_relaxed(&path, &record) {
+        warn!(%error, "life review persistence failed (non-fatal)");
+    } else {
+        info!(
+            arc = ?life_review.narrative_arc,
+            memories = life_review.memories.len(),
+            turning_points = life_review.turning_points.len(),
+            "life review completed at shutdown"
+        );
+    }
+}
+
+// ─── P1-41: Playbook deprecation lifecycle ──────────────────────────────
+
+/// Deprecate playbooks with high failure rates at plan completion.
+///
+/// Scans the playbook store for entries with enough trials and marks those
+/// with a failure rate above `max_failure_rate` as deprecated by appending
+/// `[DEPRECATED]` to their goal.
+async fn deprecate_underperforming_playbooks(config: &RunConfig) {
+    let store = roko_learn::playbook::PlaybookStore::new(
+        config.layout.learn_dir().join("playbooks"),
+    );
+
+    match store.deprecate_underperformers(5, 0.7).await {
+        Ok(deprecated_ids) => {
+            if !deprecated_ids.is_empty() {
+                info!(
+                    count = deprecated_ids.len(),
+                    ids = ?deprecated_ids,
+                    "deprecated underperforming playbooks"
+                );
+            }
+        }
+        Err(error) => {
+            warn!(%error, "playbook deprecation check failed (non-fatal)");
+        }
     }
 }
 
@@ -12527,6 +12671,16 @@ async fn dispatch_action(
             }
 
             let cognitive_policy = cognitive_dispatch_policy(ctx.config);
+            // P1-43: Log Yerkes-Dodson complexity ceiling at dispatch time.
+            if let Some(ref policy) = cognitive_policy {
+                debug!(
+                    task = %task_id,
+                    yerkes_ceiling = %policy.yerkes_dodson_ceiling,
+                    max_complexity = %policy.max_complexity_band(),
+                    phase = ?policy.phase,
+                    "Yerkes-Dodson complexity ceiling at dispatch"
+                );
+            }
             if cognitive_policy
                 .is_some_and(|policy| policy.phase == roko_daimon::BehavioralPhase::Terminal)
             {
@@ -16572,7 +16726,15 @@ fn health_filtered_knowledge_candidates(
                 profiles
                     .iter()
                     .find(|(_, profile)| profile.slug == *slug)
-                    .map(|(_, profile)| (slug.clone(), profile.provider.clone()))
+                    .map(|(_, profile)| {
+                        // P1-46: Normalize provider IDs so that config values
+                        // like "claude-cli" and "claude_cli" map to the same
+                        // circuit breaker entry in the health registry.
+                        let normalized = roko_learn::provider_health::normalize_provider_key(
+                            &profile.provider,
+                        );
+                        (slug.clone(), normalized)
+                    })
             })
             .collect()
     });

@@ -1210,6 +1210,48 @@ impl KnowledgeStore {
             .collect())
     }
 
+    /// P1-34: Query with PAD affect state bias.
+    ///
+    /// Performs a standard keyword query, then re-scores results using PAD
+    /// similarity between the current affect state and each entry's emotional
+    /// provenance. Entries discovered in similar emotional states get a boost.
+    ///
+    /// The `pad_weight` parameter controls how much influence affect has:
+    /// 0.0 = no affect bias, 1.0 = strong affect bias.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the backing file cannot be read.
+    pub fn query_with_affect(
+        &self,
+        topic: &str,
+        limit: usize,
+        affect: &roko_core::affect::PadVector,
+        pad_weight: f64,
+    ) -> Result<Vec<KnowledgeEntry>> {
+        let pad_weight = pad_weight.clamp(0.0, 1.0);
+        // Fetch more candidates than needed so affect bias can reshuffle.
+        let oversampled = (limit * 2).max(10);
+        let mut hits = self.query_hits(topic, oversampled)?;
+
+        if pad_weight > f64::EPSILON {
+            for hit in &mut hits {
+                let pad_bonus = pad_affinity(affect, &hit.entry) * pad_weight * 0.25;
+                hit.total_score += pad_bonus;
+            }
+            hits.sort_by(|left, right| {
+                right
+                    .total_score
+                    .partial_cmp(&left.total_score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| left.entry.id.cmp(&right.entry.id))
+            });
+        }
+
+        hits.truncate(limit);
+        Ok(hits.into_iter().map(|hit| hit.entry).collect())
+    }
+
     /// Query the store by a serialized 10,240-bit fingerprint.
     ///
     /// Entries without a valid stored fingerprint are skipped. Results are
@@ -3154,6 +3196,27 @@ fn compare_hit_scores(left: &KnowledgeQueryHit, right: &KnowledgeQueryHit) -> st
 
 fn emotional_retrieval_boost(entry: &KnowledgeEntry) -> f64 {
     entry.emotional_retrieval_boost()
+}
+
+/// P1-34: Compute PAD affinity between the current affect state and a
+/// knowledge entry's emotional provenance. Returns 0.0 if the entry
+/// has no emotional provenance. Returns a value in [0.0, 1.0] where
+/// 1.0 = identical PAD vectors.
+fn pad_affinity(
+    current: &roko_core::affect::PadVector,
+    entry: &KnowledgeEntry,
+) -> f64 {
+    let Some(provenance) = entry.emotional_provenance.as_ref() else {
+        return 0.0;
+    };
+    let avg = &provenance.average_pad;
+    let dp = current.pleasure - avg.pleasure;
+    let da = current.arousal - avg.arousal;
+    let dd = current.dominance - avg.dominance;
+    let distance = (dp * dp + da * da + dd * dd).sqrt();
+    // Max possible distance is sqrt(12) ≈ 3.46 (each dimension in [-1, 1]).
+    // Normalize to [0, 1] where 0 = max distance, 1 = identical.
+    (1.0 - distance / 3.46).clamp(0.0, 1.0)
 }
 
 fn knowledge_kind_label(kind: KnowledgeKind) -> &'static str {

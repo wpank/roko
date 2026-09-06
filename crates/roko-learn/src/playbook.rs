@@ -1084,6 +1084,44 @@ impl PlaybookStore {
         self.record_outcome(id, success).await
     }
 
+    /// Deprecate playbooks with high failure rates.
+    ///
+    /// Scans all playbooks. Those with at least `min_trials` total outcomes
+    /// and a failure rate above `max_failure_rate` have `[DEPRECATED]`
+    /// prepended to their goal and are re-saved. Returns the list of
+    /// deprecated playbook ids.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for any I/O failure during listing, loading, or
+    /// saving playbooks.
+    pub async fn deprecate_underperformers(
+        &self,
+        min_trials: u64,
+        max_failure_rate: f64,
+    ) -> io::Result<Vec<String>> {
+        let playbooks = self.list().await?;
+        let mut deprecated = Vec::new();
+        for mut playbook in playbooks {
+            let total = playbook.total_outcomes();
+            if total < min_trials {
+                continue;
+            }
+            let failure_rate = playbook.failure_count as f64 / total as f64;
+            if failure_rate <= max_failure_rate {
+                continue;
+            }
+            // Already deprecated -- skip.
+            if playbook.goal.starts_with("[DEPRECATED]") {
+                continue;
+            }
+            playbook.goal = format!("[DEPRECATED] {}", playbook.goal);
+            self.save(&playbook).await?;
+            deprecated.push(playbook.id.clone());
+        }
+        Ok(deprecated)
+    }
+
     /// Delete the playbook stored under `id`. Returns `Ok(true)` if a file
     /// was removed, `Ok(false)` if no file existed.
     ///

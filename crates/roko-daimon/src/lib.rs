@@ -102,6 +102,58 @@ pub fn affect_size_multiplier(pleasure: f64, arousal: f64, dominance: f64) -> f6
     (arousal_factor * pleasure_factor).clamp(0.25, 1.5)
 }
 
+// ─── P1-43: Yerkes-Dodson arousal curve ──────────────────────────────
+//
+// The Yerkes-Dodson law (1908) states that performance peaks at moderate
+// arousal. Very low arousal => understimulated (can handle complex tasks
+// but low motivation). Very high arousal => overstimulated (only simple
+// tasks are safe). The inverted-U maps arousal to a max complexity ceiling.
+
+/// Yerkes-Dodson complexity ceiling derived from arousal level.
+///
+/// Returns a value in `[0.0, 1.0]` representing the recommended maximum
+/// task complexity as a fraction. 1.0 = any complexity is acceptable,
+/// 0.0 = only the simplest tasks should be attempted.
+///
+/// The curve is an inverted-U centered at moderate arousal (~0.3-0.5):
+///
+/// ```text
+///   1.0  ─────╮         ╭──────
+///              ╲       ╱
+///   0.5         ╲     ╱
+///                ╲   ╱
+///   0.0  ────────╰─╯────────
+///       -1.0    0.0    1.0  arousal
+/// ```
+#[must_use]
+pub fn yerkes_dodson_complexity_ceiling(arousal: f64) -> f64 {
+    let a = arousal.clamp(-1.0, 1.0);
+    // Gaussian-like curve peaked at arousal = 0.35 (moderate activation).
+    // Width chosen so the ceiling degrades gracefully at extremes.
+    let optimal = 0.35;
+    let width = 0.6;
+    let deviation = (a - optimal) / width;
+    (1.0 - 0.5 * deviation * deviation).clamp(0.25, 1.0)
+}
+
+/// Map a Yerkes-Dodson complexity ceiling to a `TaskComplexityBand` label.
+///
+/// Used at dispatch time to select the appropriate complexity band based
+/// on the current arousal state.
+#[must_use]
+pub fn yerkes_dodson_max_complexity(arousal: f64) -> &'static str {
+    let ceiling = yerkes_dodson_complexity_ceiling(arousal);
+    if ceiling >= 0.85 {
+        "complex"
+    } else if ceiling >= 0.6 {
+        "standard"
+    } else if ceiling >= 0.4 {
+        "simple"
+    } else {
+        "trivial"
+    }
+}
+
 // ─── Four-Factor Retrieval Model (P0-20) ────────────────────────────
 
 /// Learnable weights for the four-factor retrieval scoring model.

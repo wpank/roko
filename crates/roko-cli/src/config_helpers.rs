@@ -177,13 +177,16 @@ pub(crate) fn provider_id_for_routing_model(
     model_providers: &HashMap<String, String>,
     model: &str,
 ) -> String {
-    model_providers.get(model).cloned().unwrap_or_else(|| {
+    // P1-46: Normalize the resolved provider ID so that config values like
+    // "claude-cli" and "claude_cli" map to the same circuit breaker entry.
+    let raw = model_providers.get(model).cloned().unwrap_or_else(|| {
         let resolved = resolve_model(config, model);
         resolved
             .profile
             .map(|profile| profile.provider)
             .unwrap_or_else(|| resolved.provider_kind.label().to_owned())
-    })
+    });
+    roko_learn::provider_health::normalize_provider_key(&raw)
 }
 
 pub(crate) fn find_role_override<'a>(

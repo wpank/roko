@@ -240,6 +240,9 @@ pub fn load_dream_routing_advice(workdir: impl AsRef<Path>) -> Result<DreamRouti
     load_dream_routing_advice_at(&dream_routing_advice_path(workdir))
 }
 
+/// Default staleness TTL for routing advice (1 hour).
+pub const ROUTING_ADVICE_DEFAULT_TTL: chrono::TimeDelta = chrono::TimeDelta::hours(1);
+
 /// Load dream routing advice from an explicit path.
 ///
 /// Missing files return an empty default advice value.
@@ -248,6 +251,19 @@ pub fn load_dream_routing_advice(workdir: impl AsRef<Path>) -> Result<DreamRouti
 ///
 /// Returns an error if the file exists but cannot be read or parsed.
 pub fn load_dream_routing_advice_at(path: &Path) -> Result<DreamRoutingAdvice> {
+    load_dream_routing_advice_at_with_ttl(path, ROUTING_ADVICE_DEFAULT_TTL)
+}
+
+/// Load dream routing advice from an explicit path, returning the empty
+/// default if the advice is older than `ttl`.
+///
+/// # Errors
+///
+/// Returns an error if the file exists but cannot be read or parsed.
+pub fn load_dream_routing_advice_at_with_ttl(
+    path: &Path,
+    ttl: chrono::TimeDelta,
+) -> Result<DreamRoutingAdvice> {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -255,7 +271,23 @@ pub fn load_dream_routing_advice_at(path: &Path) -> Result<DreamRoutingAdvice> {
         }
         Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
     };
-    serde_json::from_str(&text).with_context(|| format!("parse {}", path.display()))
+    let advice: DreamRoutingAdvice =
+        serde_json::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
+
+    // P1-42: Check staleness TTL. If the advice is older than the configured
+    // TTL, discard it and return the empty default so the caller regenerates.
+    let age = Utc::now() - advice.generated_at;
+    if age > ttl {
+        tracing::debug!(
+            generated_at = %advice.generated_at,
+            age_secs = age.num_seconds(),
+            ttl_secs = ttl.num_seconds(),
+            "routing advice is stale, returning empty default"
+        );
+        return Ok(DreamRoutingAdvice::default());
+    }
+
+    Ok(advice)
 }
 
 /// Save dream routing advice to the default workspace path.

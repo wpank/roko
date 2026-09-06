@@ -44,9 +44,11 @@ pub use replay::{
     compute_replay_utility, select_replay_episodes, select_replay_episodes_with_affect,
 };
 pub use routing_advice::{
-    DREAM_ROUTING_ADVICE_PATH, DreamRoutingAdvice, PatternSummary, RoutingRecommendation,
-    dream_advice_to_routing_bias, dream_routing_advice_path, generate_routing_advice,
-    load_dream_routing_advice, relevant_pattern_summaries, save_dream_routing_advice,
+    DREAM_ROUTING_ADVICE_PATH, DreamRoutingAdvice, PatternSummary,
+    ROUTING_ADVICE_DEFAULT_TTL, RoutingRecommendation, dream_advice_to_routing_bias,
+    dream_routing_advice_path, generate_routing_advice, load_dream_routing_advice,
+    load_dream_routing_advice_at_with_ttl, relevant_pattern_summaries,
+    save_dream_routing_advice,
 };
 pub use runner::{
     BusPulseTriggerConfig, DreamAgentConfig, DreamBudget, DreamConfig, DreamEngine,

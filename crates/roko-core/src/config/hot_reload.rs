@@ -429,7 +429,7 @@ pub fn append_config_journal(
         .append(true)
         .open(journal_path)?;
     serde_json::to_writer(&mut file, &entry)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        .map_err(io::Error::other)?;
     file.write_all(b"\n")?;
     Ok(())
 }

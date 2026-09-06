@@ -48,7 +48,7 @@ pub enum MigrationResult {
     /// Successfully migrated to the current version.
     Migrated {
         /// The migrated fingerprint.
-        fingerprint: VersionedFingerprint,
+        fingerprint: Box<VersionedFingerprint>,
         /// Which versions were traversed.
         from_version: u32,
     },
@@ -64,10 +64,10 @@ pub enum MigrationResult {
 /// A migration step from one version to the next.
 pub trait MigrationStep: Send + Sync {
     /// Source version this step migrates from.
-    fn from_version(&self) -> u32;
+    fn source_version(&self) -> u32;
     /// Target version this step migrates to.
     fn to_version(&self) -> u32;
-    /// Migrate a vector from `from_version` to `to_version`.
+    /// Migrate a vector from `source_version` to `to_version`.
     fn migrate(&self, vector: &HdcVector) -> Result<HdcVector, String>;
 }
 
@@ -92,7 +92,7 @@ impl MigrationRegistry {
     /// Register a migration step.
     pub fn register(&mut self, step: Box<dyn MigrationStep>) {
         self.steps.push(step);
-        self.steps.sort_by_key(|s| s.from_version());
+        self.steps.sort_by_key(|s| s.source_version());
     }
 
     /// Migrate a fingerprint to the current version.
@@ -106,7 +106,7 @@ impl MigrationRegistry {
         let mut current_version = fingerprint.version;
 
         while current_version < CURRENT_VERSION {
-            let step = self.steps.iter().find(|s| s.from_version() == current_version);
+            let step = self.steps.iter().find(|s| s.source_version() == current_version);
             match step {
                 Some(step) => match step.migrate(&current_vector) {
                     Ok(migrated) => {
@@ -132,11 +132,11 @@ impl MigrationRegistry {
         }
 
         MigrationResult::Migrated {
-            fingerprint: VersionedFingerprint {
+            fingerprint: Box::new(VersionedFingerprint {
                 version: CURRENT_VERSION,
                 vector: current_vector,
                 encoded: None,
-            },
+            }),
             from_version,
         }
     }

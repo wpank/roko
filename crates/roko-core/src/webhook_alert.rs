@@ -114,12 +114,12 @@ impl WebhookConfig {
         if !self.enabled {
             return false;
         }
-        let severity_ok = match (self.min_severity, alert.severity) {
-            (AlertSeverity::Critical, AlertSeverity::Critical) => true,
-            (AlertSeverity::Warning, AlertSeverity::Critical | AlertSeverity::Warning) => true,
-            (AlertSeverity::Info, _) => true,
-            _ => false,
-        };
+        let severity_ok = matches!(
+            (self.min_severity, alert.severity),
+            (AlertSeverity::Critical, AlertSeverity::Critical)
+                | (AlertSeverity::Warning, AlertSeverity::Critical | AlertSeverity::Warning)
+                | (AlertSeverity::Info, _)
+        );
         let category_ok =
             self.categories.is_empty() || self.categories.contains(&alert.category);
         severity_ok && category_ok

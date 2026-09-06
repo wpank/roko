@@ -894,8 +894,8 @@ impl PoisoningDefense {
 
         if self.frozen {
             // Check for diversity to unfreeze.
-            let has_both = self.recent_directions.iter().any(|&d| d == 1)
-                && self.recent_directions.iter().any(|&d| d == -1);
+            let has_both = self.recent_directions.contains(&1)
+                && self.recent_directions.contains(&-1);
             if has_both {
                 self.diverse_since_freeze += 1;
             }

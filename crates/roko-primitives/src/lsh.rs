@@ -27,7 +27,7 @@ impl HashTable {
         let mut rng_state = seed;
         let hyperplane_indices: Vec<usize> = (0..hash_bits)
             .map(|_| {
-                rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                rng_state = rng_state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
                 (rng_state >> 33) as usize % HDC_BITS
             })
             .collect();
@@ -93,7 +93,7 @@ impl LshIndex {
     #[must_use]
     pub fn new(num_tables: usize, hash_bits: usize) -> Self {
         let tables: Vec<HashTable> = (0..num_tables.max(1))
-            .map(|i| HashTable::new(hash_bits.max(1), (i as u64 + 1) * 0x517cc1b727220a95))
+            .map(|i| HashTable::new(hash_bits.max(1), (i as u64 + 1) * 0x517c_c1b7_2722_0a95))
             .collect();
         Self {
             tables,

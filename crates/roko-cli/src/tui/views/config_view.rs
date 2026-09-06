@@ -587,7 +587,7 @@ fn append_runtime_sections(items: &mut Vec<ConfigItem>, tui_state: &TuiState) {
         let telemetry_dir = tui_state.workdir.join(".roko").join("telemetry");
         let lens_count = if telemetry_dir.exists() {
             std::fs::read_dir(&telemetry_dir)
-                .map(|entries| entries.filter(|e| e.is_ok()).count())
+                .map(|entries| entries.flatten().count())
                 .unwrap_or(0)
         } else {
             0

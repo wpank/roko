@@ -2047,7 +2047,7 @@ impl AppraisalResult {
 /// Tracks recent appraisal triggers to suppress duplicate emotions within
 /// a short window. Only events that cross a novelty threshold or are of
 /// a new category trigger full appraisal.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NoveltyFilter {
     /// Recent trigger types (ring buffer of last N triggers).
     recent_triggers: Vec<String>,

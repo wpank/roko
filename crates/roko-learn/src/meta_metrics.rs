@@ -79,7 +79,7 @@ impl LiftStabilityTracker {
         let history = self
             .history
             .entry(section.to_string())
-            .or_insert_with(Vec::new);
+            .or_default();
         history.push(lift);
         if history.len() > self.max_history {
             history.remove(0);

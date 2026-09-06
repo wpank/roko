@@ -82,7 +82,7 @@ impl ToolCapLearner {
                 success_count: 0,
                 total_count: 0,
             });
-            obs.buckets.last_mut().unwrap()
+            obs.buckets.last_mut().expect("bucket was just pushed")
         };
 
         bucket.total_count += 1;

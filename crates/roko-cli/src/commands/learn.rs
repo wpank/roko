@@ -1950,7 +1950,7 @@ async fn cmd_learn_tools(workdir: &std::path::Path, json: bool) -> Result<i32> {
 
     // Sort by call count descending.
     let mut rows: Vec<_> = stats.into_iter().collect();
-    rows.sort_by(|a, b| b.1.calls.cmp(&a.1.calls));
+    rows.sort_by_key(|b| std::cmp::Reverse(b.1.calls));
 
     if json {
         let json_rows: Vec<serde_json::Value> = rows

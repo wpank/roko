@@ -212,16 +212,16 @@ impl InferenceRequest {
             .collect::<Vec<_>>()
             .join("\n");
         // Append a fingerprint of tool definitions when present.
-        if let Some(tools) = &self.tools {
-            if !tools.is_empty() {
-                use std::hash::{Hash, Hasher};
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                for tool in tools {
-                    tool.name.hash(&mut hasher);
-                }
-                let tool_hash = hasher.finish();
-                text.push_str(&format!("\n__tools:{tool_hash:016x}"));
+        if let Some(tools) = &self.tools
+            && !tools.is_empty()
+        {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            for tool in tools {
+                tool.name.hash(&mut hasher);
             }
+            let tool_hash = hasher.finish();
+            text.push_str(&format!("\n__tools:{tool_hash:016x}"));
         }
         text
     }

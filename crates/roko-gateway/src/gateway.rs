@@ -522,6 +522,22 @@ impl InferenceGateway {
             false,
             None,
         )?;
+
+        // P0-11: record a richer multi-objective observation so the cascade
+        // router learns from gateway-level quality/cost/latency.
+        {
+            let ctx = routing_context(&request.metadata);
+            self.cascade_router.record_observation(
+                &ctx,
+                &response.model,
+                compute_gateway_reward(
+                    record.cost.actual_cost,
+                    response.latency_ms,
+                ),
+                true,
+            );
+        }
+
         self.finish_trace(execution.session_id, trace);
         self.counters
             .completed_requests
@@ -751,6 +767,16 @@ impl InferenceClient for InferenceGateway {
             }),
         ])))
     }
+}
+
+/// P0-11: compute a simple reward from cost and latency for the cascade
+/// router's contextual bandit. Successful completions always get a
+/// positive base reward (1.0), penalised proportionally by cost and
+/// latency so cheaper/faster providers accumulate higher scores.
+fn compute_gateway_reward(cost_usd: f64, latency_ms: u64) -> f64 {
+    let cost_penalty = (cost_usd * 100.0).min(0.5);
+    let latency_penalty = ((latency_ms as f64) / 60_000.0).min(0.3);
+    (1.0 - cost_penalty - latency_penalty).max(0.1)
 }
 
 fn routing_context(metadata: &InferenceMeta) -> RoutingContext {

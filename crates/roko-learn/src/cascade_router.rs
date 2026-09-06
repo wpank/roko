@@ -166,10 +166,25 @@ impl Default for RoutingContext {
 
 impl roko_agent::model_call_service::ForceBackendOverrideRecorder for CascadeRouter {
     fn record_override_outcome(&self, model_slug: &str, success: bool) -> bool {
-        // Use the full multi-objective path with a default routing context
-        // so that LinUCB observations are recorded even when the caller
-        // lacks a real RoutingContext (e.g. from ModelCallService).
-        let ctx = RoutingContext::default();
+        // P0-03: Build a routing context that reflects the model tier instead
+        // of a bare default. The trait boundary prevents passing a real
+        // RoutingContext from roko-agent, so we infer complexity from the
+        // model slug so the LinUCB bandit gets a more representative feature
+        // vector. The routing.rs FeedbackSink path already uses the real
+        // dispatch-time RoutingContext; this only covers the ModelCallService
+        // force_backend path.
+        let tier = crate::cascade::helpers::slug_to_tier_heuristic(model_slug);
+        let complexity = match tier {
+            roko_core::agent::ModelTier::Fast => roko_core::task::TaskComplexityBand::Fast,
+            roko_core::agent::ModelTier::Premium => roko_core::task::TaskComplexityBand::Complex,
+            _ => roko_core::task::TaskComplexityBand::Standard,
+        };
+        let ctx = RoutingContext {
+            complexity,
+            has_prior_failure: !success,
+            previous_model: Some(model_slug.to_string()),
+            ..RoutingContext::default()
+        };
         CascadeRouter::record_override_outcome(self, model_slug, &ctx, success, None)
     }
 }

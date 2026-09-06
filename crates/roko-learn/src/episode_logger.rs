@@ -279,6 +279,11 @@ pub struct Episode {
     /// Populated at dispatch time from the `PromptSectionMeta` vector.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_composition: Option<serde_json::Value>,
+    /// P0-07: Knowledge entry IDs that were injected into the prompt for this
+    /// episode. Enables tracing which knowledge entries contributed to each
+    /// agent outcome and correlating knowledge quality with task success.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub knowledge_ids_injected: Vec<String>,
     /// Forward-compat extension bag. Must serialize to ≤
     /// [`MAX_EXTRA_BYTES`].
     #[serde(default)]
@@ -327,6 +332,7 @@ impl Episode {
             emotional_tag: None,
             headline: false,
             prompt_composition: None,
+            knowledge_ids_injected: Vec::new(),
             extra: HashMap::new(),
         }
     }

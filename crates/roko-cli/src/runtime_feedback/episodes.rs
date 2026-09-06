@@ -85,6 +85,9 @@ impl FeedbackSink for EpisodeSink {
             .extra
             .insert("plan_id".into(), serde_json::Value::String(plan_id.clone()));
 
+        // P0-07: Record knowledge injection provenance as a first-class field.
+        episode.knowledge_ids_injected = knowledge_ids.clone();
+
         // ── Compounding metric keys (P3-4) ───────────────────────────────
         // Populate the episode `extra` bag with dispatch-time metadata so
         // downstream learning loops (c-factor, autocatalytic metrics,
@@ -93,10 +96,26 @@ impl FeedbackSink for EpisodeSink {
             "knowledge_used".into(),
             serde_json::Value::Bool(!knowledge_ids.is_empty()),
         );
+        // P0-06: Record the count of knowledge entries injected so
+        // compounding metrics can measure reuse depth, not just presence.
+        if !knowledge_ids.is_empty() {
+            episode.extra.insert(
+                "knowledge_count".into(),
+                serde_json::Value::Number(serde_json::Number::from(knowledge_ids.len())),
+            );
+        }
         if let Some(first_pb) = playbook_ids.first() {
             episode.extra.insert(
                 "playbook_id".into(),
                 serde_json::Value::String(first_pb.clone()),
+            );
+        }
+        // P0-04: Record the total playbook hit count so compounding metrics
+        // can observe multi-playbook dispatch scenarios beyond the first ID.
+        if !playbook_ids.is_empty() {
+            episode.extra.insert(
+                "playbook_hits".into(),
+                serde_json::Value::Number(serde_json::Number::from(playbook_ids.len())),
             );
         }
         episode.extra.insert(

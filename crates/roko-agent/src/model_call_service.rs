@@ -2124,6 +2124,18 @@ pub(crate) fn provider_error_kind(message: &str) -> &'static str {
         || lower.contains("504")
     {
         "server_error"
+    } else if lower.contains("connection refused")
+        || lower.contains("connection reset")
+        || lower.contains("dns")
+        || lower.contains("network")
+        || lower.contains("tcp connect")
+        || lower.contains("econnrefused")
+        || lower.contains("enotfound")
+        || lower.contains("broken pipe")
+    {
+        // P0-16: Classify network/connection errors separately from unknown
+        // so the health registry can apply appropriate cooldown.
+        "timeout"
     } else {
         "unknown"
     }

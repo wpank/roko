@@ -1793,6 +1793,11 @@ struct RunContext<'a> {
     /// P0-04: CodingOracle for pre-dispatch predictions and post-gate
     /// observations. Accumulates build/test patterns across the entire run.
     coding_oracle: &'a CodingOracle,
+    /// P0-01: Section outcome bandit — per-section empirical pass rates
+    /// loaded from section-outcomes.jsonl at plan start.
+    section_scores: &'a HashMap<String, f64>,
+    /// P0-02: EFE router loaded from disk at plan start, persisted at plan end.
+    efe_router: &'a roko_learn::active_inference::EfeRouter,
 }
 
 #[derive(Debug, Clone)]
@@ -3561,6 +3566,45 @@ pub async fn run_with_tui_commands(
     // entries via KnowledgeStore so the demurrage balance loop has positive income.
     let mut task_knowledge_ids: HashMap<String, Vec<String>> = HashMap::new();
 
+    // P0-01: Section outcome bandit — load section pass rates at plan start
+    // so dispatch can deprioritize low-performing prompt sections.
+    let section_scores: HashMap<String, f64> = {
+        let outcomes_path = persist::section_outcomes_path(&config.workdir);
+        match roko_learn::section_outcome::read_section_outcomes(&outcomes_path).await {
+            Ok(records) => {
+                let mut pass_counts: HashMap<String, (u64, u64)> = HashMap::new();
+                for record in &records {
+                    let entry = pass_counts.entry(record.section_name.clone()).or_default();
+                    entry.1 += 1; // total
+                    if record.status == roko_learn::section_outcome::SectionOutcomeStatus::Passed {
+                        entry.0 += 1; // passed
+                    }
+                }
+                let scores: HashMap<String, f64> = pass_counts
+                    .into_iter()
+                    .map(|(name, (passed, total))| {
+                        (name, if total == 0 { 0.5 } else { passed as f64 / total as f64 })
+                    })
+                    .collect();
+                if !scores.is_empty() {
+                    info!(
+                        sections = scores.len(),
+                        records = records.len(),
+                        "P0-01: loaded section outcome bandit scores"
+                    );
+                }
+                scores
+            }
+            Err(err) => {
+                warn!(%err, "P0-01: failed to load section outcomes, using default scores");
+                HashMap::new()
+            }
+        }
+    };
+
+    // P0-02: Load persisted EFE belief state at plan start.
+    let efe_router = load_efe_router(&config.workdir);
+
     // `skip_enrichment` is retained as plan metadata for compatibility and
     // diagnostics. Runner v2 always resolves the executor's Enriching phase
     // inline because the legacy multi-step LLM enrichment pipeline was never
@@ -3713,18 +3757,22 @@ pub async fn run_with_tui_commands(
         .map(|r| r.model_slugs().to_vec())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| vec![config.model.clone()]);
+    // P0-08: Share the anomaly detector between the learning subscriber and the
+    // event loop so post-task cost spikes can be detected inline.
+    let anomaly_detector = {
+        use std::sync::Mutex;
+        let start_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as i64);
+        Arc::new(Mutex::new(roko_learn::anomaly::AnomalyDetector::new(start_ms)))
+    };
     let learning_subscriber_handle = {
         use std::sync::Mutex;
         let latency = Arc::new(roko_learn::latency::LatencyRegistry::new());
         let router = Arc::new(roko_learn::cascade_router::CascadeRouter::new(
             subscriber_model_slugs,
         ));
-        let anomaly_start_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis() as i64);
-        let anomaly = Arc::new(Mutex::new(roko_learn::anomaly::AnomalyDetector::new(
-            anomaly_start_ms,
-        )));
+        let anomaly = Arc::clone(&anomaly_detector);
         let costs = Arc::new(roko_learn::costs_db::CostsDb::new());
         let efficiency_path = config.layout.learn_dir().join("efficiency.jsonl");
         let router_persist_path = Some(config.layout.learn_dir().join("cascade-router.json"));
@@ -5686,6 +5734,137 @@ pub async fn run_with_tui_commands(
                     }
                 }
 
+                // ── P0-13: Prompt efficiency scoring ────────────────────
+                // Compute a PromptEfficiencyScore from the prompt section
+                // diagnostics and gate verdict. Log the composite grade so
+                // operators can see which assemblies are budget-bloated.
+                {
+                    let attempt_key = completion_attempt.key();
+                    if let Some(diag) = section_diagnostics.get(&attempt_key) {
+                        let included = diag.included_sections.len() as f64;
+                        let total = (included + diag.dropped_sections.len() as f64).max(1.0);
+                        let signal_ratio = included / total;
+                        // Use estimated prompt tokens / actual tokens_in as
+                        // budget utilization proxy (no explicit model context
+                        // window on TaskRuntimeState).
+                        let budget_utilization = if state.tokens_in > 0 {
+                            (diag.estimated_tokens as f64)
+                                / (state.tokens_in as f64)
+                        } else {
+                            0.5
+                        };
+                        let cache_efficiency = if state.tokens_in > 0 {
+                            state.cache_read_tokens as f64 / state.tokens_in as f64
+                        } else {
+                            0.0
+                        };
+                        let score = roko_learn::efficiency::PromptEfficiencyScore::new(
+                            signal_ratio,
+                            budget_utilization,
+                            cache_efficiency,
+                            completion.passed,
+                        );
+                        debug!(
+                            plan_id = %completion.plan_id,
+                            task_id = %completion.task_id,
+                            composite = score.composite(),
+                            grade = ?score.grade(),
+                            signal_ratio,
+                            budget_utilization,
+                            cache_efficiency,
+                            gate_passed = completion.passed,
+                            "P0-13: prompt efficiency scored"
+                        );
+                    }
+                }
+
+                // ── P0-14: Per-section cost attribution ──────────────────
+                // Distribute the task's total cost across prompt sections
+                // proportional to their estimated token counts. Appended as
+                // a supplementary efficiency event so downstream analysis
+                // can identify expensive prompt sections.
+                {
+                    let attempt_key = completion_attempt.key();
+                    if let Some(diag) = section_diagnostics.get(&attempt_key) {
+                        if let Some(ref manifest) = diag.composition_manifest {
+                            let total_section_tokens: u64 = manifest
+                                .included
+                                .iter()
+                                .map(|s| s.estimated_tokens as u64)
+                                .sum();
+                            if total_section_tokens > 0 && state.cost_usd > 0.0 {
+                                let sections: Vec<roko_learn::efficiency::PromptSectionMeta> = manifest
+                                    .included
+                                    .iter()
+                                    .map(|s| {
+                                        roko_learn::efficiency::PromptSectionMeta {
+                                            name: s.name.clone(),
+                                            tokens: s.estimated_tokens as u64,
+                                            // IncludedSectionMeta doesn't carry priority;
+                                            // derive a coarse priority from bid_value.
+                                            priority: (255.0 - (s.bid_value * 255.0).min(255.0)) as u8,
+                                            was_truncated: false,
+                                            was_dropped: false,
+                                        }
+                                    })
+                                    .collect();
+                                let cost_event = AgentEfficiencyEvent {
+                                    agent_id: format!(
+                                        "{}/{}",
+                                        completion.plan_id, completion.task_id
+                                    ),
+                                    role: "section_cost".to_string(),
+                                    backend: state.agent_provider.clone(),
+                                    model: state.agent_model.clone(),
+                                    model_used: state.agent_model.clone(),
+                                    plan_id: completion.plan_id.clone(),
+                                    task_id: completion.task_id.clone(),
+                                    attempt_id: attempt_key.clone(),
+                                    cost_usd: state.cost_usd,
+                                    prompt_sections: sections,
+                                    total_prompt_tokens: total_section_tokens,
+                                    gate_passed: Some(completion.passed),
+                                    outcome: if completion.passed {
+                                        "section_cost_pass".to_string()
+                                    } else {
+                                        "section_cost_fail".to_string()
+                                    },
+                                    timestamp: chrono::Utc::now().to_rfc3339(),
+                                    ..AgentEfficiencyEvent::default()
+                                };
+                                let efficiency_path = paths.efficiency_jsonl.clone();
+                                feedback_tasks.spawn(async move {
+                                    match serde_json::to_string(&cost_event) {
+                                        Ok(encoded) => {
+                                            if let Err(err) =
+                                                tokio::task::spawn_blocking(move || {
+                                                    roko_fs::log_rotation::append_jsonl_line_sync(
+                                                        &efficiency_path,
+                                                        encoded.as_bytes(),
+                                                        50,
+                                                    )
+                                                })
+                                                .await
+                                            {
+                                                warn!(
+                                                    %err,
+                                                    "P0-14: failed to append section cost event"
+                                                );
+                                            }
+                                        }
+                                        Err(err) => {
+                                            warn!(
+                                                %err,
+                                                "P0-14: failed to serialize section cost event"
+                                            );
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                    }
+                }
+
                 // ── Playbook outcome recording ───────────────────────────
                 // Record gate pass/fail against every playbook that was
                 // injected into this task's prompt. This closes the feedback
@@ -5898,6 +6077,23 @@ pub async fn run_with_tui_commands(
                             &paths,
                             &tui,
                         );
+                    }
+
+                    // P0-08: Check for cost spike anomalies after each task completion.
+                    if state.cost_usd > 0.0 {
+                        if let Ok(mut detector) = anomaly_detector.lock() {
+                            if let Some(anomaly) = detector.check_cost(state.cost_usd) {
+                                if let roko_learn::anomaly::Anomaly::CostSpike { z_score } = anomaly {
+                                    warn!(
+                                        task = %completion.task_id,
+                                        plan = %completion.plan_id,
+                                        cost_usd = state.cost_usd,
+                                        z_score,
+                                        "P0-08: cost spike anomaly detected"
+                                    );
+                                }
+                            }
+                        }
                     }
                     if matches!(terminalized, TaskTerminalization::AlreadyRecorded) {
                         debug!(
@@ -6694,6 +6890,8 @@ pub async fn run_with_tui_commands(
                         }),
                         gate_adapter: Some(Arc::new(gate_dispatch::default_gate_adapter())),
                         coding_oracle: &coding_oracle,
+                        section_scores: &section_scores,
+                        efe_router: &efe_router,
                     };
                     let dispatch_outcome = dispatch_action(&action, &mut ctx).await;
                     if wake_driven_scheduler
@@ -7557,6 +7755,11 @@ pub async fn run_with_tui_commands(
             run_advanced_learning_completion(config, &paths.episodes_jsonl).await;
         }
 
+        // P0-02: Persist EFE belief state at plan end.
+        if !cancel.is_cancelled() {
+            save_efe_belief(&config.workdir, &efe_router);
+        }
+
         // ── Post-run episode compaction ──────────────────────────────────
         //
         // Compact the episode log using the default retention policy.  This
@@ -7958,6 +8161,23 @@ async fn conductor_supervision_tick(
             // Record the restart timestamp so the cooldown gate (P2-3) can
             // suppress the next attempt if it arrives too quickly.
             *last_conductor_restart = Some(Instant::now());
+
+            // P0-18: Record the intervention outcome for threshold learning.
+            // At restart time we optimistically record `task_improved: true`
+            // because the restart completed and tasks were requeued. The
+            // threshold learner will lower thresholds for this watcher,
+            // making it easier to trigger next time.
+            conductor.record_intervention_outcome(
+                roko_conductor::InterventionOutcome {
+                    watcher_name: watcher.clone(),
+                    severity_at_fire: 0.7,
+                    decision_label: "restart".to_string(),
+                    task_improved: true,
+                    recorded_at_ms: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_millis() as i64),
+                },
+            );
         }
 
         roko_core::ConductorDecision::Fail {
@@ -8060,6 +8280,22 @@ async fn conductor_supervision_tick(
                 watcher = watcher.as_str(),
                 reason = reason_str.as_str(),
                 "conductor supervision emitted terminal run failure"
+            );
+
+            // P0-18: Record the Fail intervention outcome so threshold
+            // learning knows this intervention led to a terminal abort
+            // (task_improved: false). The learner will raise thresholds
+            // for this watcher so it requires a stronger signal next time.
+            conductor.record_intervention_outcome(
+                roko_conductor::InterventionOutcome {
+                    watcher_name: watcher.clone(),
+                    severity_at_fire: 0.9,
+                    decision_label: "fail".to_string(),
+                    task_improved: false,
+                    recorded_at_ms: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_millis() as i64),
+                },
             );
         }
 
@@ -9992,6 +10228,7 @@ fn efe_dispatch_tier(
     task_def: &TaskDef,
     attempt_num: u32,
     policy: Option<CognitiveDispatchPolicy>,
+    efe_router: &roko_learn::active_inference::EfeRouter,
 ) -> Option<ModelTier> {
     let policy = policy.filter(|policy| policy.vitality < 1.0 - f64::EPSILON)?;
     let surprise_rate = (f64::from(attempt_num.saturating_sub(1)) / 3.0).min(1.0) as f32;
@@ -10008,17 +10245,81 @@ fn efe_dispatch_tier(
         "deep" | "complex" | "architectural" => 1.0,
         _ => 0.5,
     };
-    let selected = roko_learn::active_inference::EfeRouter::default().route(
-        surprise_rate,
-        regime,
-        task_difficulty,
-    );
+    // P0-02: Use the persisted EFE router instead of a fresh default.
+    let selected = efe_router.route(surprise_rate, regime, task_difficulty);
     let max_tier = policy.max_model_tier?;
     Some(if model_tier_rank(selected) > model_tier_rank(max_tier) {
         max_tier
     } else {
         selected
     })
+}
+
+/// P0-02: Load the EFE belief state from disk, falling back to the default
+/// uniform prior if the file does not exist or cannot be parsed.
+fn load_efe_router(workdir: &Path) -> roko_learn::active_inference::EfeRouter {
+    let path = roko_fs::RokoLayout::for_project(workdir)
+        .learn_dir()
+        .join("efe-belief.json");
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => {
+            match serde_json::from_str::<roko_learn::active_inference::BeliefState>(&contents) {
+                Ok(belief) => {
+                    info!(
+                        updates = belief.updates,
+                        path = %path.display(),
+                        "P0-02: loaded persisted EFE belief state"
+                    );
+                    match roko_learn::active_inference::EfeRouter::new(
+                        belief,
+                        std::collections::HashMap::from([
+                            (roko_core::agent::ModelTier::Fast, 0.25),
+                            (roko_core::agent::ModelTier::Standard, 3.0),
+                            (roko_core::agent::ModelTier::Premium, 15.0),
+                        ]),
+                    ) {
+                        Ok(router) => router,
+                        Err(err) => {
+                            warn!(%err, "P0-02: invalid EFE router config, using default");
+                            roko_learn::active_inference::EfeRouter::default()
+                        }
+                    }
+                }
+                Err(err) => {
+                    warn!(%err, "P0-02: failed to parse EFE belief state, using default");
+                    roko_learn::active_inference::EfeRouter::default()
+                }
+            }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            debug!("P0-02: no EFE belief state found, starting with uniform prior");
+            roko_learn::active_inference::EfeRouter::default()
+        }
+        Err(err) => {
+            warn!(%err, "P0-02: failed to read EFE belief state, using default");
+            roko_learn::active_inference::EfeRouter::default()
+        }
+    }
+}
+
+/// P0-02: Save the EFE belief state to disk. Failures are logged but never abort.
+fn save_efe_belief(workdir: &Path, router: &roko_learn::active_inference::EfeRouter) {
+    let path = roko_fs::RokoLayout::for_project(workdir)
+        .learn_dir()
+        .join("efe-belief.json");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match serde_json::to_string_pretty(router.belief()) {
+        Ok(json) => {
+            if let Err(err) = std::fs::write(&path, json) {
+                warn!(%err, "P0-02: failed to persist EFE belief state");
+            } else {
+                debug!(path = %path.display(), "P0-02: persisted EFE belief state");
+            }
+        }
+        Err(err) => warn!(%err, "P0-02: failed to serialize EFE belief state"),
+    }
 }
 
 fn model_for_exact_tier(
@@ -12971,15 +13272,36 @@ async fn dispatch_action(
             ctx.state.current_daimon_strategy = daimon_hook.as_ref().map(|hook| hook.strategy);
 
             // Emit affect state to TUI so the Daimon panel shows live PAD gauges.
+            // P0-10: populate recent_markers from the somatic signal and
+            // active_biases from the behavioral strategy.
             if let Some(ref h) = daimon_hook {
+                let recent_markers: Vec<(String, f64)> = if h.signal.is_actionable() {
+                    vec![
+                        (format!("valence:{:.2}", h.signal.valence), h.signal.intensity),
+                        (
+                            format!("neighbors:{}", h.signal.neighbor_count),
+                            h.signal.intensity,
+                        ),
+                    ]
+                } else {
+                    Vec::new()
+                };
+                let strategy = roko_daimon::strategy_from_pad(
+                    &roko_core::PadVector::new(h.pleasure, h.arousal, h.dominance),
+                );
+                let active_biases = vec![
+                    format!("{:?}", h.behavioral_state),
+                    format!("strategy:{strategy:?}"),
+                    format!("confidence:{:.2}", h.affect_confidence),
+                ];
                 ctx.tui.affect_updated(
                     h.pleasure,
                     h.arousal,
                     h.dominance,
                     &format!("{:?}", h.behavioral_state),
                     h.affect_confidence,
-                    Vec::new(),
-                    Vec::new(),
+                    recent_markers,
+                    active_biases,
                 );
             }
 
@@ -13222,7 +13544,7 @@ async fn dispatch_action(
                     };
                 }
             }
-            let efe_tier = efe_dispatch_tier(&task_def, attempt_num, cognitive_policy);
+            let efe_tier = efe_dispatch_tier(&task_def, attempt_num, cognitive_policy, ctx.efe_router);
             if allow_learned_model_modulation
                 && let Some(efe_model) = model_for_exact_tier(
                     ctx.config,
@@ -13419,8 +13741,15 @@ async fn dispatch_action(
                     );
                 }
                 if context_scope.max_similar_episodes > 0 {
+                    // P0-09: Include the task description (when available) in the
+                    // HDC fingerprint so similar-episode queries use richer content
+                    // instead of just the title.
+                    let task_context = task_def
+                        .description
+                        .as_deref()
+                        .unwrap_or("");
                     let task_fp =
-                        roko_learn::hdc_fingerprint::fingerprint_episode(&task_def.title, "");
+                        roko_learn::hdc_fingerprint::fingerprint_episode(&task_def.title, task_context);
                     let episodes = await_dispatch_step(
                         ctx.dispatch_deadline,
                         ctx.cancel,
@@ -13523,6 +13852,12 @@ async fn dispatch_action(
                 dropped_sections = prompt_diagnostics.dropped_sections.len(),
                 "dispatch: model selected, prompt assembled"
             );
+            // P0-01: Log section bandit scores for included sections.
+            let bandit_scores: Vec<(&str, f64)> = prompt_diagnostics
+                .included_sections
+                .iter()
+                .map(|name| (name.as_str(), section_score(ctx.section_scores, name)))
+                .collect();
             debug!(
                 plan_id = %plan_id,
                 task = %task_id,
@@ -13530,6 +13865,7 @@ async fn dispatch_action(
                 dropped_sections = ?dispatch_plan.prompt.diagnostics.dropped_sections,
                 knowledge_ids = ?dispatch_plan.prompt.diagnostics.knowledge_ids,
                 playbook_ids = ?dispatch_plan.prompt.diagnostics.playbook_ids,
+                section_bandit_scores = ?bandit_scores,
                 "dispatch prompt detail"
             );
 
@@ -15731,6 +16067,13 @@ async fn append_section_outcomes(path: PathBuf, records: Vec<SectionOutcomeRecor
         }
         Err(err) => warn!(err = %err, "failed to open section outcome store"),
     }
+}
+
+/// P0-01: Look up the empirical pass rate for a prompt section.
+/// Returns 0.5 (neutral) for unknown sections.
+#[must_use]
+fn section_score(scores: &HashMap<String, f64>, name: &str) -> f64 {
+    scores.get(name).copied().unwrap_or(0.5)
 }
 
 fn parse_dispatch_role(role: &str) -> AgentRole {
@@ -21917,8 +22260,9 @@ tier = "architectural"
         let conservation =
             CognitiveDispatchPolicy::new(roko_daimon::BehavioralPhase::Conservation, 0.4);
 
-        assert_eq!(efe_dispatch_tier(task, 4, Some(default)), None);
-        let selected = efe_dispatch_tier(task, 4, Some(conservation)).expect("EFE tier");
+        let default_router = roko_learn::active_inference::EfeRouter::default();
+        assert_eq!(efe_dispatch_tier(task, 4, Some(default), &default_router), None);
+        let selected = efe_dispatch_tier(task, 4, Some(conservation), &default_router).expect("EFE tier");
         assert!(model_tier_rank(selected) <= model_tier_rank(ModelTier::Standard));
     }
 
@@ -22867,6 +23211,8 @@ slug = "fixture-model"
             dispatch_deadline: None,
             gate_adapter: None,
             coding_oracle: &CodingOracle::new(),
+            section_scores: &HashMap::new(),
+            efe_router: &roko_learn::active_inference::EfeRouter::default(),
         };
         let action = ExecutorAction::SpawnAgent {
             plan_id: "plan".to_string(),
@@ -23112,6 +23458,8 @@ slug = "fixture-model"
                 dispatch_deadline: None,
                 gate_adapter: None,
                 coding_oracle: &CodingOracle::new(),
+                section_scores: &HashMap::new(),
+                efe_router: &roko_learn::active_inference::EfeRouter::default(),
             };
             dispatch_action(
                 &ExecutorAction::SpawnAgent {

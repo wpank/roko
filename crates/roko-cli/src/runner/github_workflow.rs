@@ -384,6 +384,15 @@ async fn check_ci_then_merge(
     loop {
         match ops.check_ci_status(&plan.branch).await {
             Ok(CiStatus::Success) => {
+                // P0-17: structured CI outcome log for episode correlation.
+                info!(
+                    %plan_id,
+                    branch = %plan.branch,
+                    pr_number = plan.pr_number,
+                    ci_outcome = "success",
+                    ci_retries = ci_check_retries,
+                    "P0-17: CI outcome recorded"
+                );
                 if let Err(error) = ops
                     .merge_pr(plan.pr_number, config.merge_method.as_str())
                     .await
@@ -394,6 +403,15 @@ async fn check_ci_then_merge(
                 return;
             }
             Ok(CiStatus::Failure) => {
+                // P0-17: structured CI outcome log for episode correlation.
+                warn!(
+                    %plan_id,
+                    branch = %plan.branch,
+                    pr_number = plan.pr_number,
+                    ci_outcome = "failure",
+                    ci_retries = ci_check_retries,
+                    "P0-17: CI outcome recorded"
+                );
                 error!(%plan_id, branch = %plan.branch, "GitHub CI failed; PR left open");
                 let body = format!(
                     "## CI failed\n\nGitHub CI for branch `{}` failed after local regression passed. The PR was not merged.",
@@ -411,6 +429,15 @@ async fn check_ci_then_merge(
                 tokio::time::sleep(policy.interval).await;
             }
             Ok(CiStatus::Pending) => {
+                // P0-17: structured CI outcome log for episode correlation.
+                warn!(
+                    %plan_id,
+                    branch = %plan.branch,
+                    pr_number = plan.pr_number,
+                    ci_outcome = "pending_timeout",
+                    ci_retries = ci_check_retries,
+                    "P0-17: CI outcome recorded"
+                );
                 let body = format!(
                     "## CI still pending\n\nGitHub CI for branch `{}` remained pending after {} retries. The PR was left open.",
                     plan.branch, policy.max_retries

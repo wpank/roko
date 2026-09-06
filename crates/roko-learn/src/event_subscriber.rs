@@ -196,6 +196,19 @@ pub async fn run_learning_subscriber(
                 );
                 costs.insert(cost_record);
 
+                // P0-12: record model-level wall time into the latency
+                // registry so `CascadeRouter::reward_with_tracker_latency`
+                // has per-model p50/p95 data.
+                if usage.wall_ms > 0 {
+                    latency.record(
+                        &turn_ctx.model,
+                        &turn_ctx.provider,
+                        usage.wall_ms as f64,
+                        usage.wall_ms as f64,
+                        u64::from(usage.output_tokens),
+                    );
+                }
+
                 let tools_used = tool_call_count.min(u32::MAX as usize) as u32;
                 let attempt_id = format!("{}:{turn}", turn_ctx.attempt_id_base);
                 // Clone before struct field moves consume these values.

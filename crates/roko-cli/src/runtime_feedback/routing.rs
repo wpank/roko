@@ -103,16 +103,19 @@ impl FeedbackSink for RoutingObservationSink {
         };
 
         if *succeeded {
-            // Quality is the binary success signal; cost / latency
-            // pressure are 0.0 because FeedbackEvent does not carry a
-            // budget remaining or SLA signal yet (T4-30 commit body).
+            // P0-05: Feed real cost from the agent outcome into the bandit.
+            // Normalize against a $1.00 per-task ceiling so the cost signal
+            // stays in [0, 1] for the LinUCB reward computation. Latency
+            // remains 0.0 until a SLA signal is available.
+            let normalized_cost = (outcome.cost_usd / 1.0).clamp(0.0, 1.0);
+            let normalized_latency = (outcome.duration_ms as f64 / 300_000.0).clamp(0.0, 1.0);
             let weights = RewardWeights::default();
             self.router.observe_multi_objective(
                 ctx.to_features(),
                 model_idx,
                 /* quality */ 1.0,
-                /* normalized_cost */ 0.0,
-                /* normalized_latency */ 0.0,
+                normalized_cost,
+                normalized_latency,
                 &weights,
             );
         } else {

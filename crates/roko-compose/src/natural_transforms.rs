@@ -266,6 +266,62 @@ pub trait NaturalTransformation<Source, Target> {
     fn transform(source: &Source) -> Target;
 }
 
+// ─── P4-24: Concrete NaturalTransformation trait implementations ────────
+
+/// Memory -> Daimon: gate outcomes become affect appraisal events.
+pub struct MemoryToDaimon;
+
+impl NaturalTransformation<MemoryOutcome, AffectEvent> for MemoryToDaimon {
+    fn transform(source: &MemoryOutcome) -> AffectEvent {
+        eta_MN(source)
+    }
+}
+
+/// Daimon -> Memory: affect assessments become knowledge entries.
+pub struct DaimonToMemory;
+
+impl NaturalTransformation<DaimonAssessment, KnowledgeEntry> for DaimonToMemory {
+    fn transform(source: &DaimonAssessment) -> KnowledgeEntry {
+        eta_NM(source)
+    }
+}
+
+/// Memory -> Dreams: knowledge entries become replay inputs.
+pub struct MemoryToDreams;
+
+impl NaturalTransformation<KnowledgeEntry, DreamConsolidationInput> for MemoryToDreams {
+    fn transform(source: &KnowledgeEntry) -> DreamConsolidationInput {
+        eta_MD(source)
+    }
+}
+
+/// Daimon -> Dreams: affect assessments become replay inputs.
+pub struct DaimonToDreams;
+
+impl NaturalTransformation<DaimonAssessment, DreamConsolidationInput> for DaimonToDreams {
+    fn transform(source: &DaimonAssessment) -> DreamConsolidationInput {
+        eta_ND(source)
+    }
+}
+
+/// Dreams -> Memory: consolidation reports become knowledge entries.
+pub struct DreamsToMemory;
+
+impl NaturalTransformation<DreamCycleReport, Vec<KnowledgeEntry>> for DreamsToMemory {
+    fn transform(source: &DreamCycleReport) -> Vec<KnowledgeEntry> {
+        eta_DM(source)
+    }
+}
+
+/// Dreams -> Daimon: consolidation reports become affect inputs.
+pub struct DreamsToDaimon;
+
+impl NaturalTransformation<DreamCycleReport, DreamAffectInput> for DreamsToDaimon {
+    fn transform(source: &DreamCycleReport) -> DreamAffectInput {
+        eta_DN(source)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use roko_neuro::KnowledgeKind;

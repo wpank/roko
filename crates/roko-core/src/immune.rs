@@ -905,6 +905,273 @@ impl Default for QuarantineVault {
     }
 }
 
+// ─── P4-11: Immune threshold calibration feedback loop ──────────────────
+
+/// Calibration state for the immune pipeline thresholds.
+///
+/// Tracks false positive rate (Approved / total quarantined) and false negative
+/// rate (retrospective incidents on accepted signals). Adjusts thresholds to
+/// reduce both FP and FN rates over time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImmuneCalibration {
+    /// Total quarantined entries reviewed.
+    pub total_reviewed: u64,
+    /// Entries that were quarantined but approved (false positives).
+    pub false_positives: u64,
+    /// Entries that were accepted but later found to be threats (false negatives).
+    pub false_negatives: u64,
+    /// Total accepted entries that were retroactively checked.
+    pub total_accepted_checked: u64,
+    /// Current quarantine threshold (adjusted by calibration).
+    pub current_threshold: f64,
+    /// Adjustment step size.
+    pub step_size: f64,
+}
+
+impl Default for ImmuneCalibration {
+    fn default() -> Self {
+        Self {
+            total_reviewed: 0,
+            false_positives: 0,
+            false_negatives: 0,
+            total_accepted_checked: 0,
+            current_threshold: 0.8,
+            step_size: 0.02,
+        }
+    }
+}
+
+impl ImmuneCalibration {
+    /// Create a new calibration tracker with the given initial threshold.
+    #[must_use]
+    pub fn new(initial_threshold: f64) -> Self {
+        Self {
+            current_threshold: initial_threshold.clamp(0.1, 0.99),
+            ..Self::default()
+        }
+    }
+
+    /// Record a false positive (quarantined but was actually safe).
+    pub fn record_false_positive(&mut self) {
+        self.false_positives += 1;
+        self.total_reviewed += 1;
+    }
+
+    /// Record a true positive (quarantined and was actually a threat).
+    pub fn record_true_positive(&mut self) {
+        self.total_reviewed += 1;
+    }
+
+    /// Record a false negative (accepted but was later a threat).
+    pub fn record_false_negative(&mut self) {
+        self.false_negatives += 1;
+        self.total_accepted_checked += 1;
+    }
+
+    /// Record a true negative (accepted and was indeed safe).
+    pub fn record_true_negative(&mut self) {
+        self.total_accepted_checked += 1;
+    }
+
+    /// False positive rate.
+    #[must_use]
+    pub fn fp_rate(&self) -> f64 {
+        if self.total_reviewed == 0 {
+            return 0.0;
+        }
+        self.false_positives as f64 / self.total_reviewed as f64
+    }
+
+    /// False negative rate.
+    #[must_use]
+    pub fn fn_rate(&self) -> f64 {
+        if self.total_accepted_checked == 0 {
+            return 0.0;
+        }
+        self.false_negatives as f64 / self.total_accepted_checked as f64
+    }
+
+    /// Calibrate: adjust the threshold based on FP/FN rates.
+    ///
+    /// If FP rate is high (>0.3), raise the threshold to quarantine less.
+    /// If FN rate is high (>0.1), lower the threshold to quarantine more.
+    /// Returns the new threshold.
+    pub fn calibrate(&mut self) -> f64 {
+        let min_samples = 10;
+        if self.total_reviewed < min_samples {
+            return self.current_threshold;
+        }
+
+        let fp_rate = self.fp_rate();
+        let fn_rate = self.fn_rate();
+
+        if fp_rate > 0.3 {
+            // Too many false positives: raise threshold (quarantine less).
+            self.current_threshold = (self.current_threshold + self.step_size).min(0.99);
+        } else if fn_rate > 0.1 {
+            // Too many false negatives: lower threshold (quarantine more).
+            self.current_threshold = (self.current_threshold - self.step_size).max(0.1);
+        }
+
+        self.current_threshold
+    }
+}
+
+// ─── P4-12: Quarantine pattern learning (adaptive immune memory) ────────
+
+/// Maximum number of threat signatures retained.
+const MAX_THREAT_SIGNATURES: usize = 100;
+
+/// A learned threat signature from confirmed quarantine entries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreatSignature {
+    /// Unique signature identifier.
+    pub id: String,
+    /// Dimensions that characterized the threat.
+    pub dimensions: HashMap<String, f64>,
+    /// Confidence/affinity of this signature (0.0 to 1.0).
+    pub affinity: f64,
+    /// Number of confirmed threats matching this signature.
+    pub confirmations: u64,
+    /// Number of approved (false positive) entries that partially matched.
+    pub false_matches: u64,
+    /// When this signature was last confirmed.
+    #[serde(default)]
+    pub last_confirmed: Option<DateTime<Utc>>,
+}
+
+impl ThreatSignature {
+    /// Compute similarity between this signature and an anomaly score.
+    #[must_use]
+    pub fn similarity(&self, anomaly: &AnomalyScore) -> f64 {
+        if self.dimensions.is_empty() {
+            return 0.0;
+        }
+        let mut matched = 0.0;
+        let mut total = 0.0;
+        for (dim, sig_score) in &self.dimensions {
+            total += 1.0;
+            if let Some(anomaly_score) = anomaly.dimensions.get(dim) {
+                let diff = (sig_score - anomaly_score).abs();
+                if diff < 0.3 {
+                    matched += 1.0 - diff / 0.3;
+                }
+            }
+        }
+        if total == 0.0 {
+            return 0.0;
+        }
+        (matched / total) * self.affinity
+    }
+}
+
+/// Adaptive immune memory that learns threat patterns.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ImmuneMemory {
+    /// Known threat signatures, bounded to [`MAX_THREAT_SIGNATURES`].
+    signatures: Vec<ThreatSignature>,
+    /// Affinity decay rate per cycle (multiplicative, < 1.0).
+    #[serde(default = "default_decay_rate")]
+    decay_rate: f64,
+}
+
+fn default_decay_rate() -> f64 {
+    0.95
+}
+
+impl ImmuneMemory {
+    /// Create a new empty immune memory.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            signatures: Vec::new(),
+            decay_rate: 0.95,
+        }
+    }
+
+    /// Extract and learn a threat signature from a confirmed quarantine entry.
+    pub fn learn_threat(&mut self, anomaly: &AnomalyScore) {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        anomaly.score.to_bits().hash(&mut hasher);
+        for (k, v) in &anomaly.dimensions {
+            k.hash(&mut hasher);
+            v.to_bits().hash(&mut hasher);
+        }
+        let id = format!("sig-{:016x}", hasher.finish());
+
+        // Check if we already have this signature.
+        if let Some(existing) = self.signatures.iter_mut().find(|s| {
+            s.dimensions == anomaly.dimensions
+        }) {
+            existing.confirmations += 1;
+            existing.affinity = (existing.affinity + 0.1).min(1.0);
+            existing.last_confirmed = Some(Utc::now());
+            return;
+        }
+
+        // Add new signature.
+        if self.signatures.len() >= MAX_THREAT_SIGNATURES {
+            // Remove the lowest-affinity signature.
+            if let Some(min_idx) = self
+                .signatures
+                .iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| a.affinity.total_cmp(&b.affinity))
+                .map(|(i, _)| i)
+            {
+                self.signatures.remove(min_idx);
+            }
+        }
+
+        self.signatures.push(ThreatSignature {
+            id,
+            dimensions: anomaly.dimensions.clone(),
+            affinity: 0.5,
+            confirmations: 1,
+            false_matches: 0,
+            last_confirmed: Some(Utc::now()),
+        });
+    }
+
+    /// Record that an approved (safe) entry partially matched a signature.
+    /// This reduces the matching signature's affinity.
+    pub fn record_false_match(&mut self, anomaly: &AnomalyScore) {
+        for sig in &mut self.signatures {
+            if sig.similarity(anomaly) > 0.5 {
+                sig.false_matches += 1;
+                sig.affinity = (sig.affinity - 0.1).max(0.0);
+            }
+        }
+    }
+
+    /// Check if an anomaly score matches any known threat signatures.
+    ///
+    /// Returns the highest-affinity match, if any exceeds the threshold.
+    #[must_use]
+    pub fn check_known_threats(&self, anomaly: &AnomalyScore, threshold: f64) -> Option<&ThreatSignature> {
+        self.signatures
+            .iter()
+            .filter(|sig| sig.similarity(anomaly) >= threshold)
+            .max_by(|a, b| a.similarity(anomaly).total_cmp(&b.similarity(anomaly)))
+    }
+
+    /// Apply decay to all signature affinities.
+    pub fn decay(&mut self) {
+        for sig in &mut self.signatures {
+            sig.affinity *= self.decay_rate;
+        }
+        // Remove signatures with negligible affinity.
+        self.signatures.retain(|sig| sig.affinity > 0.01);
+    }
+
+    /// Number of signatures currently tracked.
+    #[must_use]
+    pub fn signature_count(&self) -> usize {
+        self.signatures.len()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

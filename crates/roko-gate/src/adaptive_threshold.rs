@@ -822,6 +822,99 @@ impl AdaptiveThresholds {
     }
 }
 
+// ─── P4-13: EMA poisoning defense ────────────────────────────────────────
+
+/// Default number of consecutive same-direction observations before freeze.
+const POISONING_WINDOW: usize = 10;
+
+/// EMA poisoning defense state for one rung.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PoisoningDefense {
+    /// Recent observation directions (+1 for pass, -1 for fail).
+    recent_directions: Vec<i8>,
+    /// Whether this rung's EMA is currently frozen.
+    pub frozen: bool,
+    /// The EMA value saved before the freeze.
+    pub frozen_value: Option<f64>,
+    /// Count of diverse observations since freeze.
+    pub diverse_since_freeze: u64,
+    /// Window size for direction analysis.
+    #[serde(default = "default_poisoning_window")]
+    window: usize,
+}
+
+fn default_poisoning_window() -> usize {
+    POISONING_WINDOW
+}
+
+impl PoisoningDefense {
+    /// Create a new defense with the given window.
+    #[must_use]
+    pub fn new(window: usize) -> Self {
+        Self {
+            recent_directions: Vec::new(),
+            frozen: false,
+            frozen_value: None,
+            diverse_since_freeze: 0,
+            window: window.max(3),
+        }
+    }
+
+    /// Record an observation and return whether the EMA should be frozen.
+    ///
+    /// If frozen, the caller should revert to the domain profile prior
+    /// instead of using the poisoned EMA.
+    pub fn record(&mut self, passed: bool, current_ema: f64) -> bool {
+        let direction: i8 = if passed { 1 } else { -1 };
+        self.recent_directions.push(direction);
+        if self.recent_directions.len() > self.window {
+            self.recent_directions.remove(0);
+        }
+
+        if self.frozen {
+            // Check for diversity to unfreeze.
+            let has_both = self.recent_directions.iter().any(|&d| d == 1)
+                && self.recent_directions.iter().any(|&d| d == -1);
+            if has_both {
+                self.diverse_since_freeze += 1;
+            }
+            if self.diverse_since_freeze >= self.window as u64 / 2 {
+                self.frozen = false;
+                self.frozen_value = None;
+                self.diverse_since_freeze = 0;
+                return false;
+            }
+            return true; // Stay frozen.
+        }
+
+        // Check for consistent-direction poisoning.
+        if self.recent_directions.len() >= self.window {
+            let sum: i32 = self.recent_directions.iter().map(|&d| d as i32).sum();
+            let abs_sum = sum.unsigned_abs() as usize;
+            if abs_sum == self.window {
+                // All observations in the same direction.
+                self.frozen = true;
+                self.frozen_value = Some(current_ema);
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Whether the defense is currently freezing this rung.
+    #[must_use]
+    pub fn is_frozen(&self) -> bool {
+        self.frozen
+    }
+
+    /// Get the saved EMA value from before the freeze.
+    #[must_use]
+    pub fn saved_value(&self) -> Option<f64> {
+        self.frozen_value
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

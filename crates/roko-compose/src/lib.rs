@@ -59,6 +59,10 @@ pub mod system_prompt_builder;
 pub mod task_brief;
 pub mod templates;
 pub mod token_counter;
+/// P4-08: GroupContext bidder for agent group coordination.
+pub mod group_context_bidder;
+/// P4-10: Section-level context compression.
+pub mod section_compressor;
 
 pub use agents_md::AgentsMd;
 pub use attention::{

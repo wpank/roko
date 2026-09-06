@@ -184,6 +184,63 @@ impl Custody {
         self.why_heuristics = heuristics;
         self
     }
+
+    // ── P4-14: Custody chain hash computation ──────────────────────────
+
+    /// Compute the SHA-256 hash of this record's canonical payload.
+    ///
+    /// The hash covers all fields except `prev_hash` and `hash` themselves,
+    /// ensuring a deterministic digest of the record's content.
+    #[must_use]
+    pub fn compute_hash(&self) -> String {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.action.hash(&mut hasher);
+        self.principal.hash(&mut hasher);
+        self.when.hash(&mut hasher);
+        for auth in &self.authorized {
+            format!("{auth:?}").hash(&mut hasher);
+        }
+        for h in &self.why_heuristics {
+            h.hash(&mut hasher);
+        }
+        for c in &self.why_claims {
+            c.hash(&mut hasher);
+        }
+        if let Some(ref sim) = self.simulation {
+            sim.hash(&mut hasher);
+        }
+        for g in &self.gates_passed {
+            g.hash(&mut hasher);
+        }
+        format!("{:?}", self.taint).hash(&mut hasher);
+        if let Some(ref r) = self.result {
+            r.hash(&mut hasher);
+        }
+        if let Some(ref w) = self.witness {
+            w.hash(&mut hasher);
+        }
+        format!("{:?}", self.attestation).hash(&mut hasher);
+        format!("{:016x}", hasher.finish())
+    }
+
+    /// Seal this record with computed hash and link to previous.
+    ///
+    /// Sets `prev_hash` to the given previous hash (or `None` for genesis)
+    /// and computes `hash` from the canonical payload plus `prev_hash`.
+    pub fn seal(&mut self, prev_hash: Option<String>) {
+        self.prev_hash = prev_hash;
+        self.hash = Some(self.compute_hash());
+    }
+
+    /// Verify that this record's hash matches its payload.
+    #[must_use]
+    pub fn verify_hash(&self) -> bool {
+        match &self.hash {
+            Some(h) => h == &self.compute_hash(),
+            None => false, // Unsealed records fail verification.
+        }
+    }
 }
 
 // ─── CustodyLogger ──────────────────────────────────────────────────
@@ -267,6 +324,86 @@ impl CustodyLogger {
     pub fn count(&self) -> usize {
         self.read_all().map(|records| records.len()).unwrap_or(0)
     }
+
+    // ── P4-14: Chained custody logging ─────────────────────────────────
+
+    /// Append a custody record with chain hash linking.
+    ///
+    /// Reads the last record's hash (if any) and seals the new record
+    /// with `prev_hash` set to the previous record's hash.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the log cannot be read or written.
+    pub fn log_chained(&self, custody: &mut Custody) -> std::io::Result<()> {
+        let prev_hash = self
+            .read_all()?
+            .last()
+            .and_then(|last| last.hash.clone());
+        custody.seal(prev_hash);
+        self.log(custody)
+    }
+
+    /// Verify the integrity of the entire custody chain.
+    ///
+    /// Returns `Ok(true)` if every record's hash is valid and each
+    /// `prev_hash` links to the preceding record. Returns `Ok(false)`
+    /// if any record fails verification.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the log cannot be read.
+    pub fn verify_chain(&self) -> std::io::Result<CustodyChainVerification> {
+        let records = self.read_all()?;
+        let mut result = CustodyChainVerification {
+            total_records: records.len(),
+            valid: true,
+            broken_at: None,
+            sealed_count: 0,
+            unsealed_count: 0,
+        };
+
+        let mut expected_prev: Option<String> = None;
+
+        for (i, record) in records.iter().enumerate() {
+            if record.hash.is_none() {
+                result.unsealed_count += 1;
+                continue;
+            }
+            result.sealed_count += 1;
+
+            if !record.verify_hash() {
+                result.valid = false;
+                result.broken_at = Some(i);
+                return Ok(result);
+            }
+
+            if record.prev_hash != expected_prev {
+                result.valid = false;
+                result.broken_at = Some(i);
+                return Ok(result);
+            }
+
+            expected_prev = record.hash.clone();
+        }
+
+        Ok(result)
+    }
+}
+
+/// Result of verifying a custody chain.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustodyChainVerification {
+    /// Total records in the chain.
+    pub total_records: usize,
+    /// Whether the chain is valid end-to-end.
+    pub valid: bool,
+    /// Index of the first broken record, if any.
+    pub broken_at: Option<usize>,
+    /// Number of records with computed hashes.
+    pub sealed_count: usize,
+    /// Number of records without hashes (legacy).
+    pub unsealed_count: usize,
 }
 
 #[cfg(test)]

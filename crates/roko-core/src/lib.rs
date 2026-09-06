@@ -237,6 +237,10 @@ pub mod verdict;
 /// Relay envelopes, room names, recovery, and backpressure contracts.
 pub mod wire_protocol;
 pub mod workspace;
+/// P4-15: Webhook alerting for critical Inbox items.
+pub mod webhook_alert;
+/// P4-22: Quorum sensing for agent group coordination.
+pub mod quorum;
 
 pub use affect::{BehavioralState, DaimonPolicy, EmotionalTag, PadVector};
 pub use agent::{

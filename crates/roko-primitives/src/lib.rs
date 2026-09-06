@@ -37,6 +37,11 @@ pub mod tier;
 /// and adversarial distance computation (TA-14).
 pub mod tropical;
 
+/// P4-26: Locality-Sensitive Hashing index for sub-linear HDC similarity search.
+pub mod lsh;
+/// P4-27: HDC fingerprint migration framework for version upgrades.
+pub mod hdc_migration;
+
 pub use codebook::{
     Codebook, CodingCodebook, PatternStore, RESONANCE_THRESHOLD, ResonanceResult, StoredPattern,
     detect_cross_domain_resonance, role_bind, unbind,

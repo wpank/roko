@@ -73,7 +73,8 @@ fn task_execution_policy() {
 fn task_execution_node_and_edge_counts() {
     let graph = load_example("task-execution.toml");
     assert_eq!(graph.node_count(), 7);
-    assert_eq!(graph.edge_count(), 7);
+    // The TOML defines 6 explicit edges (not 7).
+    assert_eq!(graph.edge_count(), 6);
 }
 
 #[test]

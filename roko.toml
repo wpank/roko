@@ -6,7 +6,7 @@ bare_mode = true
 context_limit_k = 200
 default_backend = "claude"
 default_effort = "medium"
-default_model = "codex"
+default_model = "claude-sonnet"
 mode = "ephemeral"
 temperament = "balanced"
 

@@ -95,7 +95,7 @@ fn pane_empty_content(pane: PaneEmpty) -> (&'static str, &'static str, &'static 
             "No telemetry",
             &[
                 "Run a plan to generate telemetry data",
-                "roko plan run plans/ --engine runner-v2",
+                "roko plan run plans/",
             ],
         ),
         PaneEmpty::NoProviderData => (
@@ -125,7 +125,7 @@ fn empty_content(tab: Tab) -> (&'static str, &'static str, &'static [&'static st
             "No active run",
             &[
                 "Start a plan to see the dashboard come alive.",
-                "roko plan run plans/ --engine runner-v2",
+                "roko plan run plans/",
             ],
         ),
         Tab::Plans => (
@@ -191,7 +191,7 @@ fn empty_content(tab: Tab) -> (&'static str, &'static str, &'static [&'static st
             "No learning data",
             &[
                 "The cascade router learns from task completions.",
-                "roko plan run plans/ --engine runner-v2",
+                "roko plan run plans/",
             ],
         ),
     }

@@ -17,7 +17,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use roko_core::dashboard_snapshot::{
-    DiagnosisSeverity, DiagnosisSummary, ExperimentWinnerSummary, FailureEntry,
+    AffectSnapshot, DiagnosisSeverity, DiagnosisSummary, ExperimentWinnerSummary, FailureEntry,
+    InboxCategory, InboxItemState, UrgencyLevel,
 };
 
 use super::ViewState;
@@ -41,6 +42,7 @@ const SUB_TAB_LABELS: &[(&str, &str)] = &[
     ("L", "Learning"),
     ("P", "Procs"),
     ("C", "Cond"),
+    ("I", "Inbox"),
 ];
 
 // ---------------------------------------------------------------------------
@@ -173,9 +175,14 @@ fn render_idle_summary_card(
             Style::default().fg(Theme::TEXT_DIM),
         )));
         lines.push(Line::from(Span::styled(
-            " roko plan run plans/ --engine runner-v2",
+            " roko plan run plans/",
             theme.muted(),
         )));
+    }
+
+    // Affect strip: one inline line appended when data is available.
+    if let Some(snap) = &tui_state.affect {
+        lines.push(affect_summary_line(snap));
     }
 
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
@@ -213,13 +220,16 @@ fn render_left_panel(
     _view_state: &ViewState,
     theme: &Theme,
 ) {
-    // Content-aware sizing: progress card gets 5 lines, phase gets 4 lines,
-    // plan tree and task progress split the rest proportionally.
+    // Content-aware sizing: progress card gets 5 lines, affect strip 1 line
+    // (only when affect data is available), phase gets 4 lines, plan tree and
+    // task progress split the rest proportionally.
     let progress_h = 5u16.min(area.height);
+    let affect_h: u16 = if tui_state.affect.is_some() { 1 } else { 0 };
     let plan_count = tui_state.plans.len();
     let task_count = tui_state.current_task_checklist.len();
-    let phase_h = 4u16.min(area.height.saturating_sub(progress_h));
-    let available = area.height.saturating_sub(phase_h + progress_h);
+    let fixed_top = progress_h + affect_h;
+    let phase_h = 4u16.min(area.height.saturating_sub(fixed_top));
+    let available = area.height.saturating_sub(fixed_top + phase_h);
     let plan_content = (plan_count as u16).saturating_add(4);
     let task_content = if task_count > 0 {
         (task_count as u16).saturating_add(4)
@@ -240,6 +250,7 @@ fn render_left_panel(
 
     let sections = Layout::vertical([
         Constraint::Length(progress_h),
+        Constraint::Length(affect_h),
         Constraint::Length(phase_h),
         Constraint::Length(plan_h),
         Constraint::Length(task_h),
@@ -247,13 +258,20 @@ fn render_left_panel(
     .split(area);
 
     render_progress_card(frame, sections[0], tui_state, theme);
-    widgets::phase_compact::render_phase_compact(frame, sections[1], tui_state, false);
+    if affect_h > 0 {
+        widgets::affect_strip::render_affect_strip(
+            frame,
+            sections[1],
+            tui_state.affect.as_ref(),
+        );
+    }
+    widgets::phase_compact::render_phase_compact(frame, sections[2], tui_state, false);
 
     let plan_focused = matches!(tui_state.focus, FocusZone::PlanTree);
     let task_focused = matches!(tui_state.focus, FocusZone::TaskProgress);
 
-    widgets::plan_tree::render_plan_tree(frame, sections[2], tui_state, plan_focused);
-    widgets::task_progress::render_task_progress(frame, sections[3], tui_state, task_focused);
+    widgets::plan_tree::render_plan_tree(frame, sections[3], tui_state, plan_focused);
+    widgets::task_progress::render_task_progress(frame, sections[4], tui_state, task_focused);
 }
 
 /// Compact progress card showing cost, ETA, gate status, and current task.
@@ -402,6 +420,88 @@ fn current_task_label(tui_state: &TuiState, max_width: usize) -> Option<String> 
         })
 }
 
+// ---------------------------------------------------------------------------
+// Affect summary line (inline, used by both idle and active cards)
+// ---------------------------------------------------------------------------
+
+/// Build a single compact `Line` summarising the current affect state.
+///
+/// Format: ` Affect <state>  P:0.7 A:0.3 D:0.5  conf:82%`
+fn affect_summary_line(snap: &AffectSnapshot) -> Line<'static> {
+    let label = if snap.behavioral_state.is_empty() {
+        "unknown".to_string()
+    } else {
+        snap.behavioral_state.clone()
+    };
+    let label_color = affect_state_color(&label);
+
+    let conf_pct = (snap.confidence * 100.0).round() as u64;
+    let conf_color = if snap.confidence >= 0.7 {
+        Theme::SAGE
+    } else if snap.confidence >= 0.4 {
+        Theme::WARNING
+    } else {
+        Theme::EMBER
+    };
+
+    Line::from(vec![
+        Span::styled(" Affect ", Style::default().fg(Theme::TEXT_GHOST)),
+        Span::styled(
+            label,
+            Style::default()
+                .fg(label_color)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  P:", Style::default().fg(Theme::TEXT_GHOST)),
+        Span::styled(
+            format!("{:.1}", snap.pleasure),
+            Style::default().fg(pad_val_color(snap.pleasure)),
+        ),
+        Span::styled(" A:", Style::default().fg(Theme::TEXT_GHOST)),
+        Span::styled(
+            format!("{:.1}", snap.arousal),
+            Style::default().fg(pad_val_color(snap.arousal)),
+        ),
+        Span::styled(" D:", Style::default().fg(Theme::TEXT_GHOST)),
+        Span::styled(
+            format!("{:.1}", snap.dominance),
+            Style::default().fg(pad_val_color(snap.dominance)),
+        ),
+        Span::styled("  conf:", Style::default().fg(Theme::TEXT_GHOST)),
+        Span::styled(
+            format!("{conf_pct}%"),
+            Style::default().fg(conf_color),
+        ),
+    ])
+}
+
+/// Choose a color for a PAD dimension value in [-1, 1].
+fn pad_val_color(v: f64) -> ratatui::style::Color {
+    if v >= 0.3 {
+        Theme::SAGE
+    } else if v <= -0.3 {
+        Theme::EMBER
+    } else {
+        Theme::TEXT_DIM
+    }
+}
+
+/// Choose a label color based on behavioral state keyword.
+fn affect_state_color(label: &str) -> ratatui::style::Color {
+    let l = label.to_ascii_lowercase();
+    if l.contains("flow") || l.contains("engaged") || l.contains("calm") || l.contains("focuse") {
+        Theme::SAGE
+    } else if l.contains("stress") || l.contains("struggling") || l.contains("exhaust") {
+        Theme::EMBER
+    } else if l.contains("curious") || l.contains("explore") || l.contains("alert") {
+        Theme::DREAM
+    } else if l.contains("idle") || l.contains("rest") || l.contains("sleep") {
+        Theme::TEXT_DIM
+    } else {
+        Theme::ROSE
+    }
+}
+
 // ===========================================================================
 // Right panel: sub-tabbed detail view
 // ===========================================================================
@@ -464,6 +564,7 @@ fn render_right_panel_content(
         6 => render_sub_learning(frame, area, data, tui_state, focused, theme),
         7 => render_sub_processes(frame, area, data, tui_state, focused, theme),
         8 => render_sub_conductor(frame, area, tui_state, focused, theme),
+        9 => render_sub_inbox(frame, area, tui_state, focused, theme),
         _ => {}
     }
 }
@@ -513,18 +614,25 @@ fn render_sub_tab_bar(
                 let count = tui_state.experiment_winners.len();
                 (count > 0).then(|| count.to_string())
             }
+            9 => {
+                let count = tui_state.inbox_items.len();
+                (count > 0).then(|| format!("{count}\u{25cf}"))
+            }
             _ => None,
         };
         if i != active {
             if let Some(badge) = badge {
+                let badge_color = if i == 3 {
+                    Theme::EMBER
+                } else if i == 9 {
+                    Theme::WARNING
+                } else {
+                    Theme::ROSE_DIM
+                };
                 spans.push(Span::styled(
                     badge,
                     Style::default()
-                        .fg(if i == 3 {
-                            Theme::EMBER
-                        } else {
-                            Theme::ROSE_DIM
-                        })
+                        .fg(badge_color)
                         .bg(bg)
                         .add_modifier(Modifier::BOLD),
                 ));
@@ -1502,6 +1610,150 @@ fn render_sub_conductor(
         focused,
         theme,
     );
+}
+
+// ---------------------------------------------------------------------------
+// Sub-tab: Inbox -- pending human-attention items
+// ---------------------------------------------------------------------------
+
+fn render_sub_inbox(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    tui_state: &TuiState,
+    focused: bool,
+    theme: &Theme,
+) {
+    let border = if focused {
+        Theme::focused_border_style()
+    } else {
+        theme.muted()
+    };
+    let title_style = if focused {
+        Theme::focused_title_style()
+    } else {
+        theme.muted()
+    };
+
+    let pending = tui_state.inbox_items.len();
+    let title = if pending > 0 {
+        format!(" Inbox ({pending} pending) ")
+    } else {
+        " Inbox ".to_string()
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(title, title_style))
+        .border_style(border);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    if tui_state.inbox_items.is_empty() {
+        empty_state::render_pane_empty_compact(frame, inner, "No pending items", theme);
+        return;
+    }
+
+    let visible_rows = inner.height.saturating_sub(2) as usize; // -2 for header
+    let max_scroll = tui_state
+        .inbox_items
+        .len()
+        .saturating_sub(visible_rows.max(1));
+    let scroll = tui_state.inbox_scroll.min(max_scroll);
+
+    let rows: Vec<Row<'_>> = tui_state
+        .inbox_items
+        .iter()
+        .skip(scroll)
+        .take(visible_rows.max(1))
+        .map(|item| inbox_item_row(item, inner.width, theme))
+        .collect();
+
+    let widths = [
+        Constraint::Length(9),  // time
+        Constraint::Length(14), // urgency
+        Constraint::Length(16), // category
+        Constraint::Min(20),    // summary
+    ];
+
+    frame.render_widget(
+        Table::new(rows, widths)
+            .header(
+                Row::new(["Time", "Urgency", "Category", "Summary"])
+                    .style(theme.accent().add_modifier(Modifier::BOLD)),
+            )
+            .column_spacing(1),
+        inner,
+    );
+}
+
+fn inbox_item_row<'a>(item: &'a InboxItemState, width: u16, theme: &Theme) -> Row<'a> {
+    let time_str = format_inbox_time(item.received_at_ms);
+    let urgency_str = inbox_urgency_label(item.urgency);
+    let urgency_style = inbox_urgency_style(item.urgency, theme);
+    let category_str = inbox_category_label(item.category);
+
+    // Reserve cols for time, urgency, category, separators; remainder for summary.
+    let summary_width = (width as usize)
+        .saturating_sub(9 + 14 + 16 + 3 /* column spacing */ + 2 /* borders */);
+    let summary = truncate(&item.summary, summary_width.max(10));
+
+    Row::new(vec![
+        Cell::from(Span::styled(time_str, theme.muted())),
+        Cell::from(Span::styled(urgency_str, urgency_style)),
+        Cell::from(Span::styled(category_str, theme.text())),
+        Cell::from(Span::styled(summary, theme.text())),
+    ])
+}
+
+fn inbox_urgency_label(urgency: UrgencyLevel) -> String {
+    match urgency {
+        UrgencyLevel::Notify => "notify".to_string(),
+        UrgencyLevel::Question => "question".to_string(),
+        UrgencyLevel::Review => "review".to_string(),
+    }
+}
+
+fn inbox_urgency_style(urgency: UrgencyLevel, theme: &Theme) -> Style {
+    match urgency {
+        UrgencyLevel::Notify => theme.muted(),
+        UrgencyLevel::Question => theme.info(),
+        UrgencyLevel::Review => theme.warning(),
+    }
+}
+
+fn inbox_category_label(category: InboxCategory) -> String {
+    match category {
+        InboxCategory::GateVerdict => "gate-verdict".to_string(),
+        InboxCategory::AgentQuestion => "agent-question".to_string(),
+        InboxCategory::BudgetAlert => "budget-alert".to_string(),
+        InboxCategory::TaskCompletion => "task-done".to_string(),
+        InboxCategory::StructuralChange => "struct-change".to_string(),
+        InboxCategory::SecurityEvent => "security".to_string(),
+        InboxCategory::KnowledgeEvent => "knowledge".to_string(),
+        InboxCategory::SystemEvent => "system".to_string(),
+    }
+}
+
+/// Format an epoch-ms timestamp as a short human-readable time string.
+fn format_inbox_time(epoch_ms: u64) -> String {
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let age_secs = now_ms.saturating_sub(epoch_ms) / 1_000;
+    if age_secs < 60 {
+        format!("{age_secs}s ago")
+    } else if age_secs < 3_600 {
+        format!("{}m ago", age_secs / 60)
+    } else if age_secs < 86_400 {
+        format!("{}h ago", age_secs / 3_600)
+    } else {
+        format!("{}d ago", age_secs / 86_400)
+    }
 }
 
 fn render_diagnosis_panel(

@@ -23,15 +23,19 @@ use std::time::Instant;
 use roko_agent::safety::contract::{AgentContract, ContractLoadMode};
 use roko_core::config::schema::RokoConfig;
 use roko_core::error::{Result, RokoError};
-use roko_core::{Body, Kind, Signal};
+use roko_core::{Body, Context, Kind, Signal, Verify};
+use roko_gate::GatePayload;
+use roko_gate::ShellGate;
 use roko_graph::cell::CellContext;
 use roko_graph::cells::{
     AttemptReconciliation, GraphTaskEvent, ProviderAttemptRecorder, StreamingTaskDispatcher,
     TaskDispatchOutcome, TaskDispatchOutcomeKind, TaskDispatcher, TaskExecutionSpec, TaskLease,
 };
 
-use crate::dispatch::{AgentDispatchRequest, DispatchContext, SharedAgentFactory};
+use crate::dispatch::{AgentDispatchRequest, DispatchContext, ModelChoiceSource, SharedAgentFactory};
 use crate::graph_checkpoint::GraphCostLedgerCheckpoint;
+use crate::runner::tui_bridge::TuiBridge;
+use crate::runtime_feedback::{FeedbackEvent, FeedbackFacade};
 use crate::task_parser::TaskDef;
 
 const MICRO_USD_PER_USD: f64 = 1_000_000.0;
@@ -334,6 +338,53 @@ fn effective_routing_budget(context_remaining: Option<f64>, plan_remaining: f64)
     context_remaining.min(plan_remaining)
 }
 
+/// Learning/feedback subsystem context for the Graph engine.
+///
+/// Constructed once in `cmd_plan_run_engine()` and shared by all tasks in
+/// the plan run. Each subsystem is optional so the dispatcher degrades
+/// gracefully when a component cannot be initialized.
+#[derive(Clone)]
+pub struct GraphFeedbackContext {
+    /// Feedback facade that fans task-completion events to episode and routing sinks.
+    pub feedback_facade: Option<Arc<FeedbackFacade>>,
+    /// Path to `.roko/learn/efficiency.jsonl` for efficiency event writes.
+    pub efficiency_path: Option<PathBuf>,
+    /// Path to `.roko/learn/playbooks/` for playbook outcome recording.
+    pub playbook_dir: Option<PathBuf>,
+    /// Shared daimon affect state, loaded from `.roko/daimon/state.json`.
+    pub daimon_state: Option<Arc<std::sync::Mutex<roko_daimon::DaimonState>>>,
+    /// Path to `.roko/learn/experiments.json` for experiment settlement.
+    pub experiment_store_path: Option<PathBuf>,
+    /// Whether gate failure replanning is enabled (`learning.replan_on_gate_failure`).
+    pub replan_on_gate_failure: bool,
+}
+
+impl std::fmt::Debug for GraphFeedbackContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GraphFeedbackContext")
+            .field("feedback_facade", &self.feedback_facade.is_some())
+            .field("efficiency_path", &self.efficiency_path)
+            .field("playbook_dir", &self.playbook_dir)
+            .field("daimon_state", &self.daimon_state.is_some())
+            .field("experiment_store_path", &self.experiment_store_path)
+            .field("replan_on_gate_failure", &self.replan_on_gate_failure)
+            .finish()
+    }
+}
+
+impl Default for GraphFeedbackContext {
+    fn default() -> Self {
+        Self {
+            feedback_facade: None,
+            efficiency_path: None,
+            playbook_dir: None,
+            daimon_state: None,
+            experiment_store_path: None,
+            replan_on_gate_failure: false,
+        }
+    }
+}
+
 /// Real runner/provider adapter injected into `TaskExecutorCell` factories.
 pub struct GraphTaskDispatcher {
     factory: Arc<SharedAgentFactory>,
@@ -346,6 +397,18 @@ pub struct GraphTaskDispatcher {
     cli_model_override: Option<String>,
     /// Whether to skip agent permission prompts (from `--dangerously-skip-permissions`).
     dangerously_skip_permissions: bool,
+    /// Learning/feedback subsystems wired into the Graph engine.
+    feedback: GraphFeedbackContext,
+    /// Optional per-task worktree isolation provider. When `Some`, each task
+    /// dispatch acquires an isolated git worktree via this provider, runs the
+    /// agent and verify steps inside it, and releases the worktree on
+    /// completion. When `None` (the default), all tasks share `self.workdir`.
+    workspace_provider: Option<Arc<dyn roko_graph::workspace::ExecutionWorkspaceProvider>>,
+    /// Optional TUI bridge for forwarding live agent output events to the
+    /// dashboard. When set, completed dispatch events (text deltas, tool
+    /// calls, tool outputs) are published through the StateHub so the TUI
+    /// can render agent activity in real time.
+    tui_bridge: Option<TuiBridge>,
 }
 
 impl GraphTaskDispatcher {
@@ -364,6 +427,9 @@ impl GraphTaskDispatcher {
             budget_ledger: GraphPlanBudgetLedger::default(),
             cli_model_override: None,
             dangerously_skip_permissions: false,
+            feedback: GraphFeedbackContext::default(),
+            workspace_provider: None,
+            tui_bridge: None,
         }
     }
 
@@ -381,6 +447,42 @@ impl GraphTaskDispatcher {
     #[must_use]
     pub fn with_dangerously_skip_permissions(mut self, skip: bool) -> Self {
         self.dangerously_skip_permissions = skip;
+        self
+    }
+
+    /// Attach the learning/feedback subsystem context.
+    #[must_use]
+    pub fn with_feedback(mut self, feedback: GraphFeedbackContext) -> Self {
+        self.feedback = feedback;
+        self
+    }
+
+    /// Enable per-task worktree isolation via the given workspace provider.
+    ///
+    /// When set, each `dispatch` call will:
+    /// 1. Acquire an isolated worktree for the task attempt.
+    /// 2. Run the agent and verify steps inside the worktree.
+    /// 3. Release the worktree on success (`Delete`) or failure (`RetainForFailure`).
+    ///
+    /// This is opt-in via `--worktree-per-task` and defaults to `None` (shared workdir).
+    #[must_use]
+    pub fn with_workspace_provider(
+        mut self,
+        provider: Arc<dyn roko_graph::workspace::ExecutionWorkspaceProvider>,
+    ) -> Self {
+        self.workspace_provider = Some(provider);
+        self
+    }
+
+    /// Attach a TUI bridge for forwarding live agent output events.
+    ///
+    /// When set, agent dispatch events (text deltas, tool calls, tool
+    /// outputs, spawned/completed lifecycle) are published through the
+    /// StateHub so the TUI dashboard can render agent activity during
+    /// Graph plan execution.
+    #[must_use]
+    pub fn with_tui_bridge(mut self, bridge: TuiBridge) -> Self {
+        self.tui_bridge = Some(bridge);
         self
     }
 
@@ -411,6 +513,298 @@ impl GraphTaskDispatcher {
     pub fn plan_budget_snapshot(&self, plan_id: &str) -> GraphPlanBudgetSnapshot {
         self.budget_ledger.snapshot(plan_id, self.budget_policy)
     }
+
+    /// Emit all feedback events after a task dispatch completes.
+    ///
+    /// This is the Graph engine equivalent of Runner-v2's post-dispatch
+    /// feedback pipeline. Each subsystem is best-effort: failures are logged
+    /// but do not block the task result.
+    async fn emit_feedback(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        dispatch: &crate::dispatch_v2::AgentResultDispatch,
+        succeeded: bool,
+        wall_duration: std::time::Duration,
+        dispatch_plan: &crate::dispatch::RunnerDispatchPlan,
+    ) {
+        let role = task.role.as_deref().unwrap_or("implementer");
+        let provider_id = &dispatch.target.provider_id;
+        let model_slug = &dispatch.target.model_slug;
+        let cost_usd = f64::from(dispatch.result.usage.cost_usd);
+        let tokens_in = u64::from(dispatch.result.usage.input_tokens);
+        let tokens_out = u64::from(dispatch.result.usage.output_tokens);
+        let duration_ms = wall_duration.as_millis() as u64;
+
+        // Determine model choice source for feedback routing.
+        let model_source = if dispatch_plan.forced {
+            ModelChoiceSource::Override
+        } else if self.cli_model_override.is_some() {
+            ModelChoiceSource::Override
+        } else if task.model_hint.is_some() {
+            ModelChoiceSource::TaskHint
+        } else {
+            ModelChoiceSource::Router
+        };
+
+        // ── W04: FeedbackFacade (episodes + routing) ─────────────────────
+        if let Some(facade) = &self.feedback.feedback_facade {
+            let outcome = crate::dispatch::AgentOutcome {
+                task_id: task.id.clone(),
+                plan_id: spec.plan_id.clone(),
+                model: model_slug.clone(),
+                provider: provider_id.clone(),
+                output: dispatch
+                    .result
+                    .output
+                    .body
+                    .as_text()
+                    .ok()
+                    .unwrap_or("")
+                    .chars()
+                    .take(2048)
+                    .collect(),
+                tokens_in,
+                tokens_out,
+                cost_usd,
+                duration_ms,
+                exit_code: if succeeded { Some(0) } else { Some(1) },
+                is_error: !succeeded,
+            };
+            let event = FeedbackEvent::TaskCompleted {
+                plan_id: spec.plan_id.clone(),
+                task_id: task.id.clone(),
+                outcome,
+                model_source,
+                succeeded,
+                routing_context: None,
+                prompt_text: Some(dispatch_plan.prompt.system_prompt.clone()),
+                cache_read_tokens: u64::from(dispatch.result.usage.cache_read_tokens),
+                knowledge_ids: vec![],
+                playbook_ids: vec![],
+                initial_model: model_slug.clone(),
+            };
+            if let Err(error) = facade.on_event(&event).await {
+                tracing::warn!(
+                    plan_id = %spec.plan_id,
+                    task_id = %task.id,
+                    %error,
+                    "graph feedback facade error (best-effort)"
+                );
+            }
+        }
+
+        // ── W05: Efficiency event ────────────────────────────────────────
+        if let Some(eff_path) = &self.feedback.efficiency_path {
+            // P3-02: Extract actual turn count from the dispatch events so
+            // the efficiency record carries the real turn number, not 0.
+            let agent_num_turns = dispatch
+                .events
+                .iter()
+                .rev()
+                .find_map(|ev| match ev {
+                    roko_agent::AgentRuntimeEvent::TurnCompleted { num_turns, .. } => {
+                        *num_turns
+                    }
+                    _ => None,
+                })
+                .unwrap_or(1);
+            let event = roko_learn::efficiency::AgentEfficiencyEvent {
+                agent_id: format!(
+                    "{}/{}",
+                    spec.plan_id,
+                    task.id
+                ),
+                role: role.to_string(),
+                backend: provider_id.clone(),
+                model: model_slug.clone(),
+                plan_id: spec.plan_id.clone(),
+                task_id: task.id.clone(),
+                attempt_id: String::new(),
+                input_tokens: tokens_in,
+                output_tokens: tokens_out,
+                reasoning_tokens: 0,
+                cache_read_tokens: u64::from(dispatch.result.usage.cache_read_tokens),
+                cache_write_tokens: u64::from(dispatch.result.usage.cache_create_tokens),
+                cost_usd,
+                cost_usd_without_cache: cost_usd,
+                prompt_sections: vec![],
+                total_prompt_tokens: tokens_in,
+                system_prompt_tokens: 0,
+                tools_available: 0,
+                tools_used: 0,
+                tool_calls: vec![],
+                wall_time_ms: duration_ms,
+                duration_ms,
+                time_to_first_token_ms: 0,
+                was_warm_start: false,
+                iteration: agent_num_turns,
+                turn_number: agent_num_turns,
+                is_final_turn: true,
+                gate_passed: None,
+                outcome: if succeeded {
+                    "success".to_string()
+                } else {
+                    "failure".to_string()
+                },
+                gate_errors: vec![],
+                model_used: model_slug.clone(),
+                frequency: roko_core::OperatingFrequency::Gamma,
+                strategy_attempted: String::new(),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+            };
+            if let Err(error) = append_jsonl_line(eff_path, &event) {
+                tracing::warn!(
+                    plan_id = %spec.plan_id,
+                    task_id = %task.id,
+                    %error,
+                    "graph efficiency event write failed (best-effort)"
+                );
+            }
+        }
+
+        // ── W07: Playbook outcome recording ──────────────────────────────
+        if let Some(playbook_dir) = &self.feedback.playbook_dir {
+            let store = roko_learn::playbook::PlaybookStore::new(playbook_dir);
+            let playbook_id = format!("task-{}", task.id);
+            if let Err(error) = store.record_outcome(&playbook_id, succeeded).await {
+                tracing::warn!(
+                    plan_id = %spec.plan_id,
+                    task_id = %task.id,
+                    %error,
+                    "graph playbook outcome recording failed (best-effort)"
+                );
+            }
+        }
+
+        // ── W09: DaimonState affect feedback ─────────────────────────────
+        if let Some(daimon) = &self.feedback.daimon_state {
+            use roko_daimon::AffectEngine;
+            let event = roko_daimon::AffectEvent::TaskOutcome {
+                task_id: task.id.clone(),
+                succeeded,
+            };
+            if let Ok(mut state) = daimon.lock() {
+                let _ = state.appraise(event);
+            }
+        }
+
+        // ── W14: Experiment settlement ───────────────────────────────────
+        if let Some(store_path) = &self.feedback.experiment_store_path {
+            if store_path.exists() {
+                let settlement = if succeeded {
+                    roko_learn::prompt_experiment::AssignmentSettlement::Observed { success: true }
+                } else {
+                    roko_learn::prompt_experiment::AssignmentSettlement::Observed { success: false }
+                };
+                let attempt_key = roko_learn::prompt_experiment::PromptAttemptKey::new(
+                    "graph",
+                    &spec.plan_id,
+                    &task.id,
+                    0,
+                );
+                if let Err(error) = roko_learn::prompt_experiment::ExperimentStore::settle_attempt(
+                    store_path,
+                    &attempt_key,
+                    settlement,
+                ) {
+                    // AttemptNotFound is normal for non-experiment runs; log others.
+                    if !matches!(
+                        error,
+                        roko_learn::prompt_experiment::PromptAssignmentError::AttemptNotFound(_)
+                    ) {
+                        tracing::warn!(
+                            plan_id = %spec.plan_id,
+                            task_id = %task.id,
+                            %error,
+                            "graph experiment settlement failed (best-effort)"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Forward dispatch events to the TUI bridge so the dashboard shows
+    /// live agent output during Graph plan execution.
+    ///
+    /// Called after `run_shared_agent_bridge` returns. Each event in the
+    /// dispatch result is mapped to the corresponding `TuiBridge` method
+    /// which publishes a `DashboardEvent` through the StateHub.
+    fn forward_dispatch_events_to_tui(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        dispatch: &crate::dispatch_v2::AgentResultDispatch,
+        ctx: &CellContext,
+    ) {
+        let Some(tui) = &self.tui_bridge else {
+            return;
+        };
+
+        let agent_id = format!(
+            "{}/{}",
+            spec.plan_id,
+            ctx.cell_id.as_deref().unwrap_or(&task.id)
+        );
+        let plan_id = &spec.plan_id;
+        let task_id = &task.id;
+
+        // Emit agent spawned event so the TUI knows an agent is active.
+        tui.agent_spawned(
+            &agent_id,
+            plan_id,
+            task_id,
+            0,
+            task.role.as_deref().unwrap_or("implementer"),
+            &dispatch.target.model_slug,
+            &dispatch.target.provider_id,
+        );
+
+        // Forward each provider event as a TUI stream record.
+        for event in &dispatch.events {
+            match event {
+                roko_agent::AgentRuntimeEvent::MessageDelta { text } => {
+                    tui.agent_text_delta(&agent_id, plan_id, task_id, 0, text);
+                }
+                roko_agent::AgentRuntimeEvent::ToolCall { id, name } => {
+                    tui.tool_call(&agent_id, plan_id, task_id, 0, id, name);
+                }
+                roko_agent::AgentRuntimeEvent::ToolOutput { id, output } => {
+                    // Truncate tool output for the TUI to avoid overwhelming
+                    // the bounded stream ring buffer.
+                    let truncated = if output.len() > 2048 {
+                        let tail = &output[output.len() - 1024..];
+                        format!("[...truncated]\n{tail}")
+                    } else {
+                        output.clone()
+                    };
+                    tui.tool_output(&agent_id, plan_id, task_id, 0, id, &truncated);
+                }
+                _ => {}
+            }
+        }
+
+        // Emit agent completed event.
+        tui.agent_completed(&agent_id, plan_id, task_id, 0);
+    }
+}
+
+/// Append a single JSON line to a JSONL file, creating parent dirs as needed.
+fn append_jsonl_line(path: &std::path::Path, value: &impl serde::Serialize) -> std::io::Result<()> {
+    use std::io::Write;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let line = serde_json::to_string(value)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    writeln!(file, "{line}")?;
+    file.flush()?;
+    Ok(())
 }
 
 fn effective_agent_contract(task_role: &str, task: &TaskDef) -> AgentContract {
@@ -437,6 +831,81 @@ fn upstream_outputs(input: &[Signal]) -> Vec<(String, Vec<String>)> {
         .collect()
 }
 
+/// Build a reasonable `RoutingContext` for Graph task dispatch.
+///
+/// This provides the cascade router with actionable task signals without
+/// requiring the full runner-v2 internal state. The Graph engine has less
+/// runtime state than the event loop, so fields like `active_agents` and
+/// `ready_queue_depth` are set to sane defaults.
+fn build_routing_context(
+    role: &str,
+    task: &TaskDef,
+    daimon_state: &Option<Arc<std::sync::Mutex<roko_daimon::DaimonState>>>,
+) -> roko_learn::model_router::RoutingContext {
+    use roko_core::agent::AgentRole;
+    use roko_core::task::{TaskCategory, TaskComplexityBand};
+    use roko_learn::model_router::RoutingContext;
+
+    let role_enum = match role.trim().to_ascii_lowercase().as_str() {
+        "conductor" => AgentRole::Conductor,
+        "strategist" => AgentRole::Strategist,
+        "architect" => AgentRole::Architect,
+        "researcher" => AgentRole::Researcher,
+        "auditor" | "reviewer" => AgentRole::Auditor,
+        "refactorer" => AgentRole::Refactorer,
+        _ => AgentRole::Implementer,
+    };
+
+    // Derive task category from the role or task type, defaulting to
+    // Implementation for most Graph engine work.
+    let task_category = match role_enum {
+        AgentRole::Researcher => TaskCategory::Research,
+        AgentRole::Auditor => TaskCategory::Verification,
+        AgentRole::Refactorer => TaskCategory::Refactor,
+        AgentRole::Architect => TaskCategory::Scaffolding,
+        _ => TaskCategory::Implementation,
+    };
+
+    // Infer complexity from the task tier field, or default to Standard.
+    let complexity = match task.tier.trim().to_ascii_lowercase().as_str() {
+        "fast" | "t0" | "0" => TaskComplexityBand::Fast,
+        "complex" | "t2" | "2" | "premium" => TaskComplexityBand::Complex,
+        _ => TaskComplexityBand::Standard,
+    };
+
+    // Extract daimon policy if the affect state is loaded.
+    let daimon_policy = daimon_state
+        .as_ref()
+        .and_then(|d| {
+            d.lock().ok().map(|state| {
+                use roko_daimon::AffectEngine;
+                let affect = state.query();
+                roko_core::DaimonPolicy::new(affect.confidence, affect.behavioral_state)
+            })
+        })
+        .unwrap_or_default();
+
+    RoutingContext {
+        task_category,
+        complexity,
+        iteration: 0,
+        role: role_enum,
+        crate_familiarity: 0.5,
+        has_prior_failure: false,
+        conductor_load: 0.0,
+        active_agents: 1,
+        ready_queue_depth: 0,
+        max_queue_wait_hours: 0.0,
+        daimon_policy,
+        thinking_level: None,
+        temperament: None,
+        previous_model: None,
+        plan_context_tokens: None,
+        tier_thresholds: None,
+        cfactor: None,
+    }
+}
+
 #[async_trait::async_trait]
 impl TaskDispatcher for GraphTaskDispatcher {
     async fn dispatch(
@@ -455,19 +924,57 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 spec.title
             ))
         })?;
+
+        // ── Worktree isolation: acquire ─────────────────────────────────
+        //
+        // When a workspace provider is configured, acquire an isolated
+        // worktree for this task attempt. The agent and verify steps will
+        // run inside it instead of the shared repository root.
+        let attempt_id = roko_graph::workspace::WorkspaceAttemptId {
+            plan_id: spec.plan_id.clone(),
+            task_id: task.id.clone(),
+            // CellContext does not carry an attempt counter; the graph engine
+            // handles retries by re-executing the cell. Use 0 here -- the
+            // workspace provider's idempotent acquire ensures the same
+            // (plan_id, task_id, 0) triple reuses the existing worktree.
+            attempt: 0,
+        };
+        let lease = if let Some(provider) = &self.workspace_provider {
+            let lease = provider.acquire(&attempt_id).await.map_err(|e| {
+                RokoError::Agent {
+                    backend: "worktree-isolation".to_string(),
+                    message: format!("failed to acquire worktree for {attempt_id}: {e}"),
+                }
+            })?;
+            tracing::info!(
+                plan_id = %spec.plan_id,
+                task_id = %task.id,
+                worktree = %lease.path.display(),
+                "acquired isolated worktree for task"
+            );
+            Some(lease)
+        } else {
+            None
+        };
+        // Effective working directory: worktree path if isolated, else shared workdir.
+        let effective_workdir = lease
+            .as_ref()
+            .map_or_else(|| self.workdir.clone(), |l| l.path.clone());
+
         let role = task.role.as_deref().unwrap_or("implementer");
+        // ── W10: Enrichment pipeline ─────────────────────────────────────
+        let routing_ctx = build_routing_context(role, &task, &self.feedback.daimon_state);
+
         let dispatch_ctx = DispatchContext {
             plan_id: spec.plan_id.clone(),
             role: role.to_string(),
-            workdir: self.workdir.clone(),
-            // CLI model override takes priority over the task model_hint and
-            // the configured default. This mirrors the runner-v2 semantics
-            // where `--model` bypasses adaptive routing.
-            model_hint: Some(
-                self.cli_model_override
-                    .clone()
-                    .unwrap_or_else(|| self.config.agent.default_model.clone()),
-            ),
+            workdir: effective_workdir.clone(),
+            // Task-authored model_hint flows through to RoutingInputs where it
+            // beats the cascade router but loses to force_backend.  When the
+            // task has no hint we leave this None so the cascade router can
+            // make its own decision rather than short-circuiting to the config
+            // default.
+            model_hint: task.model_hint.clone(),
             force_backend: self.cli_model_override.clone(),
             budget_remaining_usd: effective_routing_budget(
                 ctx.budget_remaining,
@@ -477,7 +984,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             // Graph does not yet own runner terminal feedback receipts.
             prompt_experiment: None,
             gate_feedback: None,
-            routing_context: None,
+            routing_context: Some(routing_ctx),
             routing_bias: None,
             dependency_outputs: upstream_outputs(&input),
         };
@@ -487,13 +994,18 @@ impl TaskDispatcher for GraphTaskDispatcher {
             .plan(&task, &dispatch_ctx)
             .map_err(|error| RokoError::Planning(error.to_string()))?;
         let contract = effective_agent_contract(role, &task);
-        let timeout_ms = spec.timeout_secs.max(1).saturating_mul(1_000);
+        let effective_timeout_secs = if spec.timeout_secs == 0 {
+            self.config.timeouts.agent_dispatch_secs
+        } else {
+            spec.timeout_secs
+        };
+        let timeout_ms = effective_timeout_secs.max(1).saturating_mul(1_000);
         let request = AgentDispatchRequest {
             model_key: dispatch_plan.model.slug.clone(),
-            prompt: dispatch_plan.prompt.user_prompt,
-            system_prompt: dispatch_plan.prompt.system_prompt,
-            workdir: self.workdir.clone(),
-            immune_root: Some(self.workdir.clone()),
+            prompt: dispatch_plan.prompt.user_prompt.clone(),
+            system_prompt: dispatch_plan.prompt.system_prompt.clone(),
+            workdir: effective_workdir.clone(),
+            immune_root: Some(effective_workdir.clone()),
             agent_id: format!(
                 "{}/{}",
                 spec.plan_id,
@@ -511,20 +1023,64 @@ impl TaskDispatcher for GraphTaskDispatcher {
             dangerously_skip_permissions: self.dangerously_skip_permissions,
         };
 
+        let started_at = Instant::now();
         let dispatch = self
             .factory
             .run_shared_agent_bridge(request)
             .await
-            .map_err(|error| RokoError::Agent {
-                backend: "graph-task-executor".to_string(),
-                message: error.to_string(),
+            .map_err(|error| {
+                // Best-effort release on dispatch failure when worktree isolation is active.
+                if let Some((provider, lease)) = self.workspace_provider.as_ref().zip(lease.as_ref()) {
+                    let provider = Arc::clone(provider);
+                    let lease = lease.clone();
+                    tokio::spawn(async move {
+                        let _ = provider.release(
+                            &lease,
+                            roko_graph::workspace::WorkspaceReleasePolicy::RetainForFailure,
+                        ).await;
+                    });
+                }
+                RokoError::Agent {
+                    backend: "graph-task-executor".to_string(),
+                    message: error.to_string(),
+                }
             })?;
+        let wall_duration = started_at.elapsed();
 
         // Account for every completed provider call, including unsuccessful
         // results: callers may still have incurred the reported cost.
         budget_reservation.settle(f64::from(dispatch.result.usage.cost_usd))?;
 
+        // ── TUI streaming output ─────────────────────────────────────────
+        //
+        // Forward provider dispatch events (text deltas, tool calls, tool
+        // outputs) to the TUI bridge so the dashboard shows what the agent
+        // produced. This runs for both successful and failed dispatches.
+        self.forward_dispatch_events_to_tui(spec, &task, &dispatch, ctx);
+
+        // ── Learning/feedback pipeline ───────────────────────────────────
+        //
+        // Emit feedback events for all wired subsystems. This runs for both
+        // successful and failed dispatches so the routing and efficiency
+        // subsystems learn from every provider call.
+        self.emit_feedback(
+            spec,
+            &task,
+            &dispatch,
+            dispatch.result.success,
+            wall_duration,
+            &dispatch_plan,
+        )
+        .await;
+
         if !dispatch.result.success {
+            // Release worktree with RetainForFailure policy for post-mortem.
+            if let Some((provider, lease)) = self.workspace_provider.as_ref().zip(lease.as_ref()) {
+                let _ = provider.release(
+                    lease,
+                    roko_graph::workspace::WorkspaceReleasePolicy::RetainForFailure,
+                ).await;
+            }
             let message = dispatch
                 .result
                 .output
@@ -536,6 +1092,216 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 backend: dispatch.target.provider_id,
                 message,
             });
+        }
+
+        // ── Verify steps (gate execution) ──────────────────────────────
+        //
+        // Run each [[task.verify]] step as a shell gate. If any step fails,
+        // the task is marked failed so the Graph engine can retry or abort.
+        // Gates run in the effective workdir (worktree if isolated).
+        if !task.verify.is_empty() {
+            let payload = GatePayload::in_dir(&effective_workdir)
+                .with_label(format!("{}/{}", spec.plan_id, task.id));
+            let gate_signal = Signal::builder(Kind::Task)
+                .body(
+                    Body::from_json(&payload)
+                        .unwrap_or_else(|_| Body::text("gate-payload-fallback")),
+                )
+                .build();
+            let gate_ctx = Context::now();
+
+            let mut failures: Vec<String> = Vec::new();
+
+            for (i, step) in task.verify.iter().enumerate() {
+                let step_label = if step.phase.is_empty() {
+                    format!("verify[{}]", i)
+                } else {
+                    format!("verify[{}:{}]", i, step.phase)
+                };
+
+                tracing::info!(
+                    plan_id = %spec.plan_id,
+                    task_id = %task.id,
+                    step = i,
+                    phase = %step.phase,
+                    command = %step.command,
+                    timeout_ms = step.timeout_ms,
+                    "graph verify step starting"
+                );
+
+                // Parse the command into program + args for ShellGate.
+                let parts: Vec<&str> = step.command.split_whitespace().collect();
+                let (program, args) = if parts.is_empty() {
+                    ("true", Vec::new())
+                } else {
+                    (parts[0], parts[1..].iter().map(|s| s.to_string()).collect())
+                };
+
+                let gate = ShellGate::new(program, args)
+                    .with_timeout_ms(step.timeout_ms)
+                    .with_name(&step_label);
+
+                let verdict = gate.verify(&gate_signal, &gate_ctx).await;
+
+                tracing::info!(
+                    plan_id = %spec.plan_id,
+                    task_id = %task.id,
+                    step = i,
+                    gate = %verdict.gate,
+                    passed = verdict.passed,
+                    duration_ms = verdict.duration_ms,
+                    "graph verify step completed"
+                );
+
+                if !verdict.passed {
+                    let fail_msg = step
+                        .fail_msg
+                        .as_deref()
+                        .unwrap_or(&verdict.reason);
+                    let detail_snippet = verdict
+                        .detail
+                        .as_deref()
+                        .map(|d| {
+                            // Include a bounded tail of the output for diagnostics.
+                            let lines: Vec<&str> = d.lines().collect();
+                            let start = lines.len().saturating_sub(30);
+                            lines[start..].join("\n")
+                        })
+                        .unwrap_or_default();
+
+                    failures.push(format!(
+                        "{step_label} (`{cmd}`): {fail_msg}\n{detail_snippet}",
+                        cmd = step.command,
+                    ));
+                }
+            }
+
+            if !failures.is_empty() {
+                let summary = format!(
+                    "{n}/{total} verify step(s) failed for task `{task}`:\n\n{details}",
+                    n = failures.len(),
+                    total = task.verify.len(),
+                    task = spec.title,
+                    details = failures.join("\n\n---\n\n"),
+                );
+                tracing::warn!(
+                    plan_id = %spec.plan_id,
+                    task_id = %task.id,
+                    failed_count = failures.len(),
+                    total_count = task.verify.len(),
+                    "graph verify steps failed"
+                );
+                // ── W12: Gate failure replan signal ───────────────────────
+                if self.feedback.replan_on_gate_failure {
+                    tracing::info!(
+                        plan_id = %spec.plan_id,
+                        task_id = %task.id,
+                        failed_count = failures.len(),
+                        "gate failure replan enabled; Graph engine will retry via max_retries"
+                    );
+                    // Update efficiency gate_passed if we wrote one.
+                    if let Some(eff_path) = &self.feedback.efficiency_path {
+                        // P3-02: Propagate actual turn count from the
+                        // dispatch that preceded this gate failure.
+                        let gate_turn_number = dispatch
+                            .events
+                            .iter()
+                            .rev()
+                            .find_map(|ev| match ev {
+                                roko_agent::AgentRuntimeEvent::TurnCompleted {
+                                    num_turns, ..
+                                } => *num_turns,
+                                _ => None,
+                            })
+                            .unwrap_or(1);
+                        let gate_event = roko_learn::efficiency::AgentEfficiencyEvent {
+                            agent_id: format!("{}/{}", spec.plan_id, task.id),
+                            role: task.role.as_deref().unwrap_or("implementer").to_string(),
+                            backend: dispatch.target.provider_id.clone(),
+                            model: dispatch.target.model_slug.clone(),
+                            plan_id: spec.plan_id.clone(),
+                            task_id: task.id.clone(),
+                            attempt_id: String::new(),
+                            input_tokens: 0,
+                            output_tokens: 0,
+                            reasoning_tokens: 0,
+                            cache_read_tokens: 0,
+                            cache_write_tokens: 0,
+                            cost_usd: 0.0,
+                            cost_usd_without_cache: 0.0,
+                            prompt_sections: vec![],
+                            total_prompt_tokens: 0,
+                            system_prompt_tokens: 0,
+                            tools_available: 0,
+                            tools_used: 0,
+                            tool_calls: vec![],
+                            wall_time_ms: 0,
+                            duration_ms: 0,
+                            time_to_first_token_ms: 0,
+                            was_warm_start: false,
+                            iteration: gate_turn_number,
+                            turn_number: gate_turn_number,
+                            is_final_turn: false,
+                            gate_passed: Some(false),
+                            outcome: "gate_failure".to_string(),
+                            gate_errors: failures.clone(),
+                            model_used: dispatch.target.model_slug.clone(),
+                            frequency: roko_core::OperatingFrequency::Gamma,
+                            strategy_attempted: "replan".to_string(),
+                            timestamp: chrono::Utc::now().to_rfc3339(),
+                        };
+                        if let Err(error) = append_jsonl_line(eff_path, &gate_event) {
+                            tracing::warn!(
+                                %error,
+                                "graph gate-failure efficiency event write failed"
+                            );
+                        }
+                    }
+                }
+                // Release worktree with RetainForFailure for post-mortem.
+                if let Some((provider, lease)) = self.workspace_provider.as_ref().zip(lease.as_ref()) {
+                    let _ = provider.release(
+                        lease,
+                        roko_graph::workspace::WorkspaceReleasePolicy::RetainForFailure,
+                    ).await;
+                }
+                return Err(RokoError::Verify {
+                    gate: "graph-verify".to_string(),
+                    message: summary,
+                });
+            }
+
+            tracing::info!(
+                plan_id = %spec.plan_id,
+                task_id = %task.id,
+                step_count = task.verify.len(),
+                "all graph verify steps passed"
+            );
+        }
+
+        // ── Worktree isolation: release on success ──────────────────────
+        //
+        // On success, release the worktree with Delete policy. The changes
+        // are already on the worktree's branch and can be merged separately
+        // via the delivery pipeline. For now the worktree is cleaned up.
+        if let Some((provider, lease)) = self.workspace_provider.as_ref().zip(lease.as_ref()) {
+            tracing::info!(
+                plan_id = %spec.plan_id,
+                task_id = %task.id,
+                worktree = %lease.path.display(),
+                "releasing isolated worktree after successful task"
+            );
+            if let Err(e) = provider.release(
+                lease,
+                roko_graph::workspace::WorkspaceReleasePolicy::Delete,
+            ).await {
+                tracing::warn!(
+                    plan_id = %spec.plan_id,
+                    task_id = %task.id,
+                    error = %e,
+                    "worktree release failed (best-effort); worktree may remain on disk"
+                );
+            }
         }
 
         let mut output = dispatch.result.output;
@@ -585,7 +1351,10 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 ),
             });
         }
-        if lease.path != self.workdir {
+        // When worktree isolation is active, the lease path is the
+        // worktree (not the repo root), so the mismatch is expected.
+        // Only enforce the strict check when no workspace provider is set.
+        if self.workspace_provider.is_none() && lease.path != self.workdir {
             return Err(RokoError::Agent {
                 backend: "graph-task-executor".to_string(),
                 message: format!(
@@ -629,15 +1398,14 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             ))
         })?;
         let role = task.role.as_deref().unwrap_or("implementer");
+        // ── W10: Enrichment pipeline (streaming) ─────────────────────────
+        let routing_ctx = build_routing_context(role, &task, &self.feedback.daimon_state);
+
         let dispatch_ctx = DispatchContext {
             plan_id: spec.plan_id.clone(),
             role: role.to_string(),
             workdir: lease.path.clone(),
-            model_hint: Some(
-                self.cli_model_override
-                    .clone()
-                    .unwrap_or_else(|| self.config.agent.default_model.clone()),
-            ),
+            model_hint: task.model_hint.clone(),
             force_backend: self.cli_model_override.clone(),
             budget_remaining_usd: effective_routing_budget(
                 ctx.budget_remaining,
@@ -646,7 +1414,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             attempt: 0,
             prompt_experiment: None,
             gate_feedback: None,
-            routing_context: None,
+            routing_context: Some(routing_ctx),
             routing_bias: None,
             dependency_outputs: upstream_outputs(&input),
         };
@@ -656,11 +1424,16 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             .plan(&task, &dispatch_ctx)
             .map_err(|error| RokoError::Planning(error.to_string()))?;
         let contract = effective_agent_contract(role, &task);
-        let timeout_ms = spec.timeout_secs.max(1).saturating_mul(1_000);
+        let effective_timeout_secs = if spec.timeout_secs == 0 {
+            self.config.timeouts.agent_dispatch_secs
+        } else {
+            spec.timeout_secs
+        };
+        let timeout_ms = effective_timeout_secs.max(1).saturating_mul(1_000);
         let request = AgentDispatchRequest {
             model_key: dispatch_plan.model.slug.clone(),
-            prompt: dispatch_plan.prompt.user_prompt,
-            system_prompt: dispatch_plan.prompt.system_prompt,
+            prompt: dispatch_plan.prompt.user_prompt.clone(),
+            system_prompt: dispatch_plan.prompt.system_prompt.clone(),
             workdir: lease.path.clone(),
             immune_root: Some(lease.path.clone()),
             agent_id: format!(
@@ -684,6 +1457,12 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         let dispatch_result = self.factory.run_shared_agent_bridge(request).await;
 
         let wall_duration = started_at.elapsed();
+
+        // ── TUI streaming output (streaming path) ──────────────────────
+        // Forward provider events to the TUI bridge in the streaming path too.
+        if let Ok(dispatch) = &dispatch_result {
+            self.forward_dispatch_events_to_tui(spec, &task, dispatch, ctx);
+        }
 
         // ── Map provider events to graph events ──────────────────────────
         // Forward provider dispatch events as streaming graph events.
@@ -740,6 +1519,17 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                     None
                 };
                 budget_reservation.settle(cost_usd.max(0.0))?;
+
+                // ── Learning/feedback pipeline (streaming) ───────────────
+                self.emit_feedback(
+                    spec,
+                    &task,
+                    &dispatch,
+                    dispatch.result.success,
+                    wall_duration,
+                    &dispatch_plan,
+                )
+                .await;
 
                 // Forward final usage event with cost.
                 let _ = event_tx
@@ -837,6 +1627,136 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 backend: outcome.provider_id.clone(),
                 message: "provider returned an unsuccessful result".to_string(),
             });
+        }
+
+        // ── Verify steps (gate execution) ──────────────────────────────
+        //
+        // Run each [[task.verify]] step as a shell gate. If any step fails
+        // the task is marked failed. Progress events are forwarded through
+        // the streaming event channel for TUI display. Gates use the lease
+        // path (worktree if isolated, shared workdir otherwise).
+        if !task.verify.is_empty() {
+            let payload = GatePayload::in_dir(&lease.path)
+                .with_label(format!("{}/{}", spec.plan_id, task.id));
+            let gate_signal = Signal::builder(Kind::Task)
+                .body(
+                    Body::from_json(&payload)
+                        .unwrap_or_else(|_| Body::text("gate-payload-fallback")),
+                )
+                .build();
+            let gate_ctx = Context::now();
+            let total = task.verify.len() as u32;
+
+            let mut failures: Vec<String> = Vec::new();
+
+            for (i, step) in task.verify.iter().enumerate() {
+                let step_label = if step.phase.is_empty() {
+                    format!("verify[{}]", i)
+                } else {
+                    format!("verify[{}:{}]", i, step.phase)
+                };
+
+                // Emit progress event for the TUI.
+                let _ = event_tx
+                    .send(GraphTaskEvent::Progress {
+                        message: format!("verify: {}", step.command),
+                        completed: Some(i as u32),
+                        total: Some(total),
+                    })
+                    .await;
+
+                tracing::info!(
+                    plan_id = %spec.plan_id,
+                    task_id = %task.id,
+                    step = i,
+                    phase = %step.phase,
+                    command = %step.command,
+                    timeout_ms = step.timeout_ms,
+                    "graph verify step starting (streaming)"
+                );
+
+                let parts: Vec<&str> = step.command.split_whitespace().collect();
+                let (program, args) = if parts.is_empty() {
+                    ("true", Vec::new())
+                } else {
+                    (parts[0], parts[1..].iter().map(|s| s.to_string()).collect())
+                };
+
+                let gate = ShellGate::new(program, args)
+                    .with_timeout_ms(step.timeout_ms)
+                    .with_name(&step_label);
+
+                let verdict = gate.verify(&gate_signal, &gate_ctx).await;
+
+                tracing::info!(
+                    plan_id = %spec.plan_id,
+                    task_id = %task.id,
+                    step = i,
+                    gate = %verdict.gate,
+                    passed = verdict.passed,
+                    duration_ms = verdict.duration_ms,
+                    "graph verify step completed (streaming)"
+                );
+
+                if !verdict.passed {
+                    let fail_msg = step.fail_msg.as_deref().unwrap_or(&verdict.reason);
+                    let detail_snippet = verdict
+                        .detail
+                        .as_deref()
+                        .map(|d| {
+                            let lines: Vec<&str> = d.lines().collect();
+                            let start = lines.len().saturating_sub(30);
+                            lines[start..].join("\n")
+                        })
+                        .unwrap_or_default();
+
+                    failures.push(format!(
+                        "{step_label} (`{cmd}`): {fail_msg}\n{detail_snippet}",
+                        cmd = step.command,
+                    ));
+                }
+            }
+
+            // Emit final progress event.
+            let _ = event_tx
+                .send(GraphTaskEvent::Progress {
+                    message: if failures.is_empty() {
+                        "verify: all steps passed".to_string()
+                    } else {
+                        format!("verify: {}/{} failed", failures.len(), total)
+                    },
+                    completed: Some(total),
+                    total: Some(total),
+                })
+                .await;
+
+            if !failures.is_empty() {
+                let summary = format!(
+                    "{n}/{total} verify step(s) failed for task `{task}`:\n\n{details}",
+                    n = failures.len(),
+                    total = task.verify.len(),
+                    task = spec.title,
+                    details = failures.join("\n\n---\n\n"),
+                );
+                tracing::warn!(
+                    plan_id = %spec.plan_id,
+                    task_id = %task.id,
+                    failed_count = failures.len(),
+                    total_count = task.verify.len(),
+                    "graph verify steps failed (streaming)"
+                );
+                return Err(RokoError::Verify {
+                    gate: "graph-verify".to_string(),
+                    message: summary,
+                });
+            }
+
+            tracing::info!(
+                plan_id = %spec.plan_id,
+                task_id = %task.id,
+                step_count = task.verify.len(),
+                "all graph verify steps passed (streaming)"
+            );
         }
 
         Ok(TaskDispatchOutcome {

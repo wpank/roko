@@ -466,6 +466,9 @@ pub fn register_topology_cells(registry: &mut crate::registry::CellRegistry) {
             input_schema: None,
             output_schema: None,
             is_stub: true,
+            protocols: Vec::new(),
+            is_predictive: false,
+            display_name: Some("TaskContext".to_string()),
         },
         |_config| Box::new(PassthroughCell::new("plan.task-context")),
     );
@@ -474,6 +477,10 @@ pub fn register_topology_cells(registry: &mut crate::registry::CellRegistry) {
     for suffix in ENRICHER_SUFFIXES {
         let cell_type = format!("plan.enricher.{suffix}");
         let cell_type_clone = cell_type.clone();
+        let display = format!(
+            "{}Enricher",
+            suffix[..1].to_uppercase() + &suffix[1..]
+        );
         registry.register_with_descriptor(
             // leak the string for 'static lifetime -- these are registered once at startup
             Box::leak(cell_type.clone().into_boxed_str()),
@@ -483,6 +490,9 @@ pub fn register_topology_cells(registry: &mut crate::registry::CellRegistry) {
                 input_schema: None,
                 output_schema: None,
                 is_stub: true,
+                protocols: Vec::new(),
+                is_predictive: false,
+                display_name: Some(display),
             },
             move |_config| Box::new(PassthroughCell::new(cell_type_clone.clone())),
         );
@@ -497,6 +507,9 @@ pub fn register_topology_cells(registry: &mut crate::registry::CellRegistry) {
             input_schema: None,
             output_schema: None,
             is_stub: true,
+            protocols: Vec::new(),
+            is_predictive: false,
+            display_name: Some("Compose".to_string()),
         },
         |_config| Box::new(PassthroughCell::new("plan.compose")),
     );
@@ -510,6 +523,9 @@ pub fn register_topology_cells(registry: &mut crate::registry::CellRegistry) {
             input_schema: None,
             output_schema: None,
             is_stub: true,
+            protocols: Vec::new(),
+            is_predictive: false,
+            display_name: Some("Gate".to_string()),
         },
         |_config| Box::new(PassthroughCell::new("plan.gate")),
     );
@@ -523,6 +539,9 @@ pub fn register_topology_cells(registry: &mut crate::registry::CellRegistry) {
             input_schema: None,
             output_schema: None,
             is_stub: true,
+            protocols: Vec::new(),
+            is_predictive: false,
+            display_name: Some("SuccessBoundary".to_string()),
         },
         |_config| Box::new(PassthroughCell::new("plan.success-boundary")),
     );

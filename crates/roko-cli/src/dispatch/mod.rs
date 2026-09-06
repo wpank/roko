@@ -38,7 +38,7 @@ pub mod prompt_builder;
 pub mod prompt_cache;
 pub mod warm_pool;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use roko_agent::AgentRuntimeEvent;
@@ -46,6 +46,7 @@ use roko_core::agent::ModelSpec;
 use roko_core::config::schema::RokoConfig;
 use roko_learn::cascade_router::CascadeRouter;
 use roko_learn::model_router::RoutingContext;
+use roko_learn::provider_health::ProviderHealthRegistry;
 use tokio::sync::mpsc;
 
 pub use factory::SharedAgentFactory;
@@ -170,6 +171,19 @@ impl Dispatcher {
             prompt_assembler,
             warm_pool,
         }
+    }
+
+    /// Attach a provider health registry and model-to-provider mapping so
+    /// the inner [`ModelRouter`] can exclude unhealthy providers during
+    /// cascade routing.
+    #[must_use]
+    pub fn with_provider_health(
+        mut self,
+        health: Arc<ProviderHealthRegistry>,
+        model_providers: HashMap<String, String>,
+    ) -> Self {
+        self.router = self.router.with_provider_health(health, model_providers);
+        self
     }
 
     /// Read-only access to the prompt assembler -- exposed for bidder

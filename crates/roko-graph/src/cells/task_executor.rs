@@ -151,17 +151,20 @@ pub trait TaskDispatcher: Send + Sync {
 
     /// Reconcile a previously started attempt after crash/restart (#247).
     ///
-    /// Default implementation returns `FailAmbiguous` so that an
-    /// implementation cannot silently retry an unknown in-flight provider
-    /// call.
+    /// Default implementation returns `AllocateNew` so that an interrupted
+    /// task is safely retried on resume. The checkpoint only records completed
+    /// activities; if an activity is not in the checkpoint it was interrupted
+    /// mid-execution and should be re-executed. Host implementations that
+    /// have durable start evidence (e.g. a ledger that records attempt start
+    /// before the provider call) may override this to return `FailAmbiguous`
+    /// when the evidence indicates the provider may have already been invoked.
     async fn reconcile_attempt(
         &self,
-        _attempt_id: &str,
+        attempt_id: &str,
         _request_fingerprint: &str,
     ) -> AttemptReconciliation {
-        AttemptReconciliation::FailAmbiguous {
-            attempt_id: String::new(),
-            reason: "reconcile_attempt not implemented".to_string(),
+        AttemptReconciliation::AllocateNew {
+            attempt_id: format!("{attempt_id}-retry"),
         }
     }
 }
@@ -800,15 +803,20 @@ task_def_json = "{}"
     }
 
     #[tokio::test]
-    async fn reconcile_attempt_default_returns_fail_ambiguous() {
+    async fn reconcile_attempt_default_returns_allocate_new() {
         let dispatcher = Arc::new(CapturingDispatcher::default());
         let result = dispatcher
             .reconcile_attempt("attempt-1", "fingerprint-1")
             .await;
-        assert!(
-            matches!(result, AttemptReconciliation::FailAmbiguous { .. }),
-            "default reconcile must fail ambiguous"
-        );
+        match result {
+            AttemptReconciliation::AllocateNew { attempt_id } => {
+                assert!(
+                    attempt_id.contains("attempt-1"),
+                    "new attempt ID must reference the original: {attempt_id}"
+                );
+            }
+            other => panic!("expected AllocateNew for unimplemented reconcile, got {other:?}"),
+        }
     }
 
     // ── Provider attempt receipt ────────────────────────────────────────

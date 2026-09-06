@@ -2217,6 +2217,12 @@ pub struct TuiState {
     // -- eviction counters (#366) --
     /// Tracks evictions from bounded history collections.
     pub eviction_counters: EvictionCounters,
+
+    // -- inbox --
+    /// Unresolved human-attention inbox items, sorted by received_at_ms ascending.
+    pub inbox_items: Vec<roko_core::dashboard_snapshot::InboxItemState>,
+    /// Scroll offset for the Inbox sub-tab on the F1 Dashboard.
+    pub inbox_scroll: usize,
 }
 
 impl Default for TuiState {
@@ -2444,6 +2450,9 @@ impl Default for TuiState {
             unified_log_input_rev: 0,
 
             eviction_counters: EvictionCounters::default(),
+
+            inbox_items: Vec::new(),
+            inbox_scroll: 0,
         }
     }
 }
@@ -4341,6 +4350,12 @@ impl TuiState {
             // Lines replaced with a shorter ring — no eviction to count.
         }
 
+        // --- Inbox items from snapshot ---
+        // Replace the entire list; items are authoritative from the snapshot.
+        // Sort by received_at_ms so the oldest pending items appear at the top.
+        self.inbox_items = snap.inbox_items.values().cloned().collect();
+        self.inbox_items.sort_by_key(|item| item.received_at_ms);
+
         // --- Learning files the snapshot cannot carry (per-event payloads) ---
         self.sync_connected_learning_files();
 
@@ -4589,6 +4604,7 @@ impl TuiState {
         self.agent_scroll = None;
         self.diff_scroll = 0;
         self.procs_scroll = 0;
+        self.inbox_scroll = 0;
         self.git_detail_scroll = 0;
         self.log_detail_scroll = 0;
         self.config_values_scroll = 0;

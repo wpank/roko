@@ -6177,6 +6177,7 @@ dependencies = [
  "indexmap 2.14.0",
  "libc",
  "parking_lot",
+ "proptest",
  "rand 0.8.7",
  "regex",
  "reqwest 0.12.28",
@@ -6349,6 +6350,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "insta",
+ "proptest",
  "roko-agent",
  "roko-core",
  "roko-daimon",
@@ -6478,6 +6480,7 @@ dependencies = [
 name = "roko-eval"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "roko-core",
  "serde",
@@ -6525,6 +6528,7 @@ dependencies = [
  "filetime",
  "fs2",
  "parking_lot",
+ "proptest",
  "roko-core",
  "roko-primitives",
  "rustix 1.1.4",
@@ -6542,8 +6546,10 @@ name = "roko-gate"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "futures",
  "libc",
+ "proptest",
  "roko-agent",
  "roko-core",
  "roko-std",
@@ -6655,6 +6661,7 @@ dependencies = [
  "globset",
  "indexmap 2.14.0",
  "parking_lot",
+ "proptest",
  "rand 0.8.7",
  "rand_chacha 0.3.1",
  "roko-agent",
@@ -6744,6 +6751,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "parking_lot",
+ "proptest",
  "roko-agent",
  "roko-core",
  "roko-fs",

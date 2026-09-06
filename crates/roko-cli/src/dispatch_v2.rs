@@ -1887,8 +1887,13 @@ fn validate_contract_support(
                 | ProviderKind::OpenAiCompat
                 | ProviderKind::PerplexityApi
                 | ProviderKind::GeminiApi
+                | ProviderKind::GeminiCli
                 | ProviderKind::CerebrasApi
                 | ProviderKind::CursorAcp
+                | ProviderKind::CursorCli
+                | ProviderKind::CodexCli
+                | ProviderKind::Hermes
+                | ProviderKind::OpenClaw
         )
     {
         return Ok(());
@@ -3076,13 +3081,9 @@ mod tests {
             bare_mode: false,
             dangerously_skip_permissions: false,
         };
-        assert!(matches!(
-            validate_contract_support(&request, &target),
-            Err(DispatchV2Error::ContractUnsupported {
-                kind: ProviderKind::OpenClaw,
-                ..
-            })
-        ));
+        // All provider kinds are now in the contract support whitelist,
+        // so OpenClaw with a contract should pass validation.
+        assert!(validate_contract_support(&request, &target).is_ok());
     }
 
     #[tokio::test]

@@ -60,6 +60,9 @@ mod workflows;
 mod workspaces;
 mod ws;
 
+mod cache;
+mod doctor;
+mod history;
 mod proxy_ws;
 mod relay_proxy;
 mod rpc_proxy;
@@ -370,6 +373,9 @@ pub fn build_router(
         .merge(triggers::routes())
         .merge(workflows::routes())
         .merge(workspaces::routes())
+        .merge(history::routes())
+        .merge(cache::routes())
+        .merge(doctor::routes())
         .merge(shared_runs::auth_routes())
         .merge(webhooks::authenticated_routes())
         .nest("/providers", providers::router())

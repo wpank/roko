@@ -32,6 +32,7 @@
 // ── Public modules (callers outside runner/) ──────────────────────────────
 pub mod agent_stream;
 pub mod conductor_adapter;
+pub mod eval_generation;
 pub mod event_loop;
 pub mod extension_loader;
 pub mod extension_registry;
@@ -69,6 +70,7 @@ pub(crate) mod gate_oracles;
 pub(crate) mod gate_report;
 pub(crate) mod github_workflow;
 pub(crate) mod inline_output;
+pub(crate) mod promise_tracker;
 pub(crate) mod prompt_experiments;
 pub(crate) mod reflex;
 pub(crate) mod screenshot_collector;

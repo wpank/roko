@@ -61,6 +61,7 @@ pub mod registry;
 pub mod replay;
 pub mod snapshot;
 pub mod topo;
+pub mod topology;
 pub mod types;
 pub mod workspace;
 
@@ -129,6 +130,11 @@ pub use delivery::{
 pub use profile::{
     AuthoredGraphProfile, AuthoredGraphProfileBuilder, CapabilityDenial, CellCapabilityDenial,
     DenialReason, ProfileValidationError, RuntimeProfileKind, validate_cell_capabilities,
+};
+
+// Re-export production plan topology builder.
+pub use topology::{
+    ProductionPlanTopology, TopologyReport, TopologyTaskInfo, register_topology_cells,
 };
 
 // Re-export layered snapshot v2, extension ledger, and receipt state machine (#251).

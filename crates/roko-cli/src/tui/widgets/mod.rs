@@ -3,6 +3,7 @@
 // Shared palette — must come before widget modules that depend on it.
 pub mod rosedust;
 
+pub mod affect_strip;
 pub mod braille;
 pub mod conductor_panel;
 pub mod cost_by_model;

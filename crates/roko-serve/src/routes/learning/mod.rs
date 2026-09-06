@@ -1,4 +1,4 @@
-//! Learning data endpoints — efficiency, cascade router, experiments, gate thresholds.
+//! Learning data endpoints — efficiency, cascade router, experiments, gate thresholds, reflexes.
 
 pub(super) mod experiments;
 pub(crate) mod helpers;
@@ -20,6 +20,7 @@ use crate::state::AppState;
 use roko_gate::adaptive_threshold::AdaptiveThresholds;
 use roko_learn::efficiency::AgentEfficiencyEvent;
 use roko_learn::provider_health::{HealthState, ProviderStatus};
+use roko_learn::reflex_store::{MAX_RULES, ReflexRule, ReflexStore};
 
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -50,6 +51,9 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/learn/gate-thresholds", get(gate_thresholds))
         .route("/learn/router", get(learn_router_snapshot))
         .route("/executor/state", get(executor_state))
+        // T0 reflex store — mirrors `roko learn reflexes`
+        .route("/learn/reflexes", get(reflexes))
+        .route("/learning/reflexes", get(reflexes))
 }
 
 // ── handlers kept in mod.rs ──────────────────────────────────────────
@@ -154,6 +158,46 @@ async fn executor_state(State(state): State<Arc<AppState>>) -> Result<Json<Value
     Ok(Json(
         projections.project("executor_state", &ProjectionQuery::default())?,
     ))
+}
+
+/// `GET /api/learn/reflexes` — T0 reflex rules: count, top five by hits, recent demotions.
+///
+/// Mirrors `roko learn reflexes`. Reads `.roko/learn/reflexes.jsonl` and
+/// `.roko/learn/efficiency.jsonl` directly from disk.
+async fn reflexes(State(state): State<Arc<AppState>>) -> Result<Json<Value>, ApiError> {
+    let workdir = state.workdir.clone();
+
+    let (rules, demotions) = tokio::task::spawn_blocking(move || {
+        let reflex_path = workdir.join(".roko").join("learn").join("reflexes.jsonl");
+        let efficiency_path = workdir.join(".roko").join("learn").join("efficiency.jsonl");
+
+        let rules = ReflexStore::open(reflex_path).snapshot();
+
+        let demotions: Vec<AgentEfficiencyEvent> = std::fs::read_to_string(&efficiency_path)
+            .map(|text| {
+                text.lines()
+                    .rev()
+                    .filter_map(|line| serde_json::from_str(line.trim()).ok())
+                    .filter(|event: &AgentEfficiencyEvent| event.outcome == "reflex_demoted")
+                    .take(5)
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        (rules, demotions)
+    })
+    .await
+    .map_err(|e| ApiError::internal(format!("reflexes task panicked: {e}")))?;
+
+    let total_rules = rules.len();
+    let top_rules: Vec<&ReflexRule> = rules.iter().take(5).collect();
+
+    Ok(Json(json!({
+        "total_rules": total_rules,
+        "max_rules": MAX_RULES,
+        "top_rules": top_rules,
+        "recent_demotions": demotions,
+    })))
 }
 
 /// `GET /api/learn/model-scorecard` — join cascade stats + latency + efficiency by model slug.

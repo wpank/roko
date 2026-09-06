@@ -382,7 +382,7 @@ fn render_history(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme
         ]));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "  Run tasks to start learning: roko plan run plans/ --engine runner-v2",
+            "  Run tasks to start learning: roko plan run plans/",
             theme.muted(),
         )));
     } else {

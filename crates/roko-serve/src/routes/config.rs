@@ -1,5 +1,6 @@
 //! Configuration read/write endpoints.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -8,7 +9,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use roko_core::config::LoadConfigError;
 use roko_core::config::hot_reload;
@@ -42,6 +43,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/config", get(get_config).put(update_config))
         .route("/config/toml", get(get_config_toml))
         .route("/config/reload", post(reload_config))
+        .route("/config/preset", post(apply_preset))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -544,6 +546,243 @@ fn mask_secret_field(value: &mut Value, path: &[&str], field: &str, env_var: &st
             Value::String(format!("Set `{env_var}` in the environment.")),
         );
     }
+}
+
+// ── `POST /api/config/preset` ─────────────────────────────────────────────
+
+/// Preset name recognised by `POST /api/config/preset`.
+///
+/// Mirrors the four sub-commands of `roko config preset`.
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PresetName {
+    /// Enable strict gate checks (clippy, tests, max_iterations=2).
+    Gates,
+    /// Write the current routing-tier models to roko.toml.
+    Routing,
+    /// Set conservative per-plan and per-turn USD budgets.
+    Budget,
+    /// Set `agent.default_model` to a specific model key.
+    Model,
+}
+
+/// Request body for `POST /api/config/preset`.
+#[derive(Debug, Deserialize)]
+pub struct ConfigPresetRequest {
+    /// Which preset to apply.
+    pub preset: PresetName,
+    /// Required when `preset == "model"`: the model key to set.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// When `true`, compute the edits but do not write to disk.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+/// One key-value edit produced by a preset.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PresetEdit {
+    pub key: String,
+    pub value: String,
+}
+
+/// `POST /api/config/preset` — apply a validated config preset to `roko.toml`.
+///
+/// Mirrors `roko config preset <gates|routing|budget|model>`. The body must
+/// contain `"preset"` and, for the `model` preset, a `"model"` field.
+/// Pass `"dry_run": true` to preview edits without writing.
+async fn apply_preset(
+    State(state): State<Arc<AppState>>,
+    ApiJson(req): ApiJson<ConfigPresetRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let config = state.load_roko_config();
+    let workdir = state.workdir.clone();
+
+    // Build the edit list from the preset.
+    let (label, edits) = match req.preset {
+        PresetName::Gates => ("gates", preset_gates_edits()),
+        PresetName::Routing => ("routing", preset_routing_edits(&config)),
+        PresetName::Budget => ("budget", preset_budget_edits()),
+        PresetName::Model => {
+            let model = req.model.as_deref().unwrap_or("").trim().to_string();
+            if model.is_empty() {
+                return Err(ApiError::bad_request(
+                    "preset 'model' requires a non-empty 'model' field",
+                ));
+            }
+            ("model", vec![PresetEdit { key: "agent.default_model".into(), value: model }])
+        }
+    };
+
+    if req.dry_run {
+        return Ok(Json(json!({
+            "preset": label,
+            "dry_run": true,
+            "edits": edits,
+        })));
+    }
+
+    // Apply the edits to roko.toml via the existing config-mutation gate so
+    // it serialises with any concurrent PUT /api/config operations.
+    let config_path = workdir.join("roko.toml");
+    let edit_map: HashMap<String, String> = edits
+        .iter()
+        .map(|e| (e.key.clone(), e.value.clone()))
+        .collect();
+    let edits_clone = edits.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let _owner = CONFIG_MUTATION_GATE
+            .lock()
+            .map_err(|_| ApiError::internal("config mutation gate poisoned"))?;
+
+        apply_toml_edits(&config_path, &edit_map)
+    })
+    .await
+    .map_err(|e| ApiError::internal(format!("preset task panicked: {e}")))?
+    .map_err(|e| ApiError::internal(format!("preset write failed: {e}")))?;
+
+    Ok(Json(json!({
+        "preset": label,
+        "dry_run": false,
+        "edits": edits_clone,
+    })))
+}
+
+// ── preset builders ────────────────────────────────────────────────────────
+
+fn preset_gates_edits() -> Vec<PresetEdit> {
+    vec![
+        PresetEdit { key: "gates.clippy_enabled".into(), value: "true".into() },
+        PresetEdit { key: "gates.skip_tests".into(), value: "false".into() },
+        PresetEdit { key: "gates.max_iterations".into(), value: "2".into() },
+    ]
+}
+
+fn preset_routing_edits(config: &RokoConfig) -> Vec<PresetEdit> {
+    let r = &config.routing;
+    vec![
+        PresetEdit { key: "routing.mode".into(), value: r.mode.clone() },
+        PresetEdit { key: "routing.fast_task_model".into(), value: r.fast_task_model.clone() },
+        PresetEdit {
+            key: "routing.standard_task_model".into(),
+            value: r.standard_task_model.clone(),
+        },
+        PresetEdit {
+            key: "routing.complex_task_model".into(),
+            value: r.complex_task_model.clone(),
+        },
+        PresetEdit {
+            key: "routing.context_strategy".into(),
+            value: r.context_strategy.clone(),
+        },
+        PresetEdit {
+            key: "routing.weights.quality".into(),
+            value: format!("{:.2}", r.weights.default.quality),
+        },
+        PresetEdit {
+            key: "routing.weights.cost".into(),
+            value: format!("{:.2}", r.weights.default.cost),
+        },
+        PresetEdit {
+            key: "routing.weights.latency".into(),
+            value: format!("{:.2}", r.weights.default.latency),
+        },
+    ]
+}
+
+fn preset_budget_edits() -> Vec<PresetEdit> {
+    vec![
+        PresetEdit { key: "budget.max_plan_usd".into(), value: "10.0".into() },
+        PresetEdit { key: "budget.max_turn_usd".into(), value: "1.0".into() },
+        PresetEdit { key: "budget.prompt_token_budget".into(), value: "20000".into() },
+    ]
+}
+
+// ── TOML editor ────────────────────────────────────────────────────────────
+
+/// Apply `edits` to the TOML file at `path` atomically.
+///
+/// Parses the existing TOML, applies the key-value changes, and writes back
+/// with `roko_fs::atomic_write_bytes`. If `path` does not exist the function
+/// returns an error.
+fn apply_toml_edits(
+    path: &std::path::Path,
+    edits: &HashMap<String, String>,
+) -> Result<(), ApiError> {
+    if edits.is_empty() {
+        return Ok(());
+    }
+
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| ApiError::internal(format!("read roko.toml: {e}")))?;
+
+    let mut root: toml::Value = content
+        .parse()
+        .map_err(|e| ApiError::internal(format!("parse roko.toml: {e}")))?;
+
+    for (key, value) in edits {
+        let toml_val = coerce_toml_value(value);
+        set_toml_dotpath(&mut root, key, toml_val)
+            .map_err(|e| ApiError::internal(format!("set {key}: {e}")))?;
+    }
+
+    let toml_str = toml::to_string_pretty(&root)
+        .map_err(|e| ApiError::internal(format!("serialize roko.toml: {e}")))?;
+
+    roko_fs::atomic_write_bytes(path, toml_str.as_bytes())
+        .map_err(|e| ApiError::internal(format!("write roko.toml: {e}")))?;
+
+    Ok(())
+}
+
+/// Coerce a string value to an appropriate TOML type.
+///
+/// `"true"` / `"false"` → `Boolean`; integer strings → `Integer`; float
+/// strings → `Float`; everything else → `String`.
+fn coerce_toml_value(s: &str) -> toml::Value {
+    if s == "true" {
+        return toml::Value::Boolean(true);
+    }
+    if s == "false" {
+        return toml::Value::Boolean(false);
+    }
+    if let Ok(n) = s.parse::<i64>() {
+        return toml::Value::Integer(n);
+    }
+    if let Ok(f) = s.parse::<f64>() {
+        return toml::Value::Float(f);
+    }
+    toml::Value::String(s.to_string())
+}
+
+/// Set a dotted key path (e.g. `"gates.clippy_enabled"`) in a TOML value,
+/// creating intermediate tables as needed.
+fn set_toml_dotpath(root: &mut toml::Value, key: &str, val: toml::Value) -> Result<(), String> {
+    let parts: Vec<&str> = key.split('.').collect();
+    let mut current = root;
+
+    for (i, part) in parts.iter().enumerate() {
+        if i == parts.len() - 1 {
+            if let Some(table) = current.as_table_mut() {
+                table.insert((*part).to_string(), val);
+                return Ok(());
+            }
+            return Err(format!("key '{key}': parent of '{part}' is not a table"));
+        }
+        // Ensure intermediate table exists before descending.
+        if !current.as_table().is_some_and(|t| t.contains_key(*part)) {
+            if let Some(table) = current.as_table_mut() {
+                table.insert((*part).to_string(), toml::Value::Table(toml::map::Map::new()));
+            }
+        }
+        current = current
+            .as_table_mut()
+            .and_then(|t| t.get_mut(*part))
+            .ok_or_else(|| format!("key '{key}': cannot descend into '{part}'"))?;
+    }
+
+    Err("empty key path".to_string())
 }
 
 #[cfg(test)]

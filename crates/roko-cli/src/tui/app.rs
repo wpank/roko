@@ -2656,10 +2656,10 @@ impl App {
                 // based on which tab is active. The sub_tab in ViewState
                 // is derived from these fields via current_view_state().
                 let tab = self.tui_state.active_tab;
-                // Dashboard owns eight purpose-built detail panels.  It does
+                // Dashboard owns ten purpose-built detail panels.  It does
                 // not use the older four-item generic SubView list.
                 let max = if tab == Tab::Dashboard {
-                    8
+                    9
                 } else {
                     views::SubView::for_tab(tab).len()
                 };
@@ -3357,6 +3357,11 @@ impl App {
                 let current = self.tui_state.procs_scroll as i32;
                 self.tui_state.procs_scroll = (current + delta).max(0) as usize;
             }
+            // Dashboard RightPanel: route to inbox_scroll when on the Inbox sub-tab.
+            (Tab::Dashboard, FocusZone::RightPanel) if self.tui_state.plan_detail_tab == 9 => {
+                let current = self.tui_state.inbox_scroll as i32;
+                self.tui_state.inbox_scroll = (current + delta).max(0) as usize;
+            }
             (_, FocusZone::RightPanel) => {
                 let current = self.tui_state.diff_scroll as i32;
                 self.tui_state.diff_scroll = (current + delta).max(0) as usize;
@@ -3484,6 +3489,10 @@ impl App {
             // Dashboard RightPanel: route to procs_scroll when on the Procs sub-tab.
             (Tab::Dashboard, FocusZone::RightPanel) if self.tui_state.plan_detail_tab == 7 => {
                 self.tui_state.procs_scroll = offset;
+            }
+            // Dashboard RightPanel: route to inbox_scroll when on the Inbox sub-tab.
+            (Tab::Dashboard, FocusZone::RightPanel) if self.tui_state.plan_detail_tab == 9 => {
+                self.tui_state.inbox_scroll = offset;
             }
             (_, FocusZone::RightPanel) => {
                 self.tui_state.diff_scroll = offset;

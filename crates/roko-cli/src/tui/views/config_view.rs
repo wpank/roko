@@ -178,32 +178,23 @@ pub fn render(
     let content = Paragraph::new(visible_lines).wrap(Wrap { trim: false });
     frame.render_widget(content, content_area);
 
-    // Hint bar at the bottom
+    // Hint bar at the bottom (read-only view)
     let hint_area = Rect {
         x: inner.x,
         y: inner.y + inner.height.saturating_sub(1),
         width: inner.width,
         height: 1,
     };
-    let hint = if tui_state.config_editing {
-        Line::from(vec![
-            Span::styled("Enter", theme.accent()),
-            Span::styled(":confirm  ", theme.muted()),
-            Span::styled("Esc", theme.accent()),
-            Span::styled(":cancel", theme.muted()),
-        ])
-    } else {
-        Line::from(vec![
-            Span::styled("j/k", theme.accent()),
-            Span::styled(":nav  ", theme.muted()),
-            Span::styled("h/l", theme.accent()),
-            Span::styled(":cycle  ", theme.muted()),
-            Span::styled("Enter", theme.accent()),
-            Span::styled(":edit  ", theme.muted()),
-            Span::styled("Ctrl-S", theme.accent()),
-            Span::styled(":save", theme.muted()),
-        ])
-    };
+    let hint = Line::from(vec![
+        Span::styled("j/k", theme.accent()),
+        Span::styled(":nav  ", theme.muted()),
+        Span::styled("h/l", theme.accent()),
+        Span::styled(":cycle", theme.muted()),
+        Span::styled("  ", theme.muted()),
+        Span::styled("Use", theme.muted()),
+        Span::styled(" roko config set ", theme.accent()),
+        Span::styled("to modify", theme.muted()),
+    ]);
     frame.render_widget(Paragraph::new(hint), hint_area);
 }
 
@@ -243,43 +234,35 @@ fn render_field_line<'a>(
     let source_tag = source.label();
     let source_w = source_tag.len() + 2; // padding
 
-    // Validation indicator prefix
+    // Validation indicator prefix (no edit indicator needed)
     let valid = validate_field_value(value, kind);
-    let (indicator, indicator_style) = if editing {
-        (" ", Style::default())
-    } else {
-        match (kind, &valid) {
-            (ConfigFieldKind::ReadOnly, _) => (" ", Style::default()),
-            (_, Some(_)) => ("X", theme.danger()),
-            (ConfigFieldKind::Bool | ConfigFieldKind::Enum(_), None) => ("+", theme.success()),
-            (_, None) if source == ConfigSource::Env => ("!", theme.warning()),
-            (_, None) => (" ", Style::default()),
-        }
+    let (indicator, indicator_style) = match (kind, &valid) {
+        (ConfigFieldKind::ReadOnly, _) => (" ", Style::default()),
+        (_, Some(_)) => ("X", theme.danger()),
+        (ConfigFieldKind::Bool | ConfigFieldKind::Enum(_), None) => ("+", theme.success()),
+        (_, None) if source == ConfigSource::Env => ("!", theme.warning()),
+        (_, None) => (" ", Style::default()),
     };
 
     let indicator_span = format!(" {indicator} ");
     let label_text = format!("{label:<lw$}", lw = label_w.saturating_sub(4));
 
-    // Format value based on kind
-    let formatted_value = if editing {
-        format!("{value}_") // cursor indicator
-    } else {
-        match kind {
-            ConfigFieldKind::Bool => {
-                if value == "true" {
-                    "\u{25cf} on".to_string() // ● green indicator
-                } else {
-                    "\u{25cb} off".to_string() // ○ dim indicator
-                }
+    // Format value based on kind (always read-only display)
+    let formatted_value = match kind {
+        ConfigFieldKind::Bool => {
+            if value == "true" {
+                "\u{25cf} on".to_string() // ● green indicator
+            } else {
+                "\u{25cb} off".to_string() // ○ dim indicator
             }
-            ConfigFieldKind::Enum(_)
-            | ConfigFieldKind::Int { .. }
-            | ConfigFieldKind::Float { .. }
-            | ConfigFieldKind::Str => {
-                format!("< {value} >")
-            }
-            ConfigFieldKind::ReadOnly => value.to_string(),
         }
+        ConfigFieldKind::Enum(_)
+        | ConfigFieldKind::Int { .. }
+        | ConfigFieldKind::Float { .. }
+        | ConfigFieldKind::Str => {
+            format!("< {value} >")
+        }
+        ConfigFieldKind::ReadOnly => value.to_string(),
     };
 
     // Compute available space for value
@@ -299,9 +282,7 @@ fn render_field_line<'a>(
         theme.label()
     };
 
-    let value_style = if editing {
-        theme.accent().add_modifier(Modifier::UNDERLINED)
-    } else if valid.is_some() {
+    let value_style = if valid.is_some() {
         theme.danger()
     } else if modified || source != ConfigSource::Default {
         theme.value()

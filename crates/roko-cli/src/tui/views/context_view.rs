@@ -798,6 +798,222 @@ fn render_alerts_and_health(
 // Sub-view: Signal DAG (sub_tab == 1)
 // ---------------------------------------------------------------------------
 
+/// A single rendered row in the signal DAG tree.
+struct DagRow {
+    /// The full styled line to display.
+    spans: Vec<(String, ratatui::style::Style)>,
+    /// Index into `tui_state.recent_signals` for selection tracking.
+    signal_index: usize,
+}
+
+/// Build a DFS-ordered list of [`DagRow`]s from a flat signal slice.
+///
+/// Signals that have a `parent_hash` pointing to another signal in the slice
+/// are shown as children; all others are roots. Roots and siblings are sorted
+/// by `created_at_ms` so the tree is chronologically ordered.
+fn build_dag_rows(
+    signals: &[crate::tui::dashboard_types::SignalSummary],
+    theme: Theme,
+) -> Vec<DagRow> {
+    use std::collections::{HashMap, HashSet};
+
+    // Map id → slice index for O(1) look-up.
+    let id_to_idx: HashMap<&str, usize> = signals
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.id.as_str(), i))
+        .collect();
+
+    // Build adjacency: parent_id → sorted list of child indices.
+    let mut children: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut has_parent: HashSet<usize> = HashSet::new();
+
+    for (idx, sig) in signals.iter().enumerate() {
+        if let Some(parent_id) = &sig.parent_hash {
+            if let Some(&parent_idx) = id_to_idx.get(parent_id.as_str()) {
+                children.entry(parent_idx).or_default().push(idx);
+                has_parent.insert(idx);
+            }
+        }
+    }
+
+    // Sort each child list chronologically.
+    for child_list in children.values_mut() {
+        child_list.sort_by_key(|&i| signals[i].created_at_ms);
+    }
+
+    // Collect roots (no resolved parent), sorted chronologically.
+    let mut roots: Vec<usize> = (0..signals.len())
+        .filter(|i| !has_parent.contains(i))
+        .collect();
+    roots.sort_by_key(|&i| signals[i].created_at_ms);
+
+    // DFS walk with prefix tracking.
+    // `prefix_parts` is a stack of booleans: `true` means "this ancestor still
+    // has siblings below me" (render │), `false` means it was the last child
+    // (render   ).
+    let mut rows: Vec<DagRow> = Vec::with_capacity(signals.len());
+
+    fn walk(
+        idx: usize,
+        prefix_parts: &mut Vec<bool>,
+        is_last: bool,
+        signals: &[crate::tui::dashboard_types::SignalSummary],
+        children: &std::collections::HashMap<usize, Vec<usize>>,
+        rows: &mut Vec<DagRow>,
+        theme: Theme,
+    ) {
+        let sig = &signals[idx];
+
+        // Build the tree connector string from the ancestor prefix parts.
+        let mut connector = String::new();
+        for &has_more in prefix_parts.iter() {
+            if has_more {
+                connector.push_str("\u{2502}  "); // │  (vertical bar + 2 spaces)
+            } else {
+                connector.push_str("   "); // 3 spaces for a closed branch
+            }
+        }
+        if prefix_parts.is_empty() {
+            // Root node: just a horizontal line.
+            connector.push_str("\u{2500}\u{2500} "); // ── (two dashes + space)
+        } else if is_last {
+            connector.push_str("\u{2514}\u{2500} "); // └─  (last child)
+        } else {
+            connector.push_str("\u{251C}\u{2500} "); // ├─  (non-last child)
+        }
+
+        // Timestamp: HH:MM:SS from epoch-ms.
+        let ts = format_dag_timestamp(sig.created_at_ms);
+
+        // Kind style: color by signal category.
+        let kind_style = dag_kind_style(sig, theme);
+
+        // Short hash (8 chars).
+        let hash = truncate(&sig.id, 8);
+
+        // Content preview: truncate to remaining width (generous budget).
+        let preview = if sig.payload_preview.is_empty() {
+            String::new()
+        } else {
+            truncate(&sig.payload_preview, 48)
+        };
+
+        // Confidence indicator (compact: a single char or digit).
+        let conf_str = match sig.confidence {
+            Some(c) => format!("{:.0}%", (c * 100.0).clamp(0.0, 100.0)),
+            None => "   ".to_string(),
+        };
+        let conf_style = confidence_style(sig.confidence, &theme);
+
+        // Assemble spans: connector | hash | kind | conf | preview
+        let spans: Vec<(String, ratatui::style::Style)> = vec![
+            (connector, theme.muted()),
+            (hash, theme.muted()),
+            (" ".to_string(), ratatui::style::Style::default()),
+            (truncate(&sig.kind, 22), kind_style),
+            (" ".to_string(), ratatui::style::Style::default()),
+            (conf_str, conf_style),
+            (" ".to_string(), ratatui::style::Style::default()),
+            (ts, theme.muted()),
+            (
+                if preview.is_empty() {
+                    String::new()
+                } else {
+                    format!("  {preview}")
+                },
+                theme.muted(),
+            ),
+        ];
+
+        rows.push(DagRow {
+            spans,
+            signal_index: idx,
+        });
+
+        // Recurse into children.
+        if let Some(kids) = children.get(&idx) {
+            let last_kid = kids.len().saturating_sub(1);
+            for (ki, &child_idx) in kids.iter().enumerate() {
+                let child_is_last = ki == last_kid;
+                // Push whether this level still has more siblings after this child.
+                prefix_parts.push(!child_is_last);
+                walk(
+                    child_idx,
+                    prefix_parts,
+                    child_is_last,
+                    signals,
+                    children,
+                    rows,
+                    theme,
+                );
+                prefix_parts.pop();
+            }
+        }
+    }
+
+    let last_root = roots.len().saturating_sub(1);
+    for (ri, &root_idx) in roots.iter().enumerate() {
+        let mut prefix = Vec::new();
+        walk(
+            root_idx,
+            &mut prefix,
+            ri == last_root,
+            signals,
+            &children,
+            &mut rows,
+            theme,
+        );
+    }
+
+    rows
+}
+
+/// Pick a style for the signal kind column based on the kind string.
+fn dag_kind_style(
+    sig: &crate::tui::dashboard_types::SignalSummary,
+    theme: Theme,
+) -> ratatui::style::Style {
+    let kind = sig.kind.as_str();
+    if kind.contains("gate:") {
+        // Gate verdicts: green for pass, red for fail.
+        let passed = !sig.payload_preview.contains("fail")
+            && !sig.payload_preview.contains("error")
+            && !sig.payload_preview.contains("reject");
+        if passed {
+            theme.success()
+        } else {
+            theme.danger()
+        }
+    } else if kind.contains("agent:")
+        || kind.contains("episode")
+        || kind.contains("dispatch")
+        || kind.contains("model_select")
+        || kind.contains("model_route")
+    {
+        // Agent outputs / routing: blue-ish (info).
+        theme.info()
+    } else if kind.contains("error") || kind.contains("fail") || kind.contains("reject") {
+        theme.danger()
+    } else if kind.contains("warn") {
+        theme.warning()
+    } else {
+        theme.text()
+    }
+}
+
+/// Format an epoch-millisecond timestamp as `HH:MM:SS`.
+fn format_dag_timestamp(ms: i64) -> String {
+    if ms <= 0 {
+        return "--:--:--".to_string();
+    }
+    let secs = ms / 1000;
+    let h = (secs / 3600) % 24;
+    let m = (secs / 60) % 60;
+    let s = secs % 60;
+    format!("{h:02}:{m:02}:{s:02}")
+}
+
 fn render_signal_dag(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -805,7 +1021,10 @@ fn render_signal_dag(
     view_state: &ViewState,
     theme: &Theme,
 ) {
-    let block = Block::bordered().title(Span::styled(" Signal DAG ", theme.accent()));
+    let block = Block::bordered().title(Span::styled(
+        " Signal DAG  [↑↓ scroll] ",
+        theme.accent(),
+    ));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -817,66 +1036,49 @@ fn render_signal_dag(
         return;
     }
 
-    let header_height = 1usize;
-    let visible_height = (inner.height as usize).saturating_sub(header_height);
-    let scroll = bounded_scroll(
-        view_state.scroll as usize,
-        tui_state.recent_signals.len(),
-        visible_height,
-    );
-    let selected = selected_in_window(view_state.selected, scroll, visible_height);
+    // Build the DAG row list once per render.
+    let dag_rows = build_dag_rows(&tui_state.recent_signals, *theme);
+    let total_rows = dag_rows.len();
+    let visible_height = inner.height as usize;
 
-    let rows: Vec<Row<'_>> = tui_state
-        .recent_signals
+    let scroll = bounded_scroll(view_state.scroll as usize, total_rows, visible_height);
+    let selected_abs = view_state.selected;
+
+    // Convert each DagRow to a ratatui ListItem with styled Spans.
+    let items: Vec<ListItem<'_>> = dag_rows
         .iter()
         .enumerate()
         .skip(scroll)
         .take(visible_height)
-        .map(|(idx, sig)| {
-            let depth = signal_depth(sig);
-            let connector = if depth == 0 {
-                "\u{2500} "
+        .map(|(row_idx, dag_row)| {
+            let is_selected = dag_row.signal_index == selected_abs
+                || row_idx == selected_abs;
+            let spans: Vec<Span<'_>> = if is_selected {
+                // Highlight the whole line on selection.
+                dag_row
+                    .spans
+                    .iter()
+                    .map(|(text, _)| Span::styled(text.clone(), theme.selection()))
+                    .collect()
             } else {
-                "\u{2514}\u{2500} "
+                dag_row
+                    .spans
+                    .iter()
+                    .map(|(text, style)| Span::styled(text.clone(), *style))
+                    .collect()
             };
-            let tree = format!("{}{}", "  ".repeat(depth), connector);
-            let confidence = confidence_bar(sig.confidence, 6);
-            let confidence_style = confidence_style(sig.confidence, theme);
-            let row_style = if Some(idx - scroll) == selected {
-                theme.selection()
-            } else {
-                Style::default()
-            };
-
-            Row::new(vec![
-                Cell::from(tree),
-                Cell::from(truncate(&sig.id, 8)),
-                Cell::from(truncate(&sig.kind, 16)),
-                Cell::from(Span::styled(confidence, confidence_style)),
-                Cell::from(
-                    sig.parent_hash
-                        .as_deref()
-                        .map_or("-".to_string(), |p| truncate(p, 8)),
-                ),
-            ])
-            .style(row_style)
+            ListItem::new(Line::from(spans))
         })
         .collect();
 
-    let widths = [
-        Constraint::Length(10),
-        Constraint::Length(10),
-        Constraint::Min(12),
-        Constraint::Length(11),
-        Constraint::Length(10),
-    ];
-    let table = Table::new(rows, widths)
-        .header(
-            Row::new(["tree", "hash", "kind", "conf", "parent"])
-                .style(theme.accent().add_modifier(Modifier::BOLD)),
-        )
-        .column_spacing(1);
-    frame.render_widget(table, inner);
+    let mut list_state = ListState::default();
+    // Keep the ListState selection in sync with the relative cursor position.
+    if selected_abs >= scroll && selected_abs.saturating_sub(scroll) < visible_height {
+        list_state.select(Some(selected_abs.saturating_sub(scroll)));
+    }
+
+    let list = List::new(items);
+    frame.render_stateful_widget(list, inner, &mut list_state);
 }
 
 // ---------------------------------------------------------------------------
@@ -890,42 +1092,97 @@ fn render_episode_replay(
     view_state: &ViewState,
     theme: &Theme,
 ) {
-    let block = Block::bordered().title(Span::styled(" Episode Replay ", theme.accent()));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    // Determine focus zones.
+    let list_focused = matches!(tui_state.focus, FocusZone::InspectTree);
+    let detail_focused = matches!(tui_state.focus, FocusZone::InspectDetail);
+
+    // Use a horizontal split when the terminal is wide enough, otherwise stack.
+    let use_horizontal = area.width >= 100;
+    let (list_area, detail_area) = if use_horizontal {
+        let chunks = Layout::horizontal([
+            Constraint::Percentage(40),
+            Constraint::Percentage(60),
+        ])
+        .split(area);
+        (chunks[0], chunks[1])
+    } else {
+        let list_h = (area.height / 3).clamp(6, 14).min(area.height.saturating_sub(4).max(1));
+        let chunks = Layout::vertical([
+            Constraint::Length(list_h),
+            Constraint::Min(0),
+        ])
+        .split(area);
+        (chunks[0], chunks[1])
+    };
+
+    // ── Left panel: episode list ──────────────────────────────────────────────
+
+    let list_border_style = if list_focused {
+        Theme::focused_border_style()
+    } else {
+        Theme::unfocused_border_style()
+    };
+    let list_title_style = if list_focused {
+        Theme::focused_title_style()
+    } else {
+        Theme::unfocused_title_style()
+    };
+    let list_hint = if list_focused {
+        " [↓/↑] move  [→/l] detail "
+    } else {
+        " [Tab] focus "
+    };
+    let list_block = Block::bordered()
+        .border_style(list_border_style)
+        .title(Span::styled(" Episode List ", list_title_style))
+        .title_bottom(Span::styled(list_hint, theme.muted()));
+    let list_inner = list_block.inner(list_area);
+    frame.render_widget(list_block, list_area);
 
     if tui_state.episodes_cache.is_empty() {
-        let empty = Paragraph::new("No episodes yet \u{2014} agent turns populate the episode log")
-            .style(theme.muted())
-            .wrap(Wrap { trim: false });
-        frame.render_widget(empty, inner);
+        let empty =
+            Paragraph::new("No episodes yet \u{2014} agent turns populate the episode log")
+                .style(theme.muted())
+                .wrap(Wrap { trim: false });
+        frame.render_widget(empty, list_inner);
+        // Still render an empty detail panel.
+        render_episode_detail_empty(frame, detail_area, detail_focused, theme);
         return;
     }
 
-    let header_height = 1usize;
-    let visible_height = (inner.height as usize).saturating_sub(header_height);
-    let scroll = bounded_scroll(
-        view_state.scroll as usize,
-        tui_state.episodes_cache.len(),
-        visible_height,
-    );
-    let selected = selected_in_window(view_state.selected, scroll, visible_height);
+    // The episodes cache is stored oldest-first; display newest-first.
+    let episodes_rev: Vec<&roko_learn::episode_logger::Episode> =
+        tui_state.episodes_cache.iter().rev().collect();
+    let total = episodes_rev.len();
 
-    let rows: Vec<Row<'_>> = tui_state
-        .episodes_cache
+    // `plan_scroll_offset` tracks the selected episode index (absolute, 0-based).
+    let selected_idx = tui_state.plan_scroll_offset.min(total.saturating_sub(1));
+
+    let header_height = 1usize;
+    let visible_height = (list_inner.height as usize).saturating_sub(header_height);
+
+    // Keep the selected row inside the visible window.
+    let scroll = if selected_idx < visible_height {
+        0
+    } else {
+        selected_idx.saturating_sub(visible_height.saturating_sub(1))
+    };
+    let scroll = scroll.min(total.saturating_sub(visible_height.max(1)));
+
+    let rows: Vec<Row<'_>> = episodes_rev
         .iter()
-        .rev()
         .enumerate()
         .skip(scroll)
         .take(visible_height)
-        .map(|(idx, ep)| {
+        .map(|(abs_idx, ep)| {
             let outcome_style = if ep.success {
                 theme.success()
             } else {
                 theme.danger()
             };
             let outcome = if ep.success { "pass" } else { "fail" };
-            let row_style = if Some(idx - scroll) == selected {
+            let is_selected = abs_idx == selected_idx;
+            let row_style = if is_selected {
                 theme.selection()
             } else {
                 Style::default()
@@ -933,7 +1190,7 @@ fn render_episode_replay(
             let wall_time_ms = (ep.duration_secs.max(0.0) * 1000.0).round() as u64;
             Row::new(vec![
                 Cell::from(ep.timestamp.format("%H:%M:%S").to_string()),
-                Cell::from(truncate(&ep.agent_id, 16)),
+                Cell::from(truncate(&ep.agent_id, 14)),
                 Cell::from(Span::styled(outcome.to_string(), outcome_style)),
                 Cell::from(format!("{wall_time_ms}ms")),
                 Cell::from(format_count(ep.usage.input_tokens + ep.usage.output_tokens)),
@@ -944,10 +1201,10 @@ fn render_episode_replay(
 
     let widths = [
         Constraint::Length(10),
-        Constraint::Min(12),
+        Constraint::Min(10),
         Constraint::Length(6),
-        Constraint::Length(9),
         Constraint::Length(8),
+        Constraint::Length(7),
     ];
     let table = Table::new(rows, widths)
         .header(
@@ -955,7 +1212,301 @@ fn render_episode_replay(
                 .style(theme.accent().add_modifier(Modifier::BOLD)),
         )
         .column_spacing(1);
-    frame.render_widget(table, inner);
+    frame.render_widget(table, list_inner);
+
+    // ── Right panel: episode detail ───────────────────────────────────────────
+
+    let selected_episode = episodes_rev.get(selected_idx).copied();
+    match selected_episode {
+        None => render_episode_detail_empty(frame, detail_area, detail_focused, theme),
+        Some(ep) => render_episode_detail(
+            frame,
+            detail_area,
+            ep,
+            tui_state.inspect_detail_scroll,
+            detail_focused,
+            theme,
+        ),
+    }
+}
+
+/// Render the detail panel when no episode is selected.
+fn render_episode_detail_empty(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    focused: bool,
+    theme: &Theme,
+) {
+    let border_style = if focused {
+        Theme::focused_border_style()
+    } else {
+        Theme::unfocused_border_style()
+    };
+    let title_style = if focused {
+        Theme::focused_title_style()
+    } else {
+        Theme::unfocused_title_style()
+    };
+    let block = Block::bordered()
+        .border_style(border_style)
+        .title(Span::styled(" Episode Detail ", title_style));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let msg = Paragraph::new("Select an episode from the list")
+        .style(theme.muted())
+        .alignment(Alignment::Center);
+    frame.render_widget(msg, inner);
+}
+
+/// Render the full detail panel for a single episode.
+fn render_episode_detail(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    ep: &roko_learn::episode_logger::Episode,
+    scroll_offset: usize,
+    focused: bool,
+    theme: &Theme,
+) {
+    let border_style = if focused {
+        Theme::focused_border_style()
+    } else {
+        Theme::unfocused_border_style()
+    };
+    let title_style = if focused {
+        Theme::focused_title_style()
+    } else {
+        Theme::unfocused_title_style()
+    };
+    let hint = if focused {
+        " [↓/↑] scroll  [←/h] list "
+    } else {
+        " [Tab] focus "
+    };
+    let block = Block::bordered()
+        .border_style(border_style)
+        .title(Span::styled(" Episode Detail ", title_style))
+        .title_bottom(Span::styled(hint, theme.muted()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // Build lines for the detail view.
+    let mut lines: Vec<Line<'_>> = Vec::new();
+
+    // ── Identity ──────────────────────────────────────────────────────────────
+    lines.push(Line::from(vec![
+        Span::styled("  Metadata", theme.accent_bold()),
+    ]));
+    lines.push(Line::default());
+
+    let label = theme.label();
+    let text = theme.text();
+    let muted = theme.muted();
+    let success = theme.success();
+    let danger = theme.danger();
+
+    macro_rules! kv {
+        ($k:expr, $v:expr) => {
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {:16}", $k), label),
+                Span::styled($v.to_string(), text),
+            ]));
+        };
+    }
+
+    kv!("Agent:", truncate(&ep.agent_id, 40));
+    kv!("Task:", truncate(&ep.task_id, 40));
+    if !ep.agent_template.is_empty() {
+        kv!("Role:", truncate(&ep.agent_template, 40));
+    }
+    if !ep.kind.is_empty() {
+        kv!("Kind:", truncate(&ep.kind, 40));
+    }
+    if !ep.model.is_empty() {
+        kv!("Model:", truncate(&ep.model, 40));
+    }
+    if !ep.backend.is_empty() {
+        kv!("Backend:", truncate(&ep.backend, 40));
+    }
+    kv!("Started:", ep.started_at.format("%Y-%m-%d %H:%M:%S UTC"));
+    kv!("Completed:", ep.completed_at.format("%Y-%m-%d %H:%M:%S UTC"));
+
+    // ── Duration ──────────────────────────────────────────────────────────────
+    let wall_ms = (ep.duration_secs.max(0.0) * 1000.0).round() as u64;
+    let duration_str = if wall_ms >= 60_000 {
+        format!("{:.1}m", wall_ms as f64 / 60_000.0)
+    } else if wall_ms >= 1_000 {
+        format!("{:.2}s", wall_ms as f64 / 1_000.0)
+    } else {
+        format!("{wall_ms}ms")
+    };
+    kv!("Duration:", duration_str);
+
+    // ── Outcome ───────────────────────────────────────────────────────────────
+    lines.push(Line::default());
+    lines.push(Line::from(vec![
+        Span::styled("  Outcome", theme.accent_bold()),
+    ]));
+    lines.push(Line::default());
+
+    let (outcome_label, outcome_style) = if ep.success {
+        ("pass", success)
+    } else {
+        ("fail", danger)
+    };
+    lines.push(Line::from(vec![
+        Span::styled(format!("  {:16}", "Result:"), label),
+        Span::styled(outcome_label, outcome_style),
+    ]));
+
+    if let Some(ref reason) = ep.failure_reason {
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {:16}", "Failure:"), label),
+            Span::styled(truncate(reason, 60), danger),
+        ]));
+    }
+    if let Some(ref summary) = ep.reasoning_summary {
+        if !summary.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {:16}", "Summary:"), label),
+                Span::styled(truncate(summary, 60), text),
+            ]));
+        }
+    }
+    if let Some(ref reflection) = ep.reflection {
+        if !reflection.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {:16}", "Reflection:"), label),
+                Span::styled(truncate(reflection, 60), muted),
+            ]));
+        }
+    }
+
+    // ── Gate verdicts ─────────────────────────────────────────────────────────
+    if !ep.gate_verdicts.is_empty() {
+        lines.push(Line::default());
+        lines.push(Line::from(vec![
+            Span::styled("  Gates", theme.accent_bold()),
+        ]));
+        lines.push(Line::default());
+        for verdict in &ep.gate_verdicts {
+            let (v_label, v_style) = if verdict.passed {
+                ("pass", success)
+            } else {
+                ("fail", danger)
+            };
+            let sig_part = verdict
+                .signature
+                .as_deref()
+                .map(|s| format!("  sig:{}", &s[..s.len().min(12)]))
+                .unwrap_or_default();
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {:16}", truncate(&verdict.gate, 14)), label),
+                Span::styled(v_label, v_style),
+                Span::styled(sig_part, muted),
+            ]));
+        }
+    }
+
+    // ── Token / cost accounting ───────────────────────────────────────────────
+    lines.push(Line::default());
+    lines.push(Line::from(vec![
+        Span::styled("  Tokens & Cost", theme.accent_bold()),
+    ]));
+    lines.push(Line::default());
+
+    kv!(
+        "Input tokens:",
+        format_count(ep.usage.input_tokens)
+    );
+    kv!(
+        "Output tokens:",
+        format_count(ep.usage.output_tokens)
+    );
+    if ep.usage.cache_read_tokens > 0 {
+        kv!(
+            "Cache read:",
+            format_count(ep.usage.cache_read_tokens)
+        );
+    }
+    if ep.usage.cache_write_tokens > 0 {
+        kv!(
+            "Cache write:",
+            format_count(ep.usage.cache_write_tokens)
+        );
+    }
+    kv!(
+        "Total tokens:",
+        format_count(ep.usage.input_tokens + ep.usage.output_tokens)
+    );
+    if ep.usage.cost_usd > 0.0 {
+        kv!("Cost:", format!("${:.6}", ep.usage.cost_usd));
+    }
+    if ep.usage.cost_usd_without_cache > 0.0 && ep.usage.cost_usd_without_cache != ep.usage.cost_usd {
+        kv!(
+            "Cost (no cache):",
+            format!("${:.6}", ep.usage.cost_usd_without_cache)
+        );
+    }
+
+    // ── HDC fingerprint ───────────────────────────────────────────────────────
+    if let Some(ref fp) = ep.hdc_fingerprint {
+        if !fp.is_empty() {
+            lines.push(Line::default());
+            lines.push(Line::from(vec![
+                Span::styled("  HDC Fingerprint", theme.accent_bold()),
+            ]));
+            lines.push(Line::default());
+            // Show the fingerprint in 32-char chunks for readability.
+            let fp_display = truncate(fp, 64);
+            lines.push(Line::from(vec![
+                Span::styled("  ", label),
+                Span::styled(fp_display, muted),
+            ]));
+        }
+    }
+
+    // ── Emotional tag ─────────────────────────────────────────────────────────
+    if let Some(ref tag) = ep.emotional_tag {
+        lines.push(Line::default());
+        lines.push(Line::from(vec![
+            Span::styled("  Affect (PAD)", theme.accent_bold()),
+        ]));
+        lines.push(Line::default());
+        kv!("Pleasure:", format!("{:.3}", tag.pad.pleasure));
+        kv!("Arousal:", format!("{:.3}", tag.pad.arousal));
+        kv!("Dominance:", format!("{:.3}", tag.pad.dominance));
+        kv!("Intensity:", format!("{:.3}", tag.intensity));
+        if !tag.trigger.is_empty() {
+            kv!("Trigger:", truncate(&tag.trigger, 40));
+        }
+    }
+
+    // ── Turns / extra ─────────────────────────────────────────────────────────
+    if ep.turns > 0 {
+        lines.push(Line::default());
+        kv!("Turns:", ep.turns);
+    }
+    if !ep.trigger_kind.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {:16}", "Trigger:"), label),
+            Span::styled(truncate(&ep.trigger_kind, 40), text),
+        ]));
+    }
+
+    // Render with scroll offset applied.
+    let total_lines = lines.len();
+    let visible = inner.height as usize;
+    let max_scroll = total_lines.saturating_sub(visible);
+    let clamped_scroll = scroll_offset.min(max_scroll);
+
+    let visible_lines: Vec<Line<'_>> = lines
+        .into_iter()
+        .skip(clamped_scroll)
+        .take(visible)
+        .collect();
+
+    let paragraph = Paragraph::new(visible_lines);
+    frame.render_widget(paragraph, inner);
 }
 
 // ---------------------------------------------------------------------------
@@ -1962,5 +2513,78 @@ mod tests {
             signal_depth(&signal(Some("parent"), &["a", "b", "c", "d", "e"])),
             4
         );
+    }
+
+    /// Build a [`SignalSummary`] with explicit id, parent_hash, kind, and timestamp.
+    fn make_signal(id: &str, parent: Option<&str>, kind: &str, ts: i64) -> SignalSummary {
+        SignalSummary {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            created_at_ms: ts,
+            confidence: None,
+            plan_id: None,
+            task_id: None,
+            parent_hash: parent.map(str::to_string),
+            lineage: Vec::new(),
+            payload_preview: String::new(),
+        }
+    }
+
+    #[test]
+    fn build_dag_rows_flat_list_all_roots() {
+        // Three unrelated signals — all should appear as roots in timestamp order.
+        let signals = vec![
+            make_signal("aaa", None, "gate:compile", 300),
+            make_signal("bbb", None, "agent:run", 100),
+            make_signal("ccc", None, "gate:test", 200),
+        ];
+        let theme = crate::tui::theme::Theme::no_color();
+        let rows = build_dag_rows(&signals, theme);
+        assert_eq!(rows.len(), 3);
+        // Chronological order: bbb(100), ccc(200), aaa(300).
+        assert_eq!(rows[0].signal_index, 1); // bbb
+        assert_eq!(rows[1].signal_index, 2); // ccc
+        assert_eq!(rows[2].signal_index, 0); // aaa
+    }
+
+    #[test]
+    fn build_dag_rows_parent_child_ordering() {
+        // root → child1 → grandchild
+        //      → child2
+        let signals = vec![
+            make_signal("root", None, "agent:dispatch", 0),
+            make_signal("child1", Some("root"), "gate:compile", 10),
+            make_signal("grandchild", Some("child1"), "gate:test", 20),
+            make_signal("child2", Some("root"), "gate:clippy", 15),
+        ];
+        let theme = crate::tui::theme::Theme::no_color();
+        let rows = build_dag_rows(&signals, theme);
+        // DFS order: root, child1, grandchild, child2.
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0].signal_index, 0); // root
+        assert_eq!(rows[1].signal_index, 1); // child1
+        assert_eq!(rows[2].signal_index, 2); // grandchild
+        assert_eq!(rows[3].signal_index, 3); // child2
+    }
+
+    #[test]
+    fn build_dag_rows_dangling_parent_becomes_root() {
+        // Signal references a parent that isn't in the slice — treated as root.
+        let signals = vec![
+            make_signal("orphan", Some("missing-parent"), "gate:compile", 5),
+        ];
+        let theme = crate::tui::theme::Theme::no_color();
+        let rows = build_dag_rows(&signals, theme);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].signal_index, 0);
+    }
+
+    #[test]
+    fn format_dag_timestamp_formats_correctly() {
+        // 3661 seconds = 01:01:01
+        assert_eq!(format_dag_timestamp(3_661_000), "01:01:01");
+        // Zero / negative → placeholder.
+        assert_eq!(format_dag_timestamp(0), "--:--:--");
+        assert_eq!(format_dag_timestamp(-1), "--:--:--");
     }
 }

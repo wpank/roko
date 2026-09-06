@@ -452,6 +452,8 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             screenshot_interval,
             screenshot_dir,
             batch_size,
+            worktree_per_task,
+            rich_topology,
         } => {
             let t_total = std::time::Instant::now();
             let t_setup = std::time::Instant::now();
@@ -536,6 +538,8 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     force,
                     screenshots,
                     batch_size,
+                    cli.no_replan,
+                    cli.skip_validate,
                     cli.quiet,
                 );
 
@@ -553,6 +557,9 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     effective_model_override.clone(),
                     dangerously_skip_permissions,
                     log_file.as_deref(),
+                    worktree_per_task,
+                    rich_topology,
+                    no_tui,
                 )
                 .await;
             }
@@ -2703,6 +2710,8 @@ fn warn_graph_unsupported_flags(
     force: bool,
     screenshots: bool,
     batch_size: Option<usize>,
+    no_replan: bool,
+    skip_validate: bool,
     quiet: bool,
 ) {
     if quiet {
@@ -2741,6 +2750,18 @@ fn warn_graph_unsupported_flags(
     }
     if batch_size.is_some() {
         eprintln!("warning: --batch-size is not supported with --engine graph and will be ignored");
+    }
+    if no_replan {
+        eprintln!(
+            "warning: --no-replan has no effect with --engine graph; \
+             the Graph engine does not replan on gate failure (use max_retries in tasks.toml to control retries)"
+        );
+    }
+    if skip_validate {
+        eprintln!(
+            "warning: --skip-validate skips tasks.toml structure checks but the Graph engine \
+             always runs its own internal graph validation before execution"
+        );
     }
 }
 
@@ -2867,8 +2888,9 @@ impl roko_core::TelemetryEventSink for InlineProgressTelemetrySink {
 /// Execute plans via the Graph Engine path.
 ///
 /// Loads plans using the Runner v2 plan_loader, converts each to a Graph
-/// via `roko_graph::convert::plan_to_graph`, and runs them through the
-/// GraphEngine with the default cell registry.
+/// via `roko_graph::convert::plan_to_graph` (default) or
+/// `roko_graph::topology::ProductionPlanTopology` (when `rich_topology` is
+/// true), and runs them through the GraphEngine with the default cell registry.
 async fn cmd_plan_run_engine(
     plans_dir: &std::path::Path,
     workdir: &std::path::Path,
@@ -2883,6 +2905,9 @@ async fn cmd_plan_run_engine(
     cli_model_override: Option<String>,
     dangerously_skip_permissions: bool,
     log_file: Option<&std::path::Path>,
+    worktree_per_task: bool,
+    rich_topology: bool,
+    no_tui: bool,
 ) -> Result<i32> {
     use std::sync::Arc;
 
@@ -2906,10 +2931,10 @@ async fn cmd_plan_run_engine(
     roko_core::config::loader::normalize_and_validate_dispatch_models(&mut roko_config)
         .context("validate model configuration before Graph dispatch")?;
 
-    // Wire CLI --no-replan: override config so gate failures are terminal.
-    if cli.no_replan {
-        roko_config.learning.replan_on_gate_failure = false;
-    }
+    // Note: --no-replan has no meaningful effect in the Graph engine.
+    // The Graph engine uses max_retries (from tasks.toml) for retry control
+    // and does not perform plan-level replanning on gate failure. A warning
+    // is emitted by warn_graph_unsupported_flags before reaching this path.
 
     // Merge CLI flag with config (same logic as runner-v2).
     let dangerously_skip_permissions =
@@ -2965,29 +2990,84 @@ async fn cmd_plan_run_engine(
         );
     }
 
-    let graph_task_dispatcher = Arc::new(
-        roko_cli::graph_task_dispatch::GraphTaskDispatcher::new(
-            Arc::clone(&shared_factory),
-            Arc::clone(&roko_config),
-            workdir.to_path_buf(),
-        )
-        .with_plan_budget(
-            plan_budget_ceiling,
-            f64::from(roko_config.budget.max_turn_usd),
-            budget_override_active,
-        )
-        .with_cli_model_override(cli_model_override)
-        .with_dangerously_skip_permissions(dangerously_skip_permissions),
-    );
-    let task_dispatcher: Arc<dyn TaskDispatcher> = graph_task_dispatcher.clone();
-    let state_hub_sender = roko_cli::state_hub::shared_state_hub().sender();
+    // ── Learning/feedback subsystem wiring ─────────────────────────────
+    //
+    // Build the same feedback infrastructure that Runner-v2 uses, so Graph
+    // engine runs produce episodes, efficiency events, playbook outcomes,
+    // routing observations, experiment settlements, and daimon feedback.
+    let graph_layout = RokoLayout::for_project(workdir);
+    let graph_learn_dir = graph_layout.learn_dir();
+    let _ = std::fs::create_dir_all(&graph_learn_dir);
+
+    let graph_episodes_path = graph_layout.root_episodes_path();
+    let graph_feedback_facade = {
+        let mut facade = roko_cli::runtime_feedback::FeedbackFacade::new()
+            .with_sink(std::sync::Arc::new(
+                roko_cli::runtime_feedback::EpisodeSink::at(&graph_episodes_path),
+            ));
+        if let Some(cascade) = &graph_run_config.cascade_router {
+            facade = facade.with_sink(std::sync::Arc::new(
+                roko_cli::runtime_feedback::RoutingObservationSink::new(
+                    cascade.clone(),
+                ),
+            ));
+        }
+        std::sync::Arc::new(facade)
+    };
+
+    let graph_feedback = roko_cli::graph_task_dispatch::GraphFeedbackContext {
+        feedback_facade: Some(graph_feedback_facade),
+        efficiency_path: Some(graph_learn_dir.join("efficiency.jsonl")),
+        playbook_dir: Some(graph_learn_dir.join("playbooks")),
+        daimon_state: {
+            // Convert StrategySpaceConfig -> StrategySpaceDefinition manually,
+            // matching the CLI adapter conversion in DaimonConfig::from_core.
+            let dims_vec = &roko_config.daimon.strategy_space.dimensions;
+            if dims_vec.len() == 8 {
+                let dims: [String; 8] = dims_vec.clone().try_into().unwrap();
+                let def = roko_daimon::StrategySpaceDefinition {
+                    domain: roko_config.daimon.strategy_space.domain.clone(),
+                    dimensions: dims,
+                };
+                let mut s = roko_daimon::DaimonState::load_or_new(
+                    workdir.join(".roko").join("daimon").join("affect.json"),
+                );
+                let _ = s.configure_strategy_space(def);
+                Some(std::sync::Arc::new(std::sync::Mutex::new(s)))
+            } else {
+                tracing::warn!(
+                    dims = dims_vec.len(),
+                    "daimon strategy_space.dimensions must have exactly 8 entries; skipping"
+                );
+                None
+            }
+        },
+        experiment_store_path: Some(graph_learn_dir.join("experiments.json")),
+        replan_on_gate_failure: roko_config.learning.replan_on_gate_failure,
+    };
+
+    // ── TUI vs inline progress decision ──────────────────────────────
+    //
+    // Auto-enable the interactive TUI dashboard when stdout is an
+    // interactive terminal, unless the user explicitly opted out with
+    // --no-tui, --quiet, or --json. This mirrors the runner-v2 approval
+    // TUI logic (line ~470).
+    let launch_tui =
+        !no_tui && !cli.quiet && !cli.json && std::io::stdout().is_terminal();
+
+    // Keep the full SharedStateHub alive so the TUI can subscribe to the
+    // live event stream. Previously this path only extracted sender().
+    let state_hub = roko_cli::state_hub::shared_state_hub();
+    let state_hub_sender = state_hub.sender();
     let state_hub_sink: Arc<dyn roko_core::TelemetryEventSink> = Arc::new(
         roko_cli::runner::event_loop::StateHubTelemetrySink::new(state_hub_sender.clone()),
     );
 
     // Inline progress display: print per-node start/complete/fail to stderr
     // so the user can see what the Graph engine is doing in real time.
-    let show_progress = !cli.quiet && !cli.json;
+    // Disabled when the TUI is active — events flow through the dashboard
+    // instead of being printed inline.
+    let show_progress = !cli.quiet && !cli.json && !launch_tui;
     let graph_telemetry: Arc<dyn roko_core::TelemetryEventSink> = Arc::new(
         InlineProgressTelemetrySink {
             inner: state_hub_sink,
@@ -2996,9 +3076,88 @@ async fn cmd_plan_run_engine(
     );
 
     // Wire graph engine execution into the TUI dashboard event stream.
+    // Create separate TUI bridges for the task dispatcher (agent output
+    // streaming) and the graph lifecycle bridge (plan/node events).
+    let dispatcher_tui_bridge = roko_cli::runner::tui_bridge::TuiBridge::new(state_hub_sender.clone());
     let graph_tui_bridge = roko_cli::runner::graph_tui_bridge::GraphTuiBridge::new(
         roko_cli::runner::tui_bridge::TuiBridge::new(state_hub_sender),
     );
+
+    let mut dispatcher_builder = roko_cli::graph_task_dispatch::GraphTaskDispatcher::new(
+        Arc::clone(&shared_factory),
+        Arc::clone(&roko_config),
+        workdir.to_path_buf(),
+    )
+    .with_plan_budget(
+        plan_budget_ceiling,
+        f64::from(roko_config.budget.max_turn_usd),
+        budget_override_active,
+    )
+    .with_cli_model_override(cli_model_override)
+    .with_dangerously_skip_permissions(dangerously_skip_permissions)
+    .with_feedback(graph_feedback)
+    .with_tui_bridge(dispatcher_tui_bridge);
+
+    // ── Per-task worktree isolation (opt-in via --worktree-per-task) ──
+    if worktree_per_task {
+        use roko_cli::orchestrator::worktree::{WorktreeConfig, WorktreeManager};
+        let worktree_manager = WorktreeManager::new(WorktreeConfig {
+            repo_root: workdir.to_path_buf(),
+            base_branch: "HEAD".to_string(),
+            worktrees_root: workdir.join(".roko").join("worktrees"),
+            max_live: None,
+            idle_ttl: std::time::Duration::from_hours(1),
+        });
+        let workspace_provider = Arc::new(
+            roko_cli::graph_execution::WorktreeExecutionWorkspaceProvider::new(worktree_manager),
+        );
+        if !cli.quiet && !cli.json {
+            eprintln!("\u{25b8} Per-task worktree isolation enabled (--worktree-per-task)");
+        }
+        dispatcher_builder = dispatcher_builder.with_workspace_provider(workspace_provider);
+    }
+
+    let graph_task_dispatcher = Arc::new(dispatcher_builder);
+    let task_dispatcher: Arc<dyn TaskDispatcher> = graph_task_dispatcher.clone();
+
+    // ── Spawn interactive TUI thread ─────────────────────────────────
+    //
+    // Replicates the runner-v2 approval TUI pattern: spawn the App on a
+    // dedicated OS thread so it owns the terminal while the async engine
+    // drives execution on the current task.
+    let mut tui_handle: Option<std::thread::JoinHandle<anyhow::Result<()>>> = None;
+    if launch_tui {
+        // Redirect stderr to a log file so tracing output does not
+        // corrupt the TUI's raw terminal display.
+        let layout = RokoLayout::for_project(workdir);
+        let stderr_log_path = layout.runner_stderr_log();
+        let _ = std::fs::create_dir_all(stderr_log_path.parent().unwrap_or(workdir));
+        #[cfg(unix)]
+        if let Ok(log_file) = std::fs::File::create(&stderr_log_path) {
+            use std::os::unix::io::AsRawFd;
+            #[allow(unsafe_code)]
+            unsafe {
+                libc::dup2(log_file.as_raw_fd(), 2);
+            }
+        }
+
+        let state_hub_for_tui = state_hub.clone();
+        let workdir_for_tui = workdir.to_path_buf();
+        let handle = std::thread::Builder::new()
+            .name("roko-graph-engine-tui".to_string())
+            .spawn(move || {
+                let app = App::new_connected_with_page(
+                    &workdir_for_tui,
+                    None, // Default page = Tab::Dashboard
+                    &state_hub_for_tui,
+                )
+                .without_mouse_capture()
+                .with_exit_on_plan_completion();
+                app.run()
+            })
+            .context("spawn Graph Engine TUI thread")?;
+        tui_handle = Some(handle);
+    }
 
     // ── Canonical --log-file recorder for Graph Engine (#115) ──
     let graph_event_logger: Option<Arc<dyn roko_graph::events::GraphEventSink>> = match log_file {
@@ -3018,7 +3177,7 @@ async fn cmd_plan_run_engine(
     let total_tasks: usize = plans.iter().map(|p| p.tasks.tasks.len()).sum();
     let plan_count = plans.len();
 
-    if !cli.quiet && !cli.json {
+    if !cli.quiet && !cli.json && !launch_tui {
         let plan_names: Vec<&str> = plan_execution_order.iter().map(String::as_str).collect();
         eprintln!(
             "\u{25b8} Running plan{} via Graph Engine ({} task{}): {}",
@@ -3060,7 +3219,7 @@ async fn cmd_plan_run_engine(
             continue;
         }
 
-        if !cli.quiet && !cli.json {
+        if !cli.quiet && !cli.json && !launch_tui {
             eprintln!(
                 "  Running plan '{}' via Graph Engine ({} tasks)...",
                 plan.id,
@@ -3098,30 +3257,99 @@ async fn cmd_plan_run_engine(
         } else {
             plan.tasks.meta.max_parallel
         };
+        let max_parallel_usize =
+            usize::try_from(max_parallel.max(1)).unwrap_or(usize::MAX);
         let plan_dir_str = plan.dir.display().to_string();
 
-        let graph = match plan_to_graph(&plan.id, &plan_dir_str, &tasks, max_parallel) {
-            Ok(g) => g,
-            Err(e) => {
-                graph_tui_bridge.error(&format!(
-                    "failed to convert plan '{}' to graph: {e}",
-                    plan.id
-                ));
+        let (graph, registry) = if rich_topology {
+            // ── Rich 11-node-per-task production topology ──────────────────
+            // Warn: enricher cells are currently PassthroughCell stubs and do
+            // not yet add runtime value. The richer topology is available for
+            // incremental implementation of each enricher cell type.
+            if !cli.quiet && !cli.json {
                 eprintln!(
-                    "  error: failed to convert plan '{}' to graph: {e}",
-                    plan.id
+                    "  note: --rich-topology is active; enricher cells (knowledge, \
+                     episodes, playbook, modulation, safety, experiment) are \
+                     currently passthrough stubs"
                 );
-                plan_outcomes.insert(plan.id.clone(), false);
-                all_succeeded = false;
-                continue;
+            }
+            let topo = roko_graph::ProductionPlanTopology::new(
+                &plan.id,
+                &plan_dir_str,
+                max_parallel_usize,
+            );
+            // Convert PlanTaskInfo -> TopologyTaskInfo.
+            // Note: info.max_retries is already resolved (max_retries.unwrap_or(t.max_retries))
+            // during the PlanTaskInfo construction above, so we use it directly.
+            let topo_tasks: Vec<roko_graph::TopologyTaskInfo> = tasks
+                .iter()
+                .map(|(id, info)| roko_graph::TopologyTaskInfo {
+                    task_id: id.clone(),
+                    title: info.title.clone(),
+                    description: info.description.clone(),
+                    role: info.role.clone(),
+                    tier: info.tier.clone(),
+                    model_hint: info.model_hint.clone(),
+                    files: info.files.clone(),
+                    depends_on: info.depends_on.clone(),
+                    timeout_secs: info.timeout_secs,
+                    max_retries: info.max_retries,
+                    domain: info.domain.clone(),
+                    sequence: info.sequence,
+                    full_config_json: info.full_config_json.clone(),
+                })
+                .collect();
+            match topo.build(&topo_tasks) {
+                Ok((g, _report)) => {
+                    let mut reg = roko_graph::default_registry();
+                    // Register stub passthrough cells for all topology node types.
+                    roko_graph::register_topology_cells(&mut reg);
+                    let plan_dispatcher = Arc::clone(&task_dispatcher);
+                    reg.register("task-executor", move |config| {
+                        Box::new(TaskExecutorCell::live(config, Arc::clone(&plan_dispatcher)))
+                    });
+                    (g, reg)
+                }
+                Err(e) => {
+                    graph_tui_bridge.error(&format!(
+                        "failed to build rich topology for plan '{}': {e}",
+                        plan.id
+                    ));
+                    eprintln!(
+                        "  error: failed to build rich topology for plan '{}': {e}",
+                        plan.id
+                    );
+                    plan_outcomes.insert(plan.id.clone(), false);
+                    all_succeeded = false;
+                    continue;
+                }
+            }
+        } else {
+            // ── Simple single-Activity-per-task converter (default) ─────────
+            match plan_to_graph(&plan.id, &plan_dir_str, &tasks, max_parallel) {
+                Ok(g) => {
+                    let mut reg = roko_graph::default_registry();
+                    let plan_dispatcher = Arc::clone(&task_dispatcher);
+                    reg.register("task-executor", move |config| {
+                        Box::new(TaskExecutorCell::live(config, Arc::clone(&plan_dispatcher)))
+                    });
+                    (g, reg)
+                }
+                Err(e) => {
+                    graph_tui_bridge.error(&format!(
+                        "failed to convert plan '{}' to graph: {e}",
+                        plan.id
+                    ));
+                    eprintln!(
+                        "  error: failed to convert plan '{}' to graph: {e}",
+                        plan.id
+                    );
+                    plan_outcomes.insert(plan.id.clone(), false);
+                    all_succeeded = false;
+                    continue;
+                }
             }
         };
-
-        let mut registry = roko_graph::default_registry();
-        let plan_dispatcher = Arc::clone(&task_dispatcher);
-        registry.register("task-executor", move |config| {
-            Box::new(TaskExecutorCell::live(config, Arc::clone(&plan_dispatcher)))
-        });
         let mut checkpoint = roko_cli::graph_checkpoint::prepare_graph_checkpoint(
             workdir,
             resume_plan,
@@ -3137,7 +3365,11 @@ async fn cmd_plan_run_engine(
             .attach_plan_budget_checkpoint(&plan.id, checkpoint.take_cost_ledger())?;
         let mut engine = GraphEngine::new(graph, registry)
             .with_recorder(checkpoint.take_recorder())
-            .with_telemetry(Arc::clone(&graph_telemetry));
+            .with_telemetry(Arc::clone(&graph_telemetry))
+            // Allow stub cells when using the rich topology. Enricher cells are
+            // PassthroughCell stubs; without this the engine rejects the graph
+            // at validate_for_start time.
+            .with_allow_test_stubs(rich_topology);
         // Wire canonical --log-file recorder (#115): attach the event sink
         // so every GraphExecutionEvent is written to JSONL.
         if let Some(ref sink) = graph_event_logger {
@@ -3305,6 +3537,22 @@ async fn cmd_plan_run_engine(
         }
     }
 
+    // ── Wait for TUI to exit ───────────────────────────────────────
+    // The TUI is operator-owned: keep the final state visible until the
+    // operator explicitly quits (same semantics as the runner-v2 path).
+    if !all_succeeded {
+        state_hub
+            .sender()
+            .publish(roko_core::DashboardEvent::Error {
+                message: format!(
+                    "Graph Engine: {plan_count} plan(s), {} succeeded, {} failed",
+                    plan_outcomes.values().filter(|v| **v).count(),
+                    plan_outcomes.values().filter(|v| !**v).count(),
+                ),
+            });
+    }
+    join_approval_tui_thread(tui_handle.take());
+
     if cli.json {
         println!(
             "{}",
@@ -3320,7 +3568,9 @@ async fn cmd_plan_run_engine(
             }))
             .unwrap_or_default()
         );
-    } else if !cli.quiet {
+    } else if !cli.quiet && !launch_tui {
+        // Only print the summary line when no TUI was shown — otherwise
+        // the TUI already rendered all progress information interactively.
         eprintln!(
             "\n\u{25b8} Graph Engine complete: {} plan{}, {} tasks, {} output signals, ${:.4}",
             plan_count,
@@ -3656,7 +3906,7 @@ depends_on_plan = ["missing-foundation"]
     #[test]
     fn warn_graph_unsupported_flags_does_not_panic() {
         // All flags off (quiet = true suppresses output).
-        warn_graph_unsupported_flags(None, None, None, false, false, false, None, true);
+        warn_graph_unsupported_flags(None, None, None, false, false, false, None, false, false, true);
         // All flags on (quiet = true still suppresses).
         warn_graph_unsupported_flags(
             Some("session-id"),
@@ -3666,6 +3916,8 @@ depends_on_plan = ["missing-foundation"]
             true,
             true,
             Some(5),
+            true,
+            true,
             true,
         );
         // All flags on, quiet = false (will write to stderr but must not panic).
@@ -3677,6 +3929,8 @@ depends_on_plan = ["missing-foundation"]
             true,
             true,
             Some(5),
+            true,
+            true,
             false,
         );
     }

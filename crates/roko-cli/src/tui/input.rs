@@ -975,7 +975,7 @@ fn handle_dashboard_key(key: KeyEvent, focus: FocusZone) -> TuiAction {
         KeyCode::Left | KeyCode::Char('h') => TuiAction::DrillOut,
         KeyCode::Right | KeyCode::Char('l') => TuiAction::DrillIn,
 
-        // Sub-tab switching (a/o/d/e/g/m/L/P)
+        // Sub-tab switching (a/o/d/e/g/m/L/P/C/I)
         KeyCode::Char('a') => TuiAction::SwitchDetailTab(0), // Agents
         KeyCode::Char('o') => TuiAction::SwitchDetailTab(1), // Output
         KeyCode::Char('d') => TuiAction::SwitchDetailTab(2), // Diff
@@ -985,6 +985,7 @@ fn handle_dashboard_key(key: KeyEvent, focus: FocusZone) -> TuiAction {
         KeyCode::Char('L') => TuiAction::SwitchDetailTab(6), // Learning
         KeyCode::Char('P') => TuiAction::SwitchDetailTab(7), // Processes
         KeyCode::Char('C') => TuiAction::SwitchDetailTab(8), // Conductor
+        KeyCode::Char('I') => TuiAction::SwitchDetailTab(9), // Inbox
 
         // Modal triggers
         KeyCode::Char('w') => TuiAction::ShowWaveOverview,

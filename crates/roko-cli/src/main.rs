@@ -1403,14 +1403,14 @@ enum LearnCmd {
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
-    /// Show experiment state.
+    /// Manage prompt A/B experiments (list, create, conclude, report).
     Experiments {
         /// Working directory (default: cwd).
         #[arg(long)]
         workdir: Option<PathBuf>,
-        /// Maximum number of experiments to display (1..=10000).
-        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=10_000))]
-        limit: Option<u32>,
+        /// Subcommand: list | create | conclude | report. Defaults to list.
+        #[command(subcommand)]
+        cmd: Option<ExperimentsSubCmd>,
     },
     /// Show efficiency metrics.
     Efficiency {
@@ -1496,6 +1496,54 @@ enum LearnCmd {
         /// Display current values without modifying.
         #[arg(long)]
         dry_run: bool,
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+}
+
+// -----------------------------------------------------------------------
+// ExperimentsSubCmd — subcommands for `roko learn experiments`
+// -----------------------------------------------------------------------
+
+#[derive(Debug, Subcommand)]
+enum ExperimentsSubCmd {
+    /// List all experiments as a table (Name | Status | Variants | Observations | Best Variant | Win Rate).
+    List {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Show at most N experiments.
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=10_000))]
+        limit: Option<u32>,
+    },
+    /// Create a new prompt experiment.
+    Create {
+        /// Unique experiment identifier.
+        #[arg(long)]
+        name: String,
+        /// Prompt section under test (e.g. "constraints").
+        #[arg(long)]
+        section: String,
+        /// Comma-separated variant ids (e.g. "control,concise-v2").
+        #[arg(long)]
+        variants: String,
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Conclude an experiment by auto-picking the best-performing variant as winner.
+    Conclude {
+        /// Experiment identifier to conclude.
+        name: String,
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Print a detailed statistical report for one experiment.
+    Report {
+        /// Experiment identifier to report on.
+        name: String,
         /// Working directory (default: cwd).
         #[arg(long)]
         workdir: Option<PathBuf>,
@@ -1986,6 +2034,29 @@ Rollback: to revert to the legacy Runner-v2 engine, pass --engine legacy (or --e
         /// Natural checkpoints for overnight or batch runs.
         #[arg(long, value_name = "N")]
         batch_size: Option<usize>,
+        /// Run each task in an isolated git worktree so agents cannot
+        /// interfere with each other or the user's working tree.
+        ///
+        /// When enabled, each task dispatch creates a fresh worktree,
+        /// runs the agent and verify steps inside it, and cleans it up
+        /// on completion. Failed worktrees are retained for post-mortem.
+        /// Only applies to the Graph engine.
+        #[arg(long)]
+        worktree_per_task: bool,
+        /// Use the rich 11-node-per-task production topology instead of the
+        /// simple single-Activity-per-task converter.
+        ///
+        /// When enabled, each task becomes a subgraph of:
+        ///   [TaskContext] -> 6 parallel enrichers (knowledge, episodes,
+        ///   playbook, modulation, safety, experiment) -> [Compose] ->
+        ///   [TaskExecutor] -> [Gate] -> [SuccessBoundary]
+        ///
+        /// Note: enricher cells are currently passthrough stubs. The richer
+        /// topology does not yet add runtime value over the simple converter,
+        /// but makes the structure available for incremental implementation of
+        /// each enricher cell type. Only applies to the Graph engine.
+        #[arg(long)]
+        rich_topology: bool,
     },
     /// Generate implementation plans from a prompt, file, or PRD.
     Generate {
@@ -3973,6 +4044,8 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
                 screenshot_interval: 60,
                 screenshot_dir: None,
                 batch_size: None,
+                worktree_per_task: false,
+                rich_topology: false,
             };
             commands::plan::cmd_plan(cli, plan_cmd).await
         }

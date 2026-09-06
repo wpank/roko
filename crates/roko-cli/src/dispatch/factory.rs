@@ -137,11 +137,15 @@ impl SharedAgentFactory {
         // Default warm-pool capacity: 2 slots per role. Zero-capacity silently
         // discards every pre-spawned agent on insert; using 2 lets the reviewer
         // slot remain warm while the implementer is being cleaned up.
+        //
+        // Use `available_model_slugs_for_cascade` which filters by credential
+        // availability, so cascade router results are constrained to models
+        // that actually have a configured, credential-ready provider.
         let configured_models: HashSet<String> = config
-            .effective_models()
-            .values()
-            .map(|profile| profile.slug.clone())
+            .available_model_slugs_for_cascade()
+            .into_iter()
             .collect();
+        let model_providers = crate::config_helpers::routing_model_provider_map(&config);
         let dispatcher = Dispatcher::new(
             cascade_router,
             prompt_assembler,
@@ -162,6 +166,11 @@ impl SharedAgentFactory {
         // `with_health_registry`. Keeping construction local preserves the
         // factory's use in path-free unit tests.
         let health_registry = Arc::new(ProviderHealthRegistry::new());
+
+        // Wire health into the dispatcher's ModelRouter so cascade routing
+        // excludes Open-circuit providers and demotes HalfOpen ones.
+        let dispatcher =
+            dispatcher.with_provider_health(Arc::clone(&health_registry), model_providers);
 
         Self {
             config,
@@ -248,16 +257,17 @@ impl SharedAgentFactory {
             .with_learning_bidders(learning_bidders);
         let configured_models: HashSet<String> = self
             .config
-            .effective_models()
-            .values()
-            .map(|profile| profile.slug.clone())
+            .available_model_slugs_for_cascade()
+            .into_iter()
             .collect();
+        let model_providers = crate::config_helpers::routing_model_provider_map(&self.config);
         self.dispatcher = Dispatcher::new(
             self.dispatcher.cascade_router_arc(),
             assembler,
             WarmPool::new(2),
             configured_models,
-        );
+        )
+        .with_provider_health(Arc::clone(&self.health_registry), model_providers);
     }
 
     /// Set persisted learning bidders on the prompt assembler.

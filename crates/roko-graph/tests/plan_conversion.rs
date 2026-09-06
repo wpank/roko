@@ -148,7 +148,10 @@ async fn cognitive_loop_loads_and_validates() {
 
     // The default registry should have all cognitive loop stub cell types.
     let registry = default_registry();
-    let engine = GraphEngine::new(graph, registry);
+    // The cognitive-loop.toml uses cell types (signal-reader, etc.) that are
+    // not in the default registry, so the loader creates stub entries. Allow
+    // test stubs so execute() does not reject them.
+    let engine = GraphEngine::new(graph, registry).with_allow_test_stubs(true);
 
     let issues = engine.validate();
     assert!(

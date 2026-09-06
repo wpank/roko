@@ -54,6 +54,9 @@ pub fn routes() -> Router<Arc<AppState>> {
         // T0 reflex store — mirrors `roko learn reflexes`
         .route("/learn/reflexes", get(reflexes))
         .route("/learning/reflexes", get(reflexes))
+        // Playbook store (P2-10)
+        .route("/learn/playbooks", get(playbooks))
+        .route("/learning/playbooks", get(playbooks))
 }
 
 // ── handlers kept in mod.rs ──────────────────────────────────────────
@@ -197,6 +200,57 @@ async fn reflexes(State(state): State<Arc<AppState>>) -> Result<Json<Value>, Api
         "max_rules": MAX_RULES,
         "top_rules": top_rules,
         "recent_demotions": demotions,
+    })))
+}
+
+/// `GET /api/learn/playbooks` — list persisted playbooks with success rates (P2-10).
+async fn playbooks(State(state): State<Arc<AppState>>) -> Result<Json<Value>, ApiError> {
+    let workdir = state.workdir.clone();
+
+    let playbooks = tokio::task::spawn_blocking(move || {
+        let playbooks_dir = workdir.join(".roko").join("learn").join("playbooks");
+        let entries = match std::fs::read_dir(&playbooks_dir) {
+            Ok(entries) => entries,
+            Err(_) => return Vec::new(),
+        };
+        let mut results: Vec<Value> = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            if let Ok(contents) = std::fs::read_to_string(&path) {
+                if let Ok(mut pb) = serde_json::from_str::<Value>(&contents) {
+                    // Inject computed success_rate field.
+                    let success = pb.get("success_count").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let failure = pb.get("failure_count").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let total = success + failure;
+                    let rate = if total > 0 {
+                        Value::from(success as f64 / total as f64)
+                    } else {
+                        Value::Null
+                    };
+                    if let Value::Object(ref mut map) = pb {
+                        map.insert("success_rate".to_string(), rate);
+                    }
+                    results.push(pb);
+                }
+            }
+        }
+        // Sort by success_count descending.
+        results.sort_by(|a, b| {
+            let sa = a.get("success_count").and_then(|v| v.as_u64()).unwrap_or(0);
+            let sb = b.get("success_count").and_then(|v| v.as_u64()).unwrap_or(0);
+            sb.cmp(&sa)
+        });
+        results
+    })
+    .await
+    .map_err(|e| ApiError::internal(format!("playbooks task panicked: {e}")))?;
+
+    Ok(Json(json!({
+        "total": playbooks.len(),
+        "playbooks": playbooks,
     })))
 }
 

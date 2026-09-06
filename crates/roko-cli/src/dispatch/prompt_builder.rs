@@ -1495,6 +1495,13 @@ impl PromptAssembler {
         } else {
             spec.build_sections()
         };
+        // P1-20: Apply model-aware attention-curve-driven dynamic placement.
+        // Non-critical sections are reassigned to higher-attention prompt
+        // edges (start/end) based on information density relative to the
+        // task description, mitigating the "lost in the middle" effect.
+        let task_query = task.description.as_deref().unwrap_or(&task.title);
+        roko_compose::dynamic_placement(&mut canonical_sections, task_query);
+
         let experiment_assignments = if let Some(experiment) = &ctx.prompt_experiment {
             let eligible_sections = canonical_sections
                 .iter()

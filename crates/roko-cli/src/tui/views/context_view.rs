@@ -755,6 +755,67 @@ fn render_alerts_and_health(
             .alignment(Alignment::Center);
         frame.render_widget(empty, sections[1]);
     } else {
+        // P2-03: Split gate data into two areas -- gate summary rows and
+        // adaptive threshold rows with observation count and skip advisory.
+        let has_thresholds = !tui_state.gate_results_page.threshold_rows.is_empty();
+        let gate_area = if has_thresholds {
+            let parts = Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(sections[1]);
+            // Render adaptive threshold table in the bottom half.
+            let threshold_rows: Vec<Row<'_>> = tui_state
+                .gate_results_page
+                .threshold_rows
+                .iter()
+                .map(|row| {
+                    let rate_style = if row.ema_pass_rate >= 0.8 {
+                        theme.success()
+                    } else if row.ema_pass_rate >= 0.5 {
+                        theme.warning()
+                    } else {
+                        theme.danger()
+                    };
+                    let trend_icon = match row.trend {
+                        crate::tui::dashboard_types::GateTrend::Up => "^",
+                        crate::tui::dashboard_types::GateTrend::Down => "v",
+                        crate::tui::dashboard_types::GateTrend::Flat => "-",
+                    };
+                    let skip_label = if row.skip_advisory { "skip" } else { "" };
+                    let skip_style = if row.skip_advisory {
+                        theme.warning()
+                    } else {
+                        theme.muted()
+                    };
+                    Row::new(vec![
+                        Cell::from(format!("R{}", row.rung)),
+                        Cell::from(Span::styled(
+                            format!("{:.0}%", row.ema_pass_rate * 100.0),
+                            rate_style,
+                        )),
+                        Cell::from(row.observation_count.to_string()),
+                        Cell::from(trend_icon),
+                        Cell::from(Span::styled(skip_label.to_string(), skip_style)),
+                    ])
+                })
+                .collect();
+            let threshold_widths = [
+                Constraint::Length(4),
+                Constraint::Length(5),
+                Constraint::Length(5),
+                Constraint::Length(3),
+                Constraint::Length(5),
+            ];
+            let threshold_table = Table::new(threshold_rows, threshold_widths)
+                .header(
+                    Row::new(["rung", "EMA", "obs", "t", "skip"])
+                        .style(theme.accent().add_modifier(Modifier::BOLD)),
+                )
+                .column_spacing(1);
+            frame.render_widget(threshold_table, parts[1]);
+            parts[0]
+        } else {
+            sections[1]
+        };
+
         let rows: Vec<Row<'_>> = tui_state
             .gate_results_page
             .gate_rows
@@ -791,7 +852,7 @@ fn render_alerts_and_health(
                     .style(theme.accent().add_modifier(Modifier::BOLD)),
             )
             .column_spacing(1);
-        frame.render_widget(table, sections[1]);
+        frame.render_widget(table, gate_area);
     }
 }
 

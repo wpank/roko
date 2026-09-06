@@ -18,7 +18,8 @@ use super::atmosphere::Atmosphere;
 use super::dashboard::{
     AgentSummary, AlertSummary, CascadeRouterState, DashboardData, EfficiencySummary,
     ExperimentSummary, GateResultSummary, GateResultsPageData, KnowledgeBrowseEntry,
-    PlanExecutionSnapshot, PlanTaskListSnapshot, SignalSummary, TaskSummary, Theme,
+    PlaybookSummary, PlanExecutionSnapshot, PlanTaskListSnapshot, SignalSummary, TaskSummary,
+    Theme,
 };
 use super::input::{ConfirmAction, FocusZone, InputMode, LogFilterLevel};
 use super::modals::ModalState;
@@ -2071,6 +2072,8 @@ pub struct TuiState {
     pub gate_results_page: GateResultsPageData,
     /// Experiment summaries for the config tab.
     pub experiments: Vec<ExperimentSummary>,
+    /// Playbook summaries for the F10 Learning tab (P2-05).
+    pub playbook_summaries: Vec<PlaybookSummary>,
     /// Incremental tailer over `.roko/learn/efficiency.jsonl`, used in
     /// connected mode where the core snapshot cannot carry per-event
     /// learning payloads (they are `roko-learn` types).
@@ -2390,6 +2393,7 @@ impl Default for TuiState {
             cfactor: None,
             gate_results_page: GateResultsPageData::default(),
             experiments: Vec::new(),
+            playbook_summaries: Vec::new(),
             connected_efficiency_tailer: super::jsonl_tailer::IncrementalTailer::default(),
             connected_efficiency_len: 0,
             connected_experiments_stamp: (0, 0),
@@ -2792,6 +2796,69 @@ fn load_playbook_rule_count(learn_dir: &Path) -> usize {
         .unwrap_or(0)
 }
 
+/// Load playbook summaries from `.roko/learn/playbooks/` (P2-05).
+fn load_playbook_summaries(learn_dir: &Path) -> Vec<PlaybookSummary> {
+    let playbooks_dir = learn_dir.join("playbooks");
+    let entries = match std::fs::read_dir(&playbooks_dir) {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
+    let mut summaries = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(pb) = serde_json::from_str::<serde_json::Value>(&contents) else {
+            continue;
+        };
+        let id = pb.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let name = pb
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&id)
+            .to_string();
+        let goal = pb
+            .get("goal")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let step_count = pb
+            .get("steps")
+            .and_then(|v| v.as_array())
+            .map_or(0, |a| a.len());
+        let success_count = pb
+            .get("success_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let failure_count = pb
+            .get("failure_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let total = success_count + failure_count;
+        let success_rate_pct = if total > 0 {
+            Some(success_count as f64 / total as f64 * 100.0)
+        } else {
+            None
+        };
+        summaries.push(PlaybookSummary {
+            id,
+            name,
+            goal,
+            step_count,
+            success_count,
+            failure_count,
+            success_rate_pct,
+        });
+    }
+    // Sort by success_count descending.
+    summaries.sort_by(|a, b| b.success_count.cmp(&a.success_count));
+    summaries
+}
+
 fn compute_routing_coverage(router: &CascadeRouterState) -> f64 {
     if router.model_slugs.is_empty() {
         return 0.0;
@@ -2916,6 +2983,9 @@ impl TuiState {
     /// Refresh the inspect data cache from disk files and current state.
     pub fn refresh_inspect_data(&mut self) {
         self.inspect_data = InspectData::load_from_workdir(&self.workdir, self);
+        // P2-05: Also refresh playbook summaries on the same cadence.
+        let learn_dir = self.workdir.join(".roko").join("learn");
+        self.playbook_summaries = load_playbook_summaries(&learn_dir);
         self.inspect_last_refresh = Some(Instant::now());
     }
 

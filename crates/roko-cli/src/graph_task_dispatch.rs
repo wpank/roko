@@ -16,7 +16,7 @@
 //! streaming path after lease acquisition.
 
 use std::collections::{HashMap, hash_map::Entry};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -39,6 +39,106 @@ use crate::runtime_feedback::{FeedbackEvent, FeedbackFacade};
 use crate::task_parser::TaskDef;
 
 const MICRO_USD_PER_USD: f64 = 1_000_000.0;
+
+/// P1-16: Resolve cross-cut functor conflicts at routing time.
+///
+/// When Memory, Daimon, and Dreams all propose routing recommendations on
+/// the same signal set, the arbitrator applies priority resolution (safety-
+/// critical Daimon wins, consolidated Memory beats speculative Dreams) and
+/// falls back to VCG second-price arbitration for same-level ties.
+///
+/// Returns an `Option<RoutingBias>` derived from the winning recommendation
+/// so the cascade router can incorporate the cross-cut consensus.
+fn arbitrate_cross_cut_routing_bias(
+    feedback: &GraphFeedbackContext,
+    workdir: &Path,
+    task_category: &str,
+) -> Option<roko_learn::cascade_router::RoutingBias> {
+    use roko_compose::auction::{
+        CrossCutArbitrationResult, CrossCutDecisionKind, CrossCutRecommendation,
+    };
+
+    // Collect recommendations from persisted cross-cut state.
+    let mut recommendations = Vec::new();
+
+    // Dreams routing advice (persisted by DreamOutputConsumer or delta dream).
+    if let Ok(advice) = roko_dreams::load_dream_routing_advice(workdir) {
+        for rec in &advice.recommendations {
+            if rec.confidence < 0.5 {
+                continue;
+            }
+            recommendations.push(CrossCutRecommendation {
+                source: roko_compose::auction::CrossCutId::Dreams,
+                decision_key: format!("route:{task_category}"),
+                decision_kind: CrossCutDecisionKind::Route,
+                value: rec.recommended_model.clone(),
+                confidence: rec.confidence,
+                priority_level: 2,
+                safety_critical: false,
+                knowledge_tier: None,
+            });
+        }
+    }
+
+    // Daimon safety override: if the daimon is Struggling, emit a safety-
+    // critical recommendation to prefer a conservative model.
+    if let Some(daimon) = &feedback.daimon_state {
+        if let Ok(daimon) = daimon.lock() {
+            let affect = daimon.query_state();
+            if affect.behavioral_state == roko_core::BehavioralState::Struggling {
+                recommendations.push(CrossCutRecommendation {
+                    source: roko_compose::auction::CrossCutId::Daimon,
+                    decision_key: format!("route:{task_category}"),
+                    decision_kind: CrossCutDecisionKind::Route,
+                    value: "conservative".to_string(),
+                    confidence: 0.9,
+                    priority_level: 1,
+                    safety_critical: true,
+                    knowledge_tier: None,
+                });
+            }
+        }
+    }
+
+    if recommendations.is_empty() {
+        return None;
+    }
+
+    // Run priority-then-VCG arbitration.
+    let result = roko_compose::auction::resolve_by_priority(&recommendations)
+        .unwrap_or_else(|| roko_compose::auction::resolve_by_vcg(&recommendations));
+
+    match result {
+        CrossCutArbitrationResult::Resolved {
+            winner,
+            ref recommendation,
+            attention_cost,
+            mechanism,
+            ..
+        } => {
+            tracing::debug!(
+                ?winner,
+                value = %recommendation.value,
+                attention_cost,
+                ?mechanism,
+                "cross-cut arbitration resolved routing recommendation"
+            );
+            // If the winning recommendation names a specific model to prefer,
+            // deprioritize everything else. For safety-critical "conservative"
+            // recommendations, signal budget pressure instead.
+            if recommendation.safety_critical {
+                Some(roko_learn::cascade_router::RoutingBias {
+                    deprioritize: Vec::new(),
+                    prefer_cheaper: true,
+                    reason: format!("cross-cut safety arbitration: {}", recommendation.value),
+                })
+            } else {
+                None // Prefer normal dream routing advice path (P1-18)
+            }
+        }
+        CrossCutArbitrationResult::NoConflict => None,
+    }
+}
 
 /// Per-plan cost policy applied at the Graph task-dispatch boundary.
 ///
@@ -831,6 +931,31 @@ fn upstream_outputs(input: &[Signal]) -> Vec<(String, Vec<String>)> {
         .collect()
 }
 
+/// P1-18: Load persisted dream routing advice and convert to a `RoutingBias`
+/// for the cascade router. Returns `None` when no advice file exists, the
+/// advice is stale, or no recommendations match the task category.
+fn load_dream_routing_bias(
+    workdir: &Path,
+    task_category: &str,
+    routing_ctx: &roko_learn::model_router::RoutingContext,
+) -> Option<roko_learn::cascade_router::RoutingBias> {
+    let advice = roko_dreams::load_dream_routing_advice(workdir).ok()?;
+    if advice.recommendations.is_empty() {
+        return None;
+    }
+    let complexity_band = routing_ctx.complexity.label();
+    let bias = roko_dreams::dream_advice_to_routing_bias(&advice, task_category, complexity_band);
+    if bias.deprioritize.is_empty() {
+        return None;
+    }
+    tracing::debug!(
+        deprioritize = ?bias.deprioritize,
+        reason = %bias.reason,
+        "loaded dream routing bias for graph task dispatch"
+    );
+    Some(bias)
+}
+
 /// Build a reasonable `RoutingContext` for Graph task dispatch.
 ///
 /// This provides the cascade router with actionable task signals without
@@ -965,6 +1090,19 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // ── W10: Enrichment pipeline ─────────────────────────────────────
         let routing_ctx = build_routing_context(role, &task, &self.feedback.daimon_state);
 
+        // P1-16: Run cross-cut arbitration to detect safety-critical
+        // overrides before loading dream routing advice.
+        let task_category = task.domain.as_ref().map_or("implementation", |d| d.label());
+        let arbitration_bias =
+            arbitrate_cross_cut_routing_bias(&self.feedback, &self.workdir, task_category);
+
+        // P1-18: Load persisted dream routing advice and convert to a
+        // RoutingBias so the cascade router accounts for dream-observed
+        // model performance when picking a provider for this task.
+        // Arbitration safety overrides take priority over dream advice.
+        let routing_bias = arbitration_bias
+            .or_else(|| load_dream_routing_bias(&self.workdir, task_category, &routing_ctx));
+
         let dispatch_ctx = DispatchContext {
             plan_id: spec.plan_id.clone(),
             role: role.to_string(),
@@ -985,7 +1123,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             prompt_experiment: None,
             gate_feedback: None,
             routing_context: Some(routing_ctx),
-            routing_bias: None,
+            routing_bias,
             dependency_outputs: upstream_outputs(&input),
         };
         let dispatch_plan = self

@@ -10699,20 +10699,27 @@ fn record_daimon_gate_result(config: &RunConfig, completion: &GateCompletion) {
 /// Launch the Memory -> Daimon -> Dreams failure cascade outside the event loop.
 /// The synchronous natural transformations run on a blocking worker; a delta
 /// dream is only started when the transformed Daimon assessment is Struggling.
+///
+/// P1-17: Dream-cycle output publication is delegated to
+/// [`roko_compose::DreamOutputConsumer`] instead of inlining `eta_DM` / `eta_DN`
+/// / `daimon.appraise` here, keeping this function as pure orchestration.
 fn spawn_cross_cut_gate_failure_cascade(
     config: &RunConfig,
     completion: &GateCompletion,
     episode_id: String,
     affected_entry_ids: Vec<String>,
 ) {
-    use roko_compose::natural_transforms::{
-        MemoryOutcome, eta_DM, eta_DN, run_gate_failure_cascade,
-    };
+    use roko_compose::natural_transforms::{MemoryOutcome, run_gate_failure_cascade};
 
     let Some(daimon_state) = config.daimon_state.clone() else {
         return;
     };
-    let knowledge_store = KnowledgeStore::for_workdir(&config.workdir);
+    let knowledge_store = Arc::new(KnowledgeStore::for_workdir(&config.workdir));
+    let cascade_router = config
+        .cascade_router
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| Arc::new(roko_learn::cascade_router::CascadeRouter::new(Vec::new())));
     let workdir = config.workdir.clone();
     let timeout_ms = duration_millis(llm_call_timeout(config));
     let outcome = MemoryOutcome {
@@ -10757,17 +10764,29 @@ fn spawn_cross_cut_gate_failure_cascade(
             let report = runner
                 .consolidate_now()
                 .map_err(|error| format!("delta dream failed: {error}"))?;
-            knowledge_store
-                .ingest(eta_DM(&report))
-                .map_err(|error| format!("dream knowledge publish failed: {error}"))?;
-            let affect = eta_DN(&report);
-            let mut daimon = daimon_state
-                .lock()
-                .map_err(|_| "daimon state lock poisoned after dream".to_string())?;
-            daimon.appraise(affect.event);
-            if affect.depotentiate {
-                daimon.apply_dream_depotentiation();
-            }
+
+            // P1-17: Delegate dream output publication to DreamOutputConsumer
+            // instead of manually calling eta_DM / eta_DN / daimon.appraise.
+            let daimon_rw = std::sync::RwLock::new(
+                daimon_state
+                    .lock()
+                    .map_err(|_| "daimon state lock poisoned after dream".to_string())?
+                    .clone(),
+            );
+            let consumer = roko_compose::DreamOutputConsumer::new(
+                Arc::clone(&knowledge_store),
+                Arc::new(daimon_rw),
+                cascade_router,
+            );
+            let consumed = consumer
+                .consume(&report, None)
+                .map_err(|error| format!("dream output publication failed: {error}"))?;
+            debug!(
+                knowledge_entries = consumed.knowledge_entries,
+                affect_updated = consumed.affect_updated,
+                routing_advice = consumed.routing_advice_published,
+                "DreamOutputConsumer published gate-failure dream output"
+            );
             Ok(())
         });
 

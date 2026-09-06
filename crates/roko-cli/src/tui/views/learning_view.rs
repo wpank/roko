@@ -42,6 +42,7 @@ pub(crate) fn render(
         SubView::LearningRouter => render_router(frame, rows[1], tui_state, theme),
         SubView::LearningHistory => render_history(frame, rows[1], tui_state, theme),
         SubView::LearningEfficiency => render_efficiency(frame, rows[1], tui_state, theme),
+        SubView::LearningPlaybooks => render_playbooks(frame, rows[1], tui_state, theme),
         _ => render_router(frame, rows[1], tui_state, theme),
     }
 }
@@ -710,6 +711,142 @@ struct ModelEffStats {
     passed: usize,
     total_cost: f64,
     total_latency_ms: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Sub-view 4: Playbooks (P2-05)
+// ---------------------------------------------------------------------------
+
+fn render_playbooks(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme: &Theme) {
+    let playbooks = &tui_state.playbook_summaries;
+
+    if playbooks.is_empty() {
+        let block = Block::bordered()
+            .title(Span::styled(" Playbooks ", theme.section_header()))
+            .border_style(theme.muted());
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        let lines = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "No playbooks recorded yet.",
+                theme.muted(),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Playbooks are learned from successful task episodes.",
+                theme.muted(),
+            )),
+            Line::from(Span::styled(
+                "They capture proven action sequences for common goals.",
+                theme.muted(),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Source: .roko/learn/playbooks/",
+                theme.muted(),
+            )),
+        ];
+        frame.render_widget(
+            Paragraph::new(lines)
+                .alignment(Alignment::Center)
+                .wrap(Wrap { trim: false }),
+            inner,
+        );
+        return;
+    }
+
+    let header = Row::new(vec![
+        Cell::from(Span::styled("Name", theme.label())),
+        Cell::from(Line::from(Span::styled("Steps", theme.label())).alignment(Alignment::Right)),
+        Cell::from(
+            Line::from(Span::styled("Success", theme.label())).alignment(Alignment::Right),
+        ),
+        Cell::from(
+            Line::from(Span::styled("Fail", theme.label())).alignment(Alignment::Right),
+        ),
+        Cell::from(
+            Line::from(Span::styled("Rate", theme.label())).alignment(Alignment::Right),
+        ),
+        Cell::from(Span::styled("Goal", theme.label())),
+    ])
+    .style(Style::default().add_modifier(Modifier::BOLD));
+
+    let rows: Vec<Row> = playbooks
+        .iter()
+        .map(|pb| {
+            let rate_str = pb
+                .success_rate_pct
+                .map_or_else(|| "\u{2014}".to_string(), |r| format!("{r:.0}%"));
+            let rate_color = match pb.success_rate_pct {
+                Some(r) if r >= 80.0 => Theme::RATE_GOOD,
+                Some(r) if r >= 50.0 => Theme::RATE_MID,
+                Some(_) => Theme::RATE_BAD,
+                None => theme.muted,
+            };
+
+            let display_name = if pb.name.len() > 28 {
+                format!("{}...", &pb.name[..25])
+            } else {
+                pb.name.clone()
+            };
+            let display_goal = if pb.goal.len() > 40 {
+                format!("{}...", &pb.goal[..37])
+            } else {
+                pb.goal.clone()
+            };
+
+            Row::new(vec![
+                Cell::from(Span::styled(display_name, theme.value())),
+                Cell::from(
+                    Line::from(Span::styled(pb.step_count.to_string(), theme.value()))
+                        .alignment(Alignment::Right),
+                ),
+                Cell::from(
+                    Line::from(Span::styled(
+                        pb.success_count.to_string(),
+                        theme.value(),
+                    ))
+                    .alignment(Alignment::Right),
+                ),
+                Cell::from(
+                    Line::from(Span::styled(
+                        pb.failure_count.to_string(),
+                        theme.value(),
+                    ))
+                    .alignment(Alignment::Right),
+                ),
+                Cell::from(
+                    Line::from(Span::styled(rate_str, Style::default().fg(rate_color)))
+                        .alignment(Alignment::Right),
+                ),
+                Cell::from(Span::styled(display_goal, theme.metadata())),
+            ])
+        })
+        .collect();
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Percentage(22),
+            Constraint::Percentage(8),
+            Constraint::Percentage(10),
+            Constraint::Percentage(8),
+            Constraint::Percentage(10),
+            Constraint::Percentage(42),
+        ],
+    )
+    .header(header)
+    .block(
+        Block::bordered()
+            .title(Span::styled(
+                format!(" Playbooks ({}) ", playbooks.len()),
+                theme.section_header(),
+            ))
+            .border_style(theme.muted()),
+    );
+
+    frame.render_widget(table, area);
 }
 
 #[cfg(test)]

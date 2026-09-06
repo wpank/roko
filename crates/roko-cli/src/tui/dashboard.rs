@@ -50,8 +50,9 @@ pub use super::theme::Theme;
 pub use super::dashboard_types::{
     AgentSummary, AlertSummary, CascadeRouterModelStats, CascadeRouterState, EfficiencySummary,
     ExperimentSummary, GateFailureRow, GateResultSummary, GateResultsPageData, GateSignalSummary,
-    GateSummaryRow, GateThresholdRow, GateTrend, KnowledgeBrowseEntry, PlanExecutionSnapshot,
-    PlanExecutionTaskDetail, PlanExecutionTaskRow, ReadFileSnapshot, SignalSummary, TaskSummary,
+    GateSummaryRow, GateThresholdRow, GateTrend, KnowledgeBrowseEntry, PlaybookSummary,
+    PlanExecutionSnapshot, PlanExecutionTaskDetail, PlanExecutionTaskRow, ReadFileSnapshot,
+    SignalSummary, TaskSummary,
 };
 use super::dashboard_types::{ParsedPlanTasksFile, PlanTaskRuntimeFields};
 pub(crate) use super::dashboard_types::{
@@ -3134,6 +3135,8 @@ pub(crate) fn gate_threshold_rows(thresholds: &AdaptiveThresholds) -> Vec<GateTh
             current_threshold: thresholds.suggested_max_retries(*rung),
             ema_pass_rate: stats.ema_pass_rate,
             trend: gate_trend_from_ema(stats.ema_pass_rate),
+            observation_count: stats.total_observations,
+            skip_advisory: thresholds.should_skip_rung(*rung),
         })
         .collect::<Vec<_>>();
     rows.sort_by_key(|row| row.rung);

@@ -137,6 +137,10 @@ pub struct GateThresholdRow {
     pub current_threshold: u32,
     pub ema_pass_rate: f64,
     pub trend: GateTrend,
+    /// Total observations for this rung (P2-03).
+    pub observation_count: u64,
+    /// Whether the adaptive system recommends skipping this rung (P2-03).
+    pub skip_advisory: bool,
 }
 
 /// Recent failing gate row.
@@ -306,6 +310,19 @@ pub struct ExperimentSummary {
     pub winner_id: Option<String>,
     pub active_variants: usize,
     pub total_trials: u64,
+}
+
+/// Playbook summary for the F10 Learning tab (P2-05).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlaybookSummary {
+    pub id: String,
+    pub name: String,
+    pub goal: String,
+    pub step_count: usize,
+    pub success_count: u64,
+    pub failure_count: u64,
+    /// Success rate as a percentage (0-100). `None` when no outcomes exist.
+    pub success_rate_pct: Option<f64>,
 }
 
 /// Recent signal summary.

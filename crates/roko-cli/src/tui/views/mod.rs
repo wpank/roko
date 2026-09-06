@@ -128,6 +128,8 @@ pub enum SubView {
     LearningHistory,
     /// Per-model efficiency breakdown.
     LearningEfficiency,
+    /// Playbook matches from most recent dispatch (P2-05).
+    LearningPlaybooks,
 }
 
 impl SubView {
@@ -178,6 +180,7 @@ impl SubView {
                 SubView::LearningRouter,
                 SubView::LearningHistory,
                 SubView::LearningEfficiency,
+                SubView::LearningPlaybooks,
             ],
         }
     }
@@ -217,6 +220,7 @@ impl SubView {
             Self::LearningRouter => "Route",
             Self::LearningHistory => "History",
             Self::LearningEfficiency => "Efficiency",
+            Self::LearningPlaybooks => "Playbooks",
         }
     }
 

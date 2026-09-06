@@ -15,6 +15,8 @@ use std::path::{Component, Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::sync::Arc;
 
+use anyhow::Result as AnyhowResult;
+
 use roko_agent::dispatcher::HandlerResolver;
 use roko_agent::process::{kill_tree, set_process_group};
 use roko_agent::provider::LocalToolRuntime;
@@ -37,7 +39,35 @@ use roko_std::tool::{
 use tokio::io::AsyncReadExt;
 use tracing::{debug, info, warn};
 
-use super::wasm_extension::WasmExtension;
+// WasmExtension stub — the full implementation was in wasm_extension.rs which
+// was deleted with the Runner-v2 event loop. WASM extension loading now fails
+// closed with a descriptive error so manifests declaring tier = "wasm" are
+// skipped instead of silently ignored.
+struct WasmExtension;
+
+impl WasmExtension {
+    fn load(
+        _meta: ExtensionMeta,
+        _manifest_path: &std::path::Path,
+        _config: &serde_json::Value,
+        _timeout: std::time::Duration,
+    ) -> RokoResult<Self> {
+        Err(RokoError::invalid(
+            "WASM extension runtime was removed with Runner-v2; \
+             use a native Rust extension instead",
+        ))
+    }
+}
+
+impl Extension for WasmExtension {
+    fn name(&self) -> &str {
+        unreachable!("WasmExtension::load always fails")
+    }
+
+    fn layer(&self) -> ExtensionLayer {
+        unreachable!("WasmExtension::load always fails")
+    }
+}
 
 // ─── LoadedExtension ────────────────────────────────────────────────────
 
@@ -1550,6 +1580,43 @@ fn load_extensions_internal(
         loaded,
         required_failures: failures.into_values().collect(),
     }
+}
+
+/// Initialize extensions, returning an error if a required extension fails.
+///
+/// Moved from `runner/extension_hooks.rs` during Runner-v2 deletion.
+pub async fn initialize_extensions(
+    extension_chain: Option<&Arc<tokio::sync::Mutex<ExtensionChain>>>,
+) -> AnyhowResult<()> {
+    let Some(extension_chain) = extension_chain else {
+        return Ok(());
+    };
+    let mut chain = extension_chain.lock().await;
+    let optional_by_name = chain
+        .metadata()
+        .into_iter()
+        .map(|meta| (meta.name, meta.optional))
+        .collect::<HashMap<_, _>>();
+    let errors = chain.init_all().await;
+    let mut required_errors = Vec::new();
+    for (name, error) in errors {
+        if optional_by_name.get(&name).copied().unwrap_or(false) {
+            warn!(extension = %name, error = %error, "optional extension init failed; continuing");
+            chain.disable_extension(&name);
+        } else {
+            required_errors.push(format!("{name}: {error}"));
+        }
+    }
+    if required_errors.is_empty() {
+        return Ok(());
+    }
+    for (name, error) in chain.shutdown_all().await {
+        warn!(extension = %name, error = %error, "extension shutdown after startup failure failed");
+    }
+    Err(anyhow::anyhow!(
+        "required extension initialization failed: {}",
+        required_errors.join("; ")
+    ))
 }
 
 #[cfg(test)]

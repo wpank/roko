@@ -190,8 +190,8 @@ pub static TOPICS: &[TopicEntry] = &[
                     scheduling is owned by the graph cell topology. Checkpoints persist \
                     at `.roko/state/graph/` for resumability. The merge queue handles \
                     concurrent task outputs. Process supervision via `roko-runtime` \
-                    tracks agent lifecycles. The legacy Runner-v2 event loop in \
-                    `runner/event_loop.rs` is retained for `--engine legacy` fallback.",
+                    tracks agent lifecycles. The Graph engine is the sole executor; \
+                    the legacy Runner-v2 event loop has been removed.",
     },
     TopicEntry {
         name: "env",

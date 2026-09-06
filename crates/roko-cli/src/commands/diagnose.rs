@@ -695,7 +695,7 @@ fn build_recovery_suggestions(
         }
 
         suggestions
-            .push("To retry: `roko plan run plans/ --engine runner-v2 --resume-plan`".to_string());
+            .push("To retry: `roko plan run plans/ --resume-plan`".to_string());
     }
 
     if let Some(git) = git_state

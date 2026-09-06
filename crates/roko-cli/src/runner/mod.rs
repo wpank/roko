@@ -1,39 +1,23 @@
-//! Runner v2 — event-driven plan executor with streaming agent output.
+//! Runner — plan execution infrastructure.
 //!
-//! This module replaces the batch-only legacy orchestrator plan runner with
-//! a streaming architecture:
+//! The legacy Runner-v2 event loop (`event_loop.rs` and its 18 helper modules)
+//! has been deleted. The Graph engine is now the sole execution engine.
 //!
-//! - Agent output is parsed line-by-line from `--output-format stream-json`
-//! - State is flushed to disk after every task completion
-//! - TUI receives real-time updates via `StateHub`
-//! - Process groups ensure clean agent teardown on Ctrl+C
+//! This module retains the shared infrastructure that the Graph engine and
+//! other subsystems depend on: plan loading, gate dispatch, TUI bridging,
+//! state management, types, and various adapters.
 //!
 //! # Config resolution
 //!
 //! Callers should build [`RunConfig`] from the effective [`RokoConfig`] via
 //! [`RunConfig::from_roko_config`] so that timeouts, gates, models, and budget
-//! limits all derive from the project config. If `RunConfig.roko_config` is
-//! `None` at run start, the event loop falls back to
-//! [`roko_core::config::loader::load_config_unified`] using `config.workdir`
-//! (ancestor walk + global merge + env overrides). The runner never performs
-//! its own ad-hoc project-root resolution.
+//! limits all derive from the project config.
 //!
 //! [`RokoConfig`]: roko_core::config::schema::RokoConfig
-//!
-//! # Usage
-//!
-//! ```rust,ignore
-//! use roko_cli::runner;
-//!
-//! let plans = runner::plan_loader::load_plans(&plan_dir)?;
-//! let report = runner::run(plans, &config, &state_hub, cancel).await?;
-//! ```
 
-// ── Public modules (callers outside runner/) ──────────────────────────────
+// ── Public modules ──────────────────────────────────────────────────────
 pub mod agent_stream;
 pub mod conductor_adapter;
-pub mod eval_generation;
-pub mod event_loop;
 pub mod extension_loader;
 pub mod extension_registry;
 pub mod gate_dispatch;
@@ -56,29 +40,39 @@ pub mod task_dag;
 pub mod tui_bridge;
 pub mod types;
 
-// ── Runner-internal modules (no callers outside runner/) ──────────────────
-pub(crate) mod agent_events;
-pub(crate) mod attempt_ownership;
-pub(crate) mod branch_cleanup;
+// ── Crate-internal modules ──────────────────────────────────────────────
+// Gate infrastructure — used by gate_dispatch (shared with Graph engine).
 pub(crate) mod cargo_command;
-pub(crate) mod control_adapter;
-pub(crate) mod deadlines;
-pub(crate) mod extension_hooks;
 pub(crate) mod gate_adapter;
 pub(crate) mod gate_input;
 pub(crate) mod gate_oracles;
 pub(crate) mod gate_report;
-pub(crate) mod github_workflow;
 pub(crate) mod inline_output;
 pub(crate) mod promise_tracker;
-pub(crate) mod prompt_experiments;
-pub(crate) mod reflex;
-pub(crate) mod screenshot_collector;
-pub(crate) mod snapshot_writer;
-mod wasm_extension;
 
-// Re-export the primary entry points.
-pub use event_loop::{PlanReport, RunReport, run, run_with_tui_commands};
+// Re-export primary entry points.
 pub use plan_loader::{Plan, load_plan, load_plan_lenient, load_plans, scaffold_missing_crates};
 pub use sse_stream::SseStreamClient;
-pub use types::RunConfig;
+pub use types::{PlanReport, RunConfig, RunReport};
+
+/// Deprecated Runner-v2 entry point.
+///
+/// The Runner-v2 event loop has been deleted. The Graph engine is the sole
+/// execution engine. Callers that previously used `runner::run()` should
+/// migrate to the Graph engine path (`cmd_plan_run_engine` in commands/plan.rs).
+///
+/// This stub is retained so that callers compile; at runtime it returns an
+/// error directing the caller to use the Graph engine instead.
+#[deprecated(note = "Runner-v2 has been removed; use the Graph engine instead")]
+pub async fn run(
+    _plans: Vec<Plan>,
+    _config: &RunConfig,
+    _state_hub: &crate::state_hub::StateHub,
+    _cancel: tokio_util::sync::CancellationToken,
+) -> anyhow::Result<RunReport> {
+    anyhow::bail!(
+        "the legacy Runner-v2 event loop has been removed. \
+         Use the Graph engine (the default) instead. \
+         See `roko plan run --help` for details."
+    )
+}

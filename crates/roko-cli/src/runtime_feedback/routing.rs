@@ -29,7 +29,7 @@ use roko_learn::model_router::RoutingContext;
 
 use super::{FeedbackEvent, FeedbackSink};
 use crate::dispatch::ModelChoiceSource;
-use crate::runner::event_loop::compute_conductor_load;
+use crate::runner::conductor_adapter::compute_conductor_load;
 
 /// Sink that records a routing observation per `task_completed` event.
 #[derive(Clone)]

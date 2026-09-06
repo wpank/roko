@@ -468,7 +468,7 @@ pub(crate) async fn cmd_research(
             let episodes_path = workdir.join(".roko/episodes.jsonl");
             if !episodes_path.exists() {
                 println!("No episodes found. Run some tasks first:");
-                println!("  roko plan run plans/<plan-dir> --engine runner-v2");
+                println!("  roko plan run plans/<plan-dir>");
                 println!("  roko do \"<prompt>\"");
                 return Ok(1);
             }
@@ -477,7 +477,7 @@ pub(crate) async fn cmd_research(
                 tail_lines_bounded(&episodes_path, ANALYZE_MAX_LINES)?;
             if total_lines == 0 {
                 println!("Episodes file is empty. Run some tasks first:");
-                println!("  roko plan run plans/<plan-dir> --engine runner-v2");
+                println!("  roko plan run plans/<plan-dir>");
                 return Ok(1);
             }
 

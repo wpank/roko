@@ -12,30 +12,18 @@ use roko_core::dashboard_snapshot::{DashboardEvent, DiagnosisSummary};
 /// migration while ensuring the TUI never has to scrape provider output text.
 pub const STREAM_RECORD_PREFIX: &str = "\u{001e}roko.stream.v1 ";
 
-use super::screenshot_collector::ScreenshotCollector;
 use super::types::RunnerEvent;
 
 /// Publishes runner events to the TUI / dashboard via `StateHub`.
 #[derive(Clone)]
 pub struct TuiBridge {
     sender: StateHubSender,
-    screenshot_collector: Option<ScreenshotCollector>,
 }
 
 impl TuiBridge {
     /// Create a new bridge from a `StateHubSender`.
     pub fn new(sender: StateHubSender) -> Self {
-        Self {
-            sender,
-            screenshot_collector: None,
-        }
-    }
-
-    /// Attach a non-blocking continuous screenshot collector.
-    #[must_use]
-    pub fn with_screenshot_collector(mut self, collector: ScreenshotCollector) -> Self {
-        self.screenshot_collector = Some(collector);
-        self
+        Self { sender }
     }
 
     /// A plan has started execution.
@@ -627,10 +615,9 @@ impl TuiBridge {
         }
     }
 
-    fn capture(&self, label: &str, detail: Option<String>, tabs: &[Tab]) {
-        if let Some(collector) = &self.screenshot_collector {
-            let _ = collector.capture_event(label, detail, tabs);
-        }
+    fn capture(&self, _label: &str, _detail: Option<String>, _tabs: &[Tab]) {
+        // Screenshot collector was removed with Runner-v2. This method is
+        // retained as a no-op so internal call sites compile without change.
     }
 }
 

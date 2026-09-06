@@ -8,9 +8,40 @@
 
 use std::collections::HashMap;
 
+use roko_core::{LensScope, ObservableEvent, Signal, TelemetryEventSink};
 use roko_graph::engine::{GraphOutput, NodeStatus};
 
+use crate::state_hub::StateHubSender;
+
 use super::tui_bridge::TuiBridge;
+
+/// Bridges passive observable telemetry into the runner's shared StateHub.
+///
+/// Moved from `runner/event_loop.rs` during Runner-v2 deletion.
+pub struct StateHubTelemetrySink(StateHubSender);
+
+impl StateHubTelemetrySink {
+    /// Create a telemetry sink backed by a StateHub sender.
+    pub fn new(sender: StateHubSender) -> Self {
+        Self(sender)
+    }
+}
+
+#[async_trait::async_trait]
+impl TelemetryEventSink for StateHubTelemetrySink {
+    async fn emit(
+        &self,
+        event: &ObservableEvent,
+        ancestry: &[LensScope],
+    ) -> roko_core::Result<Vec<Signal>> {
+        let errors = self.0.emit_observable(event, ancestry);
+        if errors.is_empty() {
+            Ok(Vec::new())
+        } else {
+            Err(roko_core::RokoError::invalid(errors.join("; ")))
+        }
+    }
+}
 
 /// Adapter that maps graph engine lifecycle transitions to `DashboardEvent`
 /// publications through the existing [`TuiBridge`].

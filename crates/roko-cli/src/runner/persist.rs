@@ -427,6 +427,28 @@ pub fn save_gate_thresholds(paths: &PersistPaths, thresholds: &GateThresholds) -
     thresholds.save(&paths.gate_thresholds_json)
 }
 
+/// Flush gate thresholds to disk when the observation counter reaches the
+/// configured interval.
+///
+/// Increments `obs_since_flush` unconditionally. When the count reaches
+/// `flush_interval`, the thresholds are saved atomically and the counter
+/// is reset to zero.  Flush errors are logged at warn level and do not
+/// propagate — a missed flush is non-fatal; the thresholds are still held
+/// in memory and will be flushed on the next interval or at run completion.
+pub fn maybe_flush_gate_thresholds(
+    thresholds: &GateThresholds,
+    obs_since_flush: &mut u64,
+    paths: &PersistPaths,
+    flush_interval: u64,
+) {
+    if *obs_since_flush >= flush_interval {
+        if let Err(e) = save_gate_thresholds(paths, thresholds) {
+            tracing::warn!(error = %e, "failed to flush gate thresholds to disk");
+        }
+        *obs_since_flush = 0;
+    }
+}
+
 /// Atomically write `content` to `path` via a `.tmp` sibling.
 pub fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
     roko_fs::atomic_write_bytes(path, content)
@@ -1301,7 +1323,7 @@ mod tests {
         for i in 0..(flush_interval - 1) {
             thresholds.observe(1, i % 2 == 0);
             obs_since_flush += 1;
-            super::super::event_loop::maybe_flush_gate_thresholds(
+            super::maybe_flush_gate_thresholds(
                 &thresholds,
                 &mut obs_since_flush,
                 &paths,
@@ -1317,7 +1339,7 @@ mod tests {
         // One more observation crosses the interval -- file must appear.
         thresholds.observe(1, true);
         obs_since_flush += 1;
-        super::super::event_loop::maybe_flush_gate_thresholds(
+        super::maybe_flush_gate_thresholds(
             &thresholds,
             &mut obs_since_flush,
             &paths,
@@ -1339,7 +1361,7 @@ mod tests {
             thresholds.observe(2, false);
             obs_since_flush += 1;
         }
-        super::super::event_loop::maybe_flush_gate_thresholds(
+        super::maybe_flush_gate_thresholds(
             &thresholds,
             &mut obs_since_flush,
             &paths,

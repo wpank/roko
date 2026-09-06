@@ -496,6 +496,28 @@ impl FeedbackSink for ConductorRingSink {
     }
 }
 
+/// Compute a bounded [0.0, 1.0] conductor load from live runner pressure signals.
+///
+/// The load estimate combines three independent pressure axes:
+/// - **agent pressure**: ratio of active agents to the typical max concurrency (6).
+/// - **queue pressure**: ratio of ready-but-unstarted tasks to 6.
+/// - **wait pressure**: ratio of maximum per-task queue wait hours to 8 h.
+///
+/// The returned value is the maximum of the three axes, clamped to `[0.0, 1.0]`.
+/// When no conductor is configured, pass all-zeros to obtain a neutral `0.0` load.
+///
+/// Moved from `runner/event_loop.rs` during Runner-v2 deletion.
+pub fn compute_conductor_load(
+    active_agents: u32,
+    ready_queue_depth: u32,
+    max_queue_wait_hours: f64,
+) -> f64 {
+    let agent_pressure = (f64::from(active_agents) / 6.0).clamp(0.0, 1.0);
+    let queue_pressure = (f64::from(ready_queue_depth) / 6.0).clamp(0.0, 1.0);
+    let wait_pressure = (max_queue_wait_hours / 8.0).clamp(0.0, 1.0);
+    agent_pressure.max(queue_pressure).max(wait_pressure)
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]

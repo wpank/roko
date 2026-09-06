@@ -91,7 +91,7 @@ impl RokoCliRuntime {
     /// server binds for this workspace.
     pub async fn prepare_workspace_extensions(&self, workdir: &Path) -> anyhow::Result<()> {
         let chain = self.extension_chain_for_workdir(workdir)?;
-        crate::runner::event_loop::initialize_extensions(Some(&chain)).await
+        crate::runner::extension_loader::initialize_extensions(Some(&chain)).await
     }
 }
 
@@ -469,6 +469,7 @@ fn run_plan_on_local_runtime(
         let events_offset = runner_events_offset(&workdir);
         let cancel = tokio_util::sync::CancellationToken::new();
 
+        #[allow(deprecated)] // Runner-v2 removed; this call now returns an error
         let report = crate::runner::run(plans, &run_config, &state_hub, cancel).await?;
         let gate_results = collect_runner_gate_results(&workdir, events_offset, &plan_ids)
             .unwrap_or_else(|err| {

@@ -2782,6 +2782,91 @@ impl std::fmt::Debug for RunConfig {
     }
 }
 
+// ── Report types (moved from event_loop.rs during Runner-v2 deletion) ────
+
+/// Per-run report produced by plan execution.
+///
+/// Previously returned by the Runner-v2 `run()` entry point. Retained so
+/// callers that depended on the report type can still compile. The Graph
+/// engine uses its own output types; these are kept for backward compatibility
+/// with `serve_runtime.rs` and other consumers.
+#[derive(Debug, Clone)]
+pub struct RunReport {
+    pub plans: Vec<PlanReport>,
+    pub total_tasks: usize,
+    pub tasks_completed: usize,
+    pub tasks_failed: usize,
+    pub tasks_blocked: usize,
+    pub tasks_skipped: usize,
+    pub tasks_active: usize,
+    pub tasks_pending: usize,
+    pub tasks_cancelled: usize,
+    pub tasks_orphaned: usize,
+    pub tasks_nonterminal: usize,
+    pub total_cost_usd: f64,
+    pub total_tokens_in: u64,
+    pub total_tokens_out: u64,
+    pub total_agent_calls: usize,
+    pub duration: Duration,
+    /// Per-task failure reasons keyed by "plan_id:task_id".
+    pub failure_reasons: std::collections::HashMap<String, String>,
+    /// Per-task cost breakdown.
+    pub task_costs: Vec<TaskCostReport>,
+    pub tasks: Vec<TaskRunSummary>,
+    /// Whether the run was halted because cumulative cost exceeded the
+    /// configured `max_plan_usd` budget ceiling.
+    pub budget_exhausted: bool,
+    /// Whether the run was halted because the daily cost ceiling
+    /// (`max_daily_usd`) was exceeded.
+    pub daily_budget_exhausted: bool,
+}
+
+/// Per-task cost report for the RunLedger.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TaskCostReport {
+    pub plan_id: String,
+    pub task_id: String,
+    pub model: String,
+    pub provider: String,
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    pub cost_usd: f64,
+    pub budget_usd: f64,
+    pub budget_exhausted: bool,
+    pub agent_calls: u32,
+    pub outcome: String,
+}
+
+/// Per-plan report.
+#[derive(Debug, Clone)]
+pub struct PlanReport {
+    pub plan_id: String,
+    pub completed: bool,
+    pub tasks_total: usize,
+    pub tasks_completed: usize,
+    pub tasks_failed: usize,
+    pub tasks_blocked: usize,
+    pub tasks_skipped: usize,
+    pub tasks_cancelled: usize,
+    pub tasks_orphaned: usize,
+    pub tasks_nonterminal: usize,
+    pub tasks: Vec<TaskRunSummary>,
+    pub gate_results: Vec<crate::orchestrator::GateResult>,
+}
+
+impl RunReport {
+    pub fn all_succeeded(&self) -> bool {
+        !self.budget_exhausted
+            && !self.daily_budget_exhausted
+            && self.tasks_failed == 0
+            && self.tasks_blocked == 0
+            && self.tasks_cancelled == 0
+            && self.tasks_orphaned == 0
+            && self.tasks_nonterminal == 0
+            && self.plans.iter().all(|plan| plan.completed)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3034,150 +3119,6 @@ mod tests {
         assert_eq!(cfg.timeouts.llm_call_secs, 60);
         assert_eq!(cfg.timeouts.http_request_secs, 15);
         assert_eq!(cfg.timeouts.health_check_secs, 2);
-    }
-
-    #[test]
-    fn event_loop_timeout_helpers_use_roko_config() {
-        use crate::runner::event_loop;
-        use std::time::Duration;
-
-        let roko_config = RokoConfig::from_toml(
-            r#"
-            [timeouts]
-            agent_dispatch_secs = 42
-            plan_total_secs = 99
-            llm_call_secs = 77
-            gate_compile_secs = 111
-            gate_clippy_secs = 222
-            gate_test_secs = 333
-            http_request_secs = 44
-            health_check_secs = 5
-            "#,
-        )
-        .expect("parse");
-
-        let config = RunConfig::from_roko_config(
-            PathBuf::from("/tmp/work"),
-            PathBuf::from("/tmp/plan"),
-            roko_config,
-        );
-
-        assert_eq!(
-            event_loop::agent_dispatch_timeout(&config),
-            Duration::from_secs(42)
-        );
-        assert_eq!(
-            event_loop::plan_total_timeout(&config),
-            Duration::from_secs(99)
-        );
-        assert_eq!(
-            event_loop::llm_call_timeout(&config),
-            Duration::from_secs(77)
-        );
-
-        // Gate rung mapping: 0 = compile, 1 = clippy, >= 2 = test.
-        assert_eq!(
-            event_loop::gate_timeout(&config, 0),
-            Duration::from_secs(111),
-            "rung 0 should use gate_compile"
-        );
-        assert_eq!(
-            event_loop::gate_timeout(&config, 1),
-            Duration::from_secs(222),
-            "rung 1 should use gate_clippy"
-        );
-        assert_eq!(
-            event_loop::gate_timeout(&config, 2),
-            Duration::from_secs(333),
-            "rung 2 should use gate_test"
-        );
-        assert_eq!(
-            event_loop::gate_timeout(&config, 5),
-            Duration::from_secs(333),
-            "rung 5 should use gate_test (>= 2 fallback)"
-        );
-
-        assert_eq!(
-            event_loop::http_request_timeout(&config),
-            Duration::from_secs(44)
-        );
-        assert_eq!(
-            event_loop::health_check_timeout(&config),
-            Duration::from_secs(5)
-        );
-    }
-
-    #[test]
-    fn event_loop_plan_timeout_uses_legacy_runner_value_when_canonical_default() {
-        use crate::runner::event_loop;
-        use std::time::Duration;
-
-        let roko_config = RokoConfig::from_toml(
-            r#"
-            [runner]
-            plan_timeout_secs = 14400
-            "#,
-        )
-        .expect("parse");
-
-        let config = RunConfig::from_roko_config(
-            PathBuf::from("/tmp/work"),
-            PathBuf::from("/tmp/plan"),
-            roko_config,
-        );
-
-        assert_eq!(
-            event_loop::plan_total_timeout(&config),
-            Duration::from_secs(14_400)
-        );
-    }
-
-    #[test]
-    fn event_loop_timeout_helpers_fallback_without_roko_config() {
-        use crate::runner::event_loop;
-        use std::time::Duration;
-
-        // Create a RunConfig without roko_config to test the legacy fallback.
-        let config = RunConfig {
-            timeout_secs: 55,
-            plan_timeout_secs: 88,
-            ..RunConfig::from_roko_config(
-                PathBuf::from("/tmp/work"),
-                PathBuf::from("/tmp/plan"),
-                RokoConfig::default(),
-            )
-        };
-        // Clear roko_config to force fallback path.
-        let mut config = config;
-        config.roko_config = None;
-
-        // Agent dispatch and plan total fall back to the scalar fields.
-        assert_eq!(
-            event_loop::agent_dispatch_timeout(&config),
-            Duration::from_secs(55)
-        );
-        assert_eq!(
-            event_loop::plan_total_timeout(&config),
-            Duration::from_secs(88)
-        );
-
-        // Gate timeout falls back to the agent dispatch scalar.
-        assert_eq!(
-            event_loop::gate_timeout(&config, 0),
-            Duration::from_secs(55)
-        );
-
-        // LLM call, http_request, health_check fall back to TimeoutConfig defaults.
-        let defaults = TimeoutConfig::default();
-        assert_eq!(event_loop::llm_call_timeout(&config), defaults.llm_call());
-        assert_eq!(
-            event_loop::http_request_timeout(&config),
-            defaults.http_request()
-        );
-        assert_eq!(
-            event_loop::health_check_timeout(&config),
-            defaults.health_check()
-        );
     }
 
     // ─── #60: RunConfig.safety_layer non-optionality regression ─────

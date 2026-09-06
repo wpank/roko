@@ -364,14 +364,14 @@ pub(crate) async fn cmd_run(
                         eprintln!("error: workflow halted: {reason}");
                         eprintln!("  -> Check logs: .roko/roko.log");
                         eprintln!(
-                            "  -> Resume:     roko plan run <dir> --engine runner-v2 --resume-plan"
+                            "  -> Resume:     roko plan run <dir> --resume-plan"
                         );
                         eprintln!("  -> Diagnose:   roko doctor");
                     }
                     Some(roko_core::WorkflowOutcome::Cancelled) => {
                         eprintln!("error: workflow cancelled");
                         eprintln!(
-                            "  -> Resume:     roko plan run <dir> --engine runner-v2 --resume-plan"
+                            "  -> Resume:     roko plan run <dir> --resume-plan"
                         );
                     }
                     Some(roko_core::WorkflowOutcome::Success { .. }) | None => {

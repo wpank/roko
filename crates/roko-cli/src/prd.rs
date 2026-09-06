@@ -1054,6 +1054,7 @@ async fn run_generated_plans(workdir: &Path, plans_root: &Path) -> Result<()> {
         roko_config,
     );
     let state_hub = crate::state_hub::StateHub::default_capacity();
+    #[allow(deprecated)] // Runner-v2 removed; this call now returns an error
     let report = crate::runner::run(
         plans,
         &run_config,

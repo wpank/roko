@@ -1889,17 +1889,17 @@ pub enum KnowledgeSyncDirection {
 
 /// Execution engine for `roko plan run`.
 ///
-/// Since Wave 9 (#260), the Graph Engine is the default. The legacy Runner-v2
-/// engine is retained as `--engine legacy` (alias `--engine runner-v2`) for
-/// one release cycle. To roll back: `roko plan run plans/ --engine legacy`.
+/// The Graph Engine is the sole execution engine. The `--engine legacy` and
+/// `--engine runner-v2` values are still accepted to avoid breaking existing
+/// scripts, but they print a deprecation error and exit.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
 pub enum PlanEngine {
-    /// Graph Engine (default). Converts plans to graphs and executes via the Engine.
+    /// Graph Engine (default and sole engine).
     #[default]
     #[value(name = "graph")]
     Graph,
-    /// Legacy Runner-v2 (deprecated). Uses the streaming event-loop plan executor.
-    /// Retained for one release cycle; will be removed in a future version.
+    /// Legacy Runner-v2 (REMOVED). Accepted for backward compatibility but
+    /// prints a deprecation error and exits. Use `--engine graph` (the default).
     #[value(name = "legacy", alias = "runner-v2")]
     RunnerV2,
 }
@@ -1971,16 +1971,16 @@ Examples:
   roko plan run plans/ --dry-run    Preview without executing
   roko plan run plans/ --fresh      Archive old state and start clean
   roko plan run plans/ --resume-plan .roko/state/graph                              Resume Graph Activities
-  roko plan run plans/ --engine legacy --resume-plan .roko/state/state-snapshot.json Resume legacy Runner-v2 from snapshot
 
-Rollback: to revert to the legacy Runner-v2 engine, pass --engine legacy (or --engine runner-v2).")]
+The legacy Runner-v2 engine has been removed. --engine legacy is accepted but exits with an error.")]
     Run {
         /// Path to the plans directory.
         plans_dir: PathBuf,
         /// Execution engine to use for plan execution.
         ///
-        /// Defaults to `graph`. Pass `--engine legacy` (or `--engine runner-v2`)
-        /// to use the deprecated Runner-v2 engine for one release cycle.
+        /// The Graph engine is the sole engine. `--engine legacy` and
+        /// `--engine runner-v2` are accepted for backward compatibility
+        /// but print a deprecation error and exit.
         #[arg(long, default_value = "graph", value_enum)]
         engine: PlanEngine,
         /// Working directory (repo root). Defaults to current directory.

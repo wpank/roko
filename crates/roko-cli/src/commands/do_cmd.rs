@@ -980,8 +980,9 @@ pub(crate) async fn run_plan_execution(
         cancel_for_signal.cancel();
     });
 
+    #[allow(deprecated)] // Runner-v2 removed; this call now returns an error
     let v2_report =
-        roko_cli::runner::event_loop::run(plans, &run_config, &state_hub, cancel).await?;
+        roko_cli::runner::run(plans, &run_config, &state_hub, cancel).await?;
 
     // The run-complete summary (task counts, cost, per-plan status, failure
     // details) was already printed by the output sink BEFORE post-plan

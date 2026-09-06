@@ -581,11 +581,20 @@ impl SystemPromptBuilder {
         }
 
         // Layer 3b: Relevant Context
+        //
+        // Marked Critical so the MVT foraging pre-pass never drops it.
+        // The `context` field carries task-dispatch-critical information
+        // (files in scope, acceptance criteria, verify commands, allowed
+        // tools, gate feedback on retry) — the agent cannot function
+        // correctly without it. Budget pressure on optional sections must
+        // not silently omit this block.
         if let Some(ref context) = self.context
             && !context.is_empty()
             && let Some(section) = self.apply_budget_profile(
                 PromptSection::new("context_layer", format!("## Relevant Context\n{context}"))
-                    .with_priority(self.effective_priority("context_layer", SectionPriority::High))
+                    .with_priority(
+                        self.effective_priority("context_layer", SectionPriority::Critical),
+                    )
                     .with_cache_layer(CacheLayer::Workspace)
                     .with_placement(Placement::Middle),
             )
@@ -1639,11 +1648,13 @@ mod tests {
             .expect("invariant: prompt should contain affect guidance text");
 
         // Cache order: role -> workspace -> plan -> volatile.
+        // Within the workspace tier, context_layer is Critical and comes before
+        // domain_context (High) — the runner context block must always be present.
         assert!(pos_role < pos_conv, "role before conventions");
         assert!(pos_conv < pos_tools, "conventions before tools");
-        assert!(pos_tools < pos_domain, "tools before domain");
-        assert!(pos_domain < pos_context, "domain before context");
-        assert!(pos_context < pos_task, "context before task");
+        assert!(pos_tools < pos_context, "tools before context");
+        assert!(pos_context < pos_domain, "context before domain (context is Critical)");
+        assert!(pos_domain < pos_task, "domain before task");
         assert!(pos_task < pos_anti, "task before anti-patterns");
         assert!(pos_task < pos_affect, "task before affect guidance");
         assert!(prompt.contains("Active Signals"));
@@ -1738,12 +1749,16 @@ mod tests {
         assert_eq!(sections[2].name, "tool_instructions");
         assert_eq!(sections[2].cache_layer, CacheLayer::Role);
 
-        // Layer 3: domain_context
-        assert_eq!(sections[3].name, "domain_context");
+        // Layer 3b: context_layer (Critical) sorts before domain_context (High)
+        // within the Workspace tier. The runner context block (files in scope,
+        // acceptance criteria, verify commands, allowed tools) is Critical and
+        // must always be present — MVT foraging must not drop it.
+        assert_eq!(sections[3].name, "context_layer");
+        assert_eq!(sections[3].priority, SectionPriority::Critical);
         assert_eq!(sections[3].cache_layer, CacheLayer::Workspace);
 
-        // Layer 3b: context_layer
-        assert_eq!(sections[4].name, "context_layer");
+        // Layer 3: domain_context (High) follows context_layer in Workspace tier
+        assert_eq!(sections[4].name, "domain_context");
         assert_eq!(sections[4].cache_layer, CacheLayer::Workspace);
 
         // Layer 4: task_context

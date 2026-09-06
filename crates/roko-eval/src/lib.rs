@@ -13,8 +13,9 @@
 //! # Bridge adapters
 //!
 //! The existing gate pipeline in `roko-gate` continues to work unchanged.
-//! [`LegacyCriterion`] wraps any [`Verify`](roko_core::Verify) implementation
-//! as a [`Criterion`].
+//! [`BoxedLegacyCriterion`] wraps any [`Verify`](roko_core::Verify) implementation
+//! as a [`Criterion`] (evidence-bag API). [`LegacyCriterion`] provides the
+//! generic bridge to the opaque evaluation API.
 //!
 //! # Phase 1 scope
 //!
@@ -886,21 +887,24 @@ impl EvidenceCollector for DiffCollector {
 // Bridge adapters
 // ---------------------------------------------------------------------------
 
-/// Wraps an existing [`Verify`](roko_core::Verify) implementation as a
+/// Wraps a boxed [`Verify`](roko_core::Verify) implementation as a
 /// [`Criterion`].
 ///
 /// This is the backward-compatibility bridge that allows the existing gate
-/// pipeline to be used through the new evaluation framework without changes.
-/// The wrapped gate spawns its own subprocess, so `required_evidence()` returns
-/// an empty slice.
-pub struct LegacyCriterion {
+/// pipeline to be used through the evidence-bag-based evaluation framework
+/// without changes. The wrapped gate spawns its own subprocess, so
+/// `required_evidence()` returns an empty slice.
+///
+/// For the generic (non-boxed) bridge to the opaque evaluation API, see
+/// [`LegacyCriterion`].
+pub struct BoxedLegacyCriterion {
     /// The wrapped `Verify` implementation.
     gate: Box<dyn roko_core::Verify>,
     /// Human-readable name for this criterion.
     criterion_name: String,
 }
 
-impl LegacyCriterion {
+impl BoxedLegacyCriterion {
     /// Wrap a `Verify` implementation as a `Criterion`.
     pub fn new(name: impl Into<String>, gate: Box<dyn roko_core::Verify>) -> Self {
         Self {
@@ -910,15 +914,15 @@ impl LegacyCriterion {
     }
 }
 
-impl fmt::Debug for LegacyCriterion {
+impl fmt::Debug for BoxedLegacyCriterion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("LegacyCriterion")
+        f.debug_struct("BoxedLegacyCriterion")
             .field("name", &self.criterion_name)
             .finish()
     }
 }
 
-impl Criterion for LegacyCriterion {
+impl Criterion for BoxedLegacyCriterion {
     fn name(&self) -> &str {
         &self.criterion_name
     }
@@ -1367,9 +1371,9 @@ mod tests {
         );
     }
 
-    // -- LegacyCriterion tests --
+    // -- BoxedLegacyCriterion tests --
 
-    /// A mock Verify implementation for testing the LegacyCriterion bridge.
+    /// A mock Verify implementation for testing the BoxedLegacyCriterion bridge.
     struct MockVerify {
         pass: bool,
     }
@@ -1407,7 +1411,7 @@ mod tests {
 
     #[test]
     fn legacy_criterion_wraps_passing_verify() {
-        let criterion = LegacyCriterion::new("mock-pass", Box::new(MockVerify { pass: true }));
+        let criterion = BoxedLegacyCriterion::new("mock-pass", Box::new(MockVerify { pass: true }));
 
         assert_eq!(criterion.name(), "mock-pass");
         assert!(criterion.required_evidence().is_empty());
@@ -1423,7 +1427,7 @@ mod tests {
 
     #[test]
     fn legacy_criterion_wraps_failing_verify() {
-        let criterion = LegacyCriterion::new("mock-fail", Box::new(MockVerify { pass: false }));
+        let criterion = BoxedLegacyCriterion::new("mock-fail", Box::new(MockVerify { pass: false }));
 
         let artifact = EvalArtifactRef::new(".");
         let evidence = EvidenceBag::new();
@@ -1570,5 +1574,593 @@ mod tests {
         let verdict = profile.evaluate(&artifact, &evidence, &ctx);
         assert!(verdict.passed);
         assert!((verdict.score - 1.0).abs() < f64::EPSILON);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Opaque evaluation API (spec-defined types)
+//
+// This module contains the type-erased evaluation API specified for roko-eval.
+// It is additive: all existing types above remain intact. The types here use
+// `OpaqueEvidence` — a type-erased container — so that evidence collectors and
+// criteria can be composed without knowing each other's concrete evidence types.
+//
+// Primary types:
+//   - `OpaqueEvidence`         — type-erased evidence container
+//   - `Criterion` (trait)      — async, opaque-evidence evaluator
+//   - `CriterionResult`        — per-criterion outcome (with details + metadata)
+//   - `EvidenceCollector`      — async collector producing `OpaqueEvidence`
+//   - `TaskEvalContext`        — task-scoped evaluation context
+//   - `Profile`                — named collection of criteria
+//   - `ProfileResult`          — aggregated profile outcome
+//   - `LegacyCriterion<G>`     — generic bridge to `roko_core::Verify` gates
+// ---------------------------------------------------------------------------
+
+/// Type-erased evidence container.
+///
+/// Wraps any `Send + Sync + 'static` value so that evidence collectors and
+/// criteria can be composed without knowing each other's concrete types. Use
+/// [`OpaqueEvidence::downcast_ref`] to recover the inner value.
+pub struct OpaqueEvidence(Box<dyn std::any::Any + Send + Sync>);
+
+impl OpaqueEvidence {
+    /// Wrap a value as opaque evidence.
+    pub fn new<T: std::any::Any + Send + Sync>(value: T) -> Self {
+        Self(Box::new(value))
+    }
+
+    /// Attempt to downcast to a concrete reference.
+    ///
+    /// Returns `None` if the inner type does not match `T`.
+    pub fn downcast_ref<T: 'static>(&self) -> Option<&T> {
+        self.0.downcast_ref::<T>()
+    }
+}
+
+impl std::fmt::Debug for OpaqueEvidence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("OpaqueEvidence").field(&"<dyn Any>").finish()
+    }
+}
+
+/// Per-criterion result produced by an opaque [`Criterion`] evaluation.
+///
+/// Distinct from the evidence-bag-based [`CriterionResult`] above: this variant
+/// uses `details: String` and `metadata: HashMap<String, serde_json::Value>`
+/// to carry richer structured output to agents and dashboards.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct OpaqueCriterionResult {
+    /// Whether the criterion passed.
+    pub passed: bool,
+    /// Numeric quality score in `[0.0, 1.0]`.
+    pub score: f64,
+    /// Human-readable explanation of the result.
+    pub details: String,
+    /// Arbitrary structured metadata (e.g., line counts, error codes).
+    #[serde(default)]
+    pub metadata: std::collections::HashMap<String, serde_json::Value>,
+}
+
+impl OpaqueCriterionResult {
+    /// Construct a passing result with full score and empty details.
+    #[must_use]
+    pub fn pass() -> Self {
+        Self {
+            passed: true,
+            score: 1.0,
+            details: String::new(),
+            metadata: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Construct a failing result with zero score and empty details.
+    #[must_use]
+    pub fn fail() -> Self {
+        Self {
+            passed: false,
+            score: 0.0,
+            details: String::new(),
+            metadata: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Attach a details message.
+    #[must_use]
+    pub fn with_details(mut self, details: impl Into<String>) -> Self {
+        self.details = details.into();
+        self
+    }
+
+    /// Set the score (clamped to `[0.0, 1.0]`).
+    #[must_use]
+    pub fn with_score(mut self, score: f64) -> Self {
+        self.score = score.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Insert a metadata entry.
+    #[must_use]
+    pub fn with_meta(mut self, key: impl Into<String>, value: serde_json::Value) -> Self {
+        self.metadata.insert(key.into(), value);
+        self
+    }
+}
+
+/// Task-scoped evaluation context.
+///
+/// Passed to [`OpaqueEvidenceCollector::collect`] and used by callers to
+/// communicate which plan/task is being evaluated and from which directory.
+///
+/// This is distinct from the process-level [`EvalContext`] above (which
+/// carries `run_id`/`task_id`/`attrs`); `TaskEvalContext` uses the field
+/// names specified by the eval-framework spec.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct TaskEvalContext {
+    /// Working directory for the evaluation (workspace root or worktree).
+    pub workdir: std::path::PathBuf,
+    /// Plan identifier (correlates to a `tasks.toml` plan directory).
+    pub plan_id: String,
+    /// Task identifier within the plan.
+    pub task_id: String,
+    /// Arbitrary key-value metadata for the evaluation run.
+    #[serde(default)]
+    pub metadata: std::collections::HashMap<String, serde_json::Value>,
+}
+
+impl TaskEvalContext {
+    /// Construct a minimal context with workdir, plan_id, and task_id.
+    #[must_use]
+    pub fn new(
+        workdir: impl Into<std::path::PathBuf>,
+        plan_id: impl Into<String>,
+        task_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            workdir: workdir.into(),
+            plan_id: plan_id.into(),
+            task_id: task_id.into(),
+            metadata: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Insert a metadata entry.
+    #[must_use]
+    pub fn with_meta(mut self, key: impl Into<String>, value: serde_json::Value) -> Self {
+        self.metadata.insert(key.into(), value);
+        self
+    }
+}
+
+/// A single evaluation criterion operating on opaque evidence.
+///
+/// Implementors score one quality dimension (compilation, test coverage,
+/// lint cleanliness, …) by inspecting the concrete type hidden inside
+/// [`OpaqueEvidence`]. Criteria **must not** spawn subprocesses themselves —
+/// use an [`OpaqueEvidenceCollector`] for that.
+#[async_trait::async_trait]
+pub trait OpaqueCriterion: Send + Sync {
+    /// Human-readable name of this criterion.
+    fn name(&self) -> &str;
+
+    /// Human-readable description of what this criterion checks.
+    fn description(&self) -> &str;
+
+    /// Evaluate the artifact given opaque evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the evidence cannot be downcast to the expected
+    /// concrete type, or if evaluation itself fails.
+    async fn evaluate(
+        &self,
+        evidence: &OpaqueEvidence,
+    ) -> anyhow::Result<OpaqueCriterionResult>;
+}
+
+/// Gathers opaque evidence for subsequent criterion evaluation.
+///
+/// Collectors run external tools, read files, or query APIs and package the
+/// result as [`OpaqueEvidence`]. They are intentionally separate from criteria
+/// so evidence can be reused across multiple criteria without re-running tools.
+#[async_trait::async_trait]
+pub trait OpaqueEvidenceCollector: Send + Sync {
+    /// Human-readable name of this collector.
+    fn name(&self) -> &str;
+
+    /// Collect evidence from the context's working directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying tool fails to run or its output
+    /// cannot be captured.
+    async fn collect(&self, context: &TaskEvalContext) -> anyhow::Result<OpaqueEvidence>;
+}
+
+/// A named collection of opaque criteria with a mean-score aggregation policy.
+///
+/// `OpaqueProfile` runs all criteria against a shared [`OpaqueEvidence`] bag,
+/// collects per-criterion results, and produces a [`ProfileResult`].
+pub struct OpaqueProfile {
+    /// Human-readable name for this profile.
+    pub name: String,
+    /// Ordered criteria to evaluate.
+    pub criteria: Vec<Box<dyn OpaqueCriterion>>,
+}
+
+impl std::fmt::Debug for OpaqueProfile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpaqueProfile")
+            .field("name", &self.name)
+            .field(
+                "criteria",
+                &self.criteria.iter().map(|c| c.name()).collect::<Vec<_>>(),
+            )
+            .finish()
+    }
+}
+
+impl OpaqueProfile {
+    /// Construct an empty profile.
+    #[must_use]
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            criteria: Vec::new(),
+        }
+    }
+
+    /// Add a criterion.
+    #[must_use]
+    pub fn with_criterion(mut self, criterion: Box<dyn OpaqueCriterion>) -> Self {
+        self.criteria.push(criterion);
+        self
+    }
+
+    /// Evaluate all criteria against the given evidence.
+    ///
+    /// All criteria run regardless of individual pass/fail status. The overall
+    /// profile passes only when every criterion passes. The aggregate score is
+    /// the arithmetic mean of all criterion scores.
+    ///
+    /// Criteria that return errors are treated as failures with a score of
+    /// `0.0` and an error message captured in `details`.
+    pub async fn evaluate_all(&self, evidence: &OpaqueEvidence) -> ProfileResult {
+        let mut results: Vec<(String, OpaqueCriterionResult)> =
+            Vec::with_capacity(self.criteria.len());
+
+        for criterion in &self.criteria {
+            let criterion_result = match criterion.evaluate(evidence).await {
+                Ok(r) => r,
+                Err(e) => OpaqueCriterionResult::fail()
+                    .with_details(format!("criterion error: {e}")),
+            };
+            results.push((criterion.name().to_string(), criterion_result));
+        }
+
+        let passed = results.iter().all(|(_, r)| r.passed);
+        let score = if results.is_empty() {
+            1.0
+        } else {
+            results.iter().map(|(_, r)| r.score).sum::<f64>() / results.len() as f64
+        };
+
+        ProfileResult {
+            profile_name: self.name.clone(),
+            passed,
+            score,
+            results,
+        }
+    }
+}
+
+/// Aggregated result from running an [`OpaqueProfile`].
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ProfileResult {
+    /// Name of the profile that was evaluated.
+    pub profile_name: String,
+    /// Whether every criterion in the profile passed.
+    pub passed: bool,
+    /// Arithmetic mean of all criterion scores (`0.0` to `1.0`).
+    pub score: f64,
+    /// Per-criterion results paired with criterion names, in evaluation order.
+    pub results: Vec<(String, OpaqueCriterionResult)>,
+}
+
+/// Generic bridge that wraps any `G: roko_core::Verify` as an [`OpaqueCriterion`].
+///
+/// This allows existing gate implementations to be composed in the opaque
+/// evaluation pipeline without modification. Evidence is ignored (the wrapped
+/// gate spawns its own subprocess). The gate is called with a minimal synthetic
+/// [`roko_core::Signal`] carrying the workdir from [`TaskEvalContext`].
+pub struct LegacyCriterion<G> {
+    /// The wrapped gate.
+    gate: G,
+    /// Human-readable criterion name.
+    name: String,
+}
+
+impl<G> LegacyCriterion<G> {
+    /// Wrap a gate as a criterion.
+    pub fn new(name: impl Into<String>, gate: G) -> Self {
+        Self {
+            gate,
+            name: name.into(),
+        }
+    }
+}
+
+impl<G: roko_core::Verify> std::fmt::Debug for LegacyCriterion<G> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LegacyCriterion")
+            .field("name", &self.name)
+            .finish()
+    }
+}
+
+#[async_trait::async_trait]
+impl<G: roko_core::Verify + Send + Sync> OpaqueCriterion for LegacyCriterion<G> {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn description(&self) -> &'static str {
+        "Legacy Verify gate bridge"
+    }
+
+    async fn evaluate(&self, evidence: &OpaqueEvidence) -> anyhow::Result<OpaqueCriterionResult> {
+        // Extract workdir from opaque evidence if the caller stored a
+        // `TaskEvalContext` inside it; otherwise fall back to ".".
+        let workdir = evidence
+            .downcast_ref::<TaskEvalContext>()
+            .map(|c| c.workdir.to_string_lossy().into_owned())
+            .unwrap_or_else(|| ".".to_string());
+
+        let payload = serde_json::json!({ "workdir": workdir });
+        let signal = roko_core::Signal::builder(roko_core::Kind::Task)
+            .body(
+                roko_core::Body::from_json(&payload)
+                    .unwrap_or_else(|_| roko_core::Body::empty()),
+            )
+            .build();
+        let ctx = roko_core::Context::now().with_attr("workdir", workdir);
+
+        let verdict = self.gate.verify(&signal, &ctx).await;
+
+        if verdict.passed {
+            Ok(OpaqueCriterionResult::pass())
+        } else {
+            let details = verdict
+                .error_digest
+                .as_ref()
+                .filter(|d| !d.is_empty())
+                .or(verdict.detail.as_ref().filter(|d| !d.is_empty()))
+                .unwrap_or(&verdict.reason)
+                .clone();
+            Ok(OpaqueCriterionResult::fail()
+                .with_score(f64::from(verdict.score))
+                .with_details(details))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests for opaque API types
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod opaque_tests {
+    use super::*;
+
+    // -- OpaqueEvidence tests --
+
+    #[test]
+    fn opaque_evidence_downcast_succeeds_for_correct_type() {
+        let ev = OpaqueEvidence::new(42u32);
+        let val = ev.downcast_ref::<u32>();
+        assert_eq!(val, Some(&42u32));
+    }
+
+    #[test]
+    fn opaque_evidence_downcast_fails_for_wrong_type() {
+        let ev = OpaqueEvidence::new(42u32);
+        let val = ev.downcast_ref::<String>();
+        assert!(val.is_none());
+    }
+
+    #[test]
+    fn opaque_evidence_downcast_with_struct() {
+        #[derive(Debug, PartialEq)]
+        struct MyEvidence {
+            value: i32,
+        }
+
+        let ev = OpaqueEvidence::new(MyEvidence { value: 99 });
+        let inner = ev.downcast_ref::<MyEvidence>();
+        assert_eq!(inner, Some(&MyEvidence { value: 99 }));
+    }
+
+    // -- OpaqueCriterionResult tests --
+
+    #[test]
+    fn opaque_criterion_result_pass_defaults() {
+        let r = OpaqueCriterionResult::pass();
+        assert!(r.passed);
+        assert!((r.score - 1.0).abs() < f64::EPSILON);
+        assert!(r.details.is_empty());
+        assert!(r.metadata.is_empty());
+    }
+
+    #[test]
+    fn opaque_criterion_result_fail_defaults() {
+        let r = OpaqueCriterionResult::fail();
+        assert!(!r.passed);
+        assert!((r.score - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn opaque_criterion_result_builder_chain() {
+        let r = OpaqueCriterionResult::fail()
+            .with_score(0.75)
+            .with_details("partial success")
+            .with_meta("lines", serde_json::json!(100));
+
+        assert!(!r.passed);
+        assert!((r.score - 0.75).abs() < f64::EPSILON);
+        assert_eq!(r.details, "partial success");
+        assert_eq!(r.metadata.get("lines"), Some(&serde_json::json!(100)));
+    }
+
+    #[test]
+    fn opaque_criterion_result_score_clamped() {
+        let r = OpaqueCriterionResult::pass().with_score(1.5);
+        assert!((r.score - 1.0).abs() < f64::EPSILON);
+
+        let r2 = OpaqueCriterionResult::pass().with_score(-0.5);
+        assert!((r2.score - 0.0).abs() < f64::EPSILON);
+    }
+
+    // -- TaskEvalContext tests --
+
+    #[test]
+    fn task_eval_context_builder() {
+        let ctx = TaskEvalContext::new("/workspace", "plan-abc", "task-1")
+            .with_meta("env", serde_json::json!("staging"));
+
+        assert_eq!(ctx.workdir.to_str(), Some("/workspace"));
+        assert_eq!(ctx.plan_id, "plan-abc");
+        assert_eq!(ctx.task_id, "task-1");
+        assert_eq!(ctx.metadata.get("env"), Some(&serde_json::json!("staging")));
+    }
+
+    // -- OpaqueProfile + ProfileResult tests --
+
+    struct AlwaysPassCriterion;
+
+    #[async_trait::async_trait]
+    impl OpaqueCriterion for AlwaysPassCriterion {
+        fn name(&self) -> &str {
+            "always_pass"
+        }
+        fn description(&self) -> &str {
+            "always passes"
+        }
+        async fn evaluate(
+            &self,
+            _evidence: &OpaqueEvidence,
+        ) -> anyhow::Result<OpaqueCriterionResult> {
+            Ok(OpaqueCriterionResult::pass().with_details("ok"))
+        }
+    }
+
+    struct AlwaysFailCriterion;
+
+    #[async_trait::async_trait]
+    impl OpaqueCriterion for AlwaysFailCriterion {
+        fn name(&self) -> &str {
+            "always_fail"
+        }
+        fn description(&self) -> &str {
+            "always fails"
+        }
+        async fn evaluate(
+            &self,
+            _evidence: &OpaqueEvidence,
+        ) -> anyhow::Result<OpaqueCriterionResult> {
+            Ok(OpaqueCriterionResult::fail().with_details("always fails"))
+        }
+    }
+
+    #[tokio::test]
+    async fn profile_evaluate_all_passes_when_all_criteria_pass() {
+        let profile = OpaqueProfile::new("all-pass")
+            .with_criterion(Box::new(AlwaysPassCriterion))
+            .with_criterion(Box::new(AlwaysPassCriterion));
+
+        let evidence = OpaqueEvidence::new(());
+        let result = profile.evaluate_all(&evidence).await;
+
+        assert!(result.passed);
+        assert!((result.score - 1.0).abs() < f64::EPSILON);
+        assert_eq!(result.results.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn profile_evaluate_all_fails_when_any_criterion_fails() {
+        let profile = OpaqueProfile::new("mixed")
+            .with_criterion(Box::new(AlwaysPassCriterion))
+            .with_criterion(Box::new(AlwaysFailCriterion));
+
+        let evidence = OpaqueEvidence::new(());
+        let result = profile.evaluate_all(&evidence).await;
+
+        // Overall profile fails because one criterion failed.
+        assert!(!result.passed);
+        // Score is the mean: (1.0 + 0.0) / 2 = 0.5
+        assert!((result.score - 0.5).abs() < f64::EPSILON);
+        assert_eq!(result.results.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn profile_evaluate_all_empty_profile_passes() {
+        let profile = OpaqueProfile::new("empty");
+        let evidence = OpaqueEvidence::new(());
+        let result = profile.evaluate_all(&evidence).await;
+
+        assert!(result.passed);
+        assert!((result.score - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn profile_evaluate_all_criterion_error_treated_as_failure() {
+        struct ErrorCriterion;
+
+        #[async_trait::async_trait]
+        impl OpaqueCriterion for ErrorCriterion {
+            fn name(&self) -> &str {
+                "error_criterion"
+            }
+            fn description(&self) -> &str {
+                "always returns an error"
+            }
+            async fn evaluate(
+                &self,
+                _evidence: &OpaqueEvidence,
+            ) -> anyhow::Result<OpaqueCriterionResult> {
+                Err(anyhow::anyhow!("simulated evaluation error"))
+            }
+        }
+
+        let profile = OpaqueProfile::new("error-profile")
+            .with_criterion(Box::new(ErrorCriterion));
+
+        let evidence = OpaqueEvidence::new(());
+        let result = profile.evaluate_all(&evidence).await;
+
+        assert!(!result.passed);
+        assert_eq!(result.results.len(), 1);
+        let (name, cr) = &result.results[0];
+        assert_eq!(name, "error_criterion");
+        assert!(cr.details.contains("criterion error"));
+    }
+
+    // -- ProfileResult serialization --
+
+    #[test]
+    fn profile_result_serializes_round_trip() {
+        let result = ProfileResult {
+            profile_name: "my-profile".to_string(),
+            passed: true,
+            score: 0.9,
+            results: vec![(
+                "compile".to_string(),
+                OpaqueCriterionResult::pass().with_details("clean"),
+            )],
+        };
+
+        let json = serde_json::to_string(&result).expect("serialize");
+        let back: ProfileResult = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.profile_name, "my-profile");
+        assert!(back.passed);
+        assert_eq!(back.results.len(), 1);
     }
 }

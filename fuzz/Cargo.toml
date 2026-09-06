@@ -1,0 +1,64 @@
+[package]
+name = "roko-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+rust-version = "1.91"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+# Targets fuzz parsers across these crates:
+roko-core = { path = "../crates/roko-core" }
+roko-fs = { path = "../crates/roko-fs" }
+roko-gate = { path = "../crates/roko-gate" }
+roko-learn = { path = "../crates/roko-learn" }
+serde_json = "1"
+toml = "0.8"
+
+# Prevent optimiser from removing dead code in the fuzzed library.
+[profile.release]
+debug = 1
+opt-level = 3
+
+[[bin]]
+name = "fuzz_signal_jsonl"
+path = "fuzz_targets/fuzz_signal_jsonl.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_config_toml"
+path = "fuzz_targets/fuzz_config_toml.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_episode_jsonl"
+path = "fuzz_targets/fuzz_episode_jsonl.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_jsonl_parse"
+path = "fuzz_targets/jsonl_parse.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_test_output_parse"
+path = "fuzz_targets/test_output_parse.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_config_toml_parse"
+path = "fuzz_targets/config_toml_parse.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_verify_chain_parse"
+path = "fuzz_targets/verify_chain_parse.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_gate_context_deser"
+path = "fuzz_targets/gate_context_deser.rs"
+doc = false

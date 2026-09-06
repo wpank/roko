@@ -48,6 +48,8 @@ pub mod agent_registry;
 pub mod alloy_impl;
 /// Arena definitions, lifecycle registry, leaderboards, and prize escrow.
 pub mod arena;
+/// Arena flywheel — Stage 1 (trace collection) and Stage 2 (auto-grading).
+pub mod arena_flywheel;
 /// Poll-based block watcher for streaming chain data via event bus.
 #[cfg(feature = "alloy-backend")]
 pub mod block_watcher;

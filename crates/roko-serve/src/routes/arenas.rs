@@ -14,9 +14,10 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use roko_chain::arena::{
     AggregationRule, Arena, ArenaCategory, ArenaError, ArenaRegistry, ArenaState,
-    AttemptSettlement, AttemptState, GroundTruthSource, Leaderboard, ReleaseCondition,
-    ScoringEvidence, ScoringFunction, TaskSource,
+    AttemptSettlement, AttemptState, AttemptTrace, GroundTruthSource, Leaderboard,
+    ReleaseCondition, ScoringEvidence, ScoringFunction, TaskSource,
 };
+use roko_chain::arena_flywheel::TraceCollector;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
@@ -594,6 +595,30 @@ async fn settle_attempt(
         })
         .await?;
     project_committed_events(&state).await;
+
+    // Stage 1 — persist the AttemptTrace immediately after settlement succeeds.
+    // Failures are non-fatal: the settlement result has already been durably
+    // written to the arena registry snapshot before we reach this point.
+    let settled = &mutation.value;
+    let trace = AttemptTrace {
+        attempt_id: settled.id,
+        episode_id: None,
+        gate_verdicts: settled.gate_verdicts.clone(),
+        // Scoring dimensions are not yet populated from the settle request;
+        // they will be enriched when the external grader runs Stage 2.
+        scoring_dimensions: Vec::new(),
+        hdc_fingerprint: None,
+    };
+    let collector = TraceCollector::from_workspace(&state.workdir);
+    if let Err(error) = collector.collect_trace(&settled.arena_id, &settled.id, &trace) {
+        tracing::warn!(
+            %error,
+            arena_id = %format_hash(&settled.arena_id),
+            attempt_id = %format_hash(&settled.id),
+            "arena flywheel: trace collection failed — flywheel Stage 1 skipped"
+        );
+    }
+
     Ok(Json(
         json!({ "source": "local_durable", "attempt": mutation.value }),
     ))

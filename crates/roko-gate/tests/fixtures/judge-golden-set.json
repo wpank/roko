@@ -1,0 +1,142 @@
+[
+  {
+    "id": "gs-001",
+    "task_description": "Implement a function `add(a: i32, b: i32) -> i32` that returns the sum of two integers",
+    "agent_output": "diff --git a/src/math.rs b/src/math.rs\n+++ b/src/math.rs\n+pub fn add(a: i32, b: i32) -> i32 {\n+    a + b\n+}\n+\n+#[cfg(test)]\n+mod tests {\n+    use super::*;\n+    #[test]\n+    fn test_add() {\n+        assert_eq!(add(2, 3), 5);\n+        assert_eq!(add(-1, 1), 0);\n+    }\n+}",
+    "expected_verdict": true,
+    "reasoning": "Correct implementation with a test. The function signature matches, logic is correct, and a basic test validates behavior including edge cases."
+  },
+  {
+    "id": "gs-002",
+    "task_description": "Fix the off-by-one error in the `last_index` function that currently returns `len` instead of `len - 1`",
+    "agent_output": "diff --git a/src/util.rs b/src/util.rs\n@@ -3,7 +3,7 @@\n fn last_index(v: &[i32]) -> usize {\n-    v.len()\n+    v.len() - 1\n }",
+    "expected_verdict": true,
+    "reasoning": "Minimal correct fix for the off-by-one error. Exactly one line changed, the fix is semantically correct."
+  },
+  {
+    "id": "gs-003",
+    "task_description": "Add a `#[derive(Debug)]` attribute to the `Config` struct",
+    "agent_output": "diff --git a/src/config.rs b/src/config.rs\n@@ -1,4 +1,5 @@\n+#[derive(Debug)]\n pub struct Config {\n     pub host: String,\n     pub port: u16,\n }",
+    "expected_verdict": true,
+    "reasoning": "Single-line mechanical change that exactly satisfies the requirement. No risk of regression."
+  },
+  {
+    "id": "gs-004",
+    "task_description": "Implement `fn is_palindrome(s: &str) -> bool` that returns true if the string reads the same forwards and backwards",
+    "agent_output": "diff --git a/src/strings.rs b/src/strings.rs\n+pub fn is_palindrome(s: &str) -> bool {\n+    let chars: Vec<char> = s.chars().collect();\n+    let n = chars.len();\n+    for i in 0..n / 2 {\n+        if chars[i] != chars[n - 1 - i] {\n+            return false;\n+        }\n+    }\n+    true\n+}",
+    "expected_verdict": true,
+    "reasoning": "Correct Unicode-aware palindrome check using chars(). Handles empty string correctly. Clean implementation."
+  },
+  {
+    "id": "gs-005",
+    "task_description": "Implement `fn factorial(n: u64) -> u64` using recursion",
+    "agent_output": "diff --git a/src/math.rs b/src/math.rs\n+pub fn factorial(n: u64) -> u64 {\n+    if n == 0 {\n+        1\n+    } else {\n+        n * factorial(n - 1)\n+    }\n+}",
+    "expected_verdict": true,
+    "reasoning": "Classic recursive factorial with correct base case. Handles n=0 correctly returning 1."
+  },
+  {
+    "id": "gs-006",
+    "task_description": "Add error handling to `parse_config`: return `Result<Config, ConfigError>` instead of panicking",
+    "agent_output": "diff --git a/src/config.rs b/src/config.rs\n@@ -5,8 +5,10 @@\n-pub fn parse_config(s: &str) -> Config {\n-    let v: serde_json::Value = serde_json::from_str(s).expect(\"invalid json\");\n-    Config { host: v[\"host\"].as_str().unwrap().to_string(), port: v[\"port\"].as_u64().unwrap() as u16 }\n+pub fn parse_config(s: &str) -> Result<Config, ConfigError> {\n+    let v: serde_json::Value = serde_json::from_str(s).map_err(|e| ConfigError::Parse(e.to_string()))?;\n+    let host = v[\"host\"].as_str().ok_or(ConfigError::MissingField(\"host\"))?.to_string();\n+    let port = v[\"port\"].as_u64().ok_or(ConfigError::MissingField(\"port\"))? as u16;\n+    Ok(Config { host, port })\n }",
+    "expected_verdict": true,
+    "reasoning": "Correctly converts panicking code to Result-based error handling using the ? operator. All error cases handled properly."
+  },
+  {
+    "id": "gs-007",
+    "task_description": "Write a unit test for the `split_at_comma` function",
+    "agent_output": "diff --git a/src/parse.rs b/src/parse.rs\n+#[cfg(test)]\n+mod tests {\n+    use super::*;\n+\n+    #[test]\n+    fn test_split_at_comma_basic() {\n+        assert_eq!(split_at_comma(\"a,b,c\"), vec![\"a\", \"b\", \"c\"]);\n+    }\n+\n+    #[test]\n+    fn test_split_at_comma_empty() {\n+        assert_eq!(split_at_comma(\"\"), vec![\"\"]);\n+    }\n+\n+    #[test]\n+    fn test_split_at_comma_no_comma() {\n+        assert_eq!(split_at_comma(\"hello\"), vec![\"hello\"]);\n+    }\n+}",
+    "expected_verdict": true,
+    "reasoning": "Three distinct test cases covering basic, empty, and no-comma scenarios. Good coverage for a basic split function."
+  },
+  {
+    "id": "gs-008",
+    "task_description": "Implement `fn add(a: i32, b: i32) -> i32` that returns the sum of two integers",
+    "agent_output": "diff --git a/src/math.rs b/src/math.rs\n+pub fn add(a: i32, b: i32) -> i32 {\n+    a - b\n+}",
+    "expected_verdict": false,
+    "reasoning": "Implementation uses subtraction instead of addition. Compiles but is semantically wrong."
+  },
+  {
+    "id": "gs-009",
+    "task_description": "Fix the `divide` function to handle division by zero by returning `None` instead of panicking",
+    "agent_output": "diff --git a/src/math.rs b/src/math.rs\n@@ -1,3 +1,3 @@\n-pub fn divide(a: i32, b: i32) -> i32 {\n-    a / b\n-}\n+pub fn divide(a: i32, b: i32) -> i32 {\n+    if b != 0 { a / b } else { 0 }\n+}",
+    "expected_verdict": false,
+    "reasoning": "The task requires returning Option<i32> with None on division by zero. The implementation returns i32 and returns 0 instead of None — wrong type and wrong semantics."
+  },
+  {
+    "id": "gs-010",
+    "task_description": "Remove the `println!` debug statement from the `process_request` function",
+    "agent_output": "diff --git a/src/handler.rs b/src/handler.rs\n@@ -8,7 +8,6 @@\n fn process_request(req: Request) -> Response {\n     let data = req.body();\n-    println!(\"DEBUG: processing {:?}\", data);\n     transform(data)\n }",
+    "expected_verdict": true,
+    "reasoning": "Exactly one line removed — the debug println. Clean minimal diff that satisfies the task."
+  },
+  {
+    "id": "gs-011",
+    "task_description": "Implement a function `fn clamp(val: f64, min: f64, max: f64) -> f64` that clamps a value to [min, max]",
+    "agent_output": "diff --git a/src/math.rs b/src/math.rs\n+pub fn clamp(val: f64, min: f64, max: f64) -> f64 {\n+    val.clamp(min, max)\n+}",
+    "expected_verdict": true,
+    "reasoning": "Delegates to the stdlib clamp method which handles all edge cases correctly. Minimal and correct."
+  },
+  {
+    "id": "gs-012",
+    "task_description": "Add a `Display` impl for `AppError` that shows a human-readable message",
+    "agent_output": "diff --git a/src/error.rs b/src/error.rs\n+impl std::fmt::Display for AppError {\n+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {\n+        match self {\n+            AppError::NotFound(id) => write!(f, \"resource {} not found\", id),\n+            AppError::Unauthorized => write!(f, \"unauthorized\"),\n+            AppError::Internal(msg) => write!(f, \"internal error: {}\", msg),\n+        }\n+    }\n+}",
+    "expected_verdict": true,
+    "reasoning": "Correct Display impl with exhaustive match. Each variant has a sensible human-readable message."
+  },
+  {
+    "id": "gs-013",
+    "task_description": "Implement `fn is_palindrome(s: &str) -> bool`",
+    "agent_output": "diff --git a/src/strings.rs b/src/strings.rs\n+pub fn is_palindrome(s: &str) -> bool {\n+    s == s.chars().rev().collect::<String>()\n+}",
+    "expected_verdict": true,
+    "reasoning": "Correct single-line implementation using iterator reversal. Slightly less efficient than index-based but semantically correct and idiomatic Rust."
+  },
+  {
+    "id": "gs-014",
+    "task_description": "Fix the off-by-one error in `last_index`",
+    "agent_output": "diff --git a/src/util.rs b/src/util.rs\n@@ -1,5 +1,9 @@\n fn last_index(v: &[i32]) -> usize {\n-    v.len()\n+    if v.is_empty() {\n+        return 0;\n+    }\n+    v.len() - 1\n }",
+    "expected_verdict": true,
+    "reasoning": "Fixes the off-by-one and adds empty-slice protection to avoid underflow on an empty vector. Slightly more defensive than strictly required but valid."
+  },
+  {
+    "id": "gs-015",
+    "task_description": "Implement a stack data structure with `push`, `pop`, and `peek` methods",
+    "agent_output": "diff --git a/src/stack.rs b/src/stack.rs\n+pub struct Stack<T> {\n+    inner: Vec<T>,\n+}\n+\n+impl<T> Stack<T> {\n+    pub fn new() -> Self { Stack { inner: Vec::new() } }\n+    pub fn push(&mut self, val: T) { self.inner.push(val); }\n+    pub fn pop(&mut self) -> Option<T> { self.inner.pop() }\n+    pub fn peek(&self) -> Option<&T> { self.inner.last() }\n+    pub fn is_empty(&self) -> bool { self.inner.is_empty() }\n+}",
+    "expected_verdict": true,
+    "reasoning": "Complete correct generic Stack implementation. All three required methods plus a bonus is_empty method. Wraps Vec appropriately."
+  },
+  {
+    "id": "gs-016",
+    "task_description": "Implement `fn add(a: i32, b: i32) -> i32`",
+    "agent_output": "diff --git a/src/math.rs b/src/math.rs\n+pub fn add(a: i32, b: i32) -> i32 {\n+    todo!()\n+}",
+    "expected_verdict": false,
+    "reasoning": "Uses todo!() macro as a stub. The function exists but panics at runtime. Does not implement the required logic."
+  },
+  {
+    "id": "gs-017",
+    "task_description": "Add a `len` method to `MyVec<T>` that returns the number of elements",
+    "agent_output": "diff --git a/src/vec.rs b/src/vec.rs\n@@ -10,4 +10,8 @@\n impl<T> MyVec<T> {\n     pub fn new() -> Self { MyVec { data: Vec::new() } }\n     pub fn push(&mut self, val: T) { self.data.push(val); }\n+    pub fn len(&self) -> usize {\n+        self.data.len()\n+    }\n+    pub fn is_empty(&self) -> bool {\n+        self.data.is_empty()\n+    }\n }",
+    "expected_verdict": true,
+    "reasoning": "Correctly adds the required len method. Also adds is_empty which suppresses the common clippy warning. Good proactive addition."
+  },
+  {
+    "id": "gs-018",
+    "task_description": "Implement `fn fibonacci(n: u32) -> u64` that returns the nth Fibonacci number",
+    "agent_output": "diff --git a/src/math.rs b/src/math.rs\n+pub fn fibonacci(n: u32) -> u64 {\n+    match n {\n+        0 => 0,\n+        1 => 1,\n+        _ => {\n+            let mut a = 0u64;\n+            let mut b = 1u64;\n+            for _ in 2..=n {\n+                let c = a + b;\n+                a = b;\n+                b = c;\n+            }\n+            b\n+        }\n+    }\n+}",
+    "expected_verdict": true,
+    "reasoning": "Iterative Fibonacci implementation avoiding stack overflow from recursion. Correct base cases for 0 and 1. O(n) time, O(1) space."
+  },
+  {
+    "id": "gs-019",
+    "task_description": "Refactor `process` to remove the duplicated error logging that appears in both the success and failure branches",
+    "agent_output": "diff --git a/src/process.rs b/src/process.rs\n@@ -5,14 +5,9 @@\n fn process(input: &str) -> Result<String, Error> {\n-    match transform(input) {\n-        Ok(v) => {\n-            log::error!(\"done\");\n-            Ok(v)\n-        }\n-        Err(e) => {\n-            log::error!(\"done\");\n-            Err(e)\n-        }\n-    }\n+    let result = transform(input);\n+    log::error!(\"done\");\n+    result\n }",
+    "expected_verdict": false,
+    "reasoning": "The task was to remove duplicated error logging, but the implementation keeps the log::error! call and just deduplicates it. The log statement should likely be removed entirely or changed to an appropriate level. The implementation preserves a spurious error-level log on success paths."
+  },
+  {
+    "id": "gs-020",
+    "task_description": "Add a `Default` derive or impl to `ServerConfig` which uses port 8080 and host `localhost`",
+    "agent_output": "diff --git a/src/config.rs b/src/config.rs\n+impl Default for ServerConfig {\n+    fn default() -> Self {\n+        ServerConfig {\n+            host: \"localhost\".to_string(),\n+            port: 8080,\n+        }\n+    }\n+}",
+    "expected_verdict": true,
+    "reasoning": "Explicit Default impl with exactly the specified values (host=localhost, port=8080). Cannot use #[derive(Default)] because the defaults are non-zero/non-empty, so a manual impl is the right approach."
+  }
+]

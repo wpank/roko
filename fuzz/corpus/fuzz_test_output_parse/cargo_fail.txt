@@ -1,0 +1,3 @@
+running 10 tests
+test foo ... FAILED
+test result: FAILED. 9 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out

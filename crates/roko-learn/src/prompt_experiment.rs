@@ -1431,6 +1431,61 @@ impl ExperimentStore {
     pub fn iter(&self) -> impl Iterator<Item = &PromptExperiment> {
         self.experiments.values()
     }
+
+    /// Force-conclude a running experiment by picking the best-performing active variant.
+    ///
+    /// Returns the winning variant id on success. Errors if the experiment is
+    /// already concluded, not found, or has no active variants with stats.
+    pub fn force_conclude(&mut self, experiment_id: &str) -> io::Result<String> {
+        let exp = self.experiments.get_mut(experiment_id).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("experiment '{experiment_id}' not found"),
+            )
+        })?;
+
+        if exp.status == ExperimentStatus::Concluded {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!(
+                    "experiment '{experiment_id}' is already concluded with winner '{}'",
+                    exp.winner_id.as_deref().unwrap_or("?")
+                ),
+            ));
+        }
+
+        // Pick the active variant with the highest success rate.
+        // Ties are broken by variant id lexicographic order.
+        let active_ids: Vec<String> = exp
+            .variants
+            .iter()
+            .filter(|v| v.active)
+            .map(|v| v.id.clone())
+            .collect();
+
+        let winner_id = active_ids
+            .iter()
+            .filter_map(|id| exp.stats.get(id.as_str()).map(|s| (id, s)))
+            .max_by(|a, b| {
+                a.1.success_rate()
+                    .partial_cmp(&b.1.success_rate())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.0.cmp(b.0))
+            })
+            .map(|(id, _)| id.clone())
+            .or_else(|| active_ids.into_iter().next())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("experiment '{experiment_id}' has no active variants"),
+                )
+            })?;
+
+        exp.status = ExperimentStatus::Concluded;
+        exp.winner_id = Some(winner_id.clone());
+        exp.archive = Some(exp.build_archive());
+        Ok(winner_id)
+    }
 }
 
 impl Default for ExperimentStore {

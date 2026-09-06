@@ -1,4 +1,4 @@
-//! STATUS: NOT WIRED -- built but no non-test runtime caller.
+//! STATUS: PARTIALLY WIRED -- CodingOracle wired into runner event loop (P0-04).
 //!
 //! Domain-specific Oracle implementations.
 //!

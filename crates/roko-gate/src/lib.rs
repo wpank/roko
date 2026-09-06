@@ -69,8 +69,18 @@
 
 pub mod adaptive_threshold;
 
+/// Chaos engineering / fault injection framework for evaluation testing.
+///
+/// Compiled only when the `chaos` feature is enabled. Activate with:
+/// `cargo test -p roko-gate --features chaos`
+/// and set `ROKO_CHAOS_MODE=1` to opt in at runtime.
+#[cfg(feature = "chaos")]
+pub mod chaos;
+
 pub mod acceptance_contract;
 pub mod artifact_store;
+/// Criterion benchmark regression detection: parse JSON output, compare against baselines.
+pub mod benchmark_gate;
 mod cancel_safe_command;
 pub mod clippy_gate;
 pub mod code_exec;
@@ -97,6 +107,7 @@ pub mod graph_cell;
 /// Multi-gate joint anomaly detection via Hotelling's T-squared (GATE-08).
 pub mod hotelling;
 pub mod integration_gate;
+pub mod judge_calibration;
 pub mod llm_judge_gate;
 pub mod payload;
 /// PELT (Pruned Exact Linear Time) offline change point detection (P1-13).
@@ -133,6 +144,7 @@ pub use acceptance_contract::{
 };
 pub use adaptive_threshold::{AdaptiveThresholds, RungStats, TOTAL_RUNGS};
 pub use artifact_store::ArtifactStore;
+pub use benchmark_gate::{BenchmarkComparison, BenchmarkRegressionGate};
 pub use clippy_gate::ClippyGate;
 pub use code_exec::{
     CodeExecutionBackend, CodeExecutionGate, CodeExecutionOutcome, CodeExecutionPayload,

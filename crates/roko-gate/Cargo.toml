@@ -10,6 +10,11 @@ description = "Concrete Gate implementations for Roko: compile, test, lint, symb
 [lints]
 workspace = true
 
+[features]
+## Chaos engineering / fault injection framework for evaluation testing.
+## Activate with `--features chaos` and set `ROKO_CHAOS_MODE=1` at runtime.
+chaos = []
+
 [dependencies]
 roko-core = { path = "../roko-core" }
 roko-agent = { path = "../roko-agent" }
@@ -23,12 +28,14 @@ toml = { workspace = true }
 tracing = { workspace = true }
 tokio-util = { workspace = true }
 libc = "0.2"
+chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
 tokio-util = { workspace = true }
 tempfile = { workspace = true }
 roko-std = { path = "../roko-std" }
+proptest = "1"
 
 [package.metadata.roko]
 layer = 3

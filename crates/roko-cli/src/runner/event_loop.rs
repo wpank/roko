@@ -42,6 +42,8 @@ use roko_gate::{
     PlanComplexity, classify_gate_failure, records_from_classification,
     render_failure_classification,
 };
+use roko_gate::eval_generator::EvalGenerator;
+use roko_learn::oracles::coding::{BuildRecord, CodingOracle, TestRecord};
 use roko_runtime::event_bus::PlanRevisionReason;
 use roko_runtime::run_ledger::{
     TaskTimeoutTerminal as RuntimeTaskTimeoutTerminal, TimeoutEffectKind,
@@ -105,6 +107,7 @@ use super::deadlines::{
 };
 use super::gate_dispatch;
 use super::github_workflow::{GitHubWorkflow, PlanGitHubSummary, TaskGitHubResult};
+use super::promise_tracker::{PromiseDecision, PromiseTracker, snapshot_from_gate_completion};
 use super::merge::{MergeDispatch, MergeLaunch, MergeResolution, PlanMerger, PlanMergerConfig};
 use super::output_sink::{PlanCompleteSummary, RunCompleteSummary, RunOutputSink, TaskCostSummary};
 use super::persist::{self, GateThresholds, PersistPaths};
@@ -1787,6 +1790,9 @@ struct RunContext<'a> {
     /// production service. When `Some`, `spawn_gate` delegates through the
     /// adapter instead of calling `run_gate_once` inline.
     gate_adapter: Option<Arc<gate_dispatch::RunnerProductionGateAdapter>>,
+    /// P0-04: CodingOracle for pre-dispatch predictions and post-gate
+    /// observations. Accumulates build/test patterns across the entire run.
+    coding_oracle: &'a CodingOracle,
 }
 
 #[derive(Debug, Clone)]
@@ -2614,6 +2620,10 @@ pub async fn run_with_tui_commands(
     // standalone `gate-thresholds.json` file.
     let mut gate_obs_since_flush: u64 = 0;
     let gate_threshold_flush_interval = configured_gate_threshold_flush_interval(&config);
+
+    // P0-04: CodingOracle instance — persists across the run, accumulating
+    // build/test observations for predictive gate feedback.
+    let coding_oracle = CodingOracle::new();
 
     // Ensure knowledge store directory exists for episode ingestion.
     let neuro_dir = config.layout.neuro_dir();
@@ -3500,6 +3510,12 @@ pub async fn run_with_tui_commands(
     let mut pending_promotion_candidates: HashMap<TaskAttemptRef, PendingPromotionCandidate> =
         HashMap::new();
     let mut feedback_tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
+
+    // Per-attempt promise trackers for early termination of doomed attempts.
+    // Keyed by attempt key string (plan_id:task_id:attempt). Each tracker
+    // accumulates gate verdicts and terminates when promise stays low for
+    // consecutive turns.
+    let mut promise_trackers: HashMap<String, PromiseTracker> = HashMap::new();
 
     // Per-task trace IDs for the observability trace sink. Each
     // plan_id/task_id combination gets one trace that spans the full
@@ -5210,6 +5226,44 @@ pub async fn run_with_tui_commands(
                     gate_threshold_flush_interval,
                 );
 
+                // ── P0-04: CodingOracle observations ─────────────────────
+                //
+                // Feed each verdict into the CodingOracle so it can refine
+                // its build-time and test-pass-rate predictions. Gate names
+                // containing "compile" map to build observations; those
+                // containing "test" map to test observations.
+                {
+                    let now_ms = chrono::Utc::now().timestamp_millis();
+                    for v in &completion.verdicts {
+                        if v.skipped {
+                            continue;
+                        }
+                        let gate_lower = v.gate_name.to_ascii_lowercase();
+                        if gate_lower.contains("compile") {
+                            coding_oracle.observe_build(BuildRecord {
+                                duration_secs: completion.duration_ms as f64 / 1000.0,
+                                success: v.passed,
+                                warnings: 0,
+                                ts_ms: now_ms,
+                            });
+                        }
+                        if gate_lower.contains("test") {
+                            // Approximate pass/fail from the binary verdict.
+                            let (passed, failed, total) = if v.passed {
+                                (1, 0, 1)
+                            } else {
+                                (0, 1, 1)
+                            };
+                            coding_oracle.observe_test(TestRecord {
+                                passed,
+                                failed,
+                                total,
+                                ts_ms: now_ms,
+                            });
+                        }
+                    }
+                }
+
                 // Publish gate result to the learning event bus so the
                 // background subscriber can update VerdictHistory and
                 // CalibrationPolicy.
@@ -5358,6 +5412,121 @@ pub async fn run_with_tui_commands(
                         }
                         t2_observations.remove(&completion_attempt);
                         reflex_attempted.remove(&completion_attempt);
+                    }
+                }
+
+                // ── ProcessRewardModel: early termination of doomed attempts ──
+                //
+                // Record each gate completion into the per-attempt promise
+                // tracker. If promise stays below threshold for consecutive
+                // turns, force-fail the task instead of retrying or advancing.
+                if completion.kind == GateCompletionKind::Gate {
+                    let attempt_key = completion_attempt.key();
+                    let tracker = promise_trackers
+                        .entry(attempt_key.clone())
+                        .or_insert_with(PromiseTracker::new);
+
+                    let snapshot = snapshot_from_gate_completion(
+                        completion.rung,
+                        &completion.verdicts,
+                        0, // diff_lines not available here; default to 0
+                    );
+                    let decision = tracker.record_and_check(snapshot);
+
+                    if let PromiseDecision::Terminate {
+                        promise,
+                        consecutive_turns,
+                    } = decision
+                    {
+                        let reason = format!(
+                            "early termination: promise {promise:.3} below threshold \
+                             for {consecutive_turns} consecutive gate turns"
+                        );
+                        warn!(
+                            plan_id = %completion.plan_id,
+                            task_id = %completion.task_id,
+                            attempt = completion_attempt.attempt,
+                            promise,
+                            consecutive_turns,
+                            "PRM early termination — abandoning doomed attempt"
+                        );
+                        promise_trackers.remove(&attempt_key);
+
+                        let phase_durations = runtime_task_phase_durations(
+                            &task_runtime_states,
+                            &completion_attempt,
+                            Instant::now(),
+                        );
+                        let pending_terminal = PendingTerminal::attempt(
+                            TaskAttemptOutcome::Failed,
+                            Some(RunnerFailureKind::Permanent),
+                            phase_durations,
+                            Some(&reason),
+                            None,
+                        );
+                        if persist_attempt_terminal(
+                            &paths,
+                            &mut state,
+                            &tui,
+                            config,
+                            &completion_attempt,
+                            TaskAttemptOutcome::Failed,
+                            Some(RunnerFailureKind::Permanent),
+                            phase_durations,
+                            Some(&reason),
+                            None,
+                        )
+                        .is_ok()
+                        {
+                            finish_gate_claim(
+                                &mut attempt_ownership,
+                                &mut owned_gate_claim,
+                                false,
+                            );
+                            state.mark_task_failed(
+                                &completion.plan_id,
+                                &completion.task_id,
+                            );
+                            task_dag.clear_running(
+                                &completion.plan_id,
+                                &completion.task_id,
+                            );
+                            let task_refs = task_refs_for_plan(
+                                &task_index,
+                                &completion.plan_id,
+                            );
+                            let skipped = task_dag.mark_failed_blocking_downstream(
+                                &completion.plan_id,
+                                &completion.task_id,
+                                &task_refs,
+                            );
+                            if !skipped.is_empty() {
+                                debug!(
+                                    plan_id = %completion.plan_id,
+                                    skipped = ?skipped,
+                                    "PRM termination skipped downstream tasks"
+                                );
+                            }
+                            sink.task_failed(
+                                &completion.plan_id,
+                                &completion.task_id,
+                                &reason,
+                            );
+                            cleanup_finished_task_gate(
+                                &mut pending_gate_tasks,
+                                &mut task_runtime_states,
+                                &mut executor,
+                                &completion,
+                            );
+                        } else {
+                            retain_gate_claim_after_persistence_failure(
+                                &mut attempt_ownership,
+                                &mut owned_gate_claim,
+                                reason,
+                                pending_terminal,
+                            );
+                        }
+                        continue;
                     }
                 }
 
@@ -5556,6 +5725,8 @@ pub async fn run_with_tui_commands(
                     }
                 } else if completion.passed {
                     state.clear_retry_backoff(&completion.plan_id);
+                    // Clean up promise tracker on terminal pass.
+                    promise_trackers.remove(&completion_attempt.key());
                     // WarmPool: on gate pass, try to promote a pre-spawned
                     // agent for the next phase. If a warm slot exists it is
                     // consumed here; otherwise the dispatcher cold-spawns as
@@ -5835,6 +6006,8 @@ pub async fn run_with_tui_commands(
                         }
                     }
                 } else {
+                    // Clean up promise tracker on terminal failure.
+                    promise_trackers.remove(&completion_attempt.key());
                     // WarmPool: gate failed — evict stale pre-spawned agents.
                     // No point keeping a reviewer warm if we're replanning.
                     {
@@ -6419,6 +6592,7 @@ pub async fn run_with_tui_commands(
                             )
                         }),
                         gate_adapter: Some(Arc::new(gate_dispatch::default_gate_adapter())),
+                        coding_oracle: &coding_oracle,
                     };
                     let dispatch_outcome = dispatch_action(&action, &mut ctx).await;
                     if wake_driven_scheduler
@@ -13516,6 +13690,67 @@ async fn dispatch_action(
                         .complete_claim(dispatch_claim)
                         .expect("safety rejection must release ownership");
                     return ActionDispatchOutcome::Handled;
+                }
+            }
+
+            // ── P0-02: Pre-dispatch eval generation ──────────────────────
+            //
+            // Generate targeted evaluation test cases from the task spec and
+            // write them to `<plan_workdir>/generated-tests/` so the
+            // GeneratedTestGate (Rung 3) can discover them via
+            // FsGeneratedArtifactStore. Only for tier >= Standard (skip
+            // mechanical/trivial tasks where generated evals add no value).
+            {
+                let tier = task_def.tier.as_str();
+                let is_standard_or_above =
+                    !matches!(tier, "mechanical" | "trivial");
+                if is_standard_or_above {
+                    let target_crates =
+                        crate::task_helpers::task_target_crates(Some(&task_def));
+                    let primary_crate = target_crates
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| "roko-cli".to_string());
+                    let generator = EvalGenerator::new();
+                    let evals = generator.generate_all(
+                        &task_def.title,
+                        &primary_crate,
+                        &task_def.files,
+                    );
+                    if !evals.is_empty() {
+                        let gen_dir = plan_workdir.join("generated-tests");
+                        if let Err(err) = std::fs::create_dir_all(&gen_dir) {
+                            warn!(
+                                plan_id = %plan_id,
+                                task = %task_id,
+                                error = %err,
+                                "failed to create generated-tests dir (non-fatal)"
+                            );
+                        } else {
+                            for eval in &evals {
+                                let file_name = format!("{}.rs", eval.name);
+                                let file_path = gen_dir.join(&file_name);
+                                if let Err(err) =
+                                    std::fs::write(&file_path, &eval.test_source)
+                                {
+                                    warn!(
+                                        plan_id = %plan_id,
+                                        task = %task_id,
+                                        file = %file_name,
+                                        error = %err,
+                                        "failed to write generated eval (non-fatal)"
+                                    );
+                                }
+                            }
+                            debug!(
+                                plan_id = %plan_id,
+                                task = %task_id,
+                                count = evals.len(),
+                                crate_name = %primary_crate,
+                                "wrote generated evaluations for Rung 3"
+                            );
+                        }
+                    }
                 }
             }
 
@@ -22524,6 +22759,7 @@ slug = "fixture-model"
             github_workflow: &github_workflow,
             dispatch_deadline: None,
             gate_adapter: None,
+            coding_oracle: &CodingOracle::new(),
         };
         let action = ExecutorAction::SpawnAgent {
             plan_id: "plan".to_string(),
@@ -22768,6 +23004,7 @@ slug = "fixture-model"
                 github_workflow: &github_workflow,
                 dispatch_deadline: None,
                 gate_adapter: None,
+                coding_oracle: &CodingOracle::new(),
             };
             dispatch_action(
                 &ExecutorAction::SpawnAgent {

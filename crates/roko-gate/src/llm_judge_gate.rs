@@ -30,8 +30,11 @@
 use async_trait::async_trait;
 use roko_core::{Context, Signal, Verdict, Verify};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
+
+use crate::judge_calibration::{CalibrationRecord, append_calibration_record, now_unix_secs};
 
 /// A minimal, `Agent`-agnostic oracle interface the judge delegates to.
 ///
@@ -75,6 +78,12 @@ pub struct LlmJudgeGate {
     non_blocking: bool,
     max_diff_bytes: usize,
     name: String,
+    /// Optional path for appending per-decision calibration records.
+    ///
+    /// When set, every `verify()` call appends a [`CalibrationRecord`] to this
+    /// JSONL file. Errors are logged via `tracing::warn` but never propagate
+    /// to the caller. Typically set to `.roko/learn/judge-calibration.jsonl`.
+    calibration_log: Option<PathBuf>,
 }
 
 impl LlmJudgeGate {
@@ -96,7 +105,22 @@ impl LlmJudgeGate {
             non_blocking: true,
             max_diff_bytes: Self::DEFAULT_MAX_DIFF_BYTES,
             name: "llm_judge".to_string(),
+            calibration_log: None,
         }
+    }
+
+    /// Set the path where per-decision calibration records are appended.
+    ///
+    /// Each `verify()` call will append a JSONL record to `path` with fields:
+    /// `task_id`, `verdict`, `confidence`, `output_length`, `timestamp`.
+    /// Write errors are logged with `tracing::warn` and never surfaced as
+    /// verdict failures.
+    ///
+    /// Typically called with `.roko/learn/judge-calibration.jsonl`.
+    #[must_use]
+    pub fn with_calibration_log(mut self, path: impl Into<PathBuf>) -> Self {
+        self.calibration_log = Some(path.into());
+        self
     }
 
     /// Switch the gate from advisory (default) to hard-stop mode.
@@ -178,6 +202,21 @@ impl LlmJudgeGate {
         out
     }
 
+    /// Append a [`CalibrationRecord`] to the configured log path, if set.
+    ///
+    /// Write errors are logged via `tracing::warn` and never propagate.
+    fn append_calibration(&self, record: CalibrationRecord) {
+        if let Some(path) = &self.calibration_log
+            && let Err(e) = append_calibration_record(path, &record)
+        {
+            tracing::warn!(
+                path = %path.display(),
+                task_id = %record.task_id,
+                "judge calibration log write failed: {e}"
+            );
+        }
+    }
+
     /// Assemble the prompt sent to the oracle. Pure, cheap to test.
     fn build_prompt(payload: &JudgePayload, max_diff_bytes: usize) -> String {
         let diff = Self::truncate_diff(&payload.diff, max_diff_bytes);
@@ -217,12 +256,22 @@ impl Verify for LlmJudgeGate {
             return Verdict::fail(&self.name, "no diff to judge").with_duration(elapsed(started));
         }
 
+        let output_length = payload.diff.len();
         let prompt = Self::build_prompt(&payload, self.max_diff_bytes);
+
+        // Use the task_description as the task_id when available; fall back
+        // to the signal body length as a cheap unique-ish identifier.
+        let task_id = if payload.task_description.is_empty() {
+            format!("len:{output_length}")
+        } else {
+            // Truncate to 128 chars so the JSONL stays readable.
+            payload.task_description.chars().take(128).collect()
+        };
 
         let verdict = match self.oracle.judge(&prompt).await {
             Ok(raw_score) => {
                 let score = raw_score.clamp(0.0, 1.0);
-                if score >= self.min_score {
+                let v = if score >= self.min_score {
                     Verdict::pass(&self.name).with_score(score)
                 } else {
                     Verdict::fail(
@@ -231,14 +280,37 @@ impl Verify for LlmJudgeGate {
                     )
                     .with_score(score)
                     .with_error_digest(format!("judge score={score:.3}"))
-                }
+                };
+                self.append_calibration(CalibrationRecord {
+                    task_id,
+                    verdict: v.passed,
+                    confidence: score,
+                    output_length,
+                    timestamp: now_unix_secs(),
+                });
+                v
             }
             Err(err) => {
                 if self.non_blocking {
-                    Verdict::pass(&self.name)
+                    let v = Verdict::pass(&self.name)
                         .with_detail(format!("judge unavailable: {err}"))
-                        .with_score(self.min_score)
+                        .with_score(self.min_score);
+                    self.append_calibration(CalibrationRecord {
+                        task_id,
+                        verdict: true,
+                        confidence: self.min_score,
+                        output_length,
+                        timestamp: now_unix_secs(),
+                    });
+                    v
                 } else {
+                    self.append_calibration(CalibrationRecord {
+                        task_id,
+                        verdict: false,
+                        confidence: 0.0,
+                        output_length,
+                        timestamp: now_unix_secs(),
+                    });
                     Verdict::fail(&self.name, format!("judge error: {err}"))
                 }
             }

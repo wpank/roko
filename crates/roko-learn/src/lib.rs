@@ -127,6 +127,8 @@ pub mod runtime_feedback;
 pub mod section_effect;
 /// Prompt/context section outcome telemetry for future adaptive policy.
 pub mod section_outcome;
+/// Shadow testing loop (Loop 12) — runs alternative configs alongside production tasks for A/B comparison.
+pub mod shadow;
 pub mod skill_library;
 pub mod task_metric;
 /// Verdict-aware scoring and routing history for gate-verdict re-entry (GATE-05).
@@ -134,5 +136,13 @@ pub mod verdict_scorer;
 /// Write-Ahead Log for crash-safe learning state persistence.
 pub mod wal;
 
+/// Gate gaming detector — flags rising pass rates paired with falling quality.
+pub mod gate_gaming;
+
+/// Holdout experiment infrastructure for detecting overfitting in learned routing.
+pub mod holdout;
+
 pub use error::LearnError;
 pub use feedback_service::{FeedbackService, KnowledgeOutcome};
+pub use gate_gaming::{GamingAlert, GamingObservation, GateGamingDetector};
+pub use holdout::{HoldoutExperiment, OverfittingAlert, Partition, RollingMetrics};

@@ -1,0 +1,1 @@
+{"title":"Implement login","description":"Add JWT-based authentication","symbols":["authenticate","login_handler"],"acceptance":["Returns 200 on valid credentials","Returns 401 on invalid credentials"]}

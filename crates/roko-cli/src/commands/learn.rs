@@ -34,13 +34,23 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
     let wd_for_lock = match &cmd {
         LearnCmd::All { workdir }
         | LearnCmd::Route { workdir }
-        | LearnCmd::Experiments { workdir, .. }
         | LearnCmd::Efficiency { workdir, .. }
         | LearnCmd::Episodes { workdir, .. }
         | LearnCmd::Reflexes { workdir }
         | LearnCmd::Gates { workdir }
         | LearnCmd::KnowledgeStats { workdir } => {
             workdir.clone().unwrap_or_else(|| resolve_workdir(cli))
+        }
+        LearnCmd::Experiments { workdir, cmd: sub } => {
+            // Use workdir from outer flag, or from the inner subcommand, or cwd.
+            let outer = workdir.clone();
+            let inner = sub.as_ref().and_then(|s| match s {
+                ExperimentsSubCmd::List { workdir, .. }
+                | ExperimentsSubCmd::Create { workdir, .. }
+                | ExperimentsSubCmd::Conclude { workdir, .. }
+                | ExperimentsSubCmd::Report { workdir, .. } => workdir.clone(),
+            });
+            outer.or(inner).unwrap_or_else(|| resolve_workdir(cli))
         }
         LearnCmd::Inspect { subsystem } => inspect_workdir(cli, subsystem),
         LearnCmd::Tune { workdir, .. } => workdir.clone().unwrap_or_else(|| resolve_workdir(cli)),
@@ -65,12 +75,34 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
                 cmd_learn(&wd, "router").await
             }
         }
-        LearnCmd::Experiments { workdir, .. } => {
-            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-            if json {
-                cmd_learn_json(&wd, "experiments").await
-            } else {
-                cmd_learn(&wd, "experiments").await
+        LearnCmd::Experiments { workdir, cmd: sub } => {
+            let outer_wd = workdir;
+            match sub {
+                // No subcommand → default to list (backward-compatible).
+                None => {
+                    let wd = outer_wd.unwrap_or_else(|| resolve_workdir(cli));
+                    if json {
+                        cmd_learn_json(&wd, "experiments").await
+                    } else {
+                        cmd_experiments_list(&wd, None).await
+                    }
+                }
+                Some(ExperimentsSubCmd::List { workdir, limit }) => {
+                    let wd = outer_wd.or(workdir).unwrap_or_else(|| resolve_workdir(cli));
+                    cmd_experiments_list(&wd, limit).await
+                }
+                Some(ExperimentsSubCmd::Create { workdir, name, section, variants }) => {
+                    let wd = outer_wd.or(workdir).unwrap_or_else(|| resolve_workdir(cli));
+                    cmd_experiments_create(&wd, &name, &section, &variants)
+                }
+                Some(ExperimentsSubCmd::Conclude { workdir, name }) => {
+                    let wd = outer_wd.or(workdir).unwrap_or_else(|| resolve_workdir(cli));
+                    cmd_experiments_conclude(&wd, &name)
+                }
+                Some(ExperimentsSubCmd::Report { workdir, name }) => {
+                    let wd = outer_wd.or(workdir).unwrap_or_else(|| resolve_workdir(cli));
+                    cmd_experiments_report(&wd, &name)
+                }
             }
         }
         LearnCmd::Efficiency { workdir, .. } => {
@@ -1016,6 +1048,299 @@ pub(crate) fn print_learn_experiments(workdir: &std::path::Path) {
     } else {
         println!("Model experiments: none");
     }
+}
+
+// ── Experiments subcommands ──────────────────────────────────────────
+
+/// `roko learn experiments list` — tabular view of all prompt experiments.
+#[allow(clippy::cast_precision_loss)]
+async fn cmd_experiments_list(workdir: &std::path::Path, limit: Option<u32>) -> Result<i32> {
+    let prompt_path = learn_root(workdir).join("experiments.json");
+    let store = ExperimentStore::load_or_new(&prompt_path);
+
+    let mut experiments: Vec<_> = store.iter().collect();
+    // Sort by experiment_id for deterministic output.
+    experiments.sort_by(|a, b| a.experiment_id.cmp(&b.experiment_id));
+    if let Some(n) = limit {
+        experiments.truncate(n as usize);
+    }
+
+    if experiments.is_empty() {
+        println!("No experiments found at {}", prompt_path.display());
+        return Ok(EXIT_SUCCESS);
+    }
+
+    // Column widths — derive from data.
+    let name_w = experiments
+        .iter()
+        .map(|e| e.experiment_id.len())
+        .max()
+        .unwrap_or(4)
+        .max(4);
+    let section_w = experiments
+        .iter()
+        .map(|e| e.section_name.len())
+        .max()
+        .unwrap_or(7)
+        .max(7);
+
+    println!(
+        "{:<name_w$}  {:<section_w$}  {:>8}  {:>12}  {:>12}  {:>8}  {:>10}",
+        "Name", "Section", "Status", "Variants", "Observations", "Best", "Win Rate",
+        name_w = name_w,
+        section_w = section_w,
+    );
+    println!(
+        "{:-<name_w$}  {:-<section_w$}  {:->8}  {:->12}  {:->12}  {:->8}  {:->10}",
+        "", "", "", "", "", "", "",
+        name_w = name_w,
+        section_w = section_w,
+    );
+
+    for exp in &experiments {
+        let status = match exp.status {
+            roko_learn::prompt_experiment::ExperimentStatus::Running => "running",
+            roko_learn::prompt_experiment::ExperimentStatus::Concluded => "concluded",
+        };
+        let variants_count = exp.variants.len();
+        let total_obs: u64 = exp.stats.values().map(|s| s.trials).sum();
+        let best_variant = exp
+            .winner_id
+            .as_deref()
+            .or_else(|| {
+                exp.stats
+                    .iter()
+                    .max_by(|a, b| {
+                        a.1.success_rate()
+                            .partial_cmp(&b.1.success_rate())
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .map(|(id, _)| id.as_str())
+            })
+            .unwrap_or("-");
+        let win_rate = exp
+            .winner_id
+            .as_deref()
+            .and_then(|id| exp.stats.get(id))
+            .map(|s| format!("{:.1}%", s.success_rate() * 100.0))
+            .unwrap_or_else(|| "-".to_string());
+
+        println!(
+            "{:<name_w$}  {:<section_w$}  {:>8}  {:>12}  {:>12}  {:>8}  {:>10}",
+            exp.experiment_id,
+            exp.section_name,
+            status,
+            variants_count,
+            total_obs,
+            best_variant,
+            win_rate,
+            name_w = name_w,
+            section_w = section_w,
+        );
+    }
+
+    Ok(EXIT_SUCCESS)
+}
+
+/// `roko learn experiments create` — register a new prompt experiment.
+fn cmd_experiments_create(
+    workdir: &std::path::Path,
+    name: &str,
+    section: &str,
+    variants_csv: &str,
+) -> Result<i32> {
+    use roko_learn::prompt_experiment::{PromptExperiment, PromptVariant};
+
+    let variant_ids: Vec<&str> = variants_csv.split(',').map(str::trim).collect();
+    if variant_ids.len() < 2 {
+        anyhow::bail!("at least two comma-separated variants are required (got: {variants_csv:?})");
+    }
+    if variant_ids.iter().any(|id| id.is_empty()) {
+        anyhow::bail!("variant ids must not be empty (got: {variants_csv:?})");
+    }
+
+    let variants: Vec<PromptVariant> = variant_ids
+        .iter()
+        .map(|id| PromptVariant {
+            id: id.to_string(),
+            name: id.to_string(),
+            section_name: section.to_string(),
+            content: String::new(),
+            slug: None,
+            active: true,
+        })
+        .collect();
+
+    let experiment = PromptExperiment::new(name, section, variants);
+
+    let prompt_path = learn_root(workdir).join("experiments.json");
+
+    // Ensure parent directory exists.
+    if let Some(parent) = prompt_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    ExperimentStore::transaction(&prompt_path, |store| {
+        if store.get(name).is_some() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("experiment '{name}' already exists"),
+            ));
+        }
+        store.register(experiment.clone());
+        Ok(())
+    })
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    println!(
+        "Created experiment '{}' for section '{}' with variants: {}",
+        name,
+        section,
+        variant_ids.join(", ")
+    );
+
+    Ok(EXIT_SUCCESS)
+}
+
+/// `roko learn experiments conclude` — force-conclude an experiment by picking the best variant.
+fn cmd_experiments_conclude(workdir: &std::path::Path, name: &str) -> Result<i32> {
+    let prompt_path = learn_root(workdir).join("experiments.json");
+
+    let winner_id =
+        ExperimentStore::transaction(&prompt_path, |store| store.force_conclude(name))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    println!("Concluded experiment '{name}' — winner: {winner_id}");
+
+    Ok(EXIT_SUCCESS)
+}
+
+/// `roko learn experiments report` — detailed statistical report for one experiment.
+#[allow(clippy::cast_precision_loss)]
+fn cmd_experiments_report(workdir: &std::path::Path, name: &str) -> Result<i32> {
+    use roko_learn::prompt_experiment::{ExperimentStatus, chi_squared_test};
+
+    let prompt_path = learn_root(workdir).join("experiments.json");
+    let store = ExperimentStore::load_or_new(&prompt_path);
+
+    let exp = store
+        .get(name)
+        .ok_or_else(|| anyhow::anyhow!("experiment '{name}' not found at {}", prompt_path.display()))?;
+
+    println!("Experiment: {}", exp.experiment_id);
+    println!("  Section:  {}", exp.section_name);
+    println!(
+        "  Status:   {:?}",
+        match exp.status {
+            ExperimentStatus::Running => "running",
+            ExperimentStatus::Concluded => "concluded",
+        }
+    );
+    if let Some(winner) = &exp.winner_id {
+        println!("  Winner:   {winner}");
+    }
+
+    let total_trials: u64 = exp.stats.values().map(|s| s.trials).sum();
+    println!("  Total observations: {total_trials}");
+    println!();
+
+    // Sort variants by success rate descending.
+    let mut rows: Vec<_> = exp
+        .variants
+        .iter()
+        .map(|v| {
+            let stats = exp.stats.get(&v.id).cloned().unwrap_or_default();
+            (v, stats)
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        b.1.success_rate()
+            .partial_cmp(&a.1.success_rate())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // Header
+    println!(
+        "  {:<20}  {:>8}  {:>9}  {:>8}  {:>18}",
+        "Variant", "Trials", "Successes", "Win Rate", "95% CI (Wilson)"
+    );
+    println!(
+        "  {:-<20}  {:->8}  {:->9}  {:->8}  {:->18}",
+        "", "", "", "", ""
+    );
+
+    for (variant, stats) in &rows {
+        let rate = stats.success_rate();
+        let (ci_lo, ci_hi) = {
+            if stats.trials == 0 {
+                (0.0_f64, 0.0_f64)
+            } else {
+                let n = stats.trials as f64;
+                let p = rate;
+                let z = 1.96_f64;
+                let z_sq = z * z;
+                let denom = 1.0 + z_sq / n;
+                let center = (p + z_sq / (2.0 * n)) / denom;
+                let margin =
+                    (z / denom) * ((p * (1.0 - p) / n + z_sq / (4.0 * n * n)).sqrt());
+                (
+                    (center - margin).clamp(0.0, 1.0),
+                    (center + margin).clamp(0.0, 1.0),
+                )
+            }
+        };
+        let winner_marker = if exp.winner_id.as_deref() == Some(&variant.id) {
+            " *"
+        } else {
+            ""
+        };
+        println!(
+            "  {:<20}  {:>8}  {:>9}  {:>7.1}%  [{:.3}, {:.3}]{}",
+            variant.id,
+            stats.trials,
+            stats.successes,
+            rate * 100.0,
+            ci_lo,
+            ci_hi,
+            winner_marker,
+        );
+    }
+
+    // Chi-squared test between the top two variants, if enough data.
+    if rows.len() >= 2 && total_trials >= 10 {
+        println!();
+        let (v1, s1) = &rows[0];
+        let (v2, s2) = &rows[1];
+        let (chi_sq, p_value) = chi_squared_test(s1, s2);
+        let effect_size = (s1.success_rate() - s2.success_rate()).abs();
+        // Cohen's h for two proportions.
+        let cohens_h = 2.0
+            * (s1.success_rate().sqrt().asin() - s2.success_rate().sqrt().asin()).abs();
+        println!("  Chi-squared test ({} vs {}):", v1.id, v2.id);
+        println!("    statistic = {chi_sq:.4}");
+        println!("    p-value   = {p_value:.4} {}", if p_value < 0.05 { "(significant at alpha=0.05)" } else { "(not significant)" });
+        println!("    effect size (|Δ win rate|) = {effect_size:.4}");
+        println!("    Cohen's h = {cohens_h:.4}");
+    } else if rows.len() < 2 {
+        println!();
+        println!("  (only one variant — chi-squared test not applicable)");
+    } else {
+        println!();
+        println!("  (fewer than 10 total observations — statistical test not yet reliable)");
+    }
+
+    // Archived stats, if concluded.
+    if let Some(archive) = &exp.archive {
+        println!();
+        println!(
+            "  Concluded at: {}",
+            archive.concluded_at.to_rfc3339()
+        );
+        println!("  Archive p-value:    {:.4}", archive.p_value);
+        println!("  Archive effect size: {:.4}", archive.effect_size);
+    }
+
+    Ok(EXIT_SUCCESS)
 }
 
 #[allow(clippy::cast_precision_loss)]

@@ -70,6 +70,7 @@ use crate::cascade::types::{
 use crate::cfactor::{AgentDispatchBias, CFactor};
 use crate::latency::LatencyTracker;
 use crate::model_experiment::ModelExperimentStore;
+use crate::verdict_scorer::{VerdictHistory, VerdictRecord};
 use crate::model_router::{
     CONTEXT_DIM, CandidateArmScore, LinUCBRouter, RoutingContext, compute_routing_reward_v2,
 };
@@ -106,6 +107,17 @@ pub struct CascadeRouter {
     category_stats: Mutex<HashMap<(String, TaskCategory), CategoryModelStats>>,
     /// Optional free-tier Gemini runner used for shadow evaluation.
     free_tier_shadow_runner: Option<Arc<dyn ShadowModelRunner>>,
+    /// Rolling history of gate verdict outcomes, keyed by model.
+    ///
+    /// Populated via [`Self::record_verdict`] at task completion and blended
+    /// into UCB and Confidence stage scores during selection.
+    verdict_history: Mutex<VerdictHistory>,
+    /// Blend weight for verdict quality in arm selection [0.0, 1.0].
+    ///
+    /// `final_score = (1 - verdict_blend_weight) * ucb_score + verdict_blend_weight * verdict_quality`
+    ///
+    /// Default: 0.2.
+    verdict_blend_weight: f32,
 }
 
 impl std::fmt::Debug for CascadeRouter {
@@ -186,6 +198,8 @@ impl CascadeRouter {
             }),
             category_stats: Mutex::new(HashMap::new()),
             free_tier_shadow_runner: None,
+            verdict_history: Mutex::new(VerdictHistory::new()),
+            verdict_blend_weight: 0.2,
         }
     }
 
@@ -259,6 +273,50 @@ impl CascadeRouter {
     pub fn with_free_tier_shadow_runner(mut self, runner: Arc<dyn ShadowModelRunner>) -> Self {
         self.free_tier_shadow_runner = Some(runner);
         self
+    }
+
+    /// Set the blend weight used when mixing verdict quality into arm scores.
+    ///
+    /// `weight` must be in `[0.0, 1.0]`.  0.0 disables verdict blending entirely
+    /// and falls back to pure UCB/Confidence scores.  Default is 0.2.
+    #[must_use]
+    pub fn with_verdict_blend_weight(mut self, weight: f32) -> Self {
+        self.verdict_blend_weight = weight.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Record a gate verdict outcome for verdict-quality routing.
+    ///
+    /// Call this after each task completes and a gate verdict is available.
+    /// The recorded history is blended into UCB and Confidence stage scores
+    /// during the next arm selection so that models with recent pass streaks
+    /// are preferred over models with compile-failure streaks.
+    pub fn record_verdict(
+        &self,
+        model_slug: impl Into<String>,
+        task_type: impl Into<String>,
+        target_crate: impl Into<String>,
+        gate: impl Into<String>,
+        passed: bool,
+    ) {
+        let model_slug = model_slug.into();
+        let gate_name = gate.into();
+        let record = VerdictRecord {
+            model_slug: model_slug.clone(),
+            task_type: task_type.into(),
+            target_crate: target_crate.into(),
+            gate: gate_name.clone(),
+            passed,
+            timestamp_ms: chrono::Utc::now().timestamp_millis(),
+        };
+        self.verdict_history.lock().record(record);
+
+        tracing::debug!(
+            model = %model_slug,
+            gate = %gate_name,
+            passed,
+            "cascade router: verdict recorded"
+        );
     }
 
     /// Determine the current cascade stage based on total observations.
@@ -2526,13 +2584,42 @@ impl CascadeRouter {
             *score += CATEGORY_CONFIDENCE_WEIGHT * delta;
         }
 
+        // Blend verdict-quality scores so that models with recent gate pass
+        // streaks are preferred in the Confidence stage, mirroring the UCB-stage
+        // treatment in `select_ucb_model`.
+        self.apply_verdict_blend(&mut scores);
+
         apply_cache_affinity(&mut scores, ctx.previous_model.as_deref());
         scores
     }
 
+    /// Blend verdict-quality scores into a candidate score list in place.
+    ///
+    /// For each candidate slug, the verdict quality [0.0, 1.0] is fetched from
+    /// the rolling verdict history and the final score is computed as:
+    ///
+    /// ```text
+    /// blended = (1 - w) * base_score + w * verdict_quality
+    /// ```
+    ///
+    /// where `w = self.verdict_blend_weight`.  When `w == 0.0` or the history
+    /// is empty for a model the scores are left unchanged.
+    fn apply_verdict_blend(&self, scores: &mut [(String, f64)]) {
+        let w = self.verdict_blend_weight;
+        if w == 0.0 {
+            return;
+        }
+        let history = self.verdict_history.lock();
+        for (slug, score) in scores.iter_mut() {
+            let quality = history.verdict_quality_for_model(slug, 20) as f64;
+            *score = (1.0 - w as f64) * (*score) + w as f64 * quality;
+        }
+    }
+
     fn select_ucb_model(&self, ctx: &RoutingContext, candidates: &[String]) -> ModelSpec {
         let frontier = self.current_pareto_frontier();
-        let scores = self.ucb_scores(ctx, candidates, frontier.as_deref());
+        let mut scores = self.ucb_scores(ctx, candidates, frontier.as_deref());
+        self.apply_verdict_blend(&mut scores);
         let best_slug = select_with_hysteresis(&scores, ctx.previous_model.as_deref());
         ModelSpec::from_slug(best_slug)
     }

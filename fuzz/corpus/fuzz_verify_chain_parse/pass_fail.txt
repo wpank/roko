@@ -1,0 +1,7 @@
+[compile] PASS
+[test] running 5 tests
+test result: ok. 5 passed; 0 failed
+[test] PASS
+[lint] FAIL
+error: unused variable `x`
+[lint] FAIL

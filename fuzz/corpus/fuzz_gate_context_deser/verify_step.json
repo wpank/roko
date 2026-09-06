@@ -1,0 +1,1 @@
+{"phase":"compile","command":"cargo build","fail_msg":"build failed","timeout_ms":60000}

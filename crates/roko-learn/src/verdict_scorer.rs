@@ -1,5 +1,3 @@
-//! STATUS: NOT WIRED -- called internally by floating code but no runtime entrypoint.
-//!
 //! VerdictAwareScorer — weights gate verdict signals by recency and severity (GATE-05).
 //!
 //! This scorer implements the `ScoreFn` trait from `roko-core` and specifically
@@ -322,6 +320,48 @@ impl VerdictHistory {
 
         let failures = model_records.iter().filter(|r| !r.passed).count();
         failures as f64 / model_records.len() as f64
+    }
+
+    /// Compute a quality score [0.0, 1.0] for a model from its recent verdict history.
+    ///
+    /// Quality is the exponentially-decayed weighted pass rate over the last `window`
+    /// records for the model.  Passed verdicts contribute 1.0 and failed verdicts
+    /// contribute 0.0.  A half-life of 5 minutes is used so that recent verdicts
+    /// dominate.  Returns 0.5 when the model has no recorded verdicts (neutral).
+    #[must_use]
+    pub fn verdict_quality_for_model(&self, model_slug: &str, window: usize) -> f32 {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        const HALF_LIFE_MS: f64 = 300_000.0; // 5 minutes
+
+        let model_records: Vec<&VerdictRecord> = self
+            .records
+            .iter()
+            .rev()
+            .filter(|r| r.model_slug == model_slug)
+            .take(window)
+            .collect();
+
+        if model_records.is_empty() {
+            return 0.5; // Neutral — no verdict history for this model.
+        }
+
+        let mut weight_sum = 0.0_f64;
+        let mut weighted_pass = 0.0_f64;
+
+        for record in &model_records {
+            let age_ms = (now_ms - record.timestamp_ms).max(0) as f64;
+            let decay = (-age_ms * (2.0_f64.ln()) / HALF_LIFE_MS).exp();
+            weight_sum += decay;
+            if record.passed {
+                weighted_pass += decay;
+            }
+        }
+
+        if weight_sum == 0.0 {
+            return 0.5;
+        }
+
+        (weighted_pass / weight_sum) as f32
     }
 
     /// Total number of recorded verdicts.

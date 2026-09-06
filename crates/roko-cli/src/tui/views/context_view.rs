@@ -76,6 +76,7 @@ pub(crate) fn render(
         5 => render_three_panel_inspect(frame, area, tui_state, theme),
         6 => render_cfactor_detail(frame, area, tui_state, theme),
         7 => render_dream_view(frame, area, tui_state, theme),
+        8 => render_knowledge_health(frame, area, tui_state, theme),
         _ => {
             let ctx_data = build_context_data(tui_state);
             render_with_context_data(
@@ -2782,4 +2783,119 @@ mod tests {
         assert_eq!(format_dag_timestamp(0), "--:--:--");
         assert_eq!(format_dag_timestamp(-1), "--:--:--");
     }
+}
+
+// ─── P2-32: Knowledge health surface widget ─────────────────────────
+
+/// Render the knowledge health sub-view (sub_tab 8).
+///
+/// Reads `.roko/knowledge.jsonl` and computes tier distribution, average
+/// balance, anti-knowledge count, and heuristic calibration stats.
+#[allow(clippy::cast_precision_loss)]
+fn render_knowledge_health(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    tui_state: &TuiState,
+    theme: &Theme,
+) {
+    let block = Block::bordered()
+        .title(Span::styled(" Knowledge Health ", theme.accent()))
+        .border_style(theme.accent());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height < 3 || inner.width < 20 {
+        return;
+    }
+
+    let knowledge_path = tui_state.workdir.join(".roko").join("knowledge.jsonl");
+    let text = std::fs::read_to_string(&knowledge_path).unwrap_or_default();
+
+    let mut transient = 0_u64;
+    let mut working = 0_u64;
+    let mut consolidated = 0_u64;
+    let mut persistent = 0_u64;
+    let mut anti_knowledge = 0_u64;
+    let mut frozen = 0_u64;
+    let mut total_balance = 0.0_f64;
+    let mut balance_count = 0_u64;
+    let mut calibrated = 0_u64;
+    let mut total = 0_u64;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(entry) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+            continue;
+        };
+        total += 1;
+        let tier = entry.get("tier").and_then(|v| v.as_str()).unwrap_or("transient");
+        match tier {
+            "transient" => transient += 1,
+            "working" => working += 1,
+            "consolidated" => consolidated += 1,
+            "persistent" => persistent += 1,
+            _ => transient += 1,
+        }
+        if entry.get("anti_knowledge").and_then(|v| v.as_bool()).unwrap_or(false) {
+            anti_knowledge += 1;
+        }
+        if entry.get("frozen").and_then(|v| v.as_bool()).unwrap_or(false) {
+            frozen += 1;
+        }
+        if let Some(balance) = entry.get("balance").and_then(|v| v.as_f64()) {
+            total_balance += balance;
+            balance_count += 1;
+        }
+        if entry.get("heuristic_calibration").and_then(|v| v.as_f64()).is_some() {
+            calibrated += 1;
+        }
+    }
+
+    let avg_balance = if balance_count > 0 { total_balance / balance_count as f64 } else { 0.0 };
+
+    let items = vec![
+        ListItem::new(Line::from(vec![
+            Span::styled("Total entries: ", theme.label()),
+            Span::styled(total.to_string(), Style::default().fg(theme.foreground)),
+        ])),
+        ListItem::new(Line::from(vec![
+            Span::styled("Tier distribution: ", theme.label()),
+            Span::styled(
+                format!("T={transient} W={working} C={consolidated} P={persistent}"),
+                Style::default().fg(theme.foreground),
+            ),
+        ])),
+        ListItem::new(Line::from(vec![
+            Span::styled("Anti-knowledge: ", theme.label()),
+            Span::styled(
+                anti_knowledge.to_string(),
+                if anti_knowledge > 0 {
+                    Style::default().fg(theme.warning)
+                } else {
+                    Style::default().fg(theme.foreground)
+                },
+            ),
+        ])),
+        ListItem::new(Line::from(vec![
+            Span::styled("Frozen: ", theme.label()),
+            Span::styled(frozen.to_string(), Style::default().fg(theme.muted)),
+        ])),
+        ListItem::new(Line::from(vec![
+            Span::styled("Avg balance: ", theme.label()),
+            Span::styled(format!("{avg_balance:.3}"), Style::default().fg(theme.foreground)),
+        ])),
+        ListItem::new(Line::from(vec![
+            Span::styled("Calibrated entries: ", theme.label()),
+            Span::styled(
+                format!("{calibrated}/{total}"),
+                Style::default().fg(theme.foreground),
+            ),
+        ])),
+    ];
+
+    let list = List::new(items);
+    frame.render_widget(list, inner);
 }

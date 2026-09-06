@@ -302,6 +302,7 @@ fn dashboard_event_type(event: &roko_core::dashboard_snapshot::DashboardEvent) -
         DashboardEvent::AgentTopologyUpdated { .. } => "agent_topology_updated",
         DashboardEvent::CriticalPathEtaUpdated { .. } => "critical_path_eta_updated",
         DashboardEvent::CostAnomaly { .. } => "cost_anomaly",
+        DashboardEvent::CrossCutCascade { .. } => "cross_cut_cascade",
     }
 }
 

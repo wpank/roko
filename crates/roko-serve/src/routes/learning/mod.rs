@@ -57,6 +57,12 @@ pub fn routes() -> Router<Arc<AppState>> {
         // Playbook store (P2-10)
         .route("/learn/playbooks", get(playbooks))
         .route("/learning/playbooks", get(playbooks))
+        // P2-12: Section outcome analyzer
+        .route("/learn/section-outcomes", get(section_outcomes))
+        .route("/learning/section-outcomes", get(section_outcomes))
+        // P2-17: Per-role cost profiles
+        .route("/learn/role-costs", get(role_costs))
+        .route("/learning/role-costs", get(role_costs))
 }
 
 // ── handlers kept in mod.rs ──────────────────────────────────────────
@@ -724,6 +730,94 @@ struct ModelEfficiencyAgg {
     total_duration_ms: u64,
     task_count: u64,
     successes: u64,
+}
+
+// ── P2-12: Section outcome analyzer ─────────────────────────────────
+
+/// `GET /api/learn/section-outcomes` -- per-section pass rates from section-outcomes.jsonl.
+async fn section_outcomes(State(state): State<Arc<AppState>>) -> Result<Json<Value>, ApiError> {
+    let workdir = state.workdir.clone();
+
+    let sections = tokio::task::spawn_blocking(move || {
+        let path = workdir.join(".roko").join("learn").join("section-outcomes.jsonl");
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+
+        let mut stats: HashMap<String, (u64, u64, f64)> = HashMap::new();
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let Ok(entry) = serde_json::from_str::<Value>(trimmed) else {
+                continue;
+            };
+            let name = entry
+                .get("section_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let passed = entry
+                .get("passed")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let cost = entry
+                .get("cost_usd_attributed")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let (p, t, c) = stats.entry(name).or_insert((0, 0, 0.0));
+            *t += 1;
+            if passed {
+                *p += 1;
+            }
+            *c += cost;
+        }
+
+        let mut results: Vec<Value> = stats
+            .into_iter()
+            .map(|(name, (passed, total, cost))| {
+                let rate = if total > 0 {
+                    passed as f64 / total as f64
+                } else {
+                    0.0
+                };
+                json!({
+                    "section_name": name,
+                    "passed": passed,
+                    "total": total,
+                    "pass_rate": rate,
+                    "total_cost_usd": cost,
+                })
+            })
+            .collect();
+        results.sort_by(|a, b| {
+            let ra = a.get("pass_rate").and_then(|v| v.as_f64()).unwrap_or(1.0);
+            let rb = b.get("pass_rate").and_then(|v| v.as_f64()).unwrap_or(1.0);
+            ra.partial_cmp(&rb).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        results
+    })
+    .await
+    .map_err(|e| ApiError::internal(format!("section outcomes task panicked: {e}")))?;
+
+    Ok(Json(json!({
+        "total_sections": sections.len(),
+        "sections": sections,
+    })))
+}
+
+// ── P2-17: Per-role cost profiles ───────────────────────────────────
+
+/// `GET /api/learn/role-costs` -- per-role cost profiles from efficiency events.
+#[allow(clippy::cast_precision_loss)]
+async fn role_costs(State(state): State<Arc<AppState>>) -> Result<Json<Value>, ApiError> {
+    let projections = RuntimeProjectionSet::load(&state).await?;
+    let events = projections.efficiency_events();
+    let profiles = roko_learn::efficiency::compute_role_profiles(events);
+
+    Ok(Json(json!({
+        "total_roles": profiles.len(),
+        "profiles": profiles,
+    })))
 }
 
 #[cfg(test)]

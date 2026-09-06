@@ -301,6 +301,13 @@ impl ProviderHealthRegistry {
     /// `"claude-cli"` and `"claude_cli"` map to the same circuit breaker.
     pub fn record_failure(&self, provider_id: &str, error: ErrorClass) {
         let key = normalize_provider_key(provider_id);
+        // P2-24: Provider health Prometheus-compatible metrics.
+        tracing::info!(
+            monotonic_counter.roko_provider_failures_total = 1_u64,
+            provider = %key,
+            error_class = ?error,
+            "provider failure recorded"
+        );
         let mut providers = self.providers.lock();
         let health = providers
             .entry(key.clone())

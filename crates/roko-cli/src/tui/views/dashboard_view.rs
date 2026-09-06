@@ -9,7 +9,7 @@
 //! Delegates to compiled widgets for all panels.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Sparkline, Table, Wrap};
@@ -1889,11 +1889,13 @@ fn render_sub_learning(
         .cfactor_latest
         .map(|score| rate_style(score, theme))
         .unwrap_or_else(|| theme.muted());
-    render_learning_sparkline(
+    render_cfactor_sparkline_with_bands(
         frame,
         trend_sections[0],
         &c_factor_title,
         &trends.cfactor_overall,
+        &trends.cfactor_p50,
+        &trends.cfactor_p95,
         c_factor_style,
         theme,
         focused,
@@ -1964,6 +1966,79 @@ fn render_learning_sparkline(
     let max = series.iter().copied().max().unwrap_or(0).max(1);
     let sparkline = Sparkline::default().data(series).max(max).style(color);
     frame.render_widget(sparkline, inner);
+}
+
+/// Render a C-factor sparkline with p50/p95 percentile bands shown as a
+/// compact legend line below the sparkline.
+#[allow(clippy::too_many_arguments)]
+fn render_cfactor_sparkline_with_bands(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    title: &str,
+    series_avg: &[u64],
+    series_p50: &[u64],
+    series_p95: &[u64],
+    color: Style,
+    theme: &Theme,
+    focused: bool,
+) {
+    if area.width < 8 || area.height < 2 {
+        return;
+    }
+
+    let border = if focused {
+        Theme::focused_border_style()
+    } else {
+        theme.muted()
+    };
+    let title_style = color.add_modifier(Modifier::BOLD);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(title.to_string(), title_style))
+        .border_style(border)
+        .style(Theme::block_style());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if series_avg.is_empty() {
+        empty_state::render_pane_empty_compact(frame, inner, "Waiting for trend data", theme);
+        return;
+    }
+
+    // Reserve one line at the bottom for the p50/p95 legend.
+    let (spark_area, legend_area) = if inner.height > 2 {
+        let parts = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
+        (parts[0], Some(parts[1]))
+    } else {
+        (inner, None)
+    };
+
+    let max = series_avg.iter().copied().max().unwrap_or(0).max(1);
+    let sparkline = Sparkline::default()
+        .data(series_avg)
+        .max(max)
+        .style(color);
+    frame.render_widget(sparkline, spark_area);
+
+    // Render p50/p95 band legend from latest non-zero bucket.
+    if let Some(legend) = legend_area {
+        let latest_p50 = series_p50
+            .iter()
+            .rev()
+            .find(|v| **v > 0)
+            .copied()
+            .unwrap_or(0);
+        let latest_p95 = series_p95
+            .iter()
+            .rev()
+            .find(|v| **v > 0)
+            .copied()
+            .unwrap_or(0);
+        let band_text = format!("p50:{latest_p50}% p95:{latest_p95}%");
+        let band_line = Paragraph::new(Line::from(Span::styled(band_text, theme.muted())))
+            .alignment(Alignment::Right);
+        frame.render_widget(band_line, legend);
+    }
 }
 
 fn render_concluded_experiments_panel(
@@ -2539,6 +2614,8 @@ fn relative_age_datetime(created_at: chrono::DateTime<chrono::Utc>) -> String {
 #[derive(Debug, Clone, Default)]
 struct LearningTrends {
     cfactor_overall: Vec<u64>,
+    cfactor_p50: Vec<u64>,
+    cfactor_p95: Vec<u64>,
     tokens_per_hour: Vec<u64>,
     latency_per_hour_ms: Vec<u64>,
     cost_per_hour_cents: Vec<u64>,
@@ -2559,6 +2636,16 @@ fn build_learning_trends(tui_state: &TuiState) -> LearningTrends {
         .iter()
         .map(|bucket| (bucket.avg.clamp(0.0, 1.0) * 100.0).round() as u64)
         .collect();
+    let cfactor_p50 = tui_state
+        .cfactor_trend_buckets
+        .iter()
+        .map(|bucket| (bucket.p50.clamp(0.0, 1.0) * 100.0).round() as u64)
+        .collect();
+    let cfactor_p95 = tui_state
+        .cfactor_trend_buckets
+        .iter()
+        .map(|bucket| (bucket.p95.clamp(0.0, 1.0) * 100.0).round() as u64)
+        .collect();
 
     let tokens_per_hour = tui_state
         .efficiency_trend
@@ -2578,6 +2665,8 @@ fn build_learning_trends(tui_state: &TuiState) -> LearningTrends {
 
     LearningTrends {
         cfactor_overall,
+        cfactor_p50,
+        cfactor_p95,
         tokens_per_hour,
         latency_per_hour_ms,
         cost_per_hour_cents,

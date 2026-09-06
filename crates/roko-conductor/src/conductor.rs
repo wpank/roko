@@ -367,12 +367,23 @@ impl Conductor {
     /// - COND-09: Provider health escalation signals
     #[must_use]
     pub fn evaluate_full(&self, stream: &[Signal], ctx: &Context) -> ConductorEvaluation {
+        // P2-23: Conductor evaluation counter.
+        tracing::info!(
+            monotonic_counter.roko_conductor_evaluations_total = 1_u64,
+            "conductor evaluation invoked"
+        );
+
         let plan_id = extract_plan_id(stream);
 
         // Check circuit breaker first (count-based + predictive).
         if let Some(ref pid) = plan_id
             && self.circuit_breaker.is_tripped(pid)
         {
+            // P2-23: Circuit trip counter.
+            tracing::info!(
+                monotonic_counter.roko_conductor_circuit_trips_total = 1_u64,
+                "conductor circuit breaker tripped"
+            );
             self.update_routing_bias(stream, &[]);
             return ConductorDecision::fail(
                 "circuit-breaker",

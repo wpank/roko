@@ -319,6 +319,16 @@ fn render_agent_roster(
         };
 
         let attempt = agent_row.map_or(0, |r| r.attempt);
+        let spawned_at_ms = agent_row.map_or(0, |r| r.spawned_at_ms);
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let elapsed_secs = if spawned_at_ms > 0 && now_ms > spawned_at_ms {
+            (now_ms - spawned_at_ms) / 1000
+        } else {
+            0
+        };
         let row = roster_row(RosterRow {
             width: content_width,
             density,
@@ -338,6 +348,7 @@ fn render_agent_roster(
             theme,
             active: is_active,
             attempt,
+            elapsed_secs,
         });
         rows.push((idx, row));
     }
@@ -421,6 +432,8 @@ struct RosterRow<'a> {
     theme: &'a Theme,
     active: bool,
     attempt: u32,
+    /// P2-30: elapsed time since agent spawn (seconds).
+    elapsed_secs: u64,
 }
 
 fn roster_row(row: RosterRow<'_>) -> Line<'static> {
@@ -553,10 +566,37 @@ fn roster_row(row: RosterRow<'_>) -> Line<'static> {
                     format!(" {:>3}%", row.context_pct),
                     Style::default().fg(row.theme.muted).bg(row.background),
                 ),
+                // P2-30: Agent aging — elapsed time since spawn.
+                Span::styled(
+                    format!(" {:>5}", format_elapsed(row.elapsed_secs)),
+                    Style::default().fg(if row.elapsed_secs > 300 {
+                        row.theme.warning
+                    } else {
+                        row.theme.muted
+                    }).bg(row.background),
+                ),
             ]);
         }
     }
     Line::from(spans)
+}
+
+/// Format elapsed seconds as a compact duration string (e.g., "32s", "5m12", "1h03").
+fn format_elapsed(secs: u64) -> String {
+    if secs == 0 {
+        return "-".to_string();
+    }
+    if secs < 60 {
+        return format!("{secs}s");
+    }
+    let mins = secs / 60;
+    let rem = secs % 60;
+    if mins < 60 {
+        return format!("{mins}m{rem:02}");
+    }
+    let hours = mins / 60;
+    let rem_min = mins % 60;
+    format!("{hours}h{rem_min:02}")
 }
 
 fn roster_header(width: usize, density: RosterDensity, theme: &Theme) -> Line<'static> {
@@ -564,7 +604,7 @@ fn roster_header(width: usize, density: RosterDensity, theme: &Theme) -> Line<'s
         RosterDensity::Compact => "   agent            state  task",
         RosterDensity::Standard => "   agent        state  task             tokens",
         RosterDensity::Wide => {
-            "   agent          model      state  task                 tokens   cost ctx"
+            "   agent          model      state  task                 tokens   cost ctx  age"
         }
     };
     Line::from(Span::styled(truncate_middle(label, width), theme.label()))

@@ -42,7 +42,9 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
         | LearnCmd::Playbooks { workdir }
         | LearnCmd::Sections { workdir }
         | LearnCmd::Reflections { workdir, .. }
-        | LearnCmd::Tools { workdir } => {
+        | LearnCmd::Tools { workdir }
+        | LearnCmd::FeedbackProof { workdir }
+        | LearnCmd::RoleCosts { workdir } => {
             workdir.clone().unwrap_or_else(|| resolve_workdir(cli))
         }
         LearnCmd::Experiments { workdir, cmd: sub } => {
@@ -164,6 +166,14 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
         LearnCmd::Tools { workdir } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             cmd_learn_tools(&wd, json).await
+        }
+        LearnCmd::FeedbackProof { workdir } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            cmd_learn_feedback_proof(&wd, json).await
+        }
+        LearnCmd::RoleCosts { workdir } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            cmd_learn_role_costs(&wd, json).await
         }
         LearnCmd::Inspect { subsystem } => {
             let wd = inspect_workdir(cli, &subsystem);
@@ -2183,6 +2193,193 @@ fn learn_router_model_rows(
 
     rows.sort_by(|left, right| left.slug.cmp(&right.slug));
     rows
+}
+
+// ── P2-35: End-to-end feedback loop proof query ──────────────────────
+
+/// `roko learn feedback-proof` -- trace a closed feedback loop.
+#[allow(clippy::cast_precision_loss)]
+async fn cmd_learn_feedback_proof(workdir: &std::path::Path, json: bool) -> Result<i32> {
+    // Read episodes for knowledge_ids_injected.
+    let episodes_path = learn_episodes_path(workdir);
+    let episodes_text = tokio::fs::read_to_string(&episodes_path)
+        .await
+        .unwrap_or_default();
+
+    let mut injected_ids: HashSet<String> = HashSet::new();
+    let mut passed_with_knowledge: Vec<(String, Vec<String>)> = Vec::new();
+
+    for line in episodes_text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(episode) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+            continue;
+        };
+        let ids: Vec<String> = episode
+            .get("knowledge_ids_injected")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+        if ids.is_empty() {
+            continue;
+        }
+        for id in &ids {
+            injected_ids.insert(id.clone());
+        }
+        let success = episode
+            .get("success")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if success {
+            let task_id = episode
+                .get("task_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            passed_with_knowledge.push((task_id, ids));
+        }
+    }
+
+    // Read knowledge store for confirmation counts.
+    let knowledge_path = learn_knowledge_path(workdir);
+    let knowledge_text = tokio::fs::read_to_string(&knowledge_path)
+        .await
+        .unwrap_or_default();
+
+    let mut confirmed_ids: HashSet<String> = HashSet::new();
+    for line in knowledge_text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(entry) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+            continue;
+        };
+        let id = entry
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let confirmations = entry
+            .get("confirmation_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        if confirmations > 0 && injected_ids.contains(id) {
+            confirmed_ids.insert(id.to_string());
+        }
+    }
+
+    // Build closed-loop chains.
+    let mut closed_loops: Vec<serde_json::Value> = Vec::new();
+    for (task_id, ids) in &passed_with_knowledge {
+        for id in ids {
+            if confirmed_ids.contains(id) {
+                closed_loops.push(serde_json::json!({
+                    "knowledge_id": id,
+                    "task_id": task_id,
+                    "chain": "ingested -> injected -> gate_pass -> confirmed",
+                }));
+            }
+        }
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "injected_knowledge_ids": injected_ids.len(),
+                "passed_with_knowledge": passed_with_knowledge.len(),
+                "confirmed_ids": confirmed_ids.len(),
+                "closed_loops": closed_loops.len(),
+                "loops": closed_loops,
+            }))?
+        );
+    } else {
+        println!("Feedback loop proof");
+        println!("  Knowledge IDs injected into prompts: {}", injected_ids.len());
+        println!("  Tasks passed with knowledge: {}", passed_with_knowledge.len());
+        println!("  Confirmed knowledge entries used: {}", confirmed_ids.len());
+        println!("  Closed loops found: {}", closed_loops.len());
+        if closed_loops.is_empty() {
+            println!();
+            println!("  No closed feedback loop found yet.");
+            println!("  A closed loop requires: knowledge entry ingested from an episode,");
+            println!("  injected into a prompt, contributed to a passing gate, and received confirmation.");
+        } else {
+            println!();
+            for loop_entry in &closed_loops {
+                let kid = loop_entry.get("knowledge_id").and_then(|v| v.as_str()).unwrap_or("?");
+                let tid = loop_entry.get("task_id").and_then(|v| v.as_str()).unwrap_or("?");
+                println!("  * {kid} -> task {tid}: ingested -> injected -> gate_pass -> confirmed");
+            }
+        }
+    }
+
+    Ok(EXIT_SUCCESS)
+}
+
+// ── P2-17: Per-role cost profiles ────────────────────────────────────
+
+/// `roko learn role-costs` -- show per-role cost profiles from efficiency events.
+#[allow(clippy::cast_precision_loss)]
+async fn cmd_learn_role_costs(workdir: &std::path::Path, json: bool) -> Result<i32> {
+    let eff_path = learn_efficiency_path(workdir);
+    let text = tokio::fs::read_to_string(&eff_path)
+        .await
+        .unwrap_or_default();
+
+    let events: Vec<roko_learn::efficiency::AgentEfficiencyEvent> = text
+        .lines()
+        .filter_map(|line| serde_json::from_str(line.trim()).ok())
+        .collect();
+
+    if events.is_empty() {
+        if json {
+            println!("{{\"profiles\":[]}}");
+        } else {
+            println!("Role cost profiles: no efficiency data at {}", eff_path.display());
+        }
+        return Ok(EXIT_SUCCESS);
+    }
+
+    let profiles = roko_learn::efficiency::compute_role_profiles(&events);
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "profiles": profiles,
+            }))?
+        );
+    } else {
+        println!("Per-role cost profiles ({})", eff_path.display());
+        println!();
+        println!(
+            "  {:<16} {:>5} {:>10} {:>10} {:>8} {:>10} {:>8}",
+            "Role", "Obs", "Avg Cost", "P95 Cost", "Pass%", "Cost/Pass", "Avg Wall"
+        );
+        println!("  {}", "-".repeat(76));
+        for p in &profiles {
+            let pass_pct = format!("{:.0}%", p.pass_rate * 100.0);
+            let cost_per_pass = if p.cost_per_successful_task().is_finite() {
+                format!("${:.4}", p.cost_per_successful_task())
+            } else {
+                "inf".to_string()
+            };
+            println!(
+                "  {:<16} {:>5} {:>10} {:>10} {:>8} {:>10} {:>8}",
+                truncate_str(&p.role, 16),
+                p.observations,
+                format!("${:.4}", p.avg_cost_usd),
+                format!("${:.4}", p.p95_cost_usd),
+                pass_pct,
+                cost_per_pass,
+                format!("{:.0}ms", p.avg_wall_time_ms),
+            );
+        }
+    }
+
+    Ok(EXIT_SUCCESS)
 }
 
 #[cfg(test)]

@@ -58,8 +58,10 @@ pub mod workflow_contract;
 pub use builtin_lenses_derived::{
     AnomalyLens, CFactorLens, CollectiveIntelligenceLens, TrendLens, UsageLens,
 };
-pub use builtin_lenses_health::{BudgetLens, DriftLens, ErrorLens, create_builtin_health_lens};
-pub use builtin_lenses_performance::{EfficiencyLens, LatencyLens, QualityLens};
+pub use builtin_lenses_health::{
+    BudgetLens, DriftLens, ErrorLens, TriggerLens, create_builtin_health_lens,
+};
+pub use builtin_lenses_performance::{EfficiencyLens, LatencyLens, QualityLens, VerifyLens};
 pub use cancel::CancelToken;
 pub use connector_runtime::{
     ConnectorRuntime, ConnectorRuntimeStatus, ConnectorSupervisionStatus,

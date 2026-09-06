@@ -1152,7 +1152,8 @@ impl KnowledgeStore {
                         }
                     }
 
-                    // Auto-promote based on thresholds.
+                    // Auto-promote based on thresholds (P2-15: log tier progressions).
+                    let old_tier = entry.tier;
                     match entry.tier {
                         KnowledgeTier::Transient if entry.confirmation_count >= 2 => {
                             entry.tier = KnowledgeTier::Working;
@@ -1161,6 +1162,16 @@ impl KnowledgeStore {
                             entry.tier = KnowledgeTier::Consolidated;
                         }
                         _ => {}
+                    }
+                    if entry.tier != old_tier {
+                        tracing::info!(
+                            knowledge_id = %entry.id,
+                            from_tier = ?old_tier,
+                            to_tier = ?entry.tier,
+                            confirmations = entry.confirmation_count,
+                            distinct_contexts = entry.distinct_contexts.len(),
+                            "knowledge tier progression"
+                        );
                     }
                 }
             }
@@ -1366,6 +1377,17 @@ impl KnowledgeStore {
                 .then_with(|| left.entry.id.cmp(&right.entry.id))
         });
         hits.truncate(top_k);
+
+        // P2-29: HDC telemetry — log query metrics for Lens/tracing consumption.
+        let top_score = hits.first().map(|h| h.total_score).unwrap_or(0.0);
+        tracing::info!(
+            monotonic_counter.roko_hdc_queries_total = 1_u64,
+            result_count = hits.len(),
+            top_similarity = %format!("{top_score:.4}"),
+            top_k,
+            "HDC query completed"
+        );
+
         Ok(hits)
     }
 

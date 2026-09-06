@@ -120,6 +120,11 @@ fn spawn_periodic_observer(
             }
 
             let observations = observer.observe(&registry);
+            let lens_count = observations.len();
+            tracing::debug!(
+                lens_count,
+                "periodic observer sampled event-driven Lens state"
+            );
             let sink = Arc::clone(&sink);
             match tokio::task::spawn_blocking(move || sink.emit(&observations)).await {
                 Ok(Ok(())) => {}

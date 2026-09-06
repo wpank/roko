@@ -1217,6 +1217,19 @@ pub async fn run_gate_once(
     let preview_limit = if passed { 500 } else { 4_000 };
     let output_preview: String = output.chars().take(preview_limit).collect();
     let verdict_names: Vec<&str> = summaries.iter().map(|v| v.gate_name.as_str()).collect();
+    // P2-22: Gate pipeline metrics (tracing counters for Prometheus scrape).
+    tracing::info!(
+        monotonic_counter.roko_gate_verdicts_total = 1_u64,
+        result = if passed { "pass" } else { "fail" },
+        rung,
+        "gate verdict recorded"
+    );
+    tracing::info!(
+        histogram.roko_gate_duration_seconds = duration_ms as f64 / 1000.0,
+        rung,
+        "gate duration recorded"
+    );
+
     info!(
         plan_id = %plan_id,
         task_id = %task_id,

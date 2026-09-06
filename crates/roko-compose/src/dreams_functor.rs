@@ -80,6 +80,9 @@ impl DreamOutputConsumer {
     }
 
     /// Consume a report returned by `DreamRunner`/`DreamEngine`.
+    ///
+    /// P2-26: Instrumented with a tracing span for production auditing.
+    #[tracing::instrument(skip_all)]
     pub fn consume(
         &self,
         report: &DreamCycleReport,

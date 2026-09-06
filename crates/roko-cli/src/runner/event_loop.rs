@@ -10963,6 +10963,20 @@ fn record_daimon_task_outcome(
                 ),
             );
         }
+
+        // P2-33: Emit agent tick telemetry with CorticalState energy fields
+        // so AgentLifecycle Lenses receive non-zero observation data.
+        let vitality = daimon.vitality_tracker.vitality();
+        let cognitive_energy = daimon.cognitive_energy.current;
+        let phase = daimon.behavioral_phase();
+        tracing::info!(
+            agent = %format!("{plan_id}/{task_id}"),
+            vitality = %format!("{vitality:.3}"),
+            cognitive_energy = %format!("{cognitive_energy:.3}"),
+            phase = ?phase,
+            succeeded,
+            "agent tick observation (P2-33)"
+        );
     });
 }
 

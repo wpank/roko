@@ -415,6 +415,15 @@ pub enum DashboardEvent {
         /// The cost observation that triggered the anomaly, in USD.
         cost_usd: f64,
     },
+    /// P2-25: Cross-cut functor cascade telemetry event.
+    CrossCutCascade {
+        /// Functor type that ran (e.g. "memory", "daimon", "dreams", "safety").
+        functor_type: String,
+        /// Whether the cascade completed successfully.
+        success: bool,
+        /// Duration of the cascade in milliseconds.
+        duration_ms: u64,
+    },
     /// An error occurred.
     Error { message: String },
 }
@@ -1192,6 +1201,18 @@ pub struct SnapshotStats {
     /// Cumulative cost in USD across all agents.
     #[serde(default)]
     pub cost_usd_total: f64,
+    /// Cumulative input tokens across all agents.
+    #[serde(default)]
+    pub total_input_tokens: u64,
+    /// Cumulative output tokens across all agents.
+    #[serde(default)]
+    pub total_output_tokens: u64,
+    /// Cumulative cache-read tokens across all agents.
+    #[serde(default)]
+    pub total_cache_read_tokens: u64,
+    /// Cumulative cache-write tokens across all agents.
+    #[serde(default)]
+    pub total_cache_write_tokens: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -1589,6 +1610,7 @@ impl DashboardSnapshot {
                             agent.input_tokens += *value as u64;
                             agent.last_event_at_ms = ts;
                         }
+                        self.stats.total_input_tokens += *value as u64;
                         if self.token_event_ring.len() >= MAX_TOKEN_EVENT_RING {
                             self.token_event_ring.pop_front();
                         }
@@ -1601,6 +1623,7 @@ impl DashboardSnapshot {
                             agent.output_tokens += *value as u64;
                             agent.last_event_at_ms = ts;
                         }
+                        self.stats.total_output_tokens += *value as u64;
                         if self.token_event_ring.len() >= MAX_TOKEN_EVENT_RING {
                             self.token_event_ring.pop_front();
                         }
@@ -1612,6 +1635,7 @@ impl DashboardSnapshot {
                         {
                             agent.cache_read_tokens += *value as u64;
                         }
+                        self.stats.total_cache_read_tokens += *value as u64;
                     }
                     "cache_write_tokens" => {
                         if let Some(agent) =
@@ -1619,6 +1643,7 @@ impl DashboardSnapshot {
                         {
                             agent.cache_write_tokens += *value as u64;
                         }
+                        self.stats.total_cache_write_tokens += *value as u64;
                     }
                     "cost_usd" => {
                         if let Some(agent) =
@@ -1859,6 +1884,20 @@ impl DashboardSnapshot {
                     String::new(),
                     String::new(),
                     format!("Cost spike detected: ${cost_usd:.4} (z={z_score:.2})"),
+                );
+            }
+            DashboardEvent::CrossCutCascade {
+                functor_type,
+                success,
+                duration_ms,
+            } => {
+                let status = if *success { "ok" } else { "fail" };
+                self.push_event_log(
+                    ts,
+                    "cross_cut_cascade".to_string(),
+                    String::new(),
+                    String::new(),
+                    format!("{functor_type} cascade {status} ({duration_ms}ms)"),
                 );
             }
         }

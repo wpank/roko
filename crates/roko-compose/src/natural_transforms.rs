@@ -203,6 +203,9 @@ pub fn eta_DN(report: &DreamCycleReport) -> DreamAffectInput {
 }
 
 /// Fire the synchronous Memory -> Daimon -> Dreams portion of a gate failure.
+///
+/// P2-26: Instrumented with a tracing span for production auditing.
+#[tracing::instrument(skip_all, fields(affected_count = memory_outcome.affected_entry_ids.len()))]
 pub fn run_gate_failure_cascade(
     store: &KnowledgeStore,
     daimon: &mut DaimonState,

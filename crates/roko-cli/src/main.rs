@@ -1517,6 +1517,20 @@ enum LearnCmd {
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
+    /// Trace an end-to-end feedback loop: knowledge ingested -> injected -> gate pass -> confirmation.
+    #[command(alias = "feedback-proof")]
+    FeedbackProof {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show per-role cost profiles (average cost, token budget, pass rate).
+    #[command(alias = "role-costs")]
+    RoleCosts {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
     /// (deprecated: use `roko learn inspect`) Tune adaptive thresholds and model routing parameters.
     #[command(hide = true)]
     Tune {

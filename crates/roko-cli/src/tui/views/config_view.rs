@@ -557,6 +557,84 @@ fn append_runtime_sections(items: &mut Vec<ConfigItem>, tui_state: &TuiState) {
         }
     }
 
+    // P2-31: Relay status (from .roko/relay/status.json if present).
+    {
+        let relay_path = tui_state.workdir.join(".roko").join("relay").join("status.json");
+        if let Ok(text) = std::fs::read_to_string(&relay_path) {
+            if let Ok(status) = serde_json::from_str::<serde_json::Value>(&text) {
+                items.push(ConfigItem::Header("Runtime: Relay".to_string()));
+                let connected = status.get("connected").and_then(|v| v.as_bool()).unwrap_or(false);
+                let cursor = status.get("cursor").and_then(|v| v.as_u64()).unwrap_or(0);
+                let reconnects = status.get("reconnect_count").and_then(|v| v.as_u64()).unwrap_or(0);
+                let state_label = if connected { "connected" } else { "disconnected" };
+                items.push(ConfigItem::Field {
+                    meta: config_meta::ConfigFieldMeta {
+                        key: "runtime.relay",
+                        label: "status",
+                        description: "",
+                        kind: ConfigFieldKind::ReadOnly,
+                        group: "Runtime",
+                    },
+                    value: format!("{state_label}, cursor={cursor}, reconnects={reconnects}"),
+                    source: if connected { ConfigSource::File } else { ConfigSource::Default },
+                });
+            }
+        }
+    }
+
+    // P2-18: Lens health status
+    {
+        let telemetry_dir = tui_state.workdir.join(".roko").join("telemetry");
+        let lens_count = if telemetry_dir.exists() {
+            std::fs::read_dir(&telemetry_dir)
+                .map(|entries| entries.filter(|e| e.is_ok()).count())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        // Read lens-status.json if present for live health.
+        let lens_status_path = telemetry_dir.join("lens-status.json");
+        let lens_names: Vec<String> = std::fs::read_to_string(&lens_status_path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .and_then(|val| val.get("lenses").cloned())
+            .and_then(|lenses| serde_json::from_value::<Vec<serde_json::Value>>(lenses).ok())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        if !lens_names.is_empty() || lens_count > 0 {
+            items.push(ConfigItem::Header("Runtime: Telemetry Lenses".to_string()));
+            items.push(ConfigItem::Field {
+                meta: config_meta::ConfigFieldMeta {
+                    key: "runtime.lenses",
+                    label: "registered",
+                    description: "",
+                    kind: ConfigFieldKind::ReadOnly,
+                    group: "Runtime",
+                },
+                value: format!("{} lenses, {} telemetry files", lens_names.len().max(lens_count), lens_count),
+                source: ConfigSource::Default,
+            });
+            for name in &lens_names {
+                items.push(ConfigItem::Field {
+                    meta: config_meta::ConfigFieldMeta {
+                        key: "runtime.lenses",
+                        label: "lens",
+                        description: "",
+                        kind: ConfigFieldKind::ReadOnly,
+                        group: "Runtime",
+                    },
+                    value: name.clone(),
+                    source: ConfigSource::File,
+                });
+            }
+        }
+    }
+
     // Experiments
     if !tui_state.experiments.is_empty() {
         items.push(ConfigItem::Header("Runtime: Experiments".to_string()));

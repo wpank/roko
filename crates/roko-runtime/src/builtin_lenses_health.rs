@@ -1135,3 +1135,101 @@ fn usize_ratio(numerator: usize, denominator: usize) -> f64 {
         numerator as f64 / denominator as f64
     }
 }
+
+// ─── P2-20: TriggerLens ─────────────────────────────────────────────
+
+/// Tracks trigger fire/arm/disarm counts, per-trigger fire rates, and most
+/// recently fired graph references.
+pub struct TriggerLens {
+    name: String,
+    scope: LensScope,
+    state: Mutex<TriggerLensState>,
+}
+
+#[derive(Default)]
+struct TriggerLensState {
+    fire_count: u64,
+    arm_count: u64,
+    disarm_count: u64,
+    per_trigger: BTreeMap<String, u64>,
+    recent_graphs: VecDeque<String>,
+}
+
+const TRIGGER_LENS_MAX_RECENT: usize = 32;
+const TRIGGER_LENS_MAX_TRIGGERS: usize = 256;
+
+impl TriggerLens {
+    /// Construct a TriggerLens for trigger lifecycle telemetry.
+    pub fn new(name: impl Into<String>, scope: LensScope) -> Self {
+        Self {
+            name: name.into(),
+            scope,
+            state: Mutex::new(TriggerLensState::default()),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl TelemetryObserve for TriggerLens {
+    async fn observe(&self, event: &ObservableEvent) -> Result<Vec<Signal>> {
+        let mut state = self.state.lock();
+        match event {
+            ObservableEvent::TriggerFired { trigger, graph } => {
+                state.fire_count += 1;
+                if state.per_trigger.len() < TRIGGER_LENS_MAX_TRIGGERS {
+                    *state.per_trigger.entry(trigger.clone()).or_insert(0) += 1;
+                }
+                state.recent_graphs.push_back(graph.clone());
+                if state.recent_graphs.len() > TRIGGER_LENS_MAX_RECENT {
+                    state.recent_graphs.pop_front();
+                }
+            }
+            ObservableEvent::TriggerArmed { .. } => {
+                state.arm_count += 1;
+            }
+            ObservableEvent::TriggerDisarmed { .. } => {
+                state.disarm_count += 1;
+            }
+            _ => return Ok(Vec::new()),
+        }
+
+        // Emit as a Quality payload: "passed" = fired, "failed" = disarmed.
+        let total = state.fire_count + state.disarm_count;
+        let mut rung_breakdown = std::collections::BTreeMap::new();
+        for (trigger, count) in &state.per_trigger {
+            rung_breakdown.insert(
+                trigger.clone(),
+                roko_core::PassFailCounts {
+                    passed: *count,
+                    failed: 0,
+                },
+            );
+        }
+        let payload = roko_core::QualityPayload {
+            target: scope_target(&self.scope),
+            interval_ms: 0,
+            total_verifications: total,
+            pre_verify_vetoes: state.arm_count,
+            post_verify_passed: state.fire_count,
+            post_verify_failed: state.disarm_count,
+            pass_rate: u64_ratio(state.fire_count, total),
+            avg_reward: 0.0,
+            hard_criteria_failures: 0,
+            rung_breakdown,
+        };
+        crate::LensSignalEnvelope::new(&self.name, crate::LensPayload::Quality(payload))
+            .to_signal()
+            .map(|signal| vec![signal])
+            .map_err(|error| {
+                RokoError::config(format!("TriggerLens envelope encoding failed: {error}"))
+            })
+    }
+
+    fn observes(&self) -> &[ObservableEventKind] {
+        &[ObservableEventKind::TriggerLifecycle]
+    }
+
+    fn scope(&self) -> LensScope {
+        self.scope.clone()
+    }
+}

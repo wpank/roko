@@ -717,3 +717,135 @@ fn encode(name: &str, payload: LensPayload, lens: &str) -> Result<Vec<Signal>> {
         .map(|signal| vec![signal])
         .map_err(|error| RokoError::config(format!("{lens} envelope encoding failed: {error}")))
 }
+
+// ─── P2-19: VerifyLens ──────────────────────────────────────────────
+
+/// Rolling gate verdict telemetry: pre/post verification pass/fail counts,
+/// average reward values, and evidence kind distributions.
+pub struct VerifyLens {
+    name: String,
+    scope: LensScope,
+    observes: Vec<ObservableEventKind>,
+    window_size: usize,
+    samples: Mutex<VecDeque<VerifySample>>,
+}
+
+#[derive(Clone)]
+enum VerifySample {
+    Pre { vetoed: bool },
+    Post { passed: bool, reward: f64, gate: String },
+}
+
+impl VerifyLens {
+    /// Construct a VerifyLens from its registration fields.
+    pub fn new<P: Serialize>(
+        name: impl Into<String>,
+        scope: LensScope,
+        observes: Vec<ObservableEventKind>,
+        params: P,
+    ) -> Result<Self> {
+        let name = validate_registration(
+            name,
+            &observes,
+            &[ObservableEventKind::VerifyLifecycle],
+            "VerifyLens",
+        )?;
+        let mut params = parse_params(params, "VerifyLens")?;
+        let window_size = take_usize(
+            &mut params,
+            "window_size",
+            DEFAULT_WINDOW_SIZE,
+            MAX_WINDOW_SIZE,
+            "VerifyLens",
+        )?;
+        reject_unknown_params(params, "VerifyLens")?;
+        Ok(Self {
+            name,
+            scope,
+            observes,
+            window_size,
+            samples: Mutex::new(VecDeque::new()),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl TelemetryObserve for VerifyLens {
+    async fn observe(&self, event: &ObservableEvent) -> Result<Vec<Signal>> {
+        if !event.matches_any(&self.observes) {
+            return Ok(Vec::new());
+        }
+        let sample = match event {
+            ObservableEvent::VerifyPreResult { verdict, .. } if !verdict.skipped => {
+                VerifySample::Pre { vetoed: !verdict.passed }
+            }
+            ObservableEvent::VerifyPostResult { verdict, reward, .. } if !verdict.skipped => {
+                VerifySample::Post {
+                    passed: verdict.passed,
+                    reward: *reward,
+                    gate: verdict.gate.clone(),
+                }
+            }
+            _ => return Ok(Vec::new()),
+        };
+
+        let payload = {
+            let mut samples = self.samples.lock();
+            push_bounded(&mut samples, sample, self.window_size);
+            verify_payload(scope_target(&self.scope), &samples)
+        };
+        encode(&self.name, LensPayload::Quality(payload), "VerifyLens")
+    }
+
+    fn observes(&self) -> &[ObservableEventKind] {
+        &self.observes
+    }
+
+    fn scope(&self) -> LensScope {
+        self.scope.clone()
+    }
+}
+
+fn verify_payload(target: String, samples: &VecDeque<VerifySample>) -> QualityPayload {
+    let mut pre_vetoes = 0_u64;
+    let mut post_passed = 0_u64;
+    let mut post_failed = 0_u64;
+    let mut reward_sum = 0.0_f64;
+    let mut reward_count = 0_u64;
+    let mut rung_breakdown = BTreeMap::<String, PassFailCounts>::new();
+
+    for sample in samples {
+        match sample {
+            VerifySample::Pre { vetoed } => {
+                if *vetoed {
+                    pre_vetoes += 1;
+                }
+            }
+            VerifySample::Post { passed, reward, gate } => {
+                let counts = rung_breakdown.entry(gate.clone()).or_default();
+                if *passed {
+                    post_passed += 1;
+                    counts.passed += 1;
+                } else {
+                    post_failed += 1;
+                    counts.failed += 1;
+                }
+                reward_sum += reward;
+                reward_count += 1;
+            }
+        }
+    }
+    let total = post_passed + post_failed;
+    QualityPayload {
+        target,
+        interval_ms: 0,
+        total_verifications: total,
+        pre_verify_vetoes: pre_vetoes,
+        post_verify_passed: post_passed,
+        post_verify_failed: post_failed,
+        pass_rate: ratio(post_passed, total),
+        avg_reward: if reward_count == 0 { 0.0 } else { reward_sum / reward_count as f64 },
+        hard_criteria_failures: 0,
+        rung_breakdown,
+    }
+}

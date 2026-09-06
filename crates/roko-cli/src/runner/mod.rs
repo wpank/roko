@@ -63,7 +63,11 @@ pub use types::{PlanReport, RunConfig, RunReport};
 ///
 /// This stub is retained so that callers compile; at runtime it returns an
 /// error directing the caller to use the Graph engine instead.
-#[deprecated(note = "Runner-v2 has been removed; use the Graph engine instead")]
+///
+/// **#342**: Scheduled for removal in the next release. All 4 remaining call
+/// sites (`serve_runtime`, `prd`, `worker/cloud`, `do_cmd`) should be migrated
+/// to `cmd_plan_run_engine` or the graph template path.
+#[deprecated(note = "Runner-v2 has been removed; use the Graph engine instead. Scheduled for removal (#342).")]
 pub async fn run(
     _plans: Vec<Plan>,
     _config: &RunConfig,

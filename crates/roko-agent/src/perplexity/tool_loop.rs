@@ -12,7 +12,7 @@ use crate::http::{HttpPoster, ReqwestPoster};
 use crate::tool_loop::{LlmBackend, LlmError, StopReason, ToolLoop};
 use crate::translate::{BackendResponse, RenderedTools, SessionState};
 use async_trait::async_trait;
-use roko_core::tool::{ToolContext, ToolDef};
+use roko_core::tool::{CancelToken, NeverCancel, ToolContext, ToolDef};
 use roko_core::{Body, Context, Kind, Provenance, Signal};
 use roko_fs::RokoLayout;
 use serde_json::Value;
@@ -149,6 +149,9 @@ pub struct PerplexityToolLoopAgent {
     model_slug: String,
     worktree_path: PathBuf,
     immune_root_path: Option<PathBuf>,
+    /// Run-scoped cancellation token (T027). Wired from `AgentOptions::cancel_token`
+    /// so that a runner-level task cancellation stops tool execution promptly.
+    cancel_token: Arc<dyn CancelToken>,
 }
 
 impl PerplexityToolLoopAgent {
@@ -167,7 +170,18 @@ impl PerplexityToolLoopAgent {
             model_slug: model_slug.into(),
             worktree_path: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             immune_root_path: None,
+            cancel_token: Arc::new(NeverCancel),
         }
+    }
+
+    /// Wire the active run-scoped cancellation token (T027).
+    ///
+    /// When set, tool execution will be interrupted promptly when the token is
+    /// cancelled (e.g., runner-level task timeout or explicit cancel).
+    #[must_use]
+    pub fn with_cancel_token(mut self, token: Arc<dyn CancelToken>) -> Self {
+        self.cancel_token = token;
+        self
     }
 
     #[must_use]
@@ -241,11 +255,15 @@ impl PerplexityToolLoopAgent {
 impl Agent for PerplexityToolLoopAgent {
     async fn run(&self, input: &Signal, ctx: &Context) -> AgentResult {
         let prompt = input.body.as_text().unwrap_or_default();
-        let tool_ctx = ToolContext::external_pre_check(&self.worktree_path).with_immune_root(
-            self.immune_root_path
-                .as_deref()
-                .unwrap_or(&self.worktree_path),
-        );
+        // T027: wire the run-scoped cancel token so that tool execution is
+        // interrupted promptly on runner-level task cancellation.
+        let tool_ctx = ToolContext::external_pre_check(&self.worktree_path)
+            .with_immune_root(
+                self.immune_root_path
+                    .as_deref()
+                    .unwrap_or(&self.worktree_path),
+            )
+            .with_cancel_token(Arc::clone(&self.cancel_token));
         let tool_loop = match self.checkpoint_path(ctx) {
             Some(path) => self.tool_loop.clone().with_checkpoint_path(path),
             None => self.tool_loop.clone(),

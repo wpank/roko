@@ -81,6 +81,9 @@ impl ControlCommand {
 /// `[timeouts].plan_total_secs` is the canonical setting. If that field is
 /// still at its default but the legacy `[runner].plan_timeout_secs` field was
 /// changed, honor the legacy value so older project configs keep working.
+///
+/// **#336**: The `[runner].plan_timeout_secs` fallback is scheduled for removal.
+/// Projects should migrate to `[timeouts].plan_total_secs` in their `roko.toml`.
 #[must_use]
 pub fn effective_plan_timeout_secs(roko_config: &RokoConfig) -> u64 {
     let timeout_secs = roko_config.timeouts.plan_total_secs.max(1);
@@ -89,6 +92,10 @@ pub fn effective_plan_timeout_secs(roko_config: &RokoConfig) -> u64 {
         && runner_secs != DEFAULT_PLAN_TIMEOUT_SECS
         && runner_secs > 0
     {
+        tracing::warn!(
+            runner_plan_timeout_secs = runner_secs,
+            "[runner].plan_timeout_secs is deprecated; migrate to [timeouts].plan_total_secs"
+        );
         runner_secs
     } else {
         timeout_secs

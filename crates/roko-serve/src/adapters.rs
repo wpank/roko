@@ -548,6 +548,7 @@ impl SseAdapter {
             | RuntimeEvent::ActualRecorded { .. }
             | RuntimeEvent::CorrectionApplied { .. }
             | RuntimeEvent::SequenceGap { .. }
+            | RuntimeEvent::Fallthrough { .. }
             | RuntimeEvent::Extension { .. } => (
                 event.kind(),
                 "",

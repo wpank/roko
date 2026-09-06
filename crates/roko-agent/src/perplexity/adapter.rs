@@ -198,6 +198,11 @@ fn perplexity_tool_loop_agent(
     if let Some(root) = options.effective_immune_root() {
         agent = agent.with_immune_root(root);
     }
+    // T027: wire the run-scoped cancel token so tool execution responds to
+    // runner-level task cancellation rather than running to completion.
+    if let Some(ref token) = options.cancel_token {
+        agent = agent.with_cancel_token(Arc::clone(token));
+    }
 
     Ok(Box::new(agent))
 }

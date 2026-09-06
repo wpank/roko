@@ -1531,6 +1531,12 @@ enum LearnCmd {
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
+    /// Show graduation policy state (configured policies, counters, and evaluation preview).
+    Graduation {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
     /// (deprecated: use `roko learn inspect`) Tune adaptive thresholds and model routing parameters.
     #[command(hide = true)]
     Tune {
@@ -1892,6 +1898,10 @@ pub enum KnowledgeSyncDirection {
 /// The Graph Engine is the sole execution engine. The `--engine legacy` and
 /// `--engine runner-v2` values are still accepted to avoid breaking existing
 /// scripts, but they print a deprecation error and exit.
+///
+/// **#336**: The legacy engine variant is scheduled for removal. Scripts using
+/// `--engine legacy` or `--engine runner-v2` should remove the flag entirely
+/// (the graph engine is the default and sole engine).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
 pub enum PlanEngine {
     /// Graph Engine (default and sole engine).
@@ -1900,7 +1910,8 @@ pub enum PlanEngine {
     Graph,
     /// Legacy Runner-v2 (REMOVED). Accepted for backward compatibility but
     /// prints a deprecation error and exits. Use `--engine graph` (the default).
-    #[value(name = "legacy", alias = "runner-v2")]
+    /// Scheduled for removal in the next release (#336).
+    #[value(name = "legacy", alias = "runner-v2", hide = true)]
     RunnerV2,
 }
 

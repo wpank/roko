@@ -1322,33 +1322,85 @@ pub(crate) async fn cmd_inject(
     payload: String,
     workdir: Option<PathBuf>,
 ) -> Result<i32> {
+    use roko_cli::runner::types::{ControlAction, ControlCommand};
+
     let inject_kind = InjectKind::parse(kind_str).map_err(|e| anyhow!("{e}"))?;
     let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-    let request = InjectRequest::new(session.clone(), inject_kind.clone(), payload.clone(), wd);
+    let request = InjectRequest::new(session.clone(), inject_kind.clone(), payload.clone(), wd.clone());
 
     // Validation errors (empty session, empty payload for directive/context) remain
     // more specific than the transport-unavailable error below.
     request.validate().map_err(|e| anyhow!("{e}"))?;
 
-    // No live command transport is installed (#361 owns the canonical daemon
-    // transport). Until then every syntactically valid request must fail closed
-    // rather than silently discarding the signal.
-    if cli.json {
-        println!(
-            r#"{{"code":"inject_transport_unavailable","message":"no live command transport is installed","hint":"No live command transport is installed; use plan pause/cancel controls where applicable.","kind":"{}","session":"{}"}}"#,
-            inject_kind, session,
-        );
-    } else {
-        eprintln!(
-            "Error: no live command transport is installed for inject {} -> session {}",
-            inject_kind, session,
-        );
-        eprintln!(
-            "Hint: No live command transport is installed; use plan pause/cancel controls where applicable."
-        );
-    }
+    // #361: Wire inject through the file-based ControlCommand transport.
+    // Map InjectKind to ControlAction: abort maps to cancel, directive/context
+    // map to resume (as a trigger to re-read context). The control file is
+    // picked up by the Graph engine's control-file poll loop.
+    let control_action = match inject_kind {
+        InjectKind::Abort => ControlAction::Cancel,
+        InjectKind::Directive | InjectKind::Context => {
+            // For directive and context injections, write the payload to
+            // the inject signal file and send a resume control action so
+            // the running session picks up the new context.
+            let inject_dir = wd.join(".roko").join("state");
+            std::fs::create_dir_all(&inject_dir)?;
+            let inject_file = inject_dir.join("inject.json");
+            let inject_payload = serde_json::json!({
+                "kind": inject_kind.as_str(),
+                "session": session,
+                "payload": payload,
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+            });
+            std::fs::write(&inject_file, serde_json::to_string_pretty(&inject_payload)?)?;
+            // Resume to wake the executor and consume the injected signal.
+            ControlAction::Resume
+        }
+    };
 
-    Ok(EXIT_FAILURE)
+    let state_dir = wd.join(".roko").join("state");
+    let control_cmd = ControlCommand {
+        command: control_action.clone(),
+        plan_id: None,
+        task_id: None,
+    };
+
+    match control_cmd.write(&state_dir) {
+        Ok(()) => {
+            if cli.json {
+                println!(
+                    r#"{{"code":"inject_delivered","kind":"{}","session":"{}","action":"{}"}}"#,
+                    inject_kind,
+                    session,
+                    match control_action {
+                        ControlAction::Cancel => "cancel",
+                        ControlAction::Resume => "resume",
+                        ControlAction::Pause => "pause",
+                        ControlAction::Retry => "retry",
+                    },
+                );
+            } else {
+                println!(
+                    "Injected {} -> session {} (control action: {:?})",
+                    inject_kind, session, control_action,
+                );
+            }
+            Ok(EXIT_SUCCESS)
+        }
+        Err(e) => {
+            if cli.json {
+                println!(
+                    r#"{{"code":"inject_write_failed","message":"{}","kind":"{}","session":"{}"}}"#,
+                    e, inject_kind, session,
+                );
+            } else {
+                eprintln!(
+                    "Error: failed to write control command for inject {} -> session {}: {}",
+                    inject_kind, session, e,
+                );
+            }
+            Ok(EXIT_FAILURE)
+        }
+    }
 }
 
 pub(crate) fn cmd_index(cli: &Cli, cmd: IndexCmd) -> Result<i32> {

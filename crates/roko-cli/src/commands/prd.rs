@@ -674,6 +674,26 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
                 if !draft.exists() {
                     anyhow::bail!("draft not found: {}", draft.display());
                 }
+                // #303: consistent model resolution and preflight across PRD subcommands
+                let model_key = roko_cli::model_selection::resolve_effective_model_key(
+                    &workdir,
+                    cli.model.clone(),
+                    Some("scribe"),
+                    "prd draft edit",
+                )?;
+                {
+                    let edit_config: roko_core::config::schema::RokoConfig =
+                        std::fs::read_to_string(workdir.join("roko.toml"))
+                            .ok()
+                            .and_then(|s| roko_core::config::schema::RokoConfig::from_toml(&s).ok())
+                            .unwrap_or_default();
+                    crate::commands::util::preflight_provider_for_model(&edit_config, &model_key)?;
+                    crate::commands::util::warn_capability_mismatch(
+                        &edit_config,
+                        &model_key,
+                        "scribe",
+                    );
+                }
                 println!("📝 Refining draft: {slug}");
                 let system = roko_cli::prd::prd_agent_prompt(
                     &workdir,
@@ -704,13 +724,13 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
                 let (exit_code, output) = run_agent_capture_silent(AgentExecOpts {
                     prompt: &task_prompt,
                     workdir: &workdir,
-                    model: model_ref,
+                    model: Some(model_key.as_str()),
                     effort: Some(edit_effort),
                     system_prompt: Some(&system),
                     resume_session,
                     env_vars: &gw.vars,
                     role: Some("scribe"),
-                    allowed_tools: None,
+                    allowed_tools: Some("Read,Grep,Glob"),
                 })
                 .await?;
                 let mtime_after = std::fs::metadata(&draft).and_then(|m| m.modified()).ok();
@@ -746,7 +766,7 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
                 let _ = persist_capture_episode(
                     &workdir,
                     &agent_command,
-                    model_ref,
+                    Some(model_key.as_str()),
                     "prd-draft-edit",
                     &format!("prd:draft:edit:{slug}"),
                     &task_prompt,
@@ -820,6 +840,26 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
             Ok(0)
         }
         PrdCmd::Consolidate => {
+            // #303: consistent model resolution and preflight across PRD subcommands
+            let model_key = roko_cli::model_selection::resolve_effective_model_key(
+                &workdir,
+                cli.model.clone(),
+                Some("strategist"),
+                "prd consolidate",
+            )?;
+            {
+                let cons_config: roko_core::config::schema::RokoConfig =
+                    std::fs::read_to_string(workdir.join("roko.toml"))
+                        .ok()
+                        .and_then(|s| roko_core::config::schema::RokoConfig::from_toml(&s).ok())
+                        .unwrap_or_default();
+                crate::commands::util::preflight_provider_for_model(&cons_config, &model_key)?;
+                crate::commands::util::warn_capability_mismatch(
+                    &cons_config,
+                    &model_key,
+                    "strategist",
+                );
+            }
             println!("🔄 Scanning all PRDs for duplicates, gaps, and inconsistencies...");
             let mut all_context = String::new();
             for dir_name in ["published", "drafts"] {
@@ -850,13 +890,13 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
             let (exit_code, output) = run_agent_capture_silent(AgentExecOpts {
                 prompt: &task_prompt,
                 workdir: &workdir,
-                model: model_ref,
+                model: Some(model_key.as_str()),
                 effort: Some(consolidate_effort),
                 system_prompt: Some(&system),
                 resume_session,
                 env_vars: &gw.vars,
                 role: Some("strategist"),
-                allowed_tools: None,
+                allowed_tools: Some("Read,Grep,Glob"),
             })
             .await?;
             if !output.is_empty() {
@@ -865,7 +905,7 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
             let _ = persist_capture_episode(
                 &workdir,
                 &agent_command,
-                model_ref,
+                Some(model_key.as_str()),
                 "prd-consolidate",
                 "prd:consolidate",
                 &task_prompt,

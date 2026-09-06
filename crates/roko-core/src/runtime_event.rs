@@ -785,6 +785,27 @@ pub enum RuntimeEvent {
     },
 
     // -----------------------------------------------------------------------
+    // Fallthrough observability (v2, #343)
+    // -----------------------------------------------------------------------
+    /// Records when an operation fell through to default behavior without
+    /// being explicitly handled. This makes silent fallthroughs observable
+    /// so dashboards/logs can track unhandled routing, dispatch, or
+    /// configuration paths.
+    Fallthrough {
+        /// The subsystem where the fallthrough occurred (e.g. "dispatch",
+        /// "routing", "config", "gate").
+        subsystem: String,
+        /// A short identifier for the operation that fell through
+        /// (e.g. "model_selection", "template_routing").
+        operation: String,
+        /// Human-readable description of the default behavior chosen.
+        default_behavior: String,
+        /// Optional context about what input caused the fallthrough.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context: Option<String>,
+    },
+
+    // -----------------------------------------------------------------------
     // Extension (v2)
     // -----------------------------------------------------------------------
     /// Forward-compatible payload for third-party or experimental event data.
@@ -861,6 +882,7 @@ impl RuntimeEvent {
             | Self::ActualRecorded { .. }
             | Self::CorrectionApplied { .. }
             | Self::SequenceGap { .. }
+            | Self::Fallthrough { .. }
             | Self::Extension { .. } => "",
         }
     }
@@ -921,6 +943,7 @@ impl RuntimeEvent {
             Self::ActualRecorded { .. } => "actual_recorded",
             Self::CorrectionApplied { .. } => "correction_applied",
             Self::SequenceGap { .. } => "sequence_gap",
+            Self::Fallthrough { .. } => "fallthrough",
             Self::Extension { .. } => "extension",
         }
     }
@@ -985,6 +1008,7 @@ impl RuntimeEvent {
             | Self::ActualRecorded { .. }
             | Self::CorrectionApplied { .. }
             | Self::SequenceGap { .. }
+            | Self::Fallthrough { .. }
             | Self::Extension { .. } => RuntimeEventDelivery::Reliable,
         }
     }
@@ -1964,6 +1988,7 @@ mod tests {
             "actual_recorded",
             "correction_applied",
             "sequence_gap",
+            "fallthrough",
             "extension",
         ];
 
@@ -1973,7 +1998,34 @@ mod tests {
             assert!(seen.insert(kind), "duplicate kind: {kind}");
         }
 
-        // 27 v1 + 25 v2 = 52 total
-        assert_eq!(all_kinds.len(), 52);
+        // 27 v1 + 26 v2 = 53 total
+        assert_eq!(all_kinds.len(), 53);
+    }
+
+    #[test]
+    fn fallthrough_event_serde_roundtrip() {
+        let event = RuntimeEvent::Fallthrough {
+            subsystem: "dispatch".into(),
+            operation: "model_selection".into(),
+            default_behavior: "used default model claude-sonnet".into(),
+            context: Some("no provider override configured".into()),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let decoded: RuntimeEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, decoded);
+        assert_eq!(event.kind(), "fallthrough");
+        assert_eq!(event.delivery(), RuntimeEventDelivery::Reliable);
+
+        // Without context
+        let event_no_ctx = RuntimeEvent::Fallthrough {
+            subsystem: "routing".into(),
+            operation: "template_routing".into(),
+            default_behavior: "used mechanical template".into(),
+            context: None,
+        };
+        let json2 = serde_json::to_string(&event_no_ctx).unwrap();
+        assert!(!json2.contains("context"));
+        let decoded2: RuntimeEvent = serde_json::from_str(&json2).unwrap();
+        assert_eq!(event_no_ctx, decoded2);
     }
 }

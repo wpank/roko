@@ -434,8 +434,17 @@ pub struct WorkflowRunReport {
     pub output: String,
     /// Number of agent turns used.
     pub agent_turns: u32,
-    /// Total tokens used.
+    /// Total tokens used (sum of input + output; retained for backward compat).
     pub token_usage: u64,
+    /// Input tokens used (prompt/context).
+    #[serde(default)]
+    pub input_tokens: u64,
+    /// Output tokens used (completion/generation).
+    #[serde(default)]
+    pub output_tokens: u64,
+    /// Cache-read tokens (prompt tokens served from cache).
+    #[serde(default)]
+    pub cache_read_tokens: u64,
     /// Total cost, when known.
     pub cost: Option<f64>,
     /// Total runtime in seconds.
@@ -523,6 +532,9 @@ mod tests {
             output: "done".to_string(),
             agent_turns: 2,
             token_usage: 1000,
+            input_tokens: 600,
+            output_tokens: 400,
+            cache_read_tokens: 0,
             cost: Some(0.05),
             duration_secs: 12.5,
             gates: vec![],

@@ -44,7 +44,8 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
         | LearnCmd::Reflections { workdir, .. }
         | LearnCmd::Tools { workdir }
         | LearnCmd::FeedbackProof { workdir }
-        | LearnCmd::RoleCosts { workdir } => {
+        | LearnCmd::RoleCosts { workdir }
+        | LearnCmd::Graduation { workdir } => {
             workdir.clone().unwrap_or_else(|| resolve_workdir(cli))
         }
         LearnCmd::Experiments { workdir, cmd: sub } => {
@@ -174,6 +175,10 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
         LearnCmd::RoleCosts { workdir } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             cmd_learn_role_costs(&wd, json).await
+        }
+        LearnCmd::Graduation { workdir } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            cmd_learn_graduation(&wd, json).await
         }
         LearnCmd::Inspect { subsystem } => {
             let wd = inspect_workdir(cli, &subsystem);
@@ -2640,4 +2645,96 @@ mod tests {
         assert!(json.contains("\"total_events\":42"));
         assert!(json.contains("\"passed\":30"));
     }
+}
+
+// ── Graduation command (#334) ───────────────────────────────────────
+
+/// JSON output for `roko learn graduation --json`.
+#[derive(serde::Serialize)]
+struct GraduationJson {
+    policy_count: usize,
+    always_topics: Vec<String>,
+    never_topics: Vec<String>,
+    sample_topics: Vec<GraduationSampleEntry>,
+}
+
+#[derive(serde::Serialize)]
+struct GraduationSampleEntry {
+    topic: String,
+    sample_every: usize,
+}
+
+/// `roko learn graduation` -- show configured graduation policies and
+/// their evaluation semantics.
+async fn cmd_learn_graduation(workdir: &std::path::Path, json: bool) -> Result<i32> {
+    let config: roko_core::config::schema::RokoConfig =
+        roko_core::config::loader::load_config_unified(workdir).unwrap_or_default();
+
+    let grad_config = &config.graduation;
+    let policies = &grad_config.policies;
+
+    if json {
+        let mut always_topics = Vec::new();
+        let mut never_topics = Vec::new();
+        let mut sample_topics = Vec::new();
+
+        for policy in policies {
+            let topic_desc = format!("{:?}", policy.watch);
+            if policy.never {
+                never_topics.push(topic_desc);
+            } else if policy.always {
+                always_topics.push(topic_desc);
+            } else {
+                sample_topics.push(GraduationSampleEntry {
+                    topic: topic_desc,
+                    sample_every: policy.sample_every,
+                });
+            }
+        }
+
+        let output = GraduationJson {
+            policy_count: policies.len(),
+            always_topics,
+            never_topics,
+            sample_topics,
+        };
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!("Graduation policies ({} configured)", policies.len());
+        println!();
+
+        if policies.is_empty() {
+            println!("  No graduation policies configured.");
+            println!("  All Pulses will remain ephemeral (default: do not graduate).");
+        } else {
+            println!("  Precedence: never > always > sample_every > default (skip)");
+            println!();
+
+            for (i, policy) in policies.iter().enumerate() {
+                let mode = if policy.never {
+                    "NEVER"
+                } else if policy.always {
+                    "ALWAYS"
+                } else {
+                    "SAMPLE"
+                };
+
+                let sample_note = if !policy.always && !policy.never && policy.sample_every > 1 {
+                    format!(" (every {})", policy.sample_every)
+                } else {
+                    String::new()
+                };
+
+                println!(
+                    "  [{}] {:<8} {:?}{}",
+                    i + 1,
+                    mode,
+                    policy.watch,
+                    sample_note,
+                );
+            }
+        }
+    }
+
+    Ok(EXIT_SUCCESS)
 }

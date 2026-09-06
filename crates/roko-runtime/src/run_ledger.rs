@@ -108,6 +108,9 @@ impl RunLedger {
                 .unwrap_or_else(|| default_report_output(success)),
             agent_turns: agent_fields.agent_turns,
             token_usage: agent_fields.token_usage,
+            input_tokens: agent_fields.input_tokens,
+            output_tokens: agent_fields.output_tokens,
+            cache_read_tokens: agent_fields.cache_read_tokens,
             cost: agent_fields.cost(),
             duration_secs,
             gates,
@@ -258,6 +261,9 @@ fn gate_outcomes_from_events(events: &[RuntimeEventEnvelope]) -> Vec<GateOutcome
 struct AgentReportFields {
     agent_turns: u32,
     token_usage: u64,
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_read_tokens: u64,
     cost_total: f64,
     saw_cost: bool,
     output: Option<String>,
@@ -304,6 +310,17 @@ impl AgentReportFields {
     ) {
         self.output = Some(output.to_string());
         self.token_usage = self.token_usage.saturating_add(usage.total_tokens);
+        self.input_tokens = self.input_tokens.saturating_add(usage.input_tokens);
+        self.output_tokens = self.output_tokens.saturating_add(usage.output_tokens);
+        // Cache-read tokens: infer from input - output when total > input + output,
+        // or track explicitly when the provider reports cache_read_tokens.
+        // For now, accumulate the difference as an approximation.
+        let non_cache = usage.input_tokens.saturating_add(usage.output_tokens);
+        if usage.total_tokens > non_cache {
+            self.cache_read_tokens = self
+                .cache_read_tokens
+                .saturating_add(usage.total_tokens.saturating_sub(non_cache));
+        }
         self.cost_total += usage.cost_usd;
         self.saw_cost = true;
         if self.selected_agent.is_none() || role == "implementer" {

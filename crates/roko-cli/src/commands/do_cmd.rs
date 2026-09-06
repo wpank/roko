@@ -302,12 +302,24 @@ pub(crate) async fn cmd_do(
     };
     let route = resolve_do_route(&route_input);
 
-    tracing::debug!(
+    tracing::info!(
         ?route,
         template = route.template_name(),
         cost_band = route.cost_band(),
-        "resolved do route"
+        pipeline = route.pipeline_description(),
+        complexity_forced = forced,
+        "resolved do route (#278 deterministic template routing)"
     );
+
+    // #278 + #343: emit structured trace when complexity was auto-detected
+    // rather than user-specified. This makes silent routing observable.
+    if !forced {
+        tracing::info!(
+            complexity = ?complexity,
+            template = route.template_name(),
+            "auto-detected complexity -> template (no --complexity override)"
+        );
+    }
 
     match route {
         DoRoute::DryRun { ref inner } => {

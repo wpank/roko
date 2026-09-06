@@ -214,6 +214,7 @@ pub trait RunOutputSink: Send + Sync + fmt::Debug {
 
     /// A line of output was received from the agent process.
     /// Legacy compatibility method — prefer `agent_text_delta`.
+    /// **#342**: Scheduled for removal once all sinks use `agent_text_delta`.
     fn agent_line(&self, _plan_id: &str, _task_id: &str, _line: &str) {}
 }
 

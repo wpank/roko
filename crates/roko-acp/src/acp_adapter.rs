@@ -167,7 +167,8 @@ impl AcpAdapter {
             | RuntimeEvent::ActualRecorded { .. }
             | RuntimeEvent::CorrectionApplied { .. }
             | RuntimeEvent::SequenceGap { .. }
-            | RuntimeEvent::Extension { .. } => None,
+            | RuntimeEvent::Extension { .. }
+            | RuntimeEvent::Fallthrough { .. } => None,
         }
     }
 

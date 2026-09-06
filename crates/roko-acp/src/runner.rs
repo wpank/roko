@@ -1027,7 +1027,8 @@ impl CoreEventConsumer for AcpWorkflowEventConsumer {
             | CoreRuntimeEvent::ActualRecorded { .. }
             | CoreRuntimeEvent::CorrectionApplied { .. }
             | CoreRuntimeEvent::SequenceGap { .. }
-            | CoreRuntimeEvent::Extension { .. } => {}
+            | CoreRuntimeEvent::Extension { .. }
+            | CoreRuntimeEvent::Fallthrough { .. } => {}
         }
     }
 }

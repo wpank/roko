@@ -186,6 +186,7 @@ fn apply_event(summary: &mut RunSummary, event: &RuntimeEvent) {
         | RuntimeEvent::ActualRecorded { .. }
         | RuntimeEvent::CorrectionApplied { .. }
         | RuntimeEvent::SequenceGap { .. }
+        | RuntimeEvent::Fallthrough { .. }
         | RuntimeEvent::Extension { .. } => {}
     }
 }

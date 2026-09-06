@@ -199,13 +199,31 @@ impl InferenceRequest {
     }
 
     /// Text used for semantic caching and convergence fingerprints.
+    ///
+    /// P3-14: Includes a truncated hash of tool schemas when present so that
+    /// requests with different tool states do not collide in the L2 semantic
+    /// cache.
     #[must_use]
     pub fn semantic_text(&self) -> String {
-        self.messages
+        let mut text: String = self
+            .messages
             .iter()
             .map(|message| message.content.as_str())
             .collect::<Vec<_>>()
-            .join("\n")
+            .join("\n");
+        // Append a fingerprint of tool definitions when present.
+        if let Some(tools) = &self.tools {
+            if !tools.is_empty() {
+                use std::hash::{Hash, Hasher};
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                for tool in tools {
+                    tool.name.hash(&mut hasher);
+                }
+                let tool_hash = hasher.finish();
+                text.push_str(&format!("\n__tools:{tool_hash:016x}"));
+            }
+        }
+        text
     }
 }
 

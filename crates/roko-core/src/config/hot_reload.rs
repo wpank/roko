@@ -400,6 +400,40 @@ pub fn apply_hot_reload(
     }
 }
 
+/// P3-25: Append a timestamped JSON entry to the config journal.
+///
+/// Call this after `apply_hot_reload` or `config set` to maintain an
+/// audit trail of configuration changes.
+pub fn append_config_journal(
+    journal_path: &Path,
+    changes: &[ConfigChange],
+    source: &str,
+) -> io::Result<()> {
+    use std::io::Write;
+    if changes.is_empty() {
+        return Ok(());
+    }
+    let entry = serde_json::json!({
+        "timestamp": Utc::now().to_rfc3339(),
+        "source": source,
+        "changes": changes
+            .iter()
+            .map(|c| serde_json::json!({
+                "section": c.section,
+                "summary": c.summary,
+            }))
+            .collect::<Vec<_>>(),
+    });
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(journal_path)?;
+    serde_json::to_writer(&mut file, &entry)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    file.write_all(b"\n")?;
+    Ok(())
+}
+
 /// Pull the latest workspace config, validate it, diff it, and atomically
 /// apply only hot-reloadable sections to `current`.
 pub fn try_reload(current: &mut RokoConfig, workdir: &Path) -> Result<HotReloadResult, String> {

@@ -455,6 +455,23 @@ fn sanitize_playbook_id_component(text: &str) -> String {
     }
 }
 
+/// P3-31: Compute the fraction of steps shared between two playbooks.
+fn step_overlap(a: &Playbook, b: &Playbook) -> f64 {
+    if a.steps.is_empty() && b.steps.is_empty() {
+        return 0.0;
+    }
+    let a_set: std::collections::HashSet<&str> =
+        a.steps.iter().map(|s| s.description.as_str()).collect();
+    let b_set: std::collections::HashSet<&str> =
+        b.steps.iter().map(|s| s.description.as_str()).collect();
+    let intersection = a_set.intersection(&b_set).count();
+    let union = a_set.union(&b_set).count();
+    if union == 0 {
+        return 0.0;
+    }
+    intersection as f64 / union as f64
+}
+
 fn playbook_merge_query(playbook: &Playbook) -> String {
     let mut parts = Vec::new();
     if !playbook.goal.trim().is_empty() {
@@ -1120,6 +1137,68 @@ impl PlaybookStore {
             deprecated.push(playbook.id.clone());
         }
         Ok(deprecated)
+    }
+
+    /// P3-31: Prune playbooks with > `min_uses` uses and < `success_rate`
+    /// success rate. Returns the IDs of removed playbooks.
+    pub async fn prune_low_success(
+        &self,
+        min_uses: u64,
+        max_success_rate: f64,
+    ) -> io::Result<Vec<String>> {
+        let playbooks = self.list().await?;
+        let mut pruned = Vec::new();
+        for playbook in &playbooks {
+            let total = playbook.total_outcomes();
+            if total < min_uses {
+                continue;
+            }
+            let success_rate = playbook.success_count as f64 / total as f64;
+            if success_rate < max_success_rate {
+                self.delete(&playbook.id).await?;
+                pruned.push(playbook.id.clone());
+            }
+        }
+        Ok(pruned)
+    }
+
+    /// P3-31: Merge playbooks with >80% step overlap.
+    ///
+    /// When two playbooks share a supermajority of their steps, the lower-
+    /// performing one is deprecated and its outcomes are folded into the
+    /// surviving playbook. Returns the number of merges performed.
+    pub async fn merge_overlapping(&self, overlap_threshold: f64) -> io::Result<usize> {
+        let playbooks = self.list().await?;
+        let mut merged = 0usize;
+        let mut to_deprecate: Vec<String> = Vec::new();
+
+        for i in 0..playbooks.len() {
+            for j in (i + 1)..playbooks.len() {
+                if to_deprecate.contains(&playbooks[j].id) {
+                    continue;
+                }
+                let overlap = step_overlap(&playbooks[i], &playbooks[j]);
+                if overlap >= overlap_threshold {
+                    // Keep the one with more successes.
+                    let (keep, remove) = if playbooks[i].success_count >= playbooks[j].success_count
+                    {
+                        (&playbooks[i], &playbooks[j])
+                    } else {
+                        (&playbooks[j], &playbooks[i])
+                    };
+                    let mut kept = keep.clone();
+                    kept.success_count += remove.success_count;
+                    kept.failure_count += remove.failure_count;
+                    self.save(&kept).await?;
+                    to_deprecate.push(remove.id.clone());
+                    merged += 1;
+                }
+            }
+        }
+        for id in &to_deprecate {
+            self.delete(id).await?;
+        }
+        Ok(merged)
     }
 
     /// Delete the playbook stored under `id`. Returns `Ok(true)` if a file

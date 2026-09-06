@@ -123,6 +123,50 @@ pub struct LearningConfig {
     /// hardcoded cadence.
     #[serde(default = "default_gate_threshold_flush_interval")]
     pub gate_threshold_flush_interval: u64,
+    /// P3-26: Knowledge tier progression thresholds.
+    #[serde(default)]
+    pub knowledge: KnowledgeProgressionConfig,
+}
+
+/// P3-26: Configurable thresholds for knowledge tier promotion/demotion.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct KnowledgeProgressionConfig {
+    /// Confirmations needed for Transient -> Working promotion.
+    #[serde(default = "default_transient_confirmations")]
+    pub transient_confirmations: u32,
+    /// Distinct contexts needed for Working -> Consolidated promotion.
+    #[serde(default = "default_working_contexts")]
+    pub working_contexts: u32,
+    /// Minimum age in days for Consolidated -> Persistent promotion.
+    #[serde(default = "default_consolidated_age_days")]
+    pub consolidated_age_days: u32,
+    /// Minimum balance for demotion consideration.
+    #[serde(default = "default_demotion_balance")]
+    pub demotion_balance_threshold: f64,
+}
+
+const fn default_transient_confirmations() -> u32 {
+    2
+}
+const fn default_working_contexts() -> u32 {
+    3
+}
+const fn default_consolidated_age_days() -> u32 {
+    14
+}
+fn default_demotion_balance() -> f64 {
+    0.1
+}
+
+impl Default for KnowledgeProgressionConfig {
+    fn default() -> Self {
+        Self {
+            transient_confirmations: default_transient_confirmations(),
+            working_contexts: default_working_contexts(),
+            consolidated_age_days: default_consolidated_age_days(),
+            demotion_balance_threshold: default_demotion_balance(),
+        }
+    }
 }
 
 fn default_lookahead_threshold() -> f64 {
@@ -173,6 +217,7 @@ impl Default for LearningConfig {
             lookahead_threshold: default_lookahead_threshold(),
             override_learning_dampening: None,
             gate_threshold_flush_interval: default_gate_threshold_flush_interval(),
+            knowledge: KnowledgeProgressionConfig::default(),
         }
     }
 }

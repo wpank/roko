@@ -446,6 +446,10 @@ impl KnowledgeCandidateRecord {
             frozen_at: None,
             falsifier: None,
             catalytic_score: 0,
+            hdc_encoder_version: 0,
+            access_count: 0,
+            last_accessed: None,
+            activation_conditions: Vec::new(),
         }
     }
 }
@@ -1871,6 +1875,10 @@ mod tests {
             frozen_at: None,
             falsifier: None,
             catalytic_score: 0,
+            hdc_encoder_version: 0,
+            access_count: 0,
+            last_accessed: None,
+            activation_conditions: Vec::new(),
         }
     }
 

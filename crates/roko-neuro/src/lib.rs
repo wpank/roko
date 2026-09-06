@@ -340,6 +340,37 @@ impl EmotionalProvenance {
     }
 }
 
+/// P3-30: Condition that must be satisfied for a knowledge entry to
+/// be surfaced during context-pack assembly.
+///
+/// Entries with non-matching conditions are silenced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivationCondition {
+    /// Only surface when using a model from this family (e.g. "claude", "gpt").
+    ModelFamily(String),
+    /// Only surface for this task type (e.g. "implementation", "review").
+    TaskType(String),
+    /// Only surface when domain tag matches.
+    DomainTag(String),
+    /// Only surface for this programming language.
+    Language(String),
+}
+
+impl ActivationCondition {
+    /// Check whether this condition is satisfied by the given context.
+    pub fn matches(&self, model: &str, task_type: &str, domain: &str, language: &str) -> bool {
+        match self {
+            Self::ModelFamily(family) => {
+                model.to_ascii_lowercase().contains(&family.to_ascii_lowercase())
+            }
+            Self::TaskType(ty) => task_type.eq_ignore_ascii_case(ty),
+            Self::DomainTag(tag) => domain.eq_ignore_ascii_case(tag),
+            Self::Language(lang) => language.eq_ignore_ascii_case(lang),
+        }
+    }
+}
+
 /// A durable unit of knowledge used for retrieval and memory.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KnowledgeEntry {
@@ -453,6 +484,22 @@ pub struct KnowledgeEntry {
     /// (self-sustaining growth).
     #[serde(default)]
     pub catalytic_score: u32,
+    /// P3-11: Encoder version used to produce `hdc_vector`.
+    ///
+    /// When the current encoder version does not match, the entry's HDC
+    /// vector is skipped during similarity queries to avoid spurious matches.
+    /// Set to `ENCODER_VERSION_TEXT_V1` at creation time.
+    #[serde(default)]
+    pub hdc_encoder_version: u32,
+    /// P3-13: Number of times this entry was accessed by a query.
+    #[serde(default)]
+    pub access_count: u64,
+    /// P3-13: Timestamp of the most recent query access.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_accessed: Option<DateTime<Utc>>,
+    /// P3-30: Activation conditions controlling when this entry is surfaced.
+    #[serde(default)]
+    pub activation_conditions: Vec<ActivationCondition>,
 }
 
 impl Default for KnowledgeEntry {
@@ -487,6 +534,10 @@ impl Default for KnowledgeEntry {
             frozen_at: None,
             falsifier: None,
             catalytic_score: 0,
+            hdc_encoder_version: 0,
+            access_count: 0,
+            last_accessed: None,
+            activation_conditions: Vec::new(),
         }
     }
 }
@@ -1591,6 +1642,10 @@ mod tests {
             frozen_at: None,
             falsifier: None,
             catalytic_score: 0,
+            hdc_encoder_version: 0,
+            access_count: 0,
+            last_accessed: None,
+            activation_conditions: Vec::new(),
         };
 
         assert_eq!(entry.effective_half_life_days(), 100.0);

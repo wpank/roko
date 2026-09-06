@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 
+use roko_core::phase::FailureKind;
 use roko_core::ConductorDecision;
 use serde::{Deserialize, Serialize};
 
@@ -196,15 +197,36 @@ impl PlanConductor {
 
 // ── L4: FleetConductor ─────────────────────────────────────────────────
 
-/// Cross-agent fleet conductor (L4, Phase 2+ stub).
+/// P3-19: Cross-agent fleet conductor (L4).
 ///
-/// Coordinates across multiple agents. Currently a passthrough.
+/// Coordinates across multiple agents by tracking active count,
+/// fleet-wide budget, and failure rate. Emits fail decision or
+/// reduces parallelism when thresholds are exceeded.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FleetConductor {
     /// Number of active agents in the fleet.
     pub active_agents: usize,
     /// Fleet-wide budget remaining.
     pub fleet_budget_remaining: f64,
+    /// P3-19: Maximum concurrent agents (0 = unlimited).
+    #[serde(default)]
+    pub max_concurrent_agents: usize,
+    /// P3-19: Consecutive fleet-wide failures.
+    #[serde(default)]
+    pub consecutive_fleet_failures: u32,
+    /// P3-19: Fleet-wide failure rate threshold (default 0.5).
+    #[serde(default = "default_fleet_failure_threshold")]
+    pub failure_rate_threshold: f64,
+    /// P3-19: Total tasks completed.
+    #[serde(default)]
+    pub total_completed: u64,
+    /// P3-19: Total tasks failed.
+    #[serde(default)]
+    pub total_failed: u64,
+}
+
+fn default_fleet_failure_threshold() -> f64 {
+    0.5
 }
 
 impl FleetConductor {
@@ -214,12 +236,76 @@ impl FleetConductor {
         Self {
             active_agents: 0,
             fleet_budget_remaining: fleet_budget,
+            max_concurrent_agents: 0,
+            consecutive_fleet_failures: 0,
+            failure_rate_threshold: default_fleet_failure_threshold(),
+            total_completed: 0,
+            total_failed: 0,
         }
     }
 
-    /// Evaluate fleet-level health. Currently always continues.
+    /// Record a task outcome.
+    pub fn record_outcome(&mut self, succeeded: bool) {
+        self.total_completed += 1;
+        if succeeded {
+            self.consecutive_fleet_failures = 0;
+        } else {
+            self.total_failed += 1;
+            self.consecutive_fleet_failures =
+                self.consecutive_fleet_failures.saturating_add(1);
+        }
+    }
+
+    /// Update the active agent count.
+    pub fn set_active_agents(&mut self, count: usize) {
+        self.active_agents = count;
+    }
+
+    /// Deduct cost from the fleet budget.
+    pub fn deduct_cost(&mut self, amount_usd: f64) {
+        self.fleet_budget_remaining -= amount_usd;
+    }
+
+    /// P3-19: Fleet-wide failure rate.
+    #[must_use]
+    pub fn failure_rate(&self) -> f64 {
+        if self.total_completed == 0 {
+            0.0
+        } else {
+            self.total_failed as f64 / self.total_completed as f64
+        }
+    }
+
+    /// P3-19: Evaluate fleet-level health.
+    ///
+    /// Returns a fail decision when:
+    /// - Budget is exhausted
+    /// - 5+ consecutive fleet failures
+    /// - Failure rate exceeds threshold with enough samples
     #[must_use]
     pub fn evaluate(&self) -> ConductorDecision {
+        if self.fleet_budget_remaining <= 0.0 {
+            return ConductorDecision::fail(
+                "fleet-conductor",
+                FailureKind::Other("fleet budget exhausted".into()),
+            );
+        }
+        if self.consecutive_fleet_failures >= 5 {
+            return ConductorDecision::fail(
+                "fleet-conductor",
+                FailureKind::Other("5+ consecutive fleet-wide failures".into()),
+            );
+        }
+        if self.total_completed >= 5 && self.failure_rate() > self.failure_rate_threshold {
+            return ConductorDecision::restart(
+                "fleet-conductor",
+                &format!(
+                    "fleet failure rate {:.0}% exceeds {:.0}% threshold",
+                    self.failure_rate() * 100.0,
+                    self.failure_rate_threshold * 100.0,
+                ),
+            );
+        }
         ConductorDecision::cont()
     }
 }

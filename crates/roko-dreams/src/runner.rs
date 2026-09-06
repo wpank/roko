@@ -1074,6 +1074,37 @@ impl DreamRunner {
         self.workdir.join(".roko").join("dreams")
     }
 
+    /// P3-21: Rotate dream reports, keeping at most `max` files.
+    ///
+    /// Removes the oldest reports beyond the limit.
+    pub fn rotate_dream_reports(&self, max: usize) -> std::io::Result<usize> {
+        let dir = self.report_dir();
+        if !dir.is_dir() {
+            return Ok(0);
+        }
+        let mut files: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let meta = entry.metadata()?;
+            if meta.is_file() {
+                let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+                files.push((entry.path(), mtime));
+            }
+        }
+        if files.len() <= max {
+            return Ok(0);
+        }
+        files.sort_by_key(|(_, mtime)| *mtime);
+        let to_remove = files.len() - max;
+        let mut removed = 0;
+        for (path, _) in files.into_iter().take(to_remove) {
+            if std::fs::remove_file(&path).is_ok() {
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+
     fn heartbeat_snapshot(
         &self,
         episodes: &[Episode],

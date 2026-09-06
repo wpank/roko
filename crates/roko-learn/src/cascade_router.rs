@@ -20,7 +20,10 @@
 //! The cascade wraps a [`LinUCBRouter`] and an additional
 //! [`parking_lot::Mutex`] for confidence-stage statistics.
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
+
+/// P3-07: Default cost-pressure hysteresis duration in seconds (5 minutes).
+const COST_HYSTERESIS_SECS: i64 = 300;
 use indexmap::IndexMap;
 use parking_lot::Mutex;
 use roko_agent::AgentResult;
@@ -118,6 +121,10 @@ pub struct CascadeRouter {
     ///
     /// Default: 0.2.
     verdict_blend_weight: f32,
+    /// P3-07: Cost pressure hysteresis deadline.
+    ///
+    /// After a cost spike, pressure continues until this timestamp passes.
+    cost_pressure_until: Mutex<Option<DateTime<Utc>>>,
 }
 
 impl std::fmt::Debug for CascadeRouter {
@@ -215,6 +222,7 @@ impl CascadeRouter {
             free_tier_shadow_runner: None,
             verdict_history: Mutex::new(VerdictHistory::new()),
             verdict_blend_weight: 0.2,
+            cost_pressure_until: Mutex::new(None),
         }
     }
 
@@ -1038,8 +1046,26 @@ impl CascadeRouter {
     }
 
     /// Apply cost pressure to scored candidates.
+    ///
+    /// P3-07: Added hysteresis via `cool_down_until`. When a cost spike is
+    /// detected the cool-down is set to `now + cool_down_after`. Pressure
+    /// continues to apply until the cool-down expires, preventing oscillation
+    /// between cheap and expensive models.
     pub fn apply_cost_pressure(&self, candidates: &mut [(String, f64)], spike: bool) {
-        if !spike {
+        let now = Utc::now();
+        let pressure_active = if spike {
+            // Record a new cool-down timestamp (default 5 minutes).
+            let until = now + chrono::Duration::seconds(COST_HYSTERESIS_SECS);
+            *self.cost_pressure_until.lock() = Some(until);
+            true
+        } else {
+            // Check whether the cool-down is still active.
+            self.cost_pressure_until
+                .lock()
+                .map_or(false, |until| now < until)
+        };
+
+        if !pressure_active {
             return;
         }
 

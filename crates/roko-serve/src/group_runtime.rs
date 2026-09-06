@@ -800,6 +800,35 @@ impl GroupRuntime {
         Ok(values)
     }
 
+    /// P3-18: Return pheromones aggregated by `signal_type`.
+    ///
+    /// When multiple depositors emit the same `signal_type`, this collapses
+    /// them into a single entry with `balance = sum(individual balances)`,
+    /// capped at 1.0.
+    pub async fn aggregated_pheromones(
+        &self,
+        group_id: &GroupId,
+        actor: &str,
+    ) -> Result<Vec<PheromoneView>, GroupRuntimeError> {
+        let raw = self.pheromones(group_id, actor, None, None).await?;
+        let mut aggregated: std::collections::BTreeMap<String, PheromoneView> =
+            std::collections::BTreeMap::new();
+        for view in raw {
+            let key = view.pheromone.signal_type.clone();
+            aggregated
+                .entry(key)
+                .and_modify(|existing| {
+                    existing.balance = (existing.balance + view.balance).min(1.0);
+                    if view.last_touched_at > existing.last_touched_at {
+                        existing.last_touched_at = view.last_touched_at;
+                        existing.pheromone.metadata = view.pheromone.metadata.clone();
+                    }
+                })
+                .or_insert(view);
+        }
+        Ok(aggregated.into_values().collect())
+    }
+
     /// Return durable group events visible to the caller.
     pub async fn events(
         &self,

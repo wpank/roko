@@ -1015,6 +1015,17 @@ pub enum DrainReason {
     Other(String),
 }
 
+/// P3-29: Pending successor proposal generated during drain.
+#[derive(Debug, Clone)]
+pub struct SuccessorProposal {
+    /// The parent agent's core manifest.
+    pub parent_manifest: AgentCoreManifest,
+    /// Human-readable reason for the succession.
+    pub reason: String,
+    /// When the proposal was generated.
+    pub proposed_at: Instant,
+}
+
 /// Ordered shutdown steps performed during a graceful drain.
 ///
 /// Each step must be completed in sequence before the drain can finish.
@@ -1297,6 +1308,7 @@ impl Ready {
             capabilities: self.capabilities,
             started_at: Instant::now(),
             tick_count: 0,
+            max_ticks: None,
         }
     }
 }
@@ -1312,13 +1324,35 @@ pub struct Running {
     pub started_at: Instant,
     /// Number of real cognitive ticks completed by the caller.
     pub tick_count: u64,
+    /// P3-28: Optional maximum ticks (Hayflick limit).
+    ///
+    /// When set, `record_completed_tick` returns `TickLimitReached` once
+    /// `tick_count >= max_ticks`.
+    pub max_ticks: Option<u64>,
+}
+
+/// P3-28: Result of recording a tick — either Ok or limit reached.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TickResult {
+    /// Tick recorded, within budget.
+    Ok(u64),
+    /// The Hayflick limit has been reached.
+    TickLimitReached(u64),
 }
 
 impl Running {
     /// Record one completed cognitive tick, saturating at `u64::MAX`.
-    pub fn record_completed_tick(&mut self) -> u64 {
+    ///
+    /// P3-28: Returns `TickLimitReached` when `max_ticks` is set and
+    /// the limit has been reached.
+    pub fn record_completed_tick(&mut self) -> TickResult {
         self.tick_count = self.tick_count.saturating_add(1);
-        self.tick_count
+        if let Some(max) = self.max_ticks {
+            if self.tick_count >= max {
+                return TickResult::TickLimitReached(self.tick_count);
+            }
+        }
+        TickResult::Ok(self.tick_count)
     }
 
     /// Begin an orderly drain with tracked shutdown steps.
@@ -1389,6 +1423,25 @@ impl Draining {
     #[must_use]
     pub fn completed_steps(&self) -> &[ShutdownStep] {
         self.progress.completed_steps()
+    }
+
+    /// P3-29: Generate a successor proposal before completing the drain.
+    ///
+    /// When the drain reason is budget exhaustion or tick limit, this
+    /// produces a pending successor manifest that the orchestrator can
+    /// activate later.
+    #[must_use]
+    pub fn successor_proposal(&self) -> Option<SuccessorProposal> {
+        let reason_tag = match &self.reason {
+            DrainReason::BudgetExhausted => "budget_exhaustion",
+            DrainReason::OperatorRequest => return None,
+            _ => "other",
+        };
+        Some(SuccessorProposal {
+            parent_manifest: self.manifest.clone(),
+            reason: reason_tag.to_string(),
+            proposed_at: std::time::Instant::now(),
+        })
     }
 
     /// Complete the drain with an optional durable backup reference.
@@ -3425,8 +3478,8 @@ mod tests {
             .expect("valid runtime inputs");
         let mut running = bootstrapping.bootstrap_complete().start();
 
-        assert_eq!(running.record_completed_tick(), 1);
-        assert_eq!(running.record_completed_tick(), 2);
+        assert_eq!(running.record_completed_tick(), TickResult::Ok(1));
+        assert_eq!(running.record_completed_tick(), TickResult::Ok(2));
         let mut draining = running.drain(DrainReason::OperatorRequest);
         for step in ShutdownStep::ALL {
             draining.complete_step(step).expect("step should succeed");

@@ -140,6 +140,24 @@ impl CFactorGovernance {
         (values.len() >= 2).then(|| values[values.len() - 1] - values[0])
     }
 
+    /// P3-03: Returns `true` when the most recent `n` snapshots show a
+    /// monotonically declining overall score.
+    #[must_use]
+    pub fn is_declining_streak(&self, n: usize) -> bool {
+        if self.snapshots.len() < n {
+            return false;
+        }
+        let recent: Vec<f64> = self
+            .snapshots
+            .iter()
+            .rev()
+            .take(n)
+            .map(|s| s.overall)
+            .collect();
+        // Check monotonic decline (most recent first, so reversed order).
+        recent.windows(2).all(|w| w[0] < w[1])
+    }
+
     /// Compute non-binding recommendations from sustained evidence.
     #[must_use]
     pub fn recommendations(&self) -> Vec<CFactorRecommendation> {
@@ -526,12 +544,16 @@ pub fn compute_cfactor(
         return CFactor::default();
     }
 
+    // P3-05: Deduplicate episodes by (plan_id, task_id, attempt) before
+    // computing c-factor to prevent resumed plans from inflating statistics.
+    let deduped = deduplicate_episodes(episodes);
+
     let cutoff = match chrono::Duration::from_std(window) {
         Ok(delta) => Utc::now() - delta,
         Err(_) => DateTime::<Utc>::MIN_UTC,
     };
 
-    let filtered: Vec<&Episode> = episodes
+    let filtered: Vec<&Episode> = deduped
         .iter()
         .filter(|episode| episode.timestamp >= cutoff)
         .collect();
@@ -1301,6 +1323,45 @@ fn task_key(episode: &Episode) -> String {
     } else {
         task_id.to_string()
     }
+}
+
+/// P3-05: Deduplicate episodes by `(plan_id, task_id, attempt)`.
+///
+/// When a plan is resumed, the same `(plan_id, task_id, attempt)` may appear
+/// more than once. This keeps only the latest episode per unique key so that
+/// c-factor and compounding metrics are not inflated.
+pub fn deduplicate_episodes(episodes: &[Episode]) -> Vec<Episode> {
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    let mut result: Vec<Episode> = Vec::with_capacity(episodes.len());
+    for episode in episodes {
+        let plan_id = episode
+            .extra
+            .get("plan_id")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let attempt = episode
+            .extra
+            .get("attempt")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let task_id = episode.task_id.trim();
+        // Episodes without plan/task context are always kept (no dedup key).
+        if plan_id.is_empty() && task_id.is_empty() {
+            result.push(episode.clone());
+            continue;
+        }
+        let key = format!("{plan_id}:{task_id}:{attempt}");
+        if let Some(idx) = seen.get(&key) {
+            // Keep the one with the later timestamp.
+            if episode.timestamp > result[*idx].timestamp {
+                result[*idx] = episode.clone();
+            }
+        } else {
+            seen.insert(key, result.len());
+            result.push(episode.clone());
+        }
+    }
+    result
 }
 
 fn episode_duration_ms(episode: &Episode) -> f64 {

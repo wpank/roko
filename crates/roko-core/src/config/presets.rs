@@ -115,6 +115,7 @@ fn minimal() -> RokoConfig {
             override_learning_dampening: None,
             gate_threshold_flush_interval:
                 crate::config::learning::DEFAULT_GATE_THRESHOLD_FLUSH_INTERVAL,
+            knowledge: Default::default(),
         },
         ..RokoConfig::default()
     }
@@ -185,6 +186,7 @@ fn thorough() -> RokoConfig {
             override_learning_dampening: None,
             gate_threshold_flush_interval:
                 crate::config::learning::DEFAULT_GATE_THRESHOLD_FLUSH_INTERVAL,
+            knowledge: Default::default(),
         },
         ..RokoConfig::default()
     }

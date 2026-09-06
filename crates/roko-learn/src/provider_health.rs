@@ -98,7 +98,7 @@ pub struct FailureRecord {
 }
 
 /// Serializable per-provider health snapshot.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProviderHealth {
     /// Stable provider identifier.
     pub provider_id: String,
@@ -128,6 +128,9 @@ pub struct ProviderHealth {
     /// persisted snapshots without this field load cleanly.
     #[serde(default)]
     pub recent_outcomes: VecDeque<bool>,
+    /// P3-09: Cumulative cost in USD of failed requests (wasted spend).
+    #[serde(default)]
+    pub wasted_cost_usd: f64,
 }
 
 impl ProviderHealth {
@@ -202,6 +205,31 @@ impl ProviderHealth {
         }
     }
 
+    /// P3-09: Record a failure with associated cost attribution.
+    ///
+    /// Delegates to [`Self::record_failure`] and adds the cost to `wasted_cost_usd`.
+    pub fn record_failure_with_cost(
+        &mut self,
+        error: ErrorClass,
+        now_ms: i64,
+        cost_usd: f64,
+    ) {
+        self.record_failure(error, now_ms);
+        self.wasted_cost_usd += cost_usd;
+    }
+
+    /// P3-09: Ratio of wasted cost to an estimated total spend.
+    ///
+    /// Returns `0.0` when `total_spend_usd` is zero.
+    #[must_use]
+    pub fn wasted_cost_ratio(&self, total_spend_usd: f64) -> f64 {
+        if total_spend_usd <= 0.0 {
+            0.0
+        } else {
+            (self.wasted_cost_usd / total_spend_usd).min(1.0)
+        }
+    }
+
     /// Return whether the provider can receive a request at `now_ms`.
     ///
     /// When an open circuit's cooldown expires, the state advances to
@@ -235,7 +263,7 @@ impl ProviderHealth {
 }
 
 /// Persisted registry snapshot for loading and saving provider health.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 struct ProviderHealthRegistrySnapshot {
     /// Per-provider health snapshots keyed by provider id.
     providers: HashMap<String, ProviderHealth>,
@@ -573,6 +601,7 @@ fn new_provider_health(provider_id: &str) -> ProviderHealth {
         cooldown_until: None,
         failure_window: VecDeque::new(),
         recent_outcomes: VecDeque::new(),
+        wasted_cost_usd: 0.0,
     }
 }
 
@@ -1301,6 +1330,7 @@ mod tests {
                 },
             ]),
             recent_outcomes: VecDeque::new(),
+            wasted_cost_usd: 0.0,
         };
 
         let json = serde_json::to_string(&health).expect("serialize provider health");
@@ -1329,6 +1359,7 @@ mod tests {
             cooldown_until: None,
             failure_window: VecDeque::new(),
             recent_outcomes: VecDeque::new(),
+            wasted_cost_usd: 0.0,
         };
 
         health.record_failure(ErrorClass::Timeout, 1_000);
@@ -1362,6 +1393,7 @@ mod tests {
             cooldown_until: None,
             failure_window: VecDeque::new(),
             recent_outcomes: VecDeque::new(),
+            wasted_cost_usd: 0.0,
         };
 
         health.record_failure(ErrorClass::RateLimit, 10);
@@ -1749,6 +1781,7 @@ mod tests {
             cooldown_until: Some(33_000),
             failure_window: window,
             recent_outcomes: VecDeque::new(),
+            wasted_cost_usd: 0.0,
         };
 
         let json = serde_json::to_string_pretty(&health).unwrap();

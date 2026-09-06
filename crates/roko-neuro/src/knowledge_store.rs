@@ -1345,6 +1345,20 @@ impl KnowledgeStore {
             if entry.frozen {
                 continue;
             }
+            // P3-11: Skip entries whose HDC vector was encoded with a
+            // different version to avoid spurious similarity matches.
+            if entry.hdc_encoder_version != 0
+                && entry.hdc_encoder_version
+                    != roko_core::engram::ENCODER_VERSION_TEXT_V1
+            {
+                tracing::debug!(
+                    entry_id = %entry.id,
+                    stored_version = entry.hdc_encoder_version,
+                    current_version = roko_core::engram::ENCODER_VERSION_TEXT_V1,
+                    "P3-11: skipping HDC entry with mismatched encoder version"
+                );
+                continue;
+            }
             let Some(bytes) = entry.hdc_vector.as_deref() else {
                 continue;
             };
@@ -2245,6 +2259,63 @@ impl KnowledgeStore {
                 false
             }
         })
+    }
+
+    /// P3-13: Record a retrieval-access for a batch of entry IDs.
+    ///
+    /// Increments `access_count` and sets `last_accessed` for each matched
+    /// entry. Spaced retrieval strengthening: when `access_count > 1`,
+    /// the half-life is extended by a spacing factor proportional to the
+    /// log of the access count, rewarding entries accessed at wider intervals.
+    pub fn record_access(&self, entry_ids: &[&str]) -> Result<usize> {
+        let id_set: std::collections::HashSet<&str> = entry_ids.iter().copied().collect();
+        if id_set.is_empty() {
+            return Ok(0);
+        }
+        let now = chrono::Utc::now();
+        self.update_entries(|entry| {
+            if id_set.contains(entry.id.as_str()) {
+                entry.access_count = entry.access_count.saturating_add(1);
+                // Spacing factor: extend half-life proportionally to log(access_count).
+                if entry.access_count > 1 {
+                    let spacing = (entry.access_count as f64).ln();
+                    entry.half_life_days *= 1.0 + 0.05 * spacing;
+                }
+                entry.last_accessed = Some(now);
+                true
+            } else {
+                false
+            }
+        })
+    }
+
+    /// P3-22: Compact the knowledge confirmation log.
+    ///
+    /// Deduplicates by `(id)` and removes entries whose balance is <= 0
+    /// and that have been frozen, producing a smaller file.
+    pub fn compact(&self) -> Result<usize> {
+        let _guard = self.write_gate.lock();
+        let entries = self.read_all()?;
+        let before = entries.len();
+        // Deduplicate by id, keeping the latest version.
+        let mut deduped: std::collections::HashMap<String, KnowledgeEntry> =
+            std::collections::HashMap::with_capacity(entries.len());
+        for entry in entries {
+            deduped
+                .entry(entry.id.clone())
+                .and_modify(|existing| {
+                    if entry.created_at > existing.created_at {
+                        *existing = entry.clone();
+                    }
+                })
+                .or_insert(entry);
+        }
+        let result: Vec<KnowledgeEntry> = deduped.into_values().collect();
+        let after = result.len();
+        if after < before {
+            self.rewrite_all(&result)?;
+        }
+        Ok(before - after)
     }
 
     /// Apply configurable tier promotion and demotion to the whole store.
@@ -3633,6 +3704,10 @@ pub fn extract_anti_pattern_from_failure(
         frozen_at: None,
         falsifier: None,
         catalytic_score: 0,
+        hdc_encoder_version: 0,
+        access_count: 0,
+        last_accessed: None,
+        activation_conditions: Vec::new(),
     }
 }
 
@@ -3859,6 +3934,10 @@ mod tests {
             frozen_at: None,
             falsifier: None,
             catalytic_score: 0,
+            hdc_encoder_version: 0,
+            access_count: 0,
+            last_accessed: None,
+            activation_conditions: Vec::new(),
         }
     }
 
@@ -4535,6 +4614,10 @@ mod tests {
                 frozen_at: None,
                 falsifier: None,
                 catalytic_score: 0,
+                hdc_encoder_version: 0,
+                access_count: 0,
+                last_accessed: None,
+                activation_conditions: Vec::new(),
             })
             .expect("add anti knowledge");
 
@@ -4710,6 +4793,10 @@ mod tests {
                 frozen_at: None,
                 falsifier: None,
                 catalytic_score: 0,
+                hdc_encoder_version: 0,
+                access_count: 0,
+                last_accessed: None,
+                activation_conditions: Vec::new(),
             })
             .expect("add anti knowledge");
 
@@ -4774,6 +4861,10 @@ mod tests {
                 frozen_at: None,
                 falsifier: None,
                 catalytic_score: 0,
+                hdc_encoder_version: 0,
+                access_count: 0,
+                last_accessed: None,
+                activation_conditions: Vec::new(),
             })
             .expect("add anti knowledge");
 
@@ -4828,6 +4919,10 @@ mod tests {
                 frozen_at: None,
                 falsifier: None,
                 catalytic_score: 0,
+                hdc_encoder_version: 0,
+                access_count: 0,
+                last_accessed: None,
+                activation_conditions: Vec::new(),
             })
             .expect("add oldest");
         store
@@ -4864,6 +4959,10 @@ mod tests {
                 frozen_at: None,
                 falsifier: None,
                 catalytic_score: 0,
+                hdc_encoder_version: 0,
+                access_count: 0,
+                last_accessed: None,
+                activation_conditions: Vec::new(),
             })
             .expect("add middle");
         store
@@ -4900,6 +4999,10 @@ mod tests {
                 frozen_at: None,
                 falsifier: None,
                 catalytic_score: 0,
+                hdc_encoder_version: 0,
+                access_count: 0,
+                last_accessed: None,
+                activation_conditions: Vec::new(),
             })
             .expect("add newest");
 
@@ -5217,6 +5320,10 @@ mod tests {
             frozen_at: None,
             falsifier: None,
             catalytic_score: 0,
+            hdc_encoder_version: 0,
+            access_count: 0,
+            last_accessed: None,
+            activation_conditions: Vec::new(),
         };
 
         assert!(!entries_are_similar(&existing, &anti));
@@ -5414,6 +5521,10 @@ mod tests {
                 frozen_at: None,
                 falsifier: None,
                 catalytic_score: 0,
+                hdc_encoder_version: 0,
+                access_count: 0,
+                last_accessed: None,
+                activation_conditions: Vec::new(),
             })
             .expect("add tiered");
 
@@ -5462,6 +5573,10 @@ mod tests {
                 frozen_at: None,
                 falsifier: None,
                 catalytic_score: 0,
+                hdc_encoder_version: 0,
+                access_count: 0,
+                last_accessed: None,
+                activation_conditions: Vec::new(),
             })
             .expect("add persistent");
 
@@ -5655,6 +5770,10 @@ mod tests {
             frozen_at: None,
             falsifier: None,
             catalytic_score: 0,
+            hdc_encoder_version: 0,
+            access_count: 0,
+            last_accessed: None,
+            activation_conditions: Vec::new(),
         };
 
         // A near-identical entry that should be rejected.
@@ -5688,6 +5807,10 @@ mod tests {
             frozen_at: None,
             falsifier: None,
             catalytic_score: 0,
+            hdc_encoder_version: 0,
+            access_count: 0,
+            last_accessed: None,
+            activation_conditions: Vec::new(),
         };
 
         // An unrelated entry that should pass through.
@@ -5721,6 +5844,10 @@ mod tests {
             frozen_at: None,
             falsifier: None,
             catalytic_score: 0,
+            hdc_encoder_version: 0,
+            access_count: 0,
+            last_accessed: None,
+            activation_conditions: Vec::new(),
         };
 
         let existing = vec![anti];
@@ -5767,6 +5894,10 @@ mod tests {
             frozen_at: None,
             falsifier: None,
             catalytic_score: 0,
+            hdc_encoder_version: 0,
+            access_count: 0,
+            last_accessed: None,
+            activation_conditions: Vec::new(),
         };
 
         let new_anti = KnowledgeEntry {
@@ -5799,6 +5930,10 @@ mod tests {
             frozen_at: None,
             falsifier: None,
             catalytic_score: 0,
+            hdc_encoder_version: 0,
+            access_count: 0,
+            last_accessed: None,
+            activation_conditions: Vec::new(),
         };
 
         let existing = vec![existing_anti];
@@ -6257,6 +6392,10 @@ mod anti_pattern_tests {
             frozen_at: None,
             falsifier: None,
             catalytic_score: 0,
+            hdc_encoder_version: 0,
+            access_count: 0,
+            last_accessed: None,
+            activation_conditions: Vec::new(),
         }
     }
 

@@ -7170,6 +7170,7 @@ mod tests {
             cooldown_until: Some(108_000),
             failure_window: std::collections::VecDeque::new(),
             recent_outcomes: std::collections::VecDeque::new(),
+            wasted_cost_usd: 0.0,
         };
         let latency = ProviderLatencySummary {
             recent_latencies: vec![800.0, 1_200.0, 600.0],

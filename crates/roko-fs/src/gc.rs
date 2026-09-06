@@ -142,6 +142,10 @@ impl GcEngine {
         self.scan_episodes(&mut report).await?;
         self.scan_jsonl_archives(&mut report).await?;
         self.scan_cache(&mut report).await?;
+        // P3-20: Scan for stale state-snapshot backups.
+        self.scan_snapshot_backups(&mut report).await?;
+        // P3-23: Scan for roko.log.* archive files.
+        self.scan_log_archives(&mut report).await?;
 
         report.total_bytes = report.candidates.iter().map(|c| c.size_bytes).sum();
         Ok(report)
@@ -349,6 +353,86 @@ impl GcEngine {
             }
         }
 
+        Ok(())
+    }
+
+    /// P3-20: Scan `state/` for `state-snapshot.json.bak.*` files.
+    ///
+    /// Keeps the 3 most recent backups and flags older ones for removal.
+    async fn scan_snapshot_backups(&self, report: &mut GcReport) -> std::io::Result<()> {
+        let state_dir = self.layout.state_dir();
+        if !state_dir.is_dir() {
+            return Ok(());
+        }
+        const KEEP_BACKUPS: usize = 3;
+        let mut backups: Vec<(PathBuf, std::time::SystemTime, u64)> = Vec::new();
+        let mut dir = tokio::fs::read_dir(&state_dir).await?;
+        while let Some(entry) = dir.next_entry().await? {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with("state-snapshot.json.bak") {
+                let meta = entry.metadata().await?;
+                let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+                backups.push((entry.path(), mtime, meta.len()));
+            }
+        }
+        if backups.len() > KEEP_BACKUPS {
+            backups.sort_by_key(|(_, mtime, _)| *mtime);
+            let to_remove = backups.len() - KEEP_BACKUPS;
+            for (path, _, size) in backups.into_iter().take(to_remove) {
+                report.candidates.push(GcCandidate {
+                    path,
+                    reason: format!(
+                        "P3-20: snapshot backup exceeds {KEEP_BACKUPS}-backup limit"
+                    ),
+                    size_bytes: size,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// P3-23: Scan for `roko.log.*` and `*.old` files in the data root.
+    ///
+    /// Treats them as archive candidates with the same age policy as runs.
+    async fn scan_log_archives(&self, report: &mut GcReport) -> std::io::Result<()> {
+        let data_dir = self.layout.root();
+        if !data_dir.is_dir() {
+            return Ok(());
+        }
+        let cutoff_secs = i64::from(self.policy.max_run_age_days) * 86_400;
+        let now = chrono::Utc::now().timestamp();
+
+        let mut dir = tokio::fs::read_dir(&data_dir).await?;
+        while let Some(entry) = dir.next_entry().await? {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if !(name_str.starts_with("roko.log.") || name_str.ends_with(".old")) {
+                continue;
+            }
+            let meta = entry.metadata().await?;
+            if !meta.is_file() {
+                continue;
+            }
+            if let Ok(modified) = meta.modified() {
+                let modified_secs = modified
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                #[allow(clippy::cast_possible_wrap)]
+                let age_secs = now.saturating_sub(modified_secs as i64);
+                if age_secs > cutoff_secs {
+                    report.candidates.push(GcCandidate {
+                        path: entry.path(),
+                        reason: format!(
+                            "P3-23: log archive older than {} days",
+                            self.policy.max_run_age_days
+                        ),
+                        size_bytes: meta.len(),
+                    });
+                }
+            }
+        }
         Ok(())
     }
 }

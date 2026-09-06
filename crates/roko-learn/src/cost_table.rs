@@ -154,6 +154,47 @@ impl CostTable {
 
         self
     }
+
+    /// P3-33: Refresh pricing from an updated config without restart.
+    ///
+    /// Reads model profiles from the given config and updates any pricing
+    /// that has changed. Returns the number of models updated.
+    pub fn refresh_from_config(
+        &mut self,
+        config: &roko_core::config::schema::RokoConfig,
+    ) -> usize {
+        let mut updated = 0;
+        for (slug, profile) in &config.models {
+            let pricing = ModelPricing {
+                input_per_m: profile.cost_input_per_m.unwrap_or(0.0),
+                output_per_m: profile.cost_output_per_m.unwrap_or(0.0),
+                cache_read_per_m: profile
+                    .cost_cache_read_per_m
+                    .unwrap_or(profile.cost_input_per_m.unwrap_or(0.0) * 0.5),
+                cache_write_per_m: profile
+                    .cost_cache_write_per_m
+                    .unwrap_or(profile.cost_input_per_m.unwrap_or(0.0) * 1.25),
+                tokenizer_ratio: profile.tokenizer_ratio.unwrap_or(1.0),
+            };
+            let entry = self.models.entry(slug.clone());
+            match entry {
+                std::collections::hash_map::Entry::Occupied(mut occ) => {
+                    if *occ.get() != pricing {
+                        occ.insert(pricing);
+                        updated += 1;
+                    }
+                }
+                std::collections::hash_map::Entry::Vacant(vac) => {
+                    vac.insert(pricing);
+                    updated += 1;
+                }
+            }
+        }
+        if updated > 0 {
+            tracing::info!(updated, "P3-33: cost table refreshed from config");
+        }
+        updated
+    }
 }
 
 #[cfg(test)]

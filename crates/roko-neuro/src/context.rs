@@ -2061,6 +2061,10 @@ mod tests {
                 frozen_at: None,
                 falsifier: None,
                 catalytic_score: 0,
+                hdc_encoder_version: 0,
+                access_count: 0,
+                last_accessed: None,
+                activation_conditions: Vec::new(),
             })
             .expect("add knowledge");
 
@@ -2171,6 +2175,10 @@ mod tests {
                 frozen_at: None,
                 falsifier: None,
                 catalytic_score: 0,
+                hdc_encoder_version: 0,
+                access_count: 0,
+                last_accessed: None,
+                activation_conditions: Vec::new(),
             })
             .expect("add knowledge");
 
@@ -2236,6 +2244,10 @@ mod tests {
                 frozen_at: None,
                 falsifier: None,
                 catalytic_score: 0,
+                hdc_encoder_version: 0,
+                access_count: 0,
+                last_accessed: None,
+                activation_conditions: Vec::new(),
             })
             .expect("add strategy fragment");
         knowledge_store
@@ -2272,6 +2284,10 @@ mod tests {
                 frozen_at: None,
                 falsifier: None,
                 catalytic_score: 0,
+                hdc_encoder_version: 0,
+                access_count: 0,
+                last_accessed: None,
+                activation_conditions: Vec::new(),
             })
             .expect("add anti-knowledge");
         knowledge_store
@@ -2308,6 +2324,10 @@ mod tests {
                 frozen_at: None,
                 falsifier: None,
                 catalytic_score: 0,
+                hdc_encoder_version: 0,
+                access_count: 0,
+                last_accessed: None,
+                activation_conditions: Vec::new(),
             })
             .expect("add insight");
 
@@ -2524,6 +2544,10 @@ mod tests {
                     frozen_at: None,
                     falsifier: None,
                     catalytic_score: 0,
+                    hdc_encoder_version: 0,
+                    access_count: 0,
+                    last_accessed: None,
+                    activation_conditions: Vec::new(),
                 })
                 .expect("add anti-knowledge");
         }
@@ -2562,6 +2586,10 @@ mod tests {
                 frozen_at: None,
                 falsifier: None,
                 catalytic_score: 0,
+                hdc_encoder_version: 0,
+                access_count: 0,
+                last_accessed: None,
+                activation_conditions: Vec::new(),
             })
             .expect("add strategy");
 
@@ -2647,6 +2675,10 @@ mod tests {
                     frozen_at: None,
                     falsifier: None,
                     catalytic_score: 0,
+                    hdc_encoder_version: 0,
+                    access_count: 0,
+                    last_accessed: None,
+                    activation_conditions: Vec::new(),
                 })
                 .expect("add heuristic");
         }
@@ -2685,6 +2717,10 @@ mod tests {
                 frozen_at: None,
                 falsifier: None,
                 catalytic_score: 0,
+                hdc_encoder_version: 0,
+                access_count: 0,
+                last_accessed: None,
+                activation_conditions: Vec::new(),
             })
             .expect("add warning");
 

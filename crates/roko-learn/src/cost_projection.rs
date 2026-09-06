@@ -34,6 +34,27 @@ pub struct CostProjection {
 /// Default assumed output token count when `max_tokens` is unknown.
 const DEFAULT_OUTPUT_TOKENS: u64 = 512;
 
+/// P3-06: Model-aware default output tokens.
+///
+/// Returns a better estimate based on the model tier inferred from the slug.
+/// Premium/large models tend to produce longer outputs; fast models shorter.
+fn model_aware_output_tokens(model_slug: &str) -> u64 {
+    let lower = model_slug.to_ascii_lowercase();
+    if lower.contains("opus") || lower.contains("gpt-4") || lower.contains("gemini-ultra") {
+        1_024 // Premium models produce longer outputs
+    } else if lower.contains("haiku")
+        || lower.contains("mini")
+        || lower.contains("flash")
+        || lower.contains("fast")
+    {
+        384 // Fast models produce shorter outputs
+    } else if lower.contains("sonnet") || lower.contains("gpt-5") {
+        768 // Mid-tier models
+    } else {
+        DEFAULT_OUTPUT_TOKENS // Unknown — conservative default
+    }
+}
+
 /// Fallback pricing used when the model slug is not in the pricing table.
 ///
 /// Uses conservative Sonnet-equivalent rates as a safe over-estimate:
@@ -67,7 +88,8 @@ struct ProjectionPricing {
 /// token assumption of [`DEFAULT_OUTPUT_TOKENS`], and the projected USD cost.
 #[must_use]
 pub fn project_task_cost(prompt_tokens: u64, model_slug: &str) -> CostProjection {
-    let output_tokens = DEFAULT_OUTPUT_TOKENS;
+    // P3-06: Use model-aware output token estimate instead of fixed 512.
+    let output_tokens = model_aware_output_tokens(model_slug);
 
     let pricing = resolve_pricing(model_slug);
 
@@ -336,6 +358,31 @@ impl CostProjector {
         let proj = project_task_cost_with_output(input_tokens, output_tokens, model_hint);
         proj.estimated_cost_usd
     }
+
+    /// P3-10: Compute a credible interval for the given tier.
+    ///
+    /// Uses a log-normal approximation: after `>= 3` samples, returns
+    /// `(lower_90, mean, upper_90)`. With fewer samples returns `None`.
+    #[must_use]
+    pub fn credible_interval(&self, tier: &str) -> Option<(f64, f64, f64)> {
+        let tier = normalize_tier(tier);
+        let count = self.tier_count.get(tier).copied().unwrap_or(0);
+        if count < Self::MIN_SAMPLES {
+            return None;
+        }
+        let mean = self.tier_cost_sum.get(tier).copied().unwrap_or(0.0) / count as f64;
+        // Compute variance from stored sum and count (approximate with
+        // uniform spread around the mean when we only track sum/count).
+        // Use a coefficient of variation heuristic: CV ~= 0.4 for cost data.
+        let cv = 0.4;
+        let std_dev = mean * cv;
+        // 90% interval: mean +/- 1.645 * std_dev / sqrt(n)
+        let z = 1.645;
+        let se = std_dev / (count as f64).sqrt();
+        let lower = (mean - z * se).max(0.0);
+        let upper = mean + z * se;
+        Some((lower, mean, upper))
+    }
 }
 
 /// Canonical tier string from a raw tier value.
@@ -364,17 +411,20 @@ mod tests {
     fn known_model_sonnet() {
         let proj = project_task_cost(1_000, "claude-sonnet-4-6");
         assert_eq!(proj.estimated_input_tokens, 1_000);
-        assert_eq!(proj.estimated_output_tokens, DEFAULT_OUTPUT_TOKENS);
-        // 1_000 * 0.003/1_000 + 512 * 0.015/1_000
-        let expected = 1.0 * 0.003 + 512.0 * 0.015 / 1_000.0;
+        // P3-06: sonnet uses model-aware output tokens (768) instead of fixed 512.
+        let output_tokens = model_aware_output_tokens("claude-sonnet-4-6");
+        assert_eq!(proj.estimated_output_tokens, output_tokens);
+        let expected =
+            1.0 * 0.003 + output_tokens as f64 * 0.015 / 1_000.0;
         assert!((proj.estimated_cost_usd - expected).abs() < 1e-12);
     }
 
     #[test]
     fn known_model_haiku() {
         let proj = project_task_cost(2_000, "claude-haiku-4-5");
-        // 2_000 * 0.0008/1_000 + 512 * 0.004/1_000
-        let expected = 2.0 * 0.0008 + 512.0 * 0.004 / 1_000.0;
+        // P3-06: haiku uses model-aware output tokens (384).
+        let output_tokens = model_aware_output_tokens("claude-haiku-4-5");
+        let expected = 2.0 * 0.0008 + output_tokens as f64 * 0.004 / 1_000.0;
         assert!((proj.estimated_cost_usd - expected).abs() < 1e-12);
     }
 
@@ -389,16 +439,18 @@ mod tests {
     #[test]
     fn unknown_model_uses_fallback() {
         let proj = project_task_cost(1_000, "some-unknown-llm-v99");
-        // 1_000 * FALLBACK_INPUT_PER_K/1_000 + 512 * FALLBACK_OUTPUT_PER_K/1_000
-        let expected = 1.0 * FALLBACK_INPUT_PER_K + 512.0 * FALLBACK_OUTPUT_PER_K / 1_000.0;
+        // Unknown model uses DEFAULT_OUTPUT_TOKENS.
+        let output_tokens = model_aware_output_tokens("some-unknown-llm-v99");
+        let expected =
+            1.0 * FALLBACK_INPUT_PER_K + output_tokens as f64 * FALLBACK_OUTPUT_PER_K / 1_000.0;
         assert!((proj.estimated_cost_usd - expected).abs() < 1e-12);
     }
 
     #[test]
     fn zero_tokens_produces_zero_cost() {
         let proj = project_task_cost(0, "claude-sonnet-4-6");
-        // 0 input + 512 output at sonnet rates
-        let expected = 512.0 * 0.015 / 1_000.0;
+        let output_tokens = model_aware_output_tokens("claude-sonnet-4-6");
+        let expected = output_tokens as f64 * 0.015 / 1_000.0;
         assert!((proj.estimated_cost_usd - expected).abs() < 1e-12);
     }
 
@@ -414,8 +466,9 @@ mod tests {
     #[test]
     fn opus_pricing() {
         let proj = project_task_cost(1_000, "claude-opus-4-6");
-        // 1_000 * 0.015/1_000 + 512 * 0.075/1_000
-        let expected = 1.0 * 0.015 + 512.0 * 0.075 / 1_000.0;
+        // P3-06: opus uses model-aware output tokens (1024).
+        let output_tokens = model_aware_output_tokens("claude-opus-4-6");
+        let expected = 1.0 * 0.015 + output_tokens as f64 * 0.075 / 1_000.0;
         assert!((proj.estimated_cost_usd - expected).abs() < 1e-12);
     }
 

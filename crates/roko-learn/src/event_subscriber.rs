@@ -114,11 +114,37 @@ pub async fn run_learning_subscriber(
         .map(|_| JsonlCursor::new(&efficiency_path));
     let mut trend_buckets: Vec<EfficiencyBucket> = Vec::new();
 
+    // P3-16: Track cumulative lag and force-flush when threshold is exceeded.
+    let mut cumulative_lag: u64 = 0;
+    const LAG_FLUSH_THRESHOLD: u64 = 50;
+
     loop {
         let event = match rx.recv().await {
             Ok(event) => event,
             Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                tracing::warn!(skipped, "learning subscriber lagged behind event stream");
+                cumulative_lag = cumulative_lag.saturating_add(skipped);
+                tracing::warn!(
+                    skipped,
+                    cumulative_lag,
+                    "learning subscriber lagged behind event stream"
+                );
+                // P3-16: Force-flush cascade router state when lag is significant.
+                if cumulative_lag >= LAG_FLUSH_THRESHOLD {
+                    if let Some(path) = router_persist_path.as_ref() {
+                        if let Err(error) = router.save(path) {
+                            tracing::warn!(
+                                %error,
+                                "P3-16: force-flush cascade router on lag failed"
+                            );
+                        } else {
+                            tracing::info!(
+                                cumulative_lag,
+                                "P3-16: force-flushed cascade router due to event bus lag"
+                            );
+                        }
+                    }
+                    cumulative_lag = 0;
+                }
                 continue;
             }
             Err(broadcast::error::RecvError::Closed) => break,

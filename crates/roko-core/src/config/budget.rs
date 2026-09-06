@@ -52,6 +52,13 @@ pub struct BudgetConfig {
     /// Complexity multipliers applied to [`Self::max_task_usd`].
     #[serde(default)]
     pub tier_multipliers: TaskBudgetMultipliers,
+    /// P3-34: Per-agent cumulative lifetime cost ceiling in USD.
+    ///
+    /// `0.0` means unlimited (default). When a single agent's cumulative
+    /// cost exceeds this limit, an `AgentBudgetExhausted` event is emitted
+    /// and the agent is drained.
+    #[serde(default)]
+    pub max_agent_lifetime_usd: f32,
 }
 
 /// Per-task budget multipliers for the four canonical plan tiers.
@@ -118,6 +125,7 @@ impl Default for BudgetConfig {
             max_daily_usd: 0.0,
             prompt_token_budget: default_prompt_token_budget(),
             tier_multipliers: TaskBudgetMultipliers::default(),
+            max_agent_lifetime_usd: 0.0,
         }
     }
 }

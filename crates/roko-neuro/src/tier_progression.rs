@@ -286,10 +286,30 @@ impl Heuristic {
         if when.is_empty() {
             return false;
         }
-        task_tags
-            .iter()
-            .map(|tag| tag.trim().to_ascii_lowercase())
-            .any(|tag| !tag.is_empty() && (when.contains(&tag) || tag.contains(&when)))
+        // P3-12: Structured matching via `domain:value` tags.
+        // If the `when` field contains ':', parse as structured and require
+        // exact equality on domain and value parts. Otherwise fall back to
+        // the broader contains check.
+        if let Some((domain, value)) = when.split_once(':') {
+            let domain = domain.trim();
+            let value = value.trim();
+            task_tags.iter().any(|tag| {
+                let tag = tag.trim().to_ascii_lowercase();
+                if let Some((td, tv)) = tag.split_once(':') {
+                    td.trim() == domain && tv.trim() == value
+                } else {
+                    // Unstructured tag: exact equality with the value part.
+                    tag == value
+                }
+            })
+        } else {
+            // Unstructured matching: prefer exact tag equality, fall back
+            // to substring for backward compatibility.
+            task_tags
+                .iter()
+                .map(|tag| tag.trim().to_ascii_lowercase())
+                .any(|tag| !tag.is_empty() && (tag == when || when.contains(&tag) || tag.contains(&when)))
+        }
     }
 
     fn falsifier_matches(&self, gate_output: &str) -> bool {
@@ -1223,6 +1243,10 @@ impl From<&InsightRecord> for KnowledgeEntry {
             frozen_at: None,
             falsifier: None,
             catalytic_score: 0,
+            hdc_encoder_version: 0,
+            access_count: 0,
+            last_accessed: None,
+            activation_conditions: Vec::new(),
         }
     }
 }
@@ -1263,6 +1287,10 @@ impl From<&HeuristicRule> for KnowledgeEntry {
             frozen_at: None,
             falsifier: None,
             catalytic_score: 0,
+            hdc_encoder_version: 0,
+            access_count: 0,
+            last_accessed: None,
+            activation_conditions: Vec::new(),
         }
     }
 }
@@ -1309,6 +1337,10 @@ impl From<&PlaybookCompilation> for KnowledgeEntry {
             frozen_at: None,
             falsifier: None,
             catalytic_score: 0,
+            hdc_encoder_version: 0,
+            access_count: 0,
+            last_accessed: None,
+            activation_conditions: Vec::new(),
         }
     }
 }
@@ -1795,6 +1827,10 @@ fn anti_knowledge_for_heuristic(heuristic: &Heuristic, created_at_ms: i64) -> Kn
         frozen_at: None,
         falsifier: None,
         catalytic_score: 0,
+        hdc_encoder_version: 0,
+        access_count: 0,
+        last_accessed: None,
+        activation_conditions: Vec::new(),
     }
 }
 
@@ -2182,6 +2218,10 @@ mod tests {
             frozen_at: None,
             falsifier: None,
             catalytic_score: 0,
+            hdc_encoder_version: 0,
+            access_count: 0,
+            last_accessed: None,
+            activation_conditions: Vec::new(),
         };
         let verdicts = vec![
             EpisodeGateVerdict::new("compile", true),
@@ -2231,6 +2271,10 @@ mod tests {
             frozen_at: None,
             falsifier: None,
             catalytic_score: 0,
+            hdc_encoder_version: 0,
+            access_count: 0,
+            last_accessed: None,
+            activation_conditions: Vec::new(),
         };
         let verdicts = vec![
             EpisodeGateVerdict::new("compile", false),
@@ -2279,6 +2323,10 @@ mod tests {
             frozen_at: None,
             falsifier: None,
             catalytic_score: 0,
+            hdc_encoder_version: 0,
+            access_count: 0,
+            last_accessed: None,
+            activation_conditions: Vec::new(),
         };
 
         assert!(TierProgression::needs_expiry_review(&entry));
@@ -2321,6 +2369,10 @@ mod tests {
             frozen_at: None,
             falsifier: None,
             catalytic_score: 0,
+            hdc_encoder_version: 0,
+            access_count: 0,
+            last_accessed: None,
+            activation_conditions: Vec::new(),
         };
         let transient = KnowledgeEntry {
             tier: KnowledgeTier::Transient,

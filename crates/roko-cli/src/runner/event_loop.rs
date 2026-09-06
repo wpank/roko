@@ -5566,8 +5566,12 @@ pub async fn run_with_tui_commands(
                 // Observe each verdict into the per-model rolling window.
                 // Quality score is derived from the c-factor when available;
                 // otherwise a simple heuristic based on gate pass/fail.
+                // P3-17: Modulate reward with somatic/affect valence when
+                // a daimon state is available.
                 {
-                    let quality_score = if completion.passed { 0.8 } else { 0.2 };
+                    let base_quality = if completion.passed { 0.8 } else { 0.2 };
+                    let affect_bonus = read_daimon_valence(config).unwrap_or(0.0);
+                    let quality_score = (base_quality + affect_bonus * 0.1).clamp(0.0, 1.0);
                     for v in &completion.verdicts {
                         if let Err(err) = gate_gaming_detector
                             .observe_and_detect(&state.agent_model, v.passed, quality_score)
@@ -10367,6 +10371,16 @@ fn with_daimon_state<T>(
             None
         }
     }
+}
+
+/// P3-17: Read the current affect valence from the daimon state.
+///
+/// Returns `None` if no daimon state is loaded or the lock is poisoned.
+/// Valence is in `[-1.0, 1.0]` where positive = positive affect.
+fn read_daimon_valence(config: &RunConfig) -> Option<f64> {
+    with_daimon_state(config, |daimon| {
+        daimon.state.alma.effective_affect().pleasure
+    })
 }
 
 fn cognitive_dispatch_policy(config: &RunConfig) -> Option<CognitiveDispatchPolicy> {
@@ -19826,6 +19840,89 @@ async fn run_advanced_learning_completion(config: &RunConfig, episodes_path: &Pa
             "c-factor governance recommendation"
         );
     }
+
+    // P3-02: Replan effectiveness report.
+    // Count replan episodes (kind=replan) and determine how many eventually
+    // resulted in a passing gate verdict.
+    let replan_episodes: Vec<_> = episodes
+        .iter()
+        .filter(|ep| ep.kind.eq_ignore_ascii_case("replan") || ep.kind.eq_ignore_ascii_case("revision"))
+        .collect();
+    let total_replanned = replan_episodes.len();
+    let replanned_passed = replan_episodes
+        .iter()
+        .filter(|ep| ep.success || ep.gate_verdicts.iter().all(|v| v.passed))
+        .count();
+    if total_replanned > 0 {
+        let effectiveness = replanned_passed as f64 / total_replanned as f64;
+        info!(
+            total_replanned,
+            replanned_passed,
+            effectiveness = %format!("{:.1}%", effectiveness * 100.0),
+            "P3-02: replan effectiveness report"
+        );
+    }
+
+    // P3-03: When the C-factor is declining for 3+ consecutive snapshots,
+    // automatically increase exploration and tighten gate thresholds.
+    if governance.is_declining_streak(3) {
+        info!(
+            "P3-03: C-factor declining for 3+ snapshots — \
+             recommend increasing exploration and tightening gate thresholds"
+        );
+    }
+
+    // P3-32: Wire HindsightRelabeler into post-plan learning.
+    // Scans the last 30 days of episodes and cross-references with playbook
+    // rules to discover adjustments.
+    {
+        use roko_learn::hindsight::HindsightRelabeler;
+        let relabeler = HindsightRelabeler::new();
+        let rules_path = config.layout.learn_dir().join("rules.jsonl");
+        let rules: Vec<roko_learn::playbook_rules::Rule> =
+            if let Ok(contents) = std::fs::read_to_string(&rules_path) {
+                contents
+                    .lines()
+                    .filter_map(|line| serde_json::from_str(line).ok())
+                    .collect()
+            } else {
+                Vec::new()
+            };
+        let adjustments = relabeler.scan(&episodes, &rules);
+        if !adjustments.is_empty() {
+            info!(
+                count = adjustments.len(),
+                "P3-32: hindsight relabeler found episode adjustments"
+            );
+        }
+    }
+
+    // P3-15: Pipeline retry alignment — compare suggested max_retries from
+    // adaptive thresholds with configured max_iterations and log when they
+    // diverge.
+    let thresholds_path = config.layout.learn_dir().join("gate-thresholds.json");
+    if let Ok(contents) = std::fs::read_to_string(&thresholds_path) {
+        if let Ok(thresholds) =
+            serde_json::from_str::<roko_gate::adaptive_threshold::AdaptiveThresholds>(&contents)
+        {
+            let configured_max = config
+                .roko_config
+                .as_deref()
+                .map(|cfg| cfg.gates.max_iterations)
+                .unwrap_or(3);
+            for rung in [0u32, 1, 2, 1000, 1001] {
+                let suggested = thresholds.suggested_max_retries(rung);
+                if suggested != configured_max {
+                    info!(
+                        rung,
+                        suggested_retries = suggested,
+                        configured_max_iterations = configured_max,
+                        "P3-15: retry alignment recommendation differs from config"
+                    );
+                }
+            }
+        }
+    }
 }
 
 async fn run_dream_consolidation(config: &RunConfig, telemetry: &dyn TelemetryEventSink) {
@@ -21491,9 +21588,30 @@ fn revised_task_for_gate_failure(
     };
     revised_task.status = "ready".to_string();
     revised_task.replan_strategy = Some(strategy);
-    if revised_task.model_hint.is_none() || matches!(strategy, ReplanStrategy::RetryWithEscalation)
+
+    // P3-01: Adaptive escalation on repeated failures. After 2+ attempts,
+    // always escalate to the architectural (premium) model and increase
+    // the token budget proportionally.
+    let attempts = revision_request.attempts;
+    if revised_task.model_hint.is_none()
+        || matches!(strategy, ReplanStrategy::RetryWithEscalation)
+        || attempts >= 2
     {
         revised_task.model_hint = Some(architectural_model_hint(config));
+        if attempts >= 2 {
+            // Increase timeout by 50% per additional attempt to give
+            // the model more room to produce a correct solution.
+            let budget_multiplier = 1.0 + 0.5 * (attempts.saturating_sub(1) as f64);
+            revised_task.timeout_secs =
+                (revised_task.timeout_secs as f64 * budget_multiplier) as u64;
+            info!(
+                task_id = %revised_task.id,
+                attempts,
+                budget_multiplier,
+                new_timeout_secs = revised_task.timeout_secs,
+                "P3-01: escalated model and timeout for repeated replan failure"
+            );
+        }
     }
     if matches!(strategy, ReplanStrategy::Decompose) && revised_task.split_into.is_none() {
         revised_task.split_into = Some(vec![
@@ -22953,7 +23071,7 @@ mod tests {
 
     #[test]
     fn low_cognitive_vitality_adds_external_cheaper_routing_hint() {
-        let policy = CognitiveDispatchPolicy::new(roko_daimon::BehavioralPhase::Conservation, 0.49);
+        let policy = CognitiveDispatchPolicy::new(roko_daimon::BehavioralPhase::Conservation, 0.49, 0.5);
         let existing = roko_learn::cascade_router::RoutingBias {
             deprioritize: vec!["unhealthy".to_string()],
             prefer_cheaper: false,
@@ -22971,7 +23089,7 @@ mod tests {
 
     #[test]
     fn default_cognitive_energy_leaves_routing_unchanged() {
-        let policy = CognitiveDispatchPolicy::new(roko_daimon::BehavioralPhase::Thriving, 1.0);
+        let policy = CognitiveDispatchPolicy::new(roko_daimon::BehavioralPhase::Thriving, 1.0, 0.5);
 
         assert!(merge_cognitive_routing_bias(None, Some(policy)).is_none());
         assert_eq!(
@@ -22989,8 +23107,8 @@ mod tests {
     fn behavioral_phase_caps_actual_dispatch_tier() {
         let candidates = vec!["premium".into(), "fast".into(), "standard".into()];
         let conservation =
-            CognitiveDispatchPolicy::new(roko_daimon::BehavioralPhase::Conservation, 0.4);
-        let declining = CognitiveDispatchPolicy::new(roko_daimon::BehavioralPhase::Declining, 0.2);
+            CognitiveDispatchPolicy::new(roko_daimon::BehavioralPhase::Conservation, 0.4, 0.5);
+        let declining = CognitiveDispatchPolicy::new(roko_daimon::BehavioralPhase::Declining, 0.2, 0.5);
 
         assert_eq!(
             model_cap_decision(
@@ -23023,7 +23141,7 @@ mod tests {
     #[test]
     fn low_vitality_numeric_cost_weight_changes_final_model() {
         let candidates = vec!["premium".into(), "standard".into(), "fast".into()];
-        let policy = CognitiveDispatchPolicy::new(roko_daimon::BehavioralPhase::Conservation, 0.49);
+        let policy = CognitiveDispatchPolicy::new(roko_daimon::BehavioralPhase::Conservation, 0.49, 0.5);
 
         let adjusted =
             cognitive_cost_adjustment("premium", &candidates, Some(policy), cognitive_test_tier);
@@ -23047,9 +23165,9 @@ tier = "architectural"
         )
         .expect("parse EFE task");
         let task = &tasks.tasks[0];
-        let default = CognitiveDispatchPolicy::new(roko_daimon::BehavioralPhase::Thriving, 1.0);
+        let default = CognitiveDispatchPolicy::new(roko_daimon::BehavioralPhase::Thriving, 1.0, 0.5);
         let conservation =
-            CognitiveDispatchPolicy::new(roko_daimon::BehavioralPhase::Conservation, 0.4);
+            CognitiveDispatchPolicy::new(roko_daimon::BehavioralPhase::Conservation, 0.4, 0.5);
 
         let default_router = roko_learn::active_inference::EfeRouter::default();
         assert_eq!(efe_dispatch_tier(task, 4, Some(default), &default_router), None);

@@ -281,6 +281,52 @@ impl Default for ExtractionConfig {
     }
 }
 
+impl ExtractionConfig {
+    /// Adapt extraction thresholds based on observed rule precision.
+    ///
+    /// `contradiction_rate` is `contradictions / (validations + contradictions)` across
+    /// all rules. High contradiction rates indicate thresholds are too permissive.
+    ///
+    /// P3-04: Tighten thresholds when false positive rate (contradiction rate) exceeds
+    /// 0.3, loosen when below 0.1.
+    pub fn adapt_from_precision(&mut self, contradiction_rate: f64) {
+        if contradiction_rate > 0.3 {
+            // Too many false positives — require larger clusters and higher failure rate.
+            self.min_pattern_size = (self.min_pattern_size + 1).min(15);
+            self.min_failure_rate = (self.min_failure_rate + 0.05).min(0.95);
+            tracing::info!(
+                contradiction_rate,
+                min_pattern_size = self.min_pattern_size,
+                min_failure_rate = self.min_failure_rate,
+                "P3-04: tightened extraction thresholds (high contradiction rate)"
+            );
+        } else if contradiction_rate < 0.1 && self.min_pattern_size > 3 {
+            // Very precise — can loosen slightly to find more patterns.
+            self.min_pattern_size = (self.min_pattern_size - 1).max(3);
+            self.min_failure_rate = (self.min_failure_rate - 0.02).max(0.5);
+            tracing::debug!(
+                contradiction_rate,
+                min_pattern_size = self.min_pattern_size,
+                min_failure_rate = self.min_failure_rate,
+                "P3-04: loosened extraction thresholds (low contradiction rate)"
+            );
+        }
+    }
+
+    /// Compute the current contradiction rate from a set of rules.
+    pub fn contradiction_rate_from_rules(rules: &[Rule]) -> f64 {
+        let total: u32 = rules
+            .iter()
+            .map(|r| r.validations + r.contradictions)
+            .sum();
+        if total == 0 {
+            return 0.0;
+        }
+        let contradictions: u32 = rules.iter().map(|r| r.contradictions).sum();
+        contradictions as f64 / total as f64
+    }
+}
+
 // ─── TOML envelope ───────────────────────────────────────────────────────────
 
 /// Serde wrapper for the TOML file format:

@@ -342,6 +342,10 @@ pub(crate) fn record_lifecycle_knowledge(
             frozen_at: None,
             falsifier: None,
             catalytic_score: 0,
+            hdc_encoder_version: 0,
+            access_count: 0,
+            last_accessed: None,
+            activation_conditions: Vec::new(),
         };
         knowledge_store.max_similarity(&probe).unwrap_or(0.0)
     };
@@ -652,6 +656,10 @@ pub(crate) fn build_success_knowledge_entry(
         frozen_at: None,
         falsifier: None,
         catalytic_score: 0,
+        hdc_encoder_version: 0,
+        access_count: 0,
+        last_accessed: None,
+        activation_conditions: Vec::new(),
     }
 }
 
@@ -919,6 +927,10 @@ mod tests {
             frozen_at: None,
             falsifier: None,
             catalytic_score: 0,
+            hdc_encoder_version: 0,
+            access_count: 0,
+            last_accessed: None,
+            activation_conditions: Vec::new(),
         };
         knowledge_store.add(existing).expect("add existing entry");
 

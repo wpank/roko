@@ -284,6 +284,7 @@ fn convert_learning(m: &MoriConfig) -> LearningConfig {
         lookahead_threshold: d.lookahead_threshold,
         override_learning_dampening: d.override_learning_dampening,
         gate_threshold_flush_interval: d.gate_threshold_flush_interval,
+        knowledge: d.knowledge,
     }
 }
 

@@ -345,6 +345,10 @@ fn loosened_association(
         frozen_at: None,
         falsifier: None,
         catalytic_score: 0,
+        hdc_encoder_version: 0,
+        access_count: 0,
+        last_accessed: None,
+        activation_conditions: Vec::new(),
     }
 }
 
@@ -405,6 +409,10 @@ fn interrupt_to_insight(
         frozen_at: None,
         falsifier: None,
         catalytic_score: 0,
+        hdc_encoder_version: 0,
+        access_count: 0,
+        last_accessed: None,
+        activation_conditions: Vec::new(),
     }
 }
 
@@ -458,6 +466,10 @@ fn dali_insight(episode: &Episode, created_at: DateTime<Utc>) -> KnowledgeEntry 
         frozen_at: None,
         falsifier: None,
         catalytic_score: 0,
+        hdc_encoder_version: 0,
+        access_count: 0,
+        last_accessed: None,
+        activation_conditions: Vec::new(),
     }
 }
 
@@ -562,6 +574,10 @@ mod tests {
                 frozen_at: None,
                 falsifier: None,
                 catalytic_score: 0,
+                hdc_encoder_version: 0,
+                access_count: 0,
+                last_accessed: None,
+                activation_conditions: Vec::new(),
             },
             KnowledgeEntry {
                 id: "sig-2".to_string(),
@@ -596,6 +612,10 @@ mod tests {
                 frozen_at: None,
                 falsifier: None,
                 catalytic_score: 0,
+                hdc_encoder_version: 0,
+                access_count: 0,
+                last_accessed: None,
+                activation_conditions: Vec::new(),
             },
             KnowledgeEntry {
                 id: "sig-3".to_string(),
@@ -630,6 +650,10 @@ mod tests {
                 frozen_at: None,
                 falsifier: None,
                 catalytic_score: 0,
+                hdc_encoder_version: 0,
+                access_count: 0,
+                last_accessed: None,
+                activation_conditions: Vec::new(),
             },
             KnowledgeEntry {
                 id: "sig-4".to_string(),
@@ -664,6 +688,10 @@ mod tests {
                 frozen_at: None,
                 falsifier: None,
                 catalytic_score: 0,
+                hdc_encoder_version: 0,
+                access_count: 0,
+                last_accessed: None,
+                activation_conditions: Vec::new(),
             },
         ];
         let output = engine.run(&signals, &[], Utc::now());

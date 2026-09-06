@@ -5256,6 +5256,25 @@ pub async fn run_with_tui_commands(
                     record_daimon_gate_result(config, &completion);
                 }
 
+                // P1-13: Deposit a stigmergic pheromone signal for every
+                // real gate completion.  This records which task/files were
+                // touched, whether the gate passed, and which model was used
+                // so future dispatches can read the pheromone field when
+                // routing or building prompt context.
+                if completion.kind == GateCompletionKind::Gate {
+                    let task_files = task_index
+                        .get(completion.plan_id.as_str())
+                        .and_then(|tasks| tasks.get(completion.task_id.as_str()))
+                        .map(|task| task.files.clone())
+                        .unwrap_or_default();
+                    deposit_gate_pheromone(
+                        config,
+                        &completion,
+                        &task_files,
+                        &state.agent_model,
+                    );
+                }
+
                 // Record gate outcome in the run ledger.
                 if let Some(ref mut ledger) = run_ledger {
                     for verdict in &completion.verdicts {
@@ -10816,6 +10835,112 @@ fn record_daimon_budget_observation(config: &RunConfig, spent_usd: f64, budget_u
     });
 }
 
+// ─── P1-13: Pheromone deposit from gate results ──────────────────────────
+
+/// Append a stigmergic pheromone record to `.roko/learn/pheromones.jsonl`
+/// for every real gate completion.
+///
+/// This gives future dispatches a lightweight signal field that encodes
+/// which task/files were last touched, whether the gate passed, and which
+/// model was used. The record format is intentionally minimal: downstream
+/// readers (routing, prompt context) can filter by scope or signal_type.
+///
+/// The deposit is best-effort: failures are logged at `debug` level and do
+/// not affect gate handling.
+fn deposit_gate_pheromone(
+    config: &RunConfig,
+    completion: &GateCompletion,
+    task_files: &[String],
+    model: &str,
+) {
+    let signal_type = if completion.passed {
+        "gate_pass"
+    } else {
+        "gate_fail"
+    };
+    let pheromone = serde_json::json!({
+        "ts": chrono::Utc::now().to_rfc3339(),
+        "signal_type": signal_type,
+        "plan_id": completion.plan_id,
+        "task_id": completion.task_id,
+        "rung": completion.rung,
+        "passed": completion.passed,
+        "model": model,
+        "files": task_files,
+        // Intensity encodes confidence: full pass = 1.0, fail = 0.25.
+        "intensity": if completion.passed { 1.0_f64 } else { 0.25_f64 },
+        "scope": format!("plan:{}", completion.plan_id),
+    });
+    let path = config.layout.learn_dir().join("pheromones.jsonl");
+    if let Err(error) = super::persist::append_jsonl_relaxed(&path, &pheromone) {
+        debug!(
+            plan_id = %completion.plan_id,
+            task_id = %completion.task_id,
+            %error,
+            "pheromone deposit failed (non-fatal)"
+        );
+    }
+}
+
+// ─── P1-15: Emotion contagion for multi-agent dispatch ───────────────────
+
+/// Apply peer emotional contagion when multiple agents are running
+/// concurrently, using the canonical [`roko_daimon::contagion`] function
+/// to blend PAD states.
+///
+/// In the runner's shared-DaimonState model each concurrent agent shares one
+/// affect register, so we approximate peer PAD as the current register value
+/// and apply one `apply_contagion` call per live peer.  The susceptibility
+/// naturally decays with agent maturity (tick_count), preventing runaway
+/// emotional cascades in long-running plans.
+///
+/// When fewer than two agents are running contagion is a no-op.  On lock
+/// failure the existing affect is left unchanged.
+fn apply_contagion_to_dispatch(config: &RunConfig, active_agent_count: usize) {
+    if active_agent_count < 2 {
+        return;
+    }
+    with_daimon_state(config, |daimon| {
+        let current = daimon.query();
+        let peer_pad = roko_core::PadVector::new(
+            current.pad.pleasure,
+            current.pad.arousal,
+            current.pad.dominance,
+        );
+        let tick_count = daimon.state.tick_count;
+
+        // Compute the blended PAD that contagion would produce.
+        let peers: Vec<roko_core::PadVector> =
+            std::iter::repeat_n(peer_pad, active_agent_count - 1).collect();
+        let blended = roko_daimon::contagion(&peer_pad, &peers, tick_count);
+
+        // Only apply when the blend changes the PAD meaningfully.
+        let delta_mag = (blended.pleasure - peer_pad.pleasure).abs()
+            + (blended.arousal - peer_pad.arousal).abs()
+            + (blended.dominance - peer_pad.dominance).abs();
+        if delta_mag < 1e-6 {
+            return;
+        }
+
+        // Drive the contagion through the tracked apply_contagion path so
+        // BorrowedAffect bookkeeping and autosave run correctly.
+        for peer_idx in 0..(active_agent_count - 1) {
+            daimon.apply_contagion(roko_daimon::ContagionEvent {
+                source: format!("peer-agent-{peer_idx}"),
+                trigger: roko_daimon::ContagionTrigger::PeerSustainedSuccess,
+                source_pad: peer_pad,
+            });
+        }
+        debug!(
+            active_agents = active_agent_count,
+            blended_pleasure = blended.pleasure,
+            blended_arousal = blended.arousal,
+            blended_dominance = blended.dominance,
+            "emotion contagion applied for multi-agent dispatch"
+        );
+    });
+}
+
 /// P1-05: Check whether the fatigue detector recommends dispatch
 /// modifications for a task and return the recommended action.
 fn daimon_fatigue_check(
@@ -13461,6 +13586,19 @@ async fn dispatch_action(
             let gate_feedback = DispatchGateFeedback::from_raw(&previous_gate_output);
             let daimon_hook = daimon_task_hook(ctx.config, &task_def, attempt_num);
             ctx.state.current_daimon_strategy = daimon_hook.as_ref().map(|hook| hook.strategy);
+
+            // P1-15: Apply emotion contagion when multiple agents are running
+            // concurrently.  We read the count of surviving agents *before*
+            // the new dispatch so the blending reflects already-running peers
+            // rather than including the task we are about to start.
+            {
+                let concurrent_agents = ctx
+                    .attempt_ownership
+                    .surviving_agent_metadata()
+                    .agent_ids
+                    .len();
+                apply_contagion_to_dispatch(ctx.config, concurrent_agents);
+            }
 
             // Emit affect state to TUI so the Daimon panel shows live PAD gauges.
             // P0-10: populate recent_markers from the somatic signal and

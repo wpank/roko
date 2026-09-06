@@ -75,6 +75,7 @@ pub(crate) fn render(
         }
         5 => render_three_panel_inspect(frame, area, tui_state, theme),
         6 => render_cfactor_detail(frame, area, tui_state, theme),
+        7 => render_dream_view(frame, area, tui_state, theme),
         _ => {
             let ctx_data = build_context_data(tui_state);
             render_with_context_data(
@@ -2159,6 +2160,139 @@ fn render_prompt_stats_panel(
     ]));
 
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}
+
+// ---------------------------------------------------------------------------
+// Dream view (sub-tab 7)
+// ---------------------------------------------------------------------------
+
+/// Render the dream cycle state panel: journal entries, archive summary, and
+/// phase metadata read directly from `.roko/dreams/`.
+fn render_dream_view(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme: &Theme) {
+    let block = Block::bordered()
+        .title(Span::styled(" Dreams ", theme.section_header()))
+        .border_style(theme.accent());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let dream_dir = tui_state.workdir.join(".roko").join("dreams");
+    let journal_path = dream_dir.join("journal.jsonl");
+    let archive_path = dream_dir.join("archive.jsonl");
+
+    let mut lines: Vec<Line<'_>> = Vec::new();
+
+    // ── Journal ────────────────────────────────────────────────────────────
+    lines.push(Line::from(Span::styled("journal", theme.label())));
+
+    let journal_text = if journal_path.exists() {
+        std::fs::read_to_string(&journal_path).unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    let journal_entries: Vec<&str> = journal_text.lines().collect();
+    if journal_entries.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  (no journal entries yet)",
+            theme.muted(),
+        )));
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled("  entries: ", theme.muted()),
+            Span::styled(journal_entries.len().to_string(), theme.value()),
+        ]));
+        lines.push(Line::from(Span::styled("  recent:", theme.muted())));
+        for raw in journal_entries.iter().rev().take(5) {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(raw) {
+                let cycle_id = val
+                    .get("cycle_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
+                let phase = val.get("phase").and_then(|v| v.as_str()).unwrap_or("?");
+                let summary = val
+                    .get("summary")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                lines.push(Line::from(vec![
+                    Span::styled("    [", theme.muted()),
+                    Span::styled(cycle_id.to_string(), theme.info()),
+                    Span::styled("] ", theme.muted()),
+                    Span::styled(phase.to_string(), theme.label()),
+                    Span::styled(": ", theme.muted()),
+                    Span::styled(summary.to_string(), theme.value()),
+                ]));
+            } else {
+                lines.push(Line::from(Span::styled(
+                    format!("    {raw}"),
+                    theme.muted(),
+                )));
+            }
+        }
+    }
+
+    lines.push(Line::from(Span::raw("")));
+
+    // ── Archive ────────────────────────────────────────────────────────────
+    lines.push(Line::from(Span::styled("archive", theme.label())));
+
+    let archive_text = if archive_path.exists() {
+        std::fs::read_to_string(&archive_path).unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    let archive_entries: Vec<&str> = archive_text.lines().collect();
+    if archive_entries.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  (no archive entries yet)",
+            theme.muted(),
+        )));
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled("  entries: ", theme.muted()),
+            Span::styled(archive_entries.len().to_string(), theme.value()),
+        ]));
+        lines.push(Line::from(Span::styled("  recent:", theme.muted())));
+        for raw in archive_entries.iter().rev().take(5) {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(raw) {
+                let kind = val.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
+                let quality = val
+                    .get("quality_score")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0);
+                let summary = val
+                    .get("summary")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                lines.push(Line::from(vec![
+                    Span::styled("    [", theme.muted()),
+                    Span::styled(kind.to_string(), theme.info()),
+                    Span::styled("] q=", theme.muted()),
+                    Span::styled(format!("{quality:.2}"), theme.value()),
+                    Span::styled(": ", theme.muted()),
+                    Span::styled(summary.to_string(), theme.muted()),
+                ]));
+            } else {
+                lines.push(Line::from(Span::styled(
+                    format!("    {raw}"),
+                    theme.muted(),
+                )));
+            }
+        }
+    }
+
+    lines.push(Line::from(Span::raw("")));
+
+    // ── Paths ──────────────────────────────────────────────────────────────
+    lines.push(Line::from(vec![
+        Span::styled("dir: ", theme.muted()),
+        Span::styled(dream_dir.display().to_string(), theme.metadata()),
+    ]));
+
+    frame.render_widget(
+        ratatui::widgets::Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false }),
+        inner,
+    );
 }
 
 // ---------------------------------------------------------------------------

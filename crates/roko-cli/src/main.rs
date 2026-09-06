@@ -1482,6 +1482,27 @@ enum LearnCmd {
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
+    /// Show learned playbook store contents (name, trigger pattern, success/failure counts).
+    Playbooks {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show per-section prompt pass-rate statistics (worst sections first).
+    Sections {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show recent post-gate reflection records.
+    Reflections {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Maximum number of recent reflections to display.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
     /// Read-only inspection of a learning subsystem (gates, routing, budget).
     Inspect {
         #[command(subcommand)]

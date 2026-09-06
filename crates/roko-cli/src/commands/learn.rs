@@ -38,7 +38,10 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
         | LearnCmd::Episodes { workdir, .. }
         | LearnCmd::Reflexes { workdir }
         | LearnCmd::Gates { workdir }
-        | LearnCmd::KnowledgeStats { workdir } => {
+        | LearnCmd::KnowledgeStats { workdir }
+        | LearnCmd::Playbooks { workdir }
+        | LearnCmd::Sections { workdir }
+        | LearnCmd::Reflections { workdir, .. } => {
             workdir.clone().unwrap_or_else(|| resolve_workdir(cli))
         }
         LearnCmd::Experiments { workdir, cmd: sub } => {
@@ -144,6 +147,18 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
             } else {
                 cmd_learn(&wd, "knowledge").await
             }
+        }
+        LearnCmd::Playbooks { workdir } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            cmd_learn_playbooks(&wd).await
+        }
+        LearnCmd::Sections { workdir } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            cmd_learn_sections(&wd).await
+        }
+        LearnCmd::Reflections { workdir, limit } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            cmd_learn_reflections(&wd, limit).await
         }
         LearnCmd::Inspect { subsystem } => {
             let wd = inspect_workdir(cli, &subsystem);
@@ -1629,6 +1644,250 @@ fn learn_episodes_path(workdir: &std::path::Path) -> std::path::PathBuf {
 
 fn learn_knowledge_path(workdir: &std::path::Path) -> std::path::PathBuf {
     workdir.join(".roko").join("neuro").join("knowledge.jsonl")
+}
+
+fn learn_playbooks_dir(workdir: &std::path::Path) -> std::path::PathBuf {
+    learn_root(workdir).join("playbooks")
+}
+
+fn learn_section_outcomes_path(workdir: &std::path::Path) -> std::path::PathBuf {
+    learn_root(workdir).join("section-outcomes.jsonl")
+}
+
+fn learn_post_gate_reflections_path(workdir: &std::path::Path) -> std::path::PathBuf {
+    learn_root(workdir).join("post-gate-reflections.json")
+}
+
+// ── P2-11: Playbooks ─────────────────────────────────────────────────
+
+/// `roko learn playbooks` — list all learned playbooks.
+async fn cmd_learn_playbooks(workdir: &std::path::Path) -> Result<i32> {
+    let dir = learn_playbooks_dir(workdir);
+    let store = roko_learn::playbook::PlaybookStore::new(&dir);
+    let mut playbooks = store.list().await.unwrap_or_default();
+
+    if playbooks.is_empty() {
+        println!("Playbook store: empty ({})", dir.display());
+        return Ok(EXIT_SUCCESS);
+    }
+
+    // Sort by success rate descending, then name ascending for determinism.
+    playbooks.sort_by(|a, b| {
+        let ra = a.success_rate().unwrap_or(0.0);
+        let rb = b.success_rate().unwrap_or(0.0);
+        rb.total_cmp(&ra).then_with(|| a.name.cmp(&b.name))
+    });
+
+    let name_w = playbooks
+        .iter()
+        .map(|pb| pb.name.len().min(40))
+        .max()
+        .unwrap_or(4)
+        .max(4);
+    let pattern_w = playbooks
+        .iter()
+        .map(|pb| pb.when_pattern.as_deref().unwrap_or("-").len().min(30))
+        .max()
+        .unwrap_or(7)
+        .max(7);
+
+    println!("Playbook store: {} entries ({})", playbooks.len(), dir.display());
+    println!();
+    println!(
+        "{:<name_w$}  {:<pattern_w$}  {:>4}  {:>4}  {:>8}  {:>4}",
+        "Name", "Trigger", "Succ", "Fail", "Rate", "Deps",
+        name_w = name_w,
+        pattern_w = pattern_w,
+    );
+    println!(
+        "{:-<name_w$}  {:-<pattern_w$}  {:->4}  {:->4}  {:->8}  {:->4}",
+        "", "", "", "", "", "",
+        name_w = name_w,
+        pattern_w = pattern_w,
+    );
+
+    for pb in &playbooks {
+        let name = truncate_str(&pb.name, 40);
+        let pattern = truncate_str(pb.when_pattern.as_deref().unwrap_or("-"), 30);
+        let rate = pb
+            .success_rate()
+            .map(|r| format!("{:.0}%", r * 100.0))
+            .unwrap_or_else(|| "-".to_string());
+        let steps = pb.steps.len();
+        println!(
+            "{:<name_w$}  {:<pattern_w$}  {:>4}  {:>4}  {:>8}  {:>4}",
+            name,
+            pattern,
+            pb.success_count,
+            pb.failure_count,
+            rate,
+            steps,
+            name_w = name_w,
+            pattern_w = pattern_w,
+        );
+    }
+
+    Ok(EXIT_SUCCESS)
+}
+
+// ── P2-12: Sections ──────────────────────────────────────────────────
+
+/// `roko learn sections` — show per-section pass rates (worst first).
+async fn cmd_learn_sections(workdir: &std::path::Path) -> Result<i32> {
+    let path = learn_section_outcomes_path(workdir);
+    let text = tokio::fs::read_to_string(&path).await.unwrap_or_default();
+
+    // Accumulate (passed, total, total_cost) per section name.
+    let mut stats: std::collections::HashMap<String, (u64, u64, f64)> =
+        std::collections::HashMap::new();
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(record) =
+            serde_json::from_str::<roko_learn::section_outcome::SectionOutcomeRecord>(trimmed)
+        else {
+            continue;
+        };
+
+        let entry = stats.entry(record.section_name.clone()).or_default();
+        entry.1 += 1; // total trials
+        if record.status == roko_learn::section_outcome::SectionOutcomeStatus::Passed {
+            entry.0 += 1; // passed
+        }
+        // Cost is not directly on the record; skip for now.
+    }
+
+    if stats.is_empty() {
+        println!("Section outcomes: no data at {}", path.display());
+        return Ok(EXIT_SUCCESS);
+    }
+
+    // Sort by pass rate ascending (worst first), then name for determinism.
+    let mut rows: Vec<(String, u64, u64)> = stats
+        .into_iter()
+        .map(|(name, (passed, total, _cost))| (name, passed, total))
+        .collect();
+    rows.sort_by(|(na, pa, ta), (nb, pb, tb)| {
+        let ra = if *ta == 0 {
+            0.0f64
+        } else {
+            *pa as f64 / *ta as f64
+        };
+        let rb = if *tb == 0 {
+            0.0f64
+        } else {
+            *pb as f64 / *tb as f64
+        };
+        ra.total_cmp(&rb).then_with(|| na.cmp(nb))
+    });
+
+    let name_w = rows
+        .iter()
+        .map(|(n, _, _)| n.len().min(50))
+        .max()
+        .unwrap_or(7)
+        .max(7);
+
+    println!(
+        "Section outcomes: {} sections ({})",
+        rows.len(),
+        path.display()
+    );
+    println!();
+    println!(
+        "{:<name_w$}  {:>6}  {:>9}",
+        "Section Name", "Trials", "Pass Rate",
+        name_w = name_w,
+    );
+    println!(
+        "{:-<name_w$}  {:->6}  {:->9}",
+        "", "", "",
+        name_w = name_w,
+    );
+    #[allow(clippy::cast_precision_loss)]
+    for (name, passed, total) in &rows {
+        let rate = if *total == 0 {
+            "-".to_string()
+        } else {
+            format!("{:.1}%", (*passed as f64 / *total as f64) * 100.0)
+        };
+        let display_name = truncate_str(name, 50);
+        println!(
+            "{:<name_w$}  {:>6}  {:>9}",
+            display_name,
+            total,
+            rate,
+            name_w = name_w,
+        );
+    }
+
+    Ok(EXIT_SUCCESS)
+}
+
+// ── P2-13: Reflections ───────────────────────────────────────────────
+
+/// `roko learn reflections` — show recent post-gate reflections.
+fn cmd_learn_reflections(workdir: &std::path::Path, limit: usize) -> impl std::future::Future<Output = Result<i32>> {
+    let workdir = workdir.to_path_buf();
+    async move {
+        let path = learn_post_gate_reflections_path(&workdir);
+        let store = roko_learn::post_gate_reflection::PostGateReflectionStore::load(&path);
+        let records = &store.records;
+
+        if records.is_empty() {
+            println!("Post-gate reflections: no data at {}", path.display());
+            return Ok(EXIT_SUCCESS);
+        }
+
+        // Show the most recent `limit` records (records are in append order).
+        let display_records: Vec<_> = records.iter().rev().take(limit).collect();
+
+        println!(
+            "Post-gate reflections: {} total, showing {} ({})",
+            records.len(),
+            display_records.len(),
+            path.display()
+        );
+        println!();
+
+        for record in display_records {
+            let ts = record.created_at.format("%Y-%m-%d %H:%M:%S").to_string();
+            let task = record
+                .task_id
+                .as_deref()
+                .unwrap_or("-");
+            let verdict = match record.outcome {
+                roko_learn::post_gate_reflection::ReflectionGateOutcome::Passed => "pass",
+                roko_learn::post_gate_reflection::ReflectionGateOutcome::Failed => "fail",
+            };
+            let lesson = truncate_str(&record.proposed_lesson, 120);
+            println!("  [{}] gate={} verdict={} task={}", ts, record.trigger_gate, verdict, task);
+            println!("    {}", lesson);
+            println!();
+        }
+
+        Ok(EXIT_SUCCESS)
+    }
+}
+
+// ── Shared helpers ────────────────────────────────────────────────────
+
+/// Truncate a string to at most `max_chars` characters, appending `...` when cut.
+fn truncate_str(text: &str, max_chars: usize) -> String {
+    let text = text.trim();
+    if max_chars == 0 {
+        return String::new();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= max_chars {
+        chars.into_iter().collect()
+    } else {
+        let truncated: String = chars[..max_chars.saturating_sub(3)].iter().collect();
+        format!("{truncated}...")
+    }
 }
 
 fn count_gate_threshold_entries(content: &str) -> usize {

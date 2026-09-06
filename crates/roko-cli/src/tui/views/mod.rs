@@ -19,7 +19,7 @@
 //! | F4 Git | Git Detail | Branch Tree, Commit Graph, Worktrees |
 //! | F5 Logs | Logs | Filtered Log, Signal Stream |
 //! | F6 Config | System | Config View, Provider Health, Model Comparison |
-//! | F7 Inspect | Knowledge | Signal DAG, Episode Replay, Knowledge Browse |
+//! | F7 Inspect | Knowledge | Signal DAG, Episode Replay, Knowledge Browse, Dreams |
 //! | F8 Marketplace | Jobs | Job List, Job Detail, Create Job |
 //! | F9 Atelier | Workshop | PRD Workshop, Plan Explorer |
 //! | F10 Learning | Learning | Route, History, Efficiency |
@@ -104,6 +104,8 @@ pub enum SubView {
     ThreePanelInspect,
     /// C-Factor detail view with gauge, component breakdown, and trend.
     CFactorDetail,
+    /// Dream cycle state: journal entries, archive coverage, and phase.
+    DreamView,
 
     // ── Region 8: Marketplace (F8) ──
     /// Job list browser.
@@ -168,6 +170,7 @@ impl SubView {
                 SubView::CostByModel,
                 SubView::ThreePanelInspect,
                 SubView::CFactorDetail,
+                SubView::DreamView,
             ],
             Tab::Marketplace => &[SubView::JobList, SubView::JobDetail, SubView::CreateJob],
             Tab::Atelier => &[SubView::PrdWorkshop, SubView::PlanExplorer],
@@ -205,6 +208,7 @@ impl SubView {
             Self::CostByModel => "Cost/Model",
             Self::ThreePanelInspect => "Runtime",
             Self::CFactorDetail => "C-Factor",
+            Self::DreamView => "Dreams",
             Self::JobList => "Jobs",
             Self::JobDetail => "Detail",
             Self::CreateJob => "New Job",

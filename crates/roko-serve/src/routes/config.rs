@@ -365,6 +365,22 @@ where
     let mut current = old_config.as_ref().clone();
     let result = hot_reload::apply_hot_reload(&mut current, &new_config, &changes);
 
+    // Append an audit entry for every applied or pending-restart change.
+    if !result.applied.is_empty() || !result.needs_restart.is_empty() {
+        let all_changes: Vec<_> = result
+            .applied
+            .iter()
+            .chain(result.needs_restart.iter())
+            .cloned()
+            .collect();
+        let journal_path = state.workdir.join(".roko").join("config-journal.jsonl");
+        if let Err(err) =
+            hot_reload::append_config_journal(&journal_path, &all_changes, "hot-reload")
+        {
+            tracing::warn!(error = %err, "failed to append config journal entry");
+        }
+    }
+
     // For non-hot-reloadable changes, we still store the full new config
     // so a subsequent restart picks up the new values. But we surface
     // the restart-required warning.

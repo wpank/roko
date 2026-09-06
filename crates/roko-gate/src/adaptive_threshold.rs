@@ -49,6 +49,13 @@ pub struct RungStats {
     pub cusum_low: f64,
     /// Whether CUSUM has detected a shift since last reset.
     pub cusum_shift_detected: bool,
+    /// EMA poisoning defense for this rung (P4-13).
+    ///
+    /// When all observations in the sliding window push the EMA in the same
+    /// direction (e.g. a flood of fake passes), the defense freezes the EMA
+    /// at its pre-poisoning value until diversity is restored.
+    #[serde(default)]
+    pub poisoning_defense: PoisoningDefense,
 }
 
 impl Default for RungStats {
@@ -60,6 +67,7 @@ impl Default for RungStats {
             cusum_high: 0.0,
             cusum_low: 0.0,
             cusum_shift_detected: false,
+            poisoning_defense: PoisoningDefense::default(),
         }
     }
 }
@@ -459,11 +467,24 @@ impl AdaptiveThresholds {
     /// and feeds the observation to the per-rung SPC detector ensemble
     /// (CUSUM + EWMA Control Chart + BOCPD). When any detector fires, the
     /// alert is collected and can be drained via [`Self::drain_spc_alerts`].
+    ///
+    /// When the poisoning defense is active for this rung, the EMA update is
+    /// skipped and the frozen pre-poisoning value is restored instead (P4-13).
     pub fn observe(&mut self, rung: u32, passed: bool) {
         let stats = self.rungs.entry(rung).or_default();
         let value = if passed { 1.0 } else { 0.0 };
 
-        if stats.total_observations == 0 {
+        // ── P4-13: EMA poisoning defense ────────────────────────────────
+        // Record the observation and check whether the EMA should be frozen.
+        // If frozen, revert to the saved pre-poisoning value and skip the
+        // EMA update so an adversarial flood of same-direction results
+        // cannot permanently corrupt the pass-rate estimate.
+        let frozen = stats.poisoning_defense.record(passed, stats.ema_pass_rate);
+        if frozen {
+            if let Some(saved) = stats.poisoning_defense.saved_value() {
+                stats.ema_pass_rate = saved;
+            }
+        } else if stats.total_observations == 0 {
             stats.ema_pass_rate = value;
         } else {
             stats.ema_pass_rate =

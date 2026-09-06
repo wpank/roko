@@ -3015,6 +3015,56 @@ async fn cmd_plan_run_engine(
         std::sync::Arc::new(facade)
     };
 
+    // ── P0-04: CodingOracle ─────────────────────────────────────────────
+    //
+    // Persists across the plan run, accumulating build/test observations
+    // for predictive gate feedback. Mirrors Runner-v2's CodingOracle.
+    let coding_oracle = std::sync::Arc::new(
+        roko_learn::oracles::coding::CodingOracle::new(),
+    );
+
+    // ── P1-01: GateGamingDetector ────────────────────────────────────
+    //
+    // Flags when agents game the gate system by passing gates at an
+    // increasing rate while delivering lower-quality outputs. Alerts are
+    // appended to a JSONL file on disk.
+    let gate_gaming_detector = std::sync::Arc::new(tokio::sync::Mutex::new(
+        roko_learn::GateGamingDetector::new(
+            graph_learn_dir.join("gate-gaming-alerts.jsonl"),
+        ),
+    ));
+
+    // ── P1-04: HoldoutExperiment ─────────────────────────────────────
+    //
+    // Deterministic 80/20 train/holdout split for detecting overfitting
+    // in learned routing. Learning updates are gated behind the holdout
+    // partition check.
+    let holdout_experiment = std::sync::Arc::new(tokio::sync::Mutex::new(
+        roko_learn::HoldoutExperiment::load_or_new(
+            graph_learn_dir.join("holdout-state.json"),
+        )
+        .unwrap_or_else(|err| {
+            tracing::warn!(error = %err, "failed to load holdout experiment state; starting fresh");
+            roko_learn::HoldoutExperiment::new(
+                graph_learn_dir.join("holdout-state.json"),
+            )
+        }),
+    ));
+
+    // ── P2-01: ShadowRunner ─────────────────────────────────────────
+    //
+    // Records shadow dispatch decisions (infrastructure-only; no actual
+    // shadow task spawn). Uses the configured default model as the
+    // shadow alternative.
+    let shadow_runner = std::sync::Arc::new(roko_learn::shadow::ShadowRunner::new(
+        roko_learn::shadow::ShadowConfig {
+            model_slug: roko_config.agent.default_model.clone(),
+            prompt_variant: None,
+            label: "graph-shadow".to_string(),
+        },
+        graph_learn_dir.join("shadow-results.jsonl"),
+    ));
+
     let graph_feedback = roko_cli::graph_task_dispatch::GraphFeedbackContext {
         feedback_facade: Some(graph_feedback_facade),
         efficiency_path: Some(graph_learn_dir.join("efficiency.jsonl")),
@@ -3044,6 +3094,11 @@ async fn cmd_plan_run_engine(
         },
         experiment_store_path: Some(graph_learn_dir.join("experiments.json")),
         replan_on_gate_failure: roko_config.learning.replan_on_gate_failure,
+        coding_oracle: Some(coding_oracle),
+        gate_gaming_detector: Some(gate_gaming_detector),
+        holdout_experiment: Some(holdout_experiment.clone()),
+        shadow_runner: Some(shadow_runner),
+        eval_generation_enabled: true,
     };
 
     // ── TUI vs inline progress decision ──────────────────────────────
@@ -3551,6 +3606,16 @@ async fn cmd_plan_run_engine(
                 ),
             });
     }
+    // ── Persist holdout experiment state ────────────────────────────
+    //
+    // Save holdout state so overfitting detection survives across runs
+    // and partition assignments remain stable. Mirrors Runner-v2 cleanup.
+    if let Ok(exp) = holdout_experiment.try_lock() {
+        if let Err(err) = exp.save() {
+            tracing::warn!(error = %err, "failed to persist holdout experiment state (non-fatal)");
+        }
+    }
+
     join_approval_tui_thread(tui_handle.take());
 
     if cli.json {

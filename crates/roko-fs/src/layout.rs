@@ -334,6 +334,16 @@ impl RokoLayout {
         self.learn_dir().join("playbooks")
     }
 
+    /// `.roko/config-journal.jsonl` — append-only audit log of config changes.
+    ///
+    /// Each line is a JSON object with `timestamp`, `source`, and `changes`
+    /// fields, written by `append_config_journal` after every hot-reload or
+    /// `config set` command.
+    #[must_use]
+    pub fn config_journal_path(&self) -> PathBuf {
+        self.root.join("config-journal.jsonl")
+    }
+
     /// `.roko/plans/{plan_id}/` — enrichment artifacts for one plan.
     #[must_use]
     pub fn plan_dir(&self, plan_id: &str) -> PathBuf {

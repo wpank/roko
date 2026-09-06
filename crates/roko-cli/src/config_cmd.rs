@@ -11,6 +11,7 @@ use crate::config::{
 };
 use anyhow::{Context as _, Result, anyhow};
 use roko_core::agent::ProviderKind;
+use roko_core::config::hot_reload::{self, ConfigChange, ConfigSection};
 use roko_core::config::schema::{
     CURRENT_CONFIG_VERSION, CURRENT_SCHEMA_VERSION, ModelProfile, ProviderConfig, RokoConfig,
 };
@@ -687,6 +688,19 @@ pub fn cmd_set(workdir: &Path, target: EditTarget, key: &str, value: &str) -> Re
     set_toml_dotted_key(&mut doc, key, value).with_context(|| format!("set {key} = {value}"))?;
     write_toml_file(&path, &doc)?;
     println!("set {key} = {value} in {}", path.display());
+
+    // Append an audit entry to the config journal so changes can be traced.
+    let journal_path = workdir.join(".roko").join("config-journal.jsonl");
+    let change = ConfigChange {
+        section: ConfigSection::Other(
+            key.split('.').next().unwrap_or(key).to_string(),
+        ),
+        summary: format!("config set {key} = {value}"),
+    };
+    if let Err(err) = hot_reload::append_config_journal(&journal_path, &[change], "config-set") {
+        tracing::warn!(error = %err, "failed to append config journal entry");
+    }
+
     Ok(())
 }
 

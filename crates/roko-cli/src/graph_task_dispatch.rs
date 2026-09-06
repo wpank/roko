@@ -26,11 +26,15 @@ use roko_core::error::{Result, RokoError};
 use roko_core::{Body, Context, Kind, Signal, Verify};
 use roko_gate::GatePayload;
 use roko_gate::ShellGate;
+use roko_gate::TurnSnapshot;
+use roko_gate::eval_generator::EvalGenerator;
 use roko_graph::cell::CellContext;
 use roko_graph::cells::{
     AttemptReconciliation, GraphTaskEvent, ProviderAttemptRecorder, StreamingTaskDispatcher,
     TaskDispatchOutcome, TaskDispatchOutcomeKind, TaskDispatcher, TaskExecutionSpec, TaskLease,
 };
+use roko_learn::oracles::coding::{BuildRecord, CodingOracle, TestRecord};
+use roko_learn::shadow::ShadowRunner;
 
 use crate::dispatch::{AgentDispatchRequest, DispatchContext, ModelChoiceSource, SharedAgentFactory};
 use crate::graph_checkpoint::GraphCostLedgerCheckpoint;
@@ -457,6 +461,16 @@ pub struct GraphFeedbackContext {
     pub experiment_store_path: Option<PathBuf>,
     /// Whether gate failure replanning is enabled (`learning.replan_on_gate_failure`).
     pub replan_on_gate_failure: bool,
+    /// P0-04: CodingOracle for post-gate build/test observations.
+    pub coding_oracle: Option<Arc<CodingOracle>>,
+    /// P1-01: GateGamingDetector for flagging gaming patterns.
+    pub gate_gaming_detector: Option<Arc<tokio::sync::Mutex<roko_learn::GateGamingDetector>>>,
+    /// P1-04: HoldoutExperiment for gating learning updates (80/20 train/holdout split).
+    pub holdout_experiment: Option<Arc<tokio::sync::Mutex<roko_learn::HoldoutExperiment>>>,
+    /// P2-01: ShadowRunner for recording shadow dispatch decisions.
+    pub shadow_runner: Option<Arc<ShadowRunner>>,
+    /// P0-02: Whether eval generation is enabled for standard+ tier tasks.
+    pub eval_generation_enabled: bool,
 }
 
 impl std::fmt::Debug for GraphFeedbackContext {
@@ -468,6 +482,11 @@ impl std::fmt::Debug for GraphFeedbackContext {
             .field("daimon_state", &self.daimon_state.is_some())
             .field("experiment_store_path", &self.experiment_store_path)
             .field("replan_on_gate_failure", &self.replan_on_gate_failure)
+            .field("coding_oracle", &self.coding_oracle.is_some())
+            .field("gate_gaming_detector", &self.gate_gaming_detector.is_some())
+            .field("holdout_experiment", &self.holdout_experiment.is_some())
+            .field("shadow_runner", &self.shadow_runner.is_some())
+            .field("eval_generation_enabled", &self.eval_generation_enabled)
             .finish()
     }
 }
@@ -481,6 +500,11 @@ impl Default for GraphFeedbackContext {
             daimon_state: None,
             experiment_store_path: None,
             replan_on_gate_failure: false,
+            coding_oracle: None,
+            gate_gaming_detector: None,
+            holdout_experiment: None,
+            shadow_runner: None,
+            eval_generation_enabled: false,
         }
     }
 }
@@ -1050,6 +1074,76 @@ impl TaskDispatcher for GraphTaskDispatcher {
             ))
         })?;
 
+        // ── P0-02: EvalGenerator pre-dispatch ───────────────────────────
+        //
+        // For standard-tier and above tasks, generate evaluation test
+        // artifacts before the agent starts. Mirrors Runner-v2's
+        // pre-dispatch eval generation.
+        if self.feedback.eval_generation_enabled {
+            let tier_lower = task.tier.to_ascii_lowercase();
+            let is_standard_or_above = !matches!(tier_lower.as_str(), "mechanical" | "trivial");
+            if is_standard_or_above {
+                let target_crates =
+                    crate::task_helpers::task_target_crates(Some(&task));
+                let primary_crate = target_crates
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "roko-cli".to_string());
+                let generator = EvalGenerator::new();
+                let evals = generator.generate_all(
+                    &task.title,
+                    &primary_crate,
+                    &task.files,
+                );
+                if !evals.is_empty() {
+                    let gen_dir = self.workdir.join("generated-tests");
+                    if let Err(err) = std::fs::create_dir_all(&gen_dir) {
+                        tracing::warn!(
+                            plan_id = %spec.plan_id,
+                            task_id = %task.id,
+                            error = %err,
+                            "P0-02: failed to create generated-tests dir (non-fatal)"
+                        );
+                    } else {
+                        for eval in &evals {
+                            let file_name = format!("{}.rs", eval.name);
+                            let file_path = gen_dir.join(&file_name);
+                            if let Err(err) = std::fs::write(&file_path, &eval.test_source) {
+                                tracing::warn!(
+                                    plan_id = %spec.plan_id,
+                                    task_id = %task.id,
+                                    file = %file_name,
+                                    error = %err,
+                                    "P0-02: failed to write generated eval (non-fatal)"
+                                );
+                            }
+                        }
+                        tracing::debug!(
+                            plan_id = %spec.plan_id,
+                            task_id = %task.id,
+                            eval_count = evals.len(),
+                            "P0-02: generated eval artifacts before dispatch"
+                        );
+                    }
+                }
+            }
+        }
+
+        // ── P2-01: ShadowRunner decision recording ──────────────────────
+        //
+        // Record whether this task would be shadowed. Infrastructure-only:
+        // we record the decision but do not actually spawn a shadow task.
+        if let Some(shadow) = &self.feedback.shadow_runner {
+            let should = shadow.should_shadow();
+            tracing::debug!(
+                plan_id = %spec.plan_id,
+                task_id = %task.id,
+                should_shadow = should,
+                shadow_model = %shadow.config.model_slug,
+                "P2-01: shadow decision recorded (infrastructure-only)"
+            );
+        }
+
         // ── Worktree isolation: acquire ─────────────────────────────────
         //
         // When a workspace provider is configured, acquire an isolated
@@ -1249,8 +1343,16 @@ impl TaskDispatcher for GraphTaskDispatcher {
             let gate_ctx = Context::now();
 
             let mut failures: Vec<String> = Vec::new();
+            // P4-03: PromiseTracker for early termination of doomed attempts.
+            let mut promise_tracker = crate::runner::promise_tracker::PromiseTracker::new();
+            let mut promise_terminated = false;
 
             for (i, step) in task.verify.iter().enumerate() {
+                // P4-03: Check for early termination before running the next step.
+                if promise_terminated {
+                    break;
+                }
+
                 let step_label = if step.phase.is_empty() {
                     format!("verify[{}]", i)
                 } else {
@@ -1291,6 +1393,75 @@ impl TaskDispatcher for GraphTaskDispatcher {
                     "graph verify step completed"
                 );
 
+                // ── P0-04: CodingOracle observations ────────────────────
+                //
+                // Feed each verdict into the CodingOracle so it can refine
+                // its build-time and test-pass-rate predictions.
+                if let Some(oracle) = &self.feedback.coding_oracle {
+                    let now_ms = chrono::Utc::now().timestamp_millis();
+                    let gate_lower = step.phase.to_ascii_lowercase();
+                    if gate_lower.contains("compile") || step.command.contains("cargo check") || step.command.contains("cargo build") {
+                        oracle.observe_build(BuildRecord {
+                            duration_secs: verdict.duration_ms as f64 / 1000.0,
+                            success: verdict.passed,
+                            warnings: 0,
+                            ts_ms: now_ms,
+                        });
+                    }
+                    if gate_lower.contains("test") || step.command.contains("cargo test") {
+                        let (passed, failed, total) = if verdict.passed {
+                            (1, 0, 1)
+                        } else {
+                            (0, 1, 1)
+                        };
+                        oracle.observe_test(TestRecord {
+                            passed,
+                            failed,
+                            total,
+                            ts_ms: now_ms,
+                        });
+                    }
+                }
+
+                // ── P4-03: PromiseTracker per-step check ────────────────
+                //
+                // Build a TurnSnapshot from this verify step and check
+                // whether the attempt should be terminated early.
+                {
+                    let core_verdict = if verdict.passed {
+                        roko_core::Verdict::pass(&step_label)
+                    } else {
+                        roko_core::Verdict::fail(&step_label, &verdict.reason)
+                    };
+                    let snapshot = TurnSnapshot {
+                        rung: i as u32,
+                        verdicts: vec![core_verdict],
+                        error_count: if verdict.passed { 0 } else { 1 },
+                        diff_lines: 0,
+                    };
+                    let decision = promise_tracker.record_and_check(snapshot);
+                    if let crate::runner::promise_tracker::PromiseDecision::Terminate {
+                        promise,
+                        consecutive_turns,
+                    } = decision
+                    {
+                        tracing::warn!(
+                            plan_id = %spec.plan_id,
+                            task_id = %task.id,
+                            step = i,
+                            promise,
+                            consecutive_turns,
+                            "P4-03: PRM early termination — abandoning doomed verify sequence"
+                        );
+                        failures.push(format!(
+                            "early termination: promise {promise:.3} below threshold \
+                             for {consecutive_turns} consecutive verify steps"
+                        ));
+                        promise_terminated = true;
+                        // Don't break here; fall through to record the current failure.
+                    }
+                }
+
                 if !verdict.passed {
                     let fail_msg = step
                         .fail_msg
@@ -1311,6 +1482,64 @@ impl TaskDispatcher for GraphTaskDispatcher {
                         "{step_label} (`{cmd}`): {fail_msg}\n{detail_snippet}",
                         cmd = step.command,
                     ));
+                }
+            }
+
+            // ── Post-verify: GateGamingDetector + HoldoutExperiment ─────
+            //
+            // These run after all verify steps complete (or early-terminate)
+            // regardless of pass/fail, matching the Runner-v2 gate completion
+            // callback pattern.
+            let all_passed = failures.is_empty();
+            let model_slug = &dispatch.target.model_slug;
+
+            // P1-01: GateGamingDetector observation.
+            if let Some(detector) = &self.feedback.gate_gaming_detector {
+                let base_quality = if all_passed { 0.8 } else { 0.2 };
+                // P3-17: Modulate quality with daimon affect valence when available.
+                let affect_bonus = self.feedback.daimon_state.as_ref()
+                    .and_then(|d| d.lock().ok())
+                    .map(|state| state.state.alma.effective_affect().pleasure)
+                    .unwrap_or(0.0);
+                let quality_score = (base_quality + affect_bonus * 0.1).clamp(0.0, 1.0);
+                if let Ok(mut det) = detector.try_lock() {
+                    if let Err(err) = det
+                        .observe_and_detect(model_slug, all_passed, quality_score)
+                        .await
+                    {
+                        tracing::warn!(
+                            error = %err,
+                            model = %model_slug,
+                            "P1-01: gate gaming detection I/O error (non-fatal)"
+                        );
+                    }
+                }
+            }
+
+            // P1-04: HoldoutExperiment outcome recording and learning gate.
+            if let Some(holdout) = &self.feedback.holdout_experiment {
+                let holdout_task_key = format!("{}:{}", spec.plan_id, task.id);
+                if let Ok(mut exp) = holdout.try_lock() {
+                    exp.record_outcome(&holdout_task_key, all_passed, 0.0);
+                    if let Some(alert) = exp.check_overfitting() {
+                        tracing::warn!(
+                            train_pass_rate = alert.train_pass_rate,
+                            holdout_pass_rate = alert.holdout_pass_rate,
+                            divergence_pp = alert.divergence_pp,
+                            "P1-04: holdout overfitting detected"
+                        );
+                    }
+                    // Gate learning updates: only Train partition tasks update
+                    // the routing model; holdout tasks are observed but never
+                    // feed back into learned state. This affects the playbook,
+                    // efficiency, and experiment settlement paths above.
+                    let should_update = exp.should_update_learning(&holdout_task_key);
+                    tracing::debug!(
+                        plan_id = %spec.plan_id,
+                        task_id = %task.id,
+                        should_update_learning = should_update,
+                        "P1-04: holdout partition check"
+                    );
                 }
             }
 

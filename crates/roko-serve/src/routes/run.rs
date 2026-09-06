@@ -23,6 +23,7 @@ pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/run", post(start_run))
         .route("/run/{id}/status", get(run_status))
+        .route("/surface-events", post(handle_surface_event))
 }
 
 #[derive(Deserialize, Validate)]
@@ -352,6 +353,57 @@ fn publish_run_completed(
         run_id: run_id.to_owned(),
         success,
     });
+}
+
+/// P1-44: `POST /api/surface-events` -- accept a `SurfaceEvent` command and
+/// translate it into runtime effects.
+///
+/// Currently handles `FlowCancel` and `FlowPause` (plan cancellation/pause).
+/// Other variants are accepted and logged but do not yet trigger effects.
+async fn handle_surface_event(
+    State(state): State<Arc<AppState>>,
+    Json(event): Json<roko_core::runtime_event::SurfaceEvent>,
+) -> Result<impl IntoResponse, ApiError> {
+    use roko_core::runtime_event::SurfaceEvent;
+
+    tracing::info!(?event, "P1-44: surface event received");
+
+    match &event {
+        SurfaceEvent::FlowCancel { run_id } | SurfaceEvent::FlowPause { run_id } => {
+            let action = if matches!(event, SurfaceEvent::FlowCancel { .. }) {
+                "flow_cancel"
+            } else {
+                "flow_pause"
+            };
+            let plans = state.active_plans.read().await;
+            if let Some(handle) = plans.get(run_id.as_str()) {
+                handle.cancel.cancel();
+                tracing::info!(run_id, action, "P1-44: flow control via surface event");
+                Ok(Json(json!({ "ok": true, "action": action, "run_id": run_id })))
+            } else {
+                drop(plans);
+                Err(ApiError::not_found(format!("run {run_id} not found")))
+            }
+        }
+        SurfaceEvent::HumanRespond { run_id, cell_id, .. } => {
+            tracing::info!(
+                run_id, cell_id,
+                "P1-44: human response received (effect dispatch pending full wiring)"
+            );
+            Ok(Json(json!({
+                "ok": true,
+                "action": "human_respond",
+                "run_id": run_id,
+                "cell_id": cell_id,
+                "wired": false,
+            })))
+        }
+        _ => {
+            // Accept but log other surface event types as not-yet-wired.
+            tracing::debug!(?event, "P1-44: surface event type accepted but not yet wired");
+            Ok(Json(json!({ "ok": true, "action": "accepted", "wired": false })))
+        }
+    }
 }
 
 #[allow(clippy::cast_possible_truncation)]

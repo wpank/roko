@@ -1646,8 +1646,22 @@ pub async fn dispatch_loop(state: Arc<AppState>, dispatcher: Arc<dyn AgentDispat
                     .get("plan_id")
                     .cloned()
                     .unwrap_or_default();
+                // P1-26: Extract the review body from the graduated signal's
+                // body so it can be surfaced in replan context. The review
+                // body is stored at `body.context.review.body` by the
+                // graduation function in events.rs.
+                let review_body_len = if let roko_core::Body::Json(ref json) = signal.body {
+                    json.get("context")
+                        .and_then(|c| c.get("review"))
+                        .and_then(|r| r.get("body"))
+                        .and_then(serde_json::Value::as_str)
+                        .map_or(0, str::len)
+                } else {
+                    0
+                };
                 info!(
                     plan_id = %plan_id,
+                    review_body_len,
                     "graduated trigger: replan requested"
                 );
             }

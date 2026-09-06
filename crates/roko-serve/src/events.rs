@@ -818,6 +818,9 @@ fn graduate_github_webhook_signal(
                     "review": {
                         "id": review.get("id").and_then(Value::as_u64),
                         "state": review_state,
+                        // P1-26: Include the review body text so downstream
+                        // replan context can surface reviewer feedback.
+                        "body": review.get("body").and_then(Value::as_str).unwrap_or(""),
                     },
                 }),
             )

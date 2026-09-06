@@ -160,6 +160,9 @@ pub enum DoctorSubject {
     Disk,
     /// Network connectivity and external service reachability.
     Network,
+    /// Remove orphaned temp files, .corrupted files, and stale lock files
+    /// from `.roko/learn/` and related directories.
+    Clean,
 }
 
 /// Workspace-local build and evidence cache lifecycle.

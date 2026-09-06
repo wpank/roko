@@ -2815,6 +2815,76 @@ fn check_crash_report(workdir: &Path) -> DoctorCheck {
     }
 }
 
+/// P1-48: Remove orphaned temp files, `.corrupted` files, and stale lock
+/// files from `.roko/learn/` and related directories.
+///
+/// Returns the list of paths that were successfully removed.
+pub fn clean_orphaned_files(workdir: &Path) -> Vec<PathBuf> {
+    let roko_dir = workdir.join(".roko");
+    let learn_dir = roko_dir.join("learn");
+    let state_dir = roko_dir.join("state");
+    let tmp_dir = roko_dir.join("tmp");
+
+    let scan_dirs = [&learn_dir, &state_dir, &tmp_dir];
+    let stale_lock_age = Duration::from_secs(roko_core::defaults::DEFAULT_STALE_LOCK_SECS);
+    let mut removed = Vec::new();
+
+    for dir in &scan_dirs {
+        if !dir.is_dir() {
+            continue;
+        }
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let file_name = match path.file_name().and_then(|n| n.to_str()) {
+                Some(name) => name.to_owned(),
+                None => continue,
+            };
+
+            // Zero-byte .tmp.* files
+            let is_tmp = file_name.starts_with(".tmp.") || file_name.ends_with(".tmp");
+            if is_tmp {
+                let is_zero = entry.metadata().map_or(false, |m| m.len() == 0);
+                if is_zero {
+                    if std::fs::remove_file(&path).is_ok() {
+                        removed.push(path);
+                    }
+                    continue;
+                }
+            }
+
+            // .corrupted files (any size)
+            if file_name.ends_with(".corrupted") {
+                if std::fs::remove_file(&path).is_ok() {
+                    removed.push(path);
+                }
+                continue;
+            }
+
+            // Stale .lock files (older than DEFAULT_STALE_LOCK_SECS)
+            if file_name.ends_with(".lock") {
+                let is_stale = entry.metadata().ok().and_then(|m| m.modified().ok()).is_some_and(
+                    |mtime| {
+                        mtime
+                            .elapsed()
+                            .map_or(false, |age| age >= stale_lock_age)
+                    },
+                );
+                if is_stale {
+                    if std::fs::remove_file(&path).is_ok() {
+                        removed.push(path);
+                    }
+                }
+            }
+        }
+    }
+
+    removed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

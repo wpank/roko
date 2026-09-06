@@ -1138,6 +1138,28 @@ pub(crate) async fn cmd_doctor(
     serve_url: Option<String>,
 ) -> Result<i32> {
     let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
+    if matches!(subject, Some(DoctorSubject::Clean)) {
+        let removed = roko_cli::doctor::clean_orphaned_files(&workdir);
+        if cli.json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "cleaned": removed.len(),
+                    "files": removed.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+                })
+            );
+        } else {
+            if removed.is_empty() {
+                println!("No orphaned files found.");
+            } else {
+                println!("Cleaned {} orphaned file(s):", removed.len());
+                for path in &removed {
+                    println!("  removed: {}", path.display());
+                }
+            }
+        }
+        return Ok(0);
+    }
     if matches!(subject, Some(DoctorSubject::Disk)) {
         let report = roko_cli::doctor::run_disk_doctor(&workdir, cli.config.as_deref()).await;
         if cli.json {

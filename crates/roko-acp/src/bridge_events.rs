@@ -51,7 +51,9 @@ use roko_learn::{
     episode_logger::{Episode, EpisodeLogger, Usage as EpUsage},
     model_router::RoutingContext,
     playbook::Playbook,
-    prompt_experiment::{ExperimentStatus, ExperimentStore},
+    prompt_experiment::{
+        AssignmentSettlement, ExperimentStatus, ExperimentStore, PromptAttemptKey,
+    },
     provider_health::ProviderHealthRegistry,
 };
 use roko_neuro::{KnowledgeKind, KnowledgeQueryHit, KnowledgeTier};
@@ -783,6 +785,9 @@ struct AcpExperimentAssignment {
     section_name: String,
     content: String,
     model_slug: Option<String>,
+    /// P1-21: Durable receipt key for the canonical experiment lifecycle.
+    /// Populated when `prepare_attempt_assignments` succeeds.
+    attempt_key: Option<PromptAttemptKey>,
 }
 
 fn experiment_store_lock() -> std::sync::MutexGuard<'static, ()> {
@@ -796,7 +801,11 @@ fn experiment_store_lock() -> std::sync::MutexGuard<'static, ()> {
 ///
 /// The persisted map is intentionally sorted before selection so HashMap
 /// iteration order cannot change which experiment receives an ACP turn.
-fn assign_acp_experiment(path: &Path, mode: &str) -> Option<AcpExperimentAssignment> {
+fn assign_acp_experiment(
+    path: &Path,
+    mode: &str,
+    session_id: &str,
+) -> Option<AcpExperimentAssignment> {
     let _guard = experiment_store_lock();
     let store = ExperimentStore::load_or_new(path);
     let role = acp_role_for_mode(mode).label();
@@ -813,12 +822,35 @@ fn assign_acp_experiment(path: &Path, mode: &str) -> Option<AcpExperimentAssignm
     experiments.sort_by(|left, right| left.experiment_id.cmp(&right.experiment_id));
     let experiment = experiments.first()?;
     let variant = experiment.assign_variant()?;
+
+    // P1-21: Prepare a durable receipt key so ACP dispatches participate in
+    // the canonical experiment lifecycle. Use session_id as run_id, "acp" as
+    // plan_id, and the mode as task_id.
+    let attempt_key = PromptAttemptKey::new(session_id, "acp", mode, 1);
+    let prepare_result = ExperimentStore::prepare_attempt_assignments(
+        path,
+        &attempt_key,
+        Some(role),
+        &[experiment.section_name.as_str()],
+    );
+    let attempt_key = match prepare_result {
+        Ok(_) => Some(attempt_key),
+        Err(err) => {
+            tracing::debug!(
+                error = %err,
+                "P1-21: ACP experiment receipt preparation failed (non-fatal)"
+            );
+            None
+        }
+    };
+
     Some(AcpExperimentAssignment {
         experiment_id: experiment.experiment_id.clone(),
         variant_id: variant.id.clone(),
         section_name: experiment.section_name.clone(),
         content: variant.content.clone(),
         model_slug: variant.slug.clone().filter(|slug| !slug.trim().is_empty()),
+        attempt_key,
     })
 }
 
@@ -913,7 +945,25 @@ fn record_acp_experiment_outcome(
             if success { 1.0 } else { 0.0 },
         );
         Ok(())
-    })
+    })?;
+
+    // P1-21: Also settle via the canonical receipt protocol so durable
+    // assignment buckets reflect ACP outcomes.
+    if let Some(attempt_key) = assignment.attempt_key.as_ref() {
+        let settlement = if success {
+            AssignmentSettlement::Observed { success: true }
+        } else {
+            AssignmentSettlement::Observed { success: false }
+        };
+        if let Err(err) = ExperimentStore::settle_attempt(path, attempt_key, settlement) {
+            tracing::debug!(
+                error = %err,
+                "P1-21: ACP experiment receipt settlement failed (non-fatal)"
+            );
+        }
+    }
+
+    Ok(())
 }
 
 fn cascade_router_model_slugs(roko_config: &RokoConfig, resolved_slug: &str) -> Vec<String> {
@@ -1708,7 +1758,11 @@ where
     let experiment_assignment = if is_slash_command {
         None
     } else {
-        assign_acp_experiment(&experiment_path, &session.config_state.agent_mode)
+        assign_acp_experiment(
+            &experiment_path,
+            &session.config_state.agent_mode,
+            &session.session_id,
+        )
     };
     let (experiment_assignment, experiment_model_key) = applicable_acp_experiment(
         roko_config,
@@ -6382,7 +6436,8 @@ mod tests {
             vec![variant("Use the ACP variant.", Some("vision-wire"))],
         ));
         store.save(&experiment_path).expect("save experiments");
-        let assignment = assign_acp_experiment(&experiment_path, "code").expect("assignment");
+        let assignment =
+            assign_acp_experiment(&experiment_path, "code", "test-session").expect("assignment");
         let mut config = RokoConfig::default();
         config.models.insert(
             "vision-key".into(),
@@ -6528,7 +6583,8 @@ mod tests {
         ));
         store.save(&path).expect("save experiments");
 
-        let assignment = assign_acp_experiment(&path, "code").expect("active assignment");
+        let assignment =
+            assign_acp_experiment(&path, "code", "test-session-2").expect("active assignment");
         assert_eq!(assignment.experiment_id, "exp-a");
         assert_eq!(assignment.variant_id, "a");
         assert!(render_experiment_context(&assignment).contains("Use the selected constraint."));
@@ -6583,6 +6639,7 @@ mod tests {
             section_name: "constraints".to_string(),
             content: "Concurrent content".to_string(),
             model_slug: None,
+            attempt_key: None,
         };
         let barrier = Arc::new(std::sync::Barrier::new(3));
 

@@ -307,6 +307,56 @@ impl GateThresholds {
         }
     }
 
+    /// P1-08: Observe a prediction residual (predicted - actual pass rate).
+    ///
+    /// When oracles systematically overestimate task success, the absolute
+    /// residual tightens the gate threshold for the corresponding rung.
+    /// Uses a softer alpha (0.05) to avoid over-reacting to single
+    /// observations.
+    pub(crate) fn observe_residual(&mut self, rung: u32, residual: f64) {
+        let stats = self.rungs.entry(rung).or_default();
+        let abs_residual = residual.abs().clamp(0.0, 1.0);
+        const RESIDUAL_ALPHA: f64 = 0.05;
+        if stats.total_count > 0 {
+            let adjustment = RESIDUAL_ALPHA * abs_residual;
+            stats.ema_pass_rate = (stats.ema_pass_rate - adjustment).clamp(0.0, 1.0);
+        }
+    }
+
+    /// P1-09: Apply neuro-derived knowledge hints to threshold tuning.
+    ///
+    /// Known failure rungs get their EMA biased toward caution when few
+    /// observations exist. Known stable rungs are left untouched (the
+    /// existing EMA already captures stability).
+    pub(crate) fn apply_neuro_hints(
+        &mut self,
+        known_failure_rungs: &[u32],
+        known_stable_rungs: &[u32],
+    ) {
+        let _ = known_stable_rungs; // stability hints don't modify persist thresholds
+        for &rung in known_failure_rungs {
+            let stats = self.rungs.entry(rung).or_default();
+            if stats.total_count < 10 {
+                stats.ema_pass_rate = (stats.ema_pass_rate * 0.7).min(0.5);
+            }
+        }
+    }
+
+    /// P1-10: Apply a domain-specific threshold profile.
+    ///
+    /// Sets rung priors from the profile when the rung has no prior
+    /// observations, giving domain-appropriate initial expectations.
+    pub(crate) fn apply_profile(&mut self, profile: &roko_gate::adaptive_threshold::ThresholdProfile) {
+        for (&rung, &prior) in &profile.rung_priors {
+            let stats = self.rungs.entry(rung).or_default();
+            // Only override the EMA if the rung has zero observations so
+            // we don't clobber learned state.
+            if stats.total_count == 0 {
+                stats.ema_pass_rate = prior.clamp(0.0, 1.0);
+            }
+        }
+    }
+
     pub(crate) fn suggested_max_retries(&self, rung: u32) -> u32 {
         let Some(stats) = self.rungs.get(&rung) else {
             return DEFAULT_GATE_RETRY_COLD_START;
@@ -322,6 +372,37 @@ impl GateThresholds {
         let retries = stats.ema_pass_rate.mul_add(-range_f, max_f).round() as u32;
 
         retries.clamp(DEFAULT_GATE_RETRY_MIN, DEFAULT_GATE_RETRY_MAX)
+    }
+
+    /// P1-12: Check whether a rung should be skipped based on its pass
+    /// streak, modulated by the current daimon temperament.
+    ///
+    /// - Conservative: never skip.
+    /// - Balanced / Exploratory: skip if consecutive passes exceed
+    ///   `SKIP_STREAK_THRESHOLD` (20, matching `AdaptiveThresholds`).
+    /// - Aggressive: skip at half the threshold (10).
+    pub(crate) fn should_skip_rung_for_temperament(
+        &self,
+        _rung: u32,
+        temperament: roko_core::Temperament,
+    ) -> bool {
+        // The persist-layer GateThresholdStats does not track
+        // consecutive_passes (it only stores ema_pass_rate and counts).
+        // Without a pass streak counter, we approximate using the EMA:
+        // a very high EMA (>0.95) with many observations suggests the
+        // rung consistently passes.
+        let Some(stats) = self.rungs.get(&_rung) else {
+            return false;
+        };
+        match temperament {
+            roko_core::Temperament::Conservative => false,
+            roko_core::Temperament::Balanced | roko_core::Temperament::Exploratory => {
+                stats.total_count >= 20 && stats.ema_pass_rate > 0.95
+            }
+            roko_core::Temperament::Aggressive => {
+                stats.total_count >= 10 && stats.ema_pass_rate > 0.90
+            }
+        }
     }
 
     pub(crate) fn save(&self, path: &Path) -> Result<()> {

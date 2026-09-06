@@ -110,7 +110,12 @@ impl CodingOracle {
     }
 
     /// Predict test pass rate from historical runs.
-    fn predict_test_pass_rate(&self) -> (f64, f64) {
+    ///
+    /// Returns `(predicted_rate, confidence)` where both are in `[0.0, 1.0]`.
+    /// Callers can use the confidence threshold to decide whether the
+    /// prediction is reliable enough to act on (e.g., feeding residuals
+    /// into adaptive gate thresholds).
+    pub fn predict_test_pass_rate(&self) -> (f64, f64) {
         let history = self.test_history.read();
         if history.is_empty() {
             return (0.8, 0.2); // Optimistic default.

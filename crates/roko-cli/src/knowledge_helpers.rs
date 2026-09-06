@@ -473,6 +473,69 @@ pub(crate) fn apply_neuro_gate_hints(
     }
 }
 
+/// P1-09: Variant of [`apply_neuro_gate_hints`] targeting the persist-layer
+/// [`crate::runner::persist::GateThresholds`] used by the runner event loop.
+///
+/// Extracts the same failure/stability rung lists from neuro, then applies
+/// them through the `GateThresholds::apply_neuro_hints` method.
+pub(crate) fn apply_neuro_gate_hints_persist(
+    knowledge_store: &KnowledgeStore,
+    thresholds: &mut crate::runner::persist::GateThresholds,
+) {
+    let failure_rungs = match knowledge_store.query("gate failure compile lint test", 10) {
+        Ok(entries) => entries
+            .into_iter()
+            .filter_map(|entry| {
+                let content_lower = entry.content.to_lowercase();
+                if content_lower.contains("compile") || content_lower.contains("rung 0") {
+                    Some(0u32)
+                } else if content_lower.contains("lint")
+                    || content_lower.contains("clippy")
+                    || content_lower.contains("rung 1")
+                {
+                    Some(1)
+                } else if content_lower.contains("test fail") || content_lower.contains("rung 2") {
+                    Some(2)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>(),
+        Err(err) => {
+            tracing::debug!(error = %err, "P1-09: skipping neuro gate hints (query failed)");
+            return;
+        }
+    };
+
+    let stable_rungs = match knowledge_store.query("gate stable passing consistently", 10) {
+        Ok(entries) => entries
+            .into_iter()
+            .filter_map(|entry| {
+                let content_lower = entry.content.to_lowercase();
+                if content_lower.contains("compile") || content_lower.contains("rung 0") {
+                    Some(0u32)
+                } else if content_lower.contains("lint") || content_lower.contains("rung 1") {
+                    Some(1)
+                } else if content_lower.contains("test") || content_lower.contains("rung 2") {
+                    Some(2)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>(),
+        Err(_) => Vec::new(),
+    };
+
+    if !failure_rungs.is_empty() || !stable_rungs.is_empty() {
+        tracing::info!(
+            failure_rungs = ?failure_rungs,
+            stable_rungs = ?stable_rungs,
+            "P1-09: applying neuro knowledge hints to runner gate thresholds"
+        );
+        thresholds.apply_neuro_hints(&failure_rungs, &stable_rungs);
+    }
+}
+
 // ─── Neuro context rendering ─────────────────────────────────────────────
 
 pub(crate) fn render_neuro_chunk(chunk: &roko_neuro::ContextChunk) -> Option<String> {

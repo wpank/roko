@@ -34,8 +34,8 @@ use roko_core::{
     TelemetryEventSink, TranscriptStore,
 };
 use roko_daimon::{
-    AffectEngine as _, AffectEvent, DispatchParams, SomaticSignal, StrategyCoordinates,
-    TaskStrategyObservation,
+    AffectEngine as _, AffectEvent, DispatchParams, RecoveryMode, SomaticSignal,
+    StrategyCoordinates, TaskStrategyObservation, fatigue_response, promote_model,
 };
 use roko_fs::{FsObservabilitySinks, RokoLayout};
 use roko_gate::{
@@ -2620,6 +2620,18 @@ pub async fn run_with_tui_commands(
     info!("transcript store initialized (capacity=8192)");
 
     let mut gate_thresholds = persist::load_gate_thresholds(&paths).unwrap_or_default();
+
+    // P1-09: Apply neuro knowledge hints to gate thresholds at startup.
+    // Known failure patterns bias thresholds toward caution before any
+    // observations arrive in this run.
+    {
+        let knowledge_store = KnowledgeStore::for_workdir(&config.workdir);
+        crate::knowledge_helpers::apply_neuro_gate_hints_persist(
+            &knowledge_store,
+            &mut gate_thresholds,
+        );
+    }
+
     // E07-T10: Counter for incremental gate-threshold flushing.
     // Tracks observations since the last incremental flush to the
     // standalone `gate-thresholds.json` file.
@@ -2629,6 +2641,17 @@ pub async fn run_with_tui_commands(
     // P0-04: CodingOracle instance — persists across the run, accumulating
     // build/test observations for predictive gate feedback.
     let coding_oracle = CodingOracle::new();
+
+    // P1-11: GateRatchet — tracks the highest rung each plan has passed
+    // and prevents rung regression (e.g., passing lint but then failing
+    // compile on the next attempt). Loaded from disk so ratchet state
+    // survives restarts.
+    let ratchet_path = config.layout.learn_dir().join("gate-ratchet.json");
+    let mut gate_ratchet = roko_gate::GateRatchet::load_or_new(&ratchet_path);
+    info!(
+        plan_count = gate_ratchet.plan_count(),
+        "P1-11: loaded gate ratchet"
+    );
 
     // Gate gaming detector — flags rising pass rates paired with falling
     // quality scores, per model. Alerts are appended to JSONL on disk.
@@ -3051,6 +3074,37 @@ pub async fn run_with_tui_commands(
             total_tasks += 1;
         }
         task_index.insert(plan.id.clone(), tasks_map);
+    }
+
+    // P1-10: Apply domain-specific threshold profile based on the dominant
+    // task role across all plans.  This sets appropriate rung priors for
+    // rungs with zero observations so the adaptive system starts from
+    // domain-informed expectations instead of the 0.5 neutral default.
+    {
+        let mut role_counts: HashMap<&str, usize> = HashMap::new();
+        for tasks in task_index.values() {
+            for task in tasks.values() {
+                let role = task.role.as_deref().unwrap_or("implementer");
+                *role_counts.entry(role).or_insert(0) += 1;
+            }
+        }
+        let dominant_role = role_counts
+            .into_iter()
+            .max_by_key(|&(_, count)| count)
+            .map(|(role, _)| role)
+            .unwrap_or("implementer");
+        let profile_name = match dominant_role {
+            "researcher" | "strategist" | "pre-planner" => "research",
+            "security-reviewer" | "security" => "security",
+            _ => "coding",
+        };
+        let profile = roko_gate::adaptive_threshold::ThresholdProfile::by_name(profile_name);
+        gate_thresholds.apply_profile(&profile);
+        info!(
+            profile = profile_name,
+            dominant_role = dominant_role,
+            "P1-10: applied domain-specific threshold profile"
+        );
     }
 
     // Channels.
@@ -4069,6 +4123,9 @@ pub async fn run_with_tui_commands(
                         budget_usd,
                     )
                     .await;
+                    // P1-02: Feed the daimon VitalityTracker from the
+                    // real per-task budget observation.
+                    record_daimon_budget_observation(config, spent_usd, budget_usd);
                 }
                 append_agent_event(&paths, &event, &state);
                 publish_learning_agent_event(
@@ -5291,6 +5348,34 @@ pub async fn run_with_tui_commands(
                 }
                 emit_gate_thresholds_event(&gate_thresholds, &tui);
 
+                // ── P1-11: GateRatchet check + record ───────────────────
+                //
+                // If the gate passed, record the highest passing rung.
+                // If it failed, check whether this represents a regression
+                // from a previously passed rung and log a warning.
+                if completion.kind == GateCompletionKind::Gate {
+                    #[allow(clippy::cast_possible_truncation)]
+                    let rung_u8 = completion.rung as u8;
+                    if completion.passed {
+                        gate_ratchet.record_pass(&completion.plan_id, rung_u8);
+                    } else if !gate_ratchet.can_regress(&completion.plan_id, rung_u8) {
+                        warn!(
+                            plan_id = %completion.plan_id,
+                            task_id = %completion.task_id,
+                            rung = completion.rung,
+                            highest_pass = ?gate_ratchet.highest_pass(&completion.plan_id),
+                            "P1-11: gate ratchet regression detected — plan previously \
+                             passed a higher rung but now failed at rung {}",
+                            completion.rung,
+                        );
+                    }
+                    // Best-effort persist after each gate so ratchet state
+                    // survives crashes.
+                    if let Err(err) = gate_ratchet.save(&ratchet_path) {
+                        debug!(error = %err, "P1-11: failed to persist gate ratchet (non-fatal)");
+                    }
+                }
+
                 // E07-T10: Incrementally flush gate thresholds to the
                 // standalone learn file every N observations so external
                 // readers (serve, TUI, `roko learn`) see fresh data
@@ -5337,6 +5422,35 @@ pub async fn run_with_tui_commands(
                                 ts_ms: now_ms,
                             });
                         }
+                    }
+                }
+
+                // ── P1-08: CodingOracle residual → adaptive thresholds ───
+                //
+                // After observing verdicts into the CodingOracle above,
+                // compute the residual between its predicted test pass
+                // rate and the actual outcome, then feed that into the
+                // adaptive gate thresholds so they tighten when the oracle
+                // systematically overestimates success.
+                {
+                    let (predicted_pass_rate, confidence) = coding_oracle.predict_test_pass_rate();
+                    if confidence > 0.1 {
+                        let actual_pass_rate = if completion.passed { 1.0 } else { 0.0 };
+                        let residual = predicted_pass_rate - actual_pass_rate;
+                        for v in &completion.verdicts {
+                            if v.skipped {
+                                continue;
+                            }
+                            let actual_rung = v.rung_index.unwrap_or(completion.rung);
+                            gate_thresholds.observe_residual(actual_rung, residual);
+                        }
+                        debug!(
+                            predicted = predicted_pass_rate,
+                            actual = actual_pass_rate,
+                            residual = residual,
+                            confidence = confidence,
+                            "P1-08: oracle residual fed to adaptive gate thresholds"
+                        );
                     }
                 }
 
@@ -10516,12 +10630,18 @@ fn render_daimon_prompt_context(hook: &DaimonTaskHook) -> Option<String> {
 
 fn record_daimon_gate_result(config: &RunConfig, completion: &GateCompletion) {
     with_daimon_state(config, |daimon| {
-        daimon.appraise(AffectEvent::GateResult {
+        let event = AffectEvent::GateResult {
             plan_id: completion.plan_id.clone(),
             task_id: completion.task_id.clone(),
             passed: completion.passed,
             rung: completion.rung,
-        });
+        };
+        // P1-04 + P1-06: Use novelty-gated OCC appraisal instead of
+        // unconditional hardcoded PAD deltas.  When the novelty filter
+        // suppresses a repeated trigger category the affect state is
+        // left unchanged, preventing emotional flooding from repeated
+        // gate results of the same kind.
+        daimon.appraise_if_novel(event);
     });
 }
 
@@ -10621,10 +10741,43 @@ fn record_daimon_task_outcome(
     discriminator: &str,
 ) {
     with_daimon_state(config, |daimon| {
-        daimon.appraise(AffectEvent::TaskOutcome {
+        // P1-06 + P1-04: Use novelty-gated OCC appraisal instead of
+        // unconditional hardcoded PAD deltas.
+        let event = AffectEvent::TaskOutcome {
             task_id: task_id.to_string(),
             succeeded,
-        });
+        };
+        daimon.appraise_if_novel(event);
+
+        // P1-01: Feed the GoalTree with task outcome so emergent goals
+        // track success/failure patterns and lifecycle updates propagate.
+        let reward = if succeeded { 1.0 } else { -0.5 };
+        daimon.update_goals(succeeded, reward);
+        // Observe the task pattern for potential goal seed promotion.
+        let pattern = format!("{plan_id}/{task_id}");
+        daimon.observe_pattern(&pattern, reward);
+
+        // P1-02: VitalityTracker is fed from the per-turn budget
+        // observation path (record_daimon_budget_observation) where
+        // spent_usd and budget_usd are available directly.
+
+        // P1-05: Record fatigue state so the dispatch path can query it.
+        if succeeded {
+            daimon.record_fatigue_success(task_id);
+        } else {
+            daimon.record_fatigue_failure(task_id);
+        }
+
+        // P1-03: Recover a small amount of cognitive energy between tasks
+        // (Gamma = fast partial recovery of +0.05). Successful tasks earn
+        // a slightly larger Theta recovery (+0.15).
+        let recovery = if succeeded {
+            RecoveryMode::Theta
+        } else {
+            RecoveryMode::Gamma
+        };
+        daimon.recover_cognitive_energy(recovery);
+
         if let Some(strategy) = strategy {
             daimon.record_somatic_outcome(
                 strategy,
@@ -10646,6 +10799,38 @@ fn somatic_episode_hash(
     discriminator: &str,
 ) -> ContentHash {
     ContentHash::of(format!("somatic:{plan_id}:{task_id}:{outcome}:{discriminator}").as_bytes())
+}
+
+/// P1-02: Feed the VitalityTracker with the remaining plan budget so the
+/// behavioral phase tracks real spend.  Called from the per-turn budget
+/// observation path where `spent_usd` and `budget_usd` are available.
+fn record_daimon_budget_observation(config: &RunConfig, spent_usd: f64, budget_usd: f64) {
+    if !budget_usd.is_finite() || budget_usd <= 0.0 || !spent_usd.is_finite() {
+        return;
+    }
+    let remaining = (budget_usd - spent_usd).max(0.0);
+    with_daimon_state(config, |daimon| {
+        if let Err(error) = daimon.update_vitality(remaining) {
+            tracing::warn!(%error, "vitality update failed");
+        }
+    });
+}
+
+/// P1-05: Check whether the fatigue detector recommends dispatch
+/// modifications for a task and return the recommended action.
+fn daimon_fatigue_check(
+    config: &RunConfig,
+    task_id: &str,
+) -> Option<roko_daimon::FatigueAction> {
+    with_daimon_state(config, |daimon| {
+        if daimon.is_task_fatigued(task_id) {
+            let state = daimon.query().behavioral_state;
+            Some(fatigue_response(&state))
+        } else {
+            None
+        }
+    })
+    .flatten()
 }
 
 /// Translate a [`RunnerEvent`] into a [`FeedbackEvent`] when the runner
@@ -11885,6 +12070,12 @@ async fn dispatch_action(
             info!(plan_id = %plan_id, "dispatching plan");
             let tasks_total = ctx.task_index.get(plan_id.as_str()).map_or(0, |m| m.len());
             ctx.tui.plan_started(plan_id, tasks_total);
+
+            // P1-03: Apply a Delta (full) cognitive energy recovery at
+            // plan start so the agent begins each plan fully charged.
+            with_daimon_state(ctx.config, |daimon| {
+                daimon.recover_cognitive_energy(RecoveryMode::Delta);
+            });
 
             if let Err(e) = ctx.executor.apply_event(plan_id, &ExecutorEvent::Start) {
                 error!(plan_id = %plan_id, err = %e, "failed to start plan");
@@ -13544,6 +13735,52 @@ async fn dispatch_action(
                     };
                 }
             }
+
+            // P1-05: When the FatigueDetector flags this task, apply the
+            // behavioral-state-appropriate fatigue response.  Escalate
+            // promotes the model; all others demote or cap the turn limit.
+            if let Some(fatigue_action) = daimon_fatigue_check(ctx.config, &task_id) {
+                use roko_daimon::FatigueAction;
+                match fatigue_action {
+                    FatigueAction::Escalate => {
+                        // Struggling state: promote to a stronger model.
+                        if allow_learned_model_modulation {
+                            let promoted = promote_model(&dispatch_plan.model.slug);
+                            if promoted != dispatch_plan.model.slug {
+                                info!(
+                                    task = %task_id,
+                                    from = %dispatch_plan.model.slug,
+                                    to = %promoted,
+                                    "fatigue-escalation: promoting model"
+                                );
+                                dispatch_plan.model = ModelSpec::from_slug(promoted);
+                                selected_source.push_str("+fatigue-escalate");
+                            }
+                        }
+                    }
+                    FatigueAction::Deprioritize | FatigueAction::Replan => {
+                        // Reduce turn limit so the fatigued task gets a
+                        // lighter dispatch and frees budget for others.
+                        dispatch_turn_limit = dispatch_turn_limit.saturating_sub(5).max(5);
+                        info!(
+                            task = %task_id,
+                            action = ?fatigue_action,
+                            turn_limit = dispatch_turn_limit,
+                            "fatigue-deprioritize: reduced turn limit"
+                        );
+                    }
+                    FatigueAction::DreamCycle | FatigueAction::HelpRequest => {
+                        // Log the recommendation; actual dream dispatch or
+                        // help-request is out of scope for inline dispatch.
+                        info!(
+                            task = %task_id,
+                            action = ?fatigue_action,
+                            "fatigue action recommended (not acted on inline)"
+                        );
+                    }
+                }
+            }
+
             let efe_tier = efe_dispatch_tier(&task_def, attempt_num, cognitive_policy, ctx.efe_router);
             if allow_learned_model_modulation
                 && let Some(efe_model) = model_for_exact_tier(
@@ -14997,6 +15234,63 @@ async fn dispatch_action(
                 );
                 return ActionDispatchOutcome::Noop;
             }
+            // ── P1-12: Temperament-based skip advisory ────────────────
+            //
+            // Before spawning gate workers, consult the daimon temperament
+            // to decide whether the pipeline rung should be skipped.
+            // Conservative temperaments never skip; aggressive ones skip
+            // more readily when the rung has a strong pass streak.
+            {
+                let temperament = with_daimon_state(ctx.config, |daimon| {
+                    use roko_daimon::AffectEngine as _;
+                    let affect = daimon.query();
+                    let pad = &affect.pad;
+                    // Map PAD arousal/dominance to temperament heuristic.
+                    if pad.arousal < -0.3 || pad.dominance < -0.3 {
+                        roko_core::Temperament::Conservative
+                    } else if pad.arousal > 0.3 && pad.dominance > 0.3 {
+                        roko_core::Temperament::Aggressive
+                    } else {
+                        roko_core::Temperament::Balanced
+                    }
+                })
+                .unwrap_or(roko_core::Temperament::Balanced);
+
+                if ctx.gate_thresholds.should_skip_rung_for_temperament(
+                    pipeline_rung,
+                    temperament,
+                ) {
+                    info!(
+                        plan_id = %plan_id,
+                        task_id = %task_id,
+                        rung = pipeline_rung,
+                        temperament = ?temperament,
+                        "P1-12: temperament-based skip advisory — skipping gate pipeline"
+                    );
+                    ctx.state.clear_gate_active(&effect_key);
+                    ctx.attempt_ownership
+                        .transition_claim(gate_claim, AttemptPhase::AwaitingGate, prior_effect)
+                        .expect("skip advisory must restore ownership");
+                    // Emit a synthetic passed completion so the executor
+                    // advances past the gate phase normally.
+                    let _ = ctx.gate_tx.try_send(GateCompletion {
+                        plan_id: plan_id.clone(),
+                        task_id: task_id.clone(),
+                        rung: pipeline_rung,
+                        passed: true,
+                        output: "skipped by temperament advisory".into(),
+                        verdicts: Vec::new(),
+                        duration_ms: 0,
+                        kind: GateCompletionKind::Gate,
+                        attempt: Some(attempt_ref),
+                        effect: None,
+                        failure_kind: None,
+                        selected_rungs: Vec::new(),
+                    });
+                    return ActionDispatchOutcome::Handled;
+                }
+            }
+
             info!(
                 plan_id = %plan_id,
                 requested_rung = *rung,

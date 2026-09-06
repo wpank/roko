@@ -48,7 +48,8 @@ pub use self::phase2_stubs::{
     BehavioralStateThresholds, BehavioralStateTracker, BorrowedAffect, ContagionEvent,
     ContagionTrigger, ContrarianConfig, ContrarianTracker, CrateConfidence, CrateFatigueSuggestion,
     DimensionDef, DimensionSource, DimensionWeights, DomainRegistration, EfficiencyEvent,
-    EmotionalProvenance, ErrorPatternTracker, FatigueAction, FatigueDetector, ResourcePressure,
+    EmotionalProvenance, ErrorPatternTracker, FatigueAction, FatigueDetector, FatigueState,
+    ResourcePressure,
     ScoredEntry, SomaticField, SomaticMarkerFiredEvent, StrategyTransferMapper, TierBias,
     TierThresholds, ValidationArc, adjusted_thresholds, contagion, contagion_susceptibility,
     fatigue_response, pad_cosine_similarity,
@@ -1955,7 +1956,7 @@ impl AppraisalResult {
 /// Tracks recent appraisal triggers to suppress duplicate emotions within
 /// a short window. Only events that cross a novelty threshold or are of
 /// a new category trigger full appraisal.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct NoveltyFilter {
     /// Recent trigger types (ring buffer of last N triggers).
     recent_triggers: Vec<String>,
@@ -2315,6 +2316,9 @@ pub struct DaimonState {
     /// Behavioral patterns accumulating evidence for promotion.
     #[serde(default)]
     pub goal_seeds: Vec<GoalSeed>,
+    /// Novelty filter for suppressing repeated appraisal triggers (P1-04).
+    #[serde(default)]
+    pub novelty_filter: NoveltyFilter,
     /// Optional persistence path for best-effort autosaves.
     #[serde(skip, default)]
     persistence_path: Option<PathBuf>,
@@ -2346,6 +2350,7 @@ impl DaimonState {
             cognitive_energy: CognitiveEnergy::default(),
             goal_tree: GoalTree::default(),
             goal_seeds: Vec::new(),
+            novelty_filter: NoveltyFilter::new(10),
             persistence_path: None,
         }
     }
@@ -2447,6 +2452,52 @@ impl DaimonState {
     fn enforce_goal_limit(&mut self) {
         self.goal_tree
             .enforce_active_limit(self.behavioral_phase().max_active_goals());
+    }
+
+    /// Appraise an event through the novelty filter (P1-04).
+    ///
+    /// Returns `Some(pad)` if the event was novel and appraisal fired,
+    /// `None` if the novelty filter suppressed it.
+    pub fn appraise_if_novel(&mut self, event: AffectEvent) -> Option<PadVector> {
+        let appraisal = AppraisalResult::from_event(&event, self.state.confidence);
+        if !self.novelty_filter.is_novel(&appraisal.trigger) {
+            tracing::debug!(trigger = ?appraisal.trigger, "novelty filter suppressed appraisal");
+            return None;
+        }
+        self.novelty_filter.record(&appraisal.trigger);
+        Some(self.appraise(event))
+    }
+
+    /// Check whether a specific task is fatigued (P1-05).
+    #[must_use]
+    pub fn is_task_fatigued(&self, task_id: &str) -> bool {
+        self.fatigue_detector.is_fatigued(task_id)
+    }
+
+    /// Record a task failure into the fatigue detector (P1-05).
+    pub fn record_fatigue_failure(&mut self, task_id: &str) {
+        let now = chrono::Utc::now();
+        let entry = self
+            .fatigue_detector
+            .task_failures
+            .entry(task_id.to_string())
+            .or_insert_with(|| FatigueState {
+                consecutive_failures: 0,
+                first_failure_at: now,
+                last_failure_at: now,
+                pleasure_at_start: self.state.pad.pleasure,
+                current_pleasure: self.state.pad.pleasure,
+            });
+        entry.consecutive_failures += 1;
+        entry.last_failure_at = now;
+        entry.current_pleasure = self.state.pad.pleasure;
+        self.autosave();
+    }
+
+    /// Record a task success into the fatigue detector (clear streak).
+    pub fn record_fatigue_success(&mut self, task_id: &str) {
+        self.fatigue_detector.task_failures.remove(task_id);
+        self.autosave();
     }
 
     /// Construct a state with a custom half-life.
@@ -3303,7 +3354,8 @@ pub fn queue_wait_arousal(wait_hours: f64) -> f64 {
     ((wait_hours - 24.0) / 24.0 * 0.1).clamp(0.0, 1.0)
 }
 
-fn promote_model(model: &str) -> String {
+/// Promote a model slug to a higher tier (haiku->sonnet->opus, -high->-xhigh).
+pub fn promote_model(model: &str) -> String {
     if model.contains("haiku") {
         model.replacen("haiku", "sonnet", 1)
     } else if model.contains("sonnet") {

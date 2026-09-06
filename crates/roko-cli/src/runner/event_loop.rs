@@ -5321,6 +5321,7 @@ pub async fn run_with_tui_commands(
                 }
 
                 if completion.kind == GateCompletionKind::Merge {
+                    let conflict_paths = conflict_paths_from_merge_output(&completion.output);
                     emit_runner_event(
                         &paths,
                         &mut state,
@@ -5331,9 +5332,36 @@ pub async fn run_with_tui_commands(
                             completion_attempt.clone(),
                             &completion,
                             merge_branch_from_task_id(&completion.task_id),
-                            conflict_paths_from_merge_output(&completion.output),
+                            conflict_paths.clone(),
                         ),
                     );
+
+                    // ── P1-45: Merge conflict history for pattern detection ──
+                    // When a merge produces conflicts, append a JSONL record to
+                    // .roko/learn/merge-conflicts.jsonl so downstream learning
+                    // can detect recurrent conflict patterns.
+                    if !conflict_paths.is_empty() {
+                        let record = serde_json::json!({
+                            "timestamp": chrono::Utc::now().to_rfc3339(),
+                            "plan_id": completion.plan_id,
+                            "task_id": completion.task_id,
+                            "branch": merge_branch_from_task_id(&completion.task_id),
+                            "conflict_paths": conflict_paths,
+                            "model": state.agent_model,
+                        });
+                        let conflicts_path = config.workdir
+                            .join(".roko")
+                            .join("learn")
+                            .join("merge-conflicts.jsonl");
+                        if let Ok(mut file) = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(&conflicts_path)
+                        {
+                            use std::io::Write;
+                            let _ = writeln!(file, "{}", record);
+                        }
+                    }
                 }
 
                 // Use per-task max_retries when available, capped at the global config budget.
@@ -5865,6 +5893,47 @@ pub async fn run_with_tui_commands(
                             .dispatcher()
                             .prompt_assembler()
                             .record_outcome(&diag, completion.passed);
+
+                        // ── P1-19: Cost-attribution into learning bidder updates ──
+                        // Feed per-section cost attribution from the composition
+                        // manifest into bidder learning so expensive low-quality
+                        // sections are deprioritized in future assemblies.
+                        if let Some(manifest) = &diag.composition_manifest {
+                            let section_costs: Vec<(
+                                roko_compose::AttentionBidder,
+                                String,
+                                bool,
+                                bool,
+                                f64,
+                                usize,
+                            )> = manifest
+                                .included
+                                .iter()
+                                .map(|sec| {
+                                    let total_tokens =
+                                        manifest.total_tokens.max(1) as f64;
+                                    let fraction =
+                                        sec.estimated_tokens as f64 / total_tokens;
+                                    let attributed =
+                                        state.cost_usd * fraction;
+                                    (
+                                        sec.bidder,
+                                        sec.name.clone(),
+                                        true,
+                                        completion.passed,
+                                        attributed,
+                                        sec.estimated_tokens,
+                                    )
+                                })
+                                .collect();
+                            if !section_costs.is_empty() {
+                                factory
+                                    .dispatcher()
+                                    .prompt_assembler()
+                                    .update_bidders_with_cost(&section_costs);
+                            }
+                        }
+
                         let status = if completion.passed {
                             SectionOutcomeStatus::Passed
                         } else {
@@ -10223,6 +10292,10 @@ struct DaimonTaskHook {
     pleasure: f64,
     arousal: f64,
     dominance: f64,
+    /// P2-07: Cognitive energy level for TUI display.
+    cognitive_energy: f64,
+    /// P2-07: EFE belief tier for TUI display.
+    efe_tier: Option<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -10624,6 +10697,8 @@ fn daimon_task_hook(
                 "daimon somatic marker fired"
             );
         }
+        let cog_energy = daimon.cognitive_energy.current;
+        let efe = daimon.behavioral_phase().max_efe_tier();
         DaimonTaskHook {
             strategy,
             signal,
@@ -10632,6 +10707,8 @@ fn daimon_task_hook(
             pleasure: affect.pad.pleasure,
             arousal: affect.pad.arousal,
             dominance: affect.pad.dominance,
+            cognitive_energy: cog_energy,
+            efe_tier: efe,
         }
     })
 }
@@ -13831,6 +13908,8 @@ async fn dispatch_action(
                     h.affect_confidence,
                     recent_markers,
                     active_biases,
+                    h.cognitive_energy,
+                    h.efe_tier,
                 );
             }
 

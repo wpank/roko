@@ -390,6 +390,12 @@ pub enum DashboardEvent {
         /// Active behavioral bias names.
         #[serde(default)]
         active_biases: Vec<String>,
+        /// P2-07: Cognitive energy level [0.0, 1.0].
+        #[serde(default)]
+        cognitive_energy: f64,
+        /// P2-07: EFE belief tier (0-4).
+        #[serde(default)]
+        efe_tier: Option<u8>,
     },
     /// Agent topology updated (item 41).
     ///
@@ -437,6 +443,12 @@ pub struct AffectSnapshot {
     pub active_biases: Vec<String>,
     /// Timestamp when this snapshot was recorded (unix ms).
     pub ts: u64,
+    /// P2-07: Cognitive energy level [0.0, 1.0].
+    #[serde(default)]
+    pub cognitive_energy: f64,
+    /// P2-07: EFE belief tier (0-4), None when unavailable.
+    #[serde(default)]
+    pub efe_tier: Option<u8>,
 }
 
 /// A single plan's live state.
@@ -1818,6 +1830,8 @@ impl DashboardSnapshot {
                 confidence,
                 recent_markers,
                 active_biases,
+                cognitive_energy,
+                efe_tier,
             } => {
                 self.affect = Some(AffectSnapshot {
                     pleasure: *pleasure,
@@ -1828,6 +1842,8 @@ impl DashboardSnapshot {
                     recent_markers: recent_markers.clone(),
                     active_biases: active_biases.clone(),
                     ts,
+                    cognitive_energy: *cognitive_energy,
+                    efe_tier: *efe_tier,
                 });
             }
             DashboardEvent::AgentTopologyUpdated { topology } => {

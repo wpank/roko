@@ -2065,10 +2065,12 @@ impl CascadeRouter {
             total_observations: self.linucb.total_observations(),
             stage_transitions,
             linucb_state: Some(self.linucb.export_linucb_snapshot()),
+            pareto_frontier: self.pareto_frontier.lock().frontier.clone(),
         };
         tracing::debug!(
             total_observations = snapshot.total_observations,
             linucb_persisted = snapshot.linucb_state.is_some(),
+            pareto_frontier_len = snapshot.pareto_frontier.len(),
             "cascade router snapshot built"
         );
         serde_json::to_string_pretty(&snapshot).unwrap_or_default()
@@ -2102,6 +2104,7 @@ impl CascadeRouter {
             role_table,
             stage_transitions,
             linucb_state,
+            pareto_frontier,
         } = snapshot;
 
         let slugs = if model_slugs.is_empty() {
@@ -2161,6 +2164,12 @@ impl CascadeRouter {
             let mut stage_tracking = router.stage_tracking.lock();
             stage_tracking.current = stage_for_observations(total);
             stage_tracking.transitions = stage_transitions;
+        }
+
+        // P3-08: Restore Pareto frontier from snapshot.
+        if !pareto_frontier.is_empty() {
+            let mut frontier_state = router.pareto_frontier.lock();
+            frontier_state.frontier = pareto_frontier;
         }
 
         router

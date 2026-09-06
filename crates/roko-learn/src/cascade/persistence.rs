@@ -43,6 +43,10 @@ pub(crate) struct CascadeSnapshot {
     /// was added; the router will start with fresh parameters in that case.
     #[serde(default)]
     pub(crate) linucb_state: Option<LinUCBSnapshot>,
+    /// P3-08: Persisted Pareto frontier model slugs so the frontier survives
+    /// restarts without requiring re-computation from scratch.
+    #[serde(default)]
+    pub(crate) pareto_frontier: Vec<String>,
 }
 
 /// Serializable form of per-model confidence stats.

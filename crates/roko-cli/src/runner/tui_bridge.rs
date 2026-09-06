@@ -497,6 +497,8 @@ impl TuiBridge {
         confidence: f64,
         recent_markers: Vec<(String, f64)>,
         active_biases: Vec<String>,
+        cognitive_energy: f64,
+        efe_tier: Option<u8>,
     ) {
         self.sender.publish(DashboardEvent::AffectUpdated {
             pleasure,
@@ -506,6 +508,8 @@ impl TuiBridge {
             confidence,
             recent_markers,
             active_biases,
+            cognitive_energy,
+            efe_tier,
         });
     }
 

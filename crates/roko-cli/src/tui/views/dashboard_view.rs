@@ -444,7 +444,7 @@ fn affect_summary_line(snap: &AffectSnapshot) -> Line<'static> {
         Theme::EMBER
     };
 
-    Line::from(vec![
+    let mut spans = vec![
         Span::styled(" Affect ", Style::default().fg(Theme::TEXT_GHOST)),
         Span::styled(
             label,
@@ -472,7 +472,32 @@ fn affect_summary_line(snap: &AffectSnapshot) -> Line<'static> {
             format!("{conf_pct}%"),
             Style::default().fg(conf_color),
         ),
-    ])
+    ];
+
+    // P2-07: Cognitive energy and EFE tier.
+    if snap.cognitive_energy > 0.0 || snap.efe_tier.is_some() {
+        let energy_pct = (snap.cognitive_energy * 100.0).round() as u64;
+        let energy_color = if snap.cognitive_energy >= 0.6 {
+            Theme::SAGE
+        } else if snap.cognitive_energy >= 0.3 {
+            Theme::WARNING
+        } else {
+            Theme::EMBER
+        };
+        spans.push(Span::styled("  E:", Style::default().fg(Theme::TEXT_GHOST)));
+        spans.push(Span::styled(
+            format!("{energy_pct}%"),
+            Style::default().fg(energy_color),
+        ));
+        if let Some(tier) = snap.efe_tier {
+            spans.push(Span::styled(
+                format!(" EFE:{tier}"),
+                Style::default().fg(Theme::DREAM),
+            ));
+        }
+    }
+
+    Line::from(spans)
 }
 
 /// Choose a color for a PAD dimension value in [-1, 1].

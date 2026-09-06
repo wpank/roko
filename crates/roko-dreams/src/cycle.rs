@@ -626,6 +626,93 @@ impl DreamCycle {
             }
         }
 
+        // ── P1-32: Dream-time evolutionary fitness evaluation ────────────
+        // After distillation, evaluate heuristic fitness against the recently
+        // processed clusters using BayesianMemeticFitness. Retire Harmful
+        // heuristics and boost Beneficial ones via balance adjustments.
+        {
+            use crate::phase2::evolution::{BayesianMemeticFitness, FitnessClassification};
+            let _fitness_config = BayesianMemeticFitness {
+                prior_mean: 0.5,
+                prior_std: 0.2,
+                min_observations: 3,
+                confidence_threshold: 0.7,
+                control_for_confounders: false,
+                max_confounders: 5,
+            };
+            // Collect episode ids and success from already-processed clusters.
+            let cluster_episodes: Vec<(&str, bool)> = clusters
+                .iter()
+                .flat_map(|c| c.episodes.iter())
+                .map(|ep| (ep.id.as_str(), ep.success))
+                .collect();
+            let all_knowledge = self.knowledge_store.read_all().unwrap_or_default();
+            let heuristic_ids: Vec<(String, FitnessClassification)> = all_knowledge
+                .iter()
+                .filter(|entry| entry.kind == KnowledgeKind::Heuristic)
+                .filter_map(|heuristic| {
+                    let ep_ids: std::collections::HashSet<&str> = heuristic
+                        .source_episodes
+                        .iter()
+                        .map(String::as_str)
+                        .collect();
+                    let n_ref = cluster_episodes
+                        .iter()
+                        .filter(|(eid, _)| ep_ids.contains(eid))
+                        .count();
+                    if n_ref < _fitness_config.min_observations {
+                        return None;
+                    }
+                    let n_succ = cluster_episodes
+                        .iter()
+                        .filter(|(eid, success)| ep_ids.contains(eid) && *success)
+                        .count();
+                    let rate = n_succ as f64 / n_ref as f64;
+                    let cls = if rate
+                        > _fitness_config.prior_mean + _fitness_config.prior_std
+                    {
+                        FitnessClassification::Beneficial
+                    } else if rate
+                        < _fitness_config.prior_mean - _fitness_config.prior_std
+                    {
+                        FitnessClassification::Harmful
+                    } else {
+                        FitnessClassification::Uncertain
+                    };
+                    Some((heuristic.id.clone(), cls))
+                })
+                .collect();
+            for (hid, cls) in &heuristic_ids {
+                match cls {
+                    FitnessClassification::Harmful => {
+                        tracing::info!(
+                            heuristic_id = %hid,
+                            "dream fitness: retiring harmful heuristic"
+                        );
+                        let hid_owned = hid.clone();
+                        let _ = self.knowledge_store.update_entries(|entry| {
+                            if entry.id == hid_owned {
+                                entry.balance = (entry.balance - 0.5).max(0.0);
+                                true
+                            } else {
+                                false
+                            }
+                        });
+                    }
+                    FitnessClassification::Beneficial => {
+                        tracing::debug!(
+                            heuristic_id = %hid,
+                            "dream fitness: beneficial heuristic confirmed"
+                        );
+                        let _ = self
+                            .knowledge_store
+                            .reinforce(hid, roko_neuro::ReinforcementSignal::Gated);
+                    }
+                    FitnessClassification::Uncertain => {}
+                }
+            }
+        }
+
         // ── DREAM-11: Run hypnagogia as a pre-NREM phase ────────────────
         // Hypnagogia runs before NREM cluster processing, producing creative
         // onset candidates that feed into the staging buffer.

@@ -113,6 +113,29 @@ pub fn render_affect_strip(frame: &mut Frame<'_>, area: Rect, affect: Option<&Af
             ),
         ];
 
+        // P2-07: Cognitive energy gauge.
+        if snap.cognitive_energy > 0.0 || snap.efe_tier.is_some() {
+            let energy_pct = (snap.cognitive_energy * 100.0).round() as u64;
+            let energy_color = if snap.cognitive_energy >= 0.6 {
+                Theme::SAGE
+            } else if snap.cognitive_energy >= 0.3 {
+                Theme::WARNING
+            } else {
+                Theme::EMBER
+            };
+            spans.push(Span::styled("  E:", Style::default().fg(Theme::TEXT_GHOST)));
+            spans.push(Span::styled(
+                format!("{energy_pct}%"),
+                Style::default().fg(energy_color),
+            ));
+            if let Some(tier) = snap.efe_tier {
+                spans.push(Span::styled(
+                    format!(" EFE:{tier}"),
+                    Style::default().fg(Theme::DREAM),
+                ));
+            }
+        }
+
         // Append active biases on the same line if there is room.
         if !snap.active_biases.is_empty() && area.width >= 60 {
             let biases = snap.active_biases.join(" ");

@@ -1338,6 +1338,23 @@ impl PromptAssembler {
         }
     }
 
+    /// P1-19: Feed per-section cost attribution into learning bidders.
+    ///
+    /// Each tuple is `(bidder, section_name, included, gate_passed, cost_usd, tokens)`.
+    pub fn update_bidders_with_cost(
+        &self,
+        section_costs: &[(roko_compose::AttentionBidder, String, bool, bool, f64, usize)],
+    ) {
+        let mut bidders = self.learning_bidders.write();
+        for (bidder_id, section_name, was_included, gate_passed, cost_usd, tokens) in section_costs
+        {
+            bidders
+                .entry(*bidder_id)
+                .or_insert_with(|| LearningBidder::new(*bidder_id, 1.0))
+                .update_with_cost(section_name, *was_included, *gate_passed, *cost_usd, *tokens);
+        }
+    }
+
     /// Set the composition strategy for VCG/density-greedy budget allocation.
     /// The selected strategy is passed to the canonical [`PromptComposer`]
     /// used by [`Self::assemble`].

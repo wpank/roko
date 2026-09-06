@@ -838,6 +838,8 @@ pub struct RuntimeFeedbackProjection {
     pub runner_events_path: PathBuf,
     /// Legacy signal JSONL path.
     pub signal_log_path: PathBuf,
+    /// P1-44: Live-reloadable autonomy configs from `.roko/state/autonomy.json`.
+    pub autonomy_configs: Vec<AutonomyConfig>,
 }
 
 impl RuntimeProjectionSet {
@@ -1052,9 +1054,17 @@ impl RuntimeProjectionSet {
     /// Build the Autonomy view for every currently known agent.
     pub fn autonomy_surface(&self) -> AutonomyProjection {
         let vitality = self.agent_vitality();
+        let (configs, source) = if self.feedback.autonomy_configs.is_empty() {
+            (Vec::new(), "unavailable".to_string())
+        } else {
+            (
+                self.feedback.autonomy_configs.clone(),
+                "disk:.roko/state/autonomy.json".to_string(),
+            )
+        };
         AutonomyProjection {
-            configs: Vec::new(),
-            config_source: "unavailable".to_string(),
+            configs,
+            config_source: source,
             agent_vitality: vitality,
             c_factor: self.c_factor_summary(),
         }
@@ -2473,6 +2483,21 @@ impl RuntimeFeedbackProjection {
             knowledge_path,
             runner_events_path,
             signal_log_path,
+            // P1-44: Load autonomy configs from disk for live-reload.
+            autonomy_configs: {
+                let autonomy_path = roko.join("state").join("autonomy.json");
+                if autonomy_path.exists() {
+                    tokio::fs::read_to_string(&autonomy_path)
+                        .await
+                        .ok()
+                        .and_then(|text| {
+                            serde_json::from_str::<Vec<AutonomyConfig>>(&text).ok()
+                        })
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                }
+            },
         })
     }
 }

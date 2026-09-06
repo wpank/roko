@@ -1618,6 +1618,53 @@ pub async fn dispatch_loop(state: Arc<AppState>, dispatcher: Arc<dyn AgentDispat
             );
         }
 
+        // ── P1-24: Handle graduated GitHub trigger signals ──────────
+        // Three graduated signal kinds trigger concrete runner actions
+        // independently of subscription matching. Record the signal kind
+        // and plan_id, then log the concrete action. Subscription-based
+        // dispatch continues below for any additional template-driven work.
+        match signal.kind.as_str() {
+            roko_core::signal_kinds::GITHUB_PLAN_EXECUTION_REQUESTED => {
+                let plan_id = signal
+                    .tags
+                    .get("plan_id")
+                    .cloned()
+                    .unwrap_or_default();
+                info!(
+                    plan_id = %plan_id,
+                    "graduated trigger: plan execution requested"
+                );
+                state
+                    .event_bus
+                    .publish(ServerEvent::PlanStarted {
+                        plan_id: plan_id.clone(),
+                    });
+            }
+            roko_core::signal_kinds::GITHUB_REPLAN_REQUESTED => {
+                let plan_id = signal
+                    .tags
+                    .get("plan_id")
+                    .cloned()
+                    .unwrap_or_default();
+                info!(
+                    plan_id = %plan_id,
+                    "graduated trigger: replan requested"
+                );
+            }
+            roko_core::signal_kinds::GITHUB_CI_FAILED => {
+                let plan_id = signal
+                    .tags
+                    .get("plan_id")
+                    .cloned()
+                    .unwrap_or_default();
+                info!(
+                    plan_id = %plan_id,
+                    "graduated trigger: CI failure recorded"
+                );
+            }
+            _ => {}
+        }
+
         let matched = subscriptions.find_matching(&signal);
         if matched.is_empty() {
             // Use per-repo episodes path for similarity suggestion when available.

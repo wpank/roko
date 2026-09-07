@@ -827,9 +827,12 @@ pub fn check_models(workdir: &Path) -> Vec<DiagnosticFinding> {
         }
     };
 
-    let model_key = value
-        .get("agent")
-        .and_then(|a| a.get("model"))
+    // The canonical TOML key is `agent.default_model`; `agent.model` is the
+    // legacy alias accepted by serde but not written by `roko config set` or
+    // `roko init`. Check both so the doctor passes on standard workspaces.
+    let agent_section = value.get("agent");
+    let model_key = agent_section
+        .and_then(|a| a.get("default_model").or_else(|| a.get("model")))
         .and_then(|m| m.as_str())
         .unwrap_or("")
         .trim();
@@ -839,10 +842,10 @@ pub fn check_models(workdir: &Path) -> Vec<DiagnosticFinding> {
             check_id: DiagnosticCheckId::Models,
             code: "models_no_default".into(),
             severity: DiagnosticSeverity::Warning,
-            message: "no default_model configured".into(),
+            message: "no default_model configured under [agent]".into(),
             remediation: Some(DiagnosticRemediation {
                 summary: "set default model".into(),
-                command: Some("roko config set agent.model <model-name>".into()),
+                command: Some("roko config set agent.default_model <model-name>".into()),
                 mutation_required: true,
             }),
             evidence: BTreeMap::new(),

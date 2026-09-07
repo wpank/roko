@@ -38,6 +38,11 @@ impl FileSubstrate {
     /// Creates `root/engrams.jsonl` if missing, and replays existing entries
     /// into the in-memory index.
     ///
+    /// Migration alias: if `engrams.jsonl` does not yet exist but `signals.jsonl`
+    /// does (the pre-rename log name), the substrate replays from `signals.jsonl`
+    /// so that existing workspaces continue to work without an explicit migration step.
+    /// All subsequent writes still go to `engrams.jsonl`.
+    ///
     /// # Errors
     ///
     /// Returns an error if the directory can't be created, the log file
@@ -47,8 +52,17 @@ impl FileSubstrate {
         fs::create_dir_all(&root).await?;
         let log_path = root.join("engrams.jsonl");
 
+        // Migration alias: replay from the legacy `signals.jsonl` name when the
+        // canonical `engrams.jsonl` does not yet exist in this workspace.
+        let replay_path = if !log_path.exists() {
+            let legacy = root.join("signals.jsonl");
+            if legacy.exists() { legacy } else { log_path.clone() }
+        } else {
+            log_path.clone()
+        };
+
         // Replay: read any existing entries into the in-memory index.
-        let index = replay_log(&log_path).await?;
+        let index = replay_log(&replay_path).await?;
 
         // Open for append — all subsequent writes go to the end.
         let file = OpenOptions::new()

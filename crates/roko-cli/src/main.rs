@@ -452,6 +452,28 @@ Examples:
         demo: bool,
     },
     /// Do a task from a natural-language prompt.
+    ///
+    /// `roko do` is the recommended entry point for ad-hoc work. It auto-classifies
+    /// the prompt into a complexity band and picks the lightest workflow that can
+    /// complete it safely:
+    ///
+    ///   Trivial / Simple → direct single-agent dispatch (no plan file)
+    ///   Medium / Complex  → planned workflow: generate tasks.toml, approve, execute
+    ///
+    /// Use `--complexity` to force a specific band, or `--plan` to always use
+    /// the planned workflow regardless of classification.
+    ///
+    /// RELATED COMMANDS
+    ///
+    ///   roko run "<prompt>"     Single prompt through the universal loop (compose ->
+    ///                           agent -> gate -> persist). Lower-level than `do`; does
+    ///                           not classify or generate a plan automatically.
+    ///
+    ///   roko plan run plans/    Execute a pre-existing plans directory through the
+    ///                           Graph engine. Use this when you already have tasks.toml
+    ///                           files on disk, e.g. from `roko prd plan <slug>`.
+    ///
+    ///   roko develop "<prompt>" Removed — use `roko do --plan <prompt>` instead.
     #[command(
         visible_alias = "d",
         after_help = "\

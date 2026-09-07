@@ -525,8 +525,13 @@ fn normalize_legacy_plan_gate_results(executor: &mut serde_json::Value) {
     }
 }
 
+/// Deserialization-only schema mirror for the executor JSON embedded in a snapshot.
+///
+/// Fields are populated exclusively by serde during `parse_and_validate_embedded`
+/// and cross-projection consistency checks; they are not read individually by
+/// Rust code beyond structural validation.
 #[derive(Deserialize, Serialize)]
-#[allow(dead_code)]
+#[allow(dead_code)] // Required for serde deserialization
 struct ExecutorSchema {
     #[serde(default)]
     schema_version: u32,
@@ -542,9 +547,10 @@ struct ExecutorSchema {
     timestamp_ms: u64,
 }
 
+/// Deserialization-only schema mirror for one plan entry inside [`ExecutorSchema`].
 #[derive(Deserialize, Serialize)]
 #[serde(default)]
-#[allow(dead_code)]
+#[allow(dead_code)] // Required for serde deserialization
 struct ExecutorPlanSchema {
     plan_id: String,
     current_phase: roko_core::PlanPhase,
@@ -577,8 +583,9 @@ impl Default for ExecutorPlanSchema {
     }
 }
 
+/// Deserialization-only schema mirror for a gate result row inside a plan snapshot.
 #[derive(Deserialize, Serialize)]
-#[allow(dead_code)]
+#[allow(dead_code)] // Required for serde deserialization
 struct ExecutorGateResultSchema {
     gate_name: String,
     rung: u32,
@@ -589,8 +596,12 @@ struct ExecutorGateResultSchema {
     test_count: Option<roko_core::TestCount>,
 }
 
+/// Deserialization-only schema mirror for the orchestrator JSON embedded in a snapshot.
+///
+/// Contains an embedded copy of [`ExecutorSchema`] which is compared against
+/// the standalone `executor_json` field during cross-projection validation.
 #[derive(Deserialize, Serialize)]
-#[allow(dead_code)]
+#[allow(dead_code)] // Required for serde deserialization
 struct OrchestratorSchema {
     #[serde(default = "default_schema_version")]
     schema_version: u32,
@@ -608,8 +619,13 @@ const fn default_schema_version() -> u32 {
     1
 }
 
+/// Deserialization-only schema mirror for the run-state JSON embedded in a snapshot.
+///
+/// Individual fields are only read for semantic cross-validation
+/// (`run_id`, `timestamp_ms`, `lifecycle`); all others are required by serde
+/// to accept the full JSON without `unknown field` errors.
 #[derive(Deserialize)]
-#[allow(dead_code)]
+#[allow(dead_code)] // Required for serde deserialization
 struct RunStateSchema {
     #[serde(default)]
     schema_version: u32,
@@ -653,8 +669,9 @@ struct RunStateSchema {
     conductor_circuit_breaker_state: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
+/// Deserialization-only schema mirror for per-task token/cost usage inside run-state.
 #[derive(Deserialize)]
-#[allow(dead_code)]
+#[allow(dead_code)] // Required for serde deserialization
 struct TaskUsageSchema {
     model: String,
     provider: String,
@@ -665,8 +682,9 @@ struct TaskUsageSchema {
     agent_calls: u32,
 }
 
+/// Deserialization-only schema mirror for the replan ledger inside run-state.
 #[derive(Default, Deserialize)]
-#[allow(dead_code)]
+#[allow(dead_code)] // Required for serde deserialization
 struct ReplanLedgerSchema {
     #[serde(default)]
     replans_seen: HashMap<String, u32>,
@@ -676,8 +694,12 @@ struct ReplanLedgerSchema {
     revision_requests: Vec<serde_json::Map<String, serde_json::Value>>,
 }
 
+/// Deserialization-only schema mirror for the runner lifecycle block inside run-state.
+///
+/// Only `run_id` is read directly for cross-validation; the remaining fields
+/// are present to allow serde to accept the complete JSON object.
 #[derive(Deserialize)]
-#[allow(dead_code)]
+#[allow(dead_code)] // Required for serde deserialization
 struct RunnerLifecycleSchema {
     run_id: String,
     status: RunnerRunStatusSchema,
@@ -702,9 +724,10 @@ struct RunnerLifecycleSchema {
     events_seen: u64,
 }
 
+/// Deserialization-only mirror for the overall runner run status enum.
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[allow(dead_code)]
+#[allow(dead_code)] // Required for serde deserialization
 enum RunnerRunStatusSchema {
     Initialized,
     Running,
@@ -713,9 +736,10 @@ enum RunnerRunStatusSchema {
     Failed,
 }
 
+/// Deserialization-only mirror for per-plan lifecycle status.
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[allow(dead_code)]
+#[allow(dead_code)] // Required for serde deserialization
 enum PlanLifecycleStatusSchema {
     Started,
     Succeeded,
@@ -723,8 +747,9 @@ enum PlanLifecycleStatusSchema {
     Skipped,
 }
 
+/// Deserialization-only schema mirror for a single task's lifecycle entry.
 #[derive(Deserialize)]
-#[allow(dead_code)]
+#[allow(dead_code)] // Required for serde deserialization
 struct TaskLifecycleSchema {
     plan_id: String,
     task_id: String,
@@ -738,8 +763,9 @@ struct TaskLifecycleSchema {
     latest_failure_kind: Option<RunnerFailureKindSchema>,
 }
 
+/// Deserialization-only schema mirror for a single task attempt's lifecycle entry.
 #[derive(Deserialize)]
-#[allow(dead_code)]
+#[allow(dead_code)] // Required for serde deserialization
 struct TaskAttemptLifecycleSchema {
     plan_id: String,
     task_id: String,
@@ -756,9 +782,10 @@ struct TaskAttemptLifecycleSchema {
     retry_action: Option<RetryActionSchema>,
 }
 
+/// Deserialization-only mirror for task lifecycle status variants.
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[allow(dead_code)]
+#[allow(dead_code)] // Required for serde deserialization
 enum TaskLifecycleStatusSchema {
     Started,
     Running,
@@ -770,9 +797,10 @@ enum TaskLifecycleStatusSchema {
     TimedOut,
 }
 
+/// Deserialization-only mirror for task attempt status variants.
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[allow(dead_code)]
+#[allow(dead_code)] // Required for serde deserialization
 enum TaskAttemptStatusSchema {
     Started,
     DispatchingAgent,
@@ -792,9 +820,10 @@ enum TaskAttemptStatusSchema {
     Superseded,
 }
 
+/// Deserialization-only mirror for runner failure kind classification.
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[allow(dead_code)]
+#[allow(dead_code)] // Required for serde deserialization
 enum RunnerFailureKindSchema {
     Transient,
     Permanent,
@@ -803,24 +832,27 @@ enum RunnerFailureKindSchema {
     Unknown,
 }
 
+/// Deserialization-only mirror for retry action selection.
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[allow(dead_code)]
+#[allow(dead_code)] // Required for serde deserialization
 enum RetryActionSchema {
     RetryAfterBackoff,
     Exhausted,
     NotRetryable,
 }
 
+/// Deserialization-only schema mirror for the gate-thresholds JSON embedded in a snapshot.
 #[derive(Deserialize)]
-#[allow(dead_code)]
+#[allow(dead_code)] // Required for serde deserialization
 struct GateThresholdsSchema {
     #[serde(default)]
     rungs: HashMap<u32, GateThresholdStatsSchema>,
 }
 
+/// Deserialization-only schema mirror for per-rung EMA statistics inside [`GateThresholdsSchema`].
 #[derive(Deserialize)]
-#[allow(dead_code)]
+#[allow(dead_code)] // Required for serde deserialization
 struct GateThresholdStatsSchema {
     #[serde(default)]
     pass_count: u64,

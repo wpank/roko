@@ -12,7 +12,7 @@ default-run = "roko"
 workspace = true
 
 [features]
-default = ["chain", "hdc"]
+default = ["acp", "chain", "hdc"]
 # Backend-neutral chain tools: propagates to roko-std (17 chain tool
 # handlers), roko-agent (test assertions), and roko-serve (route marker).
 # Real RPC/provider support is an explicit build choice via alloy-backend.

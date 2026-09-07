@@ -2445,4 +2445,101 @@ mod tests {
             );
         }
     }
+
+    // --- Route smoke tests: /api/health and /api/status ---------------------
+
+    /// `GET /api/health` returns 200 with a valid status field when a key is provided.
+    ///
+    /// Note: auth is enabled by default (`ServeAuthConfig::default().enabled = true`), so
+    /// all `/api/` routes require a key even in the default config.
+    #[tokio::test]
+    async fn api_health_smoke_returns_200_with_api_key() {
+        let mut config = RokoConfig::default();
+        config.serve.auth.api_key = "health-test-key".into();
+        let (_dir, app) = build_test_router(config);
+
+        let req = Request::builder()
+            .uri("/api/health")
+            .header("X-Api-Key", "health-test-key")
+            .body(Body::empty())
+            .expect("build health request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK, "GET /api/health must return 200");
+
+        let body_bytes = resp
+            .into_body()
+            .collect()
+            .await
+            .expect("collect body")
+            .to_bytes();
+        let body: Value = serde_json::from_slice(&body_bytes).expect("parse /api/health JSON");
+        assert!(
+            ["ok", "degraded", "unhealthy"].contains(&body["status"].as_str().unwrap_or("")),
+            "GET /api/health 'status' must be ok/degraded/unhealthy, got: {}",
+            body["status"]
+        );
+        assert_eq!(
+            body["version"],
+            env!("CARGO_PKG_VERSION"),
+            "GET /api/health must echo the crate version"
+        );
+        assert!(
+            body["uptime_secs"].as_u64().is_some(),
+            "GET /api/health must contain a numeric 'uptime_secs'"
+        );
+    }
+
+    /// `GET /api/health` without a key returns 401 (auth is on by default).
+    #[tokio::test]
+    async fn api_health_requires_api_key_when_auth_enabled() {
+        let mut config = RokoConfig::default();
+        config.serve.auth.api_key = "secret-key".into();
+        let (_dir, app) = build_test_router(config);
+
+        // Without a key → 401.
+        let (status, body) = get_json(&app, "/api/health").await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "must reject unauthenticated requests");
+        assert_eq!(body["code"], "unauthorized");
+
+        // With the correct key → 200.
+        let req = Request::builder()
+            .uri("/api/health")
+            .header("X-Api-Key", "secret-key")
+            .body(Body::empty())
+            .expect("build authenticated health request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "valid API key must be accepted for GET /api/health"
+        );
+    }
+
+    /// `GET /api/status` returns 200 with a JSON body when a key is provided.
+    #[tokio::test]
+    async fn api_status_smoke_returns_200_with_api_key() {
+        let mut config = RokoConfig::default();
+        config.serve.auth.api_key = "status-test-key".into();
+        let (_dir, app) = build_test_router(config);
+
+        let req = Request::builder()
+            .uri("/api/status")
+            .header("X-Api-Key", "status-test-key")
+            .body(Body::empty())
+            .expect("build status request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK, "GET /api/status must return 200");
+
+        let body_bytes = resp
+            .into_body()
+            .collect()
+            .await
+            .expect("collect body")
+            .to_bytes();
+        let body: Value = serde_json::from_slice(&body_bytes).expect("parse /api/status JSON");
+        assert!(
+            body.is_object(),
+            "GET /api/status body must be a JSON object, got: {body}"
+        );
+    }
 }

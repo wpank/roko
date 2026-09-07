@@ -2033,26 +2033,47 @@ pub struct DiskTargetFinding {
 /// `target/` directories larger than this trigger a warning, in MB.
 const WARN_TARGET_MB: u64 = 51_200; // 50 GB — a 35-crate Rust workspace commonly reaches 10-15 GB
 
-/// Recursively compute the total size of a directory tree in bytes.
+/// Recursively compute the disk-block size of a directory tree in bytes.
+///
+/// Prefers `du -sk` (block-aligned on-disk usage) so the reported size matches
+/// what `df` and the OS would show rather than the sum of apparent file lengths,
+/// which can be significantly inflated by sparse files and filesystem overhead.
+/// Falls back to summing `metadata.len()` (apparent size) if `du` is unavailable.
 ///
 /// Non-fatal: errors on individual entries are silently skipped.
 fn dir_size_bytes(path: &Path) -> u64 {
-    let Ok(entries) = std::fs::read_dir(path) else {
-        return 0;
-    };
-    let mut total: u64 = 0;
-    for entry in entries.flatten() {
-        let metadata = match std::fs::symlink_metadata(entry.path()) {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        if metadata.file_type().is_symlink() {
+    // `du -sk` outputs "<kibibytes>\t<path>\n"; 1 KiB = 1024 bytes.
+    if let Ok(output) = std::process::Command::new("du")
+        .arg("-sk")
+        .arg(path)
+        .output()
+        && output.status.success()
+        && let Some(kib) = String::from_utf8_lossy(&output.stdout)
+            .split_whitespace()
+            .next()
+            .and_then(|v| v.parse::<u64>().ok())
+    {
+        return kib.saturating_mul(1024);
+    }
+    // Fallback: sum apparent file lengths (may be higher than actual disk usage).
+    let mut total = 0_u64;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
-        }
-        if metadata.is_dir() {
-            total += dir_size_bytes(&entry.path());
-        } else {
-            total += metadata.len();
+        };
+        for entry in entries.flatten() {
+            let Ok(metadata) = std::fs::symlink_metadata(entry.path()) else {
+                continue;
+            };
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
+            if metadata.is_dir() {
+                stack.push(entry.path());
+            } else {
+                total = total.saturating_add(metadata.len());
+            }
         }
     }
     total

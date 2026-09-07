@@ -1209,8 +1209,10 @@ mod tests {
     #[test]
     fn compose_build_with_budget_returns_auction_manifest() {
         let ctx = TaskContext::new("Implement prompt metadata");
+        // Budget must exceed the role_identity section size (~1100 tokens for
+        // implementer). 2048 gives comfortable headroom.
         let build = RoleSystemPromptSpec::new(AgentRole::Implementer, ctx, "Read,Edit")
-            .compose_build_with_budget(768)
+            .compose_build_with_budget(2048)
             .expect("composition build");
 
         let manifest = build

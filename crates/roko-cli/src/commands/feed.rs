@@ -66,7 +66,7 @@ async fn cmd_lifecycle(cli: &Cli, action: &str, id: &str) -> Result<i32> {
         }
         Ok(response) => {
             if !cli.quiet {
-                eprintln!("roko serve returned HTTP {}", response.status());
+                tracing::warn!(status = %response.status(), "roko serve returned unexpected HTTP status");
             }
             Ok(EXIT_FAILURE)
         }
@@ -107,7 +107,7 @@ async fn cmd_health(cli: &Cli) -> Result<i32> {
         }
         Ok(response) => {
             if !cli.quiet {
-                eprintln!("roko serve returned HTTP {}", response.status());
+                tracing::warn!(status = %response.status(), "roko serve returned unexpected HTTP status");
             }
             Ok(EXIT_FAILURE)
         }
@@ -146,7 +146,7 @@ async fn cmd_discover(cli: &Cli, query: Option<&str>) -> Result<i32> {
         }
         Ok(response) => {
             if !cli.quiet {
-                eprintln!("roko serve returned HTTP {}", response.status());
+                tracing::warn!(status = %response.status(), "roko serve returned unexpected HTTP status");
             }
             Ok(EXIT_FAILURE)
         }
@@ -161,7 +161,7 @@ fn unavailable(cli: &Cli) -> Result<i32> {
             serde_json::json!({"error": "roko serve is not running"})
         );
     } else if !cli.quiet {
-        eprintln!("roko serve is not running");
+        tracing::warn!("roko serve is not running");
     }
     Ok(EXIT_FAILURE)
 }
@@ -231,7 +231,7 @@ async fn cmd_list(cli: &Cli) -> Result<i32> {
         Ok(resp) => {
             let status = resp.status();
             if !cli.quiet {
-                eprintln!("roko serve returned HTTP {status}");
+                tracing::warn!(%status, "roko serve returned unexpected HTTP status");
             }
             return Ok(EXIT_FAILURE);
         }
@@ -284,13 +284,13 @@ async fn cmd_status(cli: &Cli, id: &str) -> Result<i32> {
                     serde_json::json!({"error": format!("feed '{id}' not found")})
                 );
             } else {
-                eprintln!("feed '{id}' not found");
+                tracing::warn!(id, "feed not found");
             }
             Ok(EXIT_FAILURE)
         }
         Ok(resp) => {
             let status = resp.status();
-            eprintln!("roko serve returned HTTP {status}");
+            tracing::warn!(%status, "roko serve returned unexpected HTTP status");
             Ok(EXIT_FAILURE)
         }
         Err(_) => {
@@ -300,7 +300,7 @@ async fn cmd_status(cli: &Cli, id: &str) -> Result<i32> {
                     serde_json::json!({"error": "roko serve is not running"})
                 );
             } else {
-                eprintln!("roko serve is not running");
+                tracing::warn!("roko serve is not running");
             }
             Ok(EXIT_FAILURE)
         }

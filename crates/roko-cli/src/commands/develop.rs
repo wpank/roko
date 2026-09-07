@@ -44,7 +44,7 @@ pub(crate) async fn cmd_develop(
 
     let prompt = prompt_args.join(" ").trim().to_string();
     if prompt.is_empty() {
-        eprintln!("usage: roko develop \"description of what to build\"");
+        tracing::error!("usage: roko develop \"description of what to build\"");
         return Ok(EXIT_FAILURE);
     }
 
@@ -95,7 +95,7 @@ pub(crate) async fn cmd_develop(
     // Interactive mode: check if plans already exist on disk, then ask for
     // approval. If plans exist, run them directly (skip regeneration).
     // If no plans exist yet, generate and execute in one step.
-    eprintln!("\u{25b8} roko develop: checking for existing plan...");
+    tracing::info!("roko develop: checking for existing plan");
 
     let plans_dir = roko_cli::plan::plans_dir(&workdir);
     let existing_plans = if plans_dir.is_dir() {
@@ -109,11 +109,11 @@ pub(crate) async fn cmd_develop(
     if let Some(ref plans) = existing_plans
         && !show_plan_approval(plans)
     {
-        eprintln!("\u{25b8} Aborted.");
+        tracing::info!("aborted by user");
         return Ok(EXIT_SUCCESS);
     }
 
-    eprintln!("\u{25b8} Executing plan...");
+    tracing::info!("executing plan");
     let code = if existing_plans.is_some() {
         // Plans already on disk: execute directly without regenerating.
         commands::do_cmd::run_plan_execution(cli, &workdir, &plans_dir, false, provider).await?
@@ -152,6 +152,7 @@ fn show_plan_approval(plans: &[plan_loader::Plan]) -> bool {
     }
 
     let total_tasks: usize = plans.iter().map(|p| p.tasks.tasks.len()).sum();
+    // User-facing progress output (interactive plan approval TTY screen)
     eprintln!();
     eprintln!(
         "\u{2500}\u{2500}\u{2500} Plan: {total_tasks} task(s) across {} plan(s) \u{2500}\u{2500}\u{2500}",
@@ -169,6 +170,7 @@ fn show_plan_approval(plans: &[plan_loader::Plan]) -> bool {
             print_task_row(task);
         }
     }
+    // User-facing progress output (interactive plan approval TTY screen)
     eprintln!();
 
     loop {
@@ -181,6 +183,7 @@ fn show_plan_approval(plans: &[plan_loader::Plan]) -> bool {
         match input.as_str() {
             "" | "y" | "yes" => return true,
             "q" | "quit" | "n" | "no" => return false,
+            // User-facing progress output (interactive plan approval TTY screen)
             _ => eprintln!("  Enter to execute, q to quit."),
         }
     }
@@ -192,6 +195,7 @@ fn print_task_row(task: &TaskDef) {
     } else {
         task.title.clone()
     };
+    // User-facing progress output (interactive plan approval TTY screen)
     eprintln!(
         "  {:<8} {:<14} {:<12} {title}",
         task.id, task.tier, task.status
@@ -199,6 +203,7 @@ fn print_task_row(task: &TaskDef) {
 }
 
 fn hint_tui_dashboard() {
+    // User-facing progress output
     eprintln!();
     eprintln!("\u{25b8} Tip: run `roko dashboard` to watch progress in the TUI.");
 }

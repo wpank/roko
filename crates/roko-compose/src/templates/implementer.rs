@@ -45,40 +45,83 @@ satisfies the plan specification exactly.\n\
 \n\
 ## Workspace\n\
 \n\
-You are working in a Rust workspace managed by Cargo. Key conventions:\n\
-- Run `cargo check -p <crate-name>` to verify compilation\n\
-- Run `cargo test -p <crate-name>` to run tests for a specific crate\n\
-- Run `cargo clippy -p <crate-name> --no-deps` for lint checks\n\
+You are working in a large Rust workspace (~39 crates) managed by Cargo.\n\
+\n\
+### Cargo commands (MUST use these)\n\
+- `cargo check -p <crate-name>` — verify compilation of one crate\n\
+- `cargo test -p <crate-name>` — run tests for one crate\n\
+- `cargo clippy -p <crate-name> --no-deps -- -D warnings` — lint one crate\n\
+- NEVER run bare `cargo check` or `cargo test` without `-p` on this workspace — it takes 10+ minutes\n\
 - Always work from the workspace root directory\n\
-- Only modify files listed in the task's `files` field\n\
-- Read context files listed in `read_files` before making changes\n\
+\n\
+### Workspace conventions\n\
+- Crates live under `crates/<crate-name>/src/`\n\
+- The crate name in Cargo.toml uses hyphens (e.g., `roko-core`); in Rust code use underscores (`roko_core`)\n\
+- Public types, functions, and fields in library crates MUST have `///` doc comments\n\
+- Library crates MUST NOT use `.unwrap()` — use `?`, `.ok_or()`, or `.map_err()` instead\n\
+- No upward dependencies: leaf crates have zero workspace-internal deps\n\
+- Feature flags: check `Cargo.toml` for the crate before using `#[cfg(feature = \"...\")]`\n\
+\n\
+### Before you write any code\n\
+1. Read ALL files listed in the task's `read_files` and `files` fields\n\
+2. Check existing code for types, traits, and functions you need — search before creating\n\
+3. Check existing imports and re-exports — the crate may already depend on what you need\n\
+4. If a \"Previous attempt feedback\" section exists below, read it FIRST and fix those exact errors\n\
 \n\
 ## Rules\n\
 \n\
 1. Read the plan carefully. Implement each unit of work in sequence.\n\
 2. For each unit: implement the code, write tests, create/update documentation.\n\
-3. Verify exports, doc comments, and unwrap() usage.\n\
-4. Treat the current repository state as real. Do not assume a blank starting point.\n\
-5. When current code is newer or broader than the plan, keep the newer behavior and \
+3. Treat the current repository state as real. Do not assume a blank starting point.\n\
+4. When current code is newer or broader than the plan, keep the newer behavior and \
 document the deviation.\n\
-6. Never add unwrap() in library crates — use ?, ok_or(), or map_err().\n\
-7. Every new pub type, function, and field in a library crate must have a doc comment.\n\
-8. No hardcoded absolute paths in any committed file.\n\
-9. No upward dependencies — leaf crates must have zero workspace-internal deps.\n\
-10. All tests from the plan's Verification section must pass.\n\
-11. Self-validate before signaling done: cargo check, cargo test on affected crates.\n\
-12. Operate autonomously. Do not ask questions. Complete all work and end your turn.\n\
+5. Only modify files listed in the task's `files` field. Read others for context only.\n\
+6. No hardcoded absolute paths in any committed file.\n\
+7. All tests from the plan's Verification section must pass.\n\
+8. Operate autonomously. Do not ask questions. Complete all work and end your turn.\n\
+\n\
+## Mandatory self-validation (DO THIS BEFORE ENDING YOUR TURN)\n\
+\n\
+You MUST run these commands and fix any failures before signaling done. \
+Skipping this step is the #1 cause of task failure:\n\
+\n\
+1. For EACH crate you modified, run:\n\
+   ```\n\
+   cargo check -p <crate-name>\n\
+   ```\n\
+   Fix every error. Do not end your turn with compilation errors.\n\
+\n\
+2. For EACH crate you modified, run:\n\
+   ```\n\
+   cargo test -p <crate-name>\n\
+   ```\n\
+   Fix every failing test. If a test fails on behavior you changed intentionally, \
+update the test expectation and add a comment explaining why.\n\
+\n\
+3. For EACH crate you modified, run:\n\
+   ```\n\
+   cargo clippy -p <crate-name> --no-deps -- -D warnings\n\
+   ```\n\
+   Fix every warning. Do not use `#[allow(...)]` to suppress genuine issues.\n\
+\n\
+4. If the task has `verify` commands listed, run each one and confirm it passes.\n\
+\n\
+Only end your turn when ALL of these pass cleanly.\n\
 \n\
 ## When Things Go Wrong\n\
 \n\
-- **cargo check fails**: Read the full error. Fix the root cause in the file that owns the type/trait. \
-Do not add spurious `#[allow(...)]` or `as _` casts to silence errors.\n\
-- **Tests fail**: Run the failing test in isolation with `cargo test -p <crate> <test_name>`. \
-Read the assertion message. Fix the logic, not the test expectation, unless the test was wrong.\n\
-- **You need to touch a file not in your task's `files` list**: STOP. You may only read it for context. \
-If the fix genuinely requires changing that file, note it in your output as a blocker for a follow-up task.\n\
+- **cargo check fails**: Read the FULL error output. The error message tells you the file and line. \
+Fix the root cause — do not add spurious `#[allow(...)]` or `as _` casts to silence errors. \
+Common issues: missing imports (add `use`), wrong type (check the actual signature), missing \
+trait implementations.\n\
+- **Tests fail**: Run the failing test in isolation: `cargo test -p <crate> <test_name> -- --nocapture`. \
+Read the assertion diff. Fix the logic, not the test expectation, unless the test itself was wrong.\n\
+- **Circular dependency**: If crate A needs something from crate B but B already depends on A, \
+move the shared type to the lower-level crate or create a shared trait in `roko-core`.\n\
 - **Ambiguous requirement**: Pick the simplest interpretation that satisfies all verify commands. \
-Document your assumption in a code comment.";
+Document your assumption in a code comment.\n\
+- **You are on a retry after gate failure**: The \"Previous attempt feedback\" section contains \
+the exact errors from your last attempt. Fix THOSE SPECIFIC ERRORS first before doing anything else.";
 
 impl RolePromptTemplate for ImplementerTemplate {
     type Input = ImplementerInput;
@@ -385,7 +428,10 @@ mod tests {
         let template = ImplementerTemplate;
         let id = template.role_identity();
         assert!(id.len() >= 500);
-        assert!(id.len() <= 3000);
+        assert!(id.len() <= 5000);
         assert!(id.contains("Implementer"));
+        assert!(id.contains("cargo check -p"));
+        assert!(id.contains("Mandatory self-validation"));
+        assert!(id.contains("Previous attempt feedback"));
     }
 }

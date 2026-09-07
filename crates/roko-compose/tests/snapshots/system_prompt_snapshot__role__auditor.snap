@@ -45,13 +45,14 @@ Prefer deterministic fixtures and readable snapshot diffs.
 
 ## Tool Instructions
 
-## MCP Tools (free, instant)
-
-You have MCP server tools. Use them for file reading, searching, and navigation instead of shelling out. They are faster and do not consume subprocess budget.
-
 Runtime tool allowlist: Read,Edit,Bash
 
 Use only the tools granted to your role.
+
+## Relevant Context
+### Workspace Notes
+- Snapshot output groups live prompt sections into six audit buckets.
+- Keep fixtures stable across runs.
 
 ## Domain Context
 
@@ -60,11 +61,6 @@ Task: Capture a deterministic golden prompt for this role.
 Goal: Keep system prompt composition deterministic and auditable.
 Workspace: crates/roko-compose
 Use the real RoleSystemPromptSpec path with fixed skills, playbooks, signals, and policy guidance.
-
-## Relevant Context
-### Workspace Notes
-- Snapshot output groups live prompt sections into six audit buckets.
-- Keep fixtures stable across runs.
 
 ## Active Signals
 
@@ -154,13 +150,15 @@ Prefer deterministic fixtures and readable snapshot diffs.
 <!-- TOOLS -->
 ## Tool Instructions
 
-## MCP Tools (free, instant)
-
-You have MCP server tools. Use them for file reading, searching, and navigation instead of shelling out. They are faster and do not consume subprocess budget.
-
 Runtime tool allowlist: Read,Edit,Bash
 
 Use only the tools granted to your role.
+
+<!-- CONTEXT -->
+## Relevant Context
+### Workspace Notes
+- Snapshot output groups live prompt sections into six audit buckets.
+- Keep fixtures stable across runs.
 
 <!-- CONTEXT -->
 ## Domain Context
@@ -170,12 +168,6 @@ Task: Capture a deterministic golden prompt for this role.
 Goal: Keep system prompt composition deterministic and auditable.
 Workspace: crates/roko-compose
 Use the real RoleSystemPromptSpec path with fixed skills, playbooks, signals, and policy guidance.
-
-<!-- CONTEXT -->
-## Relevant Context
-### Workspace Notes
-- Snapshot output groups live prompt sections into six audit buckets.
-- Keep fixtures stable across runs.
 
 <!-- MEMORY -->
 ## Active Signals

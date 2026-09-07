@@ -98,11 +98,12 @@ pub(crate) async fn cmd_show(
             let _ = tokio::signal::ctrl_c().await;
             cancel_for_signal.cancel();
         });
+        // User-facing progress output (streaming mode indicator)
         eprintln!("Streaming events from {serve_url}/api/events (Ctrl+C to stop)...");
         return match client.stream(cancel).await {
             Ok(()) => Ok(EXIT_SUCCESS),
             Err(err) => {
-                eprintln!("SSE stream error: {err}");
+                tracing::error!(error = %err, "SSE stream error");
                 Ok(1)
             }
         };

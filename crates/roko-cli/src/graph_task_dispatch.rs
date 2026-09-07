@@ -37,7 +37,9 @@ use roko_learn::costs_db::CostRecord;
 use roko_learn::oracles::coding::{BuildRecord, CodingOracle, TestRecord};
 use roko_learn::shadow::ShadowRunner;
 
-use crate::dispatch::{AgentDispatchRequest, DispatchContext, ModelChoiceSource, SharedAgentFactory};
+use crate::dispatch::{
+    AgentDispatchRequest, DispatchContext, GateFeedback, ModelChoiceSource, SharedAgentFactory,
+};
 use crate::graph_checkpoint::GraphCostLedgerCheckpoint;
 use crate::runner::tui_bridge::TuiBridge;
 use crate::runtime_feedback::{FeedbackEvent, FeedbackFacade};
@@ -542,6 +544,14 @@ pub struct GraphTaskDispatcher {
     /// calls, tool outputs) are published through the StateHub so the TUI
     /// can render agent activity in real time.
     tui_bridge: Option<TuiBridge>,
+    /// Per-task gate failure context carried across retries.
+    ///
+    /// When a task's verify steps fail, the structured gate output is stored
+    /// here keyed by `"{plan_id}/{task_id}"`. On the next retry of the same
+    /// task, the dispatcher reads this feedback and injects it into the
+    /// `DispatchContext` so the agent prompt includes the previous errors.
+    /// The value is `(feedback, attempt_number)`.
+    gate_retry_context: parking_lot::Mutex<HashMap<String, (GateFeedback, u32)>>,
 }
 
 impl GraphTaskDispatcher {
@@ -563,6 +573,7 @@ impl GraphTaskDispatcher {
             feedback: GraphFeedbackContext::default(),
             workspace_provider: None,
             tui_bridge: None,
+            gate_retry_context: parking_lot::Mutex::new(HashMap::new()),
         }
     }
 
@@ -742,6 +753,43 @@ impl GraphTaskDispatcher {
                     _ => None,
                 })
                 .unwrap_or(1);
+            // Gather prompt diagnostics for the efficiency event so
+            // telemetry reflects what the agent actually received.
+            let eff_prompt_sections: Vec<roko_learn::efficiency::PromptSectionMeta> =
+                dispatch_plan
+                    .prompt
+                    .diagnostics
+                    .included_sections
+                    .iter()
+                    .map(|name| roko_learn::efficiency::PromptSectionMeta {
+                        name: name.clone(),
+                        tokens: 0,
+                        priority: 0,
+                        was_truncated: false,
+                        was_dropped: false,
+                    })
+                    .collect();
+            let eff_system_prompt_tokens =
+                dispatch_plan.prompt.diagnostics.estimated_tokens;
+            let eff_tool_calls: Vec<roko_learn::efficiency::ToolCallMeta> = dispatch
+                .events
+                .iter()
+                .filter_map(|ev| match ev {
+                    roko_agent::AgentRuntimeEvent::ToolCall { name, .. } => {
+                        Some(roko_learn::efficiency::ToolCallMeta {
+                            tool_name: name.clone(),
+                            duration_ms: 0,
+                            result_tokens: 0,
+                            succeeded: true,
+                            advanced_task: false,
+                            was_redundant: false,
+                            error_category: None,
+                        })
+                    }
+                    _ => None,
+                })
+                .collect();
+            let eff_tools_used = eff_tool_calls.len() as u32;
             let event = roko_learn::efficiency::AgentEfficiencyEvent {
                 agent_id: format!(
                     "{}/{}",
@@ -761,12 +809,12 @@ impl GraphTaskDispatcher {
                 cache_write_tokens: u64::from(dispatch.result.usage.cache_create_tokens),
                 cost_usd,
                 cost_usd_without_cache: cost_usd,
-                prompt_sections: vec![],
+                prompt_sections: eff_prompt_sections,
                 total_prompt_tokens: tokens_in,
-                system_prompt_tokens: 0,
-                tools_available: 0,
-                tools_used: 0,
-                tool_calls: vec![],
+                system_prompt_tokens: u64::from(eff_system_prompt_tokens),
+                tools_available: eff_tool_calls.len() as u32,
+                tools_used: eff_tools_used,
+                tool_calls: eff_tool_calls,
                 wall_time_ms: duration_ms,
                 duration_ms,
                 time_to_first_token_ms: 0,
@@ -1240,6 +1288,32 @@ impl TaskDispatcher for GraphTaskDispatcher {
         let routing_bias = arbitration_bias
             .or_else(|| load_dream_routing_bias(&self.workdir, task_category, &routing_ctx));
 
+        // ── Gate retry context lookup ──────────────────────────────────
+        //
+        // If this task was previously dispatched and failed verification,
+        // the gate_retry_context map holds the structured errors and attempt
+        // count. Injecting this into the DispatchContext causes the prompt
+        // assembler to include a "Previous attempt feedback" section with
+        // the actual compile/test/clippy errors so the agent can fix them.
+        let retry_key = format!("{}/{}", spec.plan_id, task.id);
+        let (prior_gate_feedback, attempt_number) = self
+            .gate_retry_context
+            .lock()
+            .get(&retry_key)
+            .cloned()
+            .map(|(fb, attempt)| (Some(fb), attempt))
+            .unwrap_or((None, 0));
+
+        if attempt_number > 0 {
+            tracing::info!(
+                plan_id = %spec.plan_id,
+                task_id = %task.id,
+                attempt = attempt_number,
+                has_gate_feedback = prior_gate_feedback.is_some(),
+                "graph dispatch: injecting gate feedback from previous attempt"
+            );
+        }
+
         let dispatch_ctx = DispatchContext {
             plan_id: spec.plan_id.clone(),
             role: role.to_string(),
@@ -1255,10 +1329,10 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 ctx.budget_remaining,
                 budget_reservation.routing_budget_usd(),
             ),
-            attempt: 0,
+            attempt: attempt_number,
             // Graph does not yet own runner terminal feedback receipts.
             prompt_experiment: None,
-            gate_feedback: None,
+            gate_feedback: prior_gate_feedback,
             routing_context: Some(routing_ctx),
             routing_bias,
             dependency_outputs: upstream_outputs(&input),
@@ -1668,6 +1742,27 @@ impl TaskDispatcher for GraphTaskDispatcher {
                         }
                     }
                 }
+                // ── Store gate feedback for retry injection ─────────────
+                //
+                // Parse the raw failure text into structured GateFeedback
+                // and store it keyed by task so the next dispatch attempt
+                // can inject the errors into the agent's prompt.
+                let raw_for_feedback = failures.join("\n---\n");
+                if let Some(feedback) = GateFeedback::from_raw(&raw_for_feedback) {
+                    let next_attempt = attempt_number.saturating_add(1);
+                    tracing::info!(
+                        plan_id = %spec.plan_id,
+                        task_id = %task.id,
+                        compile_errors = feedback.compile_errors.len(),
+                        test_failures = feedback.test_failures.len(),
+                        clippy_warnings = feedback.clippy_warnings.len(),
+                        next_attempt,
+                        "storing gate feedback for retry injection"
+                    );
+                    self.gate_retry_context
+                        .lock()
+                        .insert(retry_key.clone(), (feedback, next_attempt));
+                }
                 // Release worktree with RetainForFailure for post-mortem.
                 if let Some((provider, lease)) = self.workspace_provider.as_ref().zip(lease.as_ref()) {
                     let _ = provider.release(
@@ -1687,6 +1782,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 step_count = task.verify.len(),
                 "all graph verify steps passed"
             );
+            // Clear any stale gate retry context on success.
+            self.gate_retry_context.lock().remove(&retry_key);
         }
 
         // ── Worktree isolation: release on success ──────────────────────

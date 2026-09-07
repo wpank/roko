@@ -28,10 +28,10 @@ fn check_grounding_section(prd_content: &str, slug: &str) -> bool {
     });
 
     if !has_section {
-        eprintln!(
-            "WARNING: PRD '{}' is missing '## Repository Grounding' section. \
-             The PRD may not be grounded in the actual repository.",
-            slug
+        tracing::warn!(
+            slug,
+            "PRD is missing '## Repository Grounding' section; \
+             the PRD may not be grounded in the actual repository"
         );
     }
 
@@ -252,15 +252,15 @@ fn persist_context_sidecar(
     match serde_json::to_string_pretty(&sidecar) {
         Ok(json) => {
             if let Err(e) = std::fs::write(&sidecar_path, json) {
-                eprintln!(
-                    "WARNING: Failed to write context sidecar {}: {}",
-                    sidecar_path.display(),
-                    e
+                tracing::warn!(
+                    path = %sidecar_path.display(),
+                    error = %e,
+                    "failed to write context sidecar"
                 );
             }
         }
         Err(e) => {
-            eprintln!("WARNING: Failed to serialize context sidecar: {}", e);
+            tracing::warn!(error = %e, "failed to serialize context sidecar");
         }
     }
 }
@@ -277,15 +277,15 @@ fn persist_validation_sidecar(
     match serde_json::to_string_pretty(report) {
         Ok(json) => {
             if let Err(e) = std::fs::write(&sidecar_path, json) {
-                eprintln!(
-                    "WARNING: Failed to write validation sidecar {}: {}",
-                    sidecar_path.display(),
-                    e
+                tracing::warn!(
+                    path = %sidecar_path.display(),
+                    error = %e,
+                    "failed to write validation sidecar"
                 );
             }
         }
         Err(e) => {
-            eprintln!("WARNING: Failed to serialize validation sidecar: {}", e);
+            tracing::warn!(error = %e, "failed to serialize validation sidecar");
         }
     }
 }
@@ -367,7 +367,7 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
                             target.display()
                         );
                     }
-                    eprintln!("Found empty scaffold from previous run — regenerating.");
+                    tracing::info!(%slug, "found empty scaffold from previous run; regenerating");
                 }
                 let model_key = roko_cli::model_selection::resolve_effective_model_key(
                     &workdir,
@@ -435,18 +435,19 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
                         {
                             Ok(pack) => {
                                 if !pack.context_root_verified {
-                                    eprintln!(
-                                        "WARNING: Repository context not verified for keywords {:?}. \
-                                         Generated PRD may reference nonexistent code.",
-                                        feature_keywords
+                                    tracing::warn!(
+                                        keywords = ?feature_keywords,
+                                        "repository context not verified; \
+                                         generated PRD may reference nonexistent code"
                                     );
                                 }
                                 Some(pack)
                             }
                             Err(err) => {
-                                eprintln!(
-                                    "WARNING: Repository context unavailable for keywords {:?}: {err}",
-                                    feature_keywords
+                                tracing::warn!(
+                                    keywords = ?feature_keywords,
+                                    error = %err,
+                                    "repository context unavailable"
                                 );
                                 None
                             }
@@ -472,7 +473,7 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
                 // are detected even on coarse-mtime filesystems.
                 let content_before = std::fs::read(&target).ok();
 
-                eprintln!("  Generating PRD draft: {slug}");
+                tracing::info!(%slug, "generating PRD draft");
                 let t_phase = Instant::now();
                 let started = Instant::now();
                 let scribe_effort = cli_effort_ref
@@ -490,9 +491,9 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
                 })
                 .await?;
                 if exit_code == 0 {
-                    eprintln!("  ✓ Draft generated: {slug}");
+                    tracing::info!(%slug, "PRD draft generated");
                 } else {
-                    eprintln!("  ✗ PRD draft generation failed");
+                    tracing::error!(%slug, exit_code, "PRD draft generation failed");
                 }
 
                 let agent_ms = t_phase.elapsed().as_millis();
@@ -514,10 +515,7 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
                         draft_written = true;
                         println!("📄 Draft written to {}", target.display());
                     } else {
-                        eprintln!(
-                            "Agent modified file but left it empty at {}",
-                            target.display()
-                        );
+                        tracing::warn!(path = %target.display(), "agent modified file but left it empty");
                     }
                 } else if !output.trim().is_empty() {
                     // Agent returned content as text — write it to the file.
@@ -530,22 +528,22 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
                         println!("📄 Draft written to {}", target.display());
                     } else {
                         let _ = std::fs::remove_file(&target);
-                        eprintln!(
-                            "Agent output did not contain a substantive PRD — no draft created."
-                        );
+                        tracing::warn!("agent output did not contain a substantive PRD; no draft created");
                     }
                 } else if exit_code != 0 {
                     let _ = std::fs::remove_file(&target);
-                    eprintln!("Agent failed (exit {exit_code}) — no draft created.");
+                    tracing::error!(exit_code, "agent failed; no draft created");
                 } else {
                     let _ = std::fs::remove_file(&target);
-                    eprintln!("Agent returned empty output — no draft created.");
+                    tracing::warn!("agent returned empty output; no draft created");
                 }
 
                 let mut artifact_success = draft_written && target.is_file();
                 if artifact_success && exit_code != 0 {
-                    eprintln!(
-                        "Agent exited with {exit_code}, but the draft artifact was written; treating draft creation as successful."
+                    tracing::warn!(
+                        exit_code,
+                        "agent exited with non-zero code but the draft artifact was written; \
+                         treating draft creation as successful"
                     );
                 }
 
@@ -577,12 +575,18 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
                         report.artifact_path = target.display().to_string();
 
                         for issue in &report.issues {
-                            eprintln!(
-                                "[{}] {}: {}",
-                                severity_label(&issue.severity),
-                                issue.category,
-                                issue.message
-                            );
+                            match issue.severity {
+                                Severity::Error => tracing::error!(
+                                    category = %issue.category,
+                                    message = %issue.message,
+                                    "PRD validation issue"
+                                ),
+                                Severity::Warning => tracing::warn!(
+                                    category = %issue.category,
+                                    message = %issue.message,
+                                    "PRD validation issue"
+                                ),
+                            }
                         }
 
                         Some(report)
@@ -620,12 +624,13 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
                             // Delete the draft when validation has errors so
                             // broken PRDs are not persisted.
                             if let Err(e) = std::fs::remove_file(&target) {
-                                eprintln!(
-                                    "WARNING: Failed to remove invalid draft {}: {e}",
-                                    target.display()
+                                tracing::warn!(
+                                    path = %target.display(),
+                                    error = %e,
+                                    "failed to remove invalid draft"
                                 );
                             } else {
-                                eprintln!("Removed invalid draft: {}", target.display());
+                                tracing::info!(path = %target.display(), "removed invalid draft");
                             }
                             artifact_success = false;
                         }
@@ -658,8 +663,15 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
                     total_ms,
                     "prd draft new: phase timing"
                 );
-                eprintln!(
-                    "  Timing: init={init_ms}ms prompt={prompt_ms}ms context={context_ms}ms agent={agent_ms}ms post={post_ms}ms learn={learn_ms}ms total={total_ms}ms"
+                tracing::info!(
+                    init_ms,
+                    prompt_ms,
+                    context_ms,
+                    agent_ms,
+                    post_ms,
+                    learn_ms,
+                    total_ms,
+                    "prd draft new: phase timing (summary)"
                 );
                 Ok(if artifact_success {
                     0
@@ -743,10 +755,7 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
                     if roko_cli::prd::has_substantive_markdown_content(&content) {
                         println!("📄 Draft updated at {}", draft.display());
                     } else {
-                        eprintln!(
-                            "Agent modified file but left it empty at {}",
-                            draft.display()
-                        );
+                        tracing::warn!(path = %draft.display(), "agent modified file but left it empty");
                     }
                 } else if exit_code == 0 {
                     if let Some(content) =
@@ -755,9 +764,9 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
                         std::fs::write(&draft, content)?;
                         println!("📄 Draft updated at {}", draft.display());
                     } else {
-                        eprintln!(
-                            "Agent returned empty output. Existing draft preserved at {}",
-                            draft.display()
+                        tracing::warn!(
+                            path = %draft.display(),
+                            "agent returned empty output; existing draft preserved"
                         );
                     }
                 } else if !output.is_empty() {
@@ -833,7 +842,6 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
             let generate_ms = t_phase.elapsed().as_millis();
             let total_ms = t_total.elapsed().as_millis();
             tracing::info!(init_ms, generate_ms, total_ms, "prd plan: phase timing");
-            eprintln!("  Timing: init={init_ms}ms generate={generate_ms}ms total={total_ms}ms");
             crate::commands::util::print_next_step_hint(&format!(
                 "Next: roko plan run plans/{slug}/"
             ));

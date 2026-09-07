@@ -2554,7 +2554,15 @@ impl Default for PromptAssembler {
 }
 
 fn render_gate_feedback(feedback: &GateFeedback) -> String {
-    let mut buf = String::from("# Previous attempt feedback\n");
+    let mut buf = String::from(
+        "# Previous attempt feedback\n\n\
+         Your previous attempt FAILED verification. Fix these exact errors before doing anything else.\n\n",
+    );
+    let has_structured =
+        !feedback.compile_errors.is_empty()
+            || !feedback.test_failures.is_empty()
+            || !feedback.clippy_warnings.is_empty();
+
     if !feedback.compile_errors.is_empty() {
         buf.push_str("## Compile errors\n");
         for err in &feedback.compile_errors {
@@ -2572,6 +2580,15 @@ fn render_gate_feedback(feedback: &GateFeedback) -> String {
         for w in &feedback.clippy_warnings {
             buf.push_str(&format!("- {w}\n"));
         }
+    }
+    // When no structured errors were parsed but raw output exists, include
+    // a bounded excerpt so the agent still sees what went wrong.
+    if !has_structured && !feedback.raw_output.is_empty() {
+        buf.push_str("## Raw gate output\n```\n");
+        // Limit to ~2 KB to avoid blowing the prompt budget.
+        let raw_excerpt: String = feedback.raw_output.chars().take(2048).collect();
+        buf.push_str(&raw_excerpt);
+        buf.push_str("\n```\n");
     }
     buf
 }

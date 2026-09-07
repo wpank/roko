@@ -96,13 +96,13 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                                 }
                             }
                             Err(e) => {
-                                eprintln!("DAG error: {e}");
+                                tracing::error!(error = %e, "DAG error");
                                 return Ok(EXIT_FAILURE);
                             }
                         }
                     }
                     Err(e) => {
-                        eprintln!("failed to load plans for wave analysis: {e}");
+                        tracing::error!(error = %e, "failed to load plans for wave analysis");
                         return Ok(EXIT_FAILURE);
                     }
                 }
@@ -325,7 +325,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 });
                 println!("{}", serde_json::to_string_pretty(&payload)?);
             } else if !cli.quiet {
-                eprintln!("Created plan '{plan_id}' at {}", plan_dir.display());
+                tracing::info!(plan_id = %plan_id, path = %plan_dir.display(), "Created plan");
                 crate::commands::util::print_next_step_hint(&format!(
                     "Next: edit {tasks} and run with `roko plan run {}`",
                     plan_dir.display(),
@@ -404,13 +404,13 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                                 }
                             }
                             Err(e) => {
-                                eprintln!("DAG error: {e}");
+                                tracing::error!(error = %e, "DAG error");
                                 return Ok(EXIT_FAILURE);
                             }
                         }
                     }
                     Err(e) => {
-                        eprintln!("failed to load plans for DAG analysis: {e}");
+                        tracing::error!(error = %e, "failed to load plans for DAG analysis");
                         return Ok(EXIT_FAILURE);
                     }
                 }
@@ -571,10 +571,12 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             // is kept parseable so existing scripts do not hard-fail, but the
             // engine itself is no longer available.
             {
-                eprintln!("error: the legacy Runner-v2 engine has been removed.");
-                eprintln!("       The Graph engine is now the sole execution engine.");
-                eprintln!("       Remove --engine legacy (or --engine runner-v2) from your command.");
-                eprintln!("       Your plans will run with the Graph engine by default.");
+                tracing::error!(
+                    "the legacy Runner-v2 engine has been removed; \
+                     the Graph engine is now the sole execution engine; \
+                     remove --engine legacy (or --engine runner-v2) from your command; \
+                     your plans will run with the Graph engine by default"
+                );
                 Ok(EXIT_FAILURE)
             }
         }
@@ -620,7 +622,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     let spec = match resolve_backlog_spec(&backlog_dir, *id) {
                         Ok(spec) => spec,
                         Err(err) => {
-                            eprintln!("#{id}  error: {err:#}");
+                            tracing::error!(id, error = %err, "backlog spec error");
                             results.push((*id, format!("backlog-{id}"), "error"));
                             continue;
                         }
@@ -630,12 +632,12 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
 
                     // Check if plan already exists.
                     if plan_dir.exists() {
-                        eprintln!("#{id}  {slug}  skipped (plan already exists)");
+                        tracing::info!(id, %slug, "skipped (plan already exists)");
                         results.push((*id, slug, "skipped"));
                         continue;
                     }
 
-                    eprintln!("#{id}  {slug}  generating...");
+                    tracing::info!(id, %slug, "generating plan from backlog spec");
 
                     let system = build_backlog_generation_prompt(&workdir, &spec, &slug);
                     let task_prompt = build_backlog_task_prompt(&spec, &slug);
@@ -667,47 +669,55 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                             if tasks_path.is_file() {
                                 match roko_cli::task_parser::TasksFile::parse(&tasks_path) {
                                     Ok(tf) => {
-                                        eprintln!(
-                                            "#{id}  {slug}  generated ({} tasks)",
-                                            tf.tasks.len()
+                                        tracing::info!(
+                                            id,
+                                            %slug,
+                                            task_count = tf.tasks.len(),
+                                            "plan generated"
                                         );
                                         results.push((*id, slug, "generated"));
                                     }
                                     Err(err) => {
-                                        eprintln!(
-                                            "#{id}  {slug}  generated but validation failed: {err:#}"
+                                        tracing::warn!(
+                                            id,
+                                            %slug,
+                                            error = %err,
+                                            "plan generated but validation failed"
                                         );
                                         results.push((*id, slug, "validation-failed"));
                                     }
                                 }
                             } else {
-                                eprintln!(
-                                    "#{id}  {slug}  agent succeeded but no tasks.toml written"
+                                tracing::warn!(
+                                    id,
+                                    %slug,
+                                    "agent succeeded but no tasks.toml written"
                                 );
                                 results.push((*id, slug, "no-output"));
                             }
                         }
                         Ok(code) => {
-                            eprintln!("#{id}  {slug}  agent exited with code {code}");
+                            tracing::error!(id, %slug, exit_code = code, "agent exited with non-zero code");
                             results.push((*id, slug, "failed"));
                         }
                         Err(err) => {
-                            eprintln!("#{id}  {slug}  agent failed: {err:#}");
+                            tracing::error!(id, %slug, error = %err, "agent failed");
                             results.push((*id, slug, "error"));
                         }
                     }
                 }
 
-                // Print summary table for batch mode.
+                // Log summary for batch mode.
                 if ids.len() > 1 {
-                    eprintln!("\n--- Summary ---");
                     for (id, slug, status) in &results {
-                        let icon = match *status {
-                            "generated" => "+",
-                            "skipped" => "~",
-                            _ => "!",
-                        };
-                        eprintln!("  [{icon}] #{id}  {slug:<40}  {status}");
+                        match *status {
+                            "generated" | "skipped" => {
+                                tracing::info!(id, slug = slug.as_str(), status, "batch plan generate result");
+                            }
+                            _ => {
+                                tracing::warn!(id, slug = slug.as_str(), status, "batch plan generate result");
+                            }
+                        }
                     }
                 }
 
@@ -719,22 +729,18 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 let notes_dir = workdir.join(".roko").join("notes");
                 let notes = roko_cli::note_cluster::load_notes(&notes_dir, tag.as_deref());
                 if notes.is_empty() {
-                    eprintln!("No notes found in {}", notes_dir.display());
+                    tracing::warn!(path = %notes_dir.display(), "no notes found");
                     return Ok(1);
                 }
                 let clusters = roko_cli::note_cluster::cluster_notes(notes);
-                eprintln!("Found {} note cluster(s):", clusters.len());
+                tracing::info!(count = clusters.len(), "found note clusters");
                 for (i, cluster) in clusters.iter().enumerate() {
-                    eprintln!(
-                        "  [{}] {} ({} note(s), theme: {})",
-                        i + 1,
-                        cluster.notes[0]
-                            .path
-                            .file_stem()
-                            .unwrap_or_default()
-                            .to_string_lossy(),
-                        cluster.notes.len(),
-                        cluster.theme
+                    tracing::info!(
+                        index = i + 1,
+                        name = %cluster.notes[0].path.file_stem().unwrap_or_default().to_string_lossy(),
+                        note_count = cluster.notes.len(),
+                        theme = %cluster.theme,
+                        "note cluster"
                     );
                 }
 
@@ -753,7 +759,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                         .collect::<Vec<_>>()
                         .join("\n\n---\n\n");
                     let slug = cluster.theme.replace(' ', "-");
-                    eprintln!("Generating plan for cluster: {slug}");
+                    tracing::info!(%slug, "generating plan for cluster");
 
                     let system = roko_cli::plan_generate::build_generation_prompt(
                         &workdir, &combined, "notes",
@@ -791,17 +797,13 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
 
                     match exit_code {
                         Ok(code) if code == EXIT_SUCCESS => {
-                            eprintln!("Generated: .roko/plans/{slug}/tasks.toml");
+                            tracing::info!(%slug, "plan generated from notes cluster");
                         }
                         Ok(code) => {
-                            eprintln!(
-                                "warning: plan generate for cluster '{slug}' exited with code {code}"
-                            );
+                            tracing::warn!(%slug, exit_code = code, "plan generate for cluster exited with non-zero code");
                         }
                         Err(err) => {
-                            eprintln!(
-                                "warning: plan generate for cluster '{slug}' failed: {err:#}"
-                            );
+                            tracing::warn!(%slug, error = %err, "plan generate for cluster failed");
                         }
                     }
                 }
@@ -813,14 +815,14 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             let source_text = if let Some(ref path) = from_file {
                 let content = std::fs::read_to_string(path)
                     .with_context(|| format!("read {}", path.display()))?;
-                eprintln!("📋 Generating plans from file: {}", path.display());
+                tracing::info!(path = %path.display(), "generating plans from file");
                 content
             } else {
                 let text = source.join(" ");
                 if text.is_empty() {
                     anyhow::bail!("Provide a prompt or --from-file <path>");
                 }
-                eprintln!("📋 Generating plans from prompt: {text}");
+                tracing::info!("generating plans from prompt");
                 text
             };
 
@@ -891,9 +893,10 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             .await?;
 
             if exit_code != EXIT_SUCCESS {
-                eprintln!(
-                    "plan generate: agent exited with code {exit_code}. \
-                     Check the latest episode in .roko/episodes.jsonl for details."
+                tracing::error!(
+                    exit_code,
+                    "plan generate: agent exited with non-zero code; \
+                     check the latest episode in .roko/episodes.jsonl for details"
                 );
             }
 
@@ -923,29 +926,26 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                                     policy,
                                 );
                                 if !issues.is_empty() {
-                                    eprintln!(
-                                        "warning: generated plan at {} violates its execution contract:\n{}",
-                                        tasks_path.display(),
-                                        issues
-                                            .iter()
-                                            .map(|issue| format!("  - {issue}"))
-                                            .collect::<Vec<_>>()
-                                            .join("\n")
+                                    tracing::warn!(
+                                        path = %tasks_path.display(),
+                                        issues = %issues.iter().map(|i| format!("  - {i}")).collect::<Vec<_>>().join("\n"),
+                                        "generated plan violates its execution contract"
                                     );
                                     validation_failed = true;
                                 }
                             }
                             Err(err) => {
-                                eprintln!(
-                                    "warning: invalid tasks.toml at {}: {err:#}",
-                                    tasks_path.display()
+                                tracing::warn!(
+                                    path = %tasks_path.display(),
+                                    error = %err,
+                                    "invalid tasks.toml"
                                 );
                                 validation_failed = true;
                             }
                         }
                     }
                     if validation_failed {
-                        eprintln!(
+                        tracing::error!(
                             "plan generate: one or more generated tasks.toml files failed \
                              TOML validation (see warnings above)"
                         );
@@ -1004,12 +1004,12 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     tasks_path.display(),
                     existing = existing,
                 );
-                eprintln!(
-                    "\n[dry-run] Would regenerate {} from {}",
-                    tasks_path.display(),
-                    source_path.display()
+                tracing::info!(
+                    tasks = %tasks_path.display(),
+                    source = %source_path.display(),
+                    prompt_len = system.len() + task_prompt.len(),
+                    "[dry-run] would regenerate plan"
                 );
-                eprintln!("Prompt length: {} chars", system.len() + task_prompt.len());
                 return Ok(EXIT_SUCCESS);
             }
 
@@ -1151,10 +1151,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             cmd.write(&state_dir)
                 .map_err(|e| anyhow!("failed to write control command: {e}"))?;
             if !cli.quiet {
-                eprintln!(
-                    "Pause signal written to {}",
-                    state_dir.join("control.json").display()
-                );
+                tracing::info!(path = %state_dir.join("control.json").display(), "pause signal written");
             }
             Ok(EXIT_SUCCESS)
         }
@@ -1169,10 +1166,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             cmd.write(&state_dir)
                 .map_err(|e| anyhow!("failed to write control command: {e}"))?;
             if !cli.quiet {
-                eprintln!(
-                    "Resume signal written to {}",
-                    state_dir.join("control.json").display()
-                );
+                tracing::info!(path = %state_dir.join("control.json").display(), "resume signal written");
             }
             Ok(EXIT_SUCCESS)
         }
@@ -1187,10 +1181,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             cmd.write(&state_dir)
                 .map_err(|e| anyhow!("failed to write control command: {e}"))?;
             if !cli.quiet {
-                eprintln!(
-                    "Cancel signal written to {}",
-                    state_dir.join("control.json").display()
-                );
+                tracing::info!(path = %state_dir.join("control.json").display(), "cancel signal written");
             }
             Ok(EXIT_SUCCESS)
         }
@@ -1209,10 +1200,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             cmd.write(&state_dir)
                 .map_err(|e| anyhow!("failed to write control command: {e}"))?;
             if !cli.quiet {
-                eprintln!(
-                    "Retry signal written to {}",
-                    state_dir.join("control.json").display()
-                );
+                tracing::info!(path = %state_dir.join("control.json").display(), "retry signal written");
             }
             Ok(EXIT_SUCCESS)
         }
@@ -1227,8 +1215,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                         serde_json::json!({"error": "no status file found — is a plan running?"})
                     );
                 } else {
-                    eprintln!("no status file found at {}", status_path.display());
-                    eprintln!("  -> Start a plan run: roko plan run plans/");
+                    tracing::warn!(path = %status_path.display(), "no status file found; start a plan run with: roko plan run plans/");
                 }
                 return Ok(EXIT_FAILURE);
             }
@@ -1387,7 +1374,7 @@ async fn cmd_plan_queue(cli: &Cli, cmd: QueueCmd) -> Result<i32> {
                 Ok(EXIT_SUCCESS)
             } else {
                 for issue in &issues {
-                    eprintln!("error: {issue}");
+                    tracing::error!(issue = %issue, "queue manifest validation error");
                 }
                 Ok(EXIT_FAILURE)
             }
@@ -1638,7 +1625,7 @@ fn validate_before_run(plans_dir: &Path, workdir: &Path) -> Option<i32> {
     ) {
         Ok(report) => report,
         Err(error) => {
-            eprintln!("error: plan validation failed: {error:#}");
+            tracing::error!(error = %error, "plan validation failed");
             return Some(1);
         }
     };
@@ -1651,8 +1638,7 @@ fn validate_before_run(plans_dir: &Path, workdir: &Path) -> Option<i32> {
 
     let code = report.exit_code(false);
     if code != 0 {
-        eprintln!("{}", plan_validate::render_text(&report));
-        eprintln!("error: plan validation failed — fix the errors above before running");
+        tracing::error!(report = %plan_validate::render_text(&report), "plan validation failed — fix the errors above before running");
         Some(1)
     } else {
         None
@@ -2061,47 +2047,47 @@ fn warn_graph_unsupported_flags(
     }
 
     if let Some(session) = resume_session {
-        eprintln!(
-            "warning: --resume '{session}' is not supported with --engine graph and will be ignored"
+        tracing::warn!(
+            session,
+            "--resume is not supported with --engine graph and will be ignored"
         );
     }
     if effort.is_some() {
-        eprintln!(
-            "warning: --effort is not supported with --engine graph and will be ignored \
-             (the graph engine uses the configured default_effort)"
+        tracing::warn!(
+            "--effort is not supported with --engine graph and will be ignored; \
+             the graph engine uses the configured default_effort"
         );
     }
     // --log-file is now wired for Graph Engine (#115) -- no warning needed.
     let _ = log_file;
     if skip_preflight {
-        eprintln!(
-            "warning: --skip-preflight is not supported with --engine graph and will be ignored \
-             (the graph engine runs its own provider preflight)"
+        tracing::warn!(
+            "--skip-preflight is not supported with --engine graph and will be ignored; \
+             the graph engine runs its own provider preflight"
         );
     }
     if force {
-        eprintln!(
-            "warning: --force is not supported with --engine graph and will be ignored \
-             (the graph engine does not perform a disk-space pre-check)"
+        tracing::warn!(
+            "--force is not supported with --engine graph and will be ignored; \
+             the graph engine does not perform a disk-space pre-check"
         );
     }
     if screenshots {
-        eprintln!(
-            "warning: --screenshots is not supported with --engine graph and will be ignored"
-        );
+        tracing::warn!("--screenshots is not supported with --engine graph and will be ignored");
     }
     if batch_size.is_some() {
-        eprintln!("warning: --batch-size is not supported with --engine graph and will be ignored");
+        tracing::warn!("--batch-size is not supported with --engine graph and will be ignored");
     }
     if no_replan {
-        eprintln!(
-            "warning: --no-replan has no effect with --engine graph; \
-             the Graph engine does not replan on gate failure (use max_retries in tasks.toml to control retries)"
+        tracing::warn!(
+            "--no-replan has no effect with --engine graph; \
+             the Graph engine does not replan on gate failure \
+             (use max_retries in tasks.toml to control retries)"
         );
     }
     if skip_validate {
-        eprintln!(
-            "warning: --skip-validate skips tasks.toml structure checks but the Graph engine \
+        tracing::warn!(
+            "--skip-validate skips tasks.toml structure checks but the Graph engine \
              always runs its own internal graph validation before execution"
         );
     }
@@ -2200,6 +2186,7 @@ impl roko_core::TelemetryEventSink for InlineProgressTelemetrySink {
         if self.show_progress {
             match event {
                 roko_core::ObservableEvent::CellStarted { block, .. } => {
+                    // User-facing progress output (no TUI active)
                     eprintln!("    \u{25b8} executing node '{block}'...");
                 }
                 roko_core::ObservableEvent::CellCompleted {
@@ -2209,6 +2196,7 @@ impl roko_core::TelemetryEventSink for InlineProgressTelemetrySink {
                     ..
                 } => {
                     let secs = *duration_ms as f64 / 1000.0;
+                    // User-facing progress output (no TUI active)
                     if *cost_usd > 0.0 {
                         eprintln!(
                             "    \u{2713} node '{block}' completed ({secs:.1}s, ${cost_usd:.4})"
@@ -2218,6 +2206,7 @@ impl roko_core::TelemetryEventSink for InlineProgressTelemetrySink {
                     }
                 }
                 roko_core::ObservableEvent::CellFailed { block, error, .. } => {
+                    // User-facing progress output (no TUI active)
                     eprintln!("    \u{2717} node '{block}' failed: {error}");
                 }
                 _ => {}
@@ -2510,7 +2499,7 @@ async fn cmd_plan_run_engine(
             roko_cli::graph_execution::WorktreeExecutionWorkspaceProvider::new(worktree_manager),
         );
         if !cli.quiet && !cli.json {
-            eprintln!("\u{25b8} Per-task worktree isolation enabled (--worktree-per-task)");
+            tracing::info!("per-task worktree isolation enabled (--worktree-per-task)");
         }
         dispatcher_builder = dispatcher_builder.with_workspace_provider(workspace_provider);
     }
@@ -2577,12 +2566,11 @@ async fn cmd_plan_run_engine(
 
     if !cli.quiet && !cli.json && !launch_tui {
         let plan_names: Vec<&str> = plan_execution_order.iter().map(String::as_str).collect();
-        eprintln!(
-            "\u{25b8} Running plan{} via Graph Engine ({} task{}): {}",
-            if plan_count == 1 { "" } else { "s" },
+        tracing::info!(
+            plan_count,
             total_tasks,
-            if total_tasks == 1 { "" } else { "s" },
-            plan_names.join(", "),
+            plans = plan_names.join(", "),
+            "running plans via Graph Engine"
         );
     }
 
@@ -2598,11 +2586,10 @@ async fn cmd_plan_run_engine(
         let unsatisfied =
             unsatisfied_graph_plan_dependencies(&plan.id, &plan_dependencies, &plan_outcomes);
         if !unsatisfied.is_empty() {
-            eprintln!(
-                "  blocked: plan '{}' prerequisite plan{} did not succeed: {}",
-                plan.id,
-                if unsatisfied.len() == 1 { "" } else { "s" },
-                unsatisfied.join(", "),
+            tracing::warn!(
+                plan_id = %plan.id,
+                prerequisites = unsatisfied.join(", "),
+                "plan blocked: prerequisite plan(s) did not succeed"
             );
             graph_tui_bridge.log_event(
                 "graph.plan_blocked",
@@ -2618,10 +2605,10 @@ async fn cmd_plan_run_engine(
         }
 
         if !cli.quiet && !cli.json && !launch_tui {
-            eprintln!(
-                "  Running plan '{}' via Graph Engine ({} tasks)...",
-                plan.id,
-                plan.tasks.tasks.len()
+            tracing::info!(
+                plan_id = %plan.id,
+                task_count = plan.tasks.tasks.len(),
+                "running plan via Graph Engine"
             );
         }
 
@@ -2665,8 +2652,8 @@ async fn cmd_plan_run_engine(
             // not yet add runtime value. The richer topology is available for
             // incremental implementation of each enricher cell type.
             if !cli.quiet && !cli.json {
-                eprintln!(
-                    "  note: --rich-topology is active; enricher cells (knowledge, \
+                tracing::info!(
+                    "--rich-topology is active; enricher cells (knowledge, \
                      episodes, playbook, modulation, safety, experiment) are \
                      currently passthrough stubs"
                 );
@@ -2713,10 +2700,7 @@ async fn cmd_plan_run_engine(
                         "failed to build rich topology for plan '{}': {e}",
                         plan.id
                     ));
-                    eprintln!(
-                        "  error: failed to build rich topology for plan '{}': {e}",
-                        plan.id
-                    );
+                    tracing::error!(plan_id = %plan.id, error = %e, "failed to build rich topology for plan");
                     plan_outcomes.insert(plan.id.clone(), false);
                     all_succeeded = false;
                     continue;
@@ -2738,10 +2722,7 @@ async fn cmd_plan_run_engine(
                         "failed to convert plan '{}' to graph: {e}",
                         plan.id
                     ));
-                    eprintln!(
-                        "  error: failed to convert plan '{}' to graph: {e}",
-                        plan.id
-                    );
+                    tracing::error!(plan_id = %plan.id, error = %e, "failed to convert plan to graph");
                     plan_outcomes.insert(plan.id.clone(), false);
                     all_succeeded = false;
                     continue;
@@ -2787,9 +2768,9 @@ async fn cmd_plan_run_engine(
                 issues.len(),
                 if issues.len() == 1 { "" } else { "s" },
             ));
-            eprintln!("  validation errors for plan '{}':", plan.id);
+            tracing::error!(plan_id = %plan.id, error_count = issues.len(), "plan has validation errors");
             for issue in &issues {
-                eprintln!("    - {issue}");
+                tracing::error!(plan_id = %plan.id, issue, "validation error");
             }
             plan_outcomes.insert(plan.id.clone(), false);
             all_succeeded = false;
@@ -2798,12 +2779,11 @@ async fn cmd_plan_run_engine(
         }
 
         if replayed_entries > 0 && !cli.quiet && !cli.json {
-            eprintln!(
-                "  Resuming plan '{}' with {} completed task output{} from {}",
-                plan.id,
+            tracing::info!(
+                plan_id = %plan.id,
                 replayed_entries,
-                if replayed_entries == 1 { "" } else { "s" },
-                checkpoint.paths().manifest.display(),
+                manifest = %checkpoint.paths().manifest.display(),
+                "resuming plan with replayed task outputs"
             );
         }
 
@@ -2845,27 +2825,30 @@ async fn cmd_plan_run_engine(
                 );
 
                 if !cli.quiet && !cli.json {
-                    let status = if execution_succeeded {
-                        "SUCCESS"
+                    if execution_succeeded {
+                        tracing::info!(
+                            plan_id = %plan.id,
+                            node_count = output.node_results.len(),
+                            output_count,
+                            "plan completed: SUCCESS"
+                        );
                     } else {
-                        "FAILED"
-                    };
-                    eprintln!(
-                        "  Plan '{}' completed: {} nodes, {} output signals, {}",
-                        plan.id,
-                        output.node_results.len(),
-                        output_count,
-                        status,
-                    );
-                    // Print per-node error details so failures are not silent.
+                        tracing::warn!(
+                            plan_id = %plan.id,
+                            node_count = output.node_results.len(),
+                            output_count,
+                            "plan completed: FAILED"
+                        );
+                    }
+                    // Log per-node error details so failures are not silent.
                     if !execution_succeeded {
                         for result in &output.node_results {
                             if let Some(error) = &result.error {
-                                eprintln!(
-                                    "    node '{}' ({:?}): {}",
-                                    result.node_id,
-                                    result.status,
-                                    error,
+                                tracing::warn!(
+                                    node_id = %result.node_id,
+                                    status = ?result.status,
+                                    %error,
+                                    "node failed"
                                 );
                             }
                         }
@@ -2873,14 +2856,18 @@ async fn cmd_plan_run_engine(
                     if budget.exhausted {
                         let ceiling = budget.ceiling_usd.unwrap_or_default();
                         if budget.dispatch_blocked {
-                            eprintln!(
-                                "  Plan '{}' budget exhausted: ${:.4} >= ${ceiling:.4}",
-                                plan.id, budget.spent_usd,
+                            tracing::warn!(
+                                plan_id = %plan.id,
+                                spent_usd = budget.spent_usd,
+                                ceiling_usd = ceiling,
+                                "plan budget exhausted"
                             );
                         } else {
-                            eprintln!(
-                                "  Plan '{}' budget exhausted: ${:.4} >= ${ceiling:.4}; explicit override active, continuing",
-                                plan.id, budget.spent_usd,
+                            tracing::warn!(
+                                plan_id = %plan.id,
+                                spent_usd = budget.spent_usd,
+                                ceiling_usd = ceiling,
+                                "plan budget exhausted; explicit override active, continuing"
                             );
                         }
                     }
@@ -2896,7 +2883,7 @@ async fn cmd_plan_run_engine(
                 graph_tui_bridge.error(&format!("plan '{}' execution failed: {e}", plan.id));
                 graph_tui_bridge.plan_completed(&plan.id, false);
 
-                eprintln!("  error: plan '{}' execution failed: {e}", plan.id);
+                tracing::error!(plan_id = %plan.id, error = %e, "plan execution failed");
                 plan_outcomes.insert(plan.id.clone(), false);
                 all_succeeded = false;
                 checkpoint.finish(false)?;
@@ -2930,7 +2917,7 @@ async fn cmd_plan_run_engine(
     if let Some(extension_chain) = graph_run_config.extension_chain.as_ref() {
         let mut chain = extension_chain.lock().await;
         for (name, error) in chain.shutdown_all().await {
-            eprintln!("  warning: extension '{name}' shutdown failed: {error}");
+            tracing::warn!(extension = %name, %error, "extension shutdown failed");
             all_succeeded = false;
         }
     }
@@ -2979,13 +2966,12 @@ async fn cmd_plan_run_engine(
     } else if !cli.quiet && !launch_tui {
         // Only print the summary line when no TUI was shown — otherwise
         // the TUI already rendered all progress information interactively.
-        eprintln!(
-            "\n\u{25b8} Graph Engine complete: {} plan{}, {} tasks, {} output signals, ${:.4}",
+        tracing::info!(
             plan_count,
-            if plan_count == 1 { "" } else { "s" },
             total_tasks,
             total_output_count,
             total_cost_usd,
+            "Graph Engine complete"
         );
     }
 

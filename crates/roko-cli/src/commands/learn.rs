@@ -189,12 +189,10 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
             dry_run,
             workdir,
         } => {
-            eprintln!(
-                "warning: 'roko learn tune' is deprecated, use 'roko learn inspect {subsystem}'"
-            );
+            tracing::warn!(%subsystem, "'roko learn tune' is deprecated; use 'roko learn inspect <subsystem>'");
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             if dry_run {
-                eprintln!("note: inspection is always read-only; --dry-run has no effect");
+                tracing::info!("note: inspection is always read-only; --dry-run has no effect");
             }
             cmd_learn_inspect_legacy(&wd, &subsystem, json).await
         }

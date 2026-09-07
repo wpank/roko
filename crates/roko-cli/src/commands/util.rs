@@ -34,6 +34,8 @@ pub(crate) fn cmd_explain(topic: &str, depth: u8) -> bool {
             true
         }
         None => {
+            tracing::warn!(topic, "unknown explain topic");
+            // User-facing progress output
             eprintln!("unknown topic: {topic}");
             eprintln!("available topics: {}", explain::topic_names().join(", "));
             eprintln!("run `roko explain topics` to see all topics with descriptions");
@@ -54,16 +56,13 @@ pub(crate) async fn cmd_pipe(cli: &Cli) -> Result<i32> {
 
     if input.text.is_empty() {
         if !cli.quiet {
-            eprintln!("no input received on stdin");
+            tracing::warn!("no input received on stdin");
         }
         return Ok(EXIT_SYSTEM_ERROR);
     }
 
     if input.truncated && !cli.quiet {
-        eprintln!(
-            "warning: stdin input truncated at {} bytes",
-            input.bytes_read
-        );
+        tracing::warn!(bytes_read = input.bytes_read, "stdin input truncated");
     }
 
     // Dispatch the piped text via the v2 inline chat path.
@@ -316,7 +315,7 @@ pub(crate) async fn cmd_run(
             .start_background()
             .await?;
         if !cli.quiet {
-            eprintln!("▸ HTTP server started on :6677");
+            tracing::info!("HTTP server started on :6677");
         }
         Some((state, handle))
     } else {
@@ -361,23 +360,20 @@ pub(crate) async fn cmd_run(
             if !report.success {
                 match roko_cli::run::workflow_report_outcome(&report) {
                     Some(roko_core::WorkflowOutcome::Halted { reason }) => {
-                        eprintln!("error: workflow halted: {reason}");
-                        eprintln!("  -> Check logs: .roko/roko.log");
-                        eprintln!(
-                            "  -> Resume:     roko plan run <dir> --resume-plan"
+                        tracing::error!(
+                            %reason,
+                            "workflow halted; check logs at .roko/roko.log or run `roko doctor`"
                         );
-                        eprintln!("  -> Diagnose:   roko doctor");
                     }
                     Some(roko_core::WorkflowOutcome::Cancelled) => {
-                        eprintln!("error: workflow cancelled");
-                        eprintln!(
-                            "  -> Resume:     roko plan run <dir> --resume-plan"
+                        tracing::warn!(
+                            "workflow cancelled; resume with: roko plan run <dir> --resume-plan"
                         );
                     }
                     Some(roko_core::WorkflowOutcome::Success { .. }) | None => {
-                        eprintln!("error: workflow failed");
-                        eprintln!("  -> Check logs: .roko/roko.log");
-                        eprintln!("  -> Diagnose:   roko doctor");
+                        tracing::error!(
+                            "workflow failed; check logs at .roko/roko.log or run `roko doctor`"
+                        );
                     }
                 }
             }
@@ -392,7 +388,7 @@ pub(crate) async fn cmd_run(
                 )
                 && !cli.quiet
             {
-                eprintln!("share failed: {err}");
+                tracing::warn!(error = %err, "share failed");
             }
 
             if report.success {
@@ -403,7 +399,7 @@ pub(crate) async fn cmd_run(
         }
         Err(e) => {
             if !cli.quiet {
-                eprintln!("workflow engine error: {e:#}");
+                tracing::error!(error = %e, "workflow engine error");
             }
             Ok(EXIT_AGENT_FAILURE)
         }
@@ -652,8 +648,9 @@ pub(crate) async fn cmd_status(
 
         for (plan_id, _, _) in &state_entries {
             if !crate::commands::plan::plan_path_exists(&workdir, plan_id) {
-                eprintln!(
-                    "warning: state references missing plan: {plan_id} (not found in plans/ or .roko/plans/)"
+                tracing::warn!(
+                    plan_id,
+                    "state references missing plan (not found in plans/ or .roko/plans/)"
                 );
             }
         }
@@ -1241,7 +1238,7 @@ pub(crate) async fn cmd_replay(
     let filter_value = if let Some(ref fe) = from_event {
         Some(fe.as_str())
     } else if let Some(ref ao) = as_of {
-        eprintln!("warning: --as-of is deprecated; use --from-event instead");
+        tracing::warn!("--as-of is deprecated; use --from-event instead");
         Some(ao.as_str())
     } else {
         None
@@ -1307,7 +1304,7 @@ pub(crate) async fn cmd_replay(
                     println!("{}", err.to_json());
                 }
                 ReplayFormat::Tree => {
-                    eprintln!("{}", err.to_text());
+                    tracing::error!(error = %err.to_text(), "replay error");
                 }
             }
             Ok(exit_code)
@@ -1393,10 +1390,7 @@ pub(crate) async fn cmd_inject(
                     e, inject_kind, session,
                 );
             } else {
-                eprintln!(
-                    "Error: failed to write control command for inject {} -> session {}: {}",
-                    inject_kind, session, e,
-                );
+                tracing::error!(inject_kind = %inject_kind, %session, error = %e, "failed to write control command for inject");
             }
             Ok(EXIT_FAILURE)
         }
@@ -1661,25 +1655,27 @@ fn index_load_or_build(target: &std::path::Path) -> Result<roko_index::Workspace
                 tracing::debug!("persistent index is compatible: {}", db_path.display());
             }
             Err(roko_index::IndexStoreError::VersionMismatch { stored, expected }) => {
-                eprintln!(
-                    "index: schema version mismatch (stored {stored}, expected {expected}); \
-                     rebuild with `roko index rebuild`"
+                tracing::warn!(
+                    stored,
+                    expected,
+                    "index: schema version mismatch; rebuild with `roko index rebuild`"
                 );
             }
             Err(roko_index::IndexStoreError::RootMismatch { stored, requested }) => {
-                eprintln!(
-                    "index: root mismatch (stored '{stored}', requested '{requested}'); \
-                     rebuild with `roko index rebuild`"
+                tracing::warn!(
+                    stored = %stored,
+                    requested = %requested,
+                    "index: root mismatch; rebuild with `roko index rebuild`"
                 );
             }
             Err(roko_index::IndexStoreError::Corrupt(msg)) => {
-                eprintln!("index: database corrupt ({msg}); rebuild with `roko index rebuild`");
+                tracing::error!(msg, "index: database corrupt; rebuild with `roko index rebuild`");
             }
             Err(roko_index::IndexStoreError::Locked(msg)) => {
                 anyhow::bail!("index database locked: {msg}");
             }
             Err(roko_index::IndexStoreError::Other(e)) => {
-                eprintln!("index: {e}; falling back to full build");
+                tracing::warn!(error = %e, "index error; falling back to full build");
             }
         }
     }
@@ -2513,14 +2509,12 @@ pub(crate) fn warn_capability_mismatch(config: &RokoConfig, model_key: &str, rol
             .map(String::as_str)
             .collect();
         if !missing.is_empty() {
-            eprintln!(
-                "WARNING: model '{}' selected for role '{}' does not satisfy capability \
-                 requirements: {}. Consider configuring a model with these capabilities \
-                 under [agent.roles.{}].",
+            tracing::warn!(
                 model_key,
-                role_label,
-                missing.join(", "),
-                role_label,
+                role = role_label,
+                missing_capabilities = missing.join(", "),
+                "model does not satisfy capability requirements for role; \
+                 consider configuring a model with these capabilities under [agent.roles.<role>]"
             );
         }
     }

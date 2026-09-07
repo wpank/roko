@@ -35,7 +35,7 @@ pub(crate) async fn cmd_setup(cli: &Cli, workdir: Option<PathBuf>, yes: bool) ->
     let auth = match &auth {
         AuthMethod::NeedsSetup => {
             if yes {
-                eprintln!("  No provider found. Set an API key env var and re-run.");
+                tracing::error!("no provider found; set an API key env var and re-run");
                 return Ok(1);
             }
             // Interactive: prompt for API key

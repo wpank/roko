@@ -63,7 +63,7 @@ pub(crate) async fn cmd_dev(cli: &Cli, no_frontend: bool) -> Result<i32> {
                 Some(child)
             }
             Err(e) => {
-                eprintln!("  frontend       skipped ({})", e);
+                tracing::warn!(error = %e, "frontend dev server skipped");
                 None
             }
         }
@@ -87,7 +87,7 @@ pub(crate) async fn cmd_dev(cli: &Cli, no_frontend: bool) -> Result<i32> {
         }
         status = serve_child.wait() => {
             // Serve exited unexpectedly.
-            eprintln!("warning: roko serve exited unexpectedly: {:?}", status);
+            tracing::warn!(status = ?status, "roko serve exited unexpectedly");
         }
     }
 
@@ -199,10 +199,7 @@ pub fn terminate_pid(pid: u32, timeout: Duration) -> Result<()> {
 fn handle_existing_pid_file(workdir: &Path) -> Result<()> {
     match read_pid_file(workdir)? {
         Some(pid) if process_is_alive(pid) => {
-            eprintln!(
-                "Port in use by prior roko dev process (PID {}). Stopping it...",
-                pid
-            );
+            tracing::warn!(pid, "port in use by prior roko dev process; stopping it");
             terminate_pid(pid, Duration::from_secs(5))?;
             remove_pid_file(workdir)?;
             std::thread::sleep(Duration::from_millis(500));

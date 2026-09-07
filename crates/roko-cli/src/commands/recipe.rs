@@ -66,7 +66,7 @@ pub(crate) fn cmd_recipe(cli: &Cli, command: RecipeCmd) -> Result<i32> {
                 println!("recipe '{id}' is valid");
             } else {
                 for error in &errors {
-                    eprintln!("- {error}");
+                    tracing::error!(recipe_id = %id, %error, "recipe validation error");
                 }
             }
             if !errors.is_empty() {

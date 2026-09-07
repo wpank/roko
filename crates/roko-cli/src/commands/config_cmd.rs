@@ -581,9 +581,9 @@ pub(crate) fn cmd_provider_add(workdir: &Path, name: &str, dry_run: bool) -> Res
     let entry = match lookup(name) {
         Some(e) => e,
         None => {
-            eprintln!(
-                "Unknown provider '{}'. Run `roko config providers catalog` to see available providers.",
-                name
+            tracing::warn!(
+                name,
+                "unknown provider; run `roko config providers catalog` to see available providers"
             );
             return Ok(());
         }
@@ -632,7 +632,7 @@ pub(crate) fn cmd_provider_add(workdir: &Path, name: &str, dry_run: bool) -> Res
     // Append to roko.toml
     let config_path = workdir.join("roko.toml");
     if !config_path.exists() {
-        eprintln!("No roko.toml found. Run `roko init` first.");
+        tracing::error!("no roko.toml found; run `roko init` first");
         return Ok(());
     }
 

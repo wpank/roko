@@ -134,7 +134,7 @@ async fn cmd_backlog_import(
                 println!("  #{}: {}", num, title);
             }
             Err(e) => {
-                eprintln!("  #{}: failed: {}", num, e);
+                tracing::error!(num, error = %e, "failed to import backlog item as PRD idea");
                 skipped += 1;
                 continue;
             }

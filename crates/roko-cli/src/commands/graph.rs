@@ -204,8 +204,7 @@ async fn cmd_graph_run(path: &Path, json: bool, quiet: bool) -> Result<i32> {
         Ok(EXIT_SUCCESS)
     } else {
         if quiet && !json {
-            // In quiet mode, still print errors
-            eprintln!("graph '{}' execution failed", output.graph_name);
+            tracing::error!(graph = %output.graph_name, "graph execution failed");
         }
         Ok(EXIT_FAILURE)
     }

@@ -22,16 +22,16 @@ pub(crate) async fn cmd_login(
                         return Ok(EXIT_SUCCESS);
                     }
                     Ok(false) => {
-                        eprintln!("stored credential for {} is no longer valid", cred.url);
+                        tracing::warn!(url = %cred.url, "stored credential is no longer valid");
                         return Ok(EXIT_FAILURE);
                     }
                     Err(e) => {
-                        eprintln!("could not connect to {}: {e}", cred.url);
+                        tracing::error!(url = %cred.url, error = %e, "could not connect");
                         return Ok(EXIT_FAILURE);
                     }
                 },
                 None => {
-                    eprintln!("no stored credential found; run `roko login` to authenticate");
+                    tracing::warn!("no stored credential found; run `roko login` to authenticate");
                     return Ok(EXIT_FAILURE);
                 }
             }
@@ -79,11 +79,11 @@ pub(crate) async fn cmd_login(
                 return Ok(EXIT_SUCCESS);
             }
             Ok(false) => {
-                eprintln!("invalid API key (server returned 401)");
+                tracing::error!("invalid API key (server returned 401)");
                 return Ok(EXIT_FAILURE);
             }
             Err(e) => {
-                eprintln!("could not connect to {url}: {e}");
+                tracing::error!(%url, error = %e, "could not connect");
                 return Ok(EXIT_FAILURE);
             }
         }

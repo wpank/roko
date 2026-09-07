@@ -88,9 +88,11 @@ pub(crate) async fn cmd_up(cli: &Cli, workdir: PathBuf) -> Result<i32> {
             )
             .await
             {
-                eprintln!(
-                    "  {:<14}  {}     {:10}  \u{2717} ({})",
-                    agent_def.name, agent_def.domain, ":auto", e
+                tracing::error!(
+                    agent = %agent_def.name,
+                    domain = %agent_def.domain,
+                    error = %e,
+                    "failed to prepare agent runtime"
                 );
                 continue;
             }
@@ -106,9 +108,11 @@ pub(crate) async fn cmd_up(cli: &Cli, workdir: PathBuf) -> Result<i32> {
                 started_agents.push(agent_def.name.clone());
             }
             Err(e) => {
-                eprintln!(
-                    "  {:<14}  {:<10} {:10}  \u{2717} ({})",
-                    agent_def.name, agent_def.domain, ":auto", e
+                tracing::error!(
+                    agent = %agent_def.name,
+                    domain = %agent_def.domain,
+                    error = %e,
+                    "failed to start agent"
                 );
             }
         }
@@ -230,9 +234,9 @@ fn check_security_posture(
 
     if !auth_ok {
         if unsafe_public {
-            eprintln!(
-                "WARNING: proceeding without auth (--unsafe-public). \
-                 Your server will be accessible to the internet without authentication."
+            tracing::warn!(
+                "proceeding without auth (--unsafe-public); \
+                 the server will be accessible to the internet without authentication"
             );
         } else {
             anyhow::bail!(

@@ -703,7 +703,7 @@ impl ProcessCollector {
             "cargo",
             vec!["check".into(), "--workspace".into()],
         )
-        .with_timeout_ms(120_000)
+        .with_timeout_ms(roko_core::config::timeouts::DEFAULT_AGENT_TIMEOUT_MS)
     }
 
     /// Construct a collector for `cargo clippy`.
@@ -721,7 +721,7 @@ impl ProcessCollector {
                 "warnings".into(),
             ],
         )
-        .with_timeout_ms(120_000)
+        .with_timeout_ms(roko_core::config::timeouts::DEFAULT_AGENT_TIMEOUT_MS)
     }
 
     /// Construct a collector for `cargo test`.

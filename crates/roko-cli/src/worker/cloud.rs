@@ -333,33 +333,88 @@ pub async fn git_checkout_new_branch(workspace: &Path, branch: &str) -> Result<(
     Ok(())
 }
 
-/// File patterns that must never be staged by a cloud worker.
-const EXCLUDED_PATTERNS: &[&str] = &[".env", "credentials.json", "secrets.json", ".roko/state/"];
+/// Path prefixes that must never be staged by a cloud worker (#373).
+///
+/// Each entry is checked against every discovered changed path. An entry
+/// matches when the path equals it exactly or starts with it (directory
+/// prefix). Basename matching is used for dot/secret filenames so that
+/// `subdir/.env` is also caught.
+const EXCLUDED_PATTERNS: &[&str] = &[
+    ".env",
+    "credentials.json",
+    "secrets.json",
+    ".roko/",
+];
+
+/// Returns true if `path` matches any of the [`EXCLUDED_PATTERNS`].
+fn is_excluded(path: &str) -> bool {
+    EXCLUDED_PATTERNS.iter().any(|pat| {
+        // Exact basename match (e.g. ".env", "credentials.json") or
+        // prefix match for directory patterns (e.g. ".roko/").
+        let basename = path.rsplit('/').next().unwrap_or(path);
+        basename == *pat || path.starts_with(pat)
+    })
+}
 
 /// Stage and commit the current workspace state.
 ///
-/// Uses `git add -A` but then unstages any sensitive file patterns (#373).
+/// Queries `git diff` for exact changed pathspecs and stages only those,
+/// skipping any paths that match [`EXCLUDED_PATTERNS`] (#373).
 pub async fn git_commit(workspace: &Path, message: &str) -> Result<()> {
-    let add_output = tokio::process::Command::new("git")
-        .args(["add", "-A"])
+    // Collect modified/deleted tracked files.
+    let tracked_output = tokio::process::Command::new("git")
+        .args(["diff", "--name-only", "HEAD"])
         .current_dir(workspace)
         .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .await
-        .context("spawn git add -A")?;
+        .context("spawn git diff --name-only HEAD")?;
 
-    if !add_output.status.success() {
-        return Err(git_error("git add -A", &add_output, None));
+    if !tracked_output.status.success() {
+        return Err(git_error("git diff --name-only HEAD", &tracked_output, None));
     }
 
-    // Unstage sensitive files that should never be committed by workers.
-    for pattern in EXCLUDED_PATTERNS {
-        let _ = tokio::process::Command::new("git")
-            .args(["reset", "HEAD", "--", pattern])
-            .current_dir(workspace)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .output()
-            .await;
+    // Collect untracked files (new files not yet known to git).
+    let untracked_output = tokio::process::Command::new("git")
+        .args(["ls-files", "--others", "--exclude-standard"])
+        .current_dir(workspace)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .await
+        .context("spawn git ls-files --others")?;
+
+    if !untracked_output.status.success() {
+        return Err(git_error("git ls-files --others", &untracked_output, None));
+    }
+
+    let tracked_paths = String::from_utf8_lossy(&tracked_output.stdout);
+    let untracked_paths = String::from_utf8_lossy(&untracked_output.stdout);
+
+    let paths: Vec<&str> = tracked_paths
+        .lines()
+        .chain(untracked_paths.lines())
+        .map(str::trim)
+        .filter(|p| !p.is_empty() && !is_excluded(p))
+        .collect();
+
+    if paths.is_empty() {
+        bail!("nothing to commit (working tree clean)");
+    }
+
+    // Stage only the exact pathspecs.
+    let mut add_args = vec!["add", "--"];
+    add_args.extend(paths);
+
+    let add_output = tokio::process::Command::new("git")
+        .args(&add_args)
+        .current_dir(workspace)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .await
+        .context("spawn git add -- <paths>")?;
+
+    if !add_output.status.success() {
+        return Err(git_error("git add -- <paths>", &add_output, None));
     }
 
     let diff_output = tokio::process::Command::new("git")
@@ -645,5 +700,26 @@ mod tests {
         assert!(validate_worker_branch("branch*star").is_err());
         assert!(validate_worker_branch("branch[0]").is_err());
         assert!(validate_worker_branch("branch\\escape").is_err());
+    }
+
+    #[test]
+    fn is_excluded_matches_sensitive_paths() {
+        // Exact basename matches.
+        assert!(is_excluded(".env"));
+        assert!(is_excluded("subdir/.env"));
+        assert!(is_excluded("credentials.json"));
+        assert!(is_excluded("deep/nested/secrets.json"));
+
+        // Directory prefix match -- entire .roko/ tree is excluded (#373).
+        assert!(is_excluded(".roko/state/graph/checkpoint.json"));
+        assert!(is_excluded(".roko/state/state-snapshot.json"));
+        assert!(is_excluded(".roko/episodes.jsonl"));
+        assert!(is_excluded(".roko/engrams.jsonl"));
+
+        // Safe paths must not be excluded.
+        assert!(!is_excluded("src/main.rs"));
+        assert!(!is_excluded("Cargo.toml"));
+        assert!(!is_excluded("plans/p07/tasks.toml"));
+        assert!(!is_excluded("crates/roko-core/src/lib.rs"));
     }
 }

@@ -83,6 +83,7 @@ fn ctx(workdir: std::path::PathBuf) -> DispatchContext {
         routing_context: None,
         routing_bias: None,
         dependency_outputs: Vec::new(),
+        error_patterns_context: String::new(),
     }
 }
 

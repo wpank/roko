@@ -386,7 +386,15 @@ impl Agent for HermesHttpAgent {
                 AgentResult::ok(output).with_usage(usage)
             }
             Err(e) => {
-                let output = self.build_error_output(input, &format!("hermes error: {e}"));
+                let mapped = crate::provider::map_provider_error(
+                    roko_core::agent::ProviderKind::Hermes,
+                    "hermes",
+                    self.config.api_key_env.as_deref(),
+                    Some(self.config.endpoint.as_str()),
+                    &e,
+                );
+                tracing::debug!(error = %e, "hermes send_turn failed");
+                let output = self.build_error_output(input, &mapped.to_string());
                 AgentResult::fail(output)
             }
         }

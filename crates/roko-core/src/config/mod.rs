@@ -48,7 +48,10 @@ pub use provider::{
     ModelCost, ModelDefinition, ModelMetadataSource, ProviderAuth, ProviderCapabilities,
     ProviderDefinition, ProviderId, ProviderTransport,
 };
-pub use timeouts::TimeoutConfig;
+pub use timeouts::{
+    DEFAULT_ACP_REQUEST_MS, DEFAULT_AGENT_TIMEOUT_MS, DEFAULT_AGENT_TIMEOUT_SECS,
+    DEFAULT_LLM_CALL_SECS, TimeoutConfig,
+};
 pub use validation::{
     DangerousPermissionOverride, DangerousPermissionOverrideError, InvariantResult,
     InvariantSeverity, SemanticFinding, SemanticFindingCode, StrictConfigSource,

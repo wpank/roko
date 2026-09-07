@@ -293,7 +293,10 @@ pub(crate) async fn cmd_archive(
     let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
     let roko_dir = wd.join(".roko");
     if !roko_dir.exists() {
-        bail!("no .roko/ directory found in {}", wd.display());
+        bail!(
+            "no .roko/ directory found in {}\n  -> Run `roko init` to create a workspace.",
+            wd.display()
+        );
     }
 
     // Parse duration string (e.g. "30d", "7d", "24h").

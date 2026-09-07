@@ -19,7 +19,7 @@ use roko_agent::{
     },
     process::registry::{register_spawned_pid, unregister_pid},
 };
-use roko_agent_server::{AgentServer, DispatchLike, SidecarDispatchError};
+use roko_agent_server::{AgentServer, BearerAuth, DispatchLike, SidecarDispatchError};
 use roko_cli::agent_spawn::{SpawnAgentSpec, spawn_agent_scoped};
 use roko_core::{Body, Context, Kind, MessageContent, Signal};
 use serde::{Deserialize, Serialize};
@@ -205,6 +205,17 @@ pub struct AgentServeArgs {
     /// roko-serve control plane URL for heartbeat reporting.
     #[arg(long, default_value_t = roko_cli::DEFAULT_SERVE_URL.to_string())]
     pub serve_url: String,
+    /// Bearer token for authenticating requests to protected sidecar routes.
+    ///
+    /// When provided, all non-health routes require `Authorization: Bearer <TOKEN>`.
+    /// Mutually exclusive with `--token-file`.
+    #[arg(long, conflicts_with = "token_file")]
+    pub token: Option<String>,
+    /// Path to a file containing the bearer token (trailing newlines stripped).
+    ///
+    /// Mutually exclusive with `--token`.
+    #[arg(long, conflicts_with = "token")]
+    pub token_file: Option<PathBuf>,
     /// Allow the cognitive loop to start even when it uses stub cells.
     ///
     /// Debug-only escape hatch. Release builds always reject stub cognitive
@@ -448,23 +459,53 @@ struct AgentServeRuntimeConfig {
     allow_stub_cognitive_loop: bool,
     /// Optional model override from resolved CLI flags (`--model`).
     model_override: Option<String>,
+    /// Bearer auth resolved from `--token` or `--token-file`.
+    auth: Option<BearerAuth>,
+}
+
+/// Resolve a bearer token from the `--token` / `--token-file` CLI args.
+///
+/// Returns `Ok(None)` when neither flag was supplied.
+fn resolve_bearer_auth(args: &AgentServeArgs) -> Result<Option<BearerAuth>> {
+    let secret = if let Some(ref literal) = args.token {
+        Some(literal.clone())
+    } else if let Some(ref path) = args.token_file {
+        let raw = std::fs::read_to_string(path)
+            .with_context(|| format!("read token file {}", path.display()))?;
+        // Strip trailing newlines but preserve internal whitespace.
+        Some(raw.trim_end_matches('\n').trim_end_matches('\r').to_string())
+    } else {
+        None
+    };
+
+    match secret {
+        Some(s) if s.is_empty() => bail!("bearer token must not be empty"),
+        Some(s) => Ok(Some(BearerAuth::new(s))),
+        None => Ok(None),
+    }
 }
 
 impl AgentServeRuntimeConfig {
     fn from_args(
         args: AgentServeArgs,
         overrides: &roko_cli::resolved_overrides::ResolvedExecutionOverrides,
-    ) -> Self {
-        Self {
+    ) -> Result<Self> {
+        let auth = resolve_bearer_auth(&args)?;
+        Ok(Self {
             agent_id: args.agent_id,
             bind: args.bind,
             serve_url: args.serve_url,
             allow_stub_cognitive_loop: args.allow_stub_cognitive_loop,
             model_override: overrides.model.clone(),
-        }
+            auth,
+        })
     }
 
     async fn run(self) -> Result<()> {
+        if self.auth.is_none() {
+            warn!("agent sidecar running without authentication");
+        }
+
         let startup = self.startup_snapshot();
         let has_dispatcher = self.try_build_dispatcher()?.is_some();
         let readiness = CapabilityReadiness::for_runtime(has_dispatcher);
@@ -509,6 +550,10 @@ impl AgentServeRuntimeConfig {
             .serve_url(self.serve_url.clone())
             .messaging()
             .predictions();
+
+        if let Some(ref auth) = self.auth {
+            builder = builder.auth(auth.clone());
+        }
 
         if let Some(dispatcher) = self.try_build_dispatcher()? {
             builder = builder.with_message_dispatcher(dispatcher);
@@ -1085,7 +1130,7 @@ pub async fn run(
                     },
                 );
             let resolved = overrides.unwrap_or(&default_overrides);
-            AgentServeRuntimeConfig::from_args(args, resolved)
+            AgentServeRuntimeConfig::from_args(args, resolved)?
                 .run()
                 .await
         }
@@ -2253,6 +2298,8 @@ mod tests {
             identity_registry: None,
             passport_id: None,
             wallet_key: None,
+            token: None,
+            token_file: None,
             serve_url: roko_cli::DEFAULT_SERVE_URL.to_string(),
             allow_stub_cognitive_loop: false,
         }
@@ -2765,7 +2812,7 @@ generation = 0
                 allow_stub_cognitive_loop: false,
             },
         );
-        let config = AgentServeRuntimeConfig::from_args(args, &overrides);
+        let config = AgentServeRuntimeConfig::from_args(args, &overrides).unwrap();
         assert_eq!(config.model_override.as_deref(), Some("custom-model"));
     }
 
@@ -2788,7 +2835,7 @@ generation = 0
             },
             &roko_cli::resolved_overrides::AgentServeInput::default(),
         );
-        let config = AgentServeRuntimeConfig::from_args(args, &overrides);
+        let config = AgentServeRuntimeConfig::from_args(args, &overrides).unwrap();
         assert!(config.model_override.is_none());
     }
 

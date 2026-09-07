@@ -26,6 +26,7 @@ use roko_agent::{ModelCallService, ReqwestPoster};
 use roko_core::ContentHash;
 use roko_core::DaimonPolicy;
 use roko_core::agent::{AgentRole, ProviderKind, ResolvedModel, resolve_model};
+use roko_core::config::DEFAULT_ACP_REQUEST_MS;
 #[cfg(test)]
 use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
 use roko_core::config::schema::{ModelProfile, RokoConfig};
@@ -2701,7 +2702,7 @@ async fn run_anthropic_tool_loop(
 
     let mut tool_context = ToolContext::new(
         workdir,
-        Duration::from_secs(120),
+        Duration::from_millis(DEFAULT_ACP_REQUEST_MS),
         tool_capabilities,
         Arc::new(NoopAuditSink),
         Arc::new(NoopTraceSink),
@@ -3288,7 +3289,7 @@ async fn run_openai_compat_mcp_tool_loop(
     ));
     let mut tool_context = ToolContext::new(
         workdir,
-        Duration::from_secs(120),
+        Duration::from_millis(DEFAULT_ACP_REQUEST_MS),
         tool_capabilities,
         Arc::new(NoopAuditSink),
         Arc::new(NoopTraceSink),
@@ -3455,7 +3456,7 @@ async fn run_openai_compat_builtin_tool_loop(
     ));
     let mut tool_context = ToolContext::new(
         workdir,
-        Duration::from_secs(120),
+        Duration::from_millis(DEFAULT_ACP_REQUEST_MS),
         tool_capabilities,
         Arc::new(NoopAuditSink),
         Arc::new(NoopTraceSink),

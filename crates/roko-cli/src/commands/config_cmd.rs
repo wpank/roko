@@ -770,7 +770,7 @@ pub(crate) async fn cmd_provider_test(
     let providers = configured_providers(&config);
     if providers.is_empty() {
         bail!(
-            "no providers configured in {}. add a [providers.*] entry or run `roko init`.",
+            "no providers configured in {}.\n  hint: run `roko config providers discover` to auto-detect available providers, or `roko init` to set up a new workspace",
             workdir.display()
         );
     }
@@ -942,7 +942,7 @@ pub(crate) async fn cmd_provider_test_all(workdir: &Path, json: bool) -> Result<
     let providers = configured_providers(&config);
     if providers.is_empty() {
         bail!(
-            "no providers configured in {}. add a [providers.*] entry or run `roko init`.",
+            "no providers configured in {}.\n  hint: run `roko config providers discover` to auto-detect available providers, or `roko init` to set up a new workspace",
             workdir.display()
         );
     }

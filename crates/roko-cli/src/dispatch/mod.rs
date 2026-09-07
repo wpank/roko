@@ -131,6 +131,13 @@ pub struct DispatchContext {
     /// Each entry is `(task_id, files)`. Injected into the system prompt
     /// so the agent knows what its predecessors already produced.
     pub dependency_outputs: Vec<(String, Vec<String>)>,
+    /// Pre-rendered error patterns from the shared in-memory store.
+    ///
+    /// Populated by `GraphTaskDispatcher` from
+    /// `SharedAgentFactory::format_error_patterns_for_prompt` so that
+    /// agents dispatched later in the same plan run benefit from error
+    /// patterns discovered by earlier agents.
+    pub error_patterns_context: String,
 }
 
 // ─── Dispatcher facade ─────────────────────────────────────────────────
@@ -183,6 +190,15 @@ impl Dispatcher {
         model_providers: HashMap<String, String>,
     ) -> Self {
         self.router = self.router.with_provider_health(health, model_providers);
+        self
+    }
+
+    /// Exclude models whose provider ID is in `providers`.
+    ///
+    /// Populated from `[routing] disabled_providers` in `roko.toml`.
+    #[must_use]
+    pub fn with_disabled_providers(mut self, providers: HashSet<String>) -> Self {
+        self.router = self.router.with_disabled_providers(providers);
         self
     }
 
@@ -460,6 +476,7 @@ mod tests {
             routing_context: None,
             routing_bias: None,
             dependency_outputs: Vec::new(),
+            error_patterns_context: String::new(),
         }
     }
 

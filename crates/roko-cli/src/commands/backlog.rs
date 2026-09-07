@@ -34,9 +34,21 @@ pub(crate) async fn cmd_backlog(cli: &Cli, cmd: BacklogCmd) -> Result<i32> {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             cmd_backlog_list(&wd)
         }
-        BacklogCmd::Audit { workdir, json } => {
+        BacklogCmd::Audit {
+            workdir,
+            json,
+            fix_safe,
+        } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-            cmd_backlog_audit(&wd, json)
+            cmd_backlog_audit(&wd, json, fix_safe)
+        }
+        BacklogCmd::MarkDone {
+            id,
+            evidence,
+            workdir,
+        } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            cmd_backlog_mark_done(&wd, id, &evidence)
         }
     }
 }
@@ -636,7 +648,7 @@ fn print_audit_report(report: &AuditReport) {
 }
 
 /// `roko backlog audit` entry point.
-fn cmd_backlog_audit(workdir: &Path, json: bool) -> Result<i32> {
+fn cmd_backlog_audit(workdir: &Path, json: bool, fix_safe: bool) -> Result<i32> {
     let plans_dir = workdir.join("plans");
     if !plans_dir.is_dir() {
         println!("No plans/ directory found at {}", plans_dir.display());
@@ -654,7 +666,248 @@ fn cmd_backlog_audit(workdir: &Path, json: bool) -> Result<i32> {
         print_audit_report(&report);
     }
 
+    if fix_safe {
+        let fixes = apply_safe_fixes(workdir)?;
+        if fixes == 0 {
+            println!("\n--fix-safe: no mechanical repairs needed.");
+        } else {
+            println!("\n--fix-safe: applied {} mechanical repair(s).", fixes);
+        }
+    }
+
     Ok(0)
+}
+
+// -----------------------------------------------------------------------
+// --fix-safe: deterministic mechanical repairs
+// -----------------------------------------------------------------------
+
+/// A single safe-fix action that was applied.
+#[derive(Debug)]
+struct SafeFix {
+    description: String,
+}
+
+/// Apply deterministic mechanical repairs. Returns the count of fixes applied.
+///
+/// Safe fixes are limited to:
+/// 1. Broken plan references in the index (links to files that don't exist)
+/// 2. Duplicate IDs in the index
+///
+/// This never changes semantic status (done/ready/etc.).
+fn apply_safe_fixes(workdir: &Path) -> Result<usize> {
+    let mut fixes: Vec<SafeFix> = Vec::new();
+
+    // --- Fix broken index references and duplicate IDs ---
+    let index_path = workdir.join("tmp/backlog/00-INDEX.md");
+    if index_path.is_file() {
+        let content = std::fs::read_to_string(&index_path).context("read 00-INDEX.md")?;
+        let (new_content, index_fixes) = fix_broken_index_references(workdir, &content);
+        fixes.extend(index_fixes);
+
+        let (new_content, dedup_fixes) = fix_duplicate_index_ids(&new_content);
+        fixes.extend(dedup_fixes);
+
+        if !fixes.is_empty() {
+            std::fs::write(&index_path, new_content).context("write repaired 00-INDEX.md")?;
+        }
+    }
+
+    for fix in &fixes {
+        println!("  fix: {}", fix.description);
+    }
+
+    Ok(fixes.len())
+}
+
+/// Scan the index for markdown links like `[#NNN](NNN-slug.md)` that point to
+/// files which no longer exist in `tmp/backlog/` (and are not in `archive/`
+/// either). Remove such broken references from the table rows.
+fn fix_broken_index_references(workdir: &Path, content: &str) -> (String, Vec<SafeFix>) {
+    let backlog_dir = workdir.join("tmp/backlog");
+    let archive_dir = backlog_dir.join("archive");
+    let mut fixes = Vec::new();
+    let link_re = regex::Regex::new(r"\[#(\d+)\]\(([^)]+\.md)\)").unwrap();
+
+    let mut result = String::with_capacity(content.len());
+    for line in content.lines() {
+        // Only inspect table rows (lines starting with `|`)
+        if line.trim_start().starts_with('|') {
+            let mut broken_in_line = false;
+            for cap in link_re.captures_iter(line) {
+                let file_ref = &cap[2];
+                let full_path = backlog_dir.join(file_ref);
+                let archive_path = archive_dir.join(file_ref);
+                if !full_path.is_file() && !archive_path.is_file() {
+                    broken_in_line = true;
+                    fixes.push(SafeFix {
+                        description: format!(
+                            "removed broken index reference [#{}]({}) -- file not found",
+                            &cap[1], file_ref
+                        ),
+                    });
+                }
+            }
+            if broken_in_line {
+                // Drop the entire table row containing the broken reference.
+                continue;
+            }
+        }
+        result.push_str(line);
+        result.push('\n');
+    }
+
+    // Trim trailing newline duplication but ensure file ends with newline.
+    let result = result.trim_end().to_string() + "\n";
+    (result, fixes)
+}
+
+/// Detect duplicate backlog IDs in the index (same `#NNN` appearing in
+/// multiple table rows) and remove the later occurrences.
+fn fix_duplicate_index_ids(content: &str) -> (String, Vec<SafeFix>) {
+    let link_re = regex::Regex::new(r"\[#(\d+)\]").unwrap();
+    let mut seen_ids: BTreeSet<u32> = BTreeSet::new();
+    let mut fixes = Vec::new();
+
+    let mut result = String::with_capacity(content.len());
+    for line in content.lines() {
+        if line.trim_start().starts_with('|') {
+            // Extract all IDs from table row.
+            let ids_in_row: Vec<u32> = link_re
+                .captures_iter(line)
+                .filter_map(|cap| cap[1].parse::<u32>().ok())
+                .collect();
+
+            let mut is_dup = false;
+            for id in &ids_in_row {
+                if !seen_ids.insert(*id) {
+                    is_dup = true;
+                    fixes.push(SafeFix {
+                        description: format!(
+                            "removed duplicate index row for #{} (already listed above)",
+                            id
+                        ),
+                    });
+                }
+            }
+            if is_dup {
+                continue;
+            }
+        }
+        result.push_str(line);
+        result.push('\n');
+    }
+
+    let result = result.trim_end().to_string() + "\n";
+    (result, fixes)
+}
+
+// -----------------------------------------------------------------------
+// mark-done: semantic status update with explicit evidence
+// -----------------------------------------------------------------------
+
+/// `roko backlog mark-done <id> <evidence>` entry point.
+fn cmd_backlog_mark_done(workdir: &Path, id: u32, evidence: &str) -> Result<i32> {
+    let backlog_dir = workdir.join("tmp/backlog");
+    if !backlog_dir.is_dir() {
+        anyhow::bail!("No backlog directory found at {}", backlog_dir.display());
+    }
+
+    // Find the spec file matching this ID.
+    let spec_path = find_backlog_spec(&backlog_dir, id)?;
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let status_line = format!("**Status**: Done ({}) -- {}", today, evidence);
+
+    let content = std::fs::read_to_string(&spec_path)
+        .with_context(|| format!("read {}", spec_path.display()))?;
+
+    let new_content = upsert_status_line(&content, &status_line);
+
+    std::fs::write(&spec_path, &new_content)
+        .with_context(|| format!("write {}", spec_path.display()))?;
+
+    println!("Marked #{} as done in {}", id, spec_path.display());
+    println!("  {}", status_line);
+
+    Ok(0)
+}
+
+/// Find the backlog spec file for a given numeric ID.
+fn find_backlog_spec(backlog_dir: &Path, id: u32) -> Result<PathBuf> {
+    let prefix = format!("{}-", id);
+
+    // Search root backlog dir first, then archive/.
+    for dir in [backlog_dir.to_path_buf(), backlog_dir.join("archive")] {
+        if !dir.is_dir() {
+            continue;
+        }
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == "md") {
+                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    if stem.starts_with(&prefix) {
+                        return Ok(path);
+                    }
+                }
+            }
+        }
+    }
+
+    anyhow::bail!(
+        "no backlog spec found for #{} in {} or {}/archive/",
+        id,
+        backlog_dir.display(),
+        backlog_dir.display()
+    )
+}
+
+/// Insert or update the `**Status**: ...` line in a backlog spec.
+///
+/// If an existing `**Status**:` line exists (not inside a blockquote), replace
+/// it. Otherwise insert the new status line after the first heading.
+fn upsert_status_line(content: &str, status_line: &str) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut result = Vec::with_capacity(lines.len() + 1);
+    let mut replaced = false;
+
+    for line in &lines {
+        let trimmed = line.trim();
+        // Match a non-blockquoted **Status**: line.
+        if !replaced && trimmed.starts_with("**Status**:") && !trimmed.starts_with('>') {
+            result.push(status_line.to_string());
+            replaced = true;
+            continue;
+        }
+        result.push(line.to_string());
+    }
+
+    if !replaced {
+        // Insert after the first `# ...` heading line.
+        let mut inserted = false;
+        let mut final_result = Vec::with_capacity(result.len() + 2);
+        for line in &result {
+            final_result.push(line.clone());
+            if !inserted && line.trim().starts_with("# ") {
+                // Insert a blank line then the status line after the heading.
+                final_result.push(String::new());
+                final_result.push(status_line.to_string());
+                inserted = true;
+            }
+        }
+        if !inserted {
+            // No heading found; prepend.
+            final_result.insert(0, status_line.to_string());
+            final_result.insert(1, String::new());
+        }
+        result = final_result;
+    }
+
+    let mut out = result.join("\n");
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out
 }
 
 #[cfg(test)]
@@ -929,5 +1182,202 @@ mod tests {
         assert!(parsed.get("task_drifts").is_some());
         assert!(parsed.get("orphaned_executor_plans").is_some());
         assert!(parsed.get("orphaned_disk_plans").is_some());
+    }
+
+    // ── fix-safe tests ──────────────────────────────────────────────
+
+    #[test]
+    fn fix_safe_removes_broken_index_references() {
+        let content = "# Index\n\
+                        \n\
+                        | # | Title | Size |\n\
+                        |---|---|---|\n\
+                        | 10 | [#10](10-exists.md) | S |\n\
+                        | 20 | [#20](20-gone.md) | M |\n\
+                        | 30 | [#30](30-also-exists.md) | S |\n";
+
+        let tmp = tempfile::tempdir().unwrap();
+        let backlog_dir = tmp.path().join("tmp/backlog");
+        std::fs::create_dir_all(&backlog_dir).unwrap();
+        // Create only the files that should exist.
+        std::fs::write(backlog_dir.join("10-exists.md"), "# Exists").unwrap();
+        std::fs::write(backlog_dir.join("30-also-exists.md"), "# Also").unwrap();
+
+        let (result, fixes) = fix_broken_index_references(tmp.path(), content);
+        assert_eq!(fixes.len(), 1);
+        assert!(fixes[0].description.contains("#20"));
+        assert!(!result.contains("20-gone.md"));
+        assert!(result.contains("10-exists.md"));
+        assert!(result.contains("30-also-exists.md"));
+    }
+
+    #[test]
+    fn fix_safe_keeps_archived_references() {
+        let content = "| 10 | [#10](10-archived.md) | S |\n";
+
+        let tmp = tempfile::tempdir().unwrap();
+        let backlog_dir = tmp.path().join("tmp/backlog");
+        let archive_dir = backlog_dir.join("archive");
+        std::fs::create_dir_all(&archive_dir).unwrap();
+        // File exists in archive/, not root.
+        std::fs::write(archive_dir.join("10-archived.md"), "# Archived").unwrap();
+
+        let (result, fixes) = fix_broken_index_references(tmp.path(), content);
+        assert_eq!(fixes.len(), 0);
+        assert!(result.contains("10-archived.md"));
+    }
+
+    #[test]
+    fn fix_safe_removes_duplicate_ids() {
+        let content = "# Index\n\
+                        \n\
+                        | # | Title | Size |\n\
+                        |---|---|---|\n\
+                        | 10 | [#10](10-first.md) | S |\n\
+                        | 20 | [#20](20-item.md) | M |\n\
+                        | 10 | [#10](10-first.md) | S |\n";
+
+        let (result, fixes) = fix_duplicate_index_ids(content);
+        assert_eq!(fixes.len(), 1);
+        assert!(fixes[0].description.contains("#10"));
+        // First occurrence kept, second removed.
+        assert!(result.contains("10-first.md"));
+        assert!(result.contains("20-item.md"));
+        // Only one occurrence of the table row for #10.
+        assert_eq!(result.matches("10-first.md").count(), 1);
+    }
+
+    #[test]
+    fn fix_safe_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let backlog_dir = tmp.path().join("tmp/backlog");
+        std::fs::create_dir_all(&backlog_dir).unwrap();
+        std::fs::write(backlog_dir.join("10-item.md"), "# Item 10").unwrap();
+
+        let content = "# Index\n\
+                        \n\
+                        | # | Title | Size |\n\
+                        |---|---|---|\n\
+                        | 10 | [#10](10-item.md) | S |\n";
+
+        let (result, fixes) = fix_broken_index_references(tmp.path(), content);
+        assert_eq!(fixes.len(), 0);
+        let (result2, fixes2) = fix_duplicate_index_ids(&result);
+        assert_eq!(fixes2.len(), 0);
+        // Content is unchanged after a second pass.
+        let (result3, fixes3) = fix_broken_index_references(tmp.path(), &result2);
+        assert_eq!(fixes3.len(), 0);
+        assert_eq!(result2, result3);
+    }
+
+    // ── mark-done tests ─────────────────────────────────────────────
+
+    #[test]
+    fn upsert_status_replaces_existing_line() {
+        let content = "# 229 -- Some Feature\n\
+                        \n\
+                        **Status**: Not started\n\
+                        **Priority**: P1\n\
+                        **Size**: M\n";
+
+        let result = upsert_status_line(content, "**Status**: Done (2026-09-07) -- abc123");
+        assert!(result.contains("**Status**: Done (2026-09-07) -- abc123"));
+        assert!(!result.contains("Not started"));
+        // Preserves other lines.
+        assert!(result.contains("**Priority**: P1"));
+    }
+
+    #[test]
+    fn upsert_status_inserts_after_heading_when_absent() {
+        let content = "# 100 -- No Status Line\n\
+                        \n\
+                        **Priority**: P2\n";
+
+        let result = upsert_status_line(content, "**Status**: Done (2026-09-07) -- xyz");
+        assert!(result.contains("**Status**: Done (2026-09-07) -- xyz"));
+        // Should appear after the heading.
+        let heading_pos = result.find("# 100").unwrap();
+        let status_pos = result.find("**Status**:").unwrap();
+        assert!(status_pos > heading_pos);
+    }
+
+    #[test]
+    fn upsert_status_preserves_blockquoted_status() {
+        let content = "# 212 -- Some Feature\n\
+                        \n\
+                        > **Status: SOURCE-DONE** old blockquote\n\
+                        \n\
+                        **Status**: Verified (2026-09-03) -- evidence\n\
+                        **Priority**: P2\n";
+
+        let result =
+            upsert_status_line(content, "**Status**: Done (2026-09-07) -- new-evidence");
+        // Blockquoted status line should be preserved.
+        assert!(result.contains("> **Status: SOURCE-DONE** old blockquote"));
+        // Non-blockquoted line should be replaced.
+        assert!(result.contains("**Status**: Done (2026-09-07) -- new-evidence"));
+        assert!(!result.contains("Verified (2026-09-03)"));
+    }
+
+    #[test]
+    fn find_backlog_spec_finds_by_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let backlog_dir = tmp.path().join("tmp/backlog");
+        std::fs::create_dir_all(&backlog_dir).unwrap();
+        std::fs::write(
+            backlog_dir.join("229-backlog-plan-state-reconciliation.md"),
+            "# 229\n",
+        )
+        .unwrap();
+
+        let found = find_backlog_spec(&backlog_dir, 229).unwrap();
+        assert!(found
+            .to_str()
+            .unwrap()
+            .contains("229-backlog-plan-state-reconciliation.md"));
+    }
+
+    #[test]
+    fn find_backlog_spec_checks_archive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let backlog_dir = tmp.path().join("tmp/backlog");
+        let archive_dir = backlog_dir.join("archive");
+        std::fs::create_dir_all(&archive_dir).unwrap();
+        std::fs::write(archive_dir.join("50-old-item.md"), "# 50\n").unwrap();
+
+        let found = find_backlog_spec(&backlog_dir, 50).unwrap();
+        assert!(found.to_str().unwrap().contains("50-old-item.md"));
+    }
+
+    #[test]
+    fn find_backlog_spec_returns_error_for_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let backlog_dir = tmp.path().join("tmp/backlog");
+        std::fs::create_dir_all(&backlog_dir).unwrap();
+
+        let result = find_backlog_spec(&backlog_dir, 999);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("#999"));
+    }
+
+    #[test]
+    fn mark_done_writes_status_to_spec_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let backlog_dir = tmp.path().join("tmp/backlog");
+        std::fs::create_dir_all(&backlog_dir).unwrap();
+        std::fs::write(
+            backlog_dir.join("42-test-item.md"),
+            "# 42 -- Test Item\n\n**Priority**: P1\n**Size**: S\n",
+        )
+        .unwrap();
+
+        let result = cmd_backlog_mark_done(tmp.path(), 42, "commit abc123");
+        assert!(result.is_ok());
+
+        let content = std::fs::read_to_string(backlog_dir.join("42-test-item.md")).unwrap();
+        assert!(content.contains("**Status**: Done ("));
+        assert!(content.contains("commit abc123"));
+        // Priority line preserved.
+        assert!(content.contains("**Priority**: P1"));
     }
 }

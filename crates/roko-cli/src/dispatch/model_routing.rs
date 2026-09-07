@@ -184,6 +184,10 @@ pub struct ModelRouter {
     /// filtered: a model whose slug is not in this set is replaced with the
     /// `default_slug` fallback.  Empty means no filtering (backwards compat).
     configured_models: HashSet<String>,
+    /// Provider IDs that the operator has statically disabled via
+    /// `[routing] disabled_providers`.  Models backed by a disabled provider
+    /// are rejected in the same way as models without credentials.
+    disabled_providers: HashSet<String>,
 }
 
 impl std::fmt::Debug for ModelRouter {
@@ -199,6 +203,7 @@ impl std::fmt::Debug for ModelRouter {
             )
             .field("latency_threshold_ms", &self.latency_threshold_ms)
             .field("configured_models", &self.configured_models.len())
+            .field("disabled_providers", &self.disabled_providers.len())
             .finish()
     }
 }
@@ -214,6 +219,7 @@ impl ModelRouter {
             latency_registry: None,
             latency_threshold_ms: None,
             configured_models: HashSet::new(),
+            disabled_providers: HashSet::new(),
         }
     }
 
@@ -271,6 +277,18 @@ impl ModelRouter {
     #[must_use]
     pub fn with_configured_models(mut self, models: HashSet<String>) -> Self {
         self.configured_models = models;
+        self
+    }
+
+    /// Exclude models whose provider ID appears in `providers`.
+    ///
+    /// Populated from `[routing] disabled_providers` in `roko.toml`.
+    /// Models backed by a disabled provider are rejected at the same
+    /// precedence level as unconfigured models (after the cascade router
+    /// selects, before returning the choice).
+    #[must_use]
+    pub fn with_disabled_providers(mut self, providers: HashSet<String>) -> Self {
+        self.disabled_providers = providers;
         self
     }
 
@@ -348,6 +366,26 @@ impl ModelRouter {
                         model: ModelSpec::from_slug(&self.default_slug),
                         source: ModelChoiceSource::Router,
                     });
+                }
+                // Guard: reject models whose provider is statically disabled
+                // via `[routing] disabled_providers`.
+                if !self.disabled_providers.is_empty() {
+                    if let Some(provider_id) =
+                        self.model_providers.get(&cascade_model.primary.slug)
+                    {
+                        if self.disabled_providers.contains(provider_id) {
+                            tracing::info!(
+                                selected = %cascade_model.primary.slug,
+                                provider = %provider_id,
+                                fallback = %self.default_slug,
+                                "provider is statically disabled; falling back to default"
+                            );
+                            return Ok(ModelChoice {
+                                model: ModelSpec::from_slug(&self.default_slug),
+                                source: ModelChoiceSource::Router,
+                            });
+                        }
+                    }
                 }
                 return Ok(ModelChoice {
                     model: cascade_model.primary,
@@ -493,6 +531,7 @@ mod tests {
             routing_context: None,
             routing_bias: None,
             dependency_outputs: Vec::new(),
+            error_patterns_context: String::new(),
         }
     }
 

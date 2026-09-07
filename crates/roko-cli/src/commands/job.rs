@@ -8,70 +8,65 @@ pub(crate) async fn cmd_job(cli: &Cli, cmd: JobCmd) -> Result<i32> {
     match cmd {
         JobCmd::List { workdir, status } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-            let dir = jobs_dir(&wd);
-            if !dir.is_dir() {
-                println!(
-                    "No jobs found (directory does not exist: {})",
-                    dir.display()
+            let store = roko_core::FileJobStore::new(jobs_dir(&wd));
+
+            // Build a typed filter from the optional status string.
+            let filter = roko_core::JobFilter {
+                state: status.as_deref().and_then(roko_core::JobStatus::parse),
+                ..Default::default()
+            };
+
+            let (jobs, malformed) = store
+                .list_with_diagnostics(&filter)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+            // Report malformed files (visible in both JSON and human modes).
+            for bad in &malformed {
+                eprintln!(
+                    "warning: malformed job file {}: {}",
+                    bad.path.display(),
+                    bad.error
                 );
-                return Ok(EXIT_SUCCESS);
             }
-            let mut entries: Vec<_> = std::fs::read_dir(&dir)?
-                .filter_map(|e| e.ok())
-                .filter(|e| {
-                    e.path()
-                        .extension()
-                        .and_then(|ext| ext.to_str())
-                        .is_some_and(|ext| ext == "json")
-                })
-                .collect();
-            entries.sort_by_key(|e| e.file_name());
 
             if cli.json {
-                let mut jobs: Vec<roko_core::MarketplaceJob> = Vec::new();
-                for entry in &entries {
-                    let data = std::fs::read_to_string(entry.path())?;
-                    if let Ok(job) = serde_json::from_str::<roko_core::MarketplaceJob>(&data) {
-                        jobs.push(job);
-                    }
-                }
                 println!("{}", serde_json::to_string_pretty(&jobs)?);
+                if !malformed.is_empty() {
+                    // Non-zero exit when there are corrupted files per the
+                    // backlog #328 contract.
+                    return Ok(EXIT_FAILURE);
+                }
                 return Ok(EXIT_SUCCESS);
             }
 
-            let mut count = 0usize;
-            for entry in &entries {
-                let data = std::fs::read_to_string(entry.path())?;
-                let job: roko_core::MarketplaceJob =
-                    serde_json::from_str(&data).unwrap_or_default();
-                let effective_status = job.effective_status();
-                if let Some(ref filter) = status
-                    && !effective_status.eq_ignore_ascii_case(filter)
-                {
-                    continue;
-                }
-                let icon = match effective_status {
-                    "open" | "pending" => "\u{25cb}",
-                    "assigned" => "\u{25d4}",
-                    "in_progress" | "active" | "running" => "\u{25b6}",
-                    "submitted" => "\u{25d1}",
-                    "completed" | "done" => "\u{2713}",
-                    "failed" | "cancelled" => "\u{2717}",
-                    _ => "\u{00b7}",
-                };
-                println!(
-                    "{icon} [{:>12}] {:>10}  {}  {}",
-                    job.job_type,
-                    effective_status,
-                    &job.id[..job.id.len().min(8)],
-                    job.title
-                );
-                count += 1;
-            }
-            if count == 0 {
+            if jobs.is_empty() {
                 println!("No jobs found.");
             } else {
-                println!("\n{count} job(s)");
+                for job in &jobs {
+                    let effective_status = job.effective_status();
+                    let icon = match effective_status {
+                        "open" | "pending" => "\u{25cb}",
+                        "assigned" => "\u{25d4}",
+                        "in_progress" | "active" | "running" => "\u{25b6}",
+                        "submitted" => "\u{25d1}",
+                        "completed" | "done" => "\u{2713}",
+                        "failed" | "cancelled" => "\u{2717}",
+                        _ => "\u{00b7}",
+                    };
+                    println!(
+                        "{icon} [{:>12}] {:>10}  {}  {}",
+                        job.job_type,
+                        effective_status,
+                        &job.id[..job.id.len().min(8)],
+                        job.title
+                    );
+                }
+                println!("\n{} job(s)", jobs.len());
+            }
+
+            if !malformed.is_empty() {
+                return Ok(EXIT_FAILURE);
             }
             Ok(EXIT_SUCCESS)
         }
@@ -82,39 +77,62 @@ pub(crate) async fn cmd_job(cli: &Cli, cmd: JobCmd) -> Result<i32> {
             priority,
             auto_execute,
             plan_id,
+            tag,
+            reward,
+            posted_by,
             workdir,
-            ..
         } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-            let dir = jobs_dir(&wd);
-            std::fs::create_dir_all(&dir)?;
-            let id = uuid::Uuid::new_v4().to_string();
-            let now = chrono::Utc::now().to_rfc3339();
-            let job = roko_core::MarketplaceJob {
-                id: id.clone(),
+            let store = roko_core::FileJobStore::new(jobs_dir(&wd));
+
+            let req = roko_core::CreateJobRequest {
                 title: title.trim().to_string(),
                 description: description.trim().to_string(),
                 job_type: r#type.trim().to_string(),
-                status: "open".to_string(),
                 priority: priority.trim().to_string(),
                 auto_execute,
-                plan_id: plan_id.unwrap_or_default(),
-                created_at: now.clone(),
-                updated_at: now,
+                tags: tag,
+                reward: reward.unwrap_or_default(),
+                posted_by: posted_by.unwrap_or_default(),
                 ..Default::default()
             };
-            let path = dir.join(format!("{id}.json"));
-            let rendered = serde_json::to_string_pretty(&job)?;
-            std::fs::write(&path, &rendered)?;
+
+            // Reject blank required fields.
+            if req.title.is_empty() {
+                anyhow::bail!("job title must not be blank");
+            }
+
+            let mut job = store
+                .create(&req)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+            // plan_id is not part of CreateJobRequest; set it post-create if
+            // provided and persist the update.
+            if let Some(ref pid) = plan_id {
+                if !pid.is_empty() {
+                    job.plan_id = pid.clone();
+                    store
+                        .save(&job)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                }
+            }
+
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&job)?);
             } else {
-                println!("Created job: {id}");
+                println!("Created job: {}", job.id);
                 println!("  title:    {}", job.title);
                 println!("  type:     {}", job.job_type);
                 println!("  priority: {}", job.priority);
                 println!("  auto_execute: {}", job.auto_execute);
-                println!("  path:     {}", path.display());
+                if !job.tags.is_empty() {
+                    println!("  tags:     {}", job.tags.join(", "));
+                }
+                if !job.reward.is_empty() {
+                    println!("  reward:   {}", job.reward);
+                }
             }
             Ok(EXIT_SUCCESS)
         }
@@ -238,9 +256,26 @@ pub(crate) async fn cmd_job(cli: &Cli, cmd: JobCmd) -> Result<i32> {
         }
         JobCmd::Show { id, workdir } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-            let path = resolve_job_path(&jobs_dir(&wd), &id)?;
-            let data = std::fs::read_to_string(&path)?;
-            let job: roko_core::MarketplaceJob = serde_json::from_str(&data)?;
+            let store = roko_core::FileJobStore::new(jobs_dir(&wd));
+
+            let resolved_id = store
+                .resolve_by_prefix(&id)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let job = store
+                .get(&resolved_id)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+            // Emit legacy-state migration diagnostic when applicable.
+            if let Some(diag) = roko_core::FileJobStore::migration_diagnostic(&job) {
+                if diag.disagreement {
+                    eprintln!(
+                        "warning: job '{}' has disagreeing state='{}' vs status='{}'; canonical status wins",
+                        diag.job_id, diag.legacy_state, diag.canonical_status,
+                    );
+                }
+            }
 
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&job)?);
@@ -441,27 +476,39 @@ pub(crate) async fn cmd_job(cli: &Cli, cmd: JobCmd) -> Result<i32> {
         }
         JobCmd::Cancel { id, workdir } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-            let svc = roko_core::JobExecutionService::new(jobs_dir(&wd));
+            let store = roko_core::FileJobStore::new(jobs_dir(&wd));
 
-            let receipt = svc
-                .cancel(&id, roko_core::JobExecutionMode::Local)
-                .await
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
-
-            if cli.json {
-                println!("{}", serde_json::to_string_pretty(&receipt)?);
-            } else {
-                let ack_note = if receipt.acknowledged {
-                    ""
-                } else {
-                    " (executor not acknowledged)"
-                };
-                println!(
-                    "Job '{}' cancelled ({} -> {}){ack_note}.",
-                    receipt.job_id, receipt.prior_status, receipt.new_status
-                );
+            match store.cancel_inactive(&id).await {
+                Ok(job) => {
+                    if cli.json {
+                        println!("{}", serde_json::to_string_pretty(&job)?);
+                    } else {
+                        println!("Job '{}' cancelled.", job.id);
+                    }
+                    Ok(EXIT_SUCCESS)
+                }
+                Err(roko_core::JobError::ActiveCancellationDenied {
+                    id: held_id,
+                    status,
+                }) => {
+                    if cli.json {
+                        let receipt = serde_json::json!({
+                            "job_id": held_id,
+                            "error": "active_cancellation_requires_executor_ack",
+                            "status": status,
+                            "message": "job is active; cancellation requires executor acknowledgement (#371)",
+                        });
+                        println!("{}", serde_json::to_string_pretty(&receipt)?);
+                    } else {
+                        eprintln!(
+                            "Job '{held_id}' is {status} and cannot be cancelled while active \
+                             (active cancellation requires executor acknowledgement, see #371)."
+                        );
+                    }
+                    Ok(EXIT_FAILURE)
+                }
+                Err(e) => Err(anyhow::anyhow!("{e}")),
             }
-            Ok(EXIT_SUCCESS)
         }
         JobCmd::Recover { id, workdir } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
@@ -481,52 +528,6 @@ pub(crate) async fn cmd_job(cli: &Cli, cmd: JobCmd) -> Result<i32> {
                 );
             }
             Ok(EXIT_SUCCESS)
-        }
-    }
-}
-
-/// Resolve a (possibly prefix-truncated) job ID to the full UUID by scanning
-/// `.roko/jobs/*.json`.  Exact matches are preferred; if no exact match is
-/// found the prefix is tried.  Ambiguous prefixes produce an error listing
-/// the candidates.
-pub(crate) fn resolve_job_path(jobs_dir: &Path, id: &str) -> Result<std::path::PathBuf> {
-    // 1. Try exact match first.
-    let exact = jobs_dir.join(format!("{id}.json"));
-    if exact.exists() {
-        return Ok(exact);
-    }
-    // 2. Prefix scan.
-    let lower = id.to_ascii_lowercase();
-    let mut matches: Vec<std::path::PathBuf> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(jobs_dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let Some(stem) = std::path::Path::new(&name)
-                .file_stem()
-                .and_then(|s| s.to_str())
-            else {
-                continue;
-            };
-            if stem.to_ascii_lowercase().starts_with(&lower) {
-                matches.push(entry.path());
-            }
-        }
-    }
-    match matches.len() {
-        0 => anyhow::bail!(
-            "job '{id}' not found — no files in {} match that prefix",
-            jobs_dir.display()
-        ),
-        1 => Ok(matches.into_iter().next().expect("len checked")),
-        n => {
-            let ids: Vec<String> = matches
-                .iter()
-                .filter_map(|p| p.file_stem().and_then(|s| s.to_str()).map(String::from))
-                .collect();
-            anyhow::bail!(
-                "ambiguous job prefix '{id}' — {n} matches: {}",
-                ids.join(", ")
-            )
         }
     }
 }

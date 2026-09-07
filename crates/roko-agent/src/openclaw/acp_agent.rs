@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use roko_core::config::DEFAULT_LLM_CALL_SECS;
 use roko_core::{Body, Context, Kind, Signal};
 use tokio::sync::mpsc;
 
@@ -69,7 +70,7 @@ impl Default for OpenClawAcpConfig {
             cwd: std::env::current_dir().unwrap_or_else(|_| ".".into()),
             gateway_url: None,
             session_key: Some("agent:main:roko".into()),
-            timeout: Duration::from_secs(120),
+            timeout: Duration::from_secs(DEFAULT_LLM_CALL_SECS),
             auto_approve_permissions: true,
             resource_limits: None,
             system_prompt: None,

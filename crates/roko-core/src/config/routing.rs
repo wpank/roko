@@ -156,6 +156,18 @@ pub struct RoutingConfig {
     /// Context strategy (`"mcp_first"`, `"hybrid"`, `"inline_heavy"`).
     #[serde(default = "default_context_strategy")]
     pub context_strategy: String,
+    /// Provider IDs to exclude from routing regardless of health status.
+    ///
+    /// Uses provider IDs as defined in `[providers.<id>]` sections (e.g.
+    /// `"openai"`, `"anthropic"`). Models backed by a disabled provider are
+    /// filtered out before the cascade router sees them.
+    ///
+    /// ```toml
+    /// [routing]
+    /// disabled_providers = ["openai"]
+    /// ```
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled_providers: Vec<String>,
 }
 
 fn default_routing_mode() -> String {
@@ -193,6 +205,7 @@ impl Default for RoutingConfig {
             complex_task_model: default_complex_model(),
             weights: RoutingRewardWeightsConfig::default(),
             context_strategy: default_context_strategy(),
+            disabled_providers: Vec::new(),
         }
     }
 }

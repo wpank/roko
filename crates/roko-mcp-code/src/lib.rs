@@ -147,6 +147,18 @@ struct GetContextArguments {
     include_tests: bool,
 }
 
+#[derive(Debug, Deserialize)]
+struct GetPlanContextArguments {
+    #[serde(default)]
+    plan_id: Option<String>,
+    #[serde(default = "default_true")]
+    include_errors: bool,
+    #[serde(default)]
+    include_outputs: bool,
+    #[serde(default = "default_max_items")]
+    max_items: u32,
+}
+
 #[derive(Clone, Debug)]
 struct SearchHit {
     symbol: String,
@@ -371,6 +383,35 @@ fn handle_tools_list() -> Value {
                     "additionalProperties": false
                 })
             ),
+            tool_spec_ro(
+                "get_plan_context",
+                "Get structured plan execution context: task statuses, error patterns, and recent agent outputs. Use during plan execution to inspect what other tasks produced or what errors have been seen.",
+                &json!({
+                    "type": "object",
+                    "properties": {
+                        "plan_id": {
+                            "type": "string",
+                            "description": "Filter to a specific plan directory name. If omitted, all discovered plans are returned."
+                        },
+                        "include_errors": {
+                            "type": "boolean",
+                            "default": true,
+                            "description": "Include top-N error patterns from the learning store."
+                        },
+                        "include_outputs": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Include recent agent episode outputs from .roko/episodes.jsonl."
+                        },
+                        "max_items": {
+                            "type": "integer",
+                            "default": 5,
+                            "description": "Maximum items per section (error patterns, outputs). Capped at 20."
+                        }
+                    },
+                    "additionalProperties": false
+                })
+            ),
         ]
     })
 }
@@ -397,6 +438,7 @@ fn dispatch_tool_call(
         "get_callers" => handle_get_callers(arguments, index),
         "workspace_map" => handle_workspace_map(arguments, index),
         "get_context" => handle_get_context(arguments, index),
+        "get_plan_context" => handle_get_plan_context(arguments, index),
         "symbol_lookup" => handle_symbol_lookup(arguments, index),
         "call_graph" => handle_call_graph(arguments, index),
         "imports" => handle_imports(arguments, index),
@@ -777,6 +819,217 @@ fn handle_get_context(arguments: Value, index: &WorkspaceIndex) -> Result<Value,
         "results": included,
         "context": context,
     }))
+}
+
+fn handle_get_plan_context(
+    arguments: Value,
+    index: &WorkspaceIndex,
+) -> Result<Value, JsonRpcError> {
+    let args: GetPlanContextArguments = serde_json::from_value(arguments).map_err(|err| {
+        JsonRpcError::invalid_params(format!("invalid get_plan_context args: {err}"))
+    })?;
+    let max_items = args.max_items.min(MAX_ITEMS_CAP) as usize;
+
+    // 1. Discover plans from the plans/ directory.
+    let plans_dir = index.root().join("plans");
+    let plans = discover_plans(&plans_dir, args.plan_id.as_deref());
+
+    // 2. Load error patterns from .roko/learn/error-patterns.json.
+    let error_patterns = if args.include_errors {
+        load_error_patterns(index.root(), max_items)
+    } else {
+        Vec::new()
+    };
+
+    // 3. Load recent episodes from .roko/episodes.jsonl.
+    let recent_outputs = if args.include_outputs {
+        load_recent_episodes(index.root(), max_items)
+    } else {
+        Vec::new()
+    };
+
+    tool_result(json!({
+        "plans": plans,
+        "error_patterns": error_patterns,
+        "recent_outputs": recent_outputs,
+    }))
+}
+
+/// Discover plan directories and parse their `tasks.toml` files.
+fn discover_plans(plans_dir: &Path, filter_plan_id: Option<&str>) -> Vec<Value> {
+    let entries = match fs::read_dir(plans_dir) {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut plans = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let dir_name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(name) => name.to_string(),
+            None => continue,
+        };
+
+        if let Some(filter) = filter_plan_id
+            && dir_name != filter
+        {
+            continue;
+        }
+
+        let tasks_path = path.join("tasks.toml");
+        let content = match fs::read_to_string(&tasks_path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        if let Some(plan) = parse_tasks_toml(&dir_name, &content) {
+            plans.push(plan);
+        }
+    }
+    plans
+}
+
+/// Parse a `tasks.toml` file into a structured plan context value.
+fn parse_tasks_toml(plan_id: &str, content: &str) -> Option<Value> {
+    let table: toml::Value = toml::from_str(content).ok()?;
+
+    // Extract [meta] section.
+    let meta = table.get("meta");
+    let status = meta
+        .and_then(|m| m.get("status"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let total_tasks = meta
+        .and_then(|m| m.get("total"))
+        .and_then(|v| v.as_integer())
+        .unwrap_or(0);
+    let done_tasks = meta
+        .and_then(|m| m.get("done"))
+        .and_then(|v| v.as_integer())
+        .unwrap_or(0);
+    let last_gate = meta
+        .and_then(|m| m.get("last_gate"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    // Extract [[task]] entries.
+    let tasks = table
+        .get("task")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .map(|t| {
+                    let depends_on = t
+                        .get("depends_on")
+                        .and_then(|v| v.as_array())
+                        .map(|deps| {
+                            deps.iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+
+                    json!({
+                        "id": t.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+                        "title": t.get("title").and_then(|v| v.as_str()).unwrap_or(""),
+                        "status": t.get("status").and_then(|v| v.as_str()).unwrap_or("unknown"),
+                        "depends_on": depends_on,
+                        "wave": t.get("parallel_group").and_then(|v| v.as_str()).unwrap_or(""),
+                        "files": t.get("files").and_then(|v| v.as_array()).map(|files| {
+                            files.iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect::<Vec<_>>()
+                        }).unwrap_or_default(),
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    Some(json!({
+        "plan_id": plan_id,
+        "status": status,
+        "total_tasks": total_tasks,
+        "done_tasks": done_tasks,
+        "last_gate": last_gate,
+        "tasks": tasks,
+    }))
+}
+
+/// Load error patterns from `.roko/learn/error-patterns.json`, returning the
+/// top N by occurrence count (descending), filtering to unresolved only.
+fn load_error_patterns(root: &Path, max_items: usize) -> Vec<Value> {
+    let path = root.join(".roko/learn/error-patterns.json");
+    let content = match fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    let parsed: Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut patterns: Vec<Value> = parsed
+        .get("patterns")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    // Sort by descending occurrences.
+    patterns.sort_by(|a, b| {
+        let occ_a = a.get("occurrences").and_then(|v| v.as_u64()).unwrap_or(0);
+        let occ_b = b.get("occurrences").and_then(|v| v.as_u64()).unwrap_or(0);
+        occ_b.cmp(&occ_a)
+    });
+
+    // Filter to unresolved patterns only, then take max_items.
+    patterns
+        .into_iter()
+        .filter(|p| {
+            !p.get("resolved")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        })
+        .take(max_items)
+        .map(|p| {
+            json!({
+                "key": p.get("key").and_then(|v| v.as_str()).unwrap_or(""),
+                "digest": p.get("digest").and_then(|v| v.as_str()).unwrap_or(""),
+                "category": p.get("category").and_then(|v| v.as_str()).unwrap_or(""),
+                "occurrences": p.get("occurrences").and_then(|v| v.as_u64()).unwrap_or(0),
+                "plan_ids": p.get("plan_ids").cloned().unwrap_or(json!([])),
+                "task_ids": p.get("task_ids").cloned().unwrap_or(json!([])),
+                "suggestion": p.get("suggestion").cloned().unwrap_or(Value::Null),
+            })
+        })
+        .collect()
+}
+
+/// Load recent episode entries from `.roko/episodes.jsonl`, returning the last
+/// N entries (most recent last in the file).
+fn load_recent_episodes(root: &Path, max_items: usize) -> Vec<Value> {
+    let path = root.join(".roko/episodes.jsonl");
+    let content = match fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut entries: Vec<Value> = content
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+
+    // Keep only the last max_items entries.
+    if entries.len() > max_items {
+        entries = entries.split_off(entries.len() - max_items);
+    }
+
+    entries
 }
 
 fn handle_symbol_lookup(arguments: Value, index: &WorkspaceIndex) -> Result<Value, JsonRpcError> {
@@ -1553,7 +1806,7 @@ fn normalize_path(path: &str) -> String {
 
 /// Build a read-only, closed-world tool spec.
 ///
-/// All 10 code-intelligence tools are read-only (they inspect the index but
+/// All 11 code-intelligence tools are read-only (they inspect the index but
 /// never write to disk or the network) so they carry `readOnlyHint: true` and
 /// `openWorldHint: false`. Both the legacy (`readOnly`) and the MCP-2025 spec
 /// (`readOnlyHint`) names are emitted for compatibility with older consumers.
@@ -1618,6 +1871,12 @@ const fn default_workspace_map_depth() -> WorkspaceMapDepth {
 const fn default_token_budget() -> usize {
     40_000
 }
+
+const fn default_max_items() -> u32 {
+    5
+}
+
+const MAX_ITEMS_CAP: u32 = 20;
 
 const fn effective_search_strategy(strategy: SearchStrategy) -> SearchStrategy {
     match strategy {
@@ -1694,6 +1953,7 @@ mod tests {
                 "get_callers",
                 "workspace_map",
                 "get_context",
+                "get_plan_context",
             ]
         );
     }
@@ -1706,7 +1966,7 @@ mod tests {
         // both old consumers (roko-agent) and spec-compliant clients agree.
         let tools = handle_tools_list();
         let tool_array = tools["tools"].as_array().expect("tools array");
-        assert_eq!(tool_array.len(), 10, "expected 10 code-intel tools");
+        assert_eq!(tool_array.len(), 11, "expected 11 code-intel tools");
 
         for tool in tool_array {
             let name = tool["name"].as_str().unwrap_or("<unknown>");
@@ -1838,6 +2098,89 @@ mod tests {
             serde_json::from_str(result["content"][0]["text"].as_str().expect("payload text"))
                 .expect("json payload");
         assert!(payload["used_chars"].as_u64().expect("used chars") <= 80);
+    }
+
+    #[test]
+    fn get_plan_context_returns_empty_without_plans() {
+        let (_root, index) = make_workspace(&[("src/lib.rs", "pub fn hello() {}\n")]);
+        let result = dispatch_tool_call("get_plan_context", json!({}), &index)
+            .expect("tool result");
+
+        let payload: Value =
+            serde_json::from_str(result["content"][0]["text"].as_str().expect("payload text"))
+                .expect("json payload");
+        assert_eq!(payload["plans"].as_array().expect("plans array").len(), 0);
+        assert_eq!(
+            payload["error_patterns"]
+                .as_array()
+                .expect("error_patterns array")
+                .len(),
+            0
+        );
+        assert_eq!(
+            payload["recent_outputs"]
+                .as_array()
+                .expect("recent_outputs array")
+                .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn get_plan_context_reads_tasks_toml() {
+        let root = tempfile::tempdir().expect("create temp root");
+        let plan_dir = root.path().join("plans/test-plan");
+        fs::create_dir_all(&plan_dir).expect("create plan dir");
+        fs::write(
+            plan_dir.join("tasks.toml"),
+            r#"
+[meta]
+status = "running"
+total = 3
+done = 1
+
+[[task]]
+id = "T1"
+title = "First task"
+status = "done"
+
+[[task]]
+id = "T2"
+title = "Second task"
+status = "running"
+depends_on = ["T1"]
+"#,
+        )
+        .expect("write tasks.toml");
+        // Write a minimal source file so the index can load.
+        let src_dir = root.path().join("src");
+        fs::create_dir_all(&src_dir).expect("create src dir");
+        fs::write(src_dir.join("lib.rs"), "pub fn stub() {}\n").expect("write lib.rs");
+        let index = WorkspaceIndex::load(root.path()).expect("load workspace index");
+
+        let result =
+            dispatch_tool_call("get_plan_context", json!({ "plan_id": "test-plan" }), &index)
+                .expect("tool result");
+
+        let payload: Value =
+            serde_json::from_str(result["content"][0]["text"].as_str().expect("payload text"))
+                .expect("json payload");
+        let plans = payload["plans"].as_array().expect("plans array");
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0]["plan_id"], "test-plan");
+        assert_eq!(plans[0]["status"], "running");
+        assert_eq!(plans[0]["total_tasks"], 3);
+        assert_eq!(plans[0]["done_tasks"], 1);
+        let tasks = plans[0]["tasks"].as_array().expect("tasks array");
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0]["id"], "T1");
+        assert_eq!(tasks[0]["status"], "done");
+        assert_eq!(tasks[1]["id"], "T2");
+        assert_eq!(tasks[1]["status"], "running");
+        assert_eq!(
+            tasks[1]["depends_on"].as_array().expect("depends_on")[0],
+            "T1"
+        );
     }
 
     #[test]

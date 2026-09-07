@@ -36,6 +36,7 @@ pub mod git;
 pub mod hallucination;
 pub mod hooks;
 pub mod network;
+pub mod normalize;
 pub mod path;
 pub mod provenance;
 pub mod rate_limit;
@@ -243,7 +244,7 @@ impl DispatchSafetyContext {
 }
 
 fn classify_corrigibility_action(action: &str) -> ActionContext {
-    let action = action.to_ascii_lowercase();
+    let action = normalize::normalize_for_classification(action);
     let protective = [
         "prevent ", "block ", "reject ", "detect ", "guard ", "test ", "never ", "do not ",
     ]

@@ -684,7 +684,10 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
             PrdDraftCmd::Edit { slug } => {
                 let draft = roko_cli::workspace_paths::draft_prd_path(&workdir, &slug);
                 if !draft.exists() {
-                    anyhow::bail!("draft not found: {}", draft.display());
+                    anyhow::bail!(
+                        "draft not found: {}\n  -> Run `roko prd draft list` to see available drafts.",
+                        draft.display()
+                    );
                 }
                 // #303: consistent model resolution and preflight across PRD subcommands
                 let model_key = roko_cli::model_selection::resolve_effective_model_key(
@@ -933,7 +936,9 @@ pub(crate) fn find_prd(workdir: &Path, slug: &str) -> Result<PathBuf> {
     if let Some(path) = roko_cli::workspace_paths::find_prd_path(workdir, slug) {
         return Ok(path);
     }
-    anyhow::bail!("PRD not found: {slug} (checked published/ and drafts/)");
+    anyhow::bail!(
+        "PRD not found: {slug} (checked published/ and drafts/)\n  -> Run `roko prd list` to see available PRDs."
+    );
 }
 
 /// Auto-detect the project domain from file patterns in the target directory.

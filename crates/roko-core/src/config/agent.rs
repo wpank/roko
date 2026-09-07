@@ -26,6 +26,7 @@ pub(crate) fn default_tool_format() -> String {
 /// Agent / model configuration, including per-role overrides.
 #[allow(clippy::derive_partial_eq_without_eq)] // contains f32 via RoleOverride
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentConfig {
     /// Default model slug (e.g. `"claude-sonnet-4-6"`).
     #[serde(default = "default_model", alias = "model")]
@@ -324,8 +325,19 @@ impl Default for DataLlmConfig {
 ///
 /// Every field is optional; absent means "use the agent-level default".
 #[allow(clippy::derive_partial_eq_without_eq)] // contains f32/f64 via nested fields
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RoleOverride {
+    /// Whether this role is active for dispatch. Defaults to `true`.
+    ///
+    /// Set to `false` to skip this role during plan execution without
+    /// removing its configuration.
+    ///
+    /// ```toml
+    /// [agent.roles.reviewer]
+    /// enabled = false
+    /// ```
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     /// Explicit runtime role label override; defaults to the section name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
@@ -373,6 +385,27 @@ pub struct RoleOverride {
     /// Valid values: `"low"`, `"medium"`, `"high"`, `"max"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_effort: Option<String>,
+}
+
+impl Default for RoleOverride {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            role: None,
+            model: None,
+            backend: None,
+            effort: None,
+            temperament: None,
+            context_limit_k: None,
+            tools: None,
+            budget: None,
+            thresholds: None,
+            routing_overrides: None,
+            turn_budget_usd: None,
+            capability_requirements: None,
+            default_effort: None,
+        }
+    }
 }
 
 impl RoleOverride {

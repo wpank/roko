@@ -794,6 +794,78 @@ fn blocking_finding_for_class(class: &FailureClass) -> Option<String> {
     }
 }
 
+/// A single gate failure record persisted to `.roko/learn/gate-failures.jsonl`.
+///
+/// One record is appended per gate failure during plan execution, capturing
+/// the full classification plus execution context (plan, task, rung,
+/// timestamp). This enables fast `jq` queries, adaptive threshold learning,
+/// and TUI failure digest widgets.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GateFailureRecord {
+    /// Plan that owns the failed task.
+    pub plan_id: String,
+    /// Task whose verify step failed.
+    pub task_id: String,
+    /// Gate/verify step name (e.g. "compile:cargo", "test:cargo", or a custom verify command).
+    pub gate_name: String,
+    /// Rung index (0-6 for standard gates, 0 for custom verify steps).
+    pub rung: u32,
+    /// Coarse failure kind driving retry policy.
+    pub failure_kind: GateFailureKind,
+    /// Primary failure class for remediation decisions.
+    pub primary_class: FailureClass,
+    /// Concise human-readable failure summary.
+    pub summary: String,
+    /// Structured action the orchestrator should take next.
+    pub recommended_action: GateFailureAction,
+    /// Whether `cargo fix` is a reasonable pre-agent attempt.
+    pub cargo_fix_candidate: bool,
+    /// Whether the failure is replan-shaped rather than retry-shaped.
+    pub replan_candidate: bool,
+    /// Total compiler errors observed (0 for non-compile gates).
+    pub error_count: usize,
+    /// Total compiler warnings observed (0 for non-compile gates).
+    pub warning_count: usize,
+    /// ISO-8601 timestamp of the failure.
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+}
+
+impl GateFailureRecord {
+    /// Build a record from a classification and execution context.
+    #[must_use]
+    pub fn from_classification(
+        plan_id: &str,
+        task_id: &str,
+        gate_name: &str,
+        rung: u32,
+        classification: &GateFailureClassification,
+    ) -> Self {
+        Self {
+            plan_id: plan_id.to_string(),
+            task_id: task_id.to_string(),
+            gate_name: gate_name.to_string(),
+            rung,
+            failure_kind: classification.failure_kind.clone(),
+            primary_class: classification.primary.clone(),
+            summary: if classification.summary.is_empty() {
+                classification
+                    .raw_excerpt
+                    .chars()
+                    .take(200)
+                    .collect::<String>()
+            } else {
+                classification.summary.clone()
+            },
+            recommended_action: classification.recommended_action.clone(),
+            cargo_fix_candidate: classification.cargo_fix_candidate,
+            replan_candidate: classification.replan_candidate,
+            error_count: classification.error_count,
+            warning_count: classification.warning_count,
+            timestamp: chrono::Utc::now(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1019,5 +1091,35 @@ error[E0308]: mismatched types
             "error[E0433]: use of unresolved module or unlinked crate `missing_crate`",
         );
         assert!(!dep.cargo_fix_candidate);
+    }
+
+    #[test]
+    fn gate_failure_record_serialization_round_trip() {
+        let classification = classify_gate_failure(
+            "compile:cargo",
+            "error[E0308]: mismatched types\n --> src/main.rs:5:10",
+        );
+        let record = GateFailureRecord::from_classification(
+            "plan-abc",
+            "task-1",
+            "compile:cargo",
+            0,
+            &classification,
+        );
+
+        assert_eq!(record.plan_id, "plan-abc");
+        assert_eq!(record.task_id, "task-1");
+        assert_eq!(record.gate_name, "compile:cargo");
+        assert_eq!(record.rung, 0);
+        assert_eq!(record.primary_class, FailureClass::TypeError);
+        assert_eq!(record.failure_kind, GateFailureKind::Permanent);
+
+        // Round-trip through JSON.
+        let json = serde_json::to_string(&record).expect("serialize");
+        let parsed: GateFailureRecord = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed.plan_id, "plan-abc");
+        assert_eq!(parsed.task_id, "task-1");
+        assert_eq!(parsed.failure_kind, GateFailureKind::Permanent);
+        assert_eq!(parsed.primary_class, FailureClass::TypeError);
     }
 }

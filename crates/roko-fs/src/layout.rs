@@ -304,6 +304,16 @@ impl RokoLayout {
         self.learn_dir().join("efficiency.jsonl")
     }
 
+    /// `.roko/learn/gate-failures.jsonl` — structured gate failure records.
+    ///
+    /// One [`roko_gate::GateFailureRecord`] is appended per gate failure during
+    /// plan execution. Enables fast `jq` queries, adaptive threshold learning,
+    /// and TUI failure digest widgets.
+    #[must_use]
+    pub fn gate_failures_path(&self) -> PathBuf {
+        self.learn_dir().join("gate-failures.jsonl")
+    }
+
     /// `.roko/learn/efficiency.jsonl` — per-turn efficiency events.
     #[must_use]
     pub fn efficiency_log_path(&self) -> PathBuf {
@@ -894,6 +904,15 @@ mod tests {
         assert_eq!(
             layout.witness_log(),
             PathBuf::from("/w/.roko/witness.jsonl")
+        );
+    }
+
+    #[test]
+    fn gate_failures_path() {
+        let layout = RokoLayout::new("/g/.roko");
+        assert_eq!(
+            layout.gate_failures_path(),
+            PathBuf::from("/g/.roko/learn/gate-failures.jsonl")
         );
     }
 

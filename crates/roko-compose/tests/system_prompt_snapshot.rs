@@ -4,7 +4,8 @@ use std::collections::BTreeSet;
 
 use roko_compose::system_prompt_builder::normalize_for_caching;
 use roko_compose::{
-    ContextChunk, ContextSource, PadState, PromptSection, RoleSystemPromptSpec, TaskContext,
+    ContextChunk, ContextSource, GateFeedback, PadState, PromptSection, RoleSystemPromptSpec,
+    TaskContext,
 };
 use roko_core::AgentRole;
 use roko_learn::playbook::{Playbook, PlaybookStep};
@@ -111,6 +112,7 @@ fn snapshot_bucket(section_name: &str) -> &'static str {
         "relevant_techniques" => "<!-- SKILLS -->",
         "tool_instructions" => "<!-- TOOLS -->",
         "domain_context" | "context_layer" | "task_context" => "<!-- CONTEXT -->",
+        "code_index" => "<!-- CODE INDEX -->",
         "pheromone_signals" => "<!-- MEMORY -->",
         "conventions" | "anti_patterns" | "affect_guidance" => "<!-- POLICY -->",
         other => panic!("unexpected section name in snapshot renderer: {other}"),
@@ -124,6 +126,7 @@ fn render_section(section: &PromptSection) -> String {
         "tool_instructions" => format!("## Tool Instructions\n\n{}", section.content),
         "domain_context" => format!("## Domain Context\n\n{}", section.content),
         "context_layer" => section.content.clone(),
+        "code_index" => format!("## Code Index Context\n\n{}", section.content),
         "pheromone_signals" => format!("## Active Signals\n\n{}", section.content),
         "task_context" => format!("## Current Task\n\n{}", section.content),
         "relevant_techniques" => section.content.clone(),
@@ -193,4 +196,62 @@ fn canonical_system_prompts_match_snapshots() {
 
         insta::assert_snapshot!(format!("role__{}", role.label()), snapshot);
     }
+}
+
+#[test]
+fn implementer_differs_from_reviewer() {
+    let implementer_spec = fixture_spec(AgentRole::Implementer);
+    let reviewer_spec = fixture_spec(AgentRole::Auditor);
+
+    let implementer_prompt = implementer_spec.build();
+    let reviewer_prompt = reviewer_spec.build();
+
+    // The two roles must produce meaningfully different prompts.
+    assert_ne!(
+        implementer_prompt, reviewer_prompt,
+        "Implementer and Auditor prompts must differ"
+    );
+
+    // Verify each prompt contains its own role label so the difference is not
+    // just whitespace or ordering noise.
+    let imp_lower = implementer_prompt.to_ascii_lowercase();
+    let rev_lower = reviewer_prompt.to_ascii_lowercase();
+    assert!(
+        imp_lower.contains("implement"),
+        "Implementer prompt should reference its role identity"
+    );
+    assert!(
+        rev_lower.contains("audit"),
+        "Auditor prompt should reference its role identity"
+    );
+}
+
+#[test]
+fn retry_prompt_includes_gate_feedback() {
+    let feedback = GateFeedback::from_raw(
+        "error[E0308]: mismatched types\n --> src/lib.rs:42:5\nwarning: unused variable",
+        2,
+    )
+    .expect("non-empty raw output should produce feedback");
+
+    let spec = fixture_spec(AgentRole::Implementer).with_gate_feedback(feedback);
+    let prompt = spec.build();
+
+    // The rendered prompt must contain the gate-failure retry section.
+    assert!(
+        prompt.contains("Previous Verify Failure"),
+        "retry prompt should include the 'Previous Verify Failure' heading"
+    );
+    assert!(
+        prompt.contains("Gate rung: 2"),
+        "retry prompt should include the originating gate rung"
+    );
+    assert!(
+        prompt.contains("Actionable diagnostics"),
+        "retry prompt should include the diagnostics sub-heading"
+    );
+    assert!(
+        prompt.contains("error[E0308]"),
+        "retry prompt should surface the original error code"
+    );
 }

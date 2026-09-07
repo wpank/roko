@@ -10,6 +10,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use roko_core::config::DEFAULT_LLM_CALL_SECS;
 use roko_core::{Context, Signal};
 
 use crate::agent::{Agent, AgentResult};
@@ -71,7 +72,7 @@ impl Default for HermesOneShotConfig {
             ],
             source_tag: "roko".to_string(),
             model_override: None,
-            timeout: Duration::from_secs(120),
+            timeout: Duration::from_secs(DEFAULT_LLM_CALL_SECS),
             resource_limits: None,
             system_prompt: None,
         }

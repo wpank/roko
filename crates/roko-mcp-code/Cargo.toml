@@ -16,6 +16,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+toml = { workspace = true }
 roko-core = { path = "../roko-core" }
 roko-index = { path = "../roko-index" }
 roko-mcp-stdio = { path = "../roko-mcp-stdio" }

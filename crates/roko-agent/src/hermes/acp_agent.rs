@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use roko_core::config::DEFAULT_LLM_CALL_SECS;
 use tokio::sync::mpsc;
 
 use crate::agent::{Agent, AgentResult};
@@ -55,7 +56,7 @@ impl Default for HermesAcpConfig {
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             session_key: None,
             model_hint: None,
-            timeout: Duration::from_secs(120),
+            timeout: Duration::from_secs(DEFAULT_LLM_CALL_SECS),
             mcp_servers: None,
             resource_limits: None,
             system_prompt: None,

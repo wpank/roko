@@ -184,9 +184,21 @@ pub struct GatesConfig {
     /// Default: 50.
     #[serde(default = "default_convergence_min_observations")]
     pub convergence_min_observations: u64,
+
+    // ── Review cycle cap ──────────────────────────────────────────────
+
+    /// Maximum consecutive gate-failure review cycles before the task is
+    /// force-accepted. Prevents infinite REVISE loops that consume tokens
+    /// with diminishing returns. Default: 3.
+    #[serde(default = "default_max_review_cycles")]
+    pub max_review_cycles: u32,
 }
 
 const fn default_max_iterations() -> u32 {
+    3
+}
+
+const fn default_max_review_cycles() -> u32 {
     3
 }
 
@@ -210,6 +222,7 @@ impl Default for GatesConfig {
             adaptive_max_retries: default_max_retries(),
             skip_streak_threshold: default_skip_streak_threshold(),
             convergence_min_observations: default_convergence_min_observations(),
+            max_review_cycles: default_max_review_cycles(),
         }
     }
 }

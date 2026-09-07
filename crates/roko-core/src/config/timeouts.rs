@@ -104,6 +104,36 @@ pub struct TimeoutConfig {
     pub lost_effect_secs: u64,
 }
 
+// ── Public named constants ────────────────────────────────────────────────
+//
+// These replace the magic `120` / `120_000` literals that were previously
+// scattered across provider adapters, ACP bridge code, and tool defaults.
+// Crates that cannot thread a full `TimeoutConfig` instance (e.g. in a
+// `Default` impl) should reference these constants instead of hardcoding.
+
+/// Default agent / LLM-call timeout in **seconds** (2 minutes).
+///
+/// The canonical "2-minute agent timeout" constant.  Referenced by
+/// `TimeoutConfig::llm_call_secs`, provider adapters, dream runners,
+/// and any production path that previously hardcoded `Duration::from_secs(120)`.
+pub const DEFAULT_AGENT_TIMEOUT_SECS: u64 = 120;
+
+/// Alias preserved for backward compatibility.
+pub const DEFAULT_LLM_CALL_SECS: u64 = DEFAULT_AGENT_TIMEOUT_SECS;
+
+/// Default agent / LLM-call timeout in **milliseconds** (2 minutes).
+///
+/// Millisecond counterpart of [`DEFAULT_AGENT_TIMEOUT_SECS`].  Used by
+/// eval collectors, dream agent configs, SLA budgets, and cooldown filters
+/// that previously hardcoded `120_000`.
+pub const DEFAULT_AGENT_TIMEOUT_MS: u64 = DEFAULT_AGENT_TIMEOUT_SECS * 1_000;
+
+/// Default ACP / tool-execution request timeout in **milliseconds** (2 minutes).
+///
+/// Used by `TimeoutConfig::acp_request_ms`, `TimeoutConfig::tool_execution_ms`,
+/// and as the fallback for ACP bridge `ToolContext` construction.
+pub const DEFAULT_ACP_REQUEST_MS: u64 = DEFAULT_AGENT_TIMEOUT_MS;
+
 // ── Default helpers (const fn for serde) ─────────────────────────────────
 
 const fn default_agent_dispatch_secs() -> u64 {
@@ -119,7 +149,7 @@ const fn default_gate_clippy_secs() -> u64 {
     300
 }
 const fn default_llm_call_secs() -> u64 {
-    120
+    DEFAULT_LLM_CALL_SECS
 }
 const fn default_dream_consolidation_secs() -> u64 {
     600
@@ -137,13 +167,13 @@ const fn default_plan_total_secs() -> u64 {
     3_600
 }
 const fn default_post_run_cleanup_secs() -> u64 {
-    120
+    DEFAULT_LLM_CALL_SECS
 }
 const fn default_tool_execution_ms() -> u64 {
-    120_000
+    DEFAULT_ACP_REQUEST_MS
 }
 const fn default_acp_request_ms() -> u64 {
-    120_000
+    DEFAULT_ACP_REQUEST_MS
 }
 const fn default_graph_node_secs() -> u64 {
     300

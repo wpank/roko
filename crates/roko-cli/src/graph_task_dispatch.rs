@@ -18,6 +18,7 @@
 use std::collections::{HashMap, hash_map::Entry};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use roko_agent::safety::contract::{AgentContract, ContractLoadMode};
@@ -468,6 +469,8 @@ pub struct GraphFeedbackContext {
     pub daimon_state: Option<Arc<std::sync::Mutex<roko_daimon::DaimonState>>>,
     /// Path to `.roko/learn/experiments.json` for experiment settlement.
     pub experiment_store_path: Option<PathBuf>,
+    /// Path to `.roko/learn/gate-failures.jsonl` for structured gate failure records.
+    pub gate_failures_path: Option<PathBuf>,
     /// Whether gate failure replanning is enabled (`learning.replan_on_gate_failure`).
     pub replan_on_gate_failure: bool,
     /// P0-04: CodingOracle for post-gate build/test observations.
@@ -491,6 +494,7 @@ impl std::fmt::Debug for GraphFeedbackContext {
             .field("playbook_dir", &self.playbook_dir)
             .field("daimon_state", &self.daimon_state.is_some())
             .field("experiment_store_path", &self.experiment_store_path)
+            .field("gate_failures_path", &self.gate_failures_path)
             .field("replan_on_gate_failure", &self.replan_on_gate_failure)
             .field("coding_oracle", &self.coding_oracle.is_some())
             .field("gate_gaming_detector", &self.gate_gaming_detector.is_some())
@@ -510,6 +514,7 @@ impl Default for GraphFeedbackContext {
             playbook_dir: None,
             daimon_state: None,
             experiment_store_path: None,
+            gate_failures_path: None,
             replan_on_gate_failure: false,
             coding_oracle: None,
             gate_gaming_detector: None,
@@ -552,6 +557,18 @@ pub struct GraphTaskDispatcher {
     /// `DispatchContext` so the agent prompt includes the previous errors.
     /// The value is `(feedback, attempt_number)`.
     gate_retry_context: parking_lot::Mutex<HashMap<String, (GateFeedback, u32)>>,
+    /// Per-task review cycle counter keyed by `"{plan_id}/{task_id}"`.
+    ///
+    /// Tracks how many consecutive gate-failure review cycles each task has
+    /// undergone. When the count reaches `gates.max_review_cycles`, the task
+    /// is force-accepted to prevent infinite reviewer loops (#204).
+    review_cycle_counts: parking_lot::Mutex<HashMap<String, u32>>,
+    /// Aggregate input tokens accumulated across all dispatches in this run.
+    agg_tokens_in: AtomicU64,
+    /// Aggregate output tokens accumulated across all dispatches in this run.
+    agg_tokens_out: AtomicU64,
+    /// Aggregate number of agent dispatch calls in this run.
+    agg_dispatch_count: AtomicU64,
 }
 
 impl GraphTaskDispatcher {
@@ -574,6 +591,10 @@ impl GraphTaskDispatcher {
             workspace_provider: None,
             tui_bridge: None,
             gate_retry_context: parking_lot::Mutex::new(HashMap::new()),
+            review_cycle_counts: parking_lot::Mutex::new(HashMap::new()),
+            agg_tokens_in: AtomicU64::new(0),
+            agg_tokens_out: AtomicU64::new(0),
+            agg_dispatch_count: AtomicU64::new(0),
         }
     }
 
@@ -658,6 +679,19 @@ impl GraphTaskDispatcher {
         self.budget_ledger.snapshot(plan_id, self.budget_policy)
     }
 
+    /// Return aggregate token and dispatch counts accumulated across all
+    /// task dispatches in this run. Used by the run-metrics persistence
+    /// path (backlog #169) to populate `RunMetricsRecord` with real values
+    /// instead of zeros.
+    #[must_use]
+    pub fn run_aggregate_stats(&self) -> (u64, u64, u64) {
+        (
+            self.agg_tokens_in.load(Ordering::Relaxed),
+            self.agg_tokens_out.load(Ordering::Relaxed),
+            self.agg_dispatch_count.load(Ordering::Relaxed),
+        )
+    }
+
     /// Emit all feedback events after a task dispatch completes.
     ///
     /// This is the Graph engine equivalent of Runner-v2's post-dispatch
@@ -679,6 +713,11 @@ impl GraphTaskDispatcher {
         let tokens_in = u64::from(dispatch.result.usage.input_tokens);
         let tokens_out = u64::from(dispatch.result.usage.output_tokens);
         let duration_ms = wall_duration.as_millis() as u64;
+
+        // Accumulate run-level aggregates for RunMetricsRecord (#169).
+        self.agg_tokens_in.fetch_add(tokens_in, Ordering::Relaxed);
+        self.agg_tokens_out.fetch_add(tokens_out, Ordering::Relaxed);
+        self.agg_dispatch_count.fetch_add(1, Ordering::Relaxed);
 
         // Determine model choice source for feedback routing.
         let model_source = if dispatch_plan.forced {
@@ -1165,6 +1204,24 @@ impl TaskDispatcher for GraphTaskDispatcher {
             ))
         })?;
 
+        // ── Role-enabled check ──────────────────────────────────────────
+        //
+        // When a role is disabled via `[agent.roles.<role>] enabled = false`,
+        // skip the task with a warning rather than failing it.
+        if let Some(role_label) = task.role.as_deref() {
+            if !crate::config_helpers::is_role_enabled(&self.config, role_label) {
+                tracing::warn!(
+                    plan_id = %spec.plan_id,
+                    task_id = %task.id,
+                    role = role_label,
+                    "role is disabled in config; skipping task"
+                );
+                // Return an empty signal vec — the graph engine treats this
+                // as a completed (no-output) cell, not a failure.
+                return Ok(Vec::new());
+            }
+        }
+
         // ── P0-02: EvalGenerator pre-dispatch ───────────────────────────
         //
         // For standard-tier and above tasks, generate evaluation test
@@ -1336,6 +1393,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             routing_context: Some(routing_ctx),
             routing_bias,
             dependency_outputs: upstream_outputs(&input),
+            error_patterns_context: self.factory.format_error_patterns_for_prompt(5),
         };
         let dispatch_plan = self
             .factory
@@ -1661,6 +1719,34 @@ impl TaskDispatcher for GraphTaskDispatcher {
             }
 
             if !failures.is_empty() {
+                // ── Review cycle cap (backlog #204) ──────────────────────
+                //
+                // Increment the per-task review cycle counter. When the count
+                // reaches `gates.max_review_cycles`, force-accept the task
+                // instead of looping indefinitely with diminishing returns.
+                let max_review_cycles = self.config.gates.max_review_cycles;
+                let cycle_count = {
+                    let mut counts = self.review_cycle_counts.lock();
+                    let count = counts.entry(retry_key.clone()).or_insert(0);
+                    *count = count.saturating_add(1);
+                    *count
+                };
+
+                if max_review_cycles > 0 && cycle_count >= max_review_cycles {
+                    tracing::warn!(
+                        plan_id = %spec.plan_id,
+                        task_id = %task.id,
+                        review_cycles = cycle_count,
+                        max_review_cycles,
+                        "review cycle cap reached for task {}, force-accepting",
+                        task.id
+                    );
+                    // Clear cycle counter and retry context for this task;
+                    // fall through to the success path below.
+                    self.review_cycle_counts.lock().remove(&retry_key);
+                    self.gate_retry_context.lock().remove(&retry_key);
+                } else {
+                // ── Normal failure handling (cap not yet reached) ─────────
                 let summary = format!(
                     "{n}/{total} verify step(s) failed for task `{task}`:\n\n{details}",
                     n = failures.len(),
@@ -1673,6 +1759,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
                     task_id = %task.id,
                     failed_count = failures.len(),
                     total_count = task.verify.len(),
+                    review_cycle = cycle_count,
+                    max_review_cycles,
                     "graph verify steps failed"
                 );
                 // ── W12: Gate failure replan signal ───────────────────────
@@ -1763,6 +1851,31 @@ impl TaskDispatcher for GraphTaskDispatcher {
                         .lock()
                         .insert(retry_key.clone(), (feedback, next_attempt));
                 }
+                // ── W13: Persist structured gate failure record ──────────
+                //
+                // Classify the raw failure text and append a GateFailureRecord
+                // to `.roko/learn/gate-failures.jsonl` for fast triage and
+                // adaptive threshold learning (#218).
+                if let Some(gf_path) = &self.feedback.gate_failures_path {
+                    let raw_for_classification = failures.join("\n---\n");
+                    let classification = roko_gate::classify_gate_failure(
+                        "graph-verify",
+                        &raw_for_classification,
+                    );
+                    let record = roko_gate::GateFailureRecord::from_classification(
+                        &spec.plan_id,
+                        &task.id,
+                        "graph-verify",
+                        0,
+                        &classification,
+                    );
+                    if let Err(error) = append_jsonl_line(gf_path, &record) {
+                        tracing::warn!(
+                            %error,
+                            "gate failure record write failed (non-fatal)"
+                        );
+                    }
+                }
                 // Release worktree with RetainForFailure for post-mortem.
                 if let Some((provider, lease)) = self.workspace_provider.as_ref().zip(lease.as_ref()) {
                     let _ = provider.release(
@@ -1774,6 +1887,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                     gate: "graph-verify".to_string(),
                     message: summary,
                 });
+                } // end else (review cycle cap not reached)
             }
 
             tracing::info!(
@@ -1782,8 +1896,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 step_count = task.verify.len(),
                 "all graph verify steps passed"
             );
-            // Clear any stale gate retry context on success.
+            // Clear any stale gate retry context and review cycle count on success.
             self.gate_retry_context.lock().remove(&retry_key);
+            self.review_cycle_counts.lock().remove(&retry_key);
         }
 
         // ── Worktree isolation: release on success ──────────────────────
@@ -1924,6 +2039,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             routing_context: Some(routing_ctx),
             routing_bias: None,
             dependency_outputs: upstream_outputs(&input),
+            error_patterns_context: self.factory.format_error_patterns_for_prompt(5),
         };
         let dispatch_plan = self
             .factory

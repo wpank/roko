@@ -2408,7 +2408,7 @@ pub(crate) fn preflight_provider_for_model(
                 builtin.api_key_env
             );
         }
-        anyhow::bail!("model '{}' not found in config", model_key);
+        anyhow::bail!("model '{}' not found in config.\n  hint: run `roko config models list` to see configured models, or add a [[models]] entry in roko.toml", model_key);
     }
     let model = model.expect("model should be Some after config lookup loop");
     let provider_name = &model.provider;

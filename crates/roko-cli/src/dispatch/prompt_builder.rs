@@ -152,6 +152,11 @@ pub struct PromptContext {
     /// C-Factor collective-intelligence policy text.
     /// Loaded from `.roko/learn/c-factor.jsonl` when history exists.
     pub cfactor_context: String,
+    /// Pre-rendered error patterns from the shared in-memory store.
+    ///
+    /// Carried from `DispatchContext::error_patterns_context` so the prompt
+    /// assembler can inject "known pitfalls" without touching the store itself.
+    pub error_patterns_context: String,
 }
 
 impl PromptContext {
@@ -212,6 +217,7 @@ impl PromptContext {
             dependency_outputs: ctx.dependency_outputs.clone(),
             workspace_context,
             cfactor_context,
+            error_patterns_context: ctx.error_patterns_context.clone(),
         }
     }
 }
@@ -1125,6 +1131,10 @@ fn build_runner_context(
 
     if !ctx.cfactor_context.is_empty() {
         parts.push(ctx.cfactor_context.clone());
+    }
+
+    if !ctx.error_patterns_context.is_empty() {
+        parts.push(ctx.error_patterns_context.clone());
     }
 
     Ok(parts.join("\n\n"))
@@ -2658,6 +2668,7 @@ mod tests {
             routing_context: None,
             routing_bias: None,
             dependency_outputs: Vec::new(),
+            error_patterns_context: String::new(),
         }
     }
 
@@ -3266,6 +3277,7 @@ mod tests {
             dependency_outputs: Vec::new(),
             workspace_context: String::new(),
             cfactor_context: String::new(),
+            error_patterns_context: String::new(),
         };
         let ctx_str = build_runner_context(&t, &pctx).expect("runner context");
         assert!(ctx_str.contains("# Files in scope"));

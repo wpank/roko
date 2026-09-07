@@ -487,7 +487,8 @@ impl ErrorPatternStore {
         self.patterns.is_empty()
     }
 
-    fn empty() -> Self {
+    /// Return a new, empty store with no patterns.
+    pub fn empty() -> Self {
         Self {
             patterns: Vec::new(),
             key_index: HashMap::new(),

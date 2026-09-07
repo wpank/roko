@@ -6,7 +6,7 @@
 //!
 //! # Architecture
 //!
-//! Seven enrichment provider Cells consume a [`signals::ComposeRequest`] and
+//! Eight enrichment provider Cells consume a [`signals::ComposeRequest`] and
 //! produce enrichment payloads in parallel:
 //!
 //! | Cell ID | Module | Required? |
@@ -18,6 +18,7 @@
 //! | `compose.modulation@1` | [`modulation`] | No |
 //! | `compose.safety@1` | [`safety`] | **Yes** |
 //! | `compose.experiment@1` | [`experiment`] | No |
+//! | `compose.code_index@1` | [`code_index`] | No |
 //!
 //! The [`aggregate`] Cell consumes one signal from every provider and
 //! produces the final [`signals::ComposedPrompt`].
@@ -30,6 +31,7 @@
 //! via the registration manifest in `roko-execution`.
 
 pub mod aggregate;
+pub mod code_index;
 pub mod episodes;
 pub mod experiment;
 pub mod knowledge;
@@ -41,6 +43,7 @@ pub mod task_context;
 
 // Re-export the core types for ergonomic use.
 pub use aggregate::AggregateCell;
+pub use code_index::{CodeIndexCell, CodeIndexProvider, NoopCodeIndexProvider};
 pub use episodes::{EpisodeProvider, EpisodesCell, NoopEpisodeProvider};
 pub use experiment::{
     ExperimentCell, ExperimentProvider, ExperimentResult, NoopExperimentProvider,
@@ -50,8 +53,8 @@ pub use modulation::{ModulationCell, ModulationProvider, NoopModulationProvider}
 pub use playbook::{NoopPlaybookProvider, PlaybookCell, PlaybookProvider};
 pub use safety::{NoopSafetyContextProvider, SafetyCell, SafetyContextProvider};
 pub use signals::{
-    ComposeRequest, ComposeScope, ComposedPrompt, EpisodeSections, ExperimentAssignment,
-    KnowledgeSections, ModulationSections, PlaybookSections, SafetySections, TaskContextSections,
-    cell_ids,
+    CodeIndexSections, ComposeRequest, ComposeScope, ComposedPrompt, EpisodeSections,
+    ExperimentAssignment, KnowledgeSections, ModulationSections, PlaybookSections, SafetySections,
+    TaskContextSections, cell_ids,
 };
 pub use task_context::{NoopTaskContextProvider, TaskContextCell, TaskContextProvider};

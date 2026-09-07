@@ -204,6 +204,15 @@ pub(crate) fn find_role_override<'a>(
     })
 }
 
+/// Check whether `role_label` is enabled for dispatch.
+///
+/// Returns `true` when the role has no override or the override has
+/// `enabled == true`. Returns `false` only when an explicit
+/// `enabled = false` is configured.
+pub(crate) fn is_role_enabled(config: &RokoConfig, role_label: &str) -> bool {
+    find_role_override(config, role_label).map_or(true, |r| r.enabled)
+}
+
 pub(crate) fn resolved_role_label(config: &RokoConfig, role_label: &str) -> String {
     find_role_override(config, role_label)
         .map(|override_cfg| override_cfg.resolved_role_name(role_label).to_string())

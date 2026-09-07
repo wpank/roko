@@ -219,6 +219,7 @@ fn convert_gates(m: &MoriConfig) -> GatesConfig {
         adaptive_max_retries: d.adaptive_max_retries,
         skip_streak_threshold: d.skip_streak_threshold,
         convergence_min_observations: d.convergence_min_observations,
+        max_review_cycles: d.max_review_cycles,
     }
 }
 
@@ -236,6 +237,7 @@ fn convert_routing(m: &MoriConfig) -> RoutingConfig {
         complex_task_model: m.complex_task_model.clone().unwrap_or(d.complex_task_model),
         weights: d.weights,
         context_strategy: m.context_strategy.clone().unwrap_or(d.context_strategy),
+        disabled_providers: d.disabled_providers,
     }
 }
 

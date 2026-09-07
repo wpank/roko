@@ -33,10 +33,12 @@ use async_trait::async_trait;
 
 pub mod episodes;
 pub mod knowledge;
+pub mod plan_completion;
 pub mod routing;
 
 pub use episodes::EpisodeSink;
 pub use knowledge::{KnowledgeIngestionSink, KnowledgeIngestor, NeuroKnowledgeIngestor};
+pub use plan_completion::{DaimonPersistenceSink, DreamConsolidationSink};
 pub use routing::RoutingObservationSink;
 
 use roko_learn::model_router::RoutingContext;

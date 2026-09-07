@@ -1761,6 +1761,24 @@ enum BacklogCmd {
         /// Emit machine-readable JSON instead of text.
         #[arg(long)]
         json: bool,
+        /// Apply deterministic mechanical repairs: remove broken plan
+        /// references from the index, deduplicate IDs, and fix spec counts.
+        /// Never changes semantic status (use `mark-done` for that).
+        #[arg(long)]
+        fix_safe: bool,
+    },
+    /// Mark a backlog spec as done with explicit evidence.
+    ///
+    /// Finds the backlog file by its numeric ID (e.g. `229`) and writes or
+    /// updates the `**Status**: Done (DATE) -- EVIDENCE` line near the top.
+    MarkDone {
+        /// Numeric backlog ID (e.g. 229).
+        id: u32,
+        /// Evidence string (run-id, commit hash, PR number, etc.).
+        evidence: String,
+        /// Working directory (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
     },
 }
 
@@ -3842,7 +3860,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
                 }
                 ConfigCmd::Mcp { cmd: mcp_cmd } => {
                     let workdir = resolve_workdir(cli);
-                    commands::mcp::dispatch_mcp_cmd(&mcp_cmd, &workdir)?;
+                    commands::mcp::dispatch_mcp_cmd(&mcp_cmd, &workdir).await?;
                     return Ok(EXIT_SUCCESS);
                 }
                 ConfigCmd::Preset { cmd: preset_cmd } => {

@@ -4,7 +4,7 @@
 > and outstanding work. For agent execution protocols and task-level checklists, see
 > `tmp/status-quo/MASTER-EXECUTION-CHECKLIST.md`.
 >
-> Last updated: 2026-09-05
+> Last updated: 2026-09-07
 
 ---
 
@@ -141,16 +141,16 @@ Inbox receive event recomputes its receipt timestamp because the durable event h
 
 ## UX/TUI/Workflow Mori Parity (PR #73, 2026-08-31)
 
-53 items across 10 batches; **37 DONE, 14 PARTIAL, 2 NOT STARTED**.
+53 items across 10 batches; **38 DONE, 13 PARTIAL, 2 NOT STARTED**.
 107 files changed (+10,186/-1,094). Full audit: `tmp/tui-parity/` (consolidated from `ux-audit/`, `ux-mori-parity-audit/`, now in `archive/`).
 
-### Done (37)
+### Done (38)
 
 CLI: aliases (#77), default-run, CARGO_BUILD_JOBS (#206), JSON output (#113), verb
 consolidation (#65), error quality improvements, doctor diagnostics (#79), lock scope
 reduction (#226), --from-backlog generation (#227), preflight checks (#120), TOML reliability
 (#85), plan run UX friction (#107), CLI control commands (#146), runner-v2 migration (#131),
-backlog import (#147), provider config UX (#222).
+backlog import (#147), provider config UX (#222), CLI error quality (#100, 2026-09-07).
 
 TUI: ROSEDUST v2 palette (#123, #71), header bar (#124), keybind hints (#157), notification
 toasts (#201), error digest (#126), agent status grid (#189), cost-by-model table (#156),
@@ -158,7 +158,7 @@ wave hierarchy widget (#125), plan DAG (#117), queue manifest (#116), push-mode 
 (#41), F7 inspect view (#127), daimon view (#10), screenshots (#112), overlap analysis
 (#195), validate --dag (#200), merge proof (#140), live feedback (#108).
 
-### Partial (14)
+### Partial (13)
 
 | Item | Gap |
 |------|-----|
@@ -171,7 +171,6 @@ wave hierarchy widget (#125), plan DAG (#117), queue manifest (#116), push-mode 
 | #219 Plan tree filter | Input/state done; widget uses old filter fields |
 | #109 TUI streaming RC-7 | No live gate-rung-in-progress indicator |
 | #121 Data model unification | Phase A done; Phases B/C (migration) not started |
-| #100 CLI error quality | Recovery hints on key paths; 285 eprintln! remain |
 | #178 Conductor supervisor | Tick+thresholds wired; actions only log |
 | #134 Replan escalation | 4 strategies defined; not wired to retry-count ladder |
 | #223 Setup wizard | stdin wizard, not ratatui-based per spec |
@@ -765,6 +764,33 @@ remaining capacity. See `crates/roko-graph/src/` for details.
 
 ## Recently Resolved
 
+### Batch 2026-09-07 (dispatch, config, gates, MCP code intelligence)
+
+18 backlog items implemented and archived. The batch spans CLI dispatch, configuration
+schema, gate improvements, MCP tooling, prompt assembly, safety hardening, and cloud
+worker lifecycle.
+
+| # | Item | Category |
+|---|---|---|
+| 38 | Provider error UX (actionable status-code messages) | CLI/dispatch |
+| 100 | CLI error quality (recovery hints, tracing migration) | CLI/UX |
+| 143 | Dream consolidation trigger after plan completion | Runtime/dreams |
+| 169 | Cybernetic run metrics (self-tracking performance) | Observability |
+| 203 | Cross-agent error pattern sharing via SharedAgentFactory | Learning |
+| 204 | Review cycle cap with force-commit escape | Dispatch |
+| 205 | `get_plan_context` MCP tool for mid-turn plan state queries | MCP |
+| 210 | Code index as structured prompt section | Compose/prompts |
+| 211 | Prompt snapshot tests for role and retry differentiation | Testing |
+| 218 | Dedicated gate failures JSONL | Gates/persistence |
+| 220 | Static `disabled_providers` config list | Config |
+| 221 | Per-role agent enable/disable toggles | Config/agents |
+| 302 | Prune orphaned `run.rs` APIs and ignored parameters | Dead code |
+| 314 | Make `config mcp test` perform a real MCP handshake | MCP/config |
+| 322 | Direct chat path parity and response correctness | Chat/CLI |
+| 340 | Config schema integrity and live `roko.toml` repair | Config |
+| 353 | Harden corrigibility classification beyond fixed English keywords | Safety |
+| 373 | Restrict cloud worker branches and staged changes | Worker/git |
+
 ### Batch 2026-09-05 (engine convergence)
 
 - Graph Engine is now the sole production engine (#260 default, #276 retired WorkflowEngine)
@@ -850,7 +876,7 @@ remaining capacity. See `crates/roko-graph/src/` for details.
 > Fully specced backlog items. Master index at `tmp/backlog/00-INDEX.md`.
 > Each spec is self-contained: problem, what exists, what to do, acceptance criteria.
 >
-> Last reconciled: 2026-08-18 (75-82 added from examples dogfood audit)
+> Last reconciled: 2026-09-07 (18 items closed; see session entry below)
 
 ### P0 — Critical
 
@@ -896,7 +922,6 @@ remaining capacity. See `crates/roko-graph/src/` for details.
 | 34 | PRD cascade learning (model routing from PRD agent calls) | S |
 | 35 | CLI output redesign (structured reporter) | M |
 | 37 | Multi-process locking (.roko/ concurrent writer safety) | S |
-| 38 | Provider error UX (actionable status-code messages) | S |
 | 39 | ACP learning-pipeline parity (experiment receipts) | M |
 | 40 | Gate rung input completion (diff, fact-check, builder) | S |
 | 43 | Clippy suppression removal (blanket allows in lib.rs) | M |
@@ -945,6 +970,10 @@ remaining capacity. See `crates/roko-graph/src/` for details.
 
 Items 06, 07, 08, 36 (output budgeting, inference cache, key rotation, atomic file I/O)
 are fully implemented and removed from the active index.
+
+Items 38, 100, 143, 169, 203, 204, 205, 210, 211, 218, 220, 221, 302, 314, 322, 340,
+353, 373 were implemented on 2026-09-07 and moved to `tmp/backlog/archive/`. See the
+session entry under "Recently Resolved" for details.
 
 Items 04, 05, 15, 16 have partial implementations — types/scaffolding exist but runner
 wiring is incomplete. Specs detail exactly what's present vs. missing.
@@ -1025,7 +1054,7 @@ These findings from the audits are not currently tracked as named entries in GAP
 | 6/9 `roko new` scaffold types generate non-compiling code | Critical | Engram-to-Signal rename left stale identifiers in templates; only composer, template, and event-source produce working output | cli-audit/15-index-new-explain-completions.md |
 | `knowledge sync` can corrupt version vectors | Critical | Invalid `--direction` values silently skip both sync phases but still corrupt version vectors; no validation on the direction parameter | cli-audit/06-knowledge.md |
 | 5 marketplace serve stubs return 200/201 instead of 501 | High | `publish`, `fork`, etc. return success status codes with `"stub": true` in the body, misleading clients | cli-audit/09-serve.md |
-| No `deny_unknown_fields` on RokoConfig | High | Typos and ghost config sections (including dead `[isfr]` and `[[gate]]`) go unnoticed | cli-audit/21-config-schema.md |
+| ~~No `deny_unknown_fields` on RokoConfig~~ | ~~High~~ | Resolved (2026-09-07, #340): strict schema validation and live config repair | cli-audit/21-config-schema.md |
 | `--json` flag ignored by ~15+ subcommands | Medium | PRD (all 9), knowledge (6), learn tune, agent status silently ignore the flag | cli-audit/08-config.md |
 | `--role` flag hardcoded by research and PRD commands | Medium | Global flag ignored; roles are hardcoded instead | cli-audit/03-prd.md, cli-audit/05-research.md |
 | `config set --global` flag silently ignored | Medium | Bound as `_` in match arm; writes are always local | cli-audit/08-config.md |

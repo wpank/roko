@@ -6,7 +6,7 @@
 //! `warnings: Vec<String>`. The final [`ComposedPrompt`] additionally
 //! records which sections were included and which were dropped.
 //!
-//! These payloads are consumed and produced by the seven enrichment provider
+//! These payloads are consumed and produced by the eight enrichment provider
 //! Cells and the aggregate Cell. They are transported as `Signal` bodies
 //! through the graph engine.
 
@@ -48,7 +48,7 @@ impl ComposeScope {
 // Request
 // ---------------------------------------------------------------------------
 
-/// Input signal consumed by all seven enrichment provider Cells.
+/// Input signal consumed by all eight enrichment provider Cells.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ComposeRequest {
     /// Identity scope for this compose invocation.
@@ -193,6 +193,14 @@ enrichment_payload!(
     SafetySections, "compose.safety@1"
 );
 
+enrichment_payload!(
+    /// Output from the code index enrichment Cell (`compose.code_index@1`).
+    ///
+    /// Provides structural code context (symbols, files, call graphs) from
+    /// the workspace code intelligence index.
+    CodeIndexSections, "compose.code_index@1"
+);
+
 // ---------------------------------------------------------------------------
 // Experiment assignment
 // ---------------------------------------------------------------------------
@@ -311,6 +319,8 @@ pub mod cell_ids {
     pub const SAFETY: &str = "compose.safety@1";
     /// Experiment assignment provider Cell.
     pub const EXPERIMENT: &str = "compose.experiment@1";
+    /// Code index enrichment provider Cell.
+    pub const CODE_INDEX: &str = "compose.code_index@1";
     /// Aggregate composition Cell.
     pub const AGGREGATE: &str = "compose.aggregate@1";
 
@@ -323,6 +333,7 @@ pub mod cell_ids {
         MODULATION,
         SAFETY,
         EXPERIMENT,
+        CODE_INDEX,
     ];
 
     /// Required provider Cell IDs -- aggregate fails closed if missing.
@@ -443,7 +454,7 @@ mod tests {
 
     #[test]
     fn cell_ids_all_providers_count() {
-        assert_eq!(cell_ids::ALL_PROVIDERS.len(), 7);
+        assert_eq!(cell_ids::ALL_PROVIDERS.len(), 8);
     }
 
     #[test]

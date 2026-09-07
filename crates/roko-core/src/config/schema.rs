@@ -87,6 +87,7 @@ fn extract_config_version_from_text(s: &str) -> u32 {
 
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RokoConfig {
     #[serde(default = "default_config_version")]
     pub config_version: u32,

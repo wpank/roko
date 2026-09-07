@@ -5,24 +5,20 @@
 //! into a single Prompt signal, invokes the configured agent backend, runs
 //! each configured gate on the working directory, and emits an Episode.
 
-use crate::config::{Config, GateConfig, PromptFile};
+use crate::config::{Config, GateConfig};
 use crate::model_selection::{EffectiveModelSelection, SelectionSource, resolve_effective_model};
 use crate::output_format;
-use crate::state_hub::{StateHub, StateHubSender};
+use crate::state_hub::StateHub;
 use anyhow::{Context as _, Result, anyhow};
 use chrono::Utc;
 use roko_agent::provider::is_known_protocol_command;
 use roko_core::agent::resolve_model;
 use roko_core::config::schema::RokoConfig;
-use roko_core::dashboard_snapshot::DashboardEvent;
-use roko_core::foundation::{
-    EventConsumer as WorkflowEventConsumer, ShellGateCommand as CoreShellGateCommand,
-};
+use roko_core::foundation::ShellGateCommand as CoreShellGateCommand;
 use roko_learn::episode_logger::{Episode, EpisodeLogger};
 use roko_learn::playbook::Playbook;
-use roko_runtime::workflow_contract::{WorkflowConfig, WorkflowRunReport};
+use roko_runtime::workflow_contract::WorkflowRunReport;
 use roko_serve::bench::BenchStrategy;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -136,90 +132,6 @@ fn write_shared_transcript(
     output_format::note("run with --serve to make the URL accessible");
 
     Ok(token)
-}
-
-/// Summary of running a plan through the WorkflowEngine.
-#[derive(Debug)]
-pub struct PlanWorkflowReport {
-    /// Total tasks attempted.
-    pub total: usize,
-    /// Tasks that completed successfully.
-    pub passed: usize,
-    /// Tasks that failed.
-    pub failed: usize,
-    /// Per-task outcomes: `(task_id, success, message)`.
-    pub outcomes: Vec<(String, bool, String)>,
-    pub task_reports: Vec<PlanTaskWorkflowReport>,
-    pub task_errors: Vec<PlanTaskWorkflowError>,
-}
-
-#[derive(Debug, Clone)]
-pub struct PlanWorkflowTask {
-    pub plan_id: String,
-    pub task: crate::task_parser::TaskDef,
-}
-
-#[derive(Debug, Clone)]
-pub struct PlanTaskWorkflowReport {
-    pub plan_id: String,
-    pub task_id: String,
-    pub report: WorkflowRunReport,
-}
-
-#[derive(Debug, Clone)]
-pub struct PlanTaskWorkflowError {
-    pub plan_id: String,
-    pub task_id: String,
-    pub error: String,
-}
-
-/// Bridges WorkflowEngine lifecycle events to the StateHub for TUI/SSE/WS
-/// consumption.
-struct StateHubBridge {
-    sender: StateHubSender,
-}
-
-impl WorkflowEventConsumer for StateHubBridge {
-    fn consume(&self, event: &roko_core::RuntimeEvent) {
-        match event {
-            roko_core::RuntimeEvent::WorkflowStarted {
-                run_id,
-                template,
-                prompt,
-            } => {
-                self.sender.publish(DashboardEvent::PlanStarted {
-                    plan_id: run_id.clone(),
-                    tasks_total: 0,
-                });
-                self.sender.publish(DashboardEvent::TaskStarted {
-                    plan_id: run_id.clone(),
-                    task_id: "workflow".to_string(),
-                    title: truncate(prompt, 60).to_string(),
-                    phase: format!("starting ({template})"),
-                });
-            }
-            roko_core::RuntimeEvent::PhaseTransition { run_id, from, to } => {
-                self.sender.publish(DashboardEvent::PhaseTransition {
-                    plan_id: run_id.clone(),
-                    from: from.clone(),
-                    to: to.clone(),
-                });
-            }
-            roko_core::RuntimeEvent::WorkflowCompleted { run_id, outcome } => {
-                let success = matches!(outcome, roko_core::WorkflowOutcome::Success { .. });
-                self.sender.publish(DashboardEvent::TaskCompleted {
-                    plan_id: run_id.clone(),
-                    task_id: "workflow".to_string(),
-                    outcome: format!("{outcome:?}"),
-                });
-                self.sender.publish(DashboardEvent::PlanCompleted {
-                    plan_id: run_id.clone(),
-                    success,
-                });
-            }
-            _ => {}
-        }
-    }
 }
 
 fn truncate(text: &str, max_chars: usize) -> &str {
@@ -495,28 +407,6 @@ impl WorkflowServiceAdapter {
     }
 }
 
-pub(crate) fn workflow_config_for_template(workflow_template: &str) -> WorkflowConfig {
-    match workflow_template {
-        "express" => WorkflowConfig::express(),
-        "full" => WorkflowConfig::full(),
-        _ => WorkflowConfig::standard(),
-    }
-}
-
-/// Convert a `PipelineBandConfig` from `roko.toml` into a `WorkflowConfig` for the V2 engine.
-pub(crate) fn workflow_config_from_band(
-    band: &roko_core::config::PipelineBandConfig,
-) -> WorkflowConfig {
-    WorkflowConfig {
-        has_strategy: band.strategist,
-        has_review: band.reviewers,
-        max_iterations: band.max_iterations,
-        // When reviewers are disabled, one autofix attempt is enough.
-        // When reviewers are enabled, allow two rounds.
-        max_autofix_attempts: if band.reviewers { 2 } else { 1 },
-    }
-}
-
 pub fn workflow_enabled_gate_names(gates: &[GateConfig]) -> Vec<String> {
     gates
         .iter()
@@ -614,63 +504,7 @@ pub async fn run_workflow_report(
     ))
 }
 
-/// Execute a prompt via the workflow engine.
-///
-/// Compatibility wrapper — delegates to [`run_workflow_report`].
-pub async fn run_with_workflow_engine(
-    prompt: &str,
-    workdir: &std::path::Path,
-    workflow_template: &str,
-    enabled_gates: Vec<String>,
-) -> anyhow::Result<WorkflowRunReport> {
-    run_workflow_report(
-        prompt,
-        workdir,
-        workflow_template,
-        enabled_gates,
-        Vec::new(),
-        None,
-        &CliOverrides::default(),
-    )
-    .await
-}
-
-/// Execute a prompt and optionally publish lifecycle events to a StateHub.
-///
-/// Compatibility wrapper — delegates to [`run_workflow_report`], then prints.
-pub async fn run_with_workflow_engine_with_hub(
-    prompt: &str,
-    workdir: &std::path::Path,
-    workflow_template: &str,
-    enabled_gates: Vec<String>,
-    shell_gates: Vec<CoreShellGateCommand>,
-    external_hub: Option<&StateHub>,
-    overrides: &CliOverrides,
-) -> anyhow::Result<WorkflowRunReport> {
-    let workflow_label = match workflow_template {
-        "express" | "mechanical" | "standard" => "mechanical",
-        "focused" => "focused",
-        "integrative" => "integrative",
-        "full" | "architectural" => "architectural",
-        _ => workflow_template,
-    };
-
-    let report = run_workflow_report(
-        prompt,
-        workdir,
-        workflow_template,
-        enabled_gates,
-        shell_gates,
-        external_hub,
-        overrides,
-    )
-    .await?;
-    print_workflow_run_report(prompt, workflow_label, &report);
-    Ok(report)
-}
-
-/// Like [`run_with_workflow_engine_with_hub`] but returns the raw report
-/// without printing.
+/// Like [`run_workflow_report`] but returns the raw report without printing.
 pub async fn run_workflow_engine_report_with_hub(
     prompt: &str,
     workdir: &std::path::Path,
@@ -690,43 +524,6 @@ pub async fn run_workflow_engine_report_with_hub(
         overrides,
     )
     .await
-}
-
-pub(crate) fn workflow_prompt_with_config_files(
-    workdir: &Path,
-    config: &Config,
-    prompt: &str,
-) -> anyhow::Result<String> {
-    if config.prompt.files.is_empty() {
-        return Ok(prompt.to_string());
-    }
-
-    let mut enriched = prompt.to_string();
-    enriched.push_str("\n\n## Prompt Files\n");
-    for file in &config.prompt.files {
-        enriched.push_str("\n");
-        enriched.push_str(&render_prompt_file_for_workflow(workdir, file)?);
-    }
-    Ok(enriched)
-}
-
-fn render_prompt_file_for_workflow(workdir: &Path, spec: &PromptFile) -> anyhow::Result<String> {
-    let full_path = if spec.path.is_absolute() {
-        spec.path.clone()
-    } else {
-        workdir.join(&spec.path)
-    };
-    let contents = std::fs::read_to_string(&full_path)
-        .with_context(|| format!("read prompt file {}", full_path.display()))?;
-    let label = spec
-        .name
-        .as_deref()
-        .unwrap_or_else(|| spec.path.to_str().unwrap_or("prompt_file"));
-    Ok(format!(
-        "### {label}\nPath: `{}`\n\n{}",
-        spec.path.display(),
-        contents
-    ))
 }
 
 // run_workflow_engine_with_services and its pub wrapper removed by #276.
@@ -784,375 +581,6 @@ pub fn print_workflow_run_report(
         }
     }
     output_format::end(&output_format::dim(&report.run_id));
-}
-
-/// Execute a plan's tasks via WorkflowEngine (v2 engine path for `roko plan run`).
-///
-/// Iterates over discovered task prompts and runs each sequentially through
-/// the WorkflowEngine. Skips the 21K-line PlanRunner orchestration path.
-pub async fn run_plan_with_workflow_engine(
-    tasks: &[(String, String)],
-    workdir: &std::path::Path,
-    workflow_template: &str,
-    enabled_gates: Vec<String>,
-    shell_gates: Vec<CoreShellGateCommand>,
-) -> anyhow::Result<PlanWorkflowReport> {
-    // Convert (task_id, prompt) pairs into (plan_id, task_id, prompt) triples.
-    // Derive plan_id from the task_id prefix (e.g. "my-plan:task-1" → "my-plan");
-    // falls back to the full task_id when no colon separator is present.
-    let triples: Vec<(String, String, String)> = tasks
-        .iter()
-        .map(|(task_id, prompt)| {
-            let plan_id = task_id.split(':').next().unwrap_or(task_id).to_string();
-            (plan_id, task_id.clone(), prompt.clone())
-        })
-        .collect();
-    run_plan_prompts_core(
-        triples,
-        workdir,
-        workflow_template,
-        enabled_gates,
-        shell_gates,
-    )
-    .await
-}
-
-pub async fn run_plan_tasks_with_workflow_engine(
-    tasks: &[PlanWorkflowTask],
-    workdir: &std::path::Path,
-    workflow_template: &str,
-    enabled_gates: Vec<String>,
-    shell_gates: Vec<CoreShellGateCommand>,
-) -> anyhow::Result<PlanWorkflowReport> {
-    // Build prompts up front so the shared core loop only handles (plan_id, task_id, prompt).
-    let triples: Vec<(String, String, String)> = tasks
-        .iter()
-        .map(|pt| {
-            let prompt = pt.task.build_prompt(&pt.plan_id, workdir);
-            (pt.plan_id.clone(), pt.task.id.clone(), prompt)
-        })
-        .collect();
-    run_plan_prompts_core(
-        triples,
-        workdir,
-        workflow_template,
-        enabled_gates,
-        shell_gates,
-    )
-    .await
-}
-
-/// Shared accumulator loop for both plan-running entry points.
-///
-/// Runs each `(plan_id, task_id, prompt)` triple sequentially through the
-/// WorkflowEngine and collects per-task outcomes into a [`PlanWorkflowReport`].
-async fn run_plan_prompts_core(
-    triples: Vec<(String, String, String)>,
-    workdir: &std::path::Path,
-    workflow_template: &str,
-    enabled_gates: Vec<String>,
-    shell_gates: Vec<CoreShellGateCommand>,
-) -> anyhow::Result<PlanWorkflowReport> {
-    let total = triples.len();
-    let mut passed = 0;
-    let mut failed = 0;
-    let mut outcomes = Vec::with_capacity(total);
-    let mut task_reports = Vec::new();
-    let mut task_errors = Vec::new();
-
-    for (plan_id, task_id, prompt) in triples {
-        match execute_plan_prompt_with_workflow_engine(
-            &prompt,
-            workdir,
-            workflow_template,
-            enabled_gates.clone(),
-            shell_gates.clone(),
-        )
-        .await
-        {
-            Ok(result) => {
-                let success = result.success;
-                let message = format!(
-                    "{} in {} agent turn{}",
-                    if success { "success" } else { "failed" },
-                    result.agent_turns,
-                    if result.agent_turns == 1 { "" } else { "s" },
-                );
-                println!("[{plan_id}:{task_id}] {message}");
-                tracing::info!(
-                    plan_id = %plan_id,
-                    task_id = %task_id,
-                    success = result.success,
-                    agent_turns = result.agent_turns,
-                    "v2 workflow task complete"
-                );
-                if success {
-                    passed += 1;
-                } else {
-                    failed += 1;
-                }
-                outcomes.push((task_id.clone(), success, message));
-                task_reports.push(PlanTaskWorkflowReport {
-                    plan_id,
-                    task_id,
-                    report: result,
-                });
-            }
-            Err(error) => {
-                let message = error.to_string();
-                println!("[{plan_id}:{task_id}] failed: {message}");
-                tracing::warn!(
-                    plan_id = %plan_id,
-                    task_id = %task_id,
-                    error = %message,
-                    "v2 workflow task failed"
-                );
-                failed += 1;
-                outcomes.push((task_id.clone(), false, message.clone()));
-                task_errors.push(PlanTaskWorkflowError {
-                    plan_id,
-                    task_id,
-                    error: message,
-                });
-            }
-        }
-    }
-
-    Ok(PlanWorkflowReport {
-        total,
-        passed,
-        failed,
-        outcomes,
-        task_reports,
-        task_errors,
-    })
-}
-
-pub async fn execute_plan_task_with_workflow_engine(
-    plan_id: &str,
-    task: &crate::task_parser::TaskDef,
-    workdir: &std::path::Path,
-    workflow_template: &str,
-    enabled_gates: Vec<String>,
-    shell_gates: Vec<CoreShellGateCommand>,
-) -> anyhow::Result<WorkflowRunReport> {
-    let prompt = task.build_prompt(plan_id, workdir);
-    execute_plan_prompt_with_workflow_engine(
-        &prompt,
-        workdir,
-        workflow_template,
-        enabled_gates,
-        shell_gates,
-    )
-    .await
-}
-
-async fn execute_plan_prompt_with_workflow_engine(
-    prompt: &str,
-    workdir: &std::path::Path,
-    workflow_template: &str,
-    enabled_gates: Vec<String>,
-    shell_gates: Vec<CoreShellGateCommand>,
-) -> anyhow::Result<WorkflowRunReport> {
-    run_workflow_engine_report_with_hub(
-        prompt,
-        workdir,
-        workflow_template,
-        enabled_gates,
-        shell_gates,
-        None,
-        &CliOverrides::default(),
-    )
-    .await
-}
-
-pub fn discover_plan_workflow_tasks(
-    plans_dir: &std::path::Path,
-) -> anyhow::Result<Vec<PlanWorkflowTask>> {
-    let mut tasks = Vec::new();
-    for tasks_path in discover_task_files(plans_dir)? {
-        let tasks_file = crate::task_parser::TasksFile::parse(&tasks_path)?;
-        let plan_id = tasks_file.meta.plan.clone();
-        tasks.extend(
-            dependency_ordered_task_defs(tasks_file.tasks)
-                .into_iter()
-                .map(|task| PlanWorkflowTask {
-                    plan_id: plan_id.clone(),
-                    task,
-                }),
-        );
-    }
-
-    Ok(tasks)
-}
-
-/// Discover task (id, prompt) pairs from a plans directory.
-///
-/// Reads `tasks.toml` files under `plans_dir/*/tasks.toml` and extracts each
-/// task's `id` and `prompt` fields. Returns them in dependency order if
-/// `depends_on` is present, otherwise in declaration order.
-pub fn discover_task_prompts(plans_dir: &std::path::Path) -> anyhow::Result<Vec<(String, String)>> {
-    #[derive(serde::Deserialize)]
-    struct TasksToml {
-        #[serde(default, rename = "task")]
-        tasks: Vec<TaskEntry>,
-    }
-
-    #[derive(Clone, serde::Deserialize)]
-    struct TaskEntry {
-        id: String,
-        #[serde(default)]
-        prompt: String,
-        #[serde(default)]
-        description: Option<String>,
-        #[serde(default)]
-        depends_on: Vec<String>,
-    }
-
-    fn task_prompt(task: &TaskEntry) -> String {
-        if !task.prompt.trim().is_empty() {
-            task.prompt.clone()
-        } else if let Some(description) = task
-            .description
-            .as_ref()
-            .filter(|description| !description.trim().is_empty())
-        {
-            description.clone()
-        } else {
-            task.id.clone()
-        }
-    }
-
-    fn dependency_ordered_tasks(tasks: Vec<TaskEntry>) -> Vec<TaskEntry> {
-        let mut index_by_id = HashMap::with_capacity(tasks.len());
-        for (index, task) in tasks.iter().enumerate() {
-            index_by_id.entry(task.id.clone()).or_insert(index);
-        }
-
-        let mut emitted = vec![false; tasks.len()];
-        let mut ordered = Vec::with_capacity(tasks.len());
-
-        loop {
-            let mut progressed = false;
-            for (index, task) in tasks.iter().enumerate() {
-                if emitted[index] {
-                    continue;
-                }
-
-                let deps_ready =
-                    task.depends_on
-                        .iter()
-                        .all(|dependency| match index_by_id.get(dependency) {
-                            Some(dependency_index) => emitted[*dependency_index],
-                            None => true,
-                        });
-                if deps_ready {
-                    emitted[index] = true;
-                    ordered.push(task.clone());
-                    progressed = true;
-                }
-            }
-
-            if ordered.len() == tasks.len() {
-                break;
-            }
-            if !progressed {
-                for (index, task) in tasks.iter().enumerate() {
-                    if !emitted[index] {
-                        ordered.push(task.clone());
-                    }
-                }
-                break;
-            }
-        }
-
-        ordered
-    }
-
-    let mut prompts = Vec::new();
-    for tasks_path in discover_task_files(plans_dir)? {
-        let content = std::fs::read_to_string(&tasks_path)
-            .with_context(|| format!("read {}", tasks_path.display()))?;
-        let tasks = toml::from_str::<TasksToml>(&content)
-            .with_context(|| format!("parse {}", tasks_path.display()))?;
-
-        prompts.extend(
-            dependency_ordered_tasks(tasks.tasks)
-                .into_iter()
-                .map(|task| (task.id.clone(), task_prompt(&task))),
-        );
-    }
-
-    Ok(prompts)
-}
-
-fn discover_task_files(plans_dir: &std::path::Path) -> anyhow::Result<Vec<std::path::PathBuf>> {
-    let mut task_files = Vec::new();
-    if plans_dir.join("tasks.toml").is_file() {
-        task_files.push(plans_dir.join("tasks.toml"));
-    } else {
-        for entry in
-            std::fs::read_dir(plans_dir).with_context(|| format!("read {}", plans_dir.display()))?
-        {
-            let entry = entry?;
-            let path = entry.path();
-            let tasks_path = path.join("tasks.toml");
-            if path.is_dir() && tasks_path.is_file() {
-                task_files.push(tasks_path);
-            }
-        }
-        task_files.sort();
-    }
-
-    Ok(task_files)
-}
-
-fn dependency_ordered_task_defs(
-    tasks: Vec<crate::task_parser::TaskDef>,
-) -> Vec<crate::task_parser::TaskDef> {
-    let mut index_by_id = HashMap::with_capacity(tasks.len());
-    for (index, task) in tasks.iter().enumerate() {
-        index_by_id.entry(task.id.clone()).or_insert(index);
-    }
-
-    let mut emitted = vec![false; tasks.len()];
-    let mut ordered = Vec::with_capacity(tasks.len());
-
-    loop {
-        let mut progressed = false;
-        for (index, task) in tasks.iter().enumerate() {
-            if emitted[index] {
-                continue;
-            }
-
-            let deps_ready =
-                task.depends_on
-                    .iter()
-                    .all(|dependency| match index_by_id.get(dependency) {
-                        Some(dependency_index) => emitted[*dependency_index],
-                        None => true,
-                    });
-            if deps_ready {
-                emitted[index] = true;
-                ordered.push(task.clone());
-                progressed = true;
-            }
-        }
-
-        if ordered.len() == tasks.len() {
-            break;
-        }
-        if !progressed {
-            for (index, task) in tasks.iter().enumerate() {
-                if !emitted[index] {
-                    ordered.push(task.clone());
-                }
-            }
-            break;
-        }
-    }
-
-    ordered
 }
 
 /// Single-prompt execution via the `ModelCallService` path.
@@ -1268,6 +696,7 @@ fn learning_episode_paths(workdir: &Path) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use roko_runtime::workflow_contract::WorkflowConfig;
     use tempfile::TempDir;
 
     #[test]
@@ -1340,33 +769,6 @@ mod tests {
             );
             assert_eq!(workflow.max_iterations, 2);
         }
-    }
-
-    #[test]
-    fn workflow_config_from_band_maps_pipeline_fields() {
-        let mechanical = roko_core::config::PipelineBandConfig {
-            strategist: false,
-            reviewers: false,
-            reviewer_mode: roko_core::config::PipelineReviewerMode::Quick,
-            max_iterations: 1,
-        };
-        let workflow = workflow_config_from_band(&mechanical);
-        assert!(!workflow.has_strategy);
-        assert!(!workflow.has_review);
-        assert_eq!(workflow.max_iterations, 1);
-        assert_eq!(workflow.max_autofix_attempts, 1);
-
-        let architectural = roko_core::config::PipelineBandConfig {
-            strategist: true,
-            reviewers: true,
-            reviewer_mode: roko_core::config::PipelineReviewerMode::Full,
-            max_iterations: 3,
-        };
-        let workflow = workflow_config_from_band(&architectural);
-        assert!(workflow.has_strategy);
-        assert!(workflow.has_review);
-        assert_eq!(workflow.max_iterations, 3);
-        assert_eq!(workflow.max_autofix_attempts, 2);
     }
 
     #[test]

@@ -194,33 +194,39 @@ impl Drop for RestartRecovery {
         }
         let entry = Arc::clone(&self.entry);
         let registry = Arc::clone(&self.registry);
-        tokio::spawn(async move {
-            let connected = registry
-                .read()
-                .await
-                .get(&entry.manifest.name)
-                .and_then(|info| {
-                    (info.metadata.get("generation").and_then(Value::as_u64)
-                        == Some(entry.generation))
-                    .then_some(info.health.status == ConnectorStatus::Connected)
-                });
-            let Some(connected) = connected else {
-                return;
-            };
-            if !entry.active.load(Ordering::Acquire) {
-                return;
-            }
-            let mut supervision = entry.supervision.write().await;
-            supervision.state = if connected {
-                ConnectorSupervisorState::Monitoring
-            } else if matches!(entry.manifest.reconnect_strategy, ReconnectStrategy::Manual) {
-                ConnectorSupervisorState::Manual
-            } else {
-                ConnectorSupervisorState::Reconnecting
-            };
-            drop(supervision);
-            spawn_supervisor(Arc::clone(&entry), registry);
-        });
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let connected = registry
+                    .read()
+                    .await
+                    .get(&entry.manifest.name)
+                    .and_then(|info| {
+                        (info.metadata.get("generation").and_then(Value::as_u64)
+                            == Some(entry.generation))
+                        .then_some(info.health.status == ConnectorStatus::Connected)
+                    });
+                let Some(connected) = connected else {
+                    return;
+                };
+                if !entry.active.load(Ordering::Acquire) {
+                    return;
+                }
+                let mut supervision = entry.supervision.write().await;
+                supervision.state = if connected {
+                    ConnectorSupervisorState::Monitoring
+                } else if matches!(entry.manifest.reconnect_strategy, ReconnectStrategy::Manual) {
+                    ConnectorSupervisorState::Manual
+                } else {
+                    ConnectorSupervisorState::Reconnecting
+                };
+                drop(supervision);
+                spawn_supervisor(Arc::clone(&entry), registry);
+            });
+        } else {
+            tracing::warn!(
+                "dropping RestartRecovery without async runtime; skipping async cleanup"
+            );
+        }
     }
 }
 
@@ -580,12 +586,18 @@ fn spawn_supervisor(entry: Arc<ManagedConnector>, registry: SharedConnectorRegis
 }
 
 fn spawn_cleanup(entry: Arc<ManagedConnector>) {
-    tokio::spawn(async move {
-        stop_entry(&entry).await;
-        if let Err(error) = entry.connector.lock().await.disconnect().await {
-            tracing::warn!(error = %safe_error(&error), "connector cleanup disconnect failed");
-        }
-    });
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        handle.spawn(async move {
+            stop_entry(&entry).await;
+            if let Err(error) = entry.connector.lock().await.disconnect().await {
+                tracing::warn!(error = %safe_error(&error), "connector cleanup disconnect failed");
+            }
+        });
+    } else {
+        tracing::warn!(
+            "dropping connector entry without async runtime; skipping async cleanup"
+        );
+    }
 }
 
 async fn supervise(

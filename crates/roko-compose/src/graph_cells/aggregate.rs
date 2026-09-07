@@ -27,9 +27,9 @@ use tracing::warn;
 use crate::prompt::{PromptSection, SectionPriority, estimate_tokens};
 
 use super::signals::{
-    ComposeRequest, ComposeScope, ComposedPrompt, EpisodeSections, ExperimentAssignment,
-    KnowledgeSections, ModulationSections, PlaybookSections, SafetySections, TaskContextSections,
-    cell_ids,
+    CodeIndexSections, ComposeRequest, ComposeScope, ComposedPrompt, EpisodeSections,
+    ExperimentAssignment, KnowledgeSections, ModulationSections, PlaybookSections, SafetySections,
+    TaskContextSections, cell_ids,
 };
 
 // ---------------------------------------------------------------------------
@@ -69,7 +69,7 @@ fn classify_section(section: &PromptSection) -> AggregateGroup {
         // Tool instructions
         "tool_instructions" | "tool_hints" => AggregateGroup::ToolInstructions,
         // Knowledge/code context
-        "knowledge_fact" | "domain_context" | "context_layer" | "code_context"
+        "knowledge_fact" | "domain_context" | "context_layer" | "code_context" | "code_index"
         | "pheromone_signals" => AggregateGroup::KnowledgeCodeContext,
         // Episodes/error patterns
         "error_pattern" | "episode_summary" | "recent_failures" => {
@@ -102,7 +102,7 @@ fn classify_section(section: &PromptSection) -> AggregateGroup {
             if let Some(ref src) = section.source_type {
                 match src.as_str() {
                     "safety" => AggregateGroup::Safety,
-                    "knowledge" | "neuro" => AggregateGroup::KnowledgeCodeContext,
+                    "knowledge" | "neuro" | "code_index" => AggregateGroup::KnowledgeCodeContext,
                     "episode" => AggregateGroup::EpisodesErrorPatterns,
                     "playbook" | "skill" | "dream" => AggregateGroup::PlaybookSkills,
                     "modulation" | "daimon" => AggregateGroup::ModulationRouting,
@@ -122,7 +122,7 @@ fn classify_section(section: &PromptSection) -> AggregateGroup {
 
 /// Aggregate composition Cell for the compose graph.
 ///
-/// Consumes enrichment signals from all seven provider Cells and produces
+/// Consumes enrichment signals from all eight provider Cells and produces
 /// a single [`ComposedPrompt`] signal.
 pub struct AggregateCell;
 
@@ -334,6 +334,15 @@ fn collect_enrichment_outputs(
                     sections.extend(generic.sections);
                     warnings.extend(generic.warnings);
                 }
+                CodeIndexSections::PROVIDER_TAG => {
+                    if !generic.scope.matches(request_scope) {
+                        warnings
+                            .push("code_index provider scope mismatch; degrading to empty".into());
+                        continue;
+                    }
+                    sections.extend(generic.sections);
+                    warnings.extend(generic.warnings);
+                }
                 EpisodeSections::PROVIDER_TAG => {
                     if !generic.scope.matches(request_scope) {
                         warnings
@@ -485,6 +494,19 @@ mod tests {
         let payload = KnowledgeSections::new(
             scope.clone(),
             vec![PromptSection::new("knowledge_fact", "Rust uses ownership")],
+        );
+        let body = Body::from_json(&payload).unwrap();
+        Signal::builder(Kind::ContextPack).body(body).build()
+    }
+
+    fn make_code_index_signal(scope: &ComposeScope) -> Signal {
+        let payload = CodeIndexSections::new(
+            scope.clone(),
+            vec![
+                PromptSection::new("code_index", "pub fn dispatch() -> Result<()>")
+                    .with_priority(SectionPriority::Normal)
+                    .with_source("code_index", "workspace"),
+            ],
         );
         let body = Body::from_json(&payload).unwrap();
         Signal::builder(Kind::ContextPack).body(body).build()
@@ -722,12 +744,29 @@ mod tests {
         let role = PromptSection::new("role_identity", "x");
         let task = PromptSection::new("task_brief", "x");
         let knowledge = PromptSection::new("knowledge_fact", "x");
+        let code_index = PromptSection::new("code_index", "x");
         let gate = PromptSection::new("gate_feedback", "x");
 
         assert!((classify_section(&safety) as u8) < (classify_section(&role) as u8));
         assert!((classify_section(&role) as u8) < (classify_section(&knowledge) as u8));
+        // code_index is in the same group as knowledge (KnowledgeCodeContext).
+        assert_eq!(
+            classify_section(&code_index) as u8,
+            classify_section(&knowledge) as u8
+        );
         assert!((classify_section(&knowledge) as u8) < (classify_section(&task) as u8));
         assert!((classify_section(&task) as u8) < (classify_section(&gate) as u8));
+    }
+
+    #[test]
+    fn classify_code_index_by_source_type() {
+        // A section with an unknown name but source_type "code_index" should
+        // still be classified as KnowledgeCodeContext.
+        let section = PromptSection::new("custom_code", "x").with_source("code_index", "workspace");
+        assert_eq!(
+            classify_section(&section) as u8,
+            AggregateGroup::KnowledgeCodeContext as u8
+        );
     }
 
     #[test]
@@ -742,11 +781,11 @@ mod tests {
         );
     }
 
-    /// Full-pipeline test: all 7 providers feed into the aggregate.
+    /// Full-pipeline test: all 8 providers feed into the aggregate.
     /// Verifies non-duplication, correct ordering across all groups, and
     /// that each provider's sections appear exactly once.
     #[tokio::test]
-    async fn full_pipeline_all_seven_providers() {
+    async fn full_pipeline_all_eight_providers() {
         let scope = test_scope();
         let cell = AggregateCell::new();
 
@@ -754,6 +793,7 @@ mod tests {
         let safety_sig = make_safety_signal(&scope);
         let task_ctx_sig = make_task_context_signal(&scope);
         let knowledge_sig = make_knowledge_signal(&scope);
+        let code_index_sig = make_code_index_signal(&scope);
 
         let episodes_sig = {
             let payload = EpisodeSections::new(
@@ -797,6 +837,7 @@ mod tests {
             experiment_sig,
             modulation_sig,
             episodes_sig,
+            code_index_sig,
             playbook_sig,
             knowledge_sig,
             task_ctx_sig,
@@ -811,14 +852,15 @@ mod tests {
 
         let prompt: ComposedPrompt = result[0].body.as_json().unwrap();
 
-        // All 7 sections should be present.
-        assert_eq!(prompt.included_section_ids.len(), 7);
+        // All 8 sections should be present (one per provider).
+        assert_eq!(prompt.included_section_ids.len(), 8);
         assert!(prompt.dropped_section_ids.is_empty());
 
-        // Verify ordering: safety < knowledge < episodes < playbook < task < modulation < experiment.
+        // Verify ordering: safety < knowledge/code_index < episodes < playbook < task < modulation < experiment.
         let text = &prompt.text;
         let safety_pos = text.find("Do not modify safety files").unwrap();
         let knowledge_pos = text.find("Rust uses ownership").unwrap();
+        let code_index_pos = text.find("pub fn dispatch() -> Result<()>").unwrap();
         let episodes_pos = text.find("E0277: add trait bound").unwrap();
         let playbook_pos = text.find("Use builder pattern").unwrap();
         let task_pos = text.find("Implement the widget").unwrap();
@@ -826,7 +868,12 @@ mod tests {
         let experiment_pos = text.find("Try approach B").unwrap();
 
         assert!(safety_pos < knowledge_pos, "safety before knowledge");
-        assert!(knowledge_pos < episodes_pos, "knowledge before episodes");
+        // Knowledge and code_index are in the same aggregate group (KnowledgeCodeContext).
+        assert!(safety_pos < code_index_pos, "safety before code_index");
+        assert!(
+            code_index_pos < episodes_pos,
+            "code_index before episodes"
+        );
         assert!(episodes_pos < playbook_pos, "episodes before playbook");
         assert!(playbook_pos < task_pos, "playbook before task");
         assert!(task_pos < modulation_pos, "task before modulation");
@@ -837,6 +884,93 @@ mod tests {
 
         // Experiment IDs propagated.
         assert_eq!(prompt.active_experiment_ids, vec!["exp-42"]);
+    }
+
+    /// Code index (Normal priority) is dropped before knowledge (High priority)
+    /// when the token budget is tight. This validates #210 acceptance criterion:
+    /// "When total token budget is exceeded, code index is dropped before
+    /// knowledge and playbook sections."
+    #[tokio::test]
+    async fn code_index_dropped_before_knowledge_under_budget_pressure() {
+        let scope = test_scope();
+        let cell = AggregateCell::new();
+
+        // Tight budget: enough for safety (Critical) + task (Critical) +
+        // knowledge (High) but not code_index (Normal).
+        let req = ComposeRequest {
+            scope: scope.clone(),
+            token_budget: Some(80),
+            context_window_tokens: None,
+        };
+        let req_signal = {
+            let body = Body::from_json(&req).unwrap();
+            Signal::builder(Kind::ContextPack).body(body).build()
+        };
+
+        // Knowledge at High priority -- should survive.
+        let knowledge_sig = {
+            let payload = KnowledgeSections::new(
+                scope.clone(),
+                vec![
+                    PromptSection::new("knowledge_fact", "Rust uses ownership")
+                        .with_priority(SectionPriority::High),
+                ],
+            );
+            let body = Body::from_json(&payload).unwrap();
+            Signal::builder(Kind::ContextPack).body(body).build()
+        };
+
+        // Code index at Normal priority -- should be dropped first.
+        let code_index_sig = {
+            let long_content = "x".repeat(400); // ~100 tokens, enough to exceed budget
+            let payload = CodeIndexSections::new(
+                scope.clone(),
+                vec![
+                    PromptSection::new("code_index", long_content)
+                        .with_priority(SectionPriority::Normal)
+                        .with_source("code_index", "workspace"),
+                ],
+            );
+            let body = Body::from_json(&payload).unwrap();
+            Signal::builder(Kind::ContextPack).body(body).build()
+        };
+
+        let input = vec![
+            req_signal,
+            make_safety_signal(&scope),
+            make_task_context_signal(&scope),
+            knowledge_sig,
+            code_index_sig,
+        ];
+
+        let result = cell
+            .execute(input, &roko_graph::CellContext::new())
+            .await
+            .unwrap();
+        let prompt: ComposedPrompt = result[0].body.as_json().unwrap();
+
+        // Knowledge (High) should be included; code_index (Normal) should be dropped.
+        assert!(
+            prompt.text.contains("Rust uses ownership"),
+            "knowledge (High priority) must survive budget pressure"
+        );
+        assert!(
+            !prompt.text.contains("xxxx"),
+            "code_index (Normal priority) must be dropped before knowledge"
+        );
+
+        // The dropped list should mention the code_index section.
+        assert!(
+            !prompt.dropped_section_ids.is_empty(),
+            "at least one section must be dropped"
+        );
+        assert!(
+            prompt
+                .warnings
+                .iter()
+                .any(|w| w.contains("code_index") && w.contains("budget pressure")),
+            "warning must mention code_index was dropped due to budget pressure"
+        );
     }
 
     /// Duplicate sections from multiple providers are deduplicated.

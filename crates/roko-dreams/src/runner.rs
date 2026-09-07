@@ -1277,7 +1277,7 @@ impl Default for DreamRunner {
                     bare_mode: true,
                     effort: "medium".to_string(),
                     fallback_model: None,
-                    timeout_ms: 120_000,
+                    timeout_ms: roko_core::config::timeouts::DEFAULT_AGENT_TIMEOUT_MS,
                     env: Vec::new(),
                 },
             },

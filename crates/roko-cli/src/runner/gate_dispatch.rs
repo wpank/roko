@@ -1239,6 +1239,41 @@ pub async fn run_gate_once(
         "gate completed"
     );
 
+    // ── #218: Persist structured gate failure record ─────────────────
+    //
+    // When the gate fails, classify the raw output and append a
+    // `GateFailureRecord` to `.roko/learn/gate-failures.jsonl` for fast
+    // triage, adaptive threshold learning, and TUI failure digest widgets.
+    if !passed && !all_skipped {
+        let gate_failures_path = RokoLayout::for_project(&workdir).gate_failures_path();
+        let classification = roko_gate::classify_gate_failure(
+            summaries
+                .first()
+                .map(|s| s.gate_name.as_str())
+                .unwrap_or("unknown"),
+            &output,
+        )
+        .with_duration_ms(duration_ms);
+        let record = roko_gate::GateFailureRecord::from_classification(
+            &plan_id,
+            &task_id,
+            summaries
+                .first()
+                .map(|s| s.gate_name.as_str())
+                .unwrap_or("unknown"),
+            rung,
+            &classification,
+        );
+        if let Err(error) = crate::runner::persist::append_jsonl(&gate_failures_path, &record) {
+            warn!(
+                %error,
+                plan_id = %plan_id,
+                task_id = %task_id,
+                "gate failure record write failed (non-fatal)"
+            );
+        }
+    }
+
     GateCompletion {
         kind: effect.kind,
         attempt: Some(effect.attempt.clone()),

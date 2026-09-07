@@ -2,11 +2,12 @@
 
 use anyhow::{Context as _, Result, anyhow};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::ConfigMcpCmd;
 
 /// Dispatch `roko config mcp` subcommands.
-pub(crate) fn dispatch_mcp_cmd(cmd: &ConfigMcpCmd, workdir: &Path) -> Result<()> {
+pub(crate) async fn dispatch_mcp_cmd(cmd: &ConfigMcpCmd, workdir: &Path) -> Result<()> {
     match cmd {
         ConfigMcpCmd::List {
             workdir: wd_override,
@@ -32,7 +33,7 @@ pub(crate) fn dispatch_mcp_cmd(cmd: &ConfigMcpCmd, workdir: &Path) -> Result<()>
         ConfigMcpCmd::Test {
             name,
             workdir: wd_override,
-            timeout_secs: _,
+            timeout_secs,
         } => {
             let wd = wd_override.as_deref().unwrap_or(workdir);
             let resolved = resolve_mcp_config_path(None, wd);
@@ -44,10 +45,19 @@ pub(crate) fn dispatch_mcp_cmd(cmd: &ConfigMcpCmd, workdir: &Path) -> Result<()>
             }
             let cfg = roko_agent::mcp::McpConfig::load(&path)
                 .map_err(|e| anyhow!("parse MCP config at {}: {}", path.display(), e))?;
-            if cfg.servers.iter().any(|s| s.name == *name) {
-                println!("ok: server '{}' found in {}", name, path.display());
-            } else {
-                return Err(anyhow!("server '{}' not found in {}", name, path.display()));
+            let server = cfg
+                .servers
+                .iter()
+                .find(|s| s.name == *name)
+                .ok_or_else(|| anyhow!("server '{}' not found in {}", name, path.display()))?;
+            let custom_timeout = Some(Duration::from_secs(*timeout_secs));
+            let report = roko_agent::mcp::test_mcp_server(server, path.clone(), custom_timeout).await;
+            println!("MCP test: {} ({})", server.name, path.display());
+            println!("  status: {:?}", report.status);
+            println!("  protocol: {}", report.protocol_version.as_deref().unwrap_or("n/a"));
+            println!("  tools: {}", report.tool_count);
+            if report.status == roko_agent::mcp::McpTestStatus::Failed {
+                return Err(anyhow!("MCP test failed for server '{}'", name));
             }
             Ok(())
         }

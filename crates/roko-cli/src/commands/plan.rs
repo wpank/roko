@@ -190,7 +190,9 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             let Some(plan_info) =
                 roko_cli::plan::discover_plan_by_id(&wd, plan_id).map_err(|e| anyhow!("{e}"))?
             else {
-                anyhow::bail!("plan '{plan_id}' not found");
+                anyhow::bail!(
+                    "plan '{plan_id}' not found.\n  hint: run `roko plan list` to see available plans, or `roko plan create` to create a new one"
+                );
             };
             let summary = roko_cli::plan::summarize_plan_info(&plan_info);
             let tasks_path = roko_cli::plan::tasks_path(&plan_info);
@@ -455,7 +457,6 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             worktree_per_task,
             rich_topology,
         } => {
-            let _t_total = std::time::Instant::now();
             let _t_setup = std::time::Instant::now();
 
             // The global `--model` flag (with `--force-model` and
@@ -2335,6 +2336,7 @@ async fn cmd_plan_run_engine(
     use roko_graph::convert::{PlanTaskInfo, plan_to_graph};
     use roko_graph::engine::GraphEngine;
 
+    let run_start = std::time::Instant::now();
     let plans = roko_cli::runner::plan_loader::load_plans(plans_dir)?;
     // Validate the complete selected set before initializing extensions or
     // launching a provider. This makes missing and cyclic cross-plan
@@ -2393,7 +2395,8 @@ async fn cmd_plan_run_engine(
                 .learn_dir()
                 .join("provider-health.json"),
         ),
-    ));
+    ))
+    .with_error_patterns_from_disk(workdir);
     let plugin_catalog = roko_cli::runner::extension_loader::resolve_plugin_tool_catalog(
         workdir,
         &roko_config.agent.extensions,
@@ -2418,6 +2421,30 @@ async fn cmd_plan_run_engine(
     let graph_learn_dir = graph_layout.learn_dir();
     let _ = std::fs::create_dir_all(&graph_learn_dir);
 
+    // ── #144: Construct daimon state early so it can be shared between
+    //    the feedback facade (for plan-completion persistence) and the
+    //    GraphFeedbackContext (for dispatch-time affect modulation). ───────
+    let affect_path = workdir.join(".roko").join("daimon").join("affect.json");
+    let shared_daimon_state: Option<std::sync::Arc<std::sync::Mutex<roko_daimon::DaimonState>>> = {
+        let dims_vec = &roko_config.daimon.strategy_space.dimensions;
+        if dims_vec.len() == 8 {
+            let dims: [String; 8] = dims_vec.clone().try_into().unwrap();
+            let def = roko_daimon::StrategySpaceDefinition {
+                domain: roko_config.daimon.strategy_space.domain.clone(),
+                dimensions: dims,
+            };
+            let mut s = roko_daimon::DaimonState::load_or_new(&affect_path);
+            let _ = s.configure_strategy_space(def);
+            Some(std::sync::Arc::new(std::sync::Mutex::new(s)))
+        } else {
+            tracing::warn!(
+                dims = dims_vec.len(),
+                "daimon strategy_space.dimensions must have exactly 8 entries; skipping"
+            );
+            None
+        }
+    };
+
     let graph_episodes_path = graph_layout.root_episodes_path();
     let graph_feedback_facade = {
         let mut facade = roko_cli::runtime_feedback::FeedbackFacade::new()
@@ -2431,6 +2458,26 @@ async fn cmd_plan_run_engine(
                 ),
             ));
         }
+
+        // ── #143: Dream consolidation trigger on plan completion ────────
+        facade = facade.with_sink(std::sync::Arc::new(
+            roko_cli::runtime_feedback::DreamConsolidationSink::new(
+                workdir.to_path_buf(),
+                roko_config.learning.dream_on_completion,
+                roko_config.learning.dreams.trigger_on_plan_complete,
+            ),
+        ));
+
+        // ── #144: Daimon affect persistence on plan completion ──────────
+        if let Some(ref daimon) = shared_daimon_state {
+            facade = facade.with_sink(std::sync::Arc::new(
+                roko_cli::runtime_feedback::DaimonPersistenceSink::new(
+                    affect_path.clone(),
+                    std::sync::Arc::clone(daimon),
+                ),
+            ));
+        }
+
         std::sync::Arc::new(facade)
     };
 
@@ -2489,30 +2536,12 @@ async fn cmd_plan_run_engine(
         efficiency_path: Some(graph_learn_dir.join("efficiency.jsonl")),
         costs_path: Some(graph_learn_dir.join("costs.jsonl")),
         playbook_dir: Some(graph_learn_dir.join("playbooks")),
-        daimon_state: {
-            // Convert StrategySpaceConfig -> StrategySpaceDefinition manually,
-            // matching the CLI adapter conversion in DaimonConfig::from_core.
-            let dims_vec = &roko_config.daimon.strategy_space.dimensions;
-            if dims_vec.len() == 8 {
-                let dims: [String; 8] = dims_vec.clone().try_into().unwrap();
-                let def = roko_daimon::StrategySpaceDefinition {
-                    domain: roko_config.daimon.strategy_space.domain.clone(),
-                    dimensions: dims,
-                };
-                let mut s = roko_daimon::DaimonState::load_or_new(
-                    workdir.join(".roko").join("daimon").join("affect.json"),
-                );
-                let _ = s.configure_strategy_space(def);
-                Some(std::sync::Arc::new(std::sync::Mutex::new(s)))
-            } else {
-                tracing::warn!(
-                    dims = dims_vec.len(),
-                    "daimon strategy_space.dimensions must have exactly 8 entries; skipping"
-                );
-                None
-            }
-        },
+        // Reuse the daimon state constructed above so the feedback facade
+        // persistence sink and dispatch-time modulation share the same
+        // mutable state (#144).
+        daimon_state: shared_daimon_state,
         experiment_store_path: Some(graph_learn_dir.join("experiments.json")),
+        gate_failures_path: Some(graph_layout.gate_failures_path()),
         replan_on_gate_failure: roko_config.learning.replan_on_gate_failure,
         coding_oracle: Some(coding_oracle),
         gate_gaming_detector: Some(gate_gaming_detector),
@@ -3032,6 +3061,61 @@ async fn cmd_plan_run_engine(
         if let Err(err) = exp.save() {
             tracing::warn!(error = %err, "failed to persist holdout experiment state (non-fatal)");
         }
+    }
+
+    // ── Persist run metrics (backlog #169) ──────────────────────────
+    //
+    // Collect task counts and cost from the just-completed plan loop and
+    // append a structured RunMetricsRecord to `.roko/learn/run-metrics.jsonl`.
+    // The write is fire-and-forget on a background task so it never blocks
+    // the TUI exit path.
+    {
+        let duration_ms = run_start.elapsed().as_millis() as u64;
+        let per_plan: Vec<roko_learn::run_metrics::PlanMetrics> = plan_outcomes
+            .iter()
+            .map(|(id, succeeded)| {
+                let plan_tasks = plans
+                    .iter()
+                    .find(|p| &p.id == id)
+                    .map_or(0, |p| p.tasks.tasks.len());
+                let completed = if *succeeded { plan_tasks } else { 0 };
+                roko_learn::run_metrics::PlanMetrics {
+                    plan_id: id.clone(),
+                    completed: *succeeded,
+                    tasks_completed: completed,
+                    tasks_failed: plan_tasks.saturating_sub(completed),
+                }
+            })
+            .collect();
+        let tasks_completed: usize = per_plan.iter().map(|p| p.tasks_completed).sum();
+        let tasks_failed: usize = per_plan.iter().map(|p| p.tasks_failed).sum();
+        let any_budget_exhausted = plans.iter().any(|p| {
+            graph_task_dispatcher
+                .plan_budget_snapshot(&p.id)
+                .exhausted
+        });
+        let (agg_tokens_in, agg_tokens_out, agg_dispatch_count) =
+            graph_task_dispatcher.run_aggregate_stats();
+        let record = roko_learn::run_metrics::RunMetricsRecord {
+            run_id: format!("graph-run-{}", chrono::Utc::now().timestamp_millis().max(0)),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            duration_ms,
+            total_tasks,
+            tasks_completed,
+            tasks_failed,
+            total_cost_usd,
+            total_tokens_in: agg_tokens_in,
+            total_tokens_out: agg_tokens_out,
+            total_agent_calls: agg_dispatch_count as usize,
+            budget_exhausted: any_budget_exhausted,
+            plans: per_plan,
+        };
+        let metrics_path = graph_learn_dir.join("run-metrics.jsonl");
+        tokio::spawn(async move {
+            if let Err(err) = roko_learn::run_metrics::append_run_metrics(&metrics_path, &record) {
+                tracing::warn!(error = %err, "failed to persist run metrics (non-fatal)");
+            }
+        });
     }
 
     join_approval_tui_thread(tui_handle.take());

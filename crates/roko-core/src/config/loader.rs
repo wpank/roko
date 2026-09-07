@@ -599,6 +599,12 @@ fn parse_from_resolved_path(
                 tracing::warn!(path = %p.display(), "config migration warning: {warning}");
             }
             let explicit_fields = toml_leaf_paths(&value);
+            // Strip unknown fields so that `deny_unknown_fields` on
+            // RokoConfig (and its sub-structs) does not reject
+            // forward-compatible or custom keys that were already
+            // diagnosed above.
+            let schema = build_schema_tree();
+            strip_unknown_fields(&mut value, &schema, "");
             let config =
                 value
                     .try_into::<RokoConfig>()

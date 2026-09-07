@@ -337,7 +337,10 @@ pub(crate) async fn cmd_research(
         ResearchCmd::EnhancePlan { plan } => {
             let plan_dir = roko_cli::plan::plans_dir(&workdir).join(&plan);
             if !plan_dir.is_dir() {
-                anyhow::bail!("Plan directory not found: {}", plan_dir.display());
+                anyhow::bail!(
+                    "Plan directory not found: {}\n  -> Run `roko plan list` to see available plans.",
+                    plan_dir.display()
+                );
             }
             println!("🔬 Enhancing plan: {plan}");
             // Use the resolved plan directory path, not hardcoded .roko/plans/

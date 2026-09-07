@@ -125,6 +125,12 @@ pub struct CascadeRouter {
     ///
     /// After a cost spike, pressure continues until this timestamp passes.
     cost_pressure_until: Mutex<Option<DateTime<Utc>>>,
+    /// Provider IDs to unconditionally exclude from routing.
+    ///
+    /// Set from `RoutingConfig::disabled_providers`.  Models whose provider
+    /// appears in this list are filtered out before any health or scoring
+    /// pass.  An empty list (the default) disables the filter.
+    disabled_providers: Vec<String>,
 }
 
 impl std::fmt::Debug for CascadeRouter {
@@ -223,6 +229,7 @@ impl CascadeRouter {
             verdict_history: Mutex::new(VerdictHistory::new()),
             verdict_blend_weight: 0.2,
             cost_pressure_until: Mutex::new(None),
+            disabled_providers: Vec::new(),
         }
     }
 
@@ -306,6 +313,28 @@ impl CascadeRouter {
     pub fn with_verdict_blend_weight(mut self, weight: f32) -> Self {
         self.verdict_blend_weight = weight.clamp(0.0, 1.0);
         self
+    }
+
+    /// Set the list of provider IDs to unconditionally exclude from routing.
+    ///
+    /// Models backed by a disabled provider are filtered out before any
+    /// health, latency, or scoring pass.
+    #[must_use]
+    pub fn with_disabled_providers(mut self, providers: Vec<String>) -> Self {
+        self.disabled_providers = providers;
+        self
+    }
+
+    /// Return `true` when the given model slug's provider is in the
+    /// `disabled_providers` set.  When `disabled_providers` is empty every
+    /// slug is considered enabled (fast path).
+    fn is_provider_disabled(&self, slug: &str, model_providers: &HashMap<String, String>) -> bool {
+        if self.disabled_providers.is_empty() {
+            return false;
+        }
+        model_providers
+            .get(slug)
+            .map_or(false, |pid| self.disabled_providers.iter().any(|d| d == pid))
     }
 
     /// Record a gate verdict outcome for verdict-quality routing.
@@ -824,7 +853,8 @@ impl CascadeRouter {
         self.route(ctx)
     }
 
-    /// Route a context, excluding models whose provider is currently unavailable.
+    /// Route a context, excluding models whose provider is currently unavailable
+    /// or explicitly disabled via `RoutingConfig::disabled_providers`.
     pub fn route_with_health(
         &self,
         ctx: &RoutingContext,
@@ -835,6 +865,9 @@ impl CascadeRouter {
             .model_slugs
             .iter()
             .filter(|slug| {
+                if self.is_provider_disabled(slug, model_providers) {
+                    return false;
+                }
                 model_providers
                     .get(slug.as_str())
                     .map(|provider_id| health.is_available(provider_id))
@@ -876,11 +909,14 @@ impl CascadeRouter {
         latency_threshold_ms: Option<f64>,
     ) -> CascadeModel {
         // Partition candidates into available (Closed/HalfOpen) and
-        // unavailable (Open / hard-down).
+        // unavailable (Open / hard-down), excluding disabled providers.
         let available: Vec<String> = self
             .model_slugs
             .iter()
             .filter(|slug| {
+                if self.is_provider_disabled(slug, model_providers) {
+                    return false;
+                }
                 model_providers
                     .get(slug.as_str())
                     .map(|provider_id| health.is_available(provider_id))
@@ -973,7 +1009,8 @@ impl CascadeRouter {
         route
     }
 
-    /// Remove candidates whose provider is currently unhealthy.
+    /// Remove candidates whose provider is currently unhealthy or explicitly
+    /// disabled via `RoutingConfig::disabled_providers`.
     #[must_use]
     pub fn filter_unhealthy(
         &self,
@@ -988,6 +1025,9 @@ impl CascadeRouter {
         let available: Vec<String> = candidates
             .iter()
             .filter(|slug| {
+                if self.is_provider_disabled(slug, model_providers) {
+                    return false;
+                }
                 let provider = model_providers
                     .get(slug.as_str())
                     .map_or(slug.as_str(), String::as_str);

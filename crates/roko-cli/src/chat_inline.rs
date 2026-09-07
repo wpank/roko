@@ -4388,7 +4388,7 @@ async fn send_and_receive(
     let response = client
         .post(&url)
         .json(&body)
-        .timeout(Duration::from_secs(120))
+        .timeout(Duration::from_secs(roko_core::config::timeouts::DEFAULT_AGENT_TIMEOUT_SECS))
         .send()
         .await
         .with_context(|| format!("POST {url} — is `roko serve` running?"))?;

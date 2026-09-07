@@ -6,8 +6,10 @@
 //! creates these once at run start and hands them to every dispatch call.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+use roko_learn::error_pattern_store::ErrorPatternStore;
 
 use roko_agent::AgentRuntimeEvent;
 use roko_agent::mcp::{McpConfig, McpRuntime, discover_mcp_runtime};
@@ -69,6 +71,14 @@ pub struct SharedAgentFactory {
     /// Runtime-scoped format selection bandit. Shared across all dispatches
     /// so tool-format selection learns from cumulative feedback within a run.
     pub format_bandit: Arc<dyn roko_core::tool::bandit::FormatBandit>,
+    /// Shared in-memory error pattern store. When an agent's gate fails, the
+    /// observation is written here immediately so that subsequent agent
+    /// dispatches within the same plan run can include the pattern in their
+    /// system prompt -- without waiting for a new run to reload from disk.
+    ///
+    /// Uses `std::sync::RwLock` because `ErrorPatternStore` performs only
+    /// brief CPU-bound operations (no I/O under the lock).
+    error_pattern_store: Arc<std::sync::RwLock<ErrorPatternStore>>,
 }
 
 /// Bridge task returned only after its worker reaches the provider boundary.
@@ -183,6 +193,24 @@ impl SharedAgentFactory {
         let dispatcher =
             dispatcher.with_provider_health(Arc::clone(&health_registry), model_providers);
 
+        // Wire statically disabled providers from [routing] config so the
+        // cascade router never selects models from excluded providers.
+        let disabled_providers: HashSet<String> = config
+            .routing
+            .disabled_providers
+            .iter()
+            .cloned()
+            .collect();
+        let dispatcher = if disabled_providers.is_empty() {
+            dispatcher
+        } else {
+            tracing::info!(
+                disabled = ?config.routing.disabled_providers,
+                "routing: statically disabled providers"
+            );
+            dispatcher.with_disabled_providers(disabled_providers)
+        };
+
         Self {
             config,
             semaphores,
@@ -198,6 +226,9 @@ impl SharedAgentFactory {
             format_bandit: Arc::new(
                 roko_core::tool::bandit::ProfileBandit::with_static_profiles(),
             ),
+            // Start with an empty in-memory store. Callers should replace it
+            // via `with_error_pattern_store` or `with_error_patterns_from_disk`.
+            error_pattern_store: Arc::new(std::sync::RwLock::new(ErrorPatternStore::empty())),
         }
     }
 
@@ -225,6 +256,51 @@ impl SharedAgentFactory {
     pub fn with_tool_audit(mut self, adapter: Arc<roko_fs::tool_audit::ScrubAuditAdapter>) -> Self {
         self.tool_audit = Some(adapter);
         self
+    }
+
+    /// Replace the error pattern store with a pre-loaded shared instance.
+    #[must_use]
+    pub fn with_error_pattern_store(
+        mut self,
+        store: Arc<std::sync::RwLock<ErrorPatternStore>>,
+    ) -> Self {
+        self.error_pattern_store = store;
+        self
+    }
+
+    /// Load the error pattern store from disk at the given workspace root.
+    #[must_use]
+    pub fn with_error_patterns_from_disk(mut self, workdir: &Path) -> Self {
+        let path = workdir
+            .join(".roko")
+            .join("learn")
+            .join("error-patterns.json");
+        let store = ErrorPatternStore::load(&path);
+        tracing::debug!(
+            pattern_count = store.len(),
+            "factory: loaded error patterns from disk"
+        );
+        self.error_pattern_store = Arc::new(std::sync::RwLock::new(store));
+        self
+    }
+
+    /// Shared error pattern store for cross-agent pattern sharing.
+    pub fn error_pattern_store(&self) -> &Arc<std::sync::RwLock<ErrorPatternStore>> {
+        &self.error_pattern_store
+    }
+
+    /// Format the top error patterns from the shared store for prompt injection.
+    ///
+    /// Returns an empty string when the store is empty or the lock is
+    /// poisoned (fail-open: missing context is better than a panic).
+    pub fn format_error_patterns_for_prompt(&self, limit: usize) -> String {
+        match self.error_pattern_store.read() {
+            Ok(store) => store.format_for_prompt(limit),
+            Err(_) => {
+                tracing::warn!("error pattern store lock poisoned; skipping prompt injection");
+                String::new()
+            }
+        }
     }
 
     /// Attach the canonical declarative-plugin runtime to every provider
@@ -275,13 +351,24 @@ impl SharedAgentFactory {
             .into_iter()
             .collect();
         let model_providers = crate::config_helpers::routing_model_provider_map(&self.config);
-        self.dispatcher = Dispatcher::new(
+        let disabled_providers: HashSet<String> = self
+            .config
+            .routing
+            .disabled_providers
+            .iter()
+            .cloned()
+            .collect();
+        let mut dispatcher = Dispatcher::new(
             self.dispatcher.cascade_router_arc(),
             assembler,
             WarmPool::new(2),
             configured_models,
         )
         .with_provider_health(Arc::clone(&self.health_registry), model_providers);
+        if !disabled_providers.is_empty() {
+            dispatcher = dispatcher.with_disabled_providers(disabled_providers);
+        }
+        self.dispatcher = dispatcher;
     }
 
     /// Set persisted learning bidders on the prompt assembler.

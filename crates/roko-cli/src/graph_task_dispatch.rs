@@ -33,6 +33,7 @@ use roko_graph::cells::{
     AttemptReconciliation, GraphTaskEvent, ProviderAttemptRecorder, StreamingTaskDispatcher,
     TaskDispatchOutcome, TaskDispatchOutcomeKind, TaskDispatcher, TaskExecutionSpec, TaskLease,
 };
+use roko_learn::costs_db::CostRecord;
 use roko_learn::oracles::coding::{BuildRecord, CodingOracle, TestRecord};
 use roko_learn::shadow::ShadowRunner;
 
@@ -453,6 +454,12 @@ pub struct GraphFeedbackContext {
     pub feedback_facade: Option<Arc<FeedbackFacade>>,
     /// Path to `.roko/learn/efficiency.jsonl` for efficiency event writes.
     pub efficiency_path: Option<PathBuf>,
+    /// Path to `.roko/learn/costs.jsonl` for per-task cost record writes.
+    ///
+    /// When set, each completed dispatch appends one [`roko_learn::costs_db::CostRecord`]
+    /// so that `roko status` cost summary reads from the same source as the
+    /// efficiency events produced by the Graph engine.
+    pub costs_path: Option<PathBuf>,
     /// Path to `.roko/learn/playbooks/` for playbook outcome recording.
     pub playbook_dir: Option<PathBuf>,
     /// Shared daimon affect state, loaded from `.roko/daimon/state.json`.
@@ -478,6 +485,7 @@ impl std::fmt::Debug for GraphFeedbackContext {
         f.debug_struct("GraphFeedbackContext")
             .field("feedback_facade", &self.feedback_facade.is_some())
             .field("efficiency_path", &self.efficiency_path)
+            .field("costs_path", &self.costs_path)
             .field("playbook_dir", &self.playbook_dir)
             .field("daimon_state", &self.daimon_state.is_some())
             .field("experiment_store_path", &self.experiment_store_path)
@@ -496,6 +504,7 @@ impl Default for GraphFeedbackContext {
         Self {
             feedback_facade: None,
             efficiency_path: None,
+            costs_path: None,
             playbook_dir: None,
             daimon_state: None,
             experiment_store_path: None,
@@ -783,6 +792,40 @@ impl GraphTaskDispatcher {
                     task_id = %task.id,
                     %error,
                     "graph efficiency event write failed (best-effort)"
+                );
+            }
+        }
+
+        // ── W05b: Cost record to costs.jsonl ─────────────────────────────
+        //
+        // `roko status` reads cost totals from `.roko/learn/costs.jsonl` via
+        // `CostsLog::total_cost()`. The Graph engine only writes efficiency
+        // events (above), so the status cost summary always showed $0.0000.
+        // This block bridges the gap: one `CostRecord` per dispatch, written
+        // synchronously alongside the efficiency event.
+        if let Some(costs_path) = &self.feedback.costs_path {
+            let cost_record = CostRecord {
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                model: model_slug.clone(),
+                provider: provider_id.clone(),
+                role: role.to_string(),
+                plan_id: spec.plan_id.clone(),
+                task_id: task.id.clone(),
+                complexity_band: task.tier.clone(),
+                input_tokens: tokens_in,
+                output_tokens: tokens_out,
+                cached_tokens: u64::from(dispatch.result.usage.cache_read_tokens),
+                cost_usd,
+                duration_ms,
+                success: succeeded,
+                session_id: String::new(),
+            };
+            if let Err(error) = append_jsonl_line(costs_path, &cost_record) {
+                tracing::warn!(
+                    plan_id = %spec.plan_id,
+                    task_id = %task.id,
+                    %error,
+                    "graph cost record write failed (best-effort)"
                 );
             }
         }

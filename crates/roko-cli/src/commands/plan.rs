@@ -2410,6 +2410,7 @@ async fn cmd_plan_run_engine(
     let graph_feedback = roko_cli::graph_task_dispatch::GraphFeedbackContext {
         feedback_facade: Some(graph_feedback_facade),
         efficiency_path: Some(graph_learn_dir.join("efficiency.jsonl")),
+        costs_path: Some(graph_learn_dir.join("costs.jsonl")),
         playbook_dir: Some(graph_learn_dir.join("playbooks")),
         daimon_state: {
             // Convert StrategySpaceConfig -> StrategySpaceDefinition manually,

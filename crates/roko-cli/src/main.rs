@@ -3842,7 +3842,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
                 }
                 ConfigCmd::Mcp { cmd: mcp_cmd } => {
                     let workdir = resolve_workdir(cli);
-                    dispatch_mcp_cmd(&mcp_cmd, &workdir)?;
+                    commands::mcp::dispatch_mcp_cmd(&mcp_cmd, &workdir)?;
                     return Ok(EXIT_SUCCESS);
                 }
                 ConfigCmd::Preset { cmd: preset_cmd } => {
@@ -3875,72 +3875,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             tui,
             enable_terminal,
         } => {
-            let wd = workdir.clone().unwrap_or_else(|| resolve_workdir(cli));
-            let _lock = roko_cli::workspace_lock::acquire_workspace_lock(&wd.join(".roko"))?;
-            let config = resolve_config_for_workdir(cli, &wd)?;
-            let repo_registry = RepoRegistry::load(&config, &wd).unwrap_or_default();
-            let state_hub = roko_serve::state::AppState::state_hub_for_workdir(&wd);
-            // Create a shared MetricRegistry so the runtime and the HTTP
-            // server expose the same counters on /metrics (E09-T03).
-            let metrics = std::sync::Arc::new(roko_core::obs::metrics::MetricRegistry::new());
-            let runtime = RokoCliRuntime::new_with_state_hub_and_metrics(
-                config,
-                repo_registry,
-                state_hub.clone(),
-                Some(std::sync::Arc::clone(&metrics)),
-            );
-            runtime.prepare_workspace_extensions(&wd).await?;
-            let runtime = runtime.into_arc();
-
-            // Bootstrap: consistent workspace check + unified config load.
-            let boot = roko_cli::bootstrap::RokoBootstrap::new(
-                &wd,
-                roko_cli::bootstrap::BootOpts {
-                    require_workspace: false, // serve auto-creates .roko/ via bootstrap_observability_dirs
-                    require_provider: false,
-                    acquire_lock: false, // workspace lock acquired above
-                },
-            )
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-            let mut roko_config = boot.config;
-            if let Some(bind) = bind.as_ref() {
-                roko_config.server.bind = bind.clone();
-            }
-            if let Some(port) = port {
-                roko_config.server.port = port;
-            }
-            if enable_terminal {
-                roko_config.serve.terminal_enabled = true;
-            }
-
-            let server_config =
-                roko_serve::ServerBuildConfig::new(wd.clone(), runtime, roko_config, bind, port)
-                    .with_state_hub(state_hub)
-                    .with_metrics(metrics);
-            let server_builder = roko_serve::ServerBuilder::new(server_config);
-
-            if tui {
-                let (state, server_handle) = server_builder.start_background().await?;
-                let tui_result = commands::dashboard::cmd_dashboard(
-                    cli,
-                    Some(wd),
-                    None,
-                    false,
-                    false,
-                    Some(state.state_hub.clone()),
-                )
-                .await;
-                state.cancel.cancel();
-                match server_handle.await {
-                    Ok(Ok(())) => {}
-                    Ok(Err(e)) => tracing::error!(%e, "server error on shutdown"),
-                    Err(e) => tracing::error!(%e, "server task panicked"),
-                }
-                tui_result
-            } else {
-                server_builder.run().await?;
-                Ok(EXIT_SUCCESS)
-            }
+            commands::server::cmd_serve(cli, bind, port, workdir, tui, enable_terminal).await
         }
         Command::Acp {
             workdir,
@@ -4039,86 +3974,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             Ok(EXIT_SUCCESS)
         }
         Command::Resume { run_id, workdir } => {
-            // Sugar for `roko plan run --resume-plan`
-            let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
-            let snapshot = if let Some(ref id) = run_id {
-                // Try a named checkpoint, then the authoritative unified snapshot,
-                // then the legacy executor only when the unified file is absent.
-                let specific = workdir.join(format!(".roko/state/{id}.json"));
-                if specific.exists() {
-                    specific
-                } else if workdir.join(".roko/state/state-snapshot.json").exists() {
-                    workdir.join(".roko/state/state-snapshot.json")
-                } else {
-                    workdir.join(".roko/state/executor.json")
-                }
-            } else {
-                let unified = workdir.join(".roko/state/state-snapshot.json");
-                if unified.exists() {
-                    unified
-                } else {
-                    workdir.join(".roko/state/executor.json")
-                }
-            };
-
-            if !snapshot.exists() {
-                eprintln!("no snapshot found at {}", snapshot.display());
-                eprintln!("hint: run `roko plan run <dir>` first to create a checkpoint");
-                return Ok(1);
-            }
-
-            // Print resume header using inline primitives
-            if roko_cli::inline::should_use_inline() {
-                let theme = roko_cli::tui::Theme::from_env();
-                let id_display = run_id.as_deref().unwrap_or("latest");
-                let lines = vec![roko_cli::inline::styled::section_start(
-                    &theme,
-                    "resume",
-                    id_display,
-                    Some(&format!("from {}", snapshot.display())),
-                )];
-                roko_cli::inline::plaintext::print_plain(&lines);
-            }
-
-            // Delegate to plan run with resume
-            // Use canonical `./plans/` first, fall back to `.roko/plans/` with a note.
-            let plan_dir = resolve_plans_dir(&workdir, None);
-            if !plan_dir.exists() {
-                let canonical = workdir.join("plans");
-                let fallback = workdir.join(".roko").join("plans");
-                eprintln!(
-                    "error: no plans directory found. Checked:\n  canonical: {}\n  fallback: {}",
-                    canonical.display(),
-                    fallback.display(),
-                );
-                return Ok(1);
-            }
-            let plan_cmd = PlanCmd::Run {
-                plans_dir: plan_dir,
-                engine: PlanEngine::default(),
-                resume_plan: Some(snapshot),
-                workdir: Some(workdir),
-                approval: false,
-                no_tui: false,
-                max_retries: None,
-                max_tasks: 0,
-                dry_run: false,
-                fresh: false,
-                force_resume: false,
-                budget_override: None,
-                no_budget: false,
-                force: false,
-                dangerously_skip_permissions: false,
-                log_file: None,
-                skip_preflight: false,
-                screenshots: false,
-                screenshot_interval: 60,
-                screenshot_dir: None,
-                batch_size: None,
-                worktree_per_task: false,
-                rich_topology: false,
-            };
-            commands::plan::cmd_plan(cli, plan_cmd).await
+            commands::plan::cmd_resume(cli, run_id, workdir).await
         }
         Command::Replay {
             hash,
@@ -4131,67 +3987,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             commands::util::cmd_replay(cli, workdir, hash, forensic, from_event, as_of, format)
                 .await
         }
-        Command::History { id, workdir } => {
-            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-            let truncate = |value: &str, max_chars: usize| -> String {
-                value.chars().take(max_chars).collect()
-            };
-
-            match id {
-                None => {
-                    let sessions = roko_cli::chat_history::list_sessions(&wd, 20);
-                    if sessions.is_empty() {
-                        println!(
-                            "no chat sessions found in {}",
-                            roko_cli::chat_history::sessions_dir(&wd).display()
-                        );
-                    } else {
-                        println!(
-                            "{:<40} {:<16} {:<8} {}",
-                            "session", "model", "turns", "started"
-                        );
-                        println!("{}", "-".repeat(80));
-                        for session in &sessions {
-                            println!(
-                                "{:<40} {:<16} {:<8} {}",
-                                truncate(&session.session_id, 40),
-                                truncate(&session.model_key, 16),
-                                session.turn_count,
-                                truncate(&session.started_at, 19),
-                            );
-                        }
-                    }
-                }
-                Some(id) => match roko_cli::chat_history::load_session(&wd, &id) {
-                    Some(session) => {
-                        println!("session_id:    {}", session.session_id);
-                        println!("agent_id:      {}", session.agent_id);
-                        println!("provider:      {}", session.provider);
-                        println!("model_key:     {}", session.model_key);
-                        println!("started_at:    {}", session.started_at);
-                        println!("ended_at:      {}", session.ended_at);
-                        println!("turn_count:    {}", session.turn_count);
-                        println!("total_tokens:  {}", session.total_tokens);
-                        println!("total_cost_usd:  {:?}", session.total_cost_usd);
-                        if !session.first_message.is_empty() {
-                            println!("first_message: {}", session.first_message);
-                        }
-                        if !session.last_message.is_empty() {
-                            println!("last_message:  {}", session.last_message);
-                        }
-                    }
-                    None => {
-                        eprintln!("session not found: {id}");
-                        if matches!(id.to_ascii_lowercase().trim(), "list" | "ls" | "all") {
-                            eprintln!("Hint: `roko history` (no argument) lists sessions.");
-                        }
-                        return Ok(EXIT_FAILURE);
-                    }
-                },
-            }
-
-            Ok(EXIT_SUCCESS)
-        }
+        Command::History { id, workdir } => commands::history::cmd_history(cli, id, workdir),
         Command::Inject {
             session,
             kind,
@@ -4206,26 +4002,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             type_name,
             name,
             output,
-        } => {
-            let output_dir = output.unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-            match roko_cli::scaffold::scaffold(&type_name, &name, &output_dir) {
-                Ok(files) => {
-                    println!(
-                        "scaffolded `{type_name}` as `{name}` ({} file{})",
-                        files.len(),
-                        if files.len() == 1 { "" } else { "s" }
-                    );
-                    for f in &files {
-                        println!("  {}", f.display());
-                    }
-                    Ok(EXIT_SUCCESS)
-                }
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    Ok(EXIT_SYSTEM_ERROR)
-                }
-            }
-        }
+        } => commands::util::cmd_new(&type_name, &name, output),
         Command::Explain { topic, depth } => {
             if commands::util::cmd_explain(&topic, depth) {
                 Ok(EXIT_SUCCESS)
@@ -4238,7 +4015,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             files,
             json,
             workdir,
-        } => cmd_impact(cli, &base, &files, json, workdir).await,
+        } => commands::impact::cmd_impact(cli, &base, &files, json, workdir).await,
         Command::Login {
             url,
             api_key,
@@ -4683,432 +4460,9 @@ fn load_env_file(path: &Path) -> Result<Vec<(String, String)>> {
     Ok(entries)
 }
 
-// -----------------------------------------------------------------------
-// MCP dispatch
-// -----------------------------------------------------------------------
+// Re-export for crate-internal callers (e.g. do_cmd.rs uses `crate::resolve_mcp_config_with_autodiscovery`).
+pub use commands::mcp::resolve_mcp_config_with_autodiscovery;
 
-/// Dispatch `roko config mcp` subcommands inline (avoids the `unreachable!` in
-/// `dispatch_config` which is reserved for arms intercepted before reaching it).
-fn dispatch_mcp_cmd(cmd: &ConfigMcpCmd, workdir: &Path) -> Result<()> {
-    match cmd {
-        ConfigMcpCmd::List {
-            workdir: wd_override,
-        } => {
-            let wd = wd_override.as_deref().unwrap_or(workdir);
-            // Resolve MCP config: .roko/mcp.json → ~/.claude/mcp-config.json → walk-up .mcp.json
-            let resolved = resolve_mcp_config_path(None, wd);
-            let path = resolved.ok_or_else(|| {
-                anyhow!("no MCP config found; set agent.mcp_config in roko.toml or create .roko/mcp.json")
-            })?;
-            let cfg = roko_agent::mcp::McpConfig::load(&path)
-                .map_err(|e| anyhow!("load MCP config from {}: {}", path.display(), e))?;
-            println!("MCP config: {}", path.display());
-            if cfg.servers.is_empty() {
-                println!("  (no servers configured)");
-            } else {
-                println!("{} server(s):", cfg.servers.len());
-                for server in &cfg.servers {
-                    println!("  [{:?}] {} ({})", server.tier, server.name, server.command);
-                }
-            }
-            Ok(())
-        }
-        ConfigMcpCmd::Test {
-            name,
-            workdir: wd_override,
-            timeout_secs: _,
-        } => {
-            let wd = wd_override.as_deref().unwrap_or(workdir);
-            let resolved = resolve_mcp_config_path(None, wd);
-            let path = resolved.ok_or_else(|| {
-                anyhow!("no MCP config found; set agent.mcp_config in roko.toml or create .roko/mcp.json")
-            })?;
-            if !path.is_file() {
-                return Err(anyhow!("MCP config file not found: {}", path.display()));
-            }
-            let cfg = roko_agent::mcp::McpConfig::load(&path)
-                .map_err(|e| anyhow!("parse MCP config at {}: {}", path.display(), e))?;
-            if cfg.servers.iter().any(|s| s.name == *name) {
-                println!("ok: server '{}' found in {}", name, path.display());
-            } else {
-                return Err(anyhow!("server '{}' not found in {}", name, path.display()));
-            }
-            Ok(())
-        }
-        ConfigMcpCmd::Add {
-            name,
-            command,
-            args,
-            workdir: wd_override,
-        } => {
-            let wd = wd_override.as_deref().unwrap_or(workdir);
-            let path = {
-                let roko_dir = wd.join(".roko");
-                std::fs::create_dir_all(&roko_dir)
-                    .with_context(|| format!("create {}", roko_dir.display()))?;
-                roko_dir.join("mcp.json")
-            };
-            let mut cfg = if path.is_file() {
-                roko_agent::mcp::McpConfig::load(&path).map_err(|e| {
-                    anyhow!("load existing MCP config from {}: {}", path.display(), e)
-                })?
-            } else {
-                roko_agent::mcp::McpConfig {
-                    servers: Vec::new(),
-                }
-            };
-            if cfg.servers.iter().any(|s| s.name == *name) {
-                return Err(anyhow!(
-                    "server '{}' already exists in {}",
-                    name,
-                    path.display()
-                ));
-            }
-            cfg.servers.push(roko_agent::mcp::McpServerConfig {
-                name: name.clone(),
-                transport: roko_agent::mcp::McpTransportConfig::Stdio,
-                command: command.clone(),
-                args: args.clone(),
-                env: Default::default(),
-                endpoint: None,
-                auth_token: None,
-                tier: Default::default(),
-            });
-            let json = serde_json::to_string_pretty(&cfg).context("serialize MCP config")?;
-            std::fs::write(&path, json).with_context(|| format!("write {}", path.display()))?;
-            println!("added server '{}' to {}", name, path.display());
-            Ok(())
-        }
-    }
-}
-
-/// Resolve the MCP config path using the following chain:
-/// 1. Explicit path (if provided)
-/// 2. `.roko/mcp.json` relative to workdir
-/// 3. `~/.claude/mcp-config.json`
-/// 4. Walk-up `.mcp.json` discovery from workdir
-fn resolve_mcp_config_path(explicit: Option<&Path>, workdir: &Path) -> Option<PathBuf> {
-    if let Some(p) = explicit {
-        return Some(p.to_path_buf());
-    }
-    let roko_local = workdir.join(".roko").join("mcp.json");
-    if roko_local.is_file() {
-        return Some(roko_local);
-    }
-    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-        let claude_default = home.join(".claude").join("mcp-config.json");
-        if claude_default.is_file() {
-            return Some(claude_default);
-        }
-    }
-    roko_agent::mcp::find_mcp_config(workdir)
-        .and_then(|r| r.ok())
-        .map(|(p, _)| p)
-}
-
-/// Locate a named binary via `$PATH` scan.
-///
-/// Returns the full path to the first matching executable, or `None` if the
-/// binary is not found on the PATH.
-fn find_binary_on_path(name: &str) -> Option<PathBuf> {
-    let path_var = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path_var) {
-        let candidate = dir.join(name);
-        if let Ok(meta) = std::fs::metadata(&candidate)
-            && meta.is_file()
-        {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                if meta.permissions().mode() & 0o111 != 0 {
-                    return Some(candidate);
-                }
-            }
-            #[cfg(not(unix))]
-            {
-                return Some(candidate);
-            }
-        }
-    }
-    None
-}
-
-/// Walk ancestor directories looking for `target/{release,debug}/<binary>`.
-///
-/// This covers the common developer workflow where the binary is built locally
-/// but not installed to `$PATH`.
-fn find_binary_in_target_dirs(start: &Path, name: &str) -> Option<PathBuf> {
-    for dir in start.ancestors() {
-        for profile in ["target/release", "target/debug"] {
-            let candidate = dir.join(profile).join(name);
-            if candidate.exists() {
-                return Some(candidate);
-            }
-        }
-    }
-    None
-}
-
-/// Discover the `roko-mcp-github` binary.
-///
-/// Search order:
-/// 1. `$PATH` scan — covers installed binaries
-/// 2. Ancestor `target/{release,debug}/` — covers local dev builds
-///
-/// Returns the binary's absolute path as a string, or `None` if not found.
-fn discover_roko_github_binary(workdir: &Path) -> Option<String> {
-    const BINARY: &str = "roko-mcp-github";
-
-    if let Some(path) = find_binary_on_path(BINARY) {
-        tracing::debug!(path = %path.display(), "discovered roko-mcp-github on PATH");
-        return Some(path.to_string_lossy().into_owned());
-    }
-
-    if let Some(path) = find_binary_in_target_dirs(workdir, BINARY) {
-        tracing::debug!(path = %path.display(), "discovered roko-mcp-github in target/");
-        return Some(path.to_string_lossy().into_owned());
-    }
-
-    tracing::debug!("roko-mcp-github not found on PATH or in target/ dirs");
-    None
-}
-
-/// Add a `github` MCP server entry using the given command path.
-///
-/// Internal helper used by both production code and tests.  The caller is
-/// responsible for ensuring `command` points to a valid `roko-mcp-github`
-/// binary.  `GITHUB_TOKEN` is forwarded from the current environment when set.
-fn add_github_mcp_server(config: &mut roko_agent::mcp::McpConfig, command: String) {
-    let mut env = std::collections::HashMap::new();
-    if let Ok(token) = std::env::var("GITHUB_TOKEN")
-        && !token.is_empty()
-    {
-        env.insert("GITHUB_TOKEN".to_string(), token);
-    }
-
-    config.servers.push(roko_agent::mcp::McpServerConfig {
-        name: "github".to_string(),
-        transport: roko_agent::mcp::McpTransportConfig::Stdio,
-        command,
-        args: vec![],
-        env,
-        endpoint: None,
-        auth_token: None,
-        tier: Default::default(),
-    });
-}
-
-/// Augment an [`McpConfig`](roko_agent::mcp::McpConfig) with an auto-discovered
-/// `roko-mcp-github` server entry.
-///
-/// The entry is only added when:
-/// - The binary is discoverable (PATH or target/)
-/// - No server named `"github"` already exists in `config.servers`
-///
-/// The auto-discovered entry includes `GITHUB_TOKEN` from the current
-/// environment when the variable is set.
-fn augment_mcp_config_with_github(config: &mut roko_agent::mcp::McpConfig, workdir: &Path) {
-    // User-configured 'github' server takes precedence — never override it.
-    if config.servers.iter().any(|s| s.name == "github") {
-        tracing::debug!("user-configured 'github' MCP server present; skipping auto-discovery");
-        return;
-    }
-
-    let Some(command) = discover_roko_github_binary(workdir) else {
-        tracing::debug!("roko-mcp-github not found; skipping auto-discovery");
-        return;
-    };
-
-    add_github_mcp_server(config, command);
-    tracing::info!("auto-discovered roko-mcp-github; added 'github' MCP server entry");
-}
-
-/// Resolve the MCP config path, then auto-augment it with `roko-mcp-github`
-/// when the binary is available and no user-configured `github` server exists.
-///
-/// The augmented config is written to `<roko_dir>/mcp-auto.json`.  When
-/// augmentation adds no new entries the path to the original config is
-/// returned unchanged so callers that already have a fully-configured MCP
-/// file do not pay the extra write cost.
-///
-/// Returns `None` when no MCP config is found **and** `roko-mcp-github` is
-/// not available.
-pub fn resolve_mcp_config_with_autodiscovery(workdir: &Path, roko_dir: &Path) -> Option<PathBuf> {
-    // Load base config (may be None when no file exists yet).
-    let base_path = resolve_mcp_config_path(None, workdir);
-    let mut config: roko_agent::mcp::McpConfig = match &base_path {
-        Some(p) => match roko_agent::mcp::McpConfig::load(p) {
-            Ok(c) => c,
-            Err(err) => {
-                tracing::warn!(
-                    path = %p.display(),
-                    error = %err,
-                    "MCP config load failed; using empty config for github augmentation"
-                );
-                roko_agent::mcp::McpConfig { servers: vec![] }
-            }
-        },
-        None => roko_agent::mcp::McpConfig { servers: vec![] },
-    };
-
-    let servers_before = config.servers.len();
-    augment_mcp_config_with_github(&mut config, workdir);
-
-    // If augmentation added entries, write the merged config to mcp-auto.json.
-    if config.servers.len() > servers_before {
-        let auto_path = roko_dir.join("mcp-auto.json");
-        match serde_json::to_string_pretty(&config) {
-            Ok(json) => match std::fs::write(&auto_path, json) {
-                Ok(()) => {
-                    tracing::debug!(
-                        path = %auto_path.display(),
-                        "wrote augmented MCP config"
-                    );
-                    return Some(auto_path);
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        path = %auto_path.display(),
-                        error = %err,
-                        "failed to write augmented MCP config; falling back to base"
-                    );
-                }
-            },
-            Err(err) => {
-                tracing::warn!(
-                    error = %err,
-                    "failed to serialize augmented MCP config; falling back to base"
-                );
-            }
-        }
-    }
-
-    // Return original base path (or None if nothing was found/discovered).
-    if config.servers.is_empty() {
-        None
-    } else {
-        base_path
-    }
-}
-
-// -----------------------------------------------------------------------
-// Impact analysis
-// -----------------------------------------------------------------------
-
-async fn cmd_impact(
-    cli: &Cli,
-    base: &str,
-    files: &[String],
-    json: bool,
-    workdir: Option<PathBuf>,
-) -> Result<i32> {
-    use roko_cli::runner::impact_analysis;
-    use roko_core::config::GatesConfig;
-
-    let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-    let config = GatesConfig::default();
-    let report = impact_analysis::analyze_against(&wd, base, files, &config).await;
-
-    if json {
-        let affected_packages = {
-            let mut all: std::collections::BTreeSet<String> =
-                report.producer_packages.iter().cloned().collect();
-            all.extend(report.reverse_dependents.iter().cloned());
-            all.into_iter().collect::<Vec<_>>()
-        };
-        let targets: Vec<_> = report.targets.iter().map(|t| t.check_command()).collect();
-        let output = serde_json::json!({
-            "changed_files": report.changed_files,
-            "producer_packages": report.producer_packages,
-            "reverse_dependents": report.reverse_dependents,
-            "affected_packages": affected_packages,
-            "high_impact": report.high_impact,
-            "high_impact_reasons": report.high_impact_reasons,
-            "confidence": report.confidence.to_string(),
-            "analysis_ms": report.analysis_ms,
-            "fallback_reason": report.fallback_reason,
-            "targets": targets,
-        });
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&output).unwrap_or_default()
-        );
-    } else {
-        if let Some(reason) = &report.fallback_reason {
-            println!("Fallback to full verification: {reason}");
-            println!();
-        }
-
-        if report.changed_files.is_empty() {
-            println!("No changes detected.");
-            return Ok(EXIT_SUCCESS);
-        }
-
-        println!("Changed files ({}):", report.changed_files.len());
-        for file in &report.changed_files {
-            println!("  {file}");
-        }
-        println!();
-
-        if !report.producer_packages.is_empty() {
-            println!("Producer crates ({}):", report.producer_packages.len());
-            for pkg in &report.producer_packages {
-                println!("  {pkg}");
-            }
-            println!();
-        }
-
-        if !report.reverse_dependents.is_empty() {
-            println!("Reverse dependents ({}):", report.reverse_dependents.len());
-            for pkg in &report.reverse_dependents {
-                println!("  {pkg}");
-            }
-            println!();
-        }
-
-        // Combined affected set for cargo test -p
-        let mut affected: std::collections::BTreeSet<String> =
-            report.producer_packages.iter().cloned().collect();
-        affected.extend(report.reverse_dependents.iter().cloned());
-        if !affected.is_empty() {
-            println!("All affected crates ({}):", affected.len());
-            for pkg in &affected {
-                println!("  {pkg}");
-            }
-            println!();
-            // Print a ready-to-use cargo test command
-            let pkg_args: Vec<String> = affected
-                .iter()
-                .flat_map(|p| vec!["-p".to_string(), p.clone()])
-                .collect();
-            println!("cargo test {}", pkg_args.join(" "));
-        }
-
-        if report.high_impact {
-            println!();
-            println!("HIGH IMPACT:");
-            for reason in &report.high_impact_reasons {
-                println!("  - {reason}");
-            }
-        }
-
-        if !report.targets.is_empty() {
-            println!();
-            println!("Focused check commands ({}):", report.targets.len());
-            for cmd in report.focused_commands() {
-                println!("  {cmd}");
-            }
-        }
-
-        println!();
-        println!(
-            "Confidence: {} | Analysis: {}ms",
-            report.confidence, report.analysis_ms
-        );
-    }
-
-    Ok(EXIT_SUCCESS)
-}
 
 // -----------------------------------------------------------------------
 // Tests
@@ -8097,7 +7451,7 @@ mod tests {
         std::fs::create_dir_all(&target_debug).unwrap();
         let fake = create_fake_github_binary(&target_debug);
 
-        let found = find_binary_in_target_dirs(tmp.path(), "roko-mcp-github");
+        let found = commands::mcp::find_binary_in_target_dirs(tmp.path(), "roko-mcp-github");
         assert!(found.is_some(), "should find binary in target/debug/");
         assert_eq!(found.unwrap(), fake);
     }
@@ -8108,7 +7462,7 @@ mod tests {
     fn mcp_github_discover_returns_none_when_no_target_binary() {
         let tmp = tempdir().unwrap();
         // No target/ subdirectory — nothing to find.
-        let found = find_binary_in_target_dirs(tmp.path(), "roko-mcp-github");
+        let found = commands::mcp::find_binary_in_target_dirs(tmp.path(), "roko-mcp-github");
         assert!(found.is_none(), "should return None when binary is absent");
     }
 
@@ -8118,7 +7472,7 @@ mod tests {
     fn mcp_github_discover_adds_entry_with_explicit_command() {
         let mut config = roko_agent::mcp::McpConfig { servers: vec![] };
         let cmd = "/fake/path/roko-mcp-github".to_string();
-        add_github_mcp_server(&mut config, cmd.clone());
+        commands::mcp::add_github_mcp_server(&mut config, cmd.clone());
 
         assert_eq!(config.servers.len(), 1, "expected exactly one server entry");
         let s = &config.servers[0];
@@ -8157,7 +7511,7 @@ mod tests {
         let mut config = roko_agent::mcp::McpConfig {
             servers: vec![user_entry],
         };
-        augment_mcp_config_with_github(&mut config, tmp.path());
+        commands::mcp::augment_mcp_config_with_github(&mut config, tmp.path());
 
         assert_eq!(
             config.servers.len(),
@@ -8178,7 +7532,7 @@ mod tests {
     fn mcp_github_discover_skips_when_binary_absent_from_target() {
         let tmp = tempdir().unwrap();
         let mut config = roko_agent::mcp::McpConfig { servers: vec![] };
-        augment_mcp_config_with_github(&mut config, tmp.path());
+        commands::mcp::augment_mcp_config_with_github(&mut config, tmp.path());
         // Must not panic.  Binary count may be 0 (absent) or 1 (on real PATH).
         let _ = config.servers.len();
     }

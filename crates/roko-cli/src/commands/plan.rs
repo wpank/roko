@@ -1424,6 +1424,94 @@ async fn cmd_plan_queue(cli: &Cli, cmd: QueueCmd) -> Result<i32> {
     }
 }
 
+/// Handle `roko resume [run-id]` by locating the snapshot and delegating
+/// to `cmd_plan` with a synthesized `PlanCmd::Run`.
+pub(crate) async fn cmd_resume(
+    cli: &Cli,
+    run_id: Option<String>,
+    workdir: Option<std::path::PathBuf>,
+) -> Result<i32> {
+    let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
+    let snapshot = if let Some(ref id) = run_id {
+        // Try a named checkpoint, then the authoritative unified snapshot,
+        // then the legacy executor only when the unified file is absent.
+        let specific = workdir.join(format!(".roko/state/{id}.json"));
+        if specific.exists() {
+            specific
+        } else if workdir.join(".roko/state/state-snapshot.json").exists() {
+            workdir.join(".roko/state/state-snapshot.json")
+        } else {
+            workdir.join(".roko/state/executor.json")
+        }
+    } else {
+        let unified = workdir.join(".roko/state/state-snapshot.json");
+        if unified.exists() {
+            unified
+        } else {
+            workdir.join(".roko/state/executor.json")
+        }
+    };
+
+    if !snapshot.exists() {
+        eprintln!("no snapshot found at {}", snapshot.display());
+        eprintln!("hint: run `roko plan run <dir>` first to create a checkpoint");
+        return Ok(1);
+    }
+
+    // Print resume header using inline primitives
+    if roko_cli::inline::should_use_inline() {
+        let theme = roko_cli::tui::Theme::from_env();
+        let id_display = run_id.as_deref().unwrap_or("latest");
+        let lines = vec![roko_cli::inline::styled::section_start(
+            &theme,
+            "resume",
+            id_display,
+            Some(&format!("from {}", snapshot.display())),
+        )];
+        roko_cli::inline::plaintext::print_plain(&lines);
+    }
+
+    // Delegate to plan run with resume
+    // Use canonical `./plans/` first, fall back to `.roko/plans/` with a note.
+    let plan_dir = super::super::resolve_plans_dir(&workdir, None);
+    if !plan_dir.exists() {
+        let canonical = workdir.join("plans");
+        let fallback = workdir.join(".roko").join("plans");
+        eprintln!(
+            "error: no plans directory found. Checked:\n  canonical: {}\n  fallback: {}",
+            canonical.display(),
+            fallback.display(),
+        );
+        return Ok(1);
+    }
+    let plan_cmd = PlanCmd::Run {
+        plans_dir: plan_dir,
+        engine: PlanEngine::default(),
+        resume_plan: Some(snapshot),
+        workdir: Some(workdir),
+        approval: false,
+        no_tui: false,
+        max_retries: None,
+        max_tasks: 0,
+        dry_run: false,
+        fresh: false,
+        force_resume: false,
+        budget_override: None,
+        no_budget: false,
+        force: false,
+        dangerously_skip_permissions: false,
+        log_file: None,
+        skip_preflight: false,
+        screenshots: false,
+        screenshot_interval: 60,
+        screenshot_dir: None,
+        batch_size: None,
+        worktree_per_task: false,
+        rich_topology: false,
+    };
+    cmd_plan(cli, plan_cmd).await
+}
+
 /// Parse and display a plan directory without executing anything.
 pub(crate) async fn cmd_plan_dry_run(plans_dir: &Path, cli: &Cli) -> Result<i32> {
     let plans = roko_cli::orchestrator::discover_plans(plans_dir)

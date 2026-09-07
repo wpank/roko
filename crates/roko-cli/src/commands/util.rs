@@ -44,6 +44,28 @@ pub(crate) fn cmd_explain(topic: &str, depth: u8) -> bool {
     }
 }
 
+/// Scaffold a new boilerplate artifact.
+pub(crate) fn cmd_new(type_name: &str, name: &str, output: Option<PathBuf>) -> Result<i32> {
+    let output_dir = output.unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    match roko_cli::scaffold::scaffold(type_name, name, &output_dir) {
+        Ok(files) => {
+            println!(
+                "scaffolded `{type_name}` as `{name}` ({} file{})",
+                files.len(),
+                if files.len() == 1 { "" } else { "s" }
+            );
+            for f in &files {
+                println!("  {}", f.display());
+            }
+            Ok(EXIT_SUCCESS)
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            Ok(EXIT_SYSTEM_ERROR)
+        }
+    }
+}
+
 /// Read piped stdin and dispatch as a one-shot prompt.
 ///
 /// Routes through the v2 inline path, not the legacy `run_once()` stub.

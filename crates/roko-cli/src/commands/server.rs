@@ -155,6 +155,82 @@ pub(crate) async fn cmd_up(cli: &Cli, workdir: PathBuf) -> Result<i32> {
     Ok(EXIT_SUCCESS)
 }
 
+pub(crate) async fn cmd_serve(
+    cli: &Cli,
+    bind: Option<String>,
+    port: Option<u16>,
+    workdir: Option<PathBuf>,
+    tui: bool,
+    enable_terminal: bool,
+) -> Result<i32> {
+    let wd = workdir.clone().unwrap_or_else(|| resolve_workdir(cli));
+    let _lock = roko_cli::workspace_lock::acquire_workspace_lock(&wd.join(".roko"))?;
+    let config = resolve_config_for_workdir(cli, &wd)?;
+    let repo_registry = RepoRegistry::load(&config, &wd).unwrap_or_default();
+    let state_hub = roko_serve::state::AppState::state_hub_for_workdir(&wd);
+    // Create a shared MetricRegistry so the runtime and the HTTP
+    // server expose the same counters on /metrics (E09-T03).
+    let metrics = std::sync::Arc::new(roko_core::obs::metrics::MetricRegistry::new());
+    let runtime = RokoCliRuntime::new_with_state_hub_and_metrics(
+        config,
+        repo_registry,
+        state_hub.clone(),
+        Some(std::sync::Arc::clone(&metrics)),
+    );
+    runtime.prepare_workspace_extensions(&wd).await?;
+    let runtime = runtime.into_arc();
+
+    // Bootstrap: consistent workspace check + unified config load.
+    let boot = roko_cli::bootstrap::RokoBootstrap::new(
+        &wd,
+        roko_cli::bootstrap::BootOpts {
+            require_workspace: false, // serve auto-creates .roko/ via bootstrap_observability_dirs
+            require_provider: false,
+            acquire_lock: false, // workspace lock acquired above
+        },
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let mut roko_config = boot.config;
+    if let Some(bind) = bind.as_ref() {
+        roko_config.server.bind = bind.clone();
+    }
+    if let Some(port) = port {
+        roko_config.server.port = port;
+    }
+    if enable_terminal {
+        roko_config.serve.terminal_enabled = true;
+    }
+
+    let server_config =
+        roko_serve::ServerBuildConfig::new(wd.clone(), runtime, roko_config, bind, port)
+            .with_state_hub(state_hub)
+            .with_metrics(metrics);
+    let server_builder = roko_serve::ServerBuilder::new(server_config);
+
+    if tui {
+        let (state, server_handle) = server_builder.start_background().await?;
+        let tui_result = super::dashboard::cmd_dashboard(
+            cli,
+            Some(wd),
+            None,
+            false,
+            false,
+            Some(state.state_hub.clone()),
+        )
+        .await;
+        state.cancel.cancel();
+        match server_handle.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => tracing::error!(%e, "server error on shutdown"),
+            Err(e) => tracing::error!(%e, "server task panicked"),
+        }
+        tui_result
+    } else {
+        server_builder.run().await?;
+        Ok(EXIT_SUCCESS)
+    }
+}
+
 pub(crate) async fn cmd_daemon(cli: &Cli, cmd: DaemonCmd) -> Result<i32> {
     let workdir = resolve_workdir(cli);
     match cmd {

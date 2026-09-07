@@ -218,6 +218,7 @@ impl ExecutionWorkspaceProvider for WorktreeExecutionWorkspaceProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use roko_graph::workspace::ExecutionWorkspaceProvider;
     use roko_graph::workspace::fake::InMemoryWorkspaceProvider;
 

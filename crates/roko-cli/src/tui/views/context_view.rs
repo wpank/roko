@@ -1152,7 +1152,7 @@ fn render_episode_replay(
     frame: &mut Frame<'_>,
     area: Rect,
     tui_state: &TuiState,
-    view_state: &ViewState,
+    _view_state: &ViewState,
     theme: &Theme,
 ) {
     // Determine focus zones.

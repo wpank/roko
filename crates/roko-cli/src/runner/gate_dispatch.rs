@@ -49,17 +49,14 @@ use super::cargo_command::{
     cargo_profile_available, command_uses_cargo, deduplicate_verify_steps, focused_verify_steps,
     scope_authored_verify_steps, targeted_cargo_check, with_targeted_compile_rung,
 };
-use super::gate_input::{
-    GateInputSnapshot, accepted_input_snapshot, fetch_git_diff, gate_input_fingerprint_id,
-    gate_input_snapshot,
-};
+use super::gate_input::{accepted_input_snapshot, fetch_git_diff, gate_input_snapshot};
 use super::gate_report::{
     classify_failure_kind, filter_preexisting_failures, gate_failure_input, raw_gate_name,
     render_output,
 };
 
 // Re-export for callers that access these through `gate_dispatch::`.
-pub(crate) use super::gate_input::{owned_input_fingerprint_id, reflex_input_fingerprint};
+pub(crate) use super::gate_input::owned_input_fingerprint_id;
 
 /// Sentinel rung value for plan-level verification (not a per-task rung).
 pub const RUNG_PLAN_VERIFY: u32 = 1000;

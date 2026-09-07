@@ -28,7 +28,7 @@ use tracing::{info, warn};
 
 use roko_graph::control::{
     ControlCommandKind, ControlEffect, ControlReceiptV1, ExecutionControlService,
-    FinalizationIntent, ReceiptStatus,
+    FinalizationIntent,
 };
 use roko_runtime::process::ProcessSupervisor;
 

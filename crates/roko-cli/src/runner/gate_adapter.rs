@@ -16,7 +16,7 @@ use crate::task_parser::VerifyStep;
 
 use super::gate_dispatch::{GateTaskContext, failed_gate_completion};
 use super::types::{
-    GateCompletion, GateCompletionKind, GateEffectRef, GateVerdictSummary, RunnerFailureKind,
+    GateCompletion, GateEffectRef, GateVerdictSummary, RunnerFailureKind,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════

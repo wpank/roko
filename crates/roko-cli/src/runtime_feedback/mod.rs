@@ -51,6 +51,7 @@ use crate::dispatch::{AgentOutcome, ModelChoiceSource};
 /// [`FeedbackFacade::on_event`] decides which sinks care about which
 /// events.
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum FeedbackEvent {
     /// One agent turn completed inside a still-running task.
     TurnCompleted {

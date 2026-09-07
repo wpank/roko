@@ -77,6 +77,7 @@ fn is_false(b: &bool) -> bool {
 
 /// Raw event input accepted by [`Projection::publish`].
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum RawRuntimeEvent {
     Runner(RunnerEvent),
     Agent(AgentEventInput),

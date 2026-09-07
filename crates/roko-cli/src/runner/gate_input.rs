@@ -9,8 +9,7 @@ use std::io::Read;
 use std::path::Path;
 
 use sha2::{Digest, Sha256};
-use tokio::process::Command;
-use tokio::time::{Duration, timeout};
+use tokio::time::Duration;
 
 pub(super) const MAX_UNTRACKED_FILES: usize = 1024;
 pub(super) const MAX_UNTRACKED_FILE_BYTES: u64 = 8 * 1024 * 1024;

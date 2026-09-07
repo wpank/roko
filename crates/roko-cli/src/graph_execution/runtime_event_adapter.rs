@@ -218,7 +218,7 @@ impl GraphRuntimeEventAdapter {
             },
 
             // ── Node lifecycle → Task lifecycle ─────────────────────
-            GraphExecutionEvent::NodeStarted { common, node } => RuntimeEvent::TaskStarted {
+            GraphExecutionEvent::NodeStarted { common, node: _ } => RuntimeEvent::TaskStarted {
                 run_id: common.run_id.clone(),
                 plan_id: plan_id_str.to_string(),
                 task_id: task_id_str.to_string(),
@@ -226,8 +226,8 @@ impl GraphRuntimeEventAdapter {
                 role: role_str.to_string(),
             },
             GraphExecutionEvent::NodeSkipped {
-                common,
-                node,
+                common: _,
+                node: _,
                 reason,
             } => RuntimeEvent::TaskSkipped {
                 task_id: task_id_str.to_string(),
@@ -265,9 +265,9 @@ impl GraphRuntimeEventAdapter {
                 duration_ms: *elapsed_ms,
             },
             GraphExecutionEvent::NodeFailed {
-                common,
+                common: _,
                 node: _,
-                elapsed_ms,
+                elapsed_ms: _,
                 error,
             } => RuntimeEvent::TaskFailed {
                 plan_id: plan_id_str.to_string(),

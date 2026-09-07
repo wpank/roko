@@ -11,7 +11,6 @@
 //! - `reset_for_retry` → release old with `RetainForFailure`, acquire new
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use roko_graph::workspace::{
     ExecutionWorkspaceProvider, WorkspaceAttemptId, WorkspaceError, WorkspaceLease,
@@ -19,7 +18,7 @@ use roko_graph::workspace::{
 };
 
 use crate::orchestrator::worktree::{
-    WorktreeHealth, WorktreeManager, format_attempt_branch_name, format_attempt_worktree_id,
+    WorktreeHealth, WorktreeManager, format_attempt_worktree_id,
 };
 
 /// CLI adapter that implements [`ExecutionWorkspaceProvider`] by delegating to

@@ -881,6 +881,7 @@ fn print_resolved(r: &ResolvedConfig) {
 }
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 enum ConfigMigrationPlan {
     AlreadyCurrent,
     Legacy(LegacyConfigMigration),

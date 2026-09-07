@@ -14,8 +14,6 @@
 #![allow(
     dead_code,
     missing_docs,
-    unused_imports,
-    unused_variables,
     // --- clippy pedantic / nursery / style lints that are pervasive ---
     clippy::approx_constant,
     clippy::bind_instead_of_map,
@@ -42,7 +40,6 @@
     clippy::imprecise_flops,
     clippy::io_other_error,
     clippy::iter_cloned_collect,
-    clippy::large_enum_variant,
     clippy::let_underscore_future,
     clippy::literal_string_with_formatting_args,
     clippy::manual_checked_ops,

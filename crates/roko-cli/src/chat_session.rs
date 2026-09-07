@@ -32,7 +32,6 @@ use roko_core::foundation::{
 use roko_core::{Body, Context, Kind, OperatingFrequency, Signal};
 use roko_learn::cascade_router::CascadeRouter;
 use roko_learn::feedback_service::FeedbackService;
-use serde_yaml_ng as serde_yaml;
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command as TokioCommand;

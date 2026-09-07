@@ -45,6 +45,7 @@ pub enum AgentStartupInterruption {
     Cancelled,
 }
 
+#[allow(clippy::large_enum_variant)]
 pub enum AgentStartupError {
     Failed(anyhow::Error),
     Interrupted {
@@ -217,6 +218,7 @@ pub struct AgentHandle {
 
 /// Result of attempting to terminate an agent and its stream readers.
 #[must_use]
+#[allow(clippy::large_enum_variant)]
 pub enum AgentTermination {
     /// The process exited and all reader tasks stopped intentionally.
     Confirmed { pid: u32 },

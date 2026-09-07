@@ -4,7 +4,6 @@
 //! for lifecycle management (LIFE-01, LIFE-06).
 
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result, bail};

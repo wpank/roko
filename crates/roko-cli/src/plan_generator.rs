@@ -8,7 +8,6 @@
 //!   `PlanExecutionPolicy`).
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 
 use anyhow::{Result, anyhow};
 use indexmap::IndexMap;

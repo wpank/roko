@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use crate::orchestrator::ExecutorConfig;
 use roko_core::agent::ProviderKind;
 use roko_core::config::schema::{
-    ModelProfile, ProviderConfig, ProviderRouting, RokoConfig, SubscriptionConfig,
+    ModelProfile, ProviderConfig, ProviderRouting, RokoConfig,
 };
 use roko_core::config::{
     DEFAULT_TTFT_TIMEOUT_MS, ServeConfig, ServeDeployConfig, ServeDeployWebhookConfig,
@@ -1509,7 +1509,7 @@ pub(crate) fn set_toml_dotted_key(doc: &mut toml::Value, key: &str, value: &str)
     };
 
     // Walk/create intermediate tables.
-    let table = doc
+    let _table = doc
         .as_table_mut()
         .ok_or_else(|| anyhow!("config root is not a table"))?;
     // Work in-place on `doc` (table validation above guarantees it is a table).

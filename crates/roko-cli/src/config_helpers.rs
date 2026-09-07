@@ -9,7 +9,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context as _, Result};
 use roko_agent::safety::provenance::CustodyLogger;
 use roko_agent::task_runner::CostTable as RunnerCostTable;
 use roko_agent::task_runner::ModelPricing as RunnerModelPricing;

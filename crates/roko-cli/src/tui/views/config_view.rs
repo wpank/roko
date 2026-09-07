@@ -225,7 +225,7 @@ fn render_field_line<'a>(
     source: ConfigSource,
     selected: bool,
     modified: bool,
-    editing: bool,
+    _editing: bool,
     width: u16,
     theme: &Theme,
 ) -> Line<'a> {

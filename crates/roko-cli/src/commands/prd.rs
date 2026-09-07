@@ -297,7 +297,7 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
     let workdir = resolve_workdir(cli);
     let gw = load_gateway_env(&workdir);
     let model = cli.model.clone().or_else(|| model_from_config(&workdir));
-    let model_ref = model.as_deref();
+    let _model_ref = model.as_deref();
     let cli_effort = cli.effort.map(|effort| effort.to_string());
     let cli_effort_ref = cli_effort.as_deref();
     // #181: load config for per-role effort defaults; CLI --effort still wins.

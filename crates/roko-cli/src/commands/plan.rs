@@ -449,14 +449,14 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             log_file,
             skip_preflight,
             screenshots,
-            screenshot_interval,
-            screenshot_dir,
+            screenshot_interval: _,
+            screenshot_dir: _,
             batch_size,
             worktree_per_task,
             rich_topology,
         } => {
-            let t_total = std::time::Instant::now();
-            let t_setup = std::time::Instant::now();
+            let _t_total = std::time::Instant::now();
+            let _t_setup = std::time::Instant::now();
 
             // The global `--model` flag (with `--force-model` and
             // `--force-backend` as aliases) is the single model override.

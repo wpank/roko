@@ -100,10 +100,7 @@ pub(crate) async fn cmd_research(
 ) -> Result<i32> {
     use roko_cli::agent_config::{command_from_config, load_gateway_env, model_from_config};
     use roko_cli::agent_exec::{AgentExecOpts, run_agent_capture_silent};
-    use roko_cli::research::{
-        ResearchMode, build_research_prompt, build_research_prompt_gemini,
-        build_research_prompt_perplexity, grounding_to_citations, save_research_with_grounding,
-    };
+    use roko_cli::research::{ResearchMode, build_research_prompt};
 
     let workdir = resolve_workdir(cli);
 

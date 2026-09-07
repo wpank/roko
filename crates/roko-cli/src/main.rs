@@ -29,8 +29,6 @@
     clippy::stable_sort_primitive,
     clippy::derivable_impls,
     clippy::needless_lifetimes,
-    unused_imports,
-    unused_variables,
     dead_code,
     unreachable_patterns,
     unused_mut,
@@ -54,15 +52,13 @@ use roko_agent::process::{cleanup_orphaned_agents, reap_orphaned_children};
 use roko_agent::translate::BackendResponse;
 use roko_cli::agent_spawn::{SpawnAgentSpec, spawn_agent_scoped};
 use roko_cli::resolved_overrides::{
-    ConfigEditTarget, ConfigSetInput, DevelopInput, DoInput, GlobalCliFlags, LearnTuneInput,
-    PlanRunInput, ResolvedExecutionOverrides,
+    DoInput, GlobalCliFlags, ResolvedExecutionOverrides,
 };
 use roko_cli::serve_runtime::RokoCliRuntime;
 use roko_cli::tui::App;
 use roko_cli::{
     Config, DashboardScaffold, EditTarget, InjectKind, InjectRequest, PageId, PipeMode, Plan,
     RepoRegistry, Source, WizardInputs, config_cmd, load_resolved_config, run_init_wizard,
-    run_once,
 };
 pub use roko_cli::{model_selection, repo_context};
 use roko_core::agent::{AgentRole, ProviderKind};

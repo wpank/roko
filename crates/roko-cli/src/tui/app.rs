@@ -1485,6 +1485,7 @@ impl App {
                     Tab::Marketplace => FocusZone::MarketList,
                     Tab::Atelier => FocusZone::AtelierList,
                     Tab::Learning => FocusZone::LearningMetrics,
+                    Tab::Providers => FocusZone::ProviderList,
                 };
                 // Sync legacy page
                 if let Some(page_id) = tab_to_page(tab) {
@@ -2450,7 +2451,7 @@ impl App {
                     self.tui_state.git_branch_cursor =
                         (self.tui_state.git_branch_cursor + 1).min(max);
                 }
-                Tab::Inspect | Tab::Marketplace | Tab::Atelier | Tab::Learning => {}
+                Tab::Inspect | Tab::Marketplace | Tab::Atelier | Tab::Learning | Tab::Providers => {}
                 Tab::Agents | Tab::Logs | Tab::Config => {}
             },
             TuiAction::DrillOut => match self.tui_state.active_tab {
@@ -2467,7 +2468,7 @@ impl App {
                     self.tui_state.git_branch_cursor =
                         self.tui_state.git_branch_cursor.saturating_sub(1);
                 }
-                Tab::Inspect | Tab::Marketplace | Tab::Atelier | Tab::Learning => {}
+                Tab::Inspect | Tab::Marketplace | Tab::Atelier | Tab::Learning | Tab::Providers => {}
                 Tab::Agents | Tab::Logs | Tab::Config => {}
             },
             TuiAction::WaveNext => {
@@ -3242,6 +3243,7 @@ impl App {
                 Tab::Marketplace => FocusZone::MarketList,
                 Tab::Atelier => FocusZone::AtelierList,
                 Tab::Learning => FocusZone::LearningMetrics,
+                Tab::Providers => FocusZone::ProviderList,
                 _ => FocusZone::PlanTree,
             },
             super::hit_test::FocusZone::RightPane => match self.tui_state.active_tab {
@@ -3458,6 +3460,16 @@ impl App {
                 let current = self.tui_state.plan_scroll_offset as i32;
                 self.tui_state.plan_scroll_offset = (current + delta).max(0) as usize;
             }
+            (Tab::Providers, FocusZone::ProviderList) => {
+                let current = self.tui_state.providers_selected as i32;
+                let max = self
+                    .tui_state
+                    .provider_statuses
+                    .len()
+                    .saturating_sub(1) as i32;
+                self.tui_state.providers_selected =
+                    (current + delta).clamp(0, max) as usize;
+            }
             // Exhaustive: any remaining (tab, zone) combination is a no-op
             // rather than leaking into a shared scroll field.
             _ => {}
@@ -3568,6 +3580,9 @@ impl App {
             (Tab::Learning, FocusZone::LearningDetail) => {
                 self.tui_state.learning_detail_scroll = offset;
             }
+            (Tab::Providers, FocusZone::ProviderDetail) => {
+                self.tui_state.providers_detail_scroll = offset;
+            }
             // Per-tab left/detail zones not captured above: route to their
             // dedicated field so that no unrelated pane bleeds into
             // diff_scroll (#368).
@@ -3575,6 +3590,10 @@ impl App {
             | (Tab::Inspect, FocusZone::InspectTree)
             | (Tab::Learning, FocusZone::LearningMetrics) => {
                 self.tui_state.plan_scroll_offset = offset;
+            }
+            (Tab::Providers, FocusZone::ProviderList) => {
+                let max = self.tui_state.provider_statuses.len().saturating_sub(1);
+                self.tui_state.providers_selected = offset.min(max);
             }
             // Exhaustive: any remaining (tab, zone) combination is a no-op.
             _ => {}
@@ -3800,6 +3819,13 @@ impl App {
                 }
             }
             Tab::Inspect | Tab::Learning => {}
+            Tab::Providers => {
+                if !self.tui_state.provider_statuses.is_empty() {
+                    let max = self.tui_state.provider_statuses.len().saturating_sub(1);
+                    self.tui_state.providers_selected =
+                        self.tui_state.providers_selected.min(max);
+                }
+            }
         }
     }
 
@@ -4496,6 +4522,14 @@ impl App {
                 scroll: 0,
                 selected: 0,
                 sub_tab: self.tui_state.sub_tab_for(Tab::Learning),
+                secondary_selected: 0,
+                auto_tail: false,
+                search_query: String::new(),
+            },
+            Tab::Providers => ViewState {
+                scroll: self.tui_state.providers_detail_scroll.min(u16::MAX as usize) as u16,
+                selected: self.tui_state.providers_selected,
+                sub_tab: self.tui_state.sub_tab_for(Tab::Providers),
                 secondary_selected: 0,
                 auto_tail: false,
                 search_query: String::new(),
@@ -5312,7 +5346,7 @@ fn tab_to_page(tab: Tab) -> Option<PageId> {
         Tab::Agents => Some(PageId::AgentStatus),
         Tab::Logs => Some(PageId::LogView),
         Tab::Config => Some(PageId::ConfigView),
-        Tab::Git | Tab::Inspect | Tab::Marketplace | Tab::Atelier | Tab::Learning => None,
+        Tab::Git | Tab::Inspect | Tab::Marketplace | Tab::Atelier | Tab::Learning | Tab::Providers => None,
     }
 }
 

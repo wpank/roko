@@ -35,7 +35,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use roko_core::agent::ModelSpec;
-use roko_core::task::TaskComplexityBand;
+use roko_core::task::{TaskCategory, TaskComplexityBand};
 use roko_learn::cascade_router::{CascadeRouter, RoutingBias};
 use roko_learn::latency::LatencyRegistry;
 use roko_learn::model_router::RoutingContext;
@@ -44,6 +44,15 @@ use roko_learn::provider_health::ProviderHealthRegistry;
 use super::DispatchContext;
 use super::outcome::RunnerDispatchError;
 use crate::task_parser::TaskDef;
+
+/// Returns `true` when the task category requires tool use.
+///
+/// Implementation, scaffolding, integration, verification, refactoring, and
+/// infrastructure tasks all need the model to support tool calls.  Only
+/// research and documentation tasks can proceed without tools.
+fn needs_tool_use(cat: TaskCategory) -> bool {
+    !matches!(cat, TaskCategory::Research | TaskCategory::Docs)
+}
 
 // ─── Inputs ────────────────────────────────────────────────────────────
 
@@ -188,6 +197,12 @@ pub struct ModelRouter {
     /// `[routing] disabled_providers`.  Models backed by a disabled provider
     /// are rejected in the same way as models without credentials.
     disabled_providers: HashSet<String>,
+    /// Model slugs whose `ModelProfile.supports_tools` is `false`.
+    ///
+    /// When a task requires tool use (determined by [`needs_tool_use`]),
+    /// cascade router results that land in this set are rejected and replaced
+    /// with the `default_slug` fallback.
+    models_without_tools: HashSet<String>,
 }
 
 impl std::fmt::Debug for ModelRouter {
@@ -204,6 +219,7 @@ impl std::fmt::Debug for ModelRouter {
             .field("latency_threshold_ms", &self.latency_threshold_ms)
             .field("configured_models", &self.configured_models.len())
             .field("disabled_providers", &self.disabled_providers.len())
+            .field("models_without_tools", &self.models_without_tools.len())
             .finish()
     }
 }
@@ -220,6 +236,7 @@ impl ModelRouter {
             latency_threshold_ms: None,
             configured_models: HashSet::new(),
             disabled_providers: HashSet::new(),
+            models_without_tools: HashSet::new(),
         }
     }
 
@@ -289,6 +306,18 @@ impl ModelRouter {
     #[must_use]
     pub fn with_disabled_providers(mut self, providers: HashSet<String>) -> Self {
         self.disabled_providers = providers;
+        self
+    }
+
+    /// Register model slugs that lack tool-use support.
+    ///
+    /// When a task requires tool use (implementation, scaffolding, integration,
+    /// verification, refactoring, infrastructure), cascade router results whose
+    /// slug is in this set are rejected and replaced with the `default_slug`
+    /// fallback.  Research and documentation tasks are unaffected.
+    #[must_use]
+    pub fn with_tool_capability_filter(mut self, models_without_tools: HashSet<String>) -> Self {
+        self.models_without_tools = models_without_tools;
         self
     }
 
@@ -386,6 +415,27 @@ impl ModelRouter {
                             });
                         }
                     }
+                }
+                // Guard: reject models that lack tool-use support when the
+                // task category requires tools (implementation, scaffolding,
+                // integration, verification, refactoring, infrastructure).
+                if !self.models_without_tools.is_empty()
+                    && needs_tool_use(ctx.task_category)
+                    && self
+                        .models_without_tools
+                        .contains(&cascade_model.primary.slug)
+                {
+                    tracing::warn!(
+                        selected = %cascade_model.primary.slug,
+                        fallback = %self.default_slug,
+                        task_category = ?ctx.task_category,
+                        "model does not support tool use required by task category; \
+                         falling back to default"
+                    );
+                    return Ok(ModelChoice {
+                        model: ModelSpec::from_slug(&self.default_slug),
+                        source: ModelChoiceSource::Router,
+                    });
                 }
                 return Ok(ModelChoice {
                     model: cascade_model.primary,
@@ -571,7 +621,6 @@ mod tests {
     }
 
     fn routing_context() -> RoutingContext {
-        use roko_core::task::TaskCategory;
         use roko_core::{AgentRole, BehavioralState, DaimonPolicy};
 
         RoutingContext {

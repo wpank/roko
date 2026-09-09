@@ -1010,6 +1010,32 @@ pub fn map_provider_error(
         );
     }
 
+    // Billing/credit errors must be checked before the generic 429/rate-limit
+    // block so that quota-exceeded messages that happen to mention 429 are not
+    // misclassified as transient rate limits.
+    if err_lower.contains("402")
+        || err_lower.contains("insufficient_quota")
+        || err_lower.contains("insufficient quota")
+        || err_lower.contains("insufficient funds")
+        || err_lower.contains("billing_not_active")
+        || err_lower.contains("billing not active")
+        || err_lower.contains("account_deactivated")
+        || err_lower.contains("account deactivated")
+        || err_lower.contains("payment required")
+        || (err_lower.contains("quota")
+            && (err_lower.contains("exceeded") || err_lower.contains("exhausted")))
+        || (err_lower.contains("billing")
+            && (err_lower.contains("error") || err_lower.contains("issue")))
+        || (err_lower.contains("credit") && err_lower.contains("balance"))
+    {
+        return format!(
+            "Billing error on provider '{}': insufficient credits or quota exceeded. \
+             This provider will be skipped for the remainder of this run. \
+             Top up your account or switch providers in roko.toml [providers.{}].",
+            provider_name, provider_name
+        );
+    }
+
     if err_lower.contains("429")
         || err_lower.contains("rate_limit")
         || err_lower.contains("too many requests")
@@ -1063,6 +1089,11 @@ pub fn map_provider_error(
 pub enum ProviderError {
     RateLimit { retry_after_ms: Option<u64> },
     AuthFailure,
+    /// Billing/credit failure: insufficient funds, quota exceeded, or payment
+    /// required. Unlike transient rate limits, these will not resolve by
+    /// retrying and the provider should be skipped for the remainder of the
+    /// run.
+    InsufficientCredits,
     Timeout,
     ServerError(u16),
     ContentPolicy,
@@ -1079,6 +1110,9 @@ impl fmt::Display for ProviderError {
                 None => f.write_str("rate limited"),
             },
             Self::AuthFailure => f.write_str("authentication failed"),
+            Self::InsufficientCredits => {
+                f.write_str("billing error: insufficient credits or quota exceeded — will not retry")
+            }
             Self::Timeout => f.write_str("request timed out"),
             Self::ServerError(status) => write!(f, "server error {status}"),
             Self::ContentPolicy => f.write_str("content policy violation"),
@@ -1112,6 +1146,9 @@ pub fn should_retry(error: &ProviderError) -> RetryAction {
             delay_ms: retry_after_ms.unwrap_or(5_000),
         },
         ProviderError::AuthFailure => RetryAction::Skip,
+        // Billing errors (insufficient credits, quota exceeded, payment
+        // required) are permanent for this run — retrying would waste time.
+        ProviderError::InsufficientCredits => RetryAction::Skip,
         ProviderError::Timeout => RetryAction::TryFallback,
         ProviderError::ServerError(_) => RetryAction::TryFallback,
         ProviderError::ContentPolicy => RetryAction::Skip,
@@ -1797,6 +1834,10 @@ mod tests {
         );
         assert_eq!(should_retry(&ProviderError::AuthFailure), RetryAction::Skip);
         assert_eq!(
+            should_retry(&ProviderError::InsufficientCredits),
+            RetryAction::Skip
+        );
+        assert_eq!(
             should_retry(&ProviderError::Timeout),
             RetryAction::TryFallback
         );
@@ -2219,6 +2260,33 @@ mod tests {
         );
         assert!(msg.contains("some unknown error happened"), "got: {msg}");
         assert!(msg.contains("gemini"), "got: {msg}");
+    }
+
+    #[test]
+    fn map_provider_error_402_produces_billing_message() {
+        let msg = map_provider_error(
+            ProviderKind::OpenAiCompat,
+            "openai",
+            Some("OPENAI_API_KEY"),
+            Some("https://api.openai.com/v1"),
+            &"402 Payment Required",
+        );
+        assert!(msg.contains("Billing error"), "got: {msg}");
+        assert!(msg.contains("openai"), "got: {msg}");
+    }
+
+    #[test]
+    fn map_provider_error_insufficient_quota_produces_billing_message() {
+        let msg = map_provider_error(
+            ProviderKind::OpenAiCompat,
+            "openai",
+            Some("OPENAI_API_KEY"),
+            None,
+            &"insufficient_quota: you exceeded your current quota",
+        );
+        assert!(msg.contains("Billing error"), "got: {msg}");
+        assert!(msg.contains("openai"), "got: {msg}");
+        assert!(msg.contains("skipped"), "got: {msg}");
     }
 
     // ─── Cross-PR harness adapter pipeline integration tests ─────────

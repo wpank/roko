@@ -84,6 +84,12 @@ pub enum ErrorClass {
     ContentPolicy,
     /// Context exceeded the provider's maximum window.
     ContextOverflow,
+    /// Provider rejected the request due to billing, credit, or payment issues.
+    ///
+    /// Billing errors are not transient: they persist until the account holder
+    /// adds credits or resolves the payment issue. The cooldown is long (24 h)
+    /// so the cascade router routes around the provider for the rest of the run.
+    Billing,
     /// Fallback classification when the exact class is unknown.
     Unknown,
 }
@@ -183,6 +189,10 @@ impl ProviderHealth {
             self.recent_outcomes.pop_front();
         }
 
+        // Condition 0: billing/credit errors are definitive — trip immediately
+        // on the first occurrence so the cascade router skips this provider.
+        let should_trip_billing = error == ErrorClass::Billing;
+
         // Condition 1: trip to Open after 3 consecutive failures.
         let should_trip_consecutive = self.consecutive_failures >= 3;
 
@@ -197,7 +207,7 @@ impl ProviderHealth {
             false
         };
 
-        if should_trip_consecutive || should_trip_rate {
+        if should_trip_billing || should_trip_consecutive || should_trip_rate {
             // When already Open, each additional failure extends the cooldown
             // (original behaviour). When Closed or HalfOpen, transition to Open.
             self.state = CircuitState::Open;
@@ -257,6 +267,11 @@ impl ProviderHealth {
             ErrorClass::Timeout => 10_000,
             ErrorClass::ServerError => 30_000,
             ErrorClass::AuthFailure => 300_000,
+            // Billing failures are not transient: they persist until the
+            // account holder resolves the payment/credit issue. Use a 24-hour
+            // cooldown so the provider is effectively excluded for the
+            // remainder of any realistic plan execution.
+            ErrorClass::Billing => 86_400_000,
             _ => 5_000,
         }
     }
@@ -1030,6 +1045,7 @@ impl roko_agent::model_call_service::ProviderOutcomeRecorder for ProviderHealthR
             "timeout" => ErrorClass::Timeout,
             "server_error" => ErrorClass::ServerError,
             "auth_failure" => ErrorClass::AuthFailure,
+            "insufficient_credits" | "billing" => ErrorClass::Billing,
             "content_policy" => ErrorClass::ContentPolicy,
             "context_overflow" => ErrorClass::ContextOverflow,
             _ => ErrorClass::Unknown,
@@ -1592,9 +1608,27 @@ mod tests {
         assert_eq!(h.cooldown_ms(ErrorClass::Timeout), 10_000);
         assert_eq!(h.cooldown_ms(ErrorClass::ServerError), 30_000);
         assert_eq!(h.cooldown_ms(ErrorClass::AuthFailure), 300_000);
+        assert_eq!(h.cooldown_ms(ErrorClass::Billing), 86_400_000);
         assert_eq!(h.cooldown_ms(ErrorClass::ContentPolicy), 5_000);
         assert_eq!(h.cooldown_ms(ErrorClass::ContextOverflow), 5_000);
         assert_eq!(h.cooldown_ms(ErrorClass::Unknown), 5_000);
+    }
+
+    /// A single billing failure immediately trips the circuit Open with a 24h
+    /// cooldown, regardless of the consecutive-failure threshold.
+    #[test]
+    fn billing_failure_trips_circuit_immediately() {
+        let mut h = new_provider_health("test");
+        assert_eq!(h.state, CircuitState::Closed);
+
+        // A *single* billing failure should trip the circuit.
+        h.record_failure(ErrorClass::Billing, 1_000);
+        assert_eq!(h.state, CircuitState::Open);
+        assert_eq!(h.consecutive_failures, 1);
+        // 24h cooldown: 1_000 + 86_400_000 = 86_401_000
+        assert_eq!(h.cooldown_until, Some(86_401_000));
+        // Should be unavailable for the entire cooldown.
+        assert!(!h.is_available(86_400_999));
     }
 
     // ── Health status transitions ────────────────────────────────────────
@@ -1818,6 +1852,7 @@ mod tests {
             ErrorClass::ServerError,
             ErrorClass::ContentPolicy,
             ErrorClass::ContextOverflow,
+            ErrorClass::Billing,
             ErrorClass::Unknown,
         ];
         for class in classes {

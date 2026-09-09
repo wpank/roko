@@ -1495,6 +1495,26 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 .as_text()
                 .unwrap_or("provider returned an unsuccessful result")
                 .to_string();
+
+            // Detect billing/credit errors and log a clear warning so
+            // operators see the root cause. The in-memory health registry
+            // has already been updated by the dispatch layer (dispatch_v2),
+            // which marks the provider as Open-circuit with a 24-hour
+            // cooldown, so the next retry will route to a different provider
+            // through the cascade router.
+            let message_lower = message.to_ascii_lowercase();
+            if roko_agent::provider::error_classify::is_billing_message(&message_lower) {
+                tracing::warn!(
+                    plan_id = %spec.plan_id,
+                    task_id = %task.id,
+                    provider = %dispatch.target.provider_id,
+                    "provider {} returned billing error: {}. \
+                     Marking as unavailable for this run.",
+                    dispatch.target.provider_id,
+                    message
+                );
+            }
+
             return Err(RokoError::Agent {
                 backend: dispatch.target.provider_id,
                 message,
@@ -1544,17 +1564,17 @@ impl TaskDispatcher for GraphTaskDispatcher {
                     "graph verify step starting"
                 );
 
-                // Parse the command into program + args for ShellGate.
-                let parts: Vec<&str> = step.command.split_whitespace().collect();
-                let (program, args) = if parts.is_empty() {
-                    ("true", Vec::new())
-                } else {
-                    (parts[0], parts[1..].iter().map(|s| s.to_string()).collect())
-                };
-
-                let gate = ShellGate::new(program, args)
-                    .with_timeout_ms(step.timeout_ms)
-                    .with_name(&step_label);
+                let gate = ShellGate::new(
+                    "bash",
+                    vec![
+                        "-o".into(),
+                        "pipefail".into(),
+                        "-c".into(),
+                        step.command.clone(),
+                    ],
+                )
+                .with_timeout_ms(step.timeout_ms)
+                .with_name(&step_label);
 
                 let verdict = gate.verify(&gate_signal, &gate_ctx).await;
 
@@ -2298,16 +2318,17 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                     "graph verify step starting (streaming)"
                 );
 
-                let parts: Vec<&str> = step.command.split_whitespace().collect();
-                let (program, args) = if parts.is_empty() {
-                    ("true", Vec::new())
-                } else {
-                    (parts[0], parts[1..].iter().map(|s| s.to_string()).collect())
-                };
-
-                let gate = ShellGate::new(program, args)
-                    .with_timeout_ms(step.timeout_ms)
-                    .with_name(&step_label);
+                let gate = ShellGate::new(
+                    "bash",
+                    vec![
+                        "-o".into(),
+                        "pipefail".into(),
+                        "-c".into(),
+                        step.command.clone(),
+                    ],
+                )
+                .with_timeout_ms(step.timeout_ms)
+                .with_name(&step_label);
 
                 let verdict = gate.verify(&gate_signal, &gate_ctx).await;
 

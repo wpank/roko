@@ -202,6 +202,17 @@ impl Dispatcher {
         self
     }
 
+    /// Register model slugs that lack tool-use support.
+    ///
+    /// When a task requires tool use (implementation, scaffolding, etc.),
+    /// cascade router results whose slug is in this set are rejected and
+    /// replaced with the default fallback.
+    #[must_use]
+    pub fn with_tool_capability_filter(mut self, models_without_tools: HashSet<String>) -> Self {
+        self.router = self.router.with_tool_capability_filter(models_without_tools);
+        self
+    }
+
     /// Read-only access to the prompt assembler -- exposed for bidder
     /// persistence and diagnostic endpoints.
     #[must_use]

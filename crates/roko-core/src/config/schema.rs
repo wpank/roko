@@ -973,6 +973,30 @@ impl RokoConfig {
         keys
     }
 
+    /// Model slugs that support tool use, filtered by credential availability.
+    ///
+    /// Returns the set of wire slugs for models where `supports_tools == true`
+    /// and the backing provider has valid credentials.  Used by the model
+    /// router to reject search-only models (e.g. Perplexity sonar) for tasks
+    /// that require tool use.
+    #[must_use]
+    pub fn models_supporting_tools(&self) -> Vec<String> {
+        let mut slugs: Vec<String> = self
+            .effective_models()
+            .into_iter()
+            .filter(|(k, profile)| {
+                profile.supports_tools
+                    && !profile.is_embedding_model
+                    && !profile.slug.trim().is_empty()
+                    && self.provider_available_for_model_key(k)
+            })
+            .map(|(_, profile)| profile.slug.clone())
+            .collect();
+        slugs.sort();
+        slugs.dedup();
+        slugs
+    }
+
     /// Backend slugs currently dispatchable by provider credential state.
     ///
     /// Prefer [`Self::model_slugs_for_cascade`] for cascade router

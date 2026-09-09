@@ -11,6 +11,10 @@ pub enum ErrorClass {
     RateLimit,
     /// Provider rejected the request because authentication failed.
     AuthFailure,
+    /// Billing/credit failure: insufficient funds, quota exceeded, or payment
+    /// required. Unlike transient rate limits, these are permanent for the
+    /// current run and should never be retried.
+    InsufficientCredits,
     /// Request timed out before completing.
     Timeout,
     /// Provider returned a transient 5xx-style failure.
@@ -30,6 +34,7 @@ impl From<&ProviderError> for ErrorClass {
         match error {
             ProviderError::RateLimit { .. } => Self::RateLimit,
             ProviderError::AuthFailure => Self::AuthFailure,
+            ProviderError::InsufficientCredits => Self::InsufficientCredits,
             ProviderError::Timeout => Self::Timeout,
             ProviderError::ServerError(_) => Self::ServerError,
             ProviderError::ContentPolicy => Self::ContentPolicy,
@@ -45,6 +50,7 @@ impl std::fmt::Display for ErrorClass {
         match self {
             Self::RateLimit => f.write_str("rate_limit"),
             Self::AuthFailure => f.write_str("auth_failure"),
+            Self::InsufficientCredits => f.write_str("insufficient_credits"),
             Self::Timeout => f.write_str("timeout"),
             Self::ServerError => f.write_str("server_error"),
             Self::ContentPolicy => f.write_str("content_policy"),
@@ -150,6 +156,7 @@ impl RetryPolicy {
         match error {
             ProviderError::RateLimit { .. } => true,
             ProviderError::AuthFailure => false,
+            ProviderError::InsufficientCredits => false,
             ProviderError::ContentPolicy => false,
             ProviderError::Timeout => true,
             ProviderError::ServerError(_) => true,
@@ -270,6 +277,7 @@ mod tests {
             2
         ));
         assert!(!policy.should_retry(&ProviderError::AuthFailure, 0));
+        assert!(!policy.should_retry(&ProviderError::InsufficientCredits, 0));
         assert!(!policy.should_retry(&ProviderError::ContentPolicy, 0));
         assert!(!policy.should_retry(&ProviderError::ContextOverflow, 0));
         assert!(policy.should_retry(&ProviderError::Other("unknown".into()), 1));

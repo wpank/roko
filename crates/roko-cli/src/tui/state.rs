@@ -61,6 +61,93 @@ pub struct SafetyIncident {
     pub description: String,
 }
 
+/// Health classification for a configured LLM provider.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ProviderHealth {
+    /// Provider is responsive and within latency/error budgets.
+    #[default]
+    Healthy,
+    /// Provider is responding but with elevated latency or error rate.
+    Degraded,
+    /// Provider is unresponsive or all recent requests failed.
+    Failed,
+    /// Provider is being throttled or has billing issues.
+    Billing,
+}
+
+/// Credit/billing classification for a provider.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum CreditStatus {
+    /// Credits/quota are available.
+    #[default]
+    Available,
+    /// Credits are running low.
+    Low,
+    /// Credits are exhausted.
+    Empty,
+    /// Credit status cannot be determined.
+    Unknown,
+    /// CLI-based provider with no billing concept.
+    CliProvider,
+}
+
+/// Snapshot of a single LLM provider's operational status for the Providers tab.
+#[derive(Clone, Debug)]
+pub struct ProviderStatus {
+    /// Display name (e.g. "anthropic-primary").
+    pub name: String,
+    /// Provider kind slug (e.g. "anthropic_api", "openai_compat", "claude_cli").
+    pub kind: String,
+    /// Current health classification.
+    pub health: ProviderHealth,
+    /// Current credit/billing status.
+    pub credit_status: CreditStatus,
+    /// Cumulative cost in USD across all requests.
+    pub total_cost_usd: f64,
+    /// Total number of API requests made.
+    pub total_requests: u64,
+    /// Total number of failed requests.
+    pub total_failures: u64,
+    /// Success rate (0.0 - 1.0).
+    pub success_rate: f64,
+    /// Average response latency in milliseconds.
+    pub avg_latency_ms: u64,
+    /// Models currently routed through this provider.
+    pub active_models: Vec<String>,
+    /// Rolling cost samples for sparkline rendering (last 60).
+    pub cost_history: Vec<f64>,
+    /// Rolling latency samples for sparkline rendering (last 60).
+    pub latency_history: Vec<u64>,
+    /// Most recent error message, if any.
+    pub last_error: Option<String>,
+    /// Circuit breaker state label ("closed", "open", "half_open").
+    pub circuit_state: String,
+    /// Seconds remaining in cooldown period, if any.
+    pub cooldown_remaining_secs: Option<u64>,
+}
+
+impl Default for ProviderStatus {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            kind: String::new(),
+            health: ProviderHealth::default(),
+            credit_status: CreditStatus::default(),
+            total_cost_usd: 0.0,
+            total_requests: 0,
+            total_failures: 0,
+            success_rate: 1.0,
+            avg_latency_ms: 0,
+            active_models: Vec::new(),
+            cost_history: Vec::new(),
+            latency_history: Vec::new(),
+            last_error: None,
+            circuit_state: String::from("closed"),
+            cooldown_remaining_secs: None,
+        }
+    }
+}
+
 /// Cached MCP configuration used by the dashboard's MCP panel.
 ///
 /// Keeping this in `TuiState` ensures rendering remains a pure in-memory
@@ -2247,6 +2334,16 @@ pub struct TuiState {
     // -- safety incidents (P2-06) --
     /// Safety incidents loaded from `.roko/immune/` or extracted from log entries.
     pub safety_incidents: Vec<SafetyIncident>,
+
+    // -- providers (F11) --
+    /// Provider status snapshots for the F11 Providers NERV tab.
+    pub provider_statuses: Vec<ProviderStatus>,
+    /// Selected Providers tab sub-view index.
+    pub providers_sub_tab: usize,
+    /// Providers detail pane scroll offset.
+    pub providers_detail_scroll: usize,
+    /// Selected provider index in the provider list.
+    pub providers_selected: usize,
 }
 
 impl Default for TuiState {
@@ -2479,6 +2576,11 @@ impl Default for TuiState {
             inbox_items: Vec::new(),
             inbox_scroll: 0,
             safety_incidents: Vec::new(),
+
+            provider_statuses: Vec::new(),
+            providers_sub_tab: 0,
+            providers_detail_scroll: 0,
+            providers_selected: 0,
         }
     }
 }
@@ -3277,6 +3379,12 @@ impl TuiState {
             Tab::Logs => self.gate_results.iter().filter(|g| !g.passed).count(),
             // F10 Learning: number of concluded experiment winners.
             Tab::Learning => self.experiment_winners.len(),
+            // F11 Providers: number of unhealthy providers.
+            Tab::Providers => self
+                .provider_statuses
+                .iter()
+                .filter(|p| !matches!(p.health, ProviderHealth::Healthy))
+                .count(),
             _ => 0,
         }
     }
@@ -3295,6 +3403,7 @@ impl TuiState {
             Tab::Marketplace => self.marketplace_sub_tab,
             Tab::Atelier => self.atelier_sub_tab,
             Tab::Learning => self.learning_sub_tab,
+            Tab::Providers => self.providers_sub_tab,
         }
     }
 
@@ -3311,6 +3420,7 @@ impl TuiState {
             Tab::Marketplace => self.marketplace_sub_tab = idx,
             Tab::Atelier => self.atelier_sub_tab = idx,
             Tab::Learning => self.learning_sub_tab = idx,
+            Tab::Providers => self.providers_sub_tab = idx,
         }
     }
 
@@ -3760,6 +3870,15 @@ impl TuiState {
             self.atelier_selected_prd = 0;
         } else if self.atelier_selected_prd >= self.atelier_prds.len() {
             self.atelier_selected_prd = self.atelier_prds.len() - 1;
+        }
+
+        // -- provider statuses (F11) --
+        self.provider_statuses =
+            populate_provider_statuses(&self.workdir, &self.efficiency_events);
+        if !self.provider_statuses.is_empty()
+            && self.providers_selected >= self.provider_statuses.len()
+        {
+            self.providers_selected = self.provider_statuses.len() - 1;
         }
     }
 
@@ -4450,6 +4569,17 @@ impl TuiState {
 
         // --- Learning files the snapshot cannot carry (per-event payloads) ---
         self.sync_connected_learning_files();
+
+        // --- Provider statuses (F11) ---
+        if !self.workdir.as_os_str().is_empty() {
+            self.provider_statuses =
+                populate_provider_statuses(&self.workdir, &self.efficiency_events);
+            if !self.provider_statuses.is_empty()
+                && self.providers_selected >= self.provider_statuses.len()
+            {
+                self.providers_selected = self.provider_statuses.len() - 1;
+            }
+        }
 
         self.refresh_cached_unified_log();
     }
@@ -5935,6 +6065,276 @@ fn episode_to_phase_name(episode: &roko_learn::episode_logger::Episode) -> Strin
 
 fn current_epoch_ms() -> u64 {
     Utc::now().timestamp_millis().max(0) as u64
+}
+
+/// Build `Vec<ProviderStatus>` from the on-disk provider-health registry
+/// and efficiency events already loaded into `TuiState`.
+///
+/// The function merges three data sources:
+///
+/// 1. **Provider health registry** (`provider-health.json`) -- circuit state,
+///    request/failure counts, cooldown timers, and failure window.
+/// 2. **Efficiency events** (`efficiency.jsonl`) -- per-turn cost, latency,
+///    and model information already parsed into `TuiState::efficiency_events`.
+/// 3. **Config providers** -- the keys of `[providers.*]` in `roko.toml`
+///    ensure every configured provider appears even if it has never been used.
+#[allow(clippy::cast_precision_loss)]
+fn populate_provider_statuses(
+    workdir: &Path,
+    efficiency_events: &[roko_learn::efficiency::AgentEfficiencyEvent],
+) -> Vec<ProviderStatus> {
+    use roko_learn::provider_health::{CircuitState, ErrorClass};
+
+    // --- 1. Load provider health from disk ---
+    let health_path = workdir.join(".roko").join("learn").join("provider-health.json");
+    let health_map: HashMap<String, roko_learn::provider_health::ProviderHealth> =
+        std::fs::read_to_string(&health_path)
+            .ok()
+            .and_then(|text| {
+                #[derive(serde::Deserialize)]
+                struct Snap {
+                    #[serde(default)]
+                    providers: HashMap<String, roko_learn::provider_health::ProviderHealth>,
+                }
+                serde_json::from_str::<Snap>(&text).ok()
+            })
+            .map(|snap| snap.providers)
+            .unwrap_or_default();
+
+    // --- 2. Aggregate efficiency events per provider ---
+    struct EffAgg {
+        total_cost: f64,
+        total_latency_ms: u64,
+        call_count: u64,
+        models: HashSet<String>,
+        cost_samples: Vec<f64>,
+        latency_samples: Vec<u64>,
+    }
+    impl Default for EffAgg {
+        fn default() -> Self {
+            Self {
+                total_cost: 0.0,
+                total_latency_ms: 0,
+                call_count: 0,
+                models: HashSet::new(),
+                cost_samples: Vec::new(),
+                latency_samples: Vec::new(),
+            }
+        }
+    }
+
+    let mut eff_by_provider: HashMap<String, EffAgg> = HashMap::new();
+    for event in efficiency_events {
+        let provider_key = if event.backend.is_empty() {
+            infer_provider_name(&event.model)
+        } else {
+            normalize_provider_display(&event.backend)
+        };
+        let agg = eff_by_provider.entry(provider_key).or_default();
+        agg.call_count += 1;
+        agg.total_cost += event.cost_usd;
+        agg.total_latency_ms += event.wall_time_ms;
+        if !event.model.is_empty() {
+            agg.models.insert(event.model.clone());
+        }
+        agg.cost_samples.push(event.cost_usd);
+        agg.latency_samples.push(event.wall_time_ms);
+    }
+
+    // --- 3. Load configured providers from roko.toml ---
+    let config_providers: Vec<(String, String)> =
+        roko_core::config::loader::load_config_unified(workdir)
+            .map(|cfg| {
+                cfg.providers
+                    .iter()
+                    .map(|(name, pc)| (name.clone(), format!("{:?}", pc.kind)))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+    // --- 4. Merge all provider names ---
+    let mut all_providers: BTreeMap<String, Option<String>> = BTreeMap::new();
+    for (name, kind) in &config_providers {
+        all_providers.insert(name.clone(), Some(kind.clone()));
+    }
+    for key in health_map.keys() {
+        all_providers.entry(key.clone()).or_insert(None);
+    }
+    for key in eff_by_provider.keys() {
+        all_providers.entry(key.clone()).or_insert(None);
+    }
+
+    // --- 5. Build ProviderStatus for each ---
+    let now_ms = Utc::now().timestamp_millis();
+    let mut statuses: Vec<ProviderStatus> = Vec::with_capacity(all_providers.len());
+
+    for (name, config_kind) in &all_providers {
+        let health_entry = health_map.get(name);
+        let eff_entry = eff_by_provider.get(name);
+
+        // Circuit state from health registry.
+        let (circuit_state, total_requests, total_failures, cooldown_remaining_secs) =
+            if let Some(h) = health_entry {
+                let circuit_label = match h.state {
+                    CircuitState::Closed => "closed",
+                    CircuitState::Open => "open",
+                    CircuitState::HalfOpen => "half_open",
+                };
+                let cooldown = h.cooldown_until.and_then(|until| {
+                    let remaining_ms = until - now_ms;
+                    if remaining_ms > 0 {
+                        Some((remaining_ms / 1000) as u64)
+                    } else {
+                        None
+                    }
+                });
+                (
+                    circuit_label.to_string(),
+                    h.total_requests,
+                    h.total_failures,
+                    cooldown,
+                )
+            } else {
+                ("closed".to_string(), 0, 0, None)
+            };
+
+        // Success rate: prefer health registry (it sees all requests including
+        // failures that don't produce efficiency events).
+        let success_rate = if total_requests > 0 {
+            (total_requests - total_failures) as f64 / total_requests as f64
+        } else {
+            // No health data yet; assume healthy.
+            1.0
+        };
+
+        // Health classification.
+        let health = if let Some(h) = health_entry {
+            match h.state {
+                CircuitState::Open => {
+                    // Check if it's a billing issue.
+                    let is_billing = h
+                        .failure_window
+                        .back()
+                        .is_some_and(|f| f.error_class == ErrorClass::Billing);
+                    if is_billing {
+                        ProviderHealth::Billing
+                    } else {
+                        ProviderHealth::Failed
+                    }
+                }
+                CircuitState::HalfOpen => ProviderHealth::Degraded,
+                CircuitState::Closed => {
+                    if success_rate < 0.7 && total_requests >= 3 {
+                        ProviderHealth::Degraded
+                    } else {
+                        ProviderHealth::Healthy
+                    }
+                }
+            }
+        } else {
+            ProviderHealth::Healthy
+        };
+
+        // Cost and latency from efficiency events.
+        let (total_cost_usd, avg_latency_ms, active_models, cost_history, latency_history) =
+            if let Some(agg) = eff_entry {
+                let avg_lat = if agg.call_count > 0 {
+                    agg.total_latency_ms / agg.call_count
+                } else {
+                    0
+                };
+                let models: Vec<String> = agg.models.iter().cloned().collect();
+                // Keep only the last 60 samples for sparklines.
+                let cost_hist: Vec<f64> = agg
+                    .cost_samples
+                    .iter()
+                    .rev()
+                    .take(60)
+                    .rev()
+                    .copied()
+                    .collect();
+                let lat_hist: Vec<u64> = agg
+                    .latency_samples
+                    .iter()
+                    .rev()
+                    .take(60)
+                    .rev()
+                    .copied()
+                    .collect();
+                (agg.total_cost, avg_lat, models, cost_hist, lat_hist)
+            } else {
+                (0.0, 0, Vec::new(), Vec::new(), Vec::new())
+            };
+
+        // Last error from health registry.
+        let last_error = health_entry.and_then(|h| {
+            h.failure_window.back().map(|f| format!("{:?}", f.error_class))
+        });
+
+        // Kind from config, or "unknown".
+        let kind = config_kind
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string());
+
+        statuses.push(ProviderStatus {
+            name: name.clone(),
+            kind,
+            health,
+            credit_status: CreditStatus::Unknown,
+            total_cost_usd,
+            total_requests,
+            total_failures,
+            success_rate,
+            avg_latency_ms,
+            active_models,
+            cost_history,
+            latency_history,
+            last_error,
+            circuit_state,
+            cooldown_remaining_secs,
+        });
+    }
+
+    statuses
+}
+
+/// Infer a provider name from a model slug when the efficiency event has
+/// no explicit backend field.
+fn infer_provider_name(model: &str) -> String {
+    let lower = model.to_ascii_lowercase();
+    if lower.contains("claude") || lower.contains("anthropic") {
+        "anthropic".to_string()
+    } else if lower.contains("gpt") || lower.contains("openai") || lower.contains("o1") || lower.contains("o3") || lower.contains("o4") {
+        "openai".to_string()
+    } else if lower.contains("gemini") || lower.contains("google") {
+        "google".to_string()
+    } else if lower.contains("llama") || lower.contains("cerebras") {
+        "cerebras".to_string()
+    } else if lower.contains("perplexity") || lower.contains("sonar") {
+        "perplexity".to_string()
+    } else if model.contains('/') {
+        model.split('/').next().unwrap_or("unknown").to_string()
+    } else {
+        "unknown".to_string()
+    }
+}
+
+/// Normalize a provider backend key for display (e.g. "anthropic_api" -> "anthropic").
+fn normalize_provider_display(backend: &str) -> String {
+    let lower = backend.to_ascii_lowercase().replace('-', "_");
+    match lower.as_str() {
+        "anthropic_api" | "anthropicapi" => "anthropic".to_string(),
+        "openai_compat" | "openaicompat" => "openai".to_string(),
+        "gemini_api" | "geminiapi" => "google".to_string(),
+        "cerebras_api" | "cerebrasapi" => "cerebras".to_string(),
+        "perplexity_api" | "perplexityapi" => "perplexity".to_string(),
+        "claude_cli" | "claudecli" => "claude_cli".to_string(),
+        "gemini_cli" | "geminicli" => "gemini_cli".to_string(),
+        "cursor_cli" | "cursorcli" => "cursor_cli".to_string(),
+        "cursor_acp" | "cursoracp" => "cursor_acp".to_string(),
+        "codex_cli" | "codexcli" => "codex_cli".to_string(),
+        _ => lower,
+    }
 }
 
 #[cfg(test)]

@@ -171,7 +171,7 @@ impl SharedAgentFactory {
             cascade_router,
             prompt_assembler,
             WarmPool::new(2),
-            configured_models,
+            configured_models.clone(),
         );
         let resolver = ProviderDispatchResolver::new(Arc::clone(&config));
 
@@ -209,6 +209,25 @@ impl SharedAgentFactory {
                 "routing: statically disabled providers"
             );
             dispatcher.with_disabled_providers(disabled_providers)
+        };
+
+        // Wire tool-capability filtering so search-only models (e.g. Perplexity
+        // sonar) are never selected for tasks that require tool use.
+        let tool_capable: HashSet<String> =
+            config.models_supporting_tools().into_iter().collect();
+        let models_without_tools: HashSet<String> = configured_models
+            .iter()
+            .filter(|slug| !tool_capable.contains(*slug))
+            .cloned()
+            .collect();
+        let dispatcher = if models_without_tools.is_empty() {
+            dispatcher
+        } else {
+            tracing::info!(
+                models = ?models_without_tools,
+                "routing: models without tool support will be skipped for tool-requiring tasks"
+            );
+            dispatcher.with_tool_capability_filter(models_without_tools)
         };
 
         Self {
@@ -362,11 +381,22 @@ impl SharedAgentFactory {
             self.dispatcher.cascade_router_arc(),
             assembler,
             WarmPool::new(2),
-            configured_models,
+            configured_models.clone(),
         )
         .with_provider_health(Arc::clone(&self.health_registry), model_providers);
         if !disabled_providers.is_empty() {
             dispatcher = dispatcher.with_disabled_providers(disabled_providers);
+        }
+        // Preserve tool-capability filter across cache updates.
+        let tool_capable: HashSet<String> =
+            self.config.models_supporting_tools().into_iter().collect();
+        let models_without_tools: HashSet<String> = configured_models
+            .iter()
+            .filter(|slug| !tool_capable.contains(*slug))
+            .cloned()
+            .collect();
+        if !models_without_tools.is_empty() {
+            dispatcher = dispatcher.with_tool_capability_filter(models_without_tools);
         }
         self.dispatcher = dispatcher;
     }

@@ -135,9 +135,12 @@ pub(crate) async fn dispatch_config(cli: &Cli, cmd: ConfigCmd) -> Result<()> {
                 cmd_provider_list(&wd).await?;
                 Ok(())
             }
-            ConfigProviderCmd::Health { workdir } => {
+            ConfigProviderCmd::Health {
+                workdir,
+                check_credits,
+            } => {
                 let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-                cmd_provider_health(&wd)?;
+                cmd_provider_health(&wd, check_credits).await?;
                 Ok(())
             }
             ConfigProviderCmd::Test {
@@ -687,7 +690,7 @@ pub(crate) async fn cmd_provider_list(workdir: &Path) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn cmd_provider_health(workdir: &Path) -> Result<()> {
+pub(crate) async fn cmd_provider_health(workdir: &Path, check_credits: bool) -> Result<()> {
     let config = roko_core::config::loader::load_config_unified(workdir)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let eff = config.effective_providers();
@@ -755,7 +758,166 @@ pub(crate) fn cmd_provider_health(workdir: &Path) -> Result<()> {
         .collect::<Vec<_>>();
 
     print!("{}", format_provider_health_rows(&rows));
+
+    // ── Credit / billing probe ────────────────────────────────────────
+    if check_credits {
+        println!();
+        println!("credit check (minimal API call per provider):");
+        let mut sorted: Vec<_> = configured.iter().collect();
+        sorted.sort_by(|a, b| a.0.cmp(b.0));
+        for (id, provider) in &sorted {
+            let result = test_provider_credit(id, provider).await;
+            println!("  {:<18} {}", id, result);
+        }
+    }
+
     Ok(())
+}
+
+/// Make a minimal API call to verify that a provider account has credits.
+///
+/// Returns a human-readable status string such as `"ok (credits available)"`,
+/// `"warn (no credits)"`, `"warn (unreachable)"`, or `"skip (cli provider)"`.
+async fn test_provider_credit(_provider_id: &str, provider: &ProviderConfig) -> String {
+    use ProviderKind::{
+        AnthropicApi, CerebrasApi, ClaudeCli, CodexCli, CursorAcp, CursorCli, GeminiApi,
+        GeminiCli, Hermes, OpenAiCompat, OpenClaw, PerplexityApi,
+    };
+
+    // CLI-based providers don't have billing — skip.
+    match provider.kind {
+        ClaudeCli | CodexCli | CursorAcp | CursorCli | GeminiCli | Hermes | OpenClaw => {
+            return "skip (cli provider)".to_string();
+        }
+        AnthropicApi | OpenAiCompat | PerplexityApi | GeminiApi | CerebrasApi => {}
+    }
+
+    let api_key = match provider.resolve_api_key().filter(|v| !v.trim().is_empty()) {
+        Some(key) => key,
+        None => return "skip (no api key)".to_string(),
+    };
+
+    let client = match reqwest::Client::builder()
+        .user_agent("roko-cli/0.1")
+        .timeout(Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => return format!("fail (http client: {e})"),
+    };
+
+    let result = match provider.kind {
+        AnthropicApi => {
+            let base = provider
+                .base_url
+                .as_deref()
+                .unwrap_or("https://api.anthropic.com")
+                .trim_end_matches('/');
+            let endpoint = format!("{base}/v1/messages");
+            let body = json!({
+                "model": "claude-3-5-haiku-20241022",
+                "max_tokens": 1,
+                "messages": [{"role": "user", "content": "hi"}]
+            });
+            client
+                .post(&endpoint)
+                .header("content-type", "application/json")
+                .header("x-api-key", &api_key)
+                .header("anthropic-version", "2023-06-01")
+                .json(&body)
+                .send()
+                .await
+        }
+        GeminiApi => {
+            let base = provider
+                .base_url
+                .as_deref()
+                .unwrap_or("https://generativelanguage.googleapis.com")
+                .trim_end_matches('/');
+            let endpoint = format!(
+                "{base}/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
+            );
+            let body = json!({
+                "contents": [{"parts": [{"text": "hi"}]}],
+                "generationConfig": {"maxOutputTokens": 1}
+            });
+            client
+                .post(&endpoint)
+                .header("content-type", "application/json")
+                .json(&body)
+                .send()
+                .await
+        }
+        // OpenAiCompat, PerplexityApi, CerebrasApi all use the OpenAI chat format.
+        _ => {
+            let endpoint = openai_compat_test_endpoint(provider);
+            // Use a cheap model fallback; the exact model doesn't matter for
+            // a billing probe — any model that the account can access works.
+            let model_slug = match provider.kind {
+                PerplexityApi => "sonar",
+                CerebrasApi => "llama-4-scout-17b-16e-instruct",
+                _ => "gpt-4o-mini",
+            };
+            let body = json!({
+                "model": model_slug,
+                "max_tokens": 1,
+                "messages": [{"role": "user", "content": "hi"}]
+            });
+            let mut req = client
+                .post(&endpoint)
+                .header("content-type", "application/json")
+                .bearer_auth(&api_key);
+            if let Some(extra_headers) = provider.extra_headers.as_ref() {
+                for (name, value) in extra_headers {
+                    req = req.header(name.as_str(), value.as_str());
+                }
+            }
+            req.json(&body).send().await
+        }
+    };
+
+    match result {
+        Ok(response) => {
+            let status = response.status();
+            if status.is_success() {
+                return "ok (credits available)".to_string();
+            }
+            let code = status.as_u16();
+            let body = response.text().await.unwrap_or_default();
+            // 402 Payment Required or 403 with billing keywords → no credits.
+            if code == 402
+                || (code == 403
+                    && (body.contains("billing")
+                        || body.contains("credit")
+                        || body.contains("payment")
+                        || body.contains("quota")))
+            {
+                format!("warn (no credits — HTTP {code})")
+            } else if code == 401 {
+                format!("warn (auth failed — HTTP {code})")
+            } else if code == 429 {
+                // Rate limited but the key is valid — credits likely available.
+                "ok (rate limited but key valid)".to_string()
+            } else {
+                format!(
+                    "warn (HTTP {code}: {})",
+                    body.chars().take(120).collect::<String>()
+                )
+            }
+        }
+        Err(e) => {
+            if e.is_timeout() {
+                "warn (unreachable — timeout)".to_string()
+            } else if e.is_connect() {
+                "warn (unreachable — connection failed)".to_string()
+            } else {
+                format!(
+                    "warn (unreachable — {})",
+                    e.without_url().to_string().chars().take(80).collect::<String>()
+                )
+            }
+        }
+    }
 }
 
 pub(crate) async fn cmd_provider_test(

@@ -723,11 +723,32 @@ impl GovernanceRule {
             }
             Self::RequireToolBeforeEdit(required_tool) => {
                 if EDIT_TOOLS.contains(&call.name.as_str()) && !has_prior_tool(ctx, required_tool) {
-                    return Err(ContractViolation::new(
-                        role,
-                        "RequireToolBeforeEdit",
-                        format!("tool `{required_tool}` must run before `{}`", call.name),
-                    ));
+                    // Allow write_file for NEW file creation: you can't read a
+                    // file that doesn't exist yet.  The guard still fires for
+                    // edits to *existing* files — the security intent is
+                    // "don't overwrite what you haven't read."
+                    let is_new_file = call
+                        .arguments
+                        .get("path")
+                        .or_else(|| call.arguments.get("file_path"))
+                        .and_then(|v| v.as_str())
+                        .map(|p| {
+                            let candidate = std::path::Path::new(p);
+                            if candidate.is_absolute() {
+                                !candidate.exists()
+                            } else {
+                                !ctx.worktree_path.join(p).exists()
+                            }
+                        })
+                        .unwrap_or(false); // no path arg → enforce the rule
+
+                    if !is_new_file {
+                        return Err(ContractViolation::new(
+                            role,
+                            "RequireToolBeforeEdit",
+                            format!("tool `{required_tool}` must run before `{}`", call.name),
+                        ));
+                    }
                 }
             }
         }
@@ -1270,6 +1291,85 @@ mod tests {
         );
 
         assert!(contract.check_pre_execution(&call, &ctx).is_ok());
+    }
+
+    #[test]
+    fn require_tool_before_edit_allows_new_file_creation() {
+        // write_file to a path that does NOT exist should be allowed even
+        // without a prior read_file — you can't read what doesn't exist yet.
+        let contract = AgentContract {
+            role: "implementer".into(),
+            invariants: Vec::new(),
+            governance: vec![GovernanceRule::RequireToolBeforeEdit("read_file".into())],
+            recovery: Vec::new(),
+            allowed_tools: None,
+            max_taint_level: default_max_taint_level(),
+        };
+        // No prior read_file actions.
+        let ctx = ToolContext::testing("/tmp/contract-tests-nonexistent-worktree");
+        let call = ToolCall::new(
+            "call-new",
+            "write_file",
+            serde_json::json!({ "path": "brand_new_file_that_does_not_exist.rs" }),
+        );
+
+        assert!(
+            contract.check_pre_execution(&call, &ctx).is_ok(),
+            "write_file to a non-existent path should be allowed without prior read_file"
+        );
+    }
+
+    #[test]
+    fn require_tool_before_edit_blocks_overwrite_of_existing_file() {
+        // write_file to a path that DOES exist should still require read_file
+        // first — the security intent is "don't overwrite what you haven't read."
+        let contract = AgentContract {
+            role: "implementer".into(),
+            invariants: Vec::new(),
+            governance: vec![GovernanceRule::RequireToolBeforeEdit("read_file".into())],
+            recovery: Vec::new(),
+            allowed_tools: None,
+            max_taint_level: default_max_taint_level(),
+        };
+        // No prior read_file actions.
+        let ctx = ToolContext::testing("/tmp/contract-tests");
+        // Cargo.toml exists at the workspace root; use an absolute path that
+        // definitely exists on any dev machine running these tests.
+        let call = ToolCall::new(
+            "call-overwrite",
+            "write_file",
+            serde_json::json!({ "path": "/etc/hosts" }),
+        );
+
+        let err = contract
+            .check_pre_execution(&call, &ctx)
+            .expect_err("write_file to an existing path without prior read should be denied");
+        assert_eq!(err.rule, "RequireToolBeforeEdit");
+    }
+
+    #[test]
+    fn require_tool_before_edit_blocks_when_no_path_arg() {
+        // If the tool call has no path argument at all, enforce the rule
+        // conservatively (deny).
+        let contract = AgentContract {
+            role: "implementer".into(),
+            invariants: Vec::new(),
+            governance: vec![GovernanceRule::RequireToolBeforeEdit("read_file".into())],
+            recovery: Vec::new(),
+            allowed_tools: None,
+            max_taint_level: default_max_taint_level(),
+        };
+        let ctx = ToolContext::testing("/tmp/contract-tests");
+        let call = ToolCall::new(
+            "call-no-path",
+            "write_file",
+            serde_json::json!({ "content": "hello" }),
+        );
+
+        let err = contract
+            .check_pre_execution(&call, &ctx)
+            .expect_err("write_file with no path arg should be denied without prior read");
+        assert_eq!(err.rule, "RequireToolBeforeEdit");
     }
 
     #[test]

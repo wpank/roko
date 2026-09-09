@@ -217,25 +217,41 @@ impl ProviderAdapter for GeminiAdapter {
     }
 
     fn classify_error(&self, status: u16, body: &Value) -> ProviderError {
+        let error_msg = body
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let error_msg_lower = error_msg.to_ascii_lowercase();
+
         match status {
-            429 => ProviderError::RateLimit {
-                retry_after_ms: body
-                    .pointer("/error/details/0/retryDelay")
-                    .and_then(Value::as_str)
-                    .and_then(|s| s.trim_end_matches('s').parse::<f64>().ok())
-                    .map(|seconds| (seconds * 1000.0) as u64),
-            },
-            401 | 403 => ProviderError::AuthFailure,
+            402 => ProviderError::InsufficientCredits,
+            429 => {
+                if crate::provider::error_classify::is_billing_message(&error_msg_lower) {
+                    ProviderError::InsufficientCredits
+                } else {
+                    ProviderError::RateLimit {
+                        retry_after_ms: body
+                            .pointer("/error/details/0/retryDelay")
+                            .and_then(Value::as_str)
+                            .and_then(|s| s.trim_end_matches('s').parse::<f64>().ok())
+                            .map(|seconds| (seconds * 1000.0) as u64),
+                    }
+                }
+            }
+            401 => ProviderError::AuthFailure,
+            403 => {
+                if crate::provider::error_classify::is_billing_message(&error_msg_lower) {
+                    ProviderError::InsufficientCredits
+                } else {
+                    ProviderError::AuthFailure
+                }
+            }
             404 => ProviderError::ModelNotFound,
             400 => {
-                let msg = body
-                    .pointer("/error/message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                if msg.contains("exceeds the maximum") || msg.contains("token limit") {
+                if error_msg.contains("exceeds the maximum") || error_msg.contains("token limit") {
                     ProviderError::ContextOverflow
                 } else {
-                    ProviderError::Other(format!("Bad request: {msg}"))
+                    ProviderError::Other(format!("Bad request: {error_msg}"))
                 }
             }
             500..=599 => ProviderError::ServerError(status),

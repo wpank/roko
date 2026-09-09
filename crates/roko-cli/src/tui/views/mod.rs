@@ -34,6 +34,7 @@ pub mod learning_view;
 pub mod logs_view;
 pub mod marketplace_view;
 pub mod plans_view;
+pub mod providers_view;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -136,6 +137,14 @@ pub enum SubView {
     // ── Region 5 additions ──
     /// Safety incident viewer (quarantine / taint propagation) (P2-06).
     SafetyIncidents,
+
+    // ── Region 11: Providers (F11) ──
+    /// Provider overview: health indicators, list, and detail.
+    ProviderOverview,
+    /// Per-provider cost breakdown and sparklines.
+    ProviderCost,
+    /// Per-provider latency distribution.
+    ProviderLatency,
 }
 
 impl SubView {
@@ -190,6 +199,11 @@ impl SubView {
                 SubView::LearningPlaybooks,
                 SubView::LearningExperiments,
             ],
+            Tab::Providers => &[
+                SubView::ProviderOverview,
+                SubView::ProviderCost,
+                SubView::ProviderLatency,
+            ],
         }
     }
 
@@ -231,6 +245,9 @@ impl SubView {
             Self::LearningPlaybooks => "Playbooks",
             Self::LearningExperiments => "Experiments",
             Self::SafetyIncidents => "Safety",
+            Self::ProviderOverview => "Overview",
+            Self::ProviderCost => "Cost",
+            Self::ProviderLatency => "Latency",
         }
     }
 
@@ -321,5 +338,8 @@ pub fn render_tab_content(
         }
         Tab::Atelier => atelier_view::render(frame, area, data, tui_state, view_state, theme),
         Tab::Learning => learning_view::render(frame, area, data, tui_state, view_state, theme),
+        Tab::Providers => {
+            providers_view::render(frame, area, data, tui_state, view_state, theme);
+        }
     }
 }

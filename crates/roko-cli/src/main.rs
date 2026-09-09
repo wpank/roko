@@ -3062,6 +3062,9 @@ enum ConfigProviderCmd {
         /// Directory containing `.roko/` (default: cwd / --repo).
         #[arg(long)]
         workdir: Option<PathBuf>,
+        /// Make a minimal API call to each provider to verify the account has credits.
+        #[arg(long)]
+        check_credits: bool,
     },
     /// Send a minimal request to verify provider connectivity.
     Test {

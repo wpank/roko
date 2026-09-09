@@ -196,6 +196,7 @@ fn convert_agent(m: &MoriConfig) -> AgentConfig {
         defaults: Default::default(),
         mcp_config: None,
         default_agent_id: None,
+        disabled_providers: d.disabled_providers,
     }
 }
 

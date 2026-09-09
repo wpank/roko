@@ -482,6 +482,10 @@ fn context_key_hints(state: &TuiState, has_failures: bool) -> String {
             hints.push("j/k:scroll");
             hints.push("Enter:expand");
         }
+        Tab::Providers => {
+            hints.push("j/k:select");
+            hints.push("Enter:detail");
+        }
     }
 
     // Reserve the final slot for help. In failure states the contextual list

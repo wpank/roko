@@ -236,6 +236,7 @@ pub async fn run_doctor(options: &DoctorOptions) -> Result<DoctorReport> {
     checks.extend(check_configured_provider_keys(&loaded_config));
     checks.push(check_provider_usable(&workdir));
     checks.push(check_available_providers(&loaded_config));
+    checks.extend(check_provider_credits(&loaded_config).await);
     checks.push(check_default_model_configured(&loaded_config));
     checks.extend(check_routing_tier_models(
         &workdir,
@@ -1095,6 +1096,233 @@ fn check_configured_provider_keys(loaded_config: &LoadedConfig) -> Vec<DoctorChe
         },
     });
     checks
+}
+
+/// Probe each configured API provider with a `max_tokens=1` completion to
+/// verify the account has credits.  CLI-based and keyless providers are skipped.
+/// Each probe uses a 10-second timeout so the doctor stays fast.
+async fn check_provider_credits(loaded_config: &LoadedConfig) -> Vec<DoctorCheck> {
+    let Some(config) = &loaded_config.resolved else {
+        return vec![];
+    };
+
+    let client = match reqwest::Client::builder()
+        .user_agent("roko-cli/0.1")
+        .timeout(Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+
+    let api_providers: Vec<(&String, &roko_core::config::schema::ProviderConfig)> = config
+        .providers
+        .iter()
+        .filter(|(_, p)| {
+            matches!(
+                p.kind,
+                ProviderKind::AnthropicApi
+                    | ProviderKind::OpenAiCompat
+                    | ProviderKind::PerplexityApi
+                    | ProviderKind::GeminiApi
+                    | ProviderKind::CerebrasApi
+            )
+        })
+        .collect();
+
+    let mut checks = Vec::new();
+    for (id, provider) in api_providers {
+        let api_key = match provider.resolve_api_key().filter(|v| !v.trim().is_empty()) {
+            Some(k) => k,
+            None => continue, // already flagged by check_configured_provider_keys
+        };
+
+        let result = probe_provider_credit(&client, id, provider, &api_key).await;
+        checks.push(result);
+    }
+    checks
+}
+
+/// Fire a single minimal completion request and return a [`DoctorCheck`].
+async fn probe_provider_credit(
+    client: &reqwest::Client,
+    provider_id: &str,
+    provider: &ProviderConfig,
+    api_key: &str,
+) -> DoctorCheck {
+    use serde_json::json;
+
+    let result = match provider.kind {
+        ProviderKind::AnthropicApi => {
+            let base = provider
+                .base_url
+                .as_deref()
+                .unwrap_or("https://api.anthropic.com")
+                .trim_end_matches('/');
+            let endpoint = format!("{base}/v1/messages");
+            let body = json!({
+                "model": "claude-3-5-haiku-20241022",
+                "max_tokens": 1,
+                "messages": [{"role": "user", "content": "hi"}]
+            });
+            client
+                .post(&endpoint)
+                .header("content-type", "application/json")
+                .header("x-api-key", api_key)
+                .header("anthropic-version", "2023-06-01")
+                .json(&body)
+                .send()
+                .await
+        }
+        ProviderKind::GeminiApi => {
+            let base = provider
+                .base_url
+                .as_deref()
+                .unwrap_or("https://generativelanguage.googleapis.com")
+                .trim_end_matches('/');
+            let endpoint = format!(
+                "{base}/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
+            );
+            let body = json!({
+                "contents": [{"parts": [{"text": "hi"}]}],
+                "generationConfig": {"maxOutputTokens": 1}
+            });
+            client
+                .post(&endpoint)
+                .header("content-type", "application/json")
+                .json(&body)
+                .send()
+                .await
+        }
+        // OpenAiCompat, PerplexityApi, CerebrasApi
+        _ => {
+            let base = provider
+                .base_url
+                .as_deref()
+                .unwrap_or("https://api.openai.com/v1")
+                .trim_end_matches('/');
+            let endpoint = format!("{base}/chat/completions");
+            let model_slug = match provider.kind {
+                ProviderKind::PerplexityApi => "sonar",
+                ProviderKind::CerebrasApi => "llama-4-scout-17b-16e-instruct",
+                _ => "gpt-4o-mini",
+            };
+            let body = json!({
+                "model": model_slug,
+                "max_tokens": 1,
+                "messages": [{"role": "user", "content": "hi"}]
+            });
+            let mut req = client
+                .post(&endpoint)
+                .header("content-type", "application/json")
+                .bearer_auth(api_key);
+            if let Some(extra_headers) = provider.extra_headers.as_ref() {
+                for (name, value) in extra_headers {
+                    req = req.header(name.as_str(), value.as_str());
+                }
+            }
+            req.json(&body).send().await
+        }
+    };
+
+    let check_id = format!("provider_credit_{provider_id}");
+
+    match result {
+        Ok(response) => {
+            let status_code = response.status().as_u16();
+            if response.status().is_success() {
+                DoctorCheck {
+                    id: check_id,
+                    status: DoctorStatus::Ok,
+                    message: format!("provider `{provider_id}` credit check passed"),
+                    detail: None,
+                    path: None,
+                    url: None,
+                    fix: None,
+                }
+            } else {
+                let body = response.text().await.unwrap_or_default();
+                let is_billing = status_code == 402
+                    || (status_code == 403
+                        && (body.contains("billing")
+                            || body.contains("credit")
+                            || body.contains("payment")
+                            || body.contains("quota")));
+                if is_billing {
+                    DoctorCheck {
+                        id: check_id,
+                        status: DoctorStatus::Warn,
+                        message: format!(
+                            "provider `{provider_id}` has no credits (HTTP {status_code})"
+                        ),
+                        detail: None,
+                        path: None,
+                        url: None,
+                        fix: Some(format!(
+                            "add credits to the {provider_id} account or switch to a different provider"
+                        )),
+                    }
+                } else if status_code == 401 {
+                    DoctorCheck {
+                        id: check_id,
+                        status: DoctorStatus::Warn,
+                        message: format!(
+                            "provider `{provider_id}` auth failed (HTTP 401)"
+                        ),
+                        detail: None,
+                        path: None,
+                        url: None,
+                        fix: Some(format!(
+                            "verify the API key for provider `{provider_id}`"
+                        )),
+                    }
+                } else if status_code == 429 {
+                    // Rate limited but key works.
+                    DoctorCheck {
+                        id: check_id,
+                        status: DoctorStatus::Ok,
+                        message: format!(
+                            "provider `{provider_id}` key valid (rate limited)"
+                        ),
+                        detail: None,
+                        path: None,
+                        url: None,
+                        fix: None,
+                    }
+                } else {
+                    DoctorCheck {
+                        id: check_id,
+                        status: DoctorStatus::Warn,
+                        message: format!(
+                            "provider `{provider_id}` credit check returned HTTP {status_code}"
+                        ),
+                        detail: Some(body.chars().take(200).collect()),
+                        path: None,
+                        url: None,
+                        fix: Some("check the provider dashboard for account status".to_string()),
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            let detail = if e.is_timeout() {
+                "request timed out (10s)".to_string()
+            } else if e.is_connect() {
+                "connection failed".to_string()
+            } else {
+                e.without_url().to_string()
+            };
+            DoctorCheck {
+                id: check_id,
+                status: DoctorStatus::Warn,
+                message: format!("provider `{provider_id}` unreachable during credit check"),
+                detail: Some(detail),
+                path: None,
+                url: None,
+                fix: Some("check network connectivity and provider status page".to_string()),
+            }
+        }
+    }
 }
 
 /// Summarise all available providers (those with working credentials or CLI tools).

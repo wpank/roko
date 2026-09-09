@@ -1908,7 +1908,12 @@ fn validate_contract_support(
 /// Classify a provider error from output text into an error kind string
 /// suitable for [`ProviderHealthRegistry::record_provider_failure`].
 pub(crate) fn classify_provider_error(output_text_lower: &str) -> &'static str {
-    if output_text_lower.contains("rate limit")
+    // Billing/credit errors must be checked before generic rate-limit detection
+    // so that messages containing "quota" + billing indicators are not
+    // misclassified as transient rate limits.
+    if roko_agent::provider::error_classify::is_billing_message(output_text_lower) {
+        "insufficient_credits"
+    } else if output_text_lower.contains("rate limit")
         || output_text_lower.contains("rate_limit")
         || output_text_lower.contains("429")
         || output_text_lower.contains("too many requests")

@@ -16,7 +16,7 @@ temperament = "balanced"
 
 [budget]
 # Explicit nonzero spend ceilings. 0.0 means unlimited (no cap).
-max_plan_usd = 10.0
+max_plan_usd = 50.0
 max_turn_usd = 0.50
 prompt_token_budget = 10000
 
@@ -138,6 +138,30 @@ max_output = 100000
 provider = "codex_cli"
 slug = "gpt-5.6-sol"
 
+[models.gpt-4o]
+context_window = 128000
+cost_input_per_m = 2.50
+cost_output_per_m = 10.0
+max_output = 16384
+provider = "openai"
+slug = "gpt-4o"
+supports_thinking = false
+supports_tools = true
+supports_vision = true
+tool_format = "openai_json"
+
+[models.gpt-4o-mini]
+context_window = 128000
+cost_input_per_m = 0.15
+cost_output_per_m = 0.60
+max_output = 16384
+provider = "openai"
+slug = "gpt-4o-mini"
+supports_thinking = false
+supports_tools = true
+supports_vision = true
+tool_format = "openai_json"
+
 [models.glm51]
 context_window = 128000
 cost_cache_read_per_m = 0.26
@@ -234,6 +258,11 @@ api_key_env = "MOONSHOT_API_KEY"
 base_url = "https://api.moonshot.ai/v1"
 kind = "openai_compat"
 
+[providers.openai]
+api_key_env = "OPENAI_API_KEY"
+base_url = "https://api.openai.com/v1"
+kind = "openai_compat"
+
 [providers.perplexity]
 api_key_env = "PERPLEXITY_API_KEY"
 base_url = "https://api.perplexity.ai"
@@ -264,12 +293,12 @@ worktree_max_age_secs = 86400
 
 [routing]
 algorithm = "linucb"
-complex_task_model = "claude-opus-4-6"
+complex_task_model = "claude-sonnet"
 context_strategy = "mcp_first"
 discount_factor = 0.99
-fast_task_model = "claude-haiku-4-5"
+fast_task_model = "gpt-4o-mini"
 mode = "auto_override"
-standard_task_model = "claude-sonnet-4-6"
+standard_task_model = "gpt-4o"
 
 [routing.weights]
 cost = 0.3
@@ -277,7 +306,7 @@ latency = 0.2
 quality = 0.5
 
 [runner]
-dangerously_skip_permissions = false
+dangerously_skip_permissions = true
 dispatch_max_retries = 5
 plan_timeout_secs = 3600
 sandbox_level = "restrict"

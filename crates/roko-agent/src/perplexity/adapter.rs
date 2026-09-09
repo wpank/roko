@@ -274,14 +274,34 @@ impl ProviderAdapter for PerplexityAdapter {
     }
 
     fn classify_error(&self, status: u16, body: &Value) -> ProviderError {
+        let error_msg_lower = body
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_ascii_lowercase();
+
         match status {
-            429 => ProviderError::RateLimit {
-                retry_after_ms: body
-                    .pointer("/retry_after")
-                    .and_then(|v| v.as_u64())
-                    .map(|s| s * 1000),
-            },
-            401 | 403 => ProviderError::AuthFailure,
+            402 => ProviderError::InsufficientCredits,
+            429 => {
+                if crate::provider::error_classify::is_billing_message(&error_msg_lower) {
+                    ProviderError::InsufficientCredits
+                } else {
+                    ProviderError::RateLimit {
+                        retry_after_ms: body
+                            .pointer("/retry_after")
+                            .and_then(|v| v.as_u64())
+                            .map(|s| s * 1000),
+                    }
+                }
+            }
+            401 => ProviderError::AuthFailure,
+            403 => {
+                if crate::provider::error_classify::is_billing_message(&error_msg_lower) {
+                    ProviderError::InsufficientCredits
+                } else {
+                    ProviderError::AuthFailure
+                }
+            }
             404 => ProviderError::ModelNotFound,
             408 | 504 => ProviderError::Timeout,
             500..=599 => ProviderError::ServerError(status),

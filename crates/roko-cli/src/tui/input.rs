@@ -99,6 +99,10 @@ pub enum FocusZone {
     LearningMetrics,
     /// Learning tab: chart/detail pane.
     LearningDetail,
+    /// Providers tab: provider list.
+    ProviderList,
+    /// Providers tab: provider detail pane.
+    ProviderDetail,
 }
 
 impl FocusZone {
@@ -125,6 +129,8 @@ impl FocusZone {
             Self::AtelierDetail => "Detail",
             Self::LearningMetrics => "Metrics",
             Self::LearningDetail => "Detail",
+            Self::ProviderList => "Providers",
+            Self::ProviderDetail => "Detail",
         }
     }
 
@@ -177,6 +183,10 @@ impl FocusZone {
                 Self::LearningMetrics => Self::LearningDetail,
                 _ => Self::LearningMetrics,
             },
+            Tab::Providers => match self {
+                Self::ProviderList => Self::ProviderDetail,
+                _ => Self::ProviderList,
+            },
         }
     }
 
@@ -228,6 +238,10 @@ impl FocusZone {
             Tab::Learning => match self {
                 Self::LearningDetail => Self::LearningMetrics,
                 _ => Self::LearningMetrics,
+            },
+            Tab::Providers => match self {
+                Self::ProviderDetail => Self::ProviderList,
+                _ => Self::ProviderList,
             },
         }
     }
@@ -635,7 +649,7 @@ pub fn handle_key(
         Tab::Inspect => handle_inspect_key(key, focus),
         Tab::Marketplace => handle_marketplace_key(key, focus),
         Tab::Atelier => handle_atelier_key(key, focus),
-        Tab::Learning => handle_learning_key(key),
+        Tab::Learning | Tab::Providers => handle_learning_key(key),
     }
 }
 
@@ -873,6 +887,7 @@ fn handle_global_key(key: KeyEvent, active_tab: Tab) -> Option<TuiAction> {
             KeyCode::Char('8') => Some(Tab::Marketplace),
             KeyCode::Char('9') => Some(Tab::Atelier),
             KeyCode::Char('0') => Some(Tab::Learning),
+            KeyCode::Char('-') => Some(Tab::Providers),
             _ => None,
         };
         if let Some(tab) = tab {

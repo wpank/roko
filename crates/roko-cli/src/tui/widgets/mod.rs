@@ -14,6 +14,7 @@ pub mod header_bar;
 pub mod parallel_pool;
 pub mod phase_compact;
 pub mod plan_tree;
+pub mod provider_nerv;
 pub mod status_bar;
 pub mod stream_output;
 pub mod sys_metrics;

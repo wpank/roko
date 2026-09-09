@@ -227,6 +227,7 @@ fn tab_badge_color(tab: super::super::tabs::Tab) -> Color {
         Tab::Plans | Tab::Logs => Theme::EMBER,
         Tab::Git => Theme::WARNING,
         Tab::Learning => Theme::DREAM,
+        Tab::Providers => Theme::EMBER,
         _ => Theme::FG_DIM,
     }
 }
@@ -597,6 +598,7 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         (" F8", Theme::SAGE, "market", Tab::Marketplace),
         (" F9", Theme::DREAM, "atelier", Tab::Atelier),
         (" F10", Theme::BONE_DIM, "learn", Tab::Learning),
+        ("  - ", Theme::SAGE, "providers", Tab::Providers),
     ];
 
     // Keep the operational metrics legible instead of reserving a tab strip

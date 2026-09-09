@@ -2,6 +2,8 @@
 
 > Depth for [05-AGENT.md](../../unified/05-AGENT.md). How self-model accuracy, threshold adaptation, and pressure management emerge as nested Loops with predict-publish-correct at every level.
 
+> **Implementation status:** The architecture described here is the target design. The current implementation uses an imperative approach via static threshold constants in `crates/roko-conductor/src/` (`MAX_GHOST_TURNS`, `MAX_COMPILE_FAIL_REPEAT`, etc.) with no adaptive learning. The `SelfModelLens`, `YerkesDodsonScorer`, `FlowLens`, and triple-loop predict-publish-correct structure described below do not yet exist. See GAPS.md for the migration path.
+
 **Depends on**: [01-SIGNAL](../../unified/01-SIGNAL.md) (Signal/Pulse duality, demurrage), [02-CELL](../../unified/02-CELL.md) (9 protocols, predict-publish-correct, Verify redesign, EFE routing), [05-AGENT](../../unified/05-AGENT.md) (Agent lifecycle, vitality, cognitive timescales), [07-LEARNING](../../unified/07-LEARNING.md) (L1-L4 loop taxonomy, predict-publish-correct), [16-diagnosis-and-stuck-detection.md](16-diagnosis-and-stuck-detection.md) (Diagnosis Route, Stuck Lens Cells, MetaCognition Loop)
 
 **Source docs**: `docs/07-conductor/08-good-regulator-self-model.md`, `docs/07-conductor/12-yerkes-dodson-pressure.md`, `docs/07-conductor/15-conductor-learning-federation.md`

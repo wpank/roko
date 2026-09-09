@@ -10,7 +10,13 @@
 > states, warm-pool pre-spawning, and how the orchestrator uses them.
 
 
-> **Implementation**: Shipping
+> **Implementation**: Built (not wired)
+>
+> **Note (2026-09-09):** `AgentPool` and `MultiAgentPool` exist in `crates/roko-agent/src/pool.rs`
+> and `multi_pool.rs` and compile with tests, but the `PlanRunner` in `orchestrate.rs` does not
+> delegate agent lifecycle to these pool types. Agents are constructed on-demand via `AgentRunConfig`
+> / `run_prepared_agent()` and tracked by `ProcessSupervisor`. The pool layer described below is the
+> intended future architecture. See the "How the Orchestrator Uses Pools" section and GAPS.md.
 
 ---
 

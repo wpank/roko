@@ -2,6 +2,8 @@
 
 > The factorized POMDP as a Loop Graph with predict-publish-correct. 90 states (6x5x3) make active inference tractable. EFE decomposes into pragmatic + epistemic - cost. Bootstrapping phases handle the cold-start problem.
 
+> **Implementation status:** The architecture described here is the target design. The current implementation uses an imperative approach via `CascadeRouter` (LinUCB bandit) in `crates/roko-learn/src/cascade_router.rs` and heuristic prediction-error thresholds for tier selection. The `FactorizedPOMDP`, A/B/C/D matrices, EFE computation, and the `active_inference` module listed in the Implementation Tasks table do not yet exist. See GAPS.md for the migration path.
+
 See [02-CELL.md](../../unified/02-CELL.md) for predict-publish-correct, [03-GRAPH.md](../../unified/03-GRAPH.md) for Loop pattern, [05-AGENT.md](../../unified/05-AGENT.md) for tier routing.
 
 ---

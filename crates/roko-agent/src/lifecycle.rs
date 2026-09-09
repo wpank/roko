@@ -1535,9 +1535,16 @@ pub struct RunningAgent {
     pub started_at: u64,
 }
 
-/// Top-level agent configuration matching the documented `roko.toml` sections.
+/// Per-agent manifest configuration for a deployed agent sidecar process.
+///
+/// This describes the top-level `roko.toml` sections owned by an individual
+/// agent (agent identity, inference settings, neuro store path, mesh config,
+/// tool profile, budget, and heartbeat). It is the configuration document
+/// loaded by `roko agent start` and the sidecar server, and is distinct from
+/// `roko_core::config::AgentConfig` which describes global model/role/routing
+/// defaults that affect all agents in the workspace.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct AgentConfig {
+pub struct AgentManifestConfig {
     /// Agent section.
     pub agent: AgentSection,
     /// Inference section.
@@ -1553,6 +1560,9 @@ pub struct AgentConfig {
     /// Heartbeat section.
     pub heartbeat: HeartbeatConfig,
 }
+
+/// Backward-compatibility alias. Prefer `AgentManifestConfig`.
+pub type AgentConfig = AgentManifestConfig;
 
 /// Agent identity and operator-authored intent section.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1653,8 +1663,8 @@ pub enum LifecycleConfigError {
 
 /// Validate a proposed config change against hot-reload constraints.
 pub fn validate_config_change(
-    current: &AgentConfig,
-    proposed: &AgentConfig,
+    current: &AgentManifestConfig,
+    proposed: &AgentManifestConfig,
 ) -> Result<Vec<ConfigWarning>, LifecycleConfigError> {
     let mut warnings = Vec::new();
     if proposed.budget.max_daily_inference_usd > current.budget.max_daily_inference_usd {
@@ -3147,7 +3157,7 @@ mod tests {
 
     #[test]
     fn config_validation_requires_restart_for_neuro_path() {
-        let current = AgentConfig::default();
+        let current = AgentManifestConfig::default();
         let mut proposed = current.clone();
         proposed.neuro.path = ".roko/other-neuro/".into();
         assert!(matches!(

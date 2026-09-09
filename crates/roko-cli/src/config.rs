@@ -27,8 +27,8 @@ use roko_dreams::DreamSchedulePolicy;
 /// The top-level `roko.toml` document.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Config {
-    /// Agent backend (the CLI that will be invoked via `ExecAgent`).
-    pub agent: AgentConfig,
+    /// Agent subprocess backend (the external CLI invoked via `ExecAgent`).
+    pub agent: ExecAgentConfig,
     /// Automatically generate a plan when a PRD is promoted.
     #[serde(default)]
     pub auto_plan: bool,
@@ -88,7 +88,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            agent: AgentConfig::default(),
+            agent: ExecAgentConfig::default(),
             auto_plan: false,
             dreams: DreamsConfig::default(),
             daimon: DaimonConfig::default(),
@@ -147,21 +147,21 @@ impl Config {
     /// once they are migrated, this function will map them directly.
     pub fn from_roko_config(core: &RokoConfig) -> Result<Self> {
         let core_agent = &core.agent;
-        let agent = AgentConfig {
+        let agent = ExecAgentConfig {
             model: Some(core_agent.default_model.clone()),
             effort: core_agent.default_effort.clone(),
             bare_mode: core_agent.bare_mode,
             command: core_agent
                 .command
                 .clone()
-                .unwrap_or_else(AgentConfig::default_command),
+                .unwrap_or_else(ExecAgentConfig::default_command),
             args: core_agent.args.clone().unwrap_or_default(),
             timeout_ms: core_agent
                 .timeout_ms
-                .unwrap_or(AgentConfig::default_timeout()),
+                .unwrap_or(ExecAgentConfig::default_timeout()),
             env: core_agent.env.clone().unwrap_or_default(),
             fallback_model: core_agent.fallback_model.clone(),
-            clean_output: AgentConfig::default_clean(),
+            clean_output: ExecAgentConfig::default_clean(),
             mcp_config: None,
             tier_models: core_agent.tier_models.clone(),
             escalation: EscalationConfig::default(),
@@ -198,11 +198,16 @@ impl Config {
     }
 }
 
-/// Agent backend — the external CLI invoked via `ExecAgent`.
+/// Subprocess dispatch configuration for the external agent CLI invoked via `ExecAgent`.
+///
+/// This is a CLI-layer concept: it describes how to invoke an external agent
+/// binary (command, args, timeout, env). It is distinct from
+/// `roko_core::config::AgentConfig`, which holds agent model/role/provider
+/// settings that are part of the canonical `roko.toml` schema.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct AgentConfig {
+pub struct ExecAgentConfig {
     /// Program name, e.g. `"cat"`, `"ollama"`, `"claude"`.
-    #[serde(default = "AgentConfig::default_command")]
+    #[serde(default = "ExecAgentConfig::default_command")]
     pub command: String,
     /// Extra args passed to the program.
     #[serde(default)]
@@ -211,17 +216,17 @@ pub struct AgentConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// Reasoning effort passed to Claude-style CLIs.
-    #[serde(default = "AgentConfig::default_effort")]
+    #[serde(default = "ExecAgentConfig::default_effort")]
     pub effort: String,
     /// Whether Claude CLI replaces its built-in system prompt with Roko's
     /// canonical prompt instead of appending to it.
-    #[serde(default = "AgentConfig::default_bare_mode")]
+    #[serde(default = "ExecAgentConfig::default_bare_mode")]
     pub bare_mode: bool,
     /// Optional fallback model slug for Claude-style CLIs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback_model: Option<String>,
     /// Timeout in milliseconds (default: `120_000`).
-    #[serde(default = "AgentConfig::default_timeout")]
+    #[serde(default = "ExecAgentConfig::default_timeout")]
     pub timeout_ms: u64,
     /// Env vars passed to the subprocess. Useful for `OLLAMA_NOPROGRESS=1`,
     /// API keys, `OLLAMA_HOST`, etc.
@@ -230,7 +235,7 @@ pub struct AgentConfig {
     /// Whether to post-process the agent output — strip ANSI escapes and
     /// reasoning-model "thinking" traces. Default: `true` (so reasoning
     /// models like glm-4 / gemma-reasoning work out of the box).
-    #[serde(default = "AgentConfig::default_clean")]
+    #[serde(default = "ExecAgentConfig::default_clean")]
     pub clean_output: bool,
     /// Optional path to an MCP config file (`.mcp.json`). When set, this
     /// is passed to Claude via `--mcp-config`. If unset, `ClaudeCliAgent`
@@ -244,6 +249,9 @@ pub struct AgentConfig {
     #[serde(default)]
     pub escalation: EscalationConfig,
 }
+
+/// Backward-compatibility alias. Prefer `ExecAgentConfig`.
+pub type AgentConfig = ExecAgentConfig;
 
 /// Tool registry preferences.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -422,7 +430,7 @@ impl Default for DaimonConfig {
     }
 }
 
-impl AgentConfig {
+impl ExecAgentConfig {
     fn default_command() -> String {
         "cat".to_string()
     }
@@ -444,7 +452,7 @@ impl AgentConfig {
     }
 }
 
-impl Default for AgentConfig {
+impl Default for ExecAgentConfig {
     fn default() -> Self {
         Self {
             command: Self::default_command(),

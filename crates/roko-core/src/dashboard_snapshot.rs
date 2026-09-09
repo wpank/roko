@@ -460,9 +460,12 @@ pub struct AffectSnapshot {
     pub efe_tier: Option<u8>,
 }
 
-/// A single plan's live state.
+/// Lightweight display snapshot of a single plan's state, used by the TUI and
+/// dashboard. For the rich internal executor state (with phase enum, gate
+/// results, assigned agents, etc.), see
+/// `roko_cli::orchestrator::executor::PlanState`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct PlanState {
+pub struct PlanDisplayState {
     /// Plan identifier.
     pub plan_id: String,
     /// Current phase name.
@@ -476,6 +479,9 @@ pub struct PlanState {
     /// Whether the plan is still executing.
     pub active: bool,
 }
+
+/// Backward-compatibility alias. Prefer `PlanDisplayState`.
+pub type PlanState = PlanDisplayState;
 
 /// A single task's live state.
 #[derive(Debug, Clone, Serialize, Deserialize)]

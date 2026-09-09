@@ -1,5 +1,3 @@
-//! STATUS: NOT WIRED -- built but no non-test runtime caller.
-//!
 //! Cheap enrichment pass for noisy gate failures before retry.
 //!
 //! The caller is expected to provide a low-cost agent (for example a

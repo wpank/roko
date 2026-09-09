@@ -48,6 +48,66 @@ use crate::task_parser::TaskDef;
 
 const MICRO_USD_PER_USD: f64 = 1_000_000.0;
 
+/// Thin `Agent` adapter that forwards a one-shot prompt through the shared
+/// factory bridge so `error_enrichment` and `quality_judge` can use the
+/// live provider without rebuilding the full dispatch stack.
+///
+/// The adapter is intentionally lightweight: it constructs a minimal
+/// `AgentDispatchRequest` with no tools, no MCP, and no contract, targeting
+/// the cheapest available model key. On dispatch failure it returns an
+/// unsuccessful `AgentResult` so callers' built-in fallbacks activate.
+struct CheapFactoryAgent {
+    factory: Arc<SharedAgentFactory>,
+    model_key: String,
+    workdir: PathBuf,
+}
+
+#[async_trait::async_trait]
+impl roko_agent::Agent for CheapFactoryAgent {
+    async fn run(&self, input: &Signal, _ctx: &Context) -> roko_agent::AgentResult {
+        let prompt = match input.body.as_text() {
+            Ok(text) => text.to_string(),
+            Err(_) => {
+                return roko_agent::AgentResult::fail(
+                    Signal::builder(Kind::AgentOutput)
+                        .body(Body::text("cheap-factory-agent: non-text input"))
+                        .build(),
+                );
+            }
+        };
+        let request = AgentDispatchRequest {
+            model_key: self.model_key.clone(),
+            prompt,
+            system_prompt: String::new(),
+            workdir: self.workdir.clone(),
+            immune_root: None,
+            agent_id: "cheap-factory-agent".to_string(),
+            command: None,
+            timeout_ms: Some(30_000),
+            mcp_config: None,
+            env: vec![],
+            extra_args: vec![],
+            effort: None,
+            tools: None,
+            agent_contract: None,
+            bare_mode: false,
+            dangerously_skip_permissions: false,
+        };
+        match self.factory.run_shared_agent_bridge(request).await {
+            Ok(dispatch) => dispatch.result,
+            Err(_) => roko_agent::AgentResult::fail(
+                Signal::builder(Kind::AgentOutput)
+                    .body(Body::text("cheap-factory-agent: dispatch failed"))
+                    .build(),
+            ),
+        }
+    }
+
+    fn name(&self) -> &str {
+        "cheap-factory-agent"
+    }
+}
+
 /// P1-16: Resolve cross-cut functor conflicts at routing time.
 ///
 /// When Memory, Daimon, and Dreams all propose routing recommendations on
@@ -690,6 +750,22 @@ impl GraphTaskDispatcher {
             self.agg_tokens_out.load(Ordering::Relaxed),
             self.agg_dispatch_count.load(Ordering::Relaxed),
         )
+    }
+
+    /// Return a `CheapFactoryAgent` wired to the first available model in the
+    /// config, or `None` when no models are configured. Used for best-effort
+    /// error enrichment and quality judgment calls.
+    fn cheap_agent(&self) -> Option<CheapFactoryAgent> {
+        let model_key = self
+            .config
+            .available_model_slugs_for_cascade()
+            .into_iter()
+            .next()?;
+        Some(CheapFactoryAgent {
+            factory: Arc::clone(&self.factory),
+            model_key,
+            workdir: self.workdir.clone(),
+        })
     }
 
     /// Emit all feedback events after a task dispatch completes.
@@ -1688,15 +1764,54 @@ impl TaskDispatcher for GraphTaskDispatcher {
             let all_passed = failures.is_empty();
             let model_slug = &dispatch.target.model_slug;
 
+            // ── quality_judge: score agent output (best-effort) ──────────
+            //
+            // Ask a cheap judge model to rate the response quality on [0.0,
+            // 1.0]. The score is logged and used to refine the base quality
+            // fed to the gaming detector. On failure the deterministic
+            // pass/fail fallback is used unchanged.
+            let judge_quality_score: f64 = if let Some(cheap_agent) = self.cheap_agent() {
+                let agent_text = dispatch
+                    .result
+                    .output
+                    .body
+                    .as_text()
+                    .unwrap_or("")
+                    .to_string();
+                let rubric = if all_passed {
+                    "Did the agent correctly complete the task and pass all verify steps?"
+                } else {
+                    "Did the agent make meaningful progress toward the task even though verify steps failed?"
+                };
+                let score = roko_learn::quality_judge::judge_quality(
+                    &cheap_agent,
+                    &spec.title,
+                    &agent_text,
+                    rubric,
+                )
+                .await;
+                tracing::debug!(
+                    plan_id = %spec.plan_id,
+                    task_id = %task.id,
+                    model = %model_slug,
+                    all_passed,
+                    quality_score = score,
+                    "quality_judge: gate output scored"
+                );
+                score
+            } else {
+                // No model configured — fall through to heuristic score.
+                if all_passed { 0.8 } else { 0.2 }
+            };
+
             // P1-01: GateGamingDetector observation.
             if let Some(detector) = &self.feedback.gate_gaming_detector {
-                let base_quality = if all_passed { 0.8 } else { 0.2 };
-                // P3-17: Modulate quality with daimon affect valence when available.
+                // P3-17: Modulate quality_judge score with daimon affect valence.
                 let affect_bonus = self.feedback.daimon_state.as_ref()
                     .and_then(|d| d.lock().ok())
                     .map(|state| state.state.alma.effective_affect().pleasure)
                     .unwrap_or(0.0);
-                let quality_score = (base_quality + affect_bonus * 0.1).clamp(0.0, 1.0);
+                let quality_score = (judge_quality_score + affect_bonus * 0.1).clamp(0.0, 1.0);
                 if let Ok(mut det) = detector.try_lock() {
                     if let Err(err) = det
                         .observe_and_detect(model_slug, all_passed, quality_score)
@@ -1850,13 +1965,37 @@ impl TaskDispatcher for GraphTaskDispatcher {
                         }
                     }
                 }
+                // ── error_enrichment: enrich gate failure before retry ───
+                //
+                // Ask a cheap judge model for a two-sentence diagnosis of the
+                // raw failure so the retry prompt carries a focused summary
+                // rather than raw compiler noise. Falls back deterministically
+                // when no model is configured or the call fails.
+                let raw_for_feedback = failures.join("\n---\n");
+                let enriched_diagnosis = if let Some(cheap_agent) = self.cheap_agent() {
+                    roko_learn::error_enrichment::enrich_error_digest(
+                        &raw_for_feedback,
+                        &cheap_agent,
+                        &spec.title,
+                    )
+                    .await
+                } else {
+                    String::new()
+                };
+
                 // ── Store gate feedback for retry injection ─────────────
                 //
                 // Parse the raw failure text into structured GateFeedback
                 // and store it keyed by task so the next dispatch attempt
                 // can inject the errors into the agent's prompt.
-                let raw_for_feedback = failures.join("\n---\n");
-                if let Some(feedback) = GateFeedback::from_raw(&raw_for_feedback) {
+                // Prepend the enriched diagnosis to raw_output so the prompt
+                // builder surfaces the focused summary ahead of the raw output.
+                let feedback_raw = if enriched_diagnosis.is_empty() {
+                    raw_for_feedback.clone()
+                } else {
+                    format!("Diagnosis: {enriched_diagnosis}\n\n{raw_for_feedback}")
+                };
+                if let Some(feedback) = GateFeedback::from_raw(&feedback_raw) {
                     let next_attempt = attempt_number.saturating_add(1);
                     tracing::info!(
                         plan_id = %spec.plan_id,
@@ -1864,6 +2003,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                         compile_errors = feedback.compile_errors.len(),
                         test_failures = feedback.test_failures.len(),
                         clippy_warnings = feedback.clippy_warnings.len(),
+                        has_enriched_diagnosis = !enriched_diagnosis.is_empty(),
                         next_attempt,
                         "storing gate feedback for retry injection"
                     );

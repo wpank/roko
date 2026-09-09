@@ -264,7 +264,7 @@ impl Workspace {
         self.root.join(".roko/learn/episodes.jsonl")
     }
 
-    /// `.roko/engrams.jsonl` — the main engram log.
+    /// `.roko/engrams.jsonl` — the main signal log.
     #[must_use]
     pub fn engrams_path(&self) -> PathBuf {
         self.root.join(".roko/engrams.jsonl")

@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use crate::bus_backends::BusErased;
 use crate::error::{Result, RokoError};
 use crate::traits::Substrate;
-use crate::{Engram, Kind};
+use crate::{Kind, Signal};
 
 // ─── ProtocolId ─────────────────────────────────────────────────────────────
 
@@ -296,7 +296,7 @@ impl TypeSchema {
     /// - `OfKind(k)` passes when `signal.kind == k`.
     /// - `JsonSchema(_)` always passes (full structural validation is deferred).
     #[must_use]
-    pub fn validate_signal(&self, signal: &Engram) -> bool {
+    pub fn validate_signal(&self, signal: &Signal) -> bool {
         match self {
             TypeSchema::Any => true,
             TypeSchema::OfKind(k) => &signal.kind == k,
@@ -397,7 +397,7 @@ pub trait Cell: Send + Sync + 'static {
     /// Returns `None` for Cells that do not implement online learning. The
     /// Graph Engine calls this before `execute`, stores the record, then
     /// passes it to `correct` along with the actual output.
-    fn predict(&self, input: &[Engram]) -> Option<PredictionRecord> {
+    fn predict(&self, input: &[Signal]) -> Option<PredictionRecord> {
         let _ = input;
         None
     }
@@ -406,12 +406,12 @@ pub trait Cell: Send + Sync + 'static {
     ///
     /// Default is a no-op. Override to implement online learning from
     /// prediction errors (prediction error = predicted_outcome vs. actual).
-    fn correct(&self, prediction: &PredictionRecord, actual: &[Engram]) {
+    fn correct(&self, prediction: &PredictionRecord, actual: &[Signal]) {
         let _ = (prediction, actual);
     }
 
     /// Execute this cell. Default returns an error -- override in implementations.
-    async fn execute(&self, input: Vec<Engram>, ctx: &CellContext) -> Result<Vec<Engram>> {
+    async fn execute(&self, input: Vec<Signal>, ctx: &CellContext) -> Result<Vec<Signal>> {
         let _ = (input, ctx);
         Err(RokoError::Invalid(format!(
             "{}: execute() not implemented",
@@ -577,24 +577,24 @@ mod tests {
 
     #[test]
     fn any_validates_all_signals() {
-        let task = Engram::builder(Kind::Task).build();
-        let ep = Engram::builder(Kind::Episode).build();
+        let task = Signal::builder(Kind::Task).build();
+        let ep = Signal::builder(Kind::Episode).build();
         assert!(schema_any().validate_signal(&task));
         assert!(schema_any().validate_signal(&ep));
     }
 
     #[test]
     fn of_kind_validates_matching_signal() {
-        let task = Engram::builder(Kind::Task).build();
-        let ep = Engram::builder(Kind::Episode).build();
+        let task = Signal::builder(Kind::Task).build();
+        let ep = Signal::builder(Kind::Episode).build();
         assert!(schema_task().validate_signal(&task));
         assert!(!schema_task().validate_signal(&ep));
     }
 
     #[test]
     fn json_schema_validates_all_signals_best_effort() {
-        let task = Engram::builder(Kind::Task).build();
-        let ep = Engram::builder(Kind::Episode).build();
+        let task = Signal::builder(Kind::Task).build();
+        let ep = Signal::builder(Kind::Episode).build();
         assert!(schema_json("{}").validate_signal(&task));
         assert!(schema_json(r#"{"type":"object"}"#).validate_signal(&ep));
     }

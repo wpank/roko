@@ -5,7 +5,7 @@
 
 use parking_lot::Mutex;
 use roko_core::traits::Score as ScoreFn;
-use roko_core::{Context, Engram, Outcome, Route, Selection};
+use roko_core::{Context, Outcome, Route, Selection, Signal};
 use std::sync::Arc;
 
 /// Picks the first candidate (deterministic, no-state).
@@ -26,7 +26,7 @@ impl roko_core::Cell for FirstRouter {
 }
 
 impl Route for FirstRouter {
-    fn select(&self, candidates: &[Engram], _ctx: &Context) -> Option<Selection> {
+    fn select(&self, candidates: &[Signal], _ctx: &Context) -> Option<Selection> {
         candidates
             .first()
             .map(|s| Selection::new(s.id, self.name()))
@@ -64,7 +64,7 @@ impl roko_core::Cell for HighestScoreRouter {
 }
 
 impl Route for HighestScoreRouter {
-    fn select(&self, candidates: &[Engram], ctx: &Context) -> Option<Selection> {
+    fn select(&self, candidates: &[Signal], ctx: &Context) -> Option<Selection> {
         candidates
             .iter()
             .map(|s| (s, self.scorer.score(s, ctx).effective()))
@@ -109,7 +109,7 @@ impl roko_core::Cell for RoundRobinRouter {
 }
 
 impl Route for RoundRobinRouter {
-    fn select(&self, candidates: &[Engram], _ctx: &Context) -> Option<Selection> {
+    fn select(&self, candidates: &[Signal], _ctx: &Context) -> Option<Selection> {
         if candidates.is_empty() {
             return None;
         }
@@ -131,8 +131,8 @@ mod tests {
     use crate::scorer::ConstScorer;
     use roko_core::{Body, Kind, Score};
 
-    fn sig(text: &str, t: i64) -> Engram {
-        Engram::builder(Kind::Task)
+    fn sig(text: &str, t: i64) -> Signal {
+        Signal::builder(Kind::Task)
             .body(Body::text(text))
             .created_at_ms(t)
             .build()
@@ -154,12 +154,12 @@ mod tests {
 
     #[test]
     fn highest_score_picks_highest() {
-        let a = Engram::builder(Kind::Task)
+        let a = Signal::builder(Kind::Task)
             .body(Body::text("a"))
             .score(Score::new(0.1, 0.0, 0.0, 1.0))
             .created_at_ms(0)
             .build();
-        let b = Engram::builder(Kind::Task)
+        let b = Signal::builder(Kind::Task)
             .body(Body::text("b"))
             .score(Score::new(0.9, 0.0, 0.0, 1.0))
             .created_at_ms(0)

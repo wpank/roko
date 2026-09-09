@@ -5,7 +5,7 @@
 //! and [`Compose`](crate::Compose) can accept both without requiring callers
 //! to persist first.
 
-use crate::{Body, Engram, Kind, Pulse};
+use crate::{Body, Kind, Pulse, Signal};
 use std::collections::BTreeMap;
 
 /// Polymorphic input surface over [`Signal`] and [`Pulse`].
@@ -17,13 +17,13 @@ use std::collections::BTreeMap;
 /// # Examples
 ///
 /// ```
-/// use roko_core::{Body, Datum, Engram, Kind, Pulse, Topic};
+/// use roko_core::{Body, Datum, Signal, Kind, Pulse, Topic};
 ///
-/// let engram = Engram::builder(Kind::Task)
+/// let signal = Signal::builder(Kind::Task)
 ///     .body(Body::text("implement login"))
 ///     .created_at_ms(1000)
 ///     .build();
-/// let d = Datum::Engram(&engram);
+/// let d = Datum::Signal(&signal);
 /// assert_eq!(d.kind(), &Kind::Task);
 /// assert_eq!(d.body(), &Body::Text("implement login".into()));
 ///
@@ -33,8 +33,8 @@ use std::collections::BTreeMap;
 /// ```
 #[derive(Clone, Copy, Debug)]
 pub enum Datum<'a> {
-    /// A persisted engram.
-    Engram(&'a Engram),
+    /// A persisted signal.
+    Signal(&'a Signal),
     /// An ephemeral pulse.
     Pulse(&'a Pulse),
 }
@@ -44,7 +44,7 @@ impl<'a> Datum<'a> {
     #[must_use]
     pub fn kind(&self) -> &Kind {
         match self {
-            Self::Engram(e) => &e.kind,
+            Self::Signal(e) => &e.kind,
             Self::Pulse(p) => &p.kind,
         }
     }
@@ -53,7 +53,7 @@ impl<'a> Datum<'a> {
     #[must_use]
     pub fn body(&self) -> &Body {
         match self {
-            Self::Engram(e) => &e.body,
+            Self::Signal(e) => &e.body,
             Self::Pulse(p) => &p.body,
         }
     }
@@ -64,7 +64,7 @@ impl<'a> Datum<'a> {
     #[must_use]
     pub fn tags(&self) -> &BTreeMap<String, String> {
         match self {
-            Self::Engram(e) => &e.tags,
+            Self::Signal(e) => &e.tags,
             Self::Pulse(p) => &p.tags,
         }
     }
@@ -73,15 +73,15 @@ impl<'a> Datum<'a> {
     #[must_use]
     pub fn created_at_ms(&self) -> i64 {
         match self {
-            Self::Engram(e) => e.created_at_ms,
+            Self::Signal(e) => e.created_at_ms,
             Self::Pulse(p) => p.created_at_ms,
         }
     }
 
     /// Whether the underlying event is a signal (persisted).
     #[must_use]
-    pub fn is_engram(&self) -> bool {
-        matches!(self, Self::Engram(_))
+    pub fn is_signal(&self) -> bool {
+        matches!(self, Self::Signal(_))
     }
 
     /// Whether the underlying event is a pulse (ephemeral).
@@ -91,9 +91,9 @@ impl<'a> Datum<'a> {
     }
 }
 
-impl<'a> From<&'a Engram> for Datum<'a> {
-    fn from(e: &'a Engram) -> Self {
-        Self::Engram(e)
+impl<'a> From<&'a Signal> for Datum<'a> {
+    fn from(e: &'a Signal) -> Self {
+        Self::Signal(e)
     }
 }
 
@@ -109,19 +109,19 @@ mod tests {
     use crate::Topic;
 
     #[test]
-    fn datum_from_engram() {
-        let e = Engram::builder(Kind::Task)
+    fn datum_from_signal() {
+        let e = Signal::builder(Kind::Task)
             .body(Body::text("do thing"))
             .created_at_ms(5000)
             .tag("priority", "high")
             .build();
-        let d = Datum::Engram(&e);
+        let d = Datum::Signal(&e);
 
         assert_eq!(d.kind(), &Kind::Task);
         assert_eq!(d.body(), &Body::Text("do thing".into()));
         assert_eq!(d.created_at_ms(), 5000);
         assert_eq!(d.tags().get("priority").map(String::as_str), Some("high"));
-        assert!(d.is_engram());
+        assert!(d.is_signal());
         assert!(!d.is_pulse());
     }
 
@@ -139,14 +139,14 @@ mod tests {
         assert_eq!(d.created_at_ms(), 9000);
         assert_eq!(d.tags().get("gate").map(String::as_str), Some("compile"));
         assert!(d.is_pulse());
-        assert!(!d.is_engram());
+        assert!(!d.is_signal());
     }
 
     #[test]
     fn datum_from_trait_impls() {
-        let e = Engram::builder(Kind::Episode).created_at_ms(0).build();
+        let e = Signal::builder(Kind::Episode).created_at_ms(0).build();
         let d: Datum<'_> = (&e).into();
-        assert!(d.is_engram());
+        assert!(d.is_signal());
 
         let p = Pulse::new(1, Topic::new("x"), Kind::Metric, Body::empty());
         let d: Datum<'_> = (&p).into();
@@ -155,8 +155,8 @@ mod tests {
 
     #[test]
     fn datum_empty_tags() {
-        let e = Engram::builder(Kind::Task).created_at_ms(0).build();
-        let d = Datum::Engram(&e);
+        let e = Signal::builder(Kind::Task).created_at_ms(0).build();
+        let d = Datum::Signal(&e);
         assert!(d.tags().is_empty());
 
         let p = Pulse::new(1, Topic::new("x"), Kind::Task, Body::empty());

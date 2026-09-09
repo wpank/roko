@@ -1,7 +1,7 @@
 //! Predictive-foraging primitives: oracle contracts, calibration-aware scoring,
 //! and policy hooks.
 
-use crate::{Budget, ContentHash, Context, Engram, Kind, Provenance, React, Score, error::Result};
+use crate::{Budget, ContentHash, Context, Kind, Provenance, React, Score, Signal, error::Result};
 use async_trait::async_trait;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -19,11 +19,11 @@ pub trait Oracle: Send + Sync {
     /// Make a prediction about future state.
     async fn predict(&self, query: &OracleQuery, ctx: &Context) -> Result<Prediction>;
 
-    /// Evaluate a past prediction against an observed outcome engram.
+    /// Evaluate a past prediction against an observed outcome signal.
     async fn evaluate(
         &self,
         prediction: &Prediction,
-        outcome: &Engram,
+        outcome: &Signal,
     ) -> Result<PredictionAccuracy>;
 }
 
@@ -366,7 +366,7 @@ pub struct Prediction {
     pub resolve_by_ms: i64,
     /// Model/oracle provenance for calibration.
     pub provenance: PredictionProvenance,
-    /// Engram lineage that informed the prediction.
+    /// Signal lineage that informed the prediction.
     pub lineage: Vec<ContentHash>,
     /// Resolution state; absent until the prediction is resolved.
     pub outcome: Option<PredictionOutcome>,
@@ -874,7 +874,7 @@ impl PredictionStore {
     pub async fn resolve(
         &self,
         prediction_id: &ContentHash,
-        outcome: &Engram,
+        outcome: &Signal,
         oracle: &dyn Oracle,
     ) -> Result<PredictionAccuracy> {
         let mut prediction = self
@@ -948,7 +948,7 @@ impl PredictionStore {
     pub async fn resolve_with_feedback(
         &self,
         prediction_id: &ContentHash,
-        outcome: &Engram,
+        outcome: &Signal,
         oracle: &dyn Oracle,
         calibration: &CalibrationTracker,
         corrector: &ResidualCorrector,
@@ -975,7 +975,7 @@ impl PredictionStore {
     /// all accuracy results.
     pub async fn resolve_from_gate_verdict(
         &self,
-        verdict_engram: &Engram,
+        verdict_signal: &Signal,
         oracle: &dyn Oracle,
         calibration: &CalibrationTracker,
         corrector: &ResidualCorrector,
@@ -988,7 +988,7 @@ impl PredictionStore {
             match self
                 .resolve_with_feedback(
                     &prediction.id,
-                    verdict_engram,
+                    verdict_signal,
                     oracle,
                     calibration,
                     corrector,
@@ -1312,7 +1312,7 @@ impl PredictiveScorer {
     }
 
     #[must_use]
-    fn pragmatic_value(&self, signal: &Engram, ctx: &Context) -> f32 {
+    fn pragmatic_value(&self, signal: &Signal, ctx: &Context) -> f32 {
         let base = signal.score.utility.max(0.0);
         let goal_overlap = ctx
             .goal
@@ -1329,7 +1329,7 @@ impl PredictiveScorer {
     #[must_use]
     fn epistemic_value(
         &self,
-        signal: &Engram,
+        signal: &Signal,
         summary: PredictionCalibrationSummary,
         body: &str,
     ) -> f32 {
@@ -1356,7 +1356,7 @@ impl PredictiveScorer {
     }
 
     #[must_use]
-    fn token_cost_penalty(&self, signal: &Engram) -> f32 {
+    fn token_cost_penalty(&self, signal: &Signal) -> f32 {
         let tokens = Budget::estimate_tokens(signal.body.byte_size()) as f32;
         (tokens / 1000.0) * self.token_cost_per_1k
     }
@@ -1375,7 +1375,7 @@ impl crate::cell::Cell for PredictiveScorer {
 }
 
 impl crate::traits::Score for PredictiveScorer {
-    fn score(&self, signal: &Engram, ctx: &Context) -> Score {
+    fn score(&self, signal: &Signal, ctx: &Context) -> Score {
         let model = signal
             .tag("model_slug")
             .or_else(|| signal.tag("model"))
@@ -1469,7 +1469,7 @@ impl crate::cell::Cell for PredictionPolicy {
 }
 
 impl React for PredictionPolicy {
-    fn decide(&self, stream: &[Engram], ctx: &Context) -> Vec<Engram> {
+    fn decide(&self, stream: &[Signal], ctx: &Context) -> Vec<Signal> {
         let mut seen = BTreeSet::new();
         let mut outputs = Vec::new();
 
@@ -1494,7 +1494,7 @@ impl React for PredictionPolicy {
 
             if summary.mean_bias.abs() >= self.bias_threshold {
                 outputs.push(
-                    Engram::builder(Kind::Insight)
+                    Signal::builder(Kind::Insight)
                         .body(crate::Body::text(format!(
                             "Prediction calibration drift for {model}/{category}: mean bias {:+.2} over {} runs",
                             summary.mean_bias, summary.sample_count
@@ -1519,7 +1519,7 @@ impl React for PredictionPolicy {
 
             if summary.accuracy_trend <= -self.degradation_threshold {
                 outputs.push(
-                    Engram::builder(Kind::Prediction)
+                    Signal::builder(Kind::Prediction)
                         .body(crate::Body::text(format!(
                             "Prediction accuracy is degrading for {model}/{category}: trend {:+.2}",
                             summary.accuracy_trend
@@ -1551,7 +1551,7 @@ impl React for PredictionPolicy {
     }
 }
 
-fn body_text(signal: &Engram) -> String {
+fn body_text(signal: &Signal) -> String {
     match &signal.body {
         crate::Body::Empty => String::new(),
         crate::Body::Text(text) => text.clone(),
@@ -1636,7 +1636,7 @@ mod tests {
             },
         ));
         let scorer = PredictiveScorer::new(calibration);
-        let signal = Engram::builder(Kind::PromptSection)
+        let signal = Signal::builder(Kind::PromptSection)
             .body(crate::Body::text(
                 "Warning: verify assumptions and check likely failure modes",
             ))
@@ -1669,7 +1669,7 @@ mod tests {
         ));
         let policy = PredictionPolicy::new(calibration);
         let stream = vec![
-            Engram::builder(Kind::Prediction)
+            Signal::builder(Kind::Prediction)
                 .body(crate::Body::text("route coding task"))
                 .tag("model_slug", "gpt-5")
                 .tag("task_category", "implementation")

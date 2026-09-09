@@ -388,16 +388,16 @@ fn default_bucket_start() -> DateTime<Utc> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use roko_core::{Body, Engram, Verdict};
+    use roko_core::{Body, Signal, Verdict};
     use tempfile::tempdir;
 
-    fn verdict_signal(ts_ms: i64, gate: &str, passed: bool, task_id: Option<&str>) -> Engram {
+    fn verdict_signal(ts_ms: i64, gate: &str, passed: bool, task_id: Option<&str>) -> Signal {
         let verdict = if passed {
             Verdict::pass(gate)
         } else {
             Verdict::fail(gate, "boom").with_error_digest("assertion failed")
         };
-        let mut builder = Engram::builder(Kind::GateVerdict)
+        let mut builder = Signal::builder(Kind::GateVerdict)
             .body(Body::from_json(&verdict).unwrap())
             .created_at_ms(ts_ms)
             .tag("gate", gate)

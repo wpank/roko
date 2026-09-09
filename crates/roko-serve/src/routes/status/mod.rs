@@ -65,7 +65,7 @@ mod tests {
     use crate::runtime::NoOpRuntime;
     use crate::state::{AppState, OperationStatus, PlanHandle};
     use roko_core::config::ServeAuthConfig;
-    use roko_core::{Body, Engram, Kind, Provenance, Verdict};
+    use roko_core::{Body, Kind, Provenance, Signal, Verdict};
 
     use super::episodes;
     use super::gates;
@@ -81,7 +81,7 @@ mod tests {
         };
         verdict.duration_ms = duration_ms;
 
-        let signal = Engram::builder(Kind::GateVerdict)
+        let signal = Signal::builder(Kind::GateVerdict)
             .body(
                 Body::from_json(&verdict)
                     .expect("invariant: verdict helper should serialize test payloads"),

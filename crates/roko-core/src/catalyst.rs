@@ -1,7 +1,7 @@
 //! Catalyst scoring for downstream-impact-aware ranking.
 
 use crate::traits::Score as ScoreTrait;
-use crate::{Context, Engram, Score};
+use crate::{Context, Score, Signal};
 use std::sync::Arc;
 
 /// Observed downstream impact for one signal.
@@ -20,7 +20,7 @@ pub struct CatalystImpactSummary {
 /// Read-only downstream-impact source used by [`CatalystScorer`].
 pub trait CatalystSignalSource: Send + Sync {
     /// Return the current impact estimate for `signal` in `ctx`.
-    fn impact(&self, signal: &Engram, ctx: &Context) -> CatalystImpactSummary;
+    fn impact(&self, signal: &Signal, ctx: &Context) -> CatalystImpactSummary;
 }
 
 /// Score signals by how strongly they catalyze useful downstream work.
@@ -69,7 +69,7 @@ impl crate::cell::Cell for CatalystScorer {
 }
 
 impl ScoreTrait for CatalystScorer {
-    fn score(&self, signal: &Engram, ctx: &Context) -> Score {
+    fn score(&self, signal: &Signal, ctx: &Context) -> Score {
         let summary = self.source.impact(signal, ctx);
         let lineage_signal = (signal.lineage.len() as f32 / 8.0).min(1.0);
         let reuse_signal = (summary.reuse_count as f32 / 8.0).min(1.0);
@@ -107,13 +107,13 @@ mod tests {
     struct FixedSource(CatalystImpactSummary);
 
     impl CatalystSignalSource for FixedSource {
-        fn impact(&self, _signal: &Engram, _ctx: &Context) -> CatalystImpactSummary {
+        fn impact(&self, _signal: &Signal, _ctx: &Context) -> CatalystImpactSummary {
             self.0
         }
     }
 
-    fn signal() -> Engram {
-        Engram::builder(Kind::PromptSection)
+    fn signal() -> Signal {
+        Signal::builder(Kind::PromptSection)
             .body(Body::text("keep the verification context"))
             .build()
     }

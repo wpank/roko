@@ -13,7 +13,7 @@
 //! ```
 
 use roko_core::traits::Score as ScoreFn;
-use roko_core::{Context, Engram, Score};
+use roko_core::{Context, Score, Signal};
 
 /// Sum several scorers element-wise (aggregates evidence).
 pub struct SumScorer {
@@ -55,7 +55,7 @@ impl roko_core::Cell for SumScorer {
 }
 
 impl ScoreFn for SumScorer {
-    fn score(&self, signal: &Engram, ctx: &Context) -> Score {
+    fn score(&self, signal: &Signal, ctx: &Context) -> Score {
         self.scorers
             .iter()
             .fold(Score::ZERO, |acc, s| acc + s.score(signal, ctx))
@@ -106,7 +106,7 @@ impl roko_core::Cell for MulScorer {
 }
 
 impl ScoreFn for MulScorer {
-    fn score(&self, signal: &Engram, ctx: &Context) -> Score {
+    fn score(&self, signal: &Signal, ctx: &Context) -> Score {
         // Start with all-1 score so multiplication is identity.
         let one = Score::new(1.0, 1.0, 1.0, 1.0);
         self.scorers
@@ -145,7 +145,7 @@ impl roko_core::Cell for ConstScorer {
 }
 
 impl ScoreFn for ConstScorer {
-    fn score(&self, _s: &Engram, _ctx: &Context) -> Score {
+    fn score(&self, _s: &Signal, _ctx: &Context) -> Score {
         self.value
     }
     fn name(&self) -> &'static str {
@@ -158,8 +158,8 @@ mod tests {
     use super::*;
     use roko_core::{Body, Kind};
 
-    fn signal() -> Engram {
-        Engram::builder(Kind::Task).body(Body::text("x")).build()
+    fn signal() -> Signal {
+        Signal::builder(Kind::Task).body(Body::text("x")).build()
     }
 
     #[test]

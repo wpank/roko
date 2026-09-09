@@ -382,7 +382,7 @@ mod tests {
     use super::*;
     use roko_core::{Body, Context, Kind, Signal};
 
-    fn verdict_engram(gate: &str, passed: bool, age_ms: i64) -> Signal {
+    fn verdict_signal(gate: &str, passed: bool, age_ms: i64) -> Signal {
         let now = chrono::Utc::now().timestamp_millis();
         let mut e = Signal::builder(Kind::GateVerdict)
             .body(Body::empty())
@@ -394,7 +394,7 @@ mod tests {
         e
     }
 
-    fn non_verdict_engram() -> Signal {
+    fn non_verdict_signal() -> Signal {
         Signal::builder(Kind::Task).body(Body::empty()).build()
     }
 
@@ -405,10 +405,10 @@ mod tests {
     // ─── VerdictAwareScorer tests ────────────────────────────────────
 
     #[test]
-    fn non_verdict_engrams_get_zero_score() {
+    fn non_verdict_signals_get_zero_score() {
         let scorer = VerdictAwareScorer::new();
         let ctx = ctx_at_now();
-        let score = scorer.score(&non_verdict_engram(), &ctx);
+        let score = scorer.score(&non_verdict_signal(), &ctx);
         assert_eq!(score.utility, 0.0);
         assert_eq!(score.salience, 0.0);
     }
@@ -418,8 +418,8 @@ mod tests {
         let scorer = VerdictAwareScorer::new();
         let ctx = ctx_at_now();
 
-        let recent = verdict_engram("compile", false, 1_000); // 1 second ago
-        let old = verdict_engram("compile", false, 3_600_000); // 1 hour ago
+        let recent = verdict_signal("compile", false, 1_000); // 1 second ago
+        let old = verdict_signal("compile", false, 3_600_000); // 1 hour ago
 
         let recent_score = scorer.score(&recent, &ctx);
         let old_score = scorer.score(&old, &ctx);
@@ -437,8 +437,8 @@ mod tests {
         let scorer = VerdictAwareScorer::new();
         let ctx = ctx_at_now();
 
-        let compile_fail = verdict_engram("compile", false, 100);
-        let lint_fail = verdict_engram("clippy_lint", false, 100);
+        let compile_fail = verdict_signal("compile", false, 100);
+        let lint_fail = verdict_signal("clippy_lint", false, 100);
 
         let compile_score = scorer.score(&compile_fail, &ctx);
         let lint_score = scorer.score(&lint_fail, &ctx);
@@ -456,8 +456,8 @@ mod tests {
         let scorer = VerdictAwareScorer::new();
         let ctx = ctx_at_now();
 
-        let pass = verdict_engram("compile", true, 100);
-        let fail = verdict_engram("compile", false, 100);
+        let pass = verdict_signal("compile", true, 100);
+        let fail = verdict_signal("compile", false, 100);
 
         let pass_score = scorer.score(&pass, &ctx);
         let fail_score = scorer.score(&fail, &ctx);
@@ -680,7 +680,7 @@ mod tests {
 
         let gates = ["compile", "test", "clippy_lint", "diff_check"];
         for gate in &gates {
-            let signal = verdict_engram(gate, true, 100);
+            let signal = verdict_signal(gate, true, 100);
             let score = scorer.score(&signal, &ctx);
             // Passing verdicts always have severity 0.1, so severity contribution
             // is 0.1 * 0.40 = 0.04. Maximum possible salience for a pass is
@@ -711,10 +711,10 @@ mod tests {
         let scorer = VerdictAwareScorer::new();
         let ctx = ctx_at_now();
 
-        let compile_pass = verdict_engram("compile", true, 100);
-        let test_fail = verdict_engram("test", false, 100);
-        let lint_pass = verdict_engram("clippy_lint", true, 100);
-        let diff_fail = verdict_engram("diff_check", false, 100);
+        let compile_pass = verdict_signal("compile", true, 100);
+        let test_fail = verdict_signal("test", false, 100);
+        let lint_pass = verdict_signal("clippy_lint", true, 100);
+        let diff_fail = verdict_signal("diff_check", false, 100);
 
         let pass_score = scorer.score(&compile_pass, &ctx);
         let test_score = scorer.score(&test_fail, &ctx);
@@ -889,7 +889,7 @@ mod tests {
         ];
 
         for (gate, expected_severity) in &gates_and_severities {
-            let signal = verdict_engram(gate, false, 100);
+            let signal = verdict_signal(gate, false, 100);
             let score = scorer.score(&signal, &ctx);
 
             // All failed verdicts should produce non-trivial scores.
@@ -1214,7 +1214,7 @@ mod tests {
 
         // Signal from ~24 hours ago. With 10-min half-life, that is
         // 144 half-lives → recency ≈ 0.
-        let signal = verdict_engram("compile", false, 86_400_000);
+        let signal = verdict_signal("compile", false, 86_400_000);
         let score = scorer.score(&signal, &ctx);
 
         assert!(

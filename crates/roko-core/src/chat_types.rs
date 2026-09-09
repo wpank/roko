@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::tool::{ToolCall, ToolDef};
-use crate::{Body, Engram, Kind};
+use crate::{Body, Kind, Signal};
 
 /// Canonical chat message format shared across prompt assembly, tool loops,
 /// and provider adapters.
@@ -297,10 +297,10 @@ impl ChatResponse {
         }
     }
 
-    /// Convert the canonical chat response back into an `AgentOutput` engram.
+    /// Convert the canonical chat response back into an `AgentOutput` signal.
     #[must_use]
-    pub fn to_signal(&self) -> Engram {
-        Engram::builder(Kind::AgentOutput)
+    pub fn to_signal(&self) -> Signal {
+        Signal::builder(Kind::AgentOutput)
             .body(Body::text(&self.content))
             .tag("model", self.metadata.model_used.as_deref().unwrap_or(""))
             .tag("finish_reason", format!("{:?}", self.finish_reason))
@@ -344,7 +344,7 @@ impl ChatRequest {
     /// Build a canonical chat request from the orchestrator's signal format.
     #[must_use]
     pub fn from_signal(
-        signal: &Engram,
+        signal: &Signal,
         model_slug: &str,
         system_prompt: Option<&str>,
         tools: Vec<ToolDef>,

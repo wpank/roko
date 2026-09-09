@@ -14,7 +14,7 @@
 //! enforced.
 
 use async_trait::async_trait;
-use roko_core::{Body, Context, Engram, traits::Verify, verdict::Verdict};
+use roko_core::{Body, Context, Signal, traits::Verify, verdict::Verdict};
 use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Instant;
@@ -234,7 +234,7 @@ impl From<TxRequestJson> for TxRequest {
 
 /// Parse a `TxRequest` out of a signal body. Returns the parse error string
 /// for a failing verdict when the body is not a recognised JSON shape.
-pub(crate) fn parse_tx_from_signal(signal: &Engram) -> Result<TxRequest, String> {
+pub(crate) fn parse_tx_from_signal(signal: &Signal) -> Result<TxRequest, String> {
     let json: TxRequestJson = match &signal.body {
         Body::Json(v) => serde_json::from_value(v.clone())
             .map_err(|e| format!("body json does not match TxRequest: {e}"))?,
@@ -265,7 +265,7 @@ impl roko_core::Cell for WalletGate {
 #[async_trait]
 
 impl Verify for WalletGate {
-    async fn verify(&self, input: &Engram, _ctx: &Context) -> Verdict {
+    async fn verify(&self, input: &Signal, _ctx: &Context) -> Verdict {
         let started = Instant::now();
 
         let tx = match parse_tx_from_signal(input) {
@@ -331,14 +331,14 @@ impl Verify for WalletGate {
 mod tests {
     use super::*;
     use crate::{MockChainClient, MockChainWallet, paired_mocks};
-    use roko_core::{Body, Context, Engram, Kind, Provenance};
+    use roko_core::{Body, Context, Kind, Provenance, Signal};
 
     fn cfg() -> WalletGateConfig {
         WalletGateConfig::default()
     }
 
-    fn tx_signal_json(v: serde_json::Value) -> Engram {
-        Engram::builder(Kind::Transaction)
+    fn tx_signal_json(v: serde_json::Value) -> Signal {
+        Signal::builder(Kind::Transaction)
             .body(Body::Json(v))
             .provenance(Provenance::agent("alice"))
             .build()
@@ -478,7 +478,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn verify_fail_on_non_json_body() {
         let (gate, _w, _c) = make_gate(1_000);
-        let signal = Engram::builder(Kind::Transaction)
+        let signal = Signal::builder(Kind::Transaction)
             .body(Body::Bytes(vec![1, 2, 3]))
             .provenance(Provenance::agent("alice"))
             .build();
@@ -490,7 +490,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn verify_fail_on_empty_body() {
         let (gate, _w, _c) = make_gate(1_000);
-        let signal = Engram::builder(Kind::Transaction)
+        let signal = Signal::builder(Kind::Transaction)
             .body(Body::Empty)
             .provenance(Provenance::agent("alice"))
             .build();
@@ -518,7 +518,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn verify_accepts_text_body_json() {
         let (gate, _w, _c) = make_gate(10_000);
-        let signal = Engram::builder(Kind::Transaction)
+        let signal = Signal::builder(Kind::Transaction)
             .body(Body::Text(r#"{"value": 100}"#.to_string()))
             .provenance(Provenance::agent("alice"))
             .build();

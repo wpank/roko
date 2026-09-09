@@ -10,7 +10,7 @@
 //! 4. Channel openness       (Bus delivery confirmation + subscriber reach)
 //! 5. Cognitive diversity    (HDC distance across cohort Engrams)
 
-use crate::{Body, Context, Engram, Kind, Provenance, React, Score};
+use crate::{Body, Context, Kind, Provenance, React, Score, Signal};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -27,7 +27,7 @@ pub struct CohortMetrics {
     pub citation_reciprocity: f64,
     /// Fraction of Bus messages successfully delivered to all subscribers.
     pub delivery_rate: f64,
-    /// Average HDC cosine distance between cohort members' Engram vectors.
+    /// Average HDC cosine distance between cohort members' Signal vectors.
     pub hdc_diversity: f64,
 }
 
@@ -192,7 +192,7 @@ impl crate::cell::Cell for CFactorPolicy {
 }
 
 impl React for CFactorPolicy {
-    fn decide(&self, _stream: &[Engram], _ctx: &Context) -> Vec<Engram> {
+    fn decide(&self, _stream: &[Signal], _ctx: &Context) -> Vec<Signal> {
         let Some(summary) = self.source.summary() else {
             return Vec::new();
         };
@@ -203,7 +203,7 @@ impl React for CFactorPolicy {
         let mut outputs = Vec::new();
         if summary.regression_drop >= self.regression_threshold || summary.trend < -0.05 {
             outputs.push(
-                Engram::builder(Kind::Insight)
+                Signal::builder(Kind::Insight)
                     .body(Body::text(format!(
                         "Collective calibration is regressing: C-Factor {:.2}, regression drop {:.1}% across {} episodes. Tighten coordination and bias toward stronger collective scaffolds.",
                         summary.overall,
@@ -223,7 +223,7 @@ impl React for CFactorPolicy {
             || summary.social_perceptiveness <= self.coordination_threshold
         {
             outputs.push(
-                Engram::builder(Kind::Insight)
+                Signal::builder(Kind::Insight)
                     .body(Body::text(format!(
                         "Collective coordination is weak: overall {:.2}, turn-taking {:.2}, social perceptiveness {:.2}, HDC diversity {:.2}, citation reciprocity {:.2}, delivery rate {:.2}.",
                         summary.overall,
@@ -243,7 +243,7 @@ impl React for CFactorPolicy {
 
         if summary.overall >= 0.7 && !summary.top_positive_contributors.is_empty() {
             outputs.push(
-                Engram::builder(Kind::Insight)
+                Signal::builder(Kind::Insight)
                     .body(Body::text(format!(
                         "Collective intelligence is compounding: C-Factor {:.2}. Preserve the current high-yield collaboration pattern around {}.",
                         summary.overall,

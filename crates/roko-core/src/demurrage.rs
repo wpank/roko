@@ -16,7 +16,7 @@
 //! The legacy [`Demurrage`] trait remains for backward compatibility with
 //! simpler single-rate exponential decay.
 
-use crate::Engram;
+use crate::Signal;
 use serde::{Deserialize, Serialize};
 
 /// Configuration for the novelty-weighted demurrage tick.
@@ -88,17 +88,17 @@ fn default_novelty_bonus() -> f64 {
 /// balance = new_balance.clamp(0.0, 1.0)
 /// ```
 ///
-/// The amount lost (before clamping) is accumulated in `engram.demurrage_paid`,
+/// The amount lost (before clamping) is accumulated in `signal.demurrage_paid`,
 /// which is monotonically increasing — it never decreases.
 ///
 /// # Parameters
 ///
-/// - `engram`: the signal whose balance will be decayed in-place
+/// - `signal`: the signal whose balance will be decayed in-place
 /// - `config`: tunable rate parameters
 /// - `elapsed_hours`: time since last tick (must be non-negative)
 /// - `novelty`: the signal's current novelty in `[0..1]`, from [`Score::novelty`]
 pub fn demurrage_tick(
-    engram: &mut Engram,
+    signal: &mut Signal,
     config: &DemurrageConfig,
     elapsed_hours: f64,
     novelty: f32,
@@ -109,19 +109,19 @@ pub fn demurrage_tick(
 
     let elapsed_days = elapsed_hours / 24.0;
     let flat_loss = config.flat_tax_per_day * elapsed_days;
-    let exp_loss = config.exp_decay_per_day * engram.balance * elapsed_days;
+    let exp_loss = config.exp_decay_per_day * signal.balance * elapsed_days;
     let novelty_gain = config.novelty_bonus * f64::from(novelty) * elapsed_days;
 
     let total_loss = flat_loss + exp_loss - novelty_gain;
-    let new_balance = (engram.balance - total_loss).clamp(0.0, 1.0);
+    let new_balance = (signal.balance - total_loss).clamp(0.0, 1.0);
 
     // Track cumulative tax paid (monotonically increasing).
-    let actual_loss = engram.balance - new_balance;
+    let actual_loss = signal.balance - new_balance;
     if actual_loss > 0.0 {
-        engram.demurrage_paid += actual_loss;
+        signal.demurrage_paid += actual_loss;
     }
 
-    engram.balance = new_balance;
+    signal.balance = new_balance;
 }
 
 /// Time-decay tax on stored value -- ensures active validation.
@@ -232,8 +232,8 @@ mod tests {
 
     // ─── DemurrageConfig + demurrage_tick tests ─────────────────────────────
 
-    fn make_engram(balance: f64) -> Engram {
-        Engram::builder(Kind::Task)
+    fn make_signal(balance: f64) -> Signal {
+        Signal::builder(Kind::Task)
             .body(Body::text("test signal"))
             .balance(balance)
             .build()
@@ -249,7 +249,7 @@ mod tests {
 
     #[test]
     fn demurrage_tick_zero_elapsed_is_noop() {
-        let mut e = make_engram(0.8);
+        let mut e = make_signal(0.8);
         let cfg = DemurrageConfig::default();
         demurrage_tick(&mut e, &cfg, 0.0, 0.0);
         assert!((e.balance - 0.8).abs() < f64::EPSILON);
@@ -258,7 +258,7 @@ mod tests {
 
     #[test]
     fn demurrage_tick_negative_elapsed_is_noop() {
-        let mut e = make_engram(0.8);
+        let mut e = make_signal(0.8);
         let cfg = DemurrageConfig::default();
         demurrage_tick(&mut e, &cfg, -1.0, 0.0);
         assert!((e.balance - 0.8).abs() < f64::EPSILON);
@@ -266,7 +266,7 @@ mod tests {
 
     #[test]
     fn demurrage_tick_reduces_balance() {
-        let mut e = make_engram(1.0);
+        let mut e = make_signal(1.0);
         let cfg = DemurrageConfig::default();
         demurrage_tick(&mut e, &cfg, 24.0, 0.0);
         assert!(e.balance < 1.0);
@@ -275,8 +275,8 @@ mod tests {
 
     #[test]
     fn demurrage_tick_novelty_slows_decay() {
-        let mut no_novelty = make_engram(1.0);
-        let mut high_novelty = make_engram(1.0);
+        let mut no_novelty = make_signal(1.0);
+        let mut high_novelty = make_signal(1.0);
         let cfg = DemurrageConfig::default();
 
         demurrage_tick(&mut no_novelty, &cfg, 24.0, 0.0);
@@ -287,7 +287,7 @@ mod tests {
 
     #[test]
     fn demurrage_tick_clamps_to_zero() {
-        let mut e = make_engram(0.001);
+        let mut e = make_signal(0.001);
         let cfg = DemurrageConfig {
             flat_tax_per_day: 10.0,
             exp_decay_per_day: 5.0,
@@ -300,7 +300,7 @@ mod tests {
 
     #[test]
     fn demurrage_paid_accumulates_monotonically() {
-        let mut e = make_engram(1.0);
+        let mut e = make_signal(1.0);
         let cfg = DemurrageConfig::default();
 
         demurrage_tick(&mut e, &cfg, 24.0, 0.0);

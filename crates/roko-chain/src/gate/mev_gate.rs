@@ -35,7 +35,7 @@
 //! If any high-severity MEV pattern is detected, the gate fails the signal.
 
 use async_trait::async_trait;
-use roko_core::{Body, Context, Engram, traits::Verify, verdict::Verdict};
+use roko_core::{Body, Context, Signal, traits::Verify, verdict::Verdict};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -600,7 +600,7 @@ impl MevGate {
     }
 
     /// Parse the signal body into [`MevAnalysisInput`].
-    fn parse_input(signal: &Engram) -> Result<MevAnalysisInput, String> {
+    fn parse_input(signal: &Signal) -> Result<MevAnalysisInput, String> {
         match &signal.body {
             Body::Json(v) => serde_json::from_value(v.clone())
                 .map_err(|e| format!("body json does not match MevAnalysisInput: {e}")),
@@ -633,7 +633,7 @@ impl roko_core::Cell for MevGate {
 #[async_trait]
 
 impl Verify for MevGate {
-    async fn verify(&self, signal: &Engram, _ctx: &Context) -> Verdict {
+    async fn verify(&self, signal: &Signal, _ctx: &Context) -> Verdict {
         let started = Instant::now();
 
         let input = match Self::parse_input(signal) {
@@ -697,7 +697,7 @@ impl Verify for MevGate {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use roko_core::{Body, Context, Engram, Kind, Provenance};
+    use roko_core::{Body, Context, Kind, Provenance, Signal};
 
     fn victim_tx() -> MempoolTx {
         MempoolTx {
@@ -712,8 +712,8 @@ mod tests {
         }
     }
 
-    fn signal_from_input(input: &MevAnalysisInput) -> Engram {
-        Engram::builder(Kind::Transaction)
+    fn signal_from_input(input: &MevAnalysisInput) -> Signal {
+        Signal::builder(Kind::Transaction)
             .body(Body::Json(serde_json::to_value(input).unwrap()))
             .provenance(Provenance::agent("chain-agent"))
             .build()
@@ -965,7 +965,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn gate_fails_on_bad_body() {
         let gate = MevGate::new();
-        let signal = Engram::builder(Kind::Transaction)
+        let signal = Signal::builder(Kind::Transaction)
             .body(Body::Empty)
             .provenance(Provenance::agent("agent"))
             .build();

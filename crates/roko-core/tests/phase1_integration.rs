@@ -20,8 +20,7 @@ use roko_core::error::Result;
 use roko_core::traits::{Connect, Observe, Store, Substrate, Trigger};
 use roko_core::{
     Body, Bus, BusErased, Cell, CellContext, CellVersion, ContentHash, Context, Engram, HdcVector,
-    Kind, MemoryBus, ProtocolId, Pulse, Query, Signal, SignalBuilder, Topic, TopicFilter,
-    TypeSchema,
+    Kind, MemoryBus, ProtocolId, Pulse, Query, Signal, SignalBuilder, Topic, TopicFilter, TypeSchema,
 };
 
 // ============================================================================
@@ -32,22 +31,22 @@ use roko_core::{
 /// Substrate is auto-derived from Store via blanket impl.
 #[derive(Default)]
 struct TestStore {
-    signals: std::sync::Mutex<Vec<Engram>>,
+    signals: std::sync::Mutex<Vec<Signal>>,
 }
 
 #[async_trait]
 impl Store for TestStore {
-    async fn put(&self, engram: Engram) -> Result<ContentHash> {
-        let id = engram.id;
-        self.signals.lock().unwrap().push(engram);
+    async fn put(&self, signal: Signal) -> Result<ContentHash> {
+        let id = signal.id;
+        self.signals.lock().unwrap().push(signal);
         Ok(id)
     }
 
-    async fn get(&self, _id: &ContentHash) -> Result<Option<Engram>> {
+    async fn get(&self, _id: &ContentHash) -> Result<Option<Signal>> {
         Ok(None)
     }
 
-    async fn query(&self, _q: &Query, _ctx: &Context) -> Result<Vec<Engram>> {
+    async fn query(&self, _q: &Query, _ctx: &Context) -> Result<Vec<Signal>> {
         Ok(Vec::new())
     }
 
@@ -112,7 +111,7 @@ impl Cell for DoubleCell {
         None // accepts anything
     }
 
-    async fn execute(&self, input: Vec<Engram>, _ctx: &CellContext) -> Result<Vec<Engram>> {
+    async fn execute(&self, input: Vec<Signal>, _ctx: &CellContext) -> Result<Vec<Signal>> {
         let mut output = input.clone();
         output.extend(input);
         Ok(output)
@@ -147,7 +146,7 @@ impl Cell for PassthroughCell {
         vec![ProtocolId::Observe]
     }
 
-    async fn execute(&self, input: Vec<Engram>, _ctx: &CellContext) -> Result<Vec<Engram>> {
+    async fn execute(&self, input: Vec<Signal>, _ctx: &CellContext) -> Result<Vec<Signal>> {
         Ok(input)
     }
 }
@@ -187,10 +186,10 @@ impl Cell for StoreCountObserver {
 }
 
 impl Observe for StoreCountObserver {
-    fn observe(&self) -> Vec<Engram> {
+    fn observe(&self) -> Vec<Signal> {
         let count = *self.count.lock().unwrap();
         vec![
-            Engram::builder(Kind::Metric)
+            Signal::builder(Kind::Metric)
                 .body(Body::text(format!("signal_count={count}")))
                 .tag("source", "store_observer")
                 .tag("count", count.to_string())
@@ -312,7 +311,7 @@ impl Trigger for TopicTrigger {
 async fn cell_execute_produces_signals() {
     let ctx = make_context();
     let cell = DoubleCell;
-    let input = vec![Engram::builder(Kind::Metric).build()];
+    let input = vec![Signal::builder(Kind::Metric).build()];
 
     let output = cell.execute(input, &ctx).await.unwrap();
     assert_eq!(output.len(), 2, "DoubleCell should produce 2x signals");
@@ -333,7 +332,7 @@ async fn default_execute_returns_error() {
 #[tokio::test]
 async fn cell_execute_preserves_signal_identity() {
     let ctx = make_context();
-    let signal = Engram::builder(Kind::Task)
+    let signal = Signal::builder(Kind::Task)
         .body(Body::text("test payload"))
         .build();
     let original_id = signal.id;
@@ -596,7 +595,7 @@ async fn cell_can_interact_with_store_via_context() {
     let ctx = make_context_with_store(store.clone());
 
     // Write a signal to the store through the context.
-    let signal = Engram::builder(Kind::Episode)
+    let signal = Signal::builder(Kind::Episode)
         .body(Body::text("test episode"))
         .build();
     let hash = ctx.store.put(signal).await.unwrap();

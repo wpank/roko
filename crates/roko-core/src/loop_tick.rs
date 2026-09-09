@@ -24,7 +24,7 @@
 //! enforcement is required.
 
 use crate::{
-    Budget, Compose, Context, Engram, Query, React, Route, Store, Verdict, Verify, error::Result,
+    Budget, Compose, Context, Query, React, Route, Signal, Store, Verdict, Verify, error::Result,
 };
 
 /// Outcome of one signal selection/composition/verification/persistence pass.
@@ -33,11 +33,11 @@ pub struct SignalSelectionOutcome {
     /// How many candidates the substrate returned.
     pub candidates_examined: usize,
     /// The composed signal (if one was produced).
-    pub composed: Option<Engram>,
+    pub composed: Option<Signal>,
     /// The gate's verdict (if composition happened).
     pub verdict: Option<Verdict>,
     /// Signals emitted by the policy.
-    pub emitted: Vec<Engram>,
+    pub emitted: Vec<Signal>,
     /// Content hashes of signals written back to substrate.
     pub written: Vec<crate::ContentHash>,
 }
@@ -56,7 +56,7 @@ impl SignalSelectionOutcome {
     }
 }
 
-fn ensure_lineage(mut signal: Engram, parent: crate::ContentHash) -> Engram {
+fn ensure_lineage(mut signal: Signal, parent: crate::ContentHash) -> Signal {
     if !signal.lineage.contains(&parent) {
         signal.lineage.push(parent);
     }
@@ -165,7 +165,7 @@ pub async fn select_compose_verify_persist(
 mod tests {
     use super::*;
     use crate::{
-        Body, Budget, ContentHash, Context, Engram, Kind, Provenance, Query, Result, Score,
+        Body, Budget, ContentHash, Context, Kind, Provenance, Query, Result, Score, Signal,
         Selection, verdict::Verdict,
     };
     use async_trait::async_trait;
@@ -173,22 +173,22 @@ mod tests {
     use std::sync::Arc;
 
     struct TestSubstrate {
-        candidate: Engram,
-        written: Arc<Mutex<Vec<Engram>>>,
+        candidate: Signal,
+        written: Arc<Mutex<Vec<Signal>>>,
     }
 
     #[async_trait]
     impl Store for TestSubstrate {
-        async fn put(&self, signal: Engram) -> Result<ContentHash> {
+        async fn put(&self, signal: Signal) -> Result<ContentHash> {
             self.written.lock().push(signal.clone());
             Ok(signal.id)
         }
 
-        async fn get(&self, _id: &ContentHash) -> Result<Option<Engram>> {
+        async fn get(&self, _id: &ContentHash) -> Result<Option<Signal>> {
             Ok(None)
         }
 
-        async fn query(&self, _q: &Query, _ctx: &Context) -> Result<Vec<Engram>> {
+        async fn query(&self, _q: &Query, _ctx: &Context) -> Result<Vec<Signal>> {
             Ok(vec![self.candidate.clone()])
         }
 
@@ -214,7 +214,7 @@ mod tests {
     }
 
     impl Route for TestRouter {
-        fn select(&self, _candidates: &[Engram], _ctx: &Context) -> Option<Selection> {
+        fn select(&self, _candidates: &[Signal], _ctx: &Context) -> Option<Selection> {
             Some(self.choice.clone())
         }
 
@@ -242,12 +242,12 @@ mod tests {
     impl Compose for PassthroughComposer {
         fn compose(
             &self,
-            signals: &[Engram],
+            signals: &[Signal],
             _budget: &Budget,
             _scorer: &dyn crate::traits::Score,
             _ctx: &Context,
-        ) -> Result<Engram> {
-            Ok(Engram::builder(Kind::Prompt)
+        ) -> Result<Signal> {
+            Ok(Signal::builder(Kind::Prompt)
                 .body(Body::text("composed"))
                 .provenance(Provenance::trusted("composer"))
                 .score(Score::NEUTRAL)
@@ -282,7 +282,7 @@ mod tests {
 
     #[async_trait]
     impl Verify for PassGate {
-        async fn verify(&self, _signal: &Engram, _ctx: &Context) -> Verdict {
+        async fn verify(&self, _signal: &Signal, _ctx: &Context) -> Verdict {
             Verdict::pass("pass_gate")
         }
 
@@ -306,7 +306,7 @@ mod tests {
     }
 
     impl React for NoopPolicy {
-        fn decide(&self, _stream: &[Engram], _ctx: &Context) -> Vec<Engram> {
+        fn decide(&self, _stream: &[Signal], _ctx: &Context) -> Vec<Signal> {
             Vec::new()
         }
 
@@ -330,7 +330,7 @@ mod tests {
     }
 
     impl crate::traits::Score for ZeroScorer {
-        fn score(&self, _signal: &Engram, _ctx: &Context) -> crate::Score {
+        fn score(&self, _signal: &Signal, _ctx: &Context) -> crate::Score {
             crate::Score::NEUTRAL
         }
 
@@ -341,7 +341,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn signal_selection_adds_missing_upstream_lineage() {
-        let candidate = Engram::builder(Kind::Task)
+        let candidate = Signal::builder(Kind::Task)
             .body(Body::text("task"))
             .provenance(Provenance::trusted("source"))
             .created_at_ms(0)

@@ -4,7 +4,7 @@
 //! content identity. They are intentionally excluded from the content hash so
 //! the same Signal can be attested after creation without changing its ID.
 
-use crate::{ContentHash, Engram};
+use crate::{ContentHash, Signal};
 pub use ed25519_dalek::SigningKey;
 use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -36,11 +36,11 @@ impl<'de> Deserialize<'de> for Ed25519Signature {
     }
 }
 
-/// A 32-byte public key for the signer of an attested Engram.
+/// A 32-byte public key for the signer of an attested Signal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PublicKey(pub [u8; 32]);
 
-/// On-chain witness that an Engram hash existed on a particular chain.
+/// On-chain witness that a Signal hash existed on a particular chain.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChainAttestation {
     /// Chain identifier (for example, Korai mainnet).
@@ -51,10 +51,10 @@ pub struct ChainAttestation {
     pub block_number: u64,
 }
 
-/// Cryptographic proof that a specific signer produced an Engram.
+/// Cryptographic proof that a specific signer produced a Signal.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Attestation {
-    /// Ed25519 signature over the Engram's content hash.
+    /// Ed25519 signature over the Signal's content hash.
     pub signature: Ed25519Signature,
     /// Public key of the signer or attesting runtime.
     pub public_key: PublicKey,
@@ -84,10 +84,10 @@ impl Attestation {
     }
 }
 
-/// Sign an engram's content hash with Ed25519.
+/// Sign a signal's content hash with Ed25519.
 #[must_use]
-pub fn sign(engram: &Engram, key: &SigningKey) -> Attestation {
-    let hash = engram.content_hash();
+pub fn sign(signal: &Signal, key: &SigningKey) -> Attestation {
+    let hash = signal.content_hash();
     let signature = key.sign(&hash.0);
     Attestation {
         signature: Ed25519Signature(signature.to_bytes()),
@@ -96,22 +96,22 @@ pub fn sign(engram: &Engram, key: &SigningKey) -> Attestation {
     }
 }
 
-/// Verify that an attestation matches an engram's content hash.
+/// Verify that an attestation matches a signal's content hash.
 #[must_use]
-pub fn verify(engram: &Engram, attestation: &Attestation) -> bool {
+pub fn verify(signal: &Signal, attestation: &Attestation) -> bool {
     let Ok(public_key) = VerifyingKey::from_bytes(&attestation.public_key.0) else {
         return false;
     };
     let signature = Signature::from_bytes(&attestation.signature.0);
     public_key
-        .verify(&engram.content_hash().0, &signature)
+        .verify(&signal.content_hash().0, &signature)
         .is_ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Body, Engram, Kind, Provenance};
+    use crate::{Body, Kind, Provenance, Signal};
 
     fn signing_key(seed: u8) -> SigningKey {
         SigningKey::from_bytes(&[seed; 32])
@@ -119,25 +119,25 @@ mod tests {
 
     #[test]
     fn sign_and_verify_roundtrip() {
-        let engram = Engram::builder(Kind::Task)
+        let signal = Signal::builder(Kind::Task)
             .body(Body::text("implement attestation"))
             .provenance(Provenance::trusted("roko"))
             .created_at_ms(0)
             .build();
         let key = signing_key(7);
 
-        let attestation = sign(&engram, &key);
+        let attestation = sign(&signal, &key);
         assert_eq!(attestation.public_key.0, key.verifying_key().to_bytes());
-        assert!(verify(&engram, &attestation));
+        assert!(verify(&signal, &attestation));
     }
 
     #[test]
     fn verify_rejects_tampered_content() {
-        let base = Engram::builder(Kind::Task)
+        let base = Signal::builder(Kind::Task)
             .body(Body::text("original"))
             .created_at_ms(0)
             .build();
-        let tampered = Engram::builder(Kind::Task)
+        let tampered = Signal::builder(Kind::Task)
             .body(Body::text("tampered"))
             .created_at_ms(0)
             .build();
@@ -149,8 +149,8 @@ mod tests {
 
     #[test]
     fn witness_hash_is_stable_across_chain_attachment() {
-        let engram = Engram::builder(Kind::Task).created_at_ms(0).build();
-        let mut attestation = sign(&engram, &signing_key(3));
+        let signal = Signal::builder(Kind::Task).created_at_ms(0).build();
+        let mut attestation = sign(&signal, &signing_key(3));
         let witness = attestation.witness_hash();
         attestation = attestation.with_chain_attestation(ChainAttestation {
             chain_id: 99,

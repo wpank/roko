@@ -1,12 +1,12 @@
-//! Ephemeral events on the Bus — the live-wire counterpart to [`Engram`](crate::Engram).
+//! Ephemeral events on the Bus — the live-wire counterpart to [`Signal`](crate::Signal).
 //!
 //! A [`Pulse`] represents transport traffic that has not been persisted. Pulses
-//! flow through the [`Bus`](crate::traits) and may "graduate" to an [`Engram`]
+//! flow through the [`Bus`](crate::traits) and may "graduate" to a [`Signal`]
 //! through deliberate promotion. This module also defines [`Topic`] (the
 //! addressing key for Pulses), [`TopicFilter`] (subscription filters), and
 //! [`PolicyOutputs`] (the explicit outputs from a React's `decide()` call).
 
-use crate::{Body, ContentHash, Engram, Kind, Provenance, Score};
+use crate::{Body, ContentHash, Kind, Provenance, Score, Signal};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -54,10 +54,10 @@ impl fmt::Display for Topic {
 
 // ─── Pulse ──────────────────────────────────────────────────────────────────
 
-/// Ephemeral event on the Bus — the live-wire counterpart to [`Engram`].
+/// Ephemeral event on the Bus — the live-wire counterpart to [`Signal`].
 ///
 /// Pulses represent transport traffic that has not been persisted. A Pulse
-/// may "graduate" to an Engram through deliberate promotion.
+/// may "graduate" to a Signal through deliberate promotion.
 ///
 /// # Construction
 ///
@@ -85,9 +85,9 @@ pub struct Pulse {
     pub created_at_ms: i64,
     /// Arbitrary string metadata (ordered for stable serialization).
     pub tags: BTreeMap<String, String>,
-    /// Optional back-reference to the [`Engram`] that projected this Pulse.
+    /// Optional back-reference to the [`Signal`] that projected this Pulse.
     ///
-    /// Set when an [`Engram`] is projected to a Pulse via `Engram::to_pulse()`, or
+    /// Set when a [`Signal`] is projected to a Pulse via `Signal::to_pulse()`, or
     /// when a Cell explicitly links this Pulse to a Signal it references. Most Pulses
     /// originate directly from Bus emission and have no Signal context, so this
     /// field defaults to `None`.
@@ -122,10 +122,10 @@ impl Pulse {
         self.tags.get(key).map(String::as_str)
     }
 
-    /// Promote this ephemeral Pulse to a durable Signal (Engram).
+    /// Promote this ephemeral Pulse to a durable Signal.
     ///
     /// This is the deliberate graduation path — the only way to get a Pulse
-    /// into the durable audit DAG (Store). Unlike [`Engram::from_pulse_synthetic()`]
+    /// into the durable audit DAG (Store). Unlike [`Signal::from_pulse_synthetic()`]
     /// (a lossy helper for quick scoring), `graduate()` carries explicit provenance,
     /// balance, score, and tag metadata for the full audit trail.
     ///
@@ -141,7 +141,7 @@ impl Pulse {
     /// The graduated content hash differs from `from_pulse_synthetic` because
     /// of the additional audit tags — this is intentional.
     ///
-    /// No lineage is fabricated because there is no source Engram content hash.
+    /// No lineage is fabricated because there is no source Signal content hash.
     ///
     /// # Arguments
     ///
@@ -156,8 +156,8 @@ impl Pulse {
         initial_balance: f64,
         score: Score,
         tags: Vec<String>,
-    ) -> Engram {
-        let mut builder = Engram::builder(self.kind.clone())
+    ) -> Signal {
+        let mut builder = Signal::builder(self.kind.clone())
             .body(self.body.clone())
             .provenance(provenance)
             .score(score)
@@ -166,7 +166,7 @@ impl Pulse {
             .created_at_ms(self.created_at_ms)
             .tag("pulse_topic", self.topic.to_string())
             .tag("pulse_seq", self.seq.to_string());
-        // Copy all existing pulse tags onto the graduated engram.
+        // Copy all existing pulse tags onto the graduated signal.
         for (key, value) in &self.tags {
             builder = builder.tag(key.clone(), value.clone());
         }
@@ -229,9 +229,9 @@ impl PulseBuilder {
         self
     }
 
-    /// Set a back-reference to the [`Engram`] that projected or relates to this Pulse.
+    /// Set a back-reference to the [`Signal`] that projected or relates to this Pulse.
     ///
-    /// Use this when projecting a Signal via `Engram::to_pulse()` to preserve the
+    /// Use this when projecting a Signal via `Signal::to_pulse()` to preserve the
     /// link from the ephemeral Pulse back to its durable origin.
     #[must_use]
     pub fn lineage_hint(mut self, hash: ContentHash) -> Self {
@@ -306,36 +306,37 @@ impl TopicFilter {
 /// Explicit outputs from a [`React`](crate::React)'s `decide()` call.
 ///
 /// Policies can both publish new [`Pulse`]s for immediate downstream reactions
-/// AND persist [`Engram`]s for summaries and decisions. This struct makes both
+/// AND persist [`Signal`]s for summaries and decisions. This struct makes both
 /// output channels explicit.
 ///
 /// # Examples
 ///
 /// ```
-/// use roko_core::{Body, Engram, Kind, PolicyOutputs, Pulse, Topic};
+/// use roko_core::{Body, Signal, Kind, PolicyOutputs, Pulse, Topic};
 ///
 /// let outputs = PolicyOutputs::empty()
 ///     .with_pulse(Pulse::new(1, Topic::new("alert"), Kind::Metric, Body::text("cpu high")))
-///     .with_engram(Engram::builder(Kind::Episode).body(Body::text("logged")).build());
+///     .with_signal(Signal::builder(Kind::Episode).body(Body::text("logged")).build());
 ///
 /// assert_eq!(outputs.pulses.len(), 1);
-/// assert_eq!(outputs.engrams.len(), 1);
+/// assert_eq!(outputs.signals.len(), 1);
 /// ```
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PolicyOutputs {
     /// Pulses to publish on the Bus for immediate downstream reactions.
     pub pulses: Vec<Pulse>,
-    /// Engrams to persist via the Store.
-    pub engrams: Vec<Engram>,
+    /// Signals to persist via the Store.
+    #[serde(alias = "engrams")]
+    pub signals: Vec<Signal>,
 }
 
 impl PolicyOutputs {
-    /// Create empty outputs (no pulses, no engrams).
+    /// Create empty outputs (no pulses, no signals).
     #[must_use]
     pub fn empty() -> Self {
         Self {
             pulses: Vec::new(),
-            engrams: Vec::new(),
+            signals: Vec::new(),
         }
     }
 
@@ -346,23 +347,23 @@ impl PolicyOutputs {
         self
     }
 
-    /// Add an engram to the outputs.
+    /// Add a signal to the outputs.
     #[must_use]
-    pub fn with_engram(mut self, engram: Engram) -> Self {
-        self.engrams.push(engram);
+    pub fn with_signal(mut self, signal: Signal) -> Self {
+        self.signals.push(signal);
         self
     }
 
-    /// Whether these outputs contain any pulses or engrams.
+    /// Whether these outputs contain any pulses or signals.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.pulses.is_empty() && self.engrams.is_empty()
+        self.pulses.is_empty() && self.signals.is_empty()
     }
 
-    /// Total count of pulses and engrams.
+    /// Total count of pulses and signals.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.pulses.len() + self.engrams.len()
+        self.pulses.len() + self.signals.len()
     }
 }
 
@@ -594,7 +595,7 @@ mod tests {
         assert!(o.is_empty());
         assert_eq!(o.len(), 0);
         assert!(o.pulses.is_empty());
-        assert!(o.engrams.is_empty());
+        assert!(o.signals.is_empty());
     }
 
     #[test]
@@ -611,34 +612,34 @@ mod tests {
         assert_eq!(o.len(), 1);
         assert_eq!(o.pulses.len(), 1);
         assert_eq!(o.pulses[0], p);
-        assert!(o.engrams.is_empty());
+        assert!(o.signals.is_empty());
     }
 
     #[test]
-    fn policy_outputs_with_engram() {
-        let e = Engram::builder(Kind::Episode)
+    fn policy_outputs_with_signal() {
+        let e = Signal::builder(Kind::Episode)
             .body(Body::text("logged"))
             .created_at_ms(0)
             .build();
-        let o = PolicyOutputs::empty().with_engram(e.clone());
+        let o = PolicyOutputs::empty().with_signal(e.clone());
         assert!(!o.is_empty());
         assert_eq!(o.len(), 1);
         assert!(o.pulses.is_empty());
-        assert_eq!(o.engrams.len(), 1);
-        assert_eq!(o.engrams[0], e);
+        assert_eq!(o.signals.len(), 1);
+        assert_eq!(o.signals[0], e);
     }
 
     #[test]
     fn policy_outputs_chained() {
         let p = Pulse::new(1, Topic::new("a"), Kind::Metric, Body::empty());
-        let e = Engram::builder(Kind::Task).created_at_ms(0).build();
+        let e = Signal::builder(Kind::Task).created_at_ms(0).build();
         let o = PolicyOutputs::empty()
             .with_pulse(p)
-            .with_engram(e)
+            .with_signal(e)
             .with_pulse(Pulse::new(2, Topic::new("b"), Kind::Episode, Body::empty()));
         assert_eq!(o.len(), 3);
         assert_eq!(o.pulses.len(), 2);
-        assert_eq!(o.engrams.len(), 1);
+        assert_eq!(o.signals.len(), 1);
     }
 
     #[test]
@@ -649,8 +650,8 @@ mod tests {
                     .created_at_ms(100)
                     .build(),
             )
-            .with_engram(
-                Engram::builder(Kind::Episode)
+            .with_signal(
+                Signal::builder(Kind::Episode)
                     .body(Body::text("ep"))
                     .created_at_ms(200)
                     .build(),
@@ -783,9 +784,9 @@ mod graduation_tests {
             Score::default(),
             vec![],
         );
-        let synthetic = Engram::from_pulse_synthetic(&pulse);
+        let synthetic = Signal::from_pulse_synthetic(&pulse);
 
-        // The graduated engram has extra audit tags (pulse_topic, pulse_seq)
+        // The graduated signal has extra audit tags (pulse_topic, pulse_seq)
         // that the synthetic one does not, so their content hashes differ.
         assert_ne!(graduated.content_hash(), synthetic.content_hash());
     }

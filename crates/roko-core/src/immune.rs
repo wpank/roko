@@ -91,27 +91,27 @@ impl AnomalyScore {
     }
 }
 
-/// Decision made by the immune system about an engram.
+/// Decision made by the immune system about a signal.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum QuarantineDecision {
-    /// Engram is clean, allow it through.
+    /// Signal is clean, allow it through.
     Accept,
-    /// Engram is suspicious, quarantine for review.
+    /// Signal is suspicious, quarantine for review.
     Quarantine,
-    /// Engram is flagged and auto-reject is enabled.
+    /// Signal is flagged and auto-reject is enabled.
     Reject,
 }
 
-/// A quarantined engram entry in the vault.
+/// A quarantined signal entry in the vault.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct QuarantineEntry {
-    /// Content hash of the quarantined engram.
+    /// Content hash of the quarantined signal.
     pub hash: ContentHash,
     /// Anomaly score that triggered quarantine.
     pub anomaly_score: AnomalyScore,
-    /// When the engram was quarantined.
+    /// When the signal was quarantined.
     pub quarantined_at: DateTime<Utc>,
     /// Current review status.
     pub status: QuarantineStatus,
@@ -142,7 +142,7 @@ pub enum QuarantineStatus {
 
 /// A link between related taint incidents.
 ///
-/// When multiple engrams are quarantined due to related causes (e.g., the same
+/// When multiple signals are quarantined due to related causes (e.g., the same
 /// tainted source), incident links connect them for batch review.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -159,13 +159,13 @@ pub struct IncidentLink {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IncidentRelation {
-    /// Both engrams came from the same tainted source.
+    /// Both signals came from the same tainted source.
     SameSource,
-    /// One engram propagated taint to the other.
+    /// One signal propagated taint to the other.
     Propagated,
-    /// Both engrams contradict each other.
+    /// Both signals contradict each other.
     Contradiction,
-    /// Both engrams were produced in the same agent session.
+    /// Both signals were produced in the same agent session.
     SameSession,
 }
 
@@ -188,11 +188,11 @@ pub struct ImmuneResponse {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResponseAction {
-    /// Release the engram back into the hot substrate.
+    /// Release the signal back into the hot substrate.
     Release,
-    /// Purge the engram permanently.
+    /// Purge the signal permanently.
     Purge,
-    /// Retag the engram with corrected taint classification.
+    /// Retag the signal with corrected taint classification.
     Retag,
     /// Move to cold storage for archival.
     Archive,
@@ -456,7 +456,7 @@ impl QuarantineVault {
         Self::new(0.8, DEFAULT_QUARANTINE_VAULT_CAPACITY, false)
     }
 
-    /// Screen an engram and decide whether to quarantine it.
+    /// Screen a signal and decide whether to quarantine it.
     #[must_use]
     pub fn screen(&self, anomaly: &AnomalyScore) -> QuarantineDecision {
         if anomaly.exceeds_threshold(self.threshold) {
@@ -470,7 +470,7 @@ impl QuarantineVault {
         }
     }
 
-    /// Add an engram to quarantine.
+    /// Add a signal to quarantine.
     ///
     /// Returns `true` when the hash is present after the call (including a
     /// retry), or `false` when a new entry cannot be added because the vault is

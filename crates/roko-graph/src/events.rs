@@ -28,7 +28,6 @@
 //! skipped node has one skip terminal and zero live-start events. Resume emits
 //! replay/resume events without reporting a new provider execution.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -856,46 +855,6 @@ pub fn make_terminal_stats(elapsed: Duration, completed: u32, total: u32) -> Ter
         elapsed_ms: elapsed.as_millis() as u64,
         completed_nodes: completed,
         total_nodes: total,
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Engine emission helper
-// ---------------------------------------------------------------------------
-
-/// Private helper: emit to a graph event sink if present, logging failures.
-///
-/// This is the single emission path shared by sequential, parallel, `start()`,
-/// resume, and Hot Graph execution. It does NOT replace `TelemetryEventSink`;
-/// the engine emits to both sinks independently.
-pub(crate) async fn emit_graph_event(
-    sink: Option<&Arc<dyn GraphEventSink>>,
-    event: &GraphExecutionEvent,
-) {
-    let Some(sink) = sink else {
-        return;
-    };
-    match sink.publish(event).await {
-        Ok(GraphEventDisposition::Dropped) => {
-            // Best-effort drop is legal only for best-effort events.
-            // The caller is responsible for emitting a Gap if needed.
-            if event.delivery() == GraphEventDelivery::Reliable {
-                tracing::error!(
-                    variant = event.variant_name(),
-                    seq = event.common().seq,
-                    "reliable graph event was dropped by sink -- this is a contract violation"
-                );
-            }
-        }
-        Err(e) => {
-            tracing::warn!(
-                variant = event.variant_name(),
-                seq = event.common().seq,
-                error = %e,
-                "graph event sink publish failed"
-            );
-        }
-        Ok(_) => {}
     }
 }
 

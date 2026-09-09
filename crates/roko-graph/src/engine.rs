@@ -2060,16 +2060,6 @@ impl GraphEngine {
         }
     }
 
-    /// Emit a graph execution event to the optional sink (#246).
-    ///
-    /// This is the single emission path shared by sequential, parallel,
-    /// `start()`, resume, and Hot Graph. It does NOT replace telemetry;
-    /// the engine emits to both sinks independently.
-    #[allow(dead_code)]
-    async fn emit_graph_event(&self, event: &crate::events::GraphExecutionEvent) {
-        crate::events::emit_graph_event(self.event_sink.as_ref(), event).await;
-    }
-
     /// Extract `files_changed` from completed node outputs.
     ///
     /// Convention: nodes that modify files include a `"files_changed"` tag in

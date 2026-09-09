@@ -2704,15 +2704,6 @@ async fn apply_affect_signature(state: &AppState, episode: &mut Episode) {
     );
 }
 
-#[allow(dead_code)]
-async fn record_cascade_router_outcome(
-    state: &Arc<AppState>,
-    template: &AgentTemplate,
-    success: bool,
-) -> Result<()> {
-    record_cascade_router_outcome_with_layout(state, template, success, None).await
-}
-
 async fn record_cascade_router_outcome_with_layout(
     state: &Arc<AppState>,
     template: &AgentTemplate,

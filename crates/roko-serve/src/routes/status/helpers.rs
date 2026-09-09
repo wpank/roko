@@ -32,12 +32,6 @@ pub async fn read_jsonl_entries(path: &std::path::Path) -> Result<Vec<Value>, Ap
     Ok(entries)
 }
 
-/// Read a JSONL file and return the entries as a `Json<Value::Array>`.
-#[allow(dead_code)]
-pub async fn read_jsonl_array(path: &std::path::Path) -> Result<axum::Json<Value>, ApiError> {
-    let entries = read_jsonl_entries(path).await?;
-    Ok(axum::Json(Value::Array(entries)))
-}
 
 pub async fn read_cfactor_history(path: &std::path::Path) -> Result<Vec<CFactor>, ApiError> {
     let content = match tokio::fs::read_to_string(path).await {

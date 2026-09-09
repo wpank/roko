@@ -648,7 +648,7 @@ impl AcpSessionServiceAdapter {
 ///
 /// #276 retired `WorkflowEngine`. These options configure the graph template
 /// controller that replaced it.
-pub struct WorkflowEngineOptions {
+pub struct GraphEngineOptions {
     pub model_key: String,
     pub input_messages: Vec<roko_core::foundation::ModelInputMessage>,
     pub mcp_config: Option<std::path::PathBuf>,
@@ -663,7 +663,7 @@ pub async fn run_with_workflow_engine(
     prompt: &str,
     workdir: &Path,
     template: &str,
-    options: WorkflowEngineOptions,
+    options: GraphEngineOptions,
     event_sender: mpsc::Sender<CognitiveEvent>,
 ) -> anyhow::Result<WorkflowRunReport> {
     // Route check: GraphCanary and ReplayOnly are not yet implemented.

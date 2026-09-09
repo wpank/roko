@@ -1373,7 +1373,7 @@ fn alternate_role(role: AgentRole) -> AgentRole {
         AgentRole::IntegrationTester => AgentRole::Auditor,
         AgentRole::MergeResolver => AgentRole::Implementer,
         AgentRole::TerminalValidator => AgentRole::Auditor,
-        AgentRole::GolemLifecycleTester => AgentRole::Researcher,
+        AgentRole::LifecycleTester => AgentRole::Researcher,
         AgentRole::SpecDriftDetector => AgentRole::Auditor,
         AgentRole::RegressionDetector => AgentRole::Researcher,
         AgentRole::PerformanceSentinel => AgentRole::Strategist,

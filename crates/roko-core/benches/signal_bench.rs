@@ -3,8 +3,8 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use roko_core::{Body, ContentHash, Engram, Kind, Score};
 
-fn bench_engram_build(c: &mut Criterion) {
-    c.bench_function("engram_build", |bencher| {
+fn bench_signal_build(c: &mut Criterion) {
+    c.bench_function("signal_build", |bencher| {
         bencher.iter(|| {
             black_box(
                 Engram::builder(Kind::Task)
@@ -19,8 +19,8 @@ fn bench_engram_build(c: &mut Criterion) {
     });
 }
 
-fn bench_engram_build_minimal(c: &mut Criterion) {
-    c.bench_function("engram_build_minimal", |bencher| {
+fn bench_signal_build_minimal(c: &mut Criterion) {
+    c.bench_function("signal_build_minimal", |bencher| {
         bencher.iter(|| {
             black_box(
                 Engram::builder(Kind::Episode)
@@ -45,8 +45,8 @@ fn bench_content_hash_large(c: &mut Criterion) {
     });
 }
 
-fn bench_engram_content_hash(c: &mut Criterion) {
-    let engram = Engram::builder(Kind::Task)
+fn bench_signal_content_hash(c: &mut Criterion) {
+    let signal = Engram::builder(Kind::Task)
         .body(Body::text(
             "implement the login feature with OAuth2 support",
         ))
@@ -56,8 +56,8 @@ fn bench_engram_content_hash(c: &mut Criterion) {
         .tag("priority", "high")
         .tag("agent", "claude-opus")
         .build();
-    c.bench_function("engram_content_hash", |bencher| {
-        bencher.iter(|| black_box(engram.content_hash()));
+    c.bench_function("signal_content_hash", |bencher| {
+        bencher.iter(|| black_box(signal.content_hash()));
     });
 }
 
@@ -68,16 +68,16 @@ fn bench_score_effective(c: &mut Criterion) {
     });
 }
 
-fn bench_engram_serde_roundtrip(c: &mut Criterion) {
-    let engram = Engram::builder(Kind::Task)
+fn bench_signal_serde_roundtrip(c: &mut Criterion) {
+    let signal = Engram::builder(Kind::Task)
         .body(Body::text("serde benchmark payload"))
         .score(Score::new(0.9, 0.5, 1.0, 1.5))
         .created_at_ms(1_000_000)
         .tag("plan_id", "plan-42")
         .build();
-    c.bench_function("engram_serde_roundtrip", |bencher| {
+    c.bench_function("signal_serde_roundtrip", |bencher| {
         bencher.iter(|| {
-            let json = serde_json::to_string(&engram).expect("serialize");
+            let json = serde_json::to_string(&signal).expect("serialize");
             black_box(serde_json::from_str::<Engram>(&json).expect("deserialize"))
         });
     });
@@ -85,12 +85,12 @@ fn bench_engram_serde_roundtrip(c: &mut Criterion) {
 
 criterion_group!(
     benches,
-    bench_engram_build,
-    bench_engram_build_minimal,
+    bench_signal_build,
+    bench_signal_build_minimal,
     bench_content_hash_of,
     bench_content_hash_large,
-    bench_engram_content_hash,
+    bench_signal_content_hash,
     bench_score_effective,
-    bench_engram_serde_roundtrip,
+    bench_signal_serde_roundtrip,
 );
 criterion_main!(benches);

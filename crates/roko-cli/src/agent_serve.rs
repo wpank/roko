@@ -2012,7 +2012,7 @@ pub(crate) async fn run_agent_create(
 ///
 /// Phases:
 ///   1. Verify and stop the recorded sidecar process; wait for exit.
-///   2. Stage canonical backup (engrams, episodes, knowledge).
+///   2. Stage canonical backup (signals, episodes, knowledge).
 ///   3. Remove runtime registry entry from agents.json.
 ///   4. Clean agent-owned transient state.
 ///   5. Write DELETED marker (only on full success).

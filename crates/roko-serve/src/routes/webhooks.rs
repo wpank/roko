@@ -1,7 +1,7 @@
 //! Webhook ingress endpoints.
 //!
 //! GitHub and Slack webhooks are verified, converted into typed
-//! [`roko_core::Signal`]s, persisted through `.roko/engrams.jsonl`, and
+//! [`roko_core::Signal`]s, persisted through `.roko/signals.jsonl`, and
 //! published onto the shared event bus.
 
 use std::sync::Arc;

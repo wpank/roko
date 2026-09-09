@@ -54,7 +54,7 @@ pub type CellVersion = (u32, u32, u32);
 pub struct CellContext {
     /// Pub/sub transport for ephemeral Pulses (type-erased).
     pub bus: Arc<dyn BusErased>,
-    /// Durable storage for Engrams.
+    /// Durable storage for Signals.
     pub store: Arc<dyn Substrate>,
     /// Cancellation token for cooperative shutdown.
     pub cancel: CancellationToken,
@@ -163,7 +163,7 @@ pub struct Capabilities {
     pub chain_access: bool,
     /// Cell publishes Pulses to the shared Bus.
     pub bus_publish: bool,
-    /// Cell writes Engrams to the durable Store.
+    /// Cell writes Signals to the durable Store.
     pub store_write: bool,
 }
 

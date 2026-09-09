@@ -21,7 +21,7 @@ const HDC_TAG: &str = "hdc_fingerprint";
 /// (no blocking). Writes serialize through a tokio `Mutex` around the log
 /// file, so concurrent `put`s are appended in order.
 pub struct FileSubstrate {
-    /// Directory containing `engrams.jsonl`.
+    /// Directory containing `signals.jsonl`.
     root: PathBuf,
     /// In-memory index: `ContentHash` → `Signal`.
     index: RwLock<HashMap<ContentHash, Signal>>,
@@ -35,13 +35,14 @@ pub struct FileSubstrate {
 impl FileSubstrate {
     /// Open (or create) a file substrate rooted at `root`.
     ///
-    /// Creates `root/engrams.jsonl` if missing, and replays existing entries
+    /// Creates `root/signals.jsonl` if missing, and replays existing entries
     /// into the in-memory index.
     ///
-    /// Migration alias: if `engrams.jsonl` does not yet exist but `signals.jsonl`
-    /// does (the pre-rename log name), the substrate replays from `signals.jsonl`
-    /// so that existing workspaces continue to work without an explicit migration step.
-    /// All subsequent writes still go to `engrams.jsonl`.
+    /// Migration fallback: if `signals.jsonl` does not yet exist but
+    /// `engrams.jsonl` does (the previous canonical name), the substrate
+    /// replays from `engrams.jsonl` so that existing workspaces continue to
+    /// work without an explicit migration step. All subsequent writes still
+    /// go to `signals.jsonl`.
     ///
     /// # Errors
     ///
@@ -50,12 +51,12 @@ impl FileSubstrate {
     pub async fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
         fs::create_dir_all(&root).await?;
-        let log_path = root.join("engrams.jsonl");
+        let log_path = root.join("signals.jsonl");
 
-        // Migration alias: replay from the legacy `signals.jsonl` name when the
-        // canonical `engrams.jsonl` does not yet exist in this workspace.
+        // Migration fallback: replay from the legacy `engrams.jsonl` name when
+        // the canonical `signals.jsonl` does not yet exist in this workspace.
         let replay_path = if !log_path.exists() {
-            let legacy = root.join("signals.jsonl");
+            let legacy = root.join("engrams.jsonl");
             if legacy.exists() { legacy } else { log_path.clone() }
         } else {
             log_path.clone()
@@ -83,7 +84,7 @@ impl FileSubstrate {
     /// Path to the JSONL log file.
     #[must_use]
     pub fn log_path(&self) -> PathBuf {
-        self.root.join("engrams.jsonl")
+        self.root.join("signals.jsonl")
     }
 
     /// The root directory containing this substrate's storage.
@@ -118,7 +119,7 @@ impl FileSubstrate {
     pub async fn compact(&self) -> Result<()> {
         let snapshot: Vec<Signal> = self.index.read().values().cloned().collect();
         let log_path = self.log_path();
-        let tmp_path = self.root.join("engrams.jsonl.tmp");
+        let tmp_path = self.root.join("signals.jsonl.tmp");
 
         {
             let mut tmp = OpenOptions::new()
@@ -652,7 +653,7 @@ mod tests {
         }
         // Corrupt the log: append a partial / bad line.
         {
-            let log = tmp.path().join("engrams.jsonl");
+            let log = tmp.path().join("signals.jsonl");
             let mut f = OpenOptions::new().append(true).open(&log).await.unwrap();
             f.write_all(b"{partial_bad_json\n").await.unwrap();
             f.flush().await.unwrap();

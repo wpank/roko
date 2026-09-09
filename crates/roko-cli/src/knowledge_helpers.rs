@@ -28,7 +28,7 @@ pub(crate) fn neuro_prompt_task_category(role: AgentRole) -> TaskCategory {
         AgentRole::DocVerifier
         | AgentRole::IntegrationTester
         | AgentRole::TerminalValidator
-        | AgentRole::GolemLifecycleTester
+        | AgentRole::LifecycleTester
         | AgentRole::RegressionDetector
         | AgentRole::CoverageTracker
         | AgentRole::CrossSystemTester

@@ -1100,7 +1100,7 @@ Examples:
     },
     /// Explain a roko concept with progressive disclosure (3 depth levels).
     Explain {
-        /// Topic to explain (e.g. gates, routing, cognitive, neuro, daimon, dreams, engram, cfactor).
+        /// Topic to explain (e.g. gates, routing, cognitive, neuro, daimon, dreams, signal, cfactor).
         topic: String,
         /// Disclosure depth: 1 = summary, 2 = how it works, 3 = internals.
         #[arg(long, default_value_t = 1)]
@@ -1288,7 +1288,7 @@ enum KnowledgeCmd {
         /// Direction: send, receive, or both (default: both).
         #[arg(long, value_enum, default_value = "both")]
         direction: KnowledgeSyncDirection,
-        /// Maximum engrams to send in this sync cycle.
+        /// Maximum signals to send in this sync cycle.
         #[arg(long, default_value_t = 100)]
         max_send: usize,
     },
@@ -1304,7 +1304,7 @@ enum KnowledgeCmd {
     },
     /// Move old signals to cold storage (compressed monthly archives).
     ///
-    /// This archives signal (engram) data from the hot JSONL substrate,
+    /// This archives signal data from the hot JSONL substrate,
     /// NOT neuro knowledge-store entries. Use `roko knowledge gc` to manage
     /// the knowledge store.
     #[command(alias = "archive")]

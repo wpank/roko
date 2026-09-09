@@ -2002,7 +2002,7 @@ pub enum BackupError {
 ///
 /// 1. **Parse**: the file must be valid JSON conforming to [`BackupArchive`].
 /// 2. **Integrity**: when the archive carries a `checksum` field, the
-///    computed checksum of the serialized manifest + engrams must match.
+///    computed checksum of the serialized manifest + signals must match.
 /// 3. **Schema**: the manifest `version` must be 1 (forward-compatible
 ///    callers can extend this check later).
 ///

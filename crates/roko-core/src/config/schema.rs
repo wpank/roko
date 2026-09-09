@@ -2152,10 +2152,10 @@ pub struct ColdStorageConfig {
     /// Whether cold archival is enabled.
     #[serde(default = "ColdStorageConfig::default_enabled")]
     pub enabled: bool,
-    /// Maximum age in days before engrams are archived to cold storage.
+    /// Maximum age in days before signals are archived to cold storage.
     #[serde(default = "ColdStorageConfig::default_max_age_days")]
     pub max_age_days: u32,
-    /// Maximum number of engrams to archive per batch.
+    /// Maximum number of signals to archive per batch.
     #[serde(default = "ColdStorageConfig::default_batch_size")]
     pub batch_size: usize,
     /// Interval in seconds between scheduled cold archival runs (default: 6 hours).
@@ -2297,7 +2297,7 @@ pub struct ResourcesConfig {
 
     /// Rotate `.roko/` JSONL log files when they exceed this size in MB.
     ///
-    /// Applies to `episodes.jsonl`, `engrams.jsonl`, `efficiency.jsonl`,
+    /// Applies to `episodes.jsonl`, `signals.jsonl`, `efficiency.jsonl`,
     /// and other JSONL files in the `learn/` directory. Default: 100 MB.
     #[serde(default = "ResourcesConfig::default_log_rotation_max_mb")]
     pub log_rotation_max_mb: u64,

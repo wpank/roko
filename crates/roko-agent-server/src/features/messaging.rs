@@ -54,7 +54,7 @@ async fn message(
         "usage": response.usage,
         "session": session_json(&response.session),
         "finish_reason": finish_reason_json(Some(response.finish_reason)),
-        "engram_id": format!("engram-{}", Uuid::new_v4()),
+        "signal_id": format!("signal-{}", Uuid::new_v4()),
         "context": request.context,
     })))
 }

@@ -2152,7 +2152,7 @@ where
                 &prompt_text_for_dispatch,
                 &workdir,
                 workflow_template_name(&template),
-                crate::runner::WorkflowEngineOptions {
+                crate::runner::GraphEngineOptions {
                     model_key: model_key_for_dispatch,
                     input_messages: input_messages.clone(),
                     mcp_config: mcp_config_path,
@@ -4835,7 +4835,7 @@ Use the Workflow dropdown in the status bar to select, or:
                 args,
                 workdir,
                 "express",
-                crate::runner::WorkflowEngineOptions {
+                crate::runner::GraphEngineOptions {
                     model_key,
                     mcp_config: None,
                     provenance_card,
@@ -4886,7 +4886,7 @@ Use the Workflow dropdown in the status bar to select, or:
                 args,
                 workdir,
                 "full",
-                crate::runner::WorkflowEngineOptions {
+                crate::runner::GraphEngineOptions {
                     model_key,
                     mcp_config: None,
                     provenance_card,

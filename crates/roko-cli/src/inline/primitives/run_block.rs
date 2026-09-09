@@ -39,7 +39,7 @@ pub struct RunBlockData {
     /// Gate verdicts: (name, passed).
     pub gate_verdicts: Vec<(String, bool)>,
 
-    /// Knowledge engrams loaded before dispatch.
+    /// Knowledge signals loaded before dispatch.
     pub knowledge_loaded: Option<KnowledgeInfo>,
 
     /// Actual cost in USD.
@@ -52,7 +52,7 @@ pub struct RunBlockData {
     /// Tool calls made during execution.
     pub tool_calls: Vec<ToolCallInfo>,
 
-    /// Knowledge engrams deposited after run.
+    /// Knowledge signals deposited after run.
     pub deposited_count: usize,
     /// Deposit target path.
     pub deposited_path: Option<String>,
@@ -64,7 +64,7 @@ pub struct RunBlockData {
 /// Knowledge query result summary.
 #[derive(Debug, Clone)]
 pub struct KnowledgeInfo {
-    /// Number of engrams loaded.
+    /// Number of signals loaded.
     pub count: usize,
     /// Topic path.
     pub topic: String,

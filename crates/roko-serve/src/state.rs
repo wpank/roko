@@ -419,7 +419,7 @@ pub struct AppState {
     pub workdir: PathBuf,
     /// `.roko/` directory layout helper.
     pub layout: RokoLayout,
-    /// Lazily initialized `.roko/engrams.jsonl` writer.
+    /// Lazily initialized `.roko/signals.jsonl` writer.
     pub signal_store: SignalStore,
     /// Cancellation token for graceful shutdown.
     pub cancel: CancelToken,
@@ -1681,7 +1681,7 @@ pub struct ServerStateSnapshot {
     pub template_runs: HashMap<String, Vec<TemplateRunRecord>>,
 }
 
-/// Shared `.roko/engrams.jsonl` persistence path.
+/// Shared `.roko/signals.jsonl` persistence path.
 pub struct SignalStore {
     root: PathBuf,
     substrate: OnceCell<Arc<FileSubstrate>>,
@@ -1717,7 +1717,7 @@ impl SignalStore {
     /// # Errors
     ///
     /// Returns an error if the backing [`FileSubstrate`] cannot be opened or
-    /// if the signal cannot be appended to the `.roko/engrams.jsonl` store.
+    /// if the signal cannot be appended to the `.roko/signals.jsonl` store.
     pub async fn put(&self, signal: Signal) -> anyhow::Result<(roko_core::ContentHash, bool)> {
         let _mutation = self.mutations.lock().await;
         let substrate = self.substrate().await?;

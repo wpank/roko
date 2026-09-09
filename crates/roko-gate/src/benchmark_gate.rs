@@ -56,7 +56,7 @@ const DEFAULT_BENCH_TIMEOUT_MS: u64 = 600_000;
 #[derive(Debug, Deserialize)]
 struct CriterionMessage {
     reason: String,
-    /// The benchmark function name (e.g. "engram_build").
+    /// The benchmark function name (e.g. "signal_build").
     id: Option<String>,
     /// The "typical" (representative) estimate for this benchmark run.
     typical: Option<CriterionEstimate>,
@@ -120,7 +120,7 @@ impl BenchmarkRegressionGate {
         self
     }
 
-    /// Pass extra arguments to `cargo bench` (e.g. `--bench engram_bench`).
+    /// Pass extra arguments to `cargo bench` (e.g. `--bench signal_bench`).
     #[must_use]
     pub fn with_bench_args(mut self, args: Vec<String>) -> Self {
         self.bench_args = args;

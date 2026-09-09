@@ -767,7 +767,7 @@ impl ToolPermissions {
 /// - **Implementation**: `Implementer`, `AutoFixer`, `Refactorer`, `MergeResolver`
 /// - **Review**: `Auditor`, `Critic`, `QuickReviewer`, `Scribe`
 /// - **Research**: `Researcher`, `PatternExtractor`, `ErrorDiagnoser`
-/// - **Validation**: `IntegrationTester`, `TerminalValidator`, `GolemLifecycleTester`,
+/// - **Validation**: `IntegrationTester`, `TerminalValidator`, `LifecycleTester`,
 ///   `CrossSystemTester`, `FullLoopValidator`, `SnapshotComparator`, `DocVerifier`,
 ///   `DependencyValidator`, `RegressionDetector`, `SpecDriftDetector`
 /// - **Observability**: `PerformanceSentinel`, `CoverageTracker`
@@ -808,7 +808,8 @@ pub enum AgentRole {
     /// Tests CLI/terminal entry points end-to-end.
     TerminalValidator,
     /// Exercises agent lifecycle (spawn/tick/teardown).
-    GolemLifecycleTester,
+    #[serde(alias = "golem-lifecycle-tester")]
+    LifecycleTester,
     /// Detects divergence between PRD and implementation.
     SpecDriftDetector,
     /// Watches for regression in test-pass rate and cost.
@@ -852,7 +853,7 @@ impl AgentRole {
         Self::IntegrationTester,
         Self::MergeResolver,
         Self::TerminalValidator,
-        Self::GolemLifecycleTester,
+        Self::LifecycleTester,
         Self::SpecDriftDetector,
         Self::RegressionDetector,
         Self::PerformanceSentinel,
@@ -886,7 +887,7 @@ impl AgentRole {
             Self::IntegrationTester => "integration-tester",
             Self::MergeResolver => "merge-resolver",
             Self::TerminalValidator => "terminal-validator",
-            Self::GolemLifecycleTester => "golem-lifecycle-tester",
+            Self::LifecycleTester => "lifecycle-tester",
             Self::SpecDriftDetector => "spec-drift-detector",
             Self::RegressionDetector => "regression-detector",
             Self::PerformanceSentinel => "performance-sentinel",
@@ -921,7 +922,7 @@ impl AgentRole {
             Self::IntegrationTester => "itest",
             Self::MergeResolver => "merge",
             Self::TerminalValidator => "tval",
-            Self::GolemLifecycleTester => "glct",
+            Self::LifecycleTester => "lct",
             Self::SpecDriftDetector => "sdrf",
             Self::RegressionDetector => "regd",
             Self::PerformanceSentinel => "perf",
@@ -961,7 +962,7 @@ impl AgentRole {
             | Self::IntegrationTester
             | Self::MergeResolver
             | Self::TerminalValidator
-            | Self::GolemLifecycleTester
+            | Self::LifecycleTester
             | Self::SpecDriftDetector
             | Self::RegressionDetector
             | Self::PerformanceSentinel
@@ -1015,7 +1016,7 @@ impl AgentRole {
             | Self::IntegrationTester
             | Self::MergeResolver
             | Self::TerminalValidator
-            | Self::GolemLifecycleTester
+            | Self::LifecycleTester
             | Self::ErrorDiagnoser => ModelTier::Standard,
         }
     }
@@ -1044,7 +1045,7 @@ impl AgentRole {
             | Self::MergeResolver
             | Self::IntegrationTester
             | Self::TerminalValidator
-            | Self::GolemLifecycleTester => 1.00,
+            | Self::LifecycleTester => 1.00,
             Self::Implementer | Self::Auditor => 1.50,
 
             // Premium reasoning — expensive turns.
@@ -1075,7 +1076,7 @@ impl AgentRole {
             // Read + exec (can run tests, never edit).
             Self::IntegrationTester
             | Self::TerminalValidator
-            | Self::GolemLifecycleTester
+            | Self::LifecycleTester
             | Self::CrossSystemTester
             | Self::FullLoopValidator
             | Self::DependencyValidator
@@ -1123,7 +1124,7 @@ impl AgentRole {
             Self::IntegrationTester => 13,
             Self::MergeResolver => 14,
             Self::TerminalValidator => 15,
-            Self::GolemLifecycleTester => 16,
+            Self::LifecycleTester => 16,
             Self::SpecDriftDetector => 17,
             Self::RegressionDetector => 18,
             Self::PerformanceSentinel => 19,

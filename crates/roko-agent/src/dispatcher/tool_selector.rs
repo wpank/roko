@@ -209,7 +209,7 @@ fn tools_for_role(role: AgentRole) -> HashSet<String> {
         // Test roles: read + exec (need to run tests, not write code).
         AgentRole::IntegrationTester
         | AgentRole::TerminalValidator
-        | AgentRole::GolemLifecycleTester
+        | AgentRole::LifecycleTester
         | AgentRole::CrossSystemTester
         | AgentRole::FullLoopValidator => {
             tools.extend(exec_tools());
@@ -353,7 +353,7 @@ mod tests {
             AgentRole::QuickReviewer,
             AgentRole::Critic,
             AgentRole::TerminalValidator,
-            AgentRole::GolemLifecycleTester,
+            AgentRole::LifecycleTester,
             AgentRole::SpecDriftDetector,
             AgentRole::RegressionDetector,
             AgentRole::PerformanceSentinel,
@@ -406,7 +406,7 @@ mod tests {
     fn test_roles_have_exec_but_not_write() {
         let test_roles = [
             AgentRole::TerminalValidator,
-            AgentRole::GolemLifecycleTester,
+            AgentRole::LifecycleTester,
             AgentRole::CrossSystemTester,
             AgentRole::FullLoopValidator,
         ];
@@ -468,7 +468,7 @@ mod tests {
             AgentRole::IntegrationTester,
             AgentRole::MergeResolver,
             AgentRole::TerminalValidator,
-            AgentRole::GolemLifecycleTester,
+            AgentRole::LifecycleTester,
             AgentRole::SpecDriftDetector,
             AgentRole::RegressionDetector,
             AgentRole::PerformanceSentinel,

@@ -61,7 +61,7 @@ pub struct TuiDashboardModel {
     pub(super) adaptive_thresholds: Option<AdaptiveThresholds>,
     /// Verify-results page data derived from signals and thresholds.
     pub(super) gate_results_page: GateResultsPageData,
-    /// Most recent signals from `.roko/engrams.jsonl`.
+    /// Most recent signals from `.roko/signals.jsonl`.
     pub(super) recent_signals: Vec<SignalSummary>,
     /// Cascade router snapshot from `.roko/learn/cascade-router.json` (raw JSON).
     cascade_snapshot: Option<CascadeSnapshotData>,
@@ -171,7 +171,7 @@ impl TuiDashboardModel {
         let learn_dir = root.join(LEARN_DIR);
         let episodes_path = resolve_episodes_path(&root);
         let task_metrics_path = memory_dir.join(TASK_METRICS_FILE);
-        let signals_path = root.join(".roko").join("engrams.jsonl");
+        let signals_path = root.join(".roko").join("signals.jsonl");
 
         let episodes_logger = EpisodeLogger::new(&episodes_path);
         let episodes = EpisodeLogger::read_all_lossy(episodes_logger.path())
@@ -682,7 +682,7 @@ impl TuiDashboardModel {
         let mut out = page_header(page);
         let _ = writeln!(
             out,
-            "source: {}/engrams.jsonl",
+            "source: {}/signals.jsonl",
             self.root.join(".roko").display()
         );
         let _ = writeln!(
@@ -1222,7 +1222,7 @@ impl TuiDashboardModel {
     }
 
     pub(super) fn render_log_view_page(&self, page: &PageScaffold) -> Option<String> {
-        let signals_path = self.root.join(".roko").join("engrams.jsonl");
+        let signals_path = self.root.join(".roko").join("signals.jsonl");
         let episodes_path = resolve_episodes_path(&self.root);
 
         let signals_exist = signals_path.exists();
@@ -1290,7 +1290,7 @@ impl TuiDashboardModel {
         let mut out = page_header(page);
         let _ = writeln!(
             out,
-            "source: {}/engrams.jsonl",
+            "source: {}/signals.jsonl",
             self.root.join(".roko").display()
         );
         let _ = writeln!(out, "window: last {} signals", signals.len());

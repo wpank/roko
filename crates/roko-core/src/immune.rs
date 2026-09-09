@@ -424,7 +424,7 @@ pub struct QuarantineStats {
     pub escalated: usize,
 }
 
-/// Persistent quarantine vault for holding suspect engrams.
+/// Persistent quarantine vault for holding suspect signals.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct QuarantineVault {
@@ -434,7 +434,7 @@ pub struct QuarantineVault {
     threshold: f64,
     /// Maximum number of entries before escalation.
     max_entries: usize,
-    /// Whether to auto-reject above-threshold engrams.
+    /// Whether to auto-reject above-threshold signals.
     auto_reject: bool,
 }
 

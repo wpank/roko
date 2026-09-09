@@ -43,7 +43,7 @@ tokio = { workspace = true, features = ["rt", "macros"] }
 tracing-subscriber = { workspace = true }
 
 [[bench]]
-name = "engram_bench"
+name = "signal_bench"
 harness = false
 
 [[bench]]

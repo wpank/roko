@@ -12,7 +12,7 @@ use std::time::Duration;
 /// Universal prediction interface for any structured domain.
 ///
 /// Oracles are a cross-cutting surface over the six Synapse traits: they read
-/// current context and prior engrams, return falsifiable predictions, and later
+/// current context and prior signals, return falsifiable predictions, and later
 /// evaluate those predictions against externally observed outcomes.
 #[async_trait]
 pub trait Oracle: Send + Sync {
@@ -414,7 +414,7 @@ impl Prediction {
         self
     }
 
-    /// Attach lineage engrams used to produce this prediction.
+    /// Attach lineage signals used to produce this prediction.
     #[must_use]
     pub fn with_lineage(mut self, lineage: impl IntoIterator<Item = ContentHash>) -> Self {
         self.lineage = lineage.into_iter().collect();
@@ -529,7 +529,7 @@ impl PredictionInterval {
 pub struct PredictionAccuracy {
     /// Prediction being evaluated.
     pub prediction_id: ContentHash,
-    /// Evidence engram for the observed outcome.
+    /// Evidence signal for the observed outcome.
     pub outcome_id: ContentHash,
     /// Scalar accuracy in `[0.0, 1.0]`.
     pub accuracy: f64,
@@ -815,7 +815,7 @@ pub mod crps {
 pub struct PredictionOutcome {
     /// Actual value observed.
     pub actual: PredictedValue,
-    /// Evidence engram that produced this observation.
+    /// Evidence signal that produced this observation.
     pub evidence_id: ContentHash,
     /// Unix milliseconds when the outcome was observed.
     pub resolved_at_ms: i64,
@@ -1279,7 +1279,7 @@ pub trait PredictionCalibrationSource: Send + Sync {
     fn summary(&self, model: &str, task_category: &str) -> PredictionCalibrationSummary;
 }
 
-/// Calibration-aware scorer approximating expected free energy for Engrams.
+/// Calibration-aware scorer approximating expected free energy for Signals.
 pub struct PredictiveScorer {
     calibration: Arc<dyn PredictionCalibrationSource>,
     pragmatic_weight: f32,

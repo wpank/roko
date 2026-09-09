@@ -101,8 +101,9 @@ fn init_run_produces_expected_signals() {
     // Verify the init artifacts exist.
     assert!(workdir.join(".roko").is_dir(), ".roko directory missing");
     assert!(
-        workdir.join(".roko/engrams.jsonl").exists(),
-        "engrams.jsonl missing"
+        workdir.join(".roko/signals.jsonl").exists()
+            || workdir.join(".roko/engrams.jsonl").exists(),
+        "signals.jsonl (or legacy engrams.jsonl) missing"
     );
     assert!(workdir.join("roko.toml").exists(), "roko.toml missing");
 

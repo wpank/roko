@@ -1126,7 +1126,7 @@ fn build_app_state(
 /// - **neuro-store**: the durable knowledge store (`Database` kind)
 ///
 /// Feeds registered:
-/// - **engrams**: `.roko/engrams.jsonl` — raw signal log (`Raw` kind)
+/// - **signals**: `.roko/signals.jsonl` — raw signal log (`Raw` kind)
 /// - **episodes**: `.roko/episodes.jsonl` — agent turn episodes (`Raw` kind)
 /// - **efficiency**: `.roko/learn/efficiency.jsonl` — per-turn metrics (`Derived` kind)
 /// - **knowledge**: neuro knowledge store entries (`Composite` kind)
@@ -1185,15 +1185,15 @@ fn seed_default_registries_inner(state: &AppState) {
     // ── Feeds ─────────────────────────────────────────────────────────
     let mut feeds = state.feeds.blocking_write();
 
-    let engrams_path = layout.engrams_path();
+    let signals_path = layout.signals_path_with_fallback();
     feeds.register(FeedInfo {
         id: String::new(), // assigned by registry
         cell_id: String::new(),
-        name: "engrams".to_string(),
+        name: "signals".to_string(),
         kind: FeedKind::Raw,
         access: FeedAccess::Public,
         agent_id: "system".to_string(),
-        description: "Raw signal log (.roko/engrams.jsonl)".to_string(),
+        description: "Raw signal log (.roko/signals.jsonl)".to_string(),
         schema: None,
         pricing: None,
         created_at: now,
@@ -1246,7 +1246,7 @@ fn seed_default_registries_inner(state: &AppState) {
     info!(
         connectors = connector_count,
         feeds = feed_count,
-        engrams_path = %engrams_path.display(),
+        signals_path = %signals_path.display(),
         episodes_path = %episodes_path.display(),
         efficiency_path = %efficiency_path.display(),
         "seeded default connector and feed registries"
@@ -2325,7 +2325,7 @@ fn emit_lens_observation(state: &AppState, event: roko_core::ObservableEvent) {
 }
 
 /// Periodic cold archival: migrates aged-out signals from the hot substrate
-/// (`.roko/engrams.jsonl` / `FileSubstrate`) to compressed monthly JSONL
+/// (`.roko/signals.jsonl` / `FileSubstrate`) to compressed monthly JSONL
 /// archives in `.roko/cold/`.
 ///
 /// Runs every six hours (default) or at the interval specified by

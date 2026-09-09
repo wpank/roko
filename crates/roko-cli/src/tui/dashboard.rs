@@ -407,13 +407,13 @@ pub struct DashboardData {
     adaptive_thresholds: Option<AdaptiveThresholds>,
     /// Last observed gate-thresholds file metadata.
     gate_thresholds_stamp: FileStamp,
-    /// Most recent signals from `.roko/engrams.jsonl`.
+    /// Most recent signals from `.roko/signals.jsonl`.
     pub recent_signals: Vec<SignalSummary>,
     /// Cached signal-derived gate results when executor state does not provide them.
     signal_gate_results: Vec<GateResultSummary>,
     /// Parsed gate-related signals for the gate-results page.
     gate_signal_summaries: Vec<GateSignalSummary>,
-    /// Incremental cursor over `.roko/engrams.jsonl`.
+    /// Incremental cursor over `.roko/signals.jsonl`.
     signal_cursor: SignalCursor,
     /// Snapshot of the currently executing plan for the Plan Execution page.
     pub current_plan_execution: Option<PlanExecutionSnapshot>,
@@ -470,7 +470,7 @@ impl DashboardData {
         let root = resolve_snapshot_root(root.as_ref());
         let roko_dir = root.join(".roko");
         let learn_dir = roko_dir.join("learn");
-        let signals_path = roko_dir.join("engrams.jsonl");
+        let signals_path = roko_dir.join("signals.jsonl");
         let episodes_path = resolve_episodes_path(&root);
         let efficiency_path = learn_dir.join(EFFICIENCY_FILE);
         let experiments_path = learn_dir.join(EXPERIMENTS_FILE);
@@ -3760,7 +3760,7 @@ mod tests {
             }),
         ];
         write_jsonl(
-            &roko_dir.join("engrams.jsonl"),
+            &roko_dir.join("signals.jsonl"),
             &signals
                 .into_iter()
                 .map(|signal| serde_json::to_string(&signal).expect("signal json"))
@@ -3996,7 +3996,7 @@ mod tests {
             }),
         ];
         write_jsonl(
-            &roko_dir.join("engrams.jsonl"),
+            &roko_dir.join("signals.jsonl"),
             &signals
                 .into_iter()
                 .map(|signal| serde_json::to_string(&signal).expect("signal json"))
@@ -4979,7 +4979,7 @@ tier = "focused"
             })],
         );
         write_jsonl(
-            &roko_dir.join("engrams.jsonl"),
+            &roko_dir.join("signals.jsonl"),
             &[serde_json::json!({
                 "id": "sig-1",
                 "kind": "conductor:alert:warning",
@@ -5016,14 +5016,14 @@ tier = "focused"
             serde_json::to_string(&sample_episode("agent-b", "task-b", false, 0.8, 240))
                 .expect("episode json");
 
-        append_raw(&roko_dir.join("engrams.jsonl"), &appended_signal);
+        append_raw(&roko_dir.join("signals.jsonl"), &appended_signal);
         append_raw(&memory_dir.join(EPISODES_FILE), &appended_episode);
 
         data.tick().expect("partial tick should succeed");
         assert_eq!(data.recent_signals.len(), 1);
         assert_eq!(data.episodes().len(), 1);
 
-        append_raw(&roko_dir.join("engrams.jsonl"), "\n");
+        append_raw(&roko_dir.join("signals.jsonl"), "\n");
         append_raw(&memory_dir.join(EPISODES_FILE), "\n");
         write_json(
             &state_dir.join("events.json"),
@@ -5061,7 +5061,7 @@ tier = "focused"
         fs::create_dir_all(&memory_dir).expect("memory dir");
 
         write_jsonl(
-            &roko_dir.join("engrams.jsonl"),
+            &roko_dir.join("signals.jsonl"),
             &[
                 serde_json::json!({
                     "id": "sig-1",
@@ -5092,7 +5092,7 @@ tier = "focused"
         assert_eq!(data.episodes().len(), 2);
 
         write_jsonl(
-            &roko_dir.join("engrams.jsonl"),
+            &roko_dir.join("signals.jsonl"),
             &[serde_json::json!({
                 "id": "sig-reset",
                 "kind": "conductor:alert:error",

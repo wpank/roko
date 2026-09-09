@@ -792,7 +792,7 @@ pub struct RuntimeProjectionSet {
 pub struct RuntimeFeedbackProjection {
     /// Durable runner/runtime event records from `.roko/events.jsonl`.
     pub runner_events: Vec<Value>,
-    /// Legacy signal records from `.roko/engrams.jsonl`.
+    /// Signal records from `.roko/signals.jsonl`.
     pub signal_events: Vec<Value>,
     /// Episode records read from project learning stores.
     pub episodes: Vec<Episode>,

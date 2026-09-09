@@ -537,7 +537,7 @@ fn parse_agent_role(raw: &str) -> Option<AgentRole> {
         AgentRole::IntegrationTester,
         AgentRole::MergeResolver,
         AgentRole::TerminalValidator,
-        AgentRole::GolemLifecycleTester,
+        AgentRole::LifecycleTester,
         AgentRole::SpecDriftDetector,
         AgentRole::RegressionDetector,
         AgentRole::PerformanceSentinel,

@@ -1547,7 +1547,7 @@ pub fn refresh_correction_audit() -> Vec<RefreshCorrection> {
         RefreshCorrection {
             location: "tui/dashboard.rs::DashboardData::tick".into(),
             reads: "executor.json, efficiency.jsonl, experiments.json, \
-                    gate-thresholds.json, cascade-router.json, engrams.jsonl, \
+                    gate-thresholds.json, cascade-router.json, signals.jsonl, \
                     episodes.jsonl, events.jsonl, task-outputs/"
                 .into(),
             current_source: DataSourceKind::FileBased,

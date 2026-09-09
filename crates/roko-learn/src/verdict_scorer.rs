@@ -37,9 +37,9 @@ impl Default for VerdictScorerConfig {
     }
 }
 
-/// ScoreFn that weights `Kind::GateVerdict` engrams by recency, severity, and relevance.
+/// ScoreFn that weights `Kind::GateVerdict` signals by recency, severity, and relevance.
 ///
-/// Designed to be composed with other scorers. Non-verdict engrams receive
+/// Designed to be composed with other scorers. Non-verdict signals receive
 /// `Score::ZERO` so they don't interfere in aggregate pipelines.
 pub struct VerdictAwareScorer {
     config: VerdictScorerConfig,
@@ -99,7 +99,7 @@ impl VerdictAwareScorer {
     /// Compute relevance factor by matching tags against current context.
     ///
     /// Checks for matching `task_type`, `crate`, and `task_category` tags
-    /// between the verdict engram and the current context.
+    /// between the verdict signal and the current context.
     fn relevance_factor(&self, signal: &Signal, ctx: &Context) -> f32 {
         let mut relevance: f32 = 0.0;
         let mut checks: f32 = 0.0;

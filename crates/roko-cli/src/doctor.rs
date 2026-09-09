@@ -1701,7 +1701,7 @@ fn check_state_layout_audit(workdir: &Path) -> Vec<DoctorCheck> {
             "gate-verdicts.jsonl",
             layout.root().join("gate-verdicts.jsonl"),
         ),
-        ("engrams.jsonl", layout.engrams_path()),
+        ("signals.jsonl", layout.signals_path()),
         ("events.jsonl", layout.events_jsonl_path()),
         ("learn/gate-thresholds.json", layout.gate_thresholds_path()),
         (
@@ -1758,7 +1758,7 @@ fn check_state_layout_audit(workdir: &Path) -> Vec<DoctorCheck> {
     // -- 3. Legacy files ------------------------------------------------------
     // Files that should not exist in a migrated current workspace.
     let legacy_paths: &[(&str, PathBuf)] = &[
-        ("signals.jsonl", layout.signals_path()),
+        ("engrams.jsonl", layout.engrams_path()),
         (
             "learn/episodes.jsonl",
             layout.learn_dir().join("episodes.jsonl"),
@@ -3917,7 +3917,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn state_layout_audit_v1_workspace_warns_on_legacy_signals() {
+    async fn state_layout_audit_v1_workspace_warns_on_legacy_engrams() {
         let temp = tempdir().unwrap();
         let layout = RokoLayout::for_project(temp.path());
 
@@ -3926,8 +3926,8 @@ mod tests {
             std::fs::create_dir_all(dir).expect("create dir");
         }
         std::fs::write(layout.version_file(), "1").expect("write VERSION");
-        // Place a signals.jsonl file that would be present in a V1 workspace.
-        std::fs::write(layout.signals_path(), "{}\n").expect("write signals.jsonl");
+        // Place an engrams.jsonl file that would be present in a pre-rename workspace.
+        std::fs::write(layout.engrams_path(), "{}\n").expect("write engrams.jsonl");
 
         let checks = check_state_layout_audit(temp.path());
 
@@ -3952,24 +3952,24 @@ mod tests {
         assert_eq!(
             legacy_check.status,
             DoctorStatus::Warn,
-            "V1 workspace with signals.jsonl should warn on legacy files"
+            "workspace with engrams.jsonl should warn on legacy files"
         );
         assert!(
             legacy_check
                 .detail
                 .as_deref()
                 .unwrap_or("")
-                .contains("signals.jsonl"),
-            "legacy files detail should mention signals.jsonl"
+                .contains("engrams.jsonl"),
+            "legacy files detail should mention engrams.jsonl"
         );
     }
 
     #[tokio::test]
-    async fn state_layout_audit_v1_version_warns_even_without_signals_file() {
+    async fn state_layout_audit_v1_version_warns_even_without_legacy_file() {
         let temp = tempdir().unwrap();
         let layout = RokoLayout::for_project(temp.path());
 
-        // V1 workspace without signals.jsonl (already partially migrated).
+        // V1 workspace without legacy files (already partially migrated).
         for dir in &layout.top_level_dirs() {
             std::fs::create_dir_all(dir).expect("create dir");
         }

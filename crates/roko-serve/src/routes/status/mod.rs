@@ -258,7 +258,7 @@ mod tests {
     #[tokio::test]
     async fn gates_history_collection_is_mounted_under_api_grouping() {
         let (dir, state) = test_state();
-        let signals = dir.path().join(".roko").join("engrams.jsonl");
+        let signals = dir.path().join(".roko").join("signals.jsonl");
         tokio::fs::create_dir_all(signals.parent().expect("signals parent"))
             .await
             .expect("create signals dir");
@@ -335,7 +335,7 @@ mod tests {
     #[tokio::test]
     async fn gate_summary_includes_rung_breakdown_under_api_grouping() {
         let (dir, state) = test_state();
-        let signals = dir.path().join(".roko").join("engrams.jsonl");
+        let signals = dir.path().join(".roko").join("signals.jsonl");
         tokio::fs::create_dir_all(signals.parent().expect("signals parent"))
             .await
             .expect("create signals dir");
@@ -652,7 +652,7 @@ mod tests {
     #[tokio::test]
     async fn gate_history_returns_500_for_invalid_jsonl() {
         let (dir, state) = test_state();
-        let signals = dir.path().join(".roko").join("engrams.jsonl");
+        let signals = dir.path().join(".roko").join("signals.jsonl");
         tokio::fs::create_dir_all(signals.parent().expect("signals parent"))
             .await
             .expect("create signals dir");
@@ -670,7 +670,7 @@ mod tests {
     #[tokio::test]
     async fn signals_returns_500_for_invalid_jsonl() {
         let (dir, state) = test_state();
-        let signals_path = dir.path().join(".roko").join("engrams.jsonl");
+        let signals_path = dir.path().join(".roko").join("signals.jsonl");
         tokio::fs::create_dir_all(signals_path.parent().expect("signals parent"))
             .await
             .expect("create signals dir");

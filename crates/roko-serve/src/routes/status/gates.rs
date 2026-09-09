@@ -81,7 +81,7 @@ pub async fn gate_history(
 
 async fn read_gate_entries(state: &AppState) -> Result<Vec<Value>, ApiError> {
     let mut entries =
-        read_jsonl_entries(&state.workdir.join(".roko").join("engrams.jsonl")).await?;
+        read_jsonl_entries(&state.workdir.join(".roko").join("signals.jsonl")).await?;
     // Read gate verdicts from the dedicated typed log (written by the runner).
     let verdict_entries =
         read_jsonl_entries(&state.workdir.join(".roko").join("gate-verdicts.jsonl")).await?;
@@ -95,7 +95,7 @@ async fn read_gate_entries(state: &AppState) -> Result<Vec<Value>, ApiError> {
 
 fn gate_sources(state: &AppState) -> Vec<String> {
     [
-        ".roko/engrams.jsonl",
+        ".roko/signals.jsonl",
         ".roko/gate-verdicts.jsonl",
         ".roko/events.jsonl",
     ]

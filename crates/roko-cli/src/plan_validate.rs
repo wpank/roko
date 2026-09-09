@@ -976,7 +976,9 @@ fn parse_task_role(role: &str) -> Option<AgentRole> {
         "integration-tester" | "integrationtester" => AgentRole::IntegrationTester,
         "merge-resolver" | "mergeresolver" => AgentRole::MergeResolver,
         "terminal-validator" | "terminalvalidator" => AgentRole::TerminalValidator,
-        "golem-lifecycle-tester" | "golemlifecycletester" => AgentRole::GolemLifecycleTester,
+        "lifecycle-tester" | "lifecycletester" | "golem-lifecycle-tester" | "golemlifecycletester" => {
+            AgentRole::LifecycleTester
+        }
         "spec-drift-detector" | "specdriftdetector" => AgentRole::SpecDriftDetector,
         "regression-detector" | "regressiondetector" => AgentRole::RegressionDetector,
         "performance-sentinel" | "performancesentinel" => AgentRole::PerformanceSentinel,

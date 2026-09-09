@@ -223,25 +223,40 @@ impl RokoLayout {
 
     // ── per-entity paths ─────────────────────────────────────────────────
 
-    /// `.roko/engrams.jsonl` — the main signal log.
+    /// `.roko/signals.jsonl` — the canonical signal log.
+    ///
+    /// New code should use this path. If `signals.jsonl` does not yet exist
+    /// but `engrams.jsonl` does, callers should fall back to
+    /// [`Self::engrams_path`] for reading (see [`Self::signals_path_with_fallback`]).
+    #[must_use]
+    pub fn signals_path(&self) -> PathBuf {
+        self.root.join("signals.jsonl")
+    }
+
+    /// `.roko/engrams.jsonl` — legacy signal log path.
+    ///
+    /// Retained for backward compatibility with existing workspaces that
+    /// have not yet migrated to `signals.jsonl`.
     #[must_use]
     pub fn engrams_path(&self) -> PathBuf {
         self.root.join("engrams.jsonl")
     }
 
-    /// Legacy path for the signal log (pre-rename).
-    ///
-    /// Use [`Self::engrams_path`] for new code. This helper exists so
-    /// callers can check for the old file and migrate it.
+    /// Return the best available signal log path, preferring the canonical
+    /// `signals.jsonl` but falling back to `engrams.jsonl` if only the
+    /// legacy file exists on disk.
     #[must_use]
-    pub fn engrams_path_legacy(&self) -> PathBuf {
-        self.root.join("signals.jsonl")
-    }
-
-    /// `.roko/signals.jsonl` — legacy signal log.
-    #[must_use]
-    pub fn signals_path(&self) -> PathBuf {
-        self.root.join("signals.jsonl")
+    pub fn signals_path_with_fallback(&self) -> PathBuf {
+        let canonical = self.signals_path();
+        if canonical.exists() {
+            return canonical;
+        }
+        let legacy = self.engrams_path();
+        if legacy.exists() {
+            return legacy;
+        }
+        // Neither exists yet; return canonical so new writes go there.
+        canonical
     }
 
     /// `.roko/gate-verdicts.jsonl` — typed gate verdict log.

@@ -1972,13 +1972,13 @@ impl DashboardSnapshot {
                     ws.roko_dir(),
                     ws.state_dir(),
                     ws.learn_dir(),
-                    ws.engrams_path(),
+                    ws.signals_path(),
                 )
             } else {
                 let rd = root.join(".roko");
                 let sd = rd.join("state");
                 let ld = rd.join("learn");
-                let ep = rd.join("engrams.jsonl");
+                let ep = rd.join("signals.jsonl");
                 (rd, sd, ld, ep)
             };
 

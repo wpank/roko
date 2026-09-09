@@ -1816,7 +1816,7 @@ fn add_verification(
     }
 }
 
-/// Convert a snapshot of pheromone engrams into context chunks.
+/// Convert a snapshot of pheromone signals into context chunks.
 ///
 /// The `scope` filter accepts an exact plan/scope identifier or `all`.
 /// Signals without explicit scope metadata are treated as globally visible.

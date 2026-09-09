@@ -116,7 +116,7 @@ pub async fn experiments_metric(
 
 /// `GET /api/metrics/feedback_latency` — median hours from action to first feedback signal.
 pub async fn feedback_latency(State(state): State<Arc<AppState>>) -> Result<Json<Value>, ApiError> {
-    let path = state.workdir.join(".roko").join("engrams.jsonl");
+    let path = state.workdir.join(".roko").join("signals.jsonl");
     let entries = read_jsonl_entries(&path).await?;
     Ok(Json(build_feedback_latency_response(&entries)))
 }

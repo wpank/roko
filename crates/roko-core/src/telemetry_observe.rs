@@ -11,7 +11,7 @@ use crate::{Result, Signal, Verdict};
 /// Read-only protocol implemented by event-oriented telemetry Lenses.
 ///
 /// This is deliberately distinct from [`crate::Observe`], the synchronous
-/// environment-observation protocol that returns Engrams. Implementations
+/// environment-observation protocol that returns Signals. Implementations
 /// declare both their event-family filters and scope so a router can avoid
 /// invoking them for irrelevant events.
 #[async_trait]

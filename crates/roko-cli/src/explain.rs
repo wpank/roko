@@ -139,7 +139,7 @@ pub static TOPICS: &[TopicEntry] = &[
                     Dream artifacts persist at `.roko/dreams/`.",
     },
     TopicEntry {
-        name: "engram",
+        name: "signal",
         title: "Signals (Signal Storage)",
         summary: "Signals are the fundamental unit of data in roko. Every piece of \
                   information (prompts, outputs, gate results, episodes) is stored \
@@ -147,7 +147,7 @@ pub static TOPICS: &[TopicEntry] = &[
         detail: "Signals form a directed acyclic graph (DAG) where each signal \
                  references its parent(s). This creates an immutable audit trail of \
                  every decision and action. Use `roko replay <hash>` to walk the \
-                 lineage DAG from any signal. Signals persist in `.roko/engrams.jsonl` \
+                 lineage DAG from any signal. Signals persist in `.roko/signals.jsonl` \
                  via the `FileSubstrate` in `roko-fs`.",
         internals: "The `Signal` type in `crates/roko-core/src/engram.rs` is the base \
                     signal structure. `FileSubstrate` in `crates/roko-fs/` handles \
@@ -363,12 +363,12 @@ fn global_flag_is_bool(flag: &str) -> bool {
 
 /// Resolve user-facing aliases to canonical topic names.
 ///
-/// Maps common aliases so that, for example, `roko explain signals` finds
-/// the topic stored under the canonical name `"engram"`.
+/// Maps common aliases so that, for example, `roko explain engram` finds
+/// the topic stored under the canonical name `"signal"`.
 #[must_use]
 pub fn resolve_topic_alias(name: &str) -> &str {
     match name {
-        "signal" | "signals" | "engrams" => "engram",
+        "signals" | "engram" | "engrams" => "signal",
         "environment-variables" | "env-vars" | "envvars" | "environment" => "env",
         other => other,
     }
@@ -509,7 +509,7 @@ mod tests {
             "neuro",
             "daimon",
             "dreams",
-            "engram",
+            "signal",
             "cfactor",
         ];
         for name in &required {

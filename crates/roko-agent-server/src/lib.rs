@@ -31,7 +31,8 @@ pub use registration::{
     AgentCard, AgentCardEndpoints, AgentCardPublisher, AgentRegistration, RegistrationOutcome,
 };
 pub use state::{
-    AgentMetrics, AgentPrediction, AgentPredictionResidual, AgentRuntimeStats, AgentState,
+    AgentMetrics, AgentPrediction, AgentPredictionResidual, AgentRuntimeStats,
+    AgentSidecarState, AgentState,
     AgentStateStore, CreateTaskRequest, CreateTaskResult, DispatchLike, DispatchProfile,
     FileStateStore, HeartbeatSnapshot, MessageContext, PredictionCreateRequest, ResearchMode,
     SidecarDispatchError, StateEnvelope, StateStoreError,
@@ -437,7 +438,7 @@ fn capability_is_live(value: &str, features: FeatureFlags) -> bool {
 /// Background task that periodically POSTs a [`roko_core::HeartbeatPayload`] to
 /// the roko-serve control plane so that the discovery registry stays fresh.
 ///
-/// Payloads are populated from live [`state::AgentState::heartbeat_snapshot`]
+/// Payloads are populated from live [`state::AgentSidecarState::heartbeat_snapshot`]
 /// data rather than hardcoded zeroes.
 #[allow(clippy::cast_precision_loss)]
 async fn heartbeat_loop(state: Arc<state::AgentState>, url: String, interval_secs: u64) {

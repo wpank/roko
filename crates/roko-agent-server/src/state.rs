@@ -743,7 +743,7 @@ impl Default for DispatchProfile {
 }
 
 /// Shared state for agent-server routes.
-pub struct AgentState {
+pub struct AgentSidecarState {
     agent_id: String,
     owner: Option<String>,
     version: String,
@@ -768,7 +768,10 @@ pub struct AgentState {
     state_store: Option<Arc<dyn AgentStateStore>>,
 }
 
-impl AgentState {
+/// Backward-compatible alias for [`AgentSidecarState`].
+pub type AgentState = AgentSidecarState;
+
+impl AgentSidecarState {
     /// Build a new shared state instance.
     #[must_use]
     pub fn new(

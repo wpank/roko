@@ -341,7 +341,7 @@ pub struct Ready;
 
 /// Runtime state accumulated during provisioning.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct AgentState {
+pub struct AgentProvisioningState {
     /// Stable agent identifier.
     pub agent_id: Option<String>,
     /// Allocated resource labels.
@@ -356,7 +356,10 @@ pub struct AgentState {
     pub mesh_registered: bool,
 }
 
-impl AgentState {
+/// Backward-compatible alias for [`AgentProvisioningState`].
+pub type AgentState = AgentProvisioningState;
+
+impl AgentProvisioningState {
     /// Attach an allocated resource label.
     #[must_use]
     pub fn with_resource(mut self, resource: impl Into<String>) -> Self {
@@ -397,7 +400,7 @@ impl AgentState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Agent<S> {
     manifest_id: String,
-    state: AgentState,
+    state: AgentProvisioningState,
     stage: PhantomData<S>,
 }
 
@@ -406,7 +409,7 @@ impl Agent<Unvalidated> {
     pub fn new(manifest_id: impl Into<String>) -> Self {
         Self {
             manifest_id: manifest_id.into(),
-            state: AgentState::default(),
+            state: AgentProvisioningState::default(),
             stage: PhantomData,
         }
     }
@@ -485,7 +488,7 @@ impl Agent<MeshRegistered> {
 
 impl Agent<Ready> {
     /// Return the accumulated ready-state snapshot.
-    pub const fn state(&self) -> &AgentState {
+    pub const fn state(&self) -> &AgentProvisioningState {
         &self.state
     }
 

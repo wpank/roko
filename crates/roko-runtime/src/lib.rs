@@ -80,7 +80,8 @@ pub use lens_executor::{
     LensRuntimeStatus, QueuedLensExecutor,
 };
 pub use lifecycle::{
-    Agent, AgentLifecycleState, AgentState, ConfigDrift, DegradationStage, GitOpsConfig,
+    Agent, AgentLifecycleState, AgentProvisioningState, AgentState, ConfigDrift,
+    DegradationStage, GitOpsConfig,
     GitOpsRetryPolicy, HealthProbeConfig, HookSpec, LifecycleHooks, LifecycleTransition,
     LifecycleTransitionReason, MachineLifecycleState, MeshRegistered, NeuroInitialized,
     ProbeHandler, ProbeSpec, Ready, ResourcesAllocated, RestartBackoff, RoutingConfigured,

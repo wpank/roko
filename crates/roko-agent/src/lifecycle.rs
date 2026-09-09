@@ -582,7 +582,7 @@ pub struct ProvisioningReady;
 
 /// Provisioning state accumulated while resolving an agent manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct AgentState {
+pub struct AgentProvisioningState {
     /// Allocated resource labels.
     pub resources: Vec<String>,
     /// Whether Neuro initialization completed.
@@ -595,11 +595,14 @@ pub struct AgentState {
     pub mesh_registered: bool,
 }
 
+/// Backward-compatible alias for [`AgentProvisioningState`].
+pub type AgentState = AgentProvisioningState;
+
 /// Type-state provisioning wrapper for agent creation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProvisioningAgent<S> {
     manifest: AgentExtendedManifest,
-    state: AgentState,
+    state: AgentProvisioningState,
     stage: PhantomData<S>,
 }
 
@@ -608,7 +611,7 @@ impl ProvisioningAgent<Unvalidated> {
     pub fn new(manifest: AgentExtendedManifest) -> Self {
         Self {
             manifest,
-            state: AgentState::default(),
+            state: AgentProvisioningState::default(),
             stage: PhantomData,
         }
     }
@@ -628,7 +631,7 @@ impl ProvisioningAgent<Validated> {
     ) -> ProvisioningAgent<ResourcesAllocated> {
         ProvisioningAgent {
             manifest: self.manifest,
-            state: AgentState {
+            state: AgentProvisioningState {
                 resources: {
                     let mut resources = self.state.resources;
                     resources.push(resource.into());
@@ -646,7 +649,7 @@ impl ProvisioningAgent<ResourcesAllocated> {
     pub fn init_neuro(self) -> ProvisioningAgent<NeuroInitialized> {
         ProvisioningAgent {
             manifest: self.manifest,
-            state: AgentState {
+            state: AgentProvisioningState {
                 neuro_initialized: true,
                 ..self.state
             },
@@ -660,7 +663,7 @@ impl ProvisioningAgent<NeuroInitialized> {
     pub fn configure_routing(self) -> ProvisioningAgent<RoutingConfigured> {
         ProvisioningAgent {
             manifest: self.manifest,
-            state: AgentState {
+            state: AgentProvisioningState {
                 routing_configured: true,
                 ..self.state
             },
@@ -679,7 +682,7 @@ impl ProvisioningAgent<RoutingConfigured> {
             .unwrap_or_else(|| "standard".into());
         ProvisioningAgent {
             manifest: self.manifest,
-            state: AgentState {
+            state: AgentProvisioningState {
                 tool_profile: Some(profile),
                 ..self.state
             },
@@ -694,7 +697,7 @@ impl ProvisioningAgent<ToolsLoaded> {
         let mesh_registered = self.manifest.mesh.as_ref().is_some_and(|mesh| mesh.enabled);
         ProvisioningAgent {
             manifest: self.manifest,
-            state: AgentState {
+            state: AgentProvisioningState {
                 mesh_registered,
                 ..self.state
             },
@@ -717,7 +720,7 @@ impl ProvisioningAgent<ProvisioningReady> {
     }
 
     /// Return the accumulated provisioning state.
-    pub const fn state(&self) -> &AgentState {
+    pub const fn state(&self) -> &AgentProvisioningState {
         &self.state
     }
 
@@ -1527,7 +1530,7 @@ pub struct RunningAgent {
     /// Human-readable running agent name.
     pub name: String,
     /// Provisioned runtime state.
-    pub state: AgentState,
+    pub state: AgentProvisioningState,
     /// Unix timestamp when the running record was created.
     pub started_at: u64,
 }

@@ -2583,7 +2583,7 @@ fn start_feed_relay_bridge(state: Arc<AppState>) -> Option<tokio::task::JoinHand
         MAX_DESIRED_ROOMS, RelayClientConfig, RelayClientStatus, TopicHandler, connect,
     };
     use roko_agent_server::registration::{AgentCard, AgentCardEndpoints};
-    use roko_agent_server::state::AgentState;
+    use roko_agent_server::state::AgentSidecarState;
 
     let roko_config = state.load_roko_config();
     let raw_relay_url = roko_config.relay.url.clone()?;
@@ -2606,7 +2606,7 @@ fn start_feed_relay_bridge(state: Arc<AppState>) -> Option<tokio::task::JoinHand
         }
 
         let consumer_id = relay_consumer_id(&workspace_identity);
-        let agent_state = Arc::new(AgentState::new(
+        let agent_state = Arc::new(AgentSidecarState::new(
             consumer_id.clone(),
             None,
             env!("CARGO_PKG_VERSION").to_string(),
@@ -2961,10 +2961,10 @@ async fn run_feed_relay_publisher(
 ) {
     use roko_agent_server::features::relay_client::{RelayClientConfig, connect};
     use roko_agent_server::registration::{AgentCard, AgentCardEndpoints};
-    use roko_agent_server::state::AgentState;
+    use roko_agent_server::state::AgentSidecarState;
 
     let publisher_id = relay_publisher_id(&workspace_identity);
-    let agent_state = Arc::new(AgentState::new(
+    let agent_state = Arc::new(AgentSidecarState::new(
         publisher_id.clone(),
         None,
         env!("CARGO_PKG_VERSION").to_string(),

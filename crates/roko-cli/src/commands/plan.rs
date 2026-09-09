@@ -2478,6 +2478,39 @@ async fn cmd_plan_run_engine(
             ));
         }
 
+        // ── Theta reflection on plan completion ─────────────────────────
+        //
+        // Runs a five-phase reflective cycle (gamma summary, affect update,
+        // calibration check, progress assessment, meta-cognition) after each
+        // plan completes. Lightweight and synchronous (no LLM calls).
+        let shared_cortical = std::sync::Arc::new(
+            roko_runtime::heartbeat::CorticalState::default(),
+        );
+        let shared_theta = std::sync::Arc::new(std::sync::Mutex::new(
+            roko_runtime::theta_consumer::ThetaConsumer::default(),
+        ));
+        facade = facade.with_sink(std::sync::Arc::new(
+            roko_cli::runtime_feedback::ThetaReflectionSink::new(
+                std::sync::Arc::clone(&shared_theta),
+                std::sync::Arc::clone(&shared_cortical),
+            ),
+        ));
+
+        // ── Delta consolidation on plan completion ──────────────────────
+        //
+        // Tracks episode counts and checks trigger conditions for a dream
+        // consolidation cycle (NREM replay, REM imagination, integration).
+        // Bridges roko_runtime::delta_consumer into the feedback pipeline.
+        let shared_delta = std::sync::Arc::new(std::sync::Mutex::new(
+            roko_runtime::delta_consumer::DeltaConsumer::default(),
+        ));
+        facade = facade.with_sink(std::sync::Arc::new(
+            roko_cli::runtime_feedback::DeltaConsolidationSink::new(
+                std::sync::Arc::clone(&shared_delta),
+                std::sync::Arc::clone(&shared_cortical),
+            ),
+        ));
+
         std::sync::Arc::new(facade)
     };
 

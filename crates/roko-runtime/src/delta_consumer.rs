@@ -1,6 +1,7 @@
-//! STATUS: NOT WIRED -- built but no non-test runtime caller.
-//!
 //! Delta consolidation loop consumer (BEAT-02).
+//!
+//! Wired into the plan-completion feedback pipeline via
+//! `DeltaConsolidationSink` in `roko_cli::runtime_feedback::plan_completion`.
 //!
 
 #![allow(

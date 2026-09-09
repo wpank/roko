@@ -38,6 +38,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::active_inference::{BeliefState, select_tier as select_tier_with_belief};
+use crate::bayesian_confidence::BayesianConfidenceUpdater;
 // Re-export public types from cascade submodules so that
 // `crate::cascade_router::CascadeRouter` etc. still works for downstream crates.
 pub use crate::cascade::helpers::slug_family;
@@ -2706,9 +2707,51 @@ impl CascadeRouter {
         }
     }
 
+    /// Apply a Bayesian confidence nudge to a UCB score list in place.
+    ///
+    /// For each candidate, a `BayesianConfidenceUpdater` is seeded with the
+    /// model's empirical `(trials, successes)` from the confidence stage, and the
+    /// posterior mean is used to compute a signed nudge:
+    ///
+    /// ```text
+    /// nudge = BAYESIAN_NUDGE_WEIGHT * (posterior_mean - 0.5)
+    /// adjusted_score = ucb_score + nudge
+    /// ```
+    ///
+    /// The nudge is positive for models with above-average pass rates and
+    /// negative for below-average ones, with magnitude proportional to sample
+    /// count (the Beta posterior mean shrinks toward 0.5 for sparse data,
+    /// keeping the nudge near zero until evidence accumulates).
+    ///
+    /// The weight (0.05) is intentionally small so the Bayesian signal
+    /// complements rather than overrides the LinUCB exploration bonus.
+    fn apply_bayesian_nudge(&self, scores: &mut [(String, f64)]) {
+        const BAYESIAN_NUDGE_WEIGHT: f64 = 0.05;
+
+        let stats = self.confidence_stats.lock();
+        for (slug, score) in scores.iter_mut() {
+            let (trials, successes) = stats
+                .get(slug)
+                .map(|s| (s.trials, s.successes))
+                .unwrap_or((0, 0));
+
+            // Seed the updater from observed counts.  With zero observations
+            // the prior is Beta(1,1) → posterior mean = 0.5, nudge = 0.0.
+            let mut updater = BayesianConfidenceUpdater::uniform();
+            if trials > 0 {
+                let failures = trials.saturating_sub(successes);
+                updater.observe_batch(successes, failures);
+            }
+
+            let nudge = BAYESIAN_NUDGE_WEIGHT * (updater.confidence() - 0.5);
+            *score += nudge;
+        }
+    }
+
     fn select_ucb_model(&self, ctx: &RoutingContext, candidates: &[String]) -> ModelSpec {
         let frontier = self.current_pareto_frontier();
         let mut scores = self.ucb_scores(ctx, candidates, frontier.as_deref());
+        self.apply_bayesian_nudge(&mut scores);
         self.apply_verdict_blend(&mut scores);
         let best_slug = select_with_hysteresis(&scores, ctx.previous_model.as_deref());
         ModelSpec::from_slug(best_slug)

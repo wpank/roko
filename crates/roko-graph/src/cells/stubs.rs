@@ -1,9 +1,12 @@
 //! Stub cell implementations for graph nodes that don't have real implementations yet.
 //!
-//! These are registered in `default_registry()` so that graphs referencing
-//! cell types like `signal-reader`, `relevance-scorer`, etc. can load and
-//! validate without error. Each stub passes input signals through unchanged
-//! and logs a trace message.
+//! `PassthroughCell` is a generic stub that passes input signals through unchanged
+//! and logs a trace message. It is used for topology cells (plan.task-context,
+//! plan.enricher.*, etc.) and any other graph nodes that need a placeholder.
+//!
+//! The legacy cognitive loop names (`signal-reader`, `relevance-scorer`, etc.)
+//! are no longer stubs -- they are registered in `default_registry()` as aliases
+//! for the real typed Cell implementations in `cells::cognitive`.
 
 use std::time::Duration;
 
@@ -69,8 +72,13 @@ impl Cell for PassthroughCell {
     }
 }
 
-/// Names of stub cells registered in the default registry for the cognitive loop.
-pub const COGNITIVE_LOOP_STUBS: &[&str] = &[
+/// Legacy cognitive loop alias names.
+///
+/// These names are registered in `default_registry()` as aliases for the real
+/// cognitive Cell implementations (`SenseCell`, `AssessCell`, etc.). They are
+/// no longer `PassthroughCell` stubs -- each delegates to the corresponding
+/// typed Cell from `cells::cognitive`.
+pub const COGNITIVE_LOOP_ALIASES: &[&str] = &[
     "signal-reader",
     "relevance-scorer",
     "system-prompt-builder",

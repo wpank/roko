@@ -38,7 +38,9 @@ pub mod routing;
 
 pub use episodes::EpisodeSink;
 pub use knowledge::{KnowledgeIngestionSink, KnowledgeIngestor, NeuroKnowledgeIngestor};
-pub use plan_completion::{DaimonPersistenceSink, DreamConsolidationSink};
+pub use plan_completion::{
+    DaimonPersistenceSink, DeltaConsolidationSink, DreamConsolidationSink, ThetaReflectionSink,
+};
 pub use routing::RoutingObservationSink;
 
 use roko_learn::model_router::RoutingContext;

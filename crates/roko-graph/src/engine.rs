@@ -2514,15 +2514,89 @@ pub fn default_registry() -> CellRegistry {
         ))
     });
 
-    // Legacy cognitive loop stub aliases -- keep PassthroughCell stubs for
-    // graph definitions that still reference old names (signal-reader, etc.).
-    for name in crate::cells::stubs::COGNITIVE_LOOP_STUBS {
-        let cell_name = (*name).to_string();
-        let desc = CellDescriptor::test_stub(cell_name.clone());
-        registry.register_with_descriptor(name, desc, move |_config| {
-            Box::new(crate::cells::stubs::PassthroughCell::new(cell_name.clone()))
-        });
-    }
+    // Legacy cognitive loop aliases -- delegate to the real cognitive Cell
+    // implementations so graph definitions that reference old names
+    // (signal-reader, etc.) get full typed execution instead of stubs.
+    registry.register_with_descriptor(
+        "signal-reader",
+        CellDescriptor::new(
+            "signal-reader",
+            (0, 2, 0),
+            None,
+            Some(TypeSchema::OfKind(Kind::AgentMessage)),
+        )
+        .with_protocols(vec![ProtocolId::Observe])
+        .with_display_name("SenseCell (signal-reader alias)"),
+        |_config| Box::new(crate::cells::cognitive::SenseCell::new()),
+    );
+    registry.register_with_descriptor(
+        "relevance-scorer",
+        CellDescriptor::new(
+            "relevance-scorer",
+            (0, 2, 0),
+            Some(TypeSchema::OfKind(Kind::AgentMessage)),
+            Some(TypeSchema::OfKind(Kind::AgentMessage)),
+        )
+        .with_protocols(vec![ProtocolId::Score])
+        .with_predictive(true)
+        .with_display_name("AssessCell (relevance-scorer alias)"),
+        |_config| Box::new(crate::cells::cognitive::AssessCell::new()),
+    );
+    registry.register_with_descriptor(
+        "system-prompt-builder",
+        CellDescriptor::new(
+            "system-prompt-builder",
+            (0, 2, 0),
+            Some(TypeSchema::OfKind(Kind::AgentMessage)),
+            Some(TypeSchema::OfKind(Kind::Prompt)),
+        )
+        .with_protocols(vec![ProtocolId::Compose])
+        .with_display_name("CognitiveComposeCell (system-prompt-builder alias)"),
+        |_config| Box::new(crate::cells::cognitive::CognitiveComposeCell::new()),
+    );
+    registry.register_with_descriptor(
+        "claude-agent",
+        CellDescriptor::new(
+            "claude-agent",
+            (0, 2, 0),
+            Some(TypeSchema::OfKind(Kind::Prompt)),
+            Some(TypeSchema::OfKind(Kind::Episode)),
+        )
+        .with_protocols(vec![ProtocolId::Connect])
+        .with_display_name("ActCell (claude-agent alias)"),
+        |_config| Box::new(crate::cells::cognitive::ActCell::new()),
+    );
+    registry.register_with_descriptor(
+        "gate-pipeline",
+        CellDescriptor::new(
+            "gate-pipeline",
+            (0, 2, 0),
+            Some(TypeSchema::OfKind(Kind::Episode)),
+            Some(TypeSchema::OfKind(Kind::GateVerdict)),
+        )
+        .with_protocols(vec![ProtocolId::Verify])
+        .with_display_name("VerifyCell (gate-pipeline alias)"),
+        |_config| Box::new(crate::cells::cognitive::VerifyCell::new()),
+    );
+    registry.register_with_descriptor(
+        "store-writer",
+        CellDescriptor::new(
+            "store-writer",
+            (0, 2, 0),
+            Some(TypeSchema::OfKind(Kind::GateVerdict)),
+            None,
+        )
+        .with_protocols(vec![ProtocolId::Store])
+        .with_display_name("PersistCell (store-writer alias)"),
+        |_config| Box::new(crate::cells::cognitive::PersistCell::new()),
+    );
+    registry.register_with_descriptor(
+        "event-publisher",
+        CellDescriptor::new("event-publisher", (0, 2, 0), None, None)
+            .with_protocols(vec![ProtocolId::React, ProtocolId::Trigger])
+            .with_display_name("ReactCell (event-publisher alias)"),
+        |_config| Box::new(crate::cells::cognitive::ReactCell::new()),
+    );
 
     registry
 }

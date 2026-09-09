@@ -1,9 +1,16 @@
-//! STATUS: NOT WIRED -- built but no non-test runtime caller.
-//!
 //! Zero-LLM heartbeat probe registry and default probe set.
 //!
 //! Probes are deterministic, side-effect-light checks that feed prediction
 //! error and tier selection without invoking a model.
+//!
+//! # Status
+//!
+//! Core types (`HeartbeatProbe`, `HeartbeatProbeRegistry`, `EngineState`,
+//! `ProbeResult`, `ProbeResults`, `ProbeDomain`, `BuildResult`) are
+//! re-exported through `roko_core::obs` and available to the rest of the
+//! workspace. The `StatefulProbeRegistry` with rolling anomaly detection
+//! is ready for use by the heartbeat gamma loop when it is wired into the
+//! Graph engine's per-tick evaluation path.
 
 #![allow(
     clippy::cast_possible_truncation,

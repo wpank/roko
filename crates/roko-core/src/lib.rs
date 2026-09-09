@@ -122,6 +122,7 @@ pub mod dispatch_plan;
 pub mod domain_profile;
 /// Canonical single-unit duration parser (`ms`, `s`, `m`, `h`, `d`).
 pub mod duration;
+/// Backward-compatible re-export module — canonical definitions live in [`signal`].
 pub mod engram;
 pub mod error;
 /// Payload contracts carried by MCP, A2A, and x402 transports.
@@ -217,7 +218,7 @@ pub mod runtime_event;
 pub mod score;
 pub mod secrets;
 pub mod shutdown;
-/// Signal — the primary type name (re-exports from `engram` module).
+/// Signal — the universal datum type plus marketplace artifact types.
 pub mod signal;
 pub mod signal_kinds;
 pub mod task;
@@ -298,7 +299,9 @@ pub use dispatch_plan::{
 };
 pub use domain_profile::{DomainProfile, TypedContext};
 pub use duration::{DurationParseError, parse_duration, parse_duration_ms};
-pub use engram::{Engram, EngramBuilder, GraduationError, HdcFingerprint, SignalStatus};
+pub use signal::{
+    Engram, EngramBuilder, GraduationError, HdcFingerprint, Signal, SignalBuilder, SignalStatus,
+};
 pub use error::{Result, RokoError};
 pub use feed::{
     FeedAccess, FeedInfo, FeedKind, FeedPricingConfig, FeedRegistry, FeedRuntimeStatus,
@@ -396,7 +399,7 @@ pub use runtime_event::{
     RuntimeEventPublishDisposition, RuntimeEventPublisher, ToolCallSummary, WorkflowOutcome,
 };
 pub use score::Score;
-pub use signal::{ArtifactKind, ArtifactLineage, ArtifactRef, Signal, SignalBuilder};
+pub use signal::{ArtifactKind, ArtifactLineage, ArtifactRef};
 pub use signal_kinds::*;
 pub use task::{
     GlobalTaskId, PlanStatus, Task, TaskCategory, TaskComplexityBand, TaskContextWeight,

@@ -131,7 +131,7 @@ impl Pulse {
     ///
     /// The graduated signal:
     /// - Preserves the pulse's kind, body, creation time, and existing tags.
-    /// - Starts at the [`SignalStatus::Working`](crate::engram::SignalStatus::Working)
+    /// - Starts at the [`SignalStatus::Working`](crate::signal::SignalStatus::Working)
     ///   tier (graduated signals are already past Transient).
     /// - Sets the initial demurrage balance to `initial_balance`.
     /// - Adds the pulse's topic string as an additional `"pulse_topic"` tag.
@@ -162,7 +162,7 @@ impl Pulse {
             .provenance(provenance)
             .score(score)
             .balance(initial_balance)
-            .status(crate::engram::SignalStatus::Working)
+            .status(crate::signal::SignalStatus::Working)
             .created_at_ms(self.created_at_ms)
             .tag("pulse_topic", self.topic.to_string())
             .tag("pulse_seq", self.seq.to_string());
@@ -792,7 +792,7 @@ mod graduation_tests {
 
     #[test]
     fn graduate_sets_status_to_working() {
-        use crate::engram::SignalStatus;
+        use crate::signal::SignalStatus;
 
         let pulse = Pulse::builder(1, Topic::new("gate.verdict"), Kind::GateVerdict)
             .body(Body::text("pass"))

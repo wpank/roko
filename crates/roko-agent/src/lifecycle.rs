@@ -233,7 +233,8 @@ pub struct NeuroConfig {
     /// Filesystem path for the knowledge store.
     pub path: String,
     /// Maximum active Signal count.
-    pub max_engrams: u64,
+    #[serde(alias = "max_engrams")]
+    pub max_signals: u64,
     /// Decay model name.
     pub decay_model: String,
     /// Tier-specific decay multipliers.
@@ -246,7 +247,7 @@ impl Default for NeuroConfig {
     fn default() -> Self {
         Self {
             path: ".roko/neuro/".into(),
-            max_engrams: 50_000,
+            max_signals: 50_000,
             decay_model: "ebbinghaus".into(),
             tiers: TierConfig::default(),
             demurrage: Some(DemurrageConfig::default()),
@@ -1950,11 +1951,14 @@ pub struct BackupManifest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct BackupStats {
     /// Total Signals in the archive.
-    pub total_engrams: u64,
+    #[serde(alias = "total_engrams")]
+    pub total_signals: u64,
     /// Count by knowledge type.
-    pub engrams_by_type: HashMap<SignalKind, u64>,
+    #[serde(alias = "engrams_by_type")]
+    pub signals_by_type: HashMap<SignalKind, u64>,
     /// Count by knowledge tier.
-    pub engrams_by_tier: HashMap<KnowledgeTier, u64>,
+    #[serde(alias = "engrams_by_tier")]
+    pub signals_by_tier: HashMap<KnowledgeTier, u64>,
     /// Average confidence.
     pub average_confidence: f64,
     /// Median confidence.
@@ -2020,7 +2024,7 @@ pub fn verify_backup(path: &Path) -> Result<BackupManifest, BackupError> {
         // self-verifiable.
         let canonical = serde_json::json!({
             "manifest": archive.manifest,
-            "engrams": archive.signals,
+            "signals": archive.signals,
             "playbook_md": archive.playbook_md,
         });
         let computed = fnv1a_hex(canonical.to_string().as_bytes());
@@ -2064,7 +2068,8 @@ pub struct RestoreConfig {
     /// Minimum source confidence accepted.
     pub min_confidence: f64,
     /// Optional maximum Signal count.
-    pub max_engrams: Option<usize>,
+    #[serde(alias = "max_engrams")]
+    pub max_signals: Option<usize>,
     /// Source-to-target generation distance.
     pub generation: u32,
     /// Per-generation confidence retention rate.
@@ -2078,7 +2083,7 @@ impl Default for RestoreConfig {
         Self {
             type_filter: TypeFilter::All,
             min_confidence: 0.0,
-            max_engrams: None,
+            max_signals: None,
             generation: 1,
             confidence_decay: 0.85,
             validate: false,
@@ -2189,7 +2194,7 @@ pub fn restore_confidence(original_confidence: f64, generation: u32, decay_rate:
 
 /// Load backup Signals into quarantine according to restore filters.
 pub fn quarantine_backup(backup: &BackupArchive, config: &RestoreConfig) -> Vec<QuarantinedSignal> {
-    let limit = config.max_engrams.unwrap_or(usize::MAX);
+    let limit = config.max_signals.unwrap_or(usize::MAX);
     backup
         .signals
         .iter()

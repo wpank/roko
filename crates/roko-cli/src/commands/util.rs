@@ -149,7 +149,7 @@ pub(crate) async fn cmd_init(
                 .await
                 .with_context(|| format!("read legacy {}", legacy.display()))?;
 
-            let mut engram_lines = Vec::new();
+            let mut signal_lines = Vec::new();
             let mut kept_lines = Vec::new();
             for line in content.lines() {
                 let trimmed = line.trim();
@@ -157,19 +157,19 @@ pub(crate) async fn cmd_init(
                     continue;
                 }
                 if serde_json::from_str::<roko_core::Signal>(trimmed).is_ok() {
-                    engram_lines.push(line.to_string());
+                    signal_lines.push(line.to_string());
                 } else {
                     kept_lines.push(line.to_string());
                 }
             }
 
-            // Write valid engram rows to engrams.jsonl.
-            if engram_lines.is_empty() {
+            // Write valid signal rows to engrams.jsonl.
+            if signal_lines.is_empty() {
                 tokio::fs::write(&engrams_path, b"")
                     .await
                     .with_context(|| format!("create {}", engrams_path.display()))?;
             } else {
-                let mut out = engram_lines.join("\n");
+                let mut out = signal_lines.join("\n");
                 out.push('\n');
                 tokio::fs::write(&engrams_path, out.as_bytes())
                     .await

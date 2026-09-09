@@ -319,7 +319,7 @@ fn calculate_margin(revenue: f64, costs: f64) -> f64 {
 }
 ```
 
-> This analysis was generated from 7 engrams across 3 agents
+> This analysis was generated from 7 signals across 3 agents
 > with an average confidence of 0.91.
 "#;
 

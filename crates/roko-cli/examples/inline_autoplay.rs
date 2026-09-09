@@ -247,7 +247,7 @@ fn calculate_margin(revenue: f64, costs: f64) -> f64 {
 }
 ```
 
-> Generated from 7 engrams across 3 agents.
+> Generated from 7 signals across 3 agents.
 "#;
     let md_lines = markdown::render_markdown_with_bar(md, &theme);
     print_plain(&md_lines);

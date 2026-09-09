@@ -7,9 +7,9 @@
 //! ◆ agent      auditor@v1  ·  eid://roko/auditor.v1  (attested)
 //! │ predict    $0.043  ·  12.4s  ·  route: haiku → sonnet
 //! │ gates      secret_scan ✔   cost_ceiling ✔   policy ✔
-//! │ knowledge  loaded 7 engrams (3 agents, 0.91 conf)
+//! │ knowledge  loaded 7 signals (3 agents, 0.91 conf)
 //! │ actual     $0.031  (-28% vs predicted)  ·  routed to haiku
-//! └ deposited  2 new engrams → /infra/payments-svc
+//! └ deposited  2 new signals → /infra/payments-svc
 //! ```
 
 use ratatui::text::Line;
@@ -118,7 +118,7 @@ impl RunBlockData {
         // Knowledge line
         if let Some(ref k) = self.knowledge_loaded {
             let value = format!(
-                "loaded {} engrams from {} ({} agents, {:.2} conf)",
+                "loaded {} signals from {} ({} agents, {:.2} conf)",
                 k.count, k.topic, k.agent_count, k.avg_confidence,
             );
             lines.push(styled::continuation(theme, "knowledge", &value, None));
@@ -182,7 +182,7 @@ impl RunBlockData {
                 theme,
                 "deposited",
                 &format!(
-                    "{} new engram{} {} {}",
+                    "{} new signal{} {} {}",
                     self.deposited_count,
                     if self.deposited_count == 1 { "" } else { "s" },
                     symbols::ARROW,

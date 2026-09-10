@@ -82,7 +82,7 @@ struct MoriConfig {
 ///
 /// Unrecognized fields are silently ignored. Missing fields receive
 /// Roko defaults.
-pub fn from_mori_toml(text: &str) -> Result<RokoConfig, toml::de::Error> {
+pub(crate) fn from_mori_toml(text: &str) -> Result<RokoConfig, toml::de::Error> {
     let m: MoriConfig = toml::from_str(text)?;
     Ok(convert(&m))
 }

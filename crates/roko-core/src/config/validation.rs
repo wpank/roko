@@ -325,13 +325,13 @@ pub enum DangerousPermissionOverrideError {
 
 /// One unknown field discovered via two-phase TOML parsing.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UnknownFieldReport {
+pub(crate) struct UnknownFieldReport {
     /// Dot-separated TOML path (e.g. `"agent.bogus_key"`).
-    pub path: String,
+    pub(crate) path: String,
     /// The raw TOML value at that path.
-    pub value: String,
+    pub(crate) value: String,
     /// A "did you mean X?" suggestion if edit distance is close, or `None`.
-    pub suggestion: Option<String>,
+    pub(crate) suggestion: Option<String>,
 }
 
 /// Detect unknown fields in raw TOML text by attempting a full deserialize
@@ -343,7 +343,7 @@ pub struct UnknownFieldReport {
 /// Returns `Ok(reports)` when unknown fields are found.
 /// Returns `Err(msg)` only for truly unparseable TOML (syntax errors).
 #[must_use]
-pub fn detect_unknown_fields(toml_text: &str) -> Vec<UnknownFieldReport> {
+pub(crate) fn detect_unknown_fields(toml_text: &str) -> Vec<UnknownFieldReport> {
     // Phase 1: try to deserialize as RokoConfig. If it succeeds, there are
     // no unknown fields in sections that have deny_unknown_fields.
     match toml::from_str::<RokoConfig>(toml_text) {
@@ -469,7 +469,7 @@ fn levenshtein(a: &str, b: &str) -> usize {
 
 /// Format a human-readable repair suggestion for CLI output.
 #[must_use]
-pub fn format_repair_suggestions(reports: &[UnknownFieldReport]) -> String {
+pub(crate) fn format_repair_suggestions(reports: &[UnknownFieldReport]) -> String {
     if reports.is_empty() {
         return "Config is clean: no unknown fields detected.".to_string();
     }

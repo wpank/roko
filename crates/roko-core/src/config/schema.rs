@@ -474,7 +474,7 @@ impl Default for RokoConfig {
 /// Callers should merge these *under* user-defined providers so that explicit
 /// `[providers.*]` config always takes precedence.
 #[must_use]
-pub fn synthesize_standard_providers() -> HashMap<String, ProviderConfig> {
+pub(crate) fn synthesize_standard_providers() -> HashMap<String, ProviderConfig> {
     synthesize_standard_providers_with_env(|key| std::env::var(key).ok())
 }
 
@@ -1098,7 +1098,7 @@ impl RokoConfig {
 
     /// Classify a proposed configuration change.
     #[must_use]
-    pub fn classify_changes(&self, proposed: &Self) -> ConfigChangeReport {
+    pub(crate) fn classify_changes(&self, proposed: &Self) -> ConfigChangeReport {
         let mut report = ConfigChangeReport::default();
 
         if self.budget != proposed.budget {
@@ -1498,23 +1498,23 @@ impl RokoConfig {
 // ---- ConfigChangeReport --------------------------------------------------
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ConfigChangeReport {
-    pub hot_reloaded: Vec<&'static str>,
-    pub requires_restart: Vec<&'static str>,
-    pub warnings: Vec<String>,
+pub(crate) struct ConfigChangeReport {
+    pub(crate) hot_reloaded: Vec<&'static str>,
+    pub(crate) requires_restart: Vec<&'static str>,
+    pub(crate) warnings: Vec<String>,
 }
 
 impl ConfigChangeReport {
     #[must_use]
-    pub fn has_changes(&self) -> bool {
+    pub(crate) fn has_changes(&self) -> bool {
         !self.hot_reloaded.is_empty() || !self.requires_restart.is_empty()
     }
     #[must_use]
-    pub fn needs_restart(&self) -> bool {
+    pub(crate) fn needs_restart(&self) -> bool {
         !self.requires_restart.is_empty()
     }
     #[must_use]
-    pub fn changed_count(&self) -> usize {
+    pub(crate) fn changed_count(&self) -> usize {
         self.hot_reloaded.len() + self.requires_restart.len()
     }
 }
@@ -1540,7 +1540,7 @@ impl fmt::Display for ConfigChangeReport {
 // ---- ValidationWarning ---------------------------------------------------
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ValidationWarning {
+pub(crate) enum ValidationWarning {
     UnknownProvider {
         model: String,
         provider: String,
@@ -1577,7 +1577,7 @@ impl fmt::Display for ValidationWarning {
 }
 
 #[must_use]
-pub fn validate_references(config: &RokoConfig) -> Vec<ValidationWarning> {
+pub(crate) fn validate_references(config: &RokoConfig) -> Vec<ValidationWarning> {
     let providers = config.effective_providers();
     let provider_keys = providers.keys().map(String::as_str).collect::<HashSet<_>>();
     let mut warnings = Vec::new();
@@ -2034,7 +2034,7 @@ const fn default_agent_enabled() -> bool {
 /// Accepts `1/true/yes/on` (case-insensitive) as truthy.
 /// Everything else (including empty string) is falsy.
 /// This is the canonical boolean parser for all env var reads.
-pub fn parse_bool_env(s: &str) -> bool {
+pub(crate) fn parse_bool_env(s: &str) -> bool {
     matches!(
         s.trim().to_ascii_lowercase().as_str(),
         "1" | "true" | "yes" | "on"

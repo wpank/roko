@@ -37,7 +37,7 @@ pub mod validation;
 // Re-exports for ergonomic use.
 pub use crate::temperament::Temperament;
 pub use cache::ConfigCache;
-pub use compat::from_mori_toml;
+pub(crate) use compat::from_mori_toml;
 pub use presets::Preset;
 pub use provenance::{
     ConfigDiagnostic, ConfigProvenance, ConfigSource, FieldProvenance, MergeContext,

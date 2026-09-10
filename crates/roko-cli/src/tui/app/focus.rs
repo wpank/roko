@@ -154,6 +154,11 @@ impl App {
 
     pub(super) fn scroll_focused(&mut self, delta: i32) {
         match (self.tui_state.active_tab, self.tui_state.focus) {
+            // Logs: route list scroll vs. detail scroll based on focus (P6.3).
+            (Tab::Logs, FocusZone::LogDetail) => {
+                let current = self.tui_state.log_detail_scroll as i32;
+                self.tui_state.log_detail_scroll = (current + delta).max(0) as usize;
+            }
             (Tab::Logs, _) => self.scroll_logs_by(delta),
             (Tab::Agents, FocusZone::PlanTree) => {
                 let max = self.tui_state.agents.len().saturating_sub(1);
@@ -161,6 +166,11 @@ impl App {
                 self.tui_state.selected_agent = next as usize;
             }
             (Tab::Agents, FocusZone::AgentOutput) => self.scroll_agent_output_by(delta),
+            // Marketplace: route list selection vs. detail scroll based on focus (P6.3).
+            (Tab::Marketplace, FocusZone::MarketDetail) => {
+                let current = self.tui_state.marketplace_detail_scroll as i32;
+                self.tui_state.marketplace_detail_scroll = (current + delta).max(0) as usize;
+            }
             (Tab::Marketplace, _) => {
                 if !self.tui_state.marketplace_jobs.is_empty() {
                     let max = self.tui_state.marketplace_jobs.len().saturating_sub(1);
@@ -168,6 +178,11 @@ impl App {
                         .clamp(0, max as i32);
                     self.tui_state.marketplace_selected_job = next as usize;
                 }
+            }
+            // Atelier: route list selection vs. detail scroll based on focus (P6.3).
+            (Tab::Atelier, FocusZone::AtelierDetail) => {
+                let current = self.tui_state.atelier_detail_scroll as i32;
+                self.tui_state.atelier_detail_scroll = (current + delta).max(0) as usize;
             }
             (Tab::Atelier, _) => {
                 if !self.tui_state.atelier_prds.is_empty() {
@@ -205,7 +220,6 @@ impl App {
                 self.tui_state.diff_scroll = (current + delta).max(0) as usize;
             }
             // Per-tab detail zones: each routes to its own dedicated scroll field.
-            // NOTE: Logs/Marketplace/Atelier handled by wildcard arms above.
             (Tab::Git, FocusZone::GitDetail) => {
                 let current = self.tui_state.git_detail_scroll as i32;
                 self.tui_state.git_detail_scroll = (current + delta).max(0) as usize;
@@ -252,6 +266,11 @@ impl App {
                 self.tui_state.providers_selected =
                     (current + delta).clamp(0, max) as usize;
             }
+            // Providers detail pane scroll (P6.3).
+            (Tab::Providers, FocusZone::ProviderDetail) => {
+                let current = self.tui_state.providers_detail_scroll as i32;
+                self.tui_state.providers_detail_scroll = (current + delta).max(0) as usize;
+            }
             // Exhaustive: any remaining (tab, zone) combination is a no-op
             // rather than leaking into a shared scroll field.
             _ => {}
@@ -269,6 +288,10 @@ impl App {
                     offset.min(max)
                 };
             }
+            // Marketplace: route Home/End to list or detail based on focus (P6.3).
+            (Tab::Marketplace, FocusZone::MarketDetail) => {
+                self.tui_state.marketplace_detail_scroll = offset;
+            }
             (Tab::Marketplace, _) => {
                 if !self.tui_state.marketplace_jobs.is_empty() {
                     let max = self.tui_state.marketplace_jobs.len().saturating_sub(1);
@@ -278,6 +301,10 @@ impl App {
                         offset.min(max)
                     };
                 }
+            }
+            // Atelier: route Home/End to list or detail based on focus (P6.3).
+            (Tab::Atelier, FocusZone::AtelierDetail) => {
+                self.tui_state.atelier_detail_scroll = offset;
             }
             (Tab::Atelier, _) => {
                 if !self.tui_state.atelier_prds.is_empty() {
@@ -308,6 +335,10 @@ impl App {
             }
             (_, FocusZone::TaskProgress) => {
                 self.tui_state.task_scroll = offset;
+            }
+            // Logs: route to log detail scroll when detail panel has focus (P6.3).
+            (Tab::Logs, FocusZone::LogDetail) => {
+                self.tui_state.log_detail_scroll = offset;
             }
             (Tab::Logs, _) => {
                 if offset == usize::MAX {
@@ -347,7 +378,6 @@ impl App {
                 self.tui_state.diff_scroll = offset;
             }
             // Per-tab detail zones: each routes to its own dedicated scroll field.
-            // NOTE: Logs/Marketplace/Atelier handled by wildcard arms above.
             (Tab::Git, FocusZone::GitDetail) => {
                 self.tui_state.git_detail_scroll = offset;
             }

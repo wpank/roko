@@ -229,19 +229,19 @@ impl FocusZone {
             },
             Tab::Marketplace => match self {
                 Self::MarketDetail => Self::MarketList,
-                _ => Self::MarketList,
+                _ => Self::MarketDetail,
             },
             Tab::Atelier => match self {
                 Self::AtelierDetail => Self::AtelierList,
-                _ => Self::AtelierList,
+                _ => Self::AtelierDetail,
             },
             Tab::Learning => match self {
                 Self::LearningDetail => Self::LearningMetrics,
-                _ => Self::LearningMetrics,
+                _ => Self::LearningDetail,
             },
             Tab::Providers => match self {
                 Self::ProviderDetail => Self::ProviderList,
-                _ => Self::ProviderList,
+                _ => Self::ProviderDetail,
             },
         }
     }

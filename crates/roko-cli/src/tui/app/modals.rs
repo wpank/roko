@@ -130,8 +130,12 @@ impl App {
     /// Map a confirmed `ConfirmAction` to the corresponding
     /// `ExecutionCommand` and send it through the in-process channel (if
     /// connected to an executor).
-
-    pub(super) fn send_tui_command_for_confirm(&self, action: &ConfirmAction) {
+    ///
+    /// Returns `true` when the action maps to an executor command AND the
+    /// channel was available (i.e. the command was actually dispatched).
+    /// Returns `false` when the action does not map to an executor command or
+    /// when no executor channel is connected (standalone TUI).
+    pub(super) fn send_tui_command_for_confirm(&self, action: &ConfirmAction) -> bool {
         use crate::execution_control::ExecutionCommandKind;
 
         let (kind, plan_id, task_id) = match action {
@@ -179,11 +183,15 @@ impl App {
                 (ExecutionCommandKind::Cancel, Some(plan_id.clone()), None)
             }
             // Other confirm actions don't map to executor commands.
-            _ => return,
+            _ => return false,
         };
         if let Some(sender) = &self.exec_cmd_sender {
             let cmd = sender.build_command(kind, plan_id, task_id, None);
             let _ = sender.try_send(cmd);
+            true
+        } else {
+            // P1.1: no executor channel — caller will show feedback.
+            false
         }
     }
 

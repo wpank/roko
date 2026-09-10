@@ -826,8 +826,17 @@ impl App {
                             "Confirmed: {}",
                             truncate_str(&action_str, 40)
                         )));
-                    // Also send the corresponding ExecutionCommand to the executor.
-                    self.send_tui_command_for_confirm(action);
+                    // Also send the corresponding ExecutionCommand to the executor
+                    // (P1.1). If no executor channel is connected, show a warning
+                    // so the user knows the action was not forwarded.
+                    let dispatched = self.send_tui_command_for_confirm(action);
+                    if !dispatched {
+                        self.notifications.push_back(
+                            super::super::modals::Notification::warn(
+                                "not connected to a running executor — command not forwarded",
+                            ),
+                        );
+                    }
                 }
                 self.tui_state.pending_confirm = None;
                 self.tui_state.active_modal = None;

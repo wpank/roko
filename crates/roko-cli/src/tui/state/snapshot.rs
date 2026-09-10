@@ -108,6 +108,13 @@ impl TuiState {
             .iter()
             .map(|plan| (plan.id.clone(), plan.expanded))
             .collect();
+        // P5.5: preserve existing started_at so the timer is not reset on
+        // every data refresh for plans that are already active.
+        let existing_plan_started_at: HashMap<String, Instant> = self
+            .plans
+            .iter()
+            .filter_map(|plan| plan.started_at.map(|t| (plan.id.clone(), t)))
+            .collect();
         let plan_waves = derive_plan_waves(data.root(), &data.plans);
         let plan_snapshots = data.plan_task_snapshots();
         self.plans = data
@@ -183,8 +190,16 @@ impl TuiState {
                     files_modified: None,
                     insertions: None,
                     deletions: None,
+                    // P5.5: reuse existing Instant when the plan is already
+                    // tracked as active; only create a new one on first
+                    // transition into the active state.
                     started_at: if snapshot.map(|plan| plan.active).unwrap_or(!completed) {
-                        Some(Instant::now())
+                        Some(
+                            existing_plan_started_at
+                                .get(&p.id)
+                                .copied()
+                                .unwrap_or_else(Instant::now),
+                        )
                     } else {
                         None
                     },
@@ -511,6 +526,13 @@ impl TuiState {
             .iter()
             .map(|plan| (plan.id.clone(), plan.elapsed_secs))
             .collect();
+        // P5.5: preserve per-plan started_at so the live elapsed timer is not
+        // reset to Instant::now() on every snapshot update for active plans.
+        let prev_plan_started_at: HashMap<String, Instant> = self
+            .plans
+            .iter()
+            .filter_map(|plan| plan.started_at.map(|t| (plan.id.clone(), t)))
+            .collect();
         let prev_plan_wave: HashMap<String, Option<usize>> = self
             .plans
             .iter()
@@ -607,8 +629,16 @@ impl TuiState {
                     files_modified: None,
                     insertions: None,
                     deletions: None,
+                    // P5.5: reuse the existing Instant if the plan is already
+                    // tracked and active; only create a new one when the plan
+                    // transitions into the active state for the first time.
                     started_at: if plan.active {
-                        Some(Instant::now())
+                        Some(
+                            prev_plan_started_at
+                                .get(plan_id)
+                                .copied()
+                                .unwrap_or_else(Instant::now),
+                        )
                     } else {
                         None
                     },
@@ -659,7 +689,17 @@ impl TuiState {
                 files_modified: None,
                 insertions: None,
                 deletions: None,
-                started_at: if active { Some(Instant::now()) } else { None },
+                // P5.5: preserve existing Instant for plans already tracked.
+                started_at: if active {
+                    Some(
+                        prev_plan_started_at
+                            .get(&plan_id)
+                            .copied()
+                            .unwrap_or_else(Instant::now),
+                    )
+                } else {
+                    None
+                },
             });
         }
 

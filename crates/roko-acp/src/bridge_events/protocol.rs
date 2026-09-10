@@ -167,7 +167,7 @@ impl PermissionReplyChannel {
         let sender = self
             .inner
             .lock()
-            .expect("PermissionReplyChannel mutex poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take();
         match sender {
             Some(tx) => tx.send(decision).is_ok(),
@@ -179,7 +179,7 @@ impl PermissionReplyChannel {
     pub fn is_consumed(&self) -> bool {
         self.inner
             .lock()
-            .expect("PermissionReplyChannel mutex poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .is_none()
     }
 
@@ -189,7 +189,7 @@ impl PermissionReplyChannel {
     pub fn receiver_is_closed(&self) -> bool {
         self.inner
             .lock()
-            .expect("PermissionReplyChannel mutex poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .as_ref()
             .map(tokio::sync::oneshot::Sender::is_closed)
             .unwrap_or(true)

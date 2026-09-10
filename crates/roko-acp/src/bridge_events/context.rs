@@ -430,7 +430,7 @@ pub(crate) fn extract_at_mentions(text: &str) -> Vec<String> {
 
         let mut end = at_index + 1;
         while end < text.len() {
-            let ch = text[end..].chars().next().expect("valid char boundary");
+            let Some(ch) = text[end..].chars().next() else { break; };
             if ch.is_whitespace()
                 || ch == '@'
                 || matches!(

@@ -257,14 +257,17 @@ pub(crate) fn sanitize_tool_segment(input: &str) -> String {
     }
 }
 
+/// Maximum number of suffix attempts before giving up on unique name generation.
+const MAX_UNIQUE_TOOL_NAME_SUFFIX: u32 = 10_000;
+
 pub(crate) fn unique_tool_name(base: &str, used: &mut HashSet<String>) -> String {
     let base: String = base.chars().take(64).collect();
     if used.insert(base.clone()) {
         return base;
     }
 
-    for suffix in 2.. {
-        let suffix = format!("_{suffix}");
+    for suffix_num in 2..=MAX_UNIQUE_TOOL_NAME_SUFFIX {
+        let suffix = format!("_{suffix_num}");
         let max_base_len = 64usize.saturating_sub(suffix.len());
         let mut candidate: String = base.chars().take(max_base_len).collect();
         candidate.push_str(&suffix);
@@ -273,7 +276,15 @@ pub(crate) fn unique_tool_name(base: &str, used: &mut HashSet<String>) -> String
         }
     }
 
-    unreachable!("suffix search should always find a unique tool name")
+    // Fallback: generate a UUID-based name instead of panicking.
+    let fallback = format!("{}_fallback_{}", &base[..base.len().min(32)], used.len());
+    warn!(
+        base_name = %base,
+        attempts = MAX_UNIQUE_TOOL_NAME_SUFFIX,
+        "could not find unique tool name after max suffix attempts; using fallback"
+    );
+    used.insert(fallback.clone());
+    fallback
 }
 
 pub(crate) struct AcpMcpHandlerResolver {

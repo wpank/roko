@@ -601,6 +601,7 @@ fn concurrent_acp_and_external_experiment_writers_preserve_all_outcomes() {
         content: "Concurrent content".to_string(),
         model_slug: None,
         attempt_key: None,
+        prepared_assignment_ids: Vec::new(),
     };
     let barrier = Arc::new(std::sync::Barrier::new(3));
 

@@ -210,12 +210,14 @@ where
                     }
                     CognitiveEvent::TokenChunk(ref text) => {
                         assistant_text.push_str(text);
-                        let update = map_event_to_update(event);
-                        send_session_update(transport, session_id, update).await?;
+                        if let Some(update) = map_event_to_update(event) {
+                            send_session_update(transport, session_id, update).await?;
+                        }
                     }
                     other => {
-                        let update = map_event_to_update(other);
-                        send_session_update(transport, session_id, update).await?;
+                        if let Some(update) = map_event_to_update(other) {
+                            send_session_update(transport, session_id, update).await?;
+                        }
                     }
                 }
             }
@@ -288,12 +290,10 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    if session.is_busy() {
+    session.ensure_provider_runtime(workdir, roko_config);
+    if !session.try_begin_prompt() {
         return Err(BridgeEventsError::SessionBusy(session.session_id.clone()));
     }
-
-    session.ensure_provider_runtime(workdir, roko_config);
-    session.begin_prompt();
 
     let outcome =
         handle_session_prompt_inner(transport, session, params, workdir, roko_config).await;
@@ -325,27 +325,36 @@ where
             accumulated_cost_usd: session.accumulated_cost_usd,
         });
     }
-    let provider_health = Arc::clone(
-        session
-            .provider_health_registry
-            .as_ref()
-            .expect("ACP provider health initialized before prompt"),
-    );
-    let provider_rate_limiter = Arc::clone(
-        session
-            .provider_rate_limiter
-            .as_ref()
-            .expect("ACP provider rate limiter initialized before prompt"),
-    );
+    let provider_health = session
+        .provider_health_registry
+        .as_ref()
+        .ok_or_else(|| {
+            BridgeEventsError::Pipeline(anyhow::anyhow!(
+                "provider health registry not initialized before prompt"
+            ))
+        })?;
+    let provider_health = Arc::clone(provider_health);
+    let provider_rate_limiter = session
+        .provider_rate_limiter
+        .as_ref()
+        .ok_or_else(|| {
+            BridgeEventsError::Pipeline(anyhow::anyhow!(
+                "provider rate limiter not initialized before prompt"
+            ))
+        })?;
+    let provider_rate_limiter = Arc::clone(provider_rate_limiter);
     let experiment_path = workdir.join(".roko").join("learn").join("experiments.json");
     let experiment_assignment = if is_slash_command {
         None
     } else {
-        assign_acp_experiment(
-            &experiment_path,
-            &session.config_state.agent_mode,
-            &session.session_id,
-        )
+        // assign_acp_experiment acquires a std::sync::Mutex and reads from disk,
+        // so run it on a blocking thread to avoid stalling the tokio runtime.
+        let path = experiment_path.clone();
+        let mode = session.config_state.agent_mode.clone();
+        let sid = session.session_id.clone();
+        tokio::task::spawn_blocking(move || assign_acp_experiment(&path, &mode, &sid))
+            .await
+            .unwrap_or(None)
     };
     let (experiment_assignment, experiment_model_key) = applicable_acp_experiment(
         roko_config,
@@ -549,7 +558,7 @@ where
         Vec::new()
     };
 
-    let (event_sender, event_receiver) = mpsc::channel(64);
+    let (event_sender, event_receiver) = mpsc::channel(256);
     if !is_slash_command {
         emit_knowledge_card(&knowledge, &event_sender).await;
     }

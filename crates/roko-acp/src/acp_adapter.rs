@@ -187,8 +187,10 @@ impl AcpAdapter {
 
 impl EventConsumer for AcpAdapter {
     fn consume(&self, event: &RuntimeEvent) {
-        if let Some(cognitive_event) = self.map_event(event) {
-            let _ = self.sender.try_send(cognitive_event);
+        if let Some(cognitive_event) = self.map_event(event)
+            && self.sender.try_send(cognitive_event).is_err()
+        {
+            tracing::warn!("acp_adapter: cognitive event channel full or closed; event dropped");
         }
     }
 }

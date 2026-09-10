@@ -12,45 +12,48 @@ use crate::types::{ContentBlock, SessionUpdate, ToolCallStatus};
 
 use super::{BridgeEventsError, CognitiveEvent, Result};
 
-pub(crate) fn map_event_to_update(event: CognitiveEvent) -> SessionUpdate {
+pub(crate) fn map_event_to_update(event: CognitiveEvent) -> Option<SessionUpdate> {
     match event {
-        CognitiveEvent::TokenChunk(text) => SessionUpdate::AgentMessageChunk {
+        CognitiveEvent::TokenChunk(text) => Some(SessionUpdate::AgentMessageChunk {
             content: text_block(text),
             _meta: None,
-        },
-        CognitiveEvent::ThinkingChunk(text) => SessionUpdate::AgentThoughtChunk {
+        }),
+        CognitiveEvent::ThinkingChunk(text) => Some(SessionUpdate::AgentThoughtChunk {
             content: text_block(text),
-        },
+        }),
         CognitiveEvent::ToolCallStart {
             tool_call_id,
             title,
             kind,
             locations,
-        } => SessionUpdate::ToolCall {
+        } => Some(SessionUpdate::ToolCall {
             tool_call_id,
             title,
             kind,
             status: ToolCallStatus::InProgress,
             content: Vec::new(),
             locations,
-        },
+        }),
         CognitiveEvent::ToolCallComplete {
             tool_call_id,
             status,
             content,
-        } => SessionUpdate::ToolCallUpdate {
+        } => Some(SessionUpdate::ToolCallUpdate {
             tool_call_id,
             status,
             content,
             locations: None,
-        },
-        CognitiveEvent::PlanUpdate { entries } => SessionUpdate::Plan { entries },
-        CognitiveEvent::McpStatus { statuses } => SessionUpdate::McpStatusUpdate { statuses },
+        }),
+        CognitiveEvent::PlanUpdate { entries } => Some(SessionUpdate::Plan { entries }),
+        CognitiveEvent::McpStatus { statuses } => Some(SessionUpdate::McpStatusUpdate { statuses }),
         CognitiveEvent::Complete { .. }
         | CognitiveEvent::Failure { .. }
         | CognitiveEvent::MaxTokens
         | CognitiveEvent::PermissionRequest { .. } => {
-            unreachable!("terminal/async cognitive events are handled before update mapping")
+            tracing::warn!(
+                "unexpected terminal/async cognitive event reached update mapping; skipping"
+            );
+            None
         }
     }
 }

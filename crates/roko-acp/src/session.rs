@@ -655,6 +655,23 @@ impl AcpSession {
         self.busy.store(true, Ordering::Release);
     }
 
+    /// Atomically transition from idle to busy. Returns `false` if already busy.
+    ///
+    /// The `&mut self` receiver ensures exclusive access to the session from the
+    /// sequential handler loop. The atomic CAS is still needed because `cancel()`
+    /// can be called from a concurrent notification handler path.
+    pub fn try_begin_prompt(&mut self) -> bool {
+        if self
+            .busy
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return false;
+        }
+        self.cancel_token = CancelToken::new();
+        true
+    }
+
     /// Marks the session prompt loop as completed.
     pub fn finish_prompt(&mut self) {
         self.busy.store(false, Ordering::Release);

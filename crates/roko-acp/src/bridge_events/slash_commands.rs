@@ -652,8 +652,12 @@ Available commands (organized by Will's core loop):
         }
     };
 
-    let stdout = child.stdout.take().expect("stdout was piped");
-    let stderr = child.stderr.take().expect("stderr was piped");
+    let stdout = child.stdout.take().ok_or_else(|| {
+        anyhow::anyhow!("subprocess stdout was not piped; check Command::stdout(Stdio::piped())")
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| {
+        anyhow::anyhow!("subprocess stderr was not piped; check Command::stderr(Stdio::piped())")
+    })?;
     let stream_outcome =
         forward_slash_command_streams(session_id, stdout, stderr, &cancel_token, &event_sender)
             .await;
@@ -969,10 +973,14 @@ pub(crate) async fn run_shell_command(
     };
 
     // Interleave stdout and stderr reading.
-    let mut stdout_lines =
-        tokio::io::BufReader::new(child.stdout.take().expect("stdout was piped")).lines();
-    let mut stderr_lines =
-        tokio::io::BufReader::new(child.stderr.take().expect("stderr was piped")).lines();
+    let stdout = child.stdout.take().ok_or_else(|| {
+        anyhow::anyhow!("subprocess stdout was not piped; check Command::stdout(Stdio::piped())")
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| {
+        anyhow::anyhow!("subprocess stderr was not piped; check Command::stderr(Stdio::piped())")
+    })?;
+    let mut stdout_lines = tokio::io::BufReader::new(stdout).lines();
+    let mut stderr_lines = tokio::io::BufReader::new(stderr).lines();
     let mut stdout_done = false;
     let mut stderr_done = false;
     let mut had_output = false;

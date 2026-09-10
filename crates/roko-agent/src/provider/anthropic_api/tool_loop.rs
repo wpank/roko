@@ -294,7 +294,10 @@ fn tool_result_content(result: &ToolResult) -> Value {
                 })
                 .collect();
             if blocks.len() == 1 {
-                blocks.into_iter().next().unwrap()
+                blocks
+                    .into_iter()
+                    .next()
+                    .expect("len checked to be exactly 1 above")
             } else {
                 Value::Array(blocks)
             }

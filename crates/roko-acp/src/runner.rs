@@ -1994,9 +1994,12 @@ async fn run_single_review(
             }
         }
         Err(e) => {
-            warn!(error = %e, "reviewer failed, treating as approved");
-            run.pipeline.step(PipelineEvent::ReviewApproved {
-                summary: "Review skipped (agent error)".into(),
+            warn!(error = %e, "reviewer agent failed; treating as revision-required");
+            run.pipeline.step(PipelineEvent::ReviewRevise {
+                findings: vec![format!(
+                    "Reviewer agent failed and could not complete the review: {e}. \
+                     Manual review required before merging."
+                )],
             })
         }
     }
@@ -2064,7 +2067,9 @@ async fn run_multi_role_review(
             }
         }
         Err(e) => {
-            warn!(error = %e, "architect reviewer failed, continuing");
+            warn!(error = %e, "architect reviewer failed");
+            all_approved = false;
+            all_findings.push(format!("[architect] agent failed: {e}"));
         }
     }
 
@@ -2091,7 +2096,9 @@ async fn run_multi_role_review(
             }
         }
         Err(e) => {
-            warn!(error = %e, "auditor reviewer failed, continuing");
+            warn!(error = %e, "auditor reviewer failed");
+            all_approved = false;
+            all_findings.push(format!("[auditor] agent failed: {e}"));
         }
     }
 

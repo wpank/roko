@@ -567,12 +567,7 @@ pub(crate) fn truncate_assistant_history(text: &str) -> String {
     truncated
 }
 
-/// Sends a `session/request_permission` request to the editor and waits for the decision.
-///
-/// Returns `PermissionDecision::Allow` if the action is already pre-granted.
-/// Returns `PermissionDecision::Reject` on timeout or error, which is the safe default.
-///
-
+/// Maps a knowledge tier to its human-readable label.
 pub(crate) fn knowledge_tier_label(tier: KnowledgeTier) -> &'static str {
     match tier {
         KnowledgeTier::Transient => "transient",

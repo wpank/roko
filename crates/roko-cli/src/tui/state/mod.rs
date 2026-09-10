@@ -1443,7 +1443,6 @@ impl PlanTreeFilter {
     }
 }
 
-/// Build a unified, time-sorted log from all available data sources.
 // ---------------------------------------------------------------------------
 // Phase pipeline types (for phase_compact widget)
 // ---------------------------------------------------------------------------

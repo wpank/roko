@@ -44,7 +44,6 @@ impl App {
     /// to the correct state field. Updates focus to the hovered panel so
     /// subsequent keyboard scrolling continues from the same panel (#368).
     /// Falls back to `scroll_focused` when the cursor is outside any known zone.
-
     pub(super) fn scroll_at(&mut self, x: u16, y: u16, delta: i32) {
         let zones = super::super::hit_test::HitZones::compute(
             super::super::layout::responsive_outer_margin(Rect::new(
@@ -77,7 +76,6 @@ impl App {
     /// Each target maps to exactly one scroll state field, avoiding the old
     /// pattern of temporarily swapping focus and falling through to a generic
     /// diff_scroll fallback.
-
     pub(super) fn scroll_by_target(&mut self, target: super::super::hit_test::ScrollTarget, delta: i32) {
         use super::super::hit_test::ScrollTarget;
         match target {

@@ -583,7 +583,6 @@ pub(crate) fn check_against_anti_knowledge(
     }
 
     // Pre-encode all AntiKnowledge entries.
-    let _encoder = KnowledgeHdcEncoder;
     let anti_vectors: Vec<_> = anti_entries
         .iter()
         .map(|e| (e, fingerprint_entry(e), fingerprint_content(&e.content)))

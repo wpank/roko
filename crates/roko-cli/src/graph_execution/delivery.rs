@@ -21,8 +21,11 @@ use std::sync::Arc;
 use roko_graph::delivery::{
     CompletionDeliveryReceiptV1, CompletionDeliveryRequest, CompletionDeliveryService,
     CompletionDeliveryState, DELIVERY_EXTENSION_KEY, DeliveryError, DeliveryReceiptStore,
-    ReleasePolicy, delivery_extension_value,
+    delivery_extension_value,
 };
+
+#[cfg(test)]
+use roko_graph::delivery::ReleasePolicy;
 use tracing::{debug, info, warn};
 
 use crate::orchestrator::{MergeQueue, MergeRequest};

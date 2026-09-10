@@ -1588,7 +1588,6 @@ impl App {
     }
 
     /// Refresh agent output search matches for the currently selected agent (#367).
-
     pub(super) fn refresh_agent_output_search_matches(&mut self) {
         let selected_id = self
             .tui_state
@@ -1626,7 +1625,6 @@ impl App {
     }
 
     /// Map a hit_test::FocusZone to the input::FocusZone used by keyboard/scroll routing.
-
     pub(super) fn handle_mouse(&mut self, mouse: MouseEvent) {
         // When a modal is open, scroll/click cannot affect underlying content
         // (#368). Route scroll to the modal and consume all other events.

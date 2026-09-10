@@ -2428,7 +2428,11 @@ async fn cmd_plan_run_engine(
     let shared_daimon_state: Option<std::sync::Arc<std::sync::Mutex<roko_daimon::DaimonState>>> = {
         let dims_vec = &roko_config.daimon.strategy_space.dimensions;
         if dims_vec.len() == 8 {
-            let dims: [String; 8] = dims_vec.clone().try_into().unwrap();
+            // SAFETY: len == 8 is checked above, so try_into() is infallible here.
+            let dims: [String; 8] = dims_vec
+                .clone()
+                .try_into()
+                .expect("dims_vec has exactly 8 elements (checked above)");
             let def = roko_daimon::StrategySpaceDefinition {
                 domain: roko_config.daimon.strategy_space.domain.clone(),
                 dimensions: dims,
@@ -3168,15 +3172,14 @@ async fn cmd_plan_run_engine(
             }))
             .unwrap_or_default()
         );
-    } else if !cli.quiet && !launch_tui {
-        // Only print the summary line when no TUI was shown — otherwise
-        // the TUI already rendered all progress information interactively.
-        tracing::info!(
-            plan_count,
-            total_tasks,
-            total_output_count,
-            total_cost_usd,
-            "Graph Engine complete"
+    } else if !cli.quiet {
+        // Always print a human-readable summary to stdout so `--no-tui` and
+        // piped invocations produce visible output.  When the TUI was active
+        // the user already saw interactive progress, but one final summary
+        // line is still useful (and harmless) after the terminal is restored.
+        println!(
+            "Graph Engine complete: {} plan(s), {} task(s), ${:.2}",
+            plan_count, total_tasks, total_cost_usd,
         );
     }
 

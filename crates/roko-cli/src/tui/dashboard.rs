@@ -1561,6 +1561,11 @@ fn load_plan_summaries(root: &Path, state: &Value) -> Vec<PlanSummary> {
         });
     }
 
+    // Overlay Graph Engine checkpoint status so that plans executed via
+    // `roko plan run` (Graph engine) show their terminal state even though
+    // `tasks.toml` is never updated by the engine.
+    crate::plan::overlay_graph_checkpoint_status(root, &mut summaries);
+
     summaries.sort_by(|a, b| a.id.cmp(&b.id));
     summaries
 }

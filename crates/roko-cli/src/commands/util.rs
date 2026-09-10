@@ -643,7 +643,20 @@ pub(crate) async fn cmd_status(
         if let Some(resume_id) = &cli.resume {
             status.session_id = Some(resume_id.clone());
         }
-        status.signal_count = Some(all.len());
+        // Include efficiency event count so the JSON consumer sees activity
+        // even when the signal substrate is empty (Graph-engine-only runs).
+        let efficiency_count_json: usize = {
+            let eff_path = learn_dir.join("efficiency.jsonl");
+            read_efficiency_events(&eff_path)
+                .await
+                .map(|events| events.len())
+                .unwrap_or(0)
+        };
+        status.signal_count = Some(if all.is_empty() && efficiency_count_json > 0 {
+            efficiency_count_json
+        } else {
+            all.len()
+        });
         status.episode_count = Some(episode_count);
         status.last_episode_passed = last_passed;
         status.cfactor = cfactor_snapshot;
@@ -684,12 +697,32 @@ pub(crate) async fn cmd_status(
         *counts.entry(sig.kind.to_string()).or_default() += 1;
     }
 
-    println!("signal counts ({} total):", all.len());
-    if counts.is_empty() {
-        println!("  (empty)");
+    // Show signal counts (substrate) alongside efficiency event counts
+    // (Graph engine).  The Graph engine records per-turn efficiency events
+    // but does not write to the signal substrate, so signal counts alone
+    // are misleading after a Graph-engine-only run.
+    let efficiency_path_early = learn_dir.join("efficiency.jsonl");
+    let efficiency_count: usize = read_efficiency_events(&efficiency_path_early)
+        .await
+        .map(|events| events.len())
+        .unwrap_or(0);
+
+    if all.is_empty() && efficiency_count > 0 {
+        println!(
+            "activity: {} efficiency event(s) recorded (signal substrate empty)",
+            efficiency_count
+        );
     } else {
-        for (kind, n) in &counts {
-            println!("  {kind:<24} {n}");
+        println!("signal counts ({} total):", all.len());
+        if counts.is_empty() {
+            println!("  (empty)");
+        } else {
+            for (kind, n) in &counts {
+                println!("  {kind:<24} {n}");
+            }
+        }
+        if efficiency_count > 0 {
+            println!("  {:<24} {}", "efficiency_events", efficiency_count);
         }
     }
 

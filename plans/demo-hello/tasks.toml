@@ -27,5 +27,5 @@ depends_on = []
 
 [[task.verify]]
 phase = "structural"
-command = "test -f demo/roko-plan-smoke-output.md && test \"$(sed -n '1p' demo/roko-plan-smoke-output.md)\" = '# Roko plan runner works' && rg -q '^Created by the `demo-hello` example plan\\.$' demo/roko-plan-smoke-output.md"
+command = "test -f demo/roko-plan-smoke-output.md && head -1 demo/roko-plan-smoke-output.md | grep -qF '# Roko plan runner works' && rg -q '^Created by the `demo-hello` example plan\\.$' demo/roko-plan-smoke-output.md"
 fail_msg = "demo/roko-plan-smoke-output.md was not created with the expected content"

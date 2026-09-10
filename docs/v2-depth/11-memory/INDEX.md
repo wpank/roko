@@ -6,6 +6,8 @@ Covers three source domains: the **Neuro** knowledge store (types, tiers, HDC, d
 **Coordination** stigmergy (pheromones, mesh sync, collective intelligence). Each depth doc
 redesigns its source material using unified primitives (Signal, Cell, Graph, Loop, Bus, Store).
 
+> **Implementation status (2026-09-10):** SUBSTANTIALLY IMPLEMENTED (E24 10/10 accepted). Balance demurrage/reinforcement, falsifiers, streaming HDC role/filler lookup, temporal query/GC, distillation and cross-domain transfer, configurable progression, Dream consolidation, and CLI lifecycle maintenance are wired. Dreams resident daemon scheduling is live for adaptive idle, cron, and episode-count triggers with idle queuing and checkpoint restore. Bus-reactive/intensive backlog controls remain partial. Stigmergy/pheromone/mesh-sync docs (11-15) cover future coordination features; local pheromone primitives exist but multi-agent coordination remains product work.
+
 ---
 
 ## Depth docs (15)

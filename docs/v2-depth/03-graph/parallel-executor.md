@@ -278,6 +278,8 @@ These hold for ALL reachable markings, providing global guarantees without state
 
 ## Reality Check: Implementation vs. Spec
 
+> **Updated 2026-09-10:** The legacy Runner-v2 event loop has been deleted. The Graph engine (`roko-graph`) is the sole execution engine as of the 2026-09-05 engine convergence. The `ParallelExecutor` state machine described in this document is the conceptual model; the concrete execution is now driven by `roko-graph` cells and topology. The gaps below remain relevant unless explicitly noted as resolved.
+
 From the mori-diffs reality check:
 
 **Budget check is post-hoc.** The per-plan budget check runs at `SpawnAgent` dispatch time, but cost accumulates only after the agent completes a turn. An expensive turn can overshoot. The spec calls for pre- and post-dispatch checks, plus per-turn re-evaluation.
@@ -286,13 +288,13 @@ From the mori-diffs reality check:
 
 **No concurrency limiting for cargo.** Multiple plans can spawn `cargo test` / `cargo clippy` simultaneously, competing for build artifacts and filesystem locks. The spec calls for a `GateSemaphore` (default: 2 concurrent cargo processes).
 
-**No failure classification.** Gate failures are binary (passed/failed). The event loop treats all failures identically. The spec calls for `GateFailureClassification` (Permanent vs Transient) to decide retry strategy.
+**No failure classification.** Gate failures are binary (passed/failed). The spec calls for `GateFailureClassification` (Permanent vs Transient) to decide retry strategy.
 
 **No retry backoff.** Retries are immediate. The spec calls for exponential backoff: 5s, 10s, 20s, 40s (capped at 45s) with +/-20% jitter.
 
-**No plan-level timeout.** `RunConfig::timeout_secs` exists but is only per-task. A plan can loop through retries indefinitely. The spec calls for a 1-hour wall-clock hard limit.
+**No plan-level timeout.** `RunConfig::timeout_secs` exists but is only per-task. The spec calls for a 1-hour wall-clock hard limit.
 
-**What IS wired:** The `ParallelExecutor` state machine, `PlanStateMachine` transitions, `PlanState` tracking, action/event vocabulary, snapshot/restore, and the tick loop in the runner v2 event loop. The pure-state-machine architecture is solid; the gaps are in the runtime harness's safety guardrails.
+**What IS wired:** The Graph engine (`roko-graph`) drives plan execution with bounded parallel waves, cost-state enforcement, resume-durable Hot tick/output/budget checkpoints, and seven cognitive Cells. `PlanState` tracking, action/event vocabulary, and snapshot/restore are live. The pure-state-machine architecture is solid; the gaps are in the runtime harness's safety guardrails (gate timeout, cargo semaphore, failure classification, retry backoff).
 
 ---
 

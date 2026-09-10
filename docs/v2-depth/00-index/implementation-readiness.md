@@ -2,6 +2,8 @@
 
 > Depth for [00-INDEX.md](../../unified/00-INDEX.md), the implementation readiness audit, and the consolidated roadmap. This doc derives a build sequence from the integration topology's Cell dependency graph, identifies parallelizable tracks, locates risk cliffs, and adds a Loop that tracks readiness metrics.
 
+> **Reconciliation note (2026-09-10):** This document was written when Bus, HDC-per-Signal, and orchestrator migration were all future work. As of 2026-09-10 these are substantially complete: the Graph engine is the sole execution engine (Runner-v2 event_loop.rs deleted), E23–E48 are accepted (48/48 epics), 124/124 executable tasks are complete, and all five safety layers (E34 8/8) are live. The Phase A–E build sequence below remains accurate as historical architecture, but the "target/gap" labels throughout reflect the state at audit time (~2025). Current runtime status for each subsystem is tracked in `CLAUDE.md` and `.roko/GAPS.md`.
+
 ---
 
 ## 1. Method: Topological Sort of the Cell Dependency Graph

@@ -2,7 +2,7 @@
 
 > Depth for [03-GRAPH.md](../../unified/03-GRAPH.md). How plans are discovered on disk, parsed into structured metadata, and assembled into a cross-plan executable Graph where each task is a Cell.
 
-> **Implementation status (2026-08-17):** IMPLEMENTED. Plan discovery (filesystem scan, frontmatter parsing, layout detection) and DAG construction (cross-plan edges, topological sort, wave computation) are wired in runner-v2. The `UnifiedTaskDag` and `PlanDiscovery` types in `roko-cli/src/runner/task_dag.rs` are the production path. Optimization passes (fusion, culling, speculation, incremental recomputation) are spec-level design targets.
+> **Implementation status (2026-08-17, updated 2026-09-10):** IMPLEMENTED. Plan discovery (filesystem scan, frontmatter parsing, layout detection) and DAG construction (cross-plan edges, topological sort, wave computation) are wired. The `UnifiedTaskDag` and `PlanDiscovery` types in `roko-cli/src/runner/task_dag.rs` are the production path. **Note:** "runner-v2" references in this doc refer to the legacy event loop that has since been deleted; the Graph engine (`roko-graph`) is now the sole execution engine as of the 2026-09-05 engine convergence. Optimization passes (fusion, culling, speculation, incremental recomputation) remain spec-level design targets.
 
 ---
 
@@ -283,17 +283,19 @@ Invariants: completed tasks are immutable, running tasks can only be cancelled t
 
 ## Reality Check: Implementation vs. Spec
 
-The mori-diffs document (`02-PLAN-EXECUTION.md`) reveals several gaps between the implementation and this spec-level design:
+> **Updated 2026-09-10:** The legacy Runner-v2 event loop has been deleted. The Graph engine (`roko-graph`) is the sole execution engine. The gaps below described the legacy event loop; current status reflects the Graph engine:
 
-**Sentinel-based resolution (not DAG).** The current runner v2 event loop uses sentinel task names (`"next"`, `"fix"`, `"regen-verify"`) instead of proper DAG resolution. It walks all tasks and picks the first whose `is_ready()` returns true -- a linear scan sorted by string ID, not topological order. No cycle detection, no parallelism within a plan, no cross-plan dependency enforcement.
+The mori-diffs document (`02-PLAN-EXECUTION.md`) revealed several gaps between the legacy runner-v2 implementation and this spec-level design:
 
-**No file-conflict inference at runtime.** `UnifiedTaskDag` exists in `roko-cli::orchestrator` with file-overlap detection, but the runner v2 event loop does not use it. Tasks are dispatched one-at-a-time.
+**Sentinel-based resolution (not DAG).** [Historical: legacy runner-v2] The old event loop used sentinel task names (`"next"`, `"fix"`, `"regen-verify"`) instead of proper DAG resolution. The Graph engine now uses proper topological wave execution via `roko-graph`.
 
-**No wave computation at dispatch time.** Waves are computed by `UnifiedTaskDag::waves()` but not consulted by the event loop's tick cycle.
+**No file-conflict inference at runtime.** [Historical: legacy runner-v2] Tasks are now dispatched by the Graph engine with bounded parallel waves. The `UnifiedTaskDag` infrastructure at `roko-cli/src/runner/task_dag.rs` remains as a shared helper.
 
-**Advanced passes are aspirational.** Task fusion, speculative execution, graph partitioning, and incremental recomputation are designed but not implemented.
+**No wave computation at dispatch time.** [Historical: legacy runner-v2] The Graph engine computes and executes waves via `roko_graph` topology. Cross-plan parallelism is bounded by `max_concurrent_plans`.
 
-**What IS wired:** Plan discovery (both layouts), frontmatter parsing, TOML task parsing, plan ranking, and basic topological sort in `crates/roko-cli/src/orchestrator/dag.rs`. The foundation exists; the gap is in the runner's use of it.
+**Advanced passes are aspirational.** Task fusion, speculative execution, graph partitioning, and incremental recomputation are still designed but not implemented.
+
+**What IS wired:** Plan discovery (both layouts), frontmatter parsing, TOML task parsing, plan ranking, topological sort, and Graph-engine-driven execution. The foundation is solid; the gaps are in the advanced optimization passes.
 
 ---
 

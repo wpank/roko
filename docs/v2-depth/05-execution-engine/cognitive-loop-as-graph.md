@@ -2,6 +2,8 @@
 
 > Depth for [05-EXECUTION-ENGINE.md](../../unified/05-EXECUTION-ENGINE.md). Redesigns the 7-step universal cognitive loop as a concrete Hot Graph with typed Cells, derives resumability from the Workflow/Activity split, and shows what emerges when loops compose.
 
+> **Implementation status (2026-09-10):** PARTIALLY IMPLEMENTED. The Graph engine (`roko-graph`) is the sole execution engine — `WorkflowEngine` was retired (#276) and Runner-v2 event_loop.rs was deleted. The 7-Cell cognitive loop described here is the architectural target. As of 2026-09-05, the Graph engine has seven cognitive Cells, five Verify Cells, Hot tick/output/budget checkpoints, and restart-durable resume wired. The Workflow/Activity split, nested loop composition (Gamma/Theta/Delta timescales), and T0 short-circuit as a conditional edge remain design targets — the Graph engine currently runs plans as standard Flows, not as persistent Hot Graphs per agent. See `CLAUDE.md` for the current wired status of each component.
+
 ---
 
 ## 1. The Loop Is Not a Metaphor

@@ -54,10 +54,13 @@ accepted as follow-up debt:
 
 1. Integration provenance and release closure for the current dirty implementation tree,
    followed by fresh-clone/post-merge verification.
-2. Documentation truth and generated validation: 3/71 DOC tasks are done and 68 remain
+2. Documentation truth and generated validation: 13/71 DOC tasks are done and 58 remain
    ready; individual supersession evidence and legacy/repo-wide link work remain. The exact
    status/source registries, maintained operator-corpus links, and `plans/INDEX.md` drift gate
-   are now bounded and checked.
+   are now bounded and checked. 2026-09-10: reconciled the 10 priority docs (00-index through
+   17-security) covering 23 files — added implementation status headers, updated stale
+   runner-v2/WorkflowEngine references, corrected route count (~317→~376), gate count (11/14→19),
+   TUI tab count (F1-F7→F1-F11), and tool count (16→16 local/35 total).
 3. Real process-level lifecycle proof for Graph, crash/restart equivalence, and deterministic
    self-host repair.
 4. Cross-surface durable projection agreement so the converged frontend DataHub, TUI, API,

@@ -2,6 +2,8 @@
 
 > Depth for [16-SECURITY.md](../../unified/16-SECURITY.md). Safety as compositions of Verify Cells in Pipeline Graphs, capability intersection, taint lattice IFC, and adaptive risk Loops.
 
+> **Implementation status (2026-09-10):** COMPLETE (E34 8/8 strict accepted 2026-08-17). Trust-origin IFC taint/TaintTracker, five-layer immune Graph, five-head corrigibility ordering, five-level sandbox policy, exact capability wrappers, persistent transitive incident handling, mandatory audited production hooks, universal host-visible tool-result screening, canonical-workspace controls, verified output attestations, bounded evidence/checkpoints, provider isolation, and tool cooldown/isolation are all live. Provider-owned internals, trace Signals, adaptive immune memory, and externally anchored whole-ledger authenticity remain broader product scope.
+
 ---
 
 ## Depth docs (7)

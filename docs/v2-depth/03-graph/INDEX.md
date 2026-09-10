@@ -2,6 +2,8 @@
 
 Depth for [03-GRAPH.md](../../unified/03-GRAPH.md)
 
+> **Implementation status (2026-09-10):** SUBSTANTIALLY IMPLEMENTED. The Graph engine (`roko-graph`) is the sole execution engine as of 2026-09-05 (Runner-v2 event_loop.rs deleted; WorkflowEngine retired by #276). Bounded parallel waves, conditional routing, live provider dispatch, paid-failure-aware cost enforcement, atomic reservations, resume-durable schema-v2 cost state, graph-fingerprinted Activity resume, restart-durable Hot tick/output/budget checkpoints, seven cognitive Cells, five Verify Cells, immune decision Graph, ProductionPlanTopology, and GuaranteedFinallyController are wired. Docs in this section that reference "runner-v2" or "runner v2 event loop" describe the legacy system that has been replaced.
+
 ---
 
 ## Source docs (14)

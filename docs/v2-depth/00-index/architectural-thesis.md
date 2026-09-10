@@ -2,6 +2,8 @@
 
 > Depth for [00-INDEX.md](../../unified/00-INDEX.md), [01-SIGNAL.md](../../unified/01-SIGNAL.md) layers, and the five-layer taxonomy. This doc re-derives the layer architecture as a structural consequence of Cell/Graph composition and protocol conformance, not as arbitrary boundary-drawing. It then extends the model to L5: self-evolution.
 
+> **Reconciliation note (2026-09-10):** This document describes the architectural design and is accurate as written. For current implementation status: 48/48 epics accepted, 124/124 executable tasks complete, Graph engine is the sole executor (Runner-v2 deleted), E34 safety layer complete (8/8 strict). The primary type is `Signal` (not `Engram` — `Engram` is kept as a backward-compat alias). See `CLAUDE.md` for the full runtime status table.
+
 ---
 
 ## 1. The Core Claim, Restated

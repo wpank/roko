@@ -73,9 +73,11 @@ Depth for [14-TOOLS.md](../../unified/14-TOOLS.md) (formerly 13-BUILTIN-BLOCK-CA
 
 ## Key implementation paths
 
+> **Implementation status (2026-09-10):** IMPLEMENTED (E32 8/8 manifest). Signed dependency graphs, bounded typed WASM hooks, strict plugin admission, verified relay/install, and current CLI/MCP targets satisfy the manifest. The tool count in roko-std is 35 definitions by default (16 executable local + 19 GitHub MCP); 52 with typed optional-chain placeholders. The "16 built-in tools" count in this doc refers to the 16 executable local tools. WIT/Component hostcalls and OpenClaw/legacy adapter parity remain separate roadmap work.
+
 | Component | Crate | Path |
 |---|---|---|
-| 16 built-in tool definitions | roko-std | `crates/roko-std/src/tool/builtin/mod.rs` |
+| 16 executable local tool definitions | roko-std | `crates/roko-std/src/tool/builtin/mod.rs` |
 | Tool registry + role filtering | roko-std | `crates/roko-std/src/tool/registry.rs` |
 | Safety hook chain | roko-agent | `crates/roko-agent/src/safety/` |
 | MCP client + tool converter | roko-agent | `crates/roko-agent/src/mcp/` |

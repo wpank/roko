@@ -1385,6 +1385,16 @@ fn spec_for(name: &str) -> Option<&'static SectionSpec> {
     SECTION_SPECS.iter().find(|s| s.name == name)
 }
 
+/// Return the rendered heading for a canonical section name.
+///
+/// For example, `"conventions"` maps to `"## Project Conventions"`.
+/// Sections with no explicit heading (like `"role_identity"`) return `None`.
+/// Unknown section names also return `None`.
+#[must_use]
+pub fn section_heading_for_name(name: &str) -> Option<&'static str> {
+    spec_for(name).and_then(|s| s.heading)
+}
+
 fn section_order_rank(name: &str) -> u8 {
     spec_for(name).map_or(12, |s| s.order_rank)
 }

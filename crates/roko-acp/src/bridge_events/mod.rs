@@ -38,8 +38,10 @@ pub(crate) use cost::{
 };
 pub(crate) use experiments::{
     AcpCascadeRequest, applicable_acp_experiment,
-    assign_acp_experiment, cascade_router_model_slugs, cascade_select_model, record_acp_experiment_outcome,
-    record_cascade_observation, render_experiment_context, resolve_acp_dispatch_model,
+    assign_acp_experiment, cascade_router_model_slugs, cascade_select_model,
+    mark_acp_experiment_dispatched, record_acp_experiment_outcome,
+    record_cascade_observation, render_experiment_context, replace_experiment_section,
+    resolve_acp_dispatch_model,
 };
 pub(crate) use dispatch::{
     run_anthropic_cognitive_task, run_openai_compat_cognitive_task,
@@ -517,7 +519,11 @@ where
         full_system = append_context(&full_system, &file_context);
         full_system = append_context(&full_system, &knowledge_context);
         if let Some(assignment) = experiment_assignment.as_ref() {
-            full_system = append_context(&full_system, &render_experiment_context(assignment));
+            full_system = replace_experiment_section(&full_system, assignment);
+            // Mark the experiment as dispatched with the final prompt hash,
+            // completing the Prepared -> Dispatched lifecycle transition.
+            let prompt_hash = roko_core::ContentHash::of(full_system.as_bytes()).to_hex();
+            mark_acp_experiment_dispatched(&experiment_path, assignment, &prompt_hash);
         }
         let mut msgs = session.build_messages_array(&full_system, &prompt_text);
         // If the prompt contains Image blocks, replace the last user message's

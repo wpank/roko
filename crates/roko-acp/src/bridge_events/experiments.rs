@@ -37,6 +37,9 @@ pub(crate) struct AcpExperimentAssignment {
     /// P1-21: Durable receipt key for the canonical experiment lifecycle.
     /// Populated when `prepare_attempt_assignments` succeeds.
     pub(crate) attempt_key: Option<PromptAttemptKey>,
+    /// Assignment IDs returned by `prepare_attempt_assignments`, needed by
+    /// `mark_attempt_dispatched` to record the exact included subset.
+    pub(crate) prepared_assignment_ids: Vec<String>,
 }
 
 pub(crate) fn experiment_store_lock() -> std::sync::MutexGuard<'static, ()> {
@@ -82,14 +85,20 @@ pub(crate) fn assign_acp_experiment(
         Some(role),
         &[experiment.section_name.as_str()],
     );
-    let attempt_key = match prepare_result {
-        Ok(_) => Some(attempt_key),
+    let (attempt_key, prepared_assignment_ids) = match prepare_result {
+        Ok(assignments) => {
+            let ids = assignments
+                .iter()
+                .map(|a| a.assignment_id.clone())
+                .collect::<Vec<_>>();
+            (Some(attempt_key), ids)
+        }
         Err(err) => {
             tracing::debug!(
                 error = %err,
                 "P1-21: ACP experiment receipt preparation failed (non-fatal)"
             );
-            None
+            (None, Vec::new())
         }
     };
 
@@ -100,6 +109,7 @@ pub(crate) fn assign_acp_experiment(
         content: variant.content.clone(),
         model_slug: variant.slug.clone().filter(|slug| !slug.trim().is_empty()),
         attempt_key,
+        prepared_assignment_ids,
     })
 }
 
@@ -166,6 +176,92 @@ pub(crate) fn render_experiment_context(assignment: &AcpExperimentAssignment) ->
         assignment.section_name,
         assignment.content.trim()
     )
+}
+
+/// Replace a named section's content in a flat system prompt string.
+///
+/// Looks up the canonical heading for `assignment.section_name` (e.g.
+/// `"conventions"` -> `"## Project Conventions"`) and replaces everything
+/// between that heading and the next `## ` heading (or end of string) with
+/// the experiment variant content.
+///
+/// For heading-less sections (like `role_identity`), replaces the content
+/// from the start of the prompt up to the first `## ` heading.
+///
+/// Falls back to `append_context` if the heading is not found in the
+/// prompt, so the experiment content is never silently lost.
+pub(crate) fn replace_experiment_section(
+    system_prompt: &str,
+    assignment: &AcpExperimentAssignment,
+) -> String {
+    let section_name = assignment.section_name.as_str();
+    let variant_content = assignment.content.trim();
+
+    match roko_compose::section_heading_for_name(section_name) {
+        Some(heading) => {
+            // Section has a heading like "## Project Conventions".
+            // Find it in the prompt and replace everything between it and the
+            // next heading.
+            if let Some(heading_start) = system_prompt.find(heading) {
+                let content_start = heading_start + heading.len();
+                // Find the next "## " heading after this one, or end of string.
+                let rest = &system_prompt[content_start..];
+                let next_heading_offset = find_next_heading(rest);
+                let content_end = content_start + next_heading_offset;
+
+                let mut result = String::with_capacity(system_prompt.len());
+                result.push_str(&system_prompt[..content_start]);
+                result.push_str("\n\n");
+                result.push_str(variant_content);
+                result.push_str("\n\n");
+                result.push_str(system_prompt[content_end..].trim_start());
+                result
+            } else {
+                // Heading not present in the prompt -- fall back to append.
+                debug!(
+                    section = section_name,
+                    heading,
+                    "experiment section heading not found in system prompt; appending"
+                );
+                crate::knowledge::append_context(system_prompt, &render_experiment_context(assignment))
+            }
+        }
+        None => {
+            // Heading-less sections (e.g. `role_identity`) occupy the content
+            // before the first `## ` heading.
+            let first_heading = find_next_heading(system_prompt);
+            if first_heading > 0 {
+                let mut result = String::with_capacity(system_prompt.len());
+                result.push_str(variant_content);
+                result.push_str("\n\n");
+                result.push_str(system_prompt[first_heading..].trim_start());
+                result
+            } else {
+                // No heading found at all -- replace the entire prompt.
+                variant_content.to_string()
+            }
+        }
+    }
+}
+
+/// Find the byte offset of the next markdown `## ` heading in `text`.
+///
+/// Returns `text.len()` if no heading is found (i.e. content runs to
+/// the end of the string).
+fn find_next_heading(text: &str) -> usize {
+    // Look for "\n## " which marks a heading at the start of a line.
+    // Also check if the text itself starts with "## ".
+    let trimmed = text.trim_start_matches('\n');
+    let skip = text.len() - trimmed.len();
+
+    if trimmed.starts_with("## ") {
+        return skip;
+    }
+
+    text[skip..]
+        .find("\n## ")
+        .map(|pos| skip + pos + 1) // +1 to skip past the newline, pointing at "## "
+        .unwrap_or(text.len())
 }
 
 pub(crate) fn record_acp_experiment_outcome(
@@ -472,5 +568,41 @@ pub(crate) fn record_cascade_observation(
             );
         }
     })
+}
+
+/// Mark an ACP experiment attempt as dispatched with the final prompt hash.
+///
+/// This completes the `Prepared -> Dispatched` transition in the durable
+/// experiment lifecycle, matching what the Graph engine does for runner
+/// dispatches. Non-fatal: logs and returns on failure.
+pub(crate) fn mark_acp_experiment_dispatched(
+    experiment_path: &Path,
+    assignment: &AcpExperimentAssignment,
+    prompt_hash: &str,
+) {
+    let Some(attempt_key) = assignment.attempt_key.as_ref() else {
+        return;
+    };
+    if assignment.prepared_assignment_ids.is_empty() {
+        return;
+    }
+
+    let included_ids: Vec<&str> = assignment
+        .prepared_assignment_ids
+        .iter()
+        .map(String::as_str)
+        .collect();
+
+    let _guard = experiment_store_lock();
+    if let Err(err) =
+        ExperimentStore::mark_attempt_dispatched(experiment_path, attempt_key, prompt_hash, &included_ids)
+    {
+        debug!(
+            experiment_id = %assignment.experiment_id,
+            variant_id = %assignment.variant_id,
+            error = %err,
+            "ACP experiment mark_attempt_dispatched failed (non-fatal)"
+        );
+    }
 }
 

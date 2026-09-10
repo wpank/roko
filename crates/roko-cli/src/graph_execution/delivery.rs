@@ -21,7 +21,7 @@ use std::sync::Arc;
 use roko_graph::delivery::{
     CompletionDeliveryReceiptV1, CompletionDeliveryRequest, CompletionDeliveryService,
     CompletionDeliveryState, DELIVERY_EXTENSION_KEY, DeliveryError, DeliveryReceiptStore,
-    delivery_extension_value,
+    ReleasePolicy, delivery_extension_value,
 };
 use tracing::{debug, info, warn};
 

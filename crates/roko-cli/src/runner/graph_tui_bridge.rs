@@ -4,7 +4,7 @@
 //! via `TelemetryEventSink`, but does not produce the `DashboardEvent`
 //! variants that the TUI consumes. This module maps graph execution
 //! lifecycle transitions to `DashboardEvent` publications so the TUI can
-//! observe `--engine graph` runs identically to runner-v2 plan runs.
+//! observe Graph engine plan runs the same way regardless of flags.
 
 use std::collections::HashMap;
 

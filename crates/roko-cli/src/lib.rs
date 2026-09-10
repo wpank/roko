@@ -175,7 +175,7 @@ pub mod model_selection;
 pub mod note_cluster;
 // oneshot.rs was removed in #363 (zero callers after develop deprecation).
 // The legacy 21K-line orchestrate.rs engine was deleted in E12-T07.
-// The v2 event_loop.rs in runner/ is the sole execution engine.
+// The Runner-v2 event_loop.rs was deleted; the Graph engine is the sole execution engine.
 pub mod cli_output;
 pub mod orchestrator;
 pub mod output_format;

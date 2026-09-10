@@ -781,6 +781,7 @@ impl GraphTaskDispatcher {
         succeeded: bool,
         wall_duration: std::time::Duration,
         dispatch_plan: &crate::dispatch::RunnerDispatchPlan,
+        routing_context: Option<roko_learn::model_router::RoutingContext>,
     ) {
         let role = task.role.as_deref().unwrap_or("implementer");
         let provider_id = &dispatch.target.provider_id;
@@ -836,7 +837,7 @@ impl GraphTaskDispatcher {
                 outcome,
                 model_source,
                 succeeded,
-                routing_context: None,
+                routing_context,
                 prompt_text: Some(dispatch_plan.prompt.system_prompt.clone()),
                 cache_read_tokens: u64::from(dispatch.result.usage.cache_read_tokens),
                 knowledge_ids: vec![],
@@ -1407,6 +1408,11 @@ impl TaskDispatcher for GraphTaskDispatcher {
         let role = task.role.as_deref().unwrap_or("implementer");
         // ── W10: Enrichment pipeline ─────────────────────────────────────
         let routing_ctx = build_routing_context(role, &task, &self.feedback.daimon_state);
+        // Clone before the move into DispatchContext so emit_feedback can pass
+        // the real dispatch-time context to the routing observation sink.
+        // This ensures force_backend override outcomes are recorded with the
+        // correct task category, complexity, and role rather than fallback defaults.
+        let routing_ctx_for_feedback = routing_ctx.clone();
 
         // P1-16: Run cross-cut arbitration to detect safety-critical
         // overrides before loading dream routing advice.
@@ -1553,6 +1559,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             dispatch.result.success,
             wall_duration,
             &dispatch_plan,
+            Some(routing_ctx_for_feedback),
         )
         .await;
 
@@ -2182,6 +2189,9 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         let role = task.role.as_deref().unwrap_or("implementer");
         // ── W10: Enrichment pipeline (streaming) ─────────────────────────
         let routing_ctx = build_routing_context(role, &task, &self.feedback.daimon_state);
+        // Clone before the move into DispatchContext so emit_feedback can pass
+        // the real dispatch-time context to the routing observation sink.
+        let routing_ctx_for_feedback = routing_ctx.clone();
 
         let dispatch_ctx = DispatchContext {
             plan_id: spec.plan_id.clone(),
@@ -2311,6 +2321,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                     dispatch.result.success,
                     wall_duration,
                     &dispatch_plan,
+                    Some(routing_ctx_for_feedback),
                 )
                 .await;
 

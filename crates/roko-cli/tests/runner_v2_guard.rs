@@ -1,10 +1,11 @@
 //! CI guard: ensure no production call sites use the legacy `PlanRunner`
 //! (backlog #131).
 //!
-//! Both `prd.rs::run_generated_plans()` and `serve_runtime.rs` have been
-//! migrated to call `crate::runner::run` (runner-v2). This test statically
-//! verifies that no new call sites for the legacy `PlanRunner::from_plans_dir`
-//! pattern appear in the CLI crate source.
+//! Both `prd.rs::run_generated_plans()` and `serve_runtime.rs` still call
+//! `crate::runner::run`, which is now a deprecated stub that returns an error
+//! directing callers to the Graph engine (#342 tracks migrating these sites).
+//! This test statically verifies that no new call sites for the legacy
+//! `PlanRunner::from_plans_dir` pattern appear in the CLI crate source.
 //!
 //! The test scans Rust source files for the pattern `PlanRunner::from_plans_dir`
 //! and fails if any call site is found (the definition itself is excluded).
@@ -55,15 +56,15 @@ fn scan_dir(dir: &Path, pattern: &str, hits: &mut Vec<(PathBuf, usize, String)>)
 /// Ensure `PlanRunner::from_plans_dir` is not called anywhere in the CLI crate.
 ///
 /// The legacy `PlanRunner` has an unbounded `Vec` memory leak and bypasses
-/// runner-v2 safety, learning, and gate wiring. All production paths must
-/// use `crate::runner::run` (runner-v2) instead.
+/// the Graph engine's safety, learning, and gate wiring. All production paths
+/// must use the Graph engine (`cmd_plan_run_engine` in `commands/plan.rs`).
 #[test]
 fn no_legacy_plan_runner_call_sites() {
     let hits = scan_for_pattern(&crate_src_dir(), "PlanRunner::from_plans_dir");
     if !hits.is_empty() {
         let mut msg = String::from(
             "ERROR: legacy PlanRunner::from_plans_dir call site(s) detected.\n\
-             All production paths must use runner-v2 (`crate::runner::run`).\n\n",
+             All production paths must use the Graph engine (`cmd_plan_run_engine`).\n\n",
         );
         for (path, line, content) in &hits {
             msg.push_str(&format!(
@@ -77,26 +78,36 @@ fn no_legacy_plan_runner_call_sites() {
     }
 }
 
-/// Verify that `prd.rs` uses `crate::runner::run` for plan execution.
+/// Verify that `prd.rs` still calls `crate::runner::run` (deprecated stub).
+///
+/// `prd.rs` is a tracked migration site (#342): it calls the deprecated
+/// `runner::run` stub which returns an error at runtime directing callers to
+/// the Graph engine. This test documents the pending migration — it will be
+/// removed once `prd.rs` is updated to use `cmd_plan_run_engine` directly.
 #[test]
-fn prd_uses_runner_v2() {
+fn prd_uses_runner_stub() {
     let prd_path = crate_src_dir().join("prd.rs");
     assert!(prd_path.exists(), "prd.rs should exist");
     let content = fs::read_to_string(&prd_path).expect("read prd.rs");
     assert!(
         content.contains("crate::runner::run"),
-        "prd.rs::run_generated_plans should call crate::runner::run (runner-v2)"
+        "prd.rs::run_generated_plans should call crate::runner::run (deprecated stub, #342)"
     );
 }
 
-/// Verify that `serve_runtime.rs` uses `crate::runner::run` for plan execution.
+/// Verify that `serve_runtime.rs` still calls `crate::runner::run` (deprecated stub).
+///
+/// `serve_runtime.rs` is a tracked migration site (#342): it calls the
+/// deprecated `runner::run` stub which returns an error at runtime. This test
+/// documents the pending migration — it will be removed once `serve_runtime.rs`
+/// is updated to use `cmd_plan_run_engine` directly.
 #[test]
-fn serve_runtime_uses_runner_v2() {
+fn serve_runtime_uses_runner_stub() {
     let serve_path = crate_src_dir().join("serve_runtime.rs");
     assert!(serve_path.exists(), "serve_runtime.rs should exist");
     let content = fs::read_to_string(&serve_path).expect("read serve_runtime.rs");
     assert!(
         content.contains("crate::runner::run"),
-        "serve_runtime.rs should call crate::runner::run (runner-v2)"
+        "serve_runtime.rs should call crate::runner::run (deprecated stub, #342)"
     );
 }

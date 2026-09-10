@@ -347,8 +347,13 @@ struct EfficiencySummary {
 // Row 5: routing (optional)
 // ---------------------------------------------------------------------------
 
-/// Updates the cascade router with the routing outcome. Skipped when the
-/// choice source was a manual override or when no router is available.
+/// Updates the cascade router with the routing outcome.
+///
+/// For normal (router-selected) outcomes, records via `record_confidence_outcome`
+/// so the bandit signal stays accurate. For manual overrides (`force_backend`),
+/// records via the dampened `record_override_outcome` path so the router learns
+/// from overrides without polluting the primary bandit signal.
+/// Skipped only when no router is available.
 #[derive(Debug)]
 struct RoutingSink {
     cascade_router: Option<Arc<roko_learn::cascade_router::CascadeRouter>>,
@@ -360,8 +365,8 @@ impl SettlementSink for RoutingSink {
         "routing"
     }
 
-    fn applicable(&self, receipt: &TaskAttemptReceiptV1) -> bool {
-        receipt.choice_source != ChoiceSource::ManualOverride && self.cascade_router.is_some()
+    fn applicable(&self, _receipt: &TaskAttemptReceiptV1) -> bool {
+        self.cascade_router.is_some()
     }
 
     async fn settle(&self, receipt: &TaskAttemptReceiptV1) -> Result<(), SinkError> {
@@ -369,12 +374,22 @@ impl SettlementSink for RoutingSink {
             sink_key: self.sink_key().to_string(),
             message: "no cascade router".to_string(),
         })?;
-        use roko_agent::model_call_service::ForceBackendOverrideRecorder;
-        ForceBackendOverrideRecorder::record_override_outcome(
-            router.as_ref(),
-            &receipt.resolved_model,
-            receipt.succeeded(),
-        );
+        if receipt.choice_source == ChoiceSource::ManualOverride {
+            // Manual override: use the dampened path so the learned policy is
+            // not dominated by operator preferences. The override is still
+            // recorded (dampened quality signal) so the router can learn which
+            // models work well for which task types when explicitly chosen.
+            use roko_agent::model_call_service::ForceBackendOverrideRecorder;
+            ForceBackendOverrideRecorder::record_override_outcome(
+                router.as_ref(),
+                &receipt.resolved_model,
+                receipt.succeeded(),
+            );
+        } else {
+            // Router-selected or experiment: record via the binary confidence
+            // path so trial/success counters stay accurate.
+            router.record_confidence_outcome(&receipt.resolved_model, receipt.succeeded());
+        }
         Ok(())
     }
 }
@@ -837,7 +852,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn routing_skipped_for_manual_override() {
+    async fn routing_skipped_when_no_cascade_router() {
+        // Without a cascade router wired into the bundle, the routing sink is
+        // always skipped regardless of choice source (override or not).
         let tmp = TempDir::new().unwrap();
         let learn_dir = tmp.path().join("learn");
         std::fs::create_dir_all(&learn_dir).unwrap();
@@ -852,7 +869,41 @@ mod tests {
         assert_eq!(
             ledger.entries["routing"].state,
             SinkSettlementState::Skipped,
-            "routing should be skipped for manual overrides"
+            "routing should be skipped when no cascade router is present"
+        );
+    }
+
+    #[tokio::test]
+    async fn routing_settled_for_manual_override_with_router() {
+        // With a cascade router, manual override receipts must be settled via
+        // the dampened record_override_outcome path (not skipped).
+        let tmp = TempDir::new().unwrap();
+        let learn_dir = tmp.path().join("learn");
+        std::fs::create_dir_all(&learn_dir).unwrap();
+
+        let cascade = Arc::new(roko_learn::cascade_router::CascadeRouter::new(vec![
+            "claude-sonnet-4-6".into(),
+        ]));
+        let bundle = FeedbackBundle {
+            learn_dir: learn_dir.clone(),
+            health_registry: Arc::new(roko_learn::provider_health::ProviderHealthRegistry::new()),
+            cascade_router: Some(cascade.clone()),
+        };
+        let settler = build_settler(&bundle);
+        let mut receipt = test_receipt();
+        receipt.choice_source = ChoiceSource::ManualOverride;
+
+        let (_, ledger) = settler.settle(&receipt, None).await;
+
+        assert_eq!(
+            ledger.entries["routing"].state,
+            SinkSettlementState::Settled,
+            "routing must be settled (dampened override path) for manual overrides when router is present"
+        );
+        // The dampened path calls observe_multi_objective, advancing the LinUCB counter.
+        assert!(
+            cascade.total_observations() >= 1,
+            "override outcome must advance the LinUCB observation counter via the dampened path"
         );
     }
 

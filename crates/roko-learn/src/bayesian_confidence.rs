@@ -1,3 +1,5 @@
+//! STATUS: WIRED — used by cascade router for provider confidence tracking.
+//!
 //! Bayesian confidence updating (AS-07).
 //!
 //! Provides a lightweight Bayesian updater that maintains a confidence estimate

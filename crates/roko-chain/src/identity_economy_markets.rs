@@ -5,6 +5,8 @@
     clippy::upper_case_acronyms
 )]
 
+//! STATUS: STUB — placeholder for Phase 2+ chain identity/economy integration.
+//!
 //! Phase 2+ job-market, settlement, futures, and compliance stubs derived
 //! from `docs/14-identity-economy`.
 

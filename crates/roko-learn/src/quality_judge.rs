@@ -1,3 +1,5 @@
+//! STATUS: WIRED — used as oracle gate rung in `gate_dispatch.rs`.
+//!
 //! Lightweight LLM judge for tasks without compilable output.
 //!
 //! Some routing tasks, such as research, documentation, and architecture

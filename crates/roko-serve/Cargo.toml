@@ -16,10 +16,12 @@ default = ["chain"]
 # Forwards to roko-std so the 17 chain tool handlers compile in.
 # This intentionally does not pull in an RPC provider.
 chain = ["dep:alloy-dyn-abi", "dep:alloy-json-abi", "dep:alloy-primitives", "roko-std/chain"]
+# Enables on-chain integration via alloy. Requires Rust 1.91+. Not needed for local-only operation.
 # Real EVM JSON-RPC reads/writes. Keep this out of ordinary self-development
 # builds: Alloy's provider/full graph dominates a cold CLI compile.
 alloy-backend = ["chain", "dep:alloy", "roko-chain/alloy-backend"]
 hdc = ["dep:roko-primitives", "roko-compose/hdc", "roko-fs/hdc"]
+# Enables OpenTelemetry Protocol (OTLP) trace/metric export. Configure OTEL_EXPORTER_OTLP_ENDPOINT to use.
 otlp = [
     "dep:opentelemetry",
     "dep:opentelemetry_sdk",

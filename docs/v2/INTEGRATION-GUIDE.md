@@ -1,5 +1,7 @@
 # Roko Integration Guide
 
+> **Implementation status (verified 2026-09-15):** IMPLEMENTED — the plan-execute-gate-persist loop works end-to-end. Graph is the sole execution engine (`PlanEngine::Graph`; `WorkflowEngine` retired by #276; its serializable contract types are in `roko-runtime::workflow_contract`; Runner-v2 retained as `--engine legacy`). `roko-serve` exposes ~376 canonical routes (~421 incl. aliases). `roko-gate` provides 19 gates in a 7-rung pipeline. All provider kinds, MCP passthrough, ACP, TUI, and GitHub integration are wired. See `.roko/GAPS.md` for remaining product residuals. The `WorkflowEngine` code diagram in Section 2 and the code example in Section 18 are preserved as historical reference; the production path is Graph-based.
+
 Roko is a self-developing agent toolkit: you describe work in plain English, and Roko generates
 an implementation plan, dispatches Claude agents to execute it, validates the result with a gate
 pipeline, and learns from each run to do better next time. The entire system is configured from a
@@ -205,6 +207,8 @@ When `roko serve` is running, most config changes take effect immediately:
 
 ### Architecture in one diagram
 
+> **Note:** WorkflowEngine was retired by #276. The production path is Graph-based (`PlanEngine::Graph`). The diagram below has been updated to reflect the converged architecture. `PipelineStateV2` and `EffectDriver` remain as preserved contract types in `roko-runtime`.
+
 ```
 Entry points
   ┌──────────┐  ┌──────────┐  ┌──────────┐
@@ -213,8 +217,10 @@ Entry points
   └────┬─────┘  └────┬─────┘  └────┬─────┘
        │              │              │
        └──────────────▼──────────────┘
-              WorkflowEngine
-         (roko-runtime/workflow_engine.rs)
+              GraphEngine (PlanEngine::Graph)
+         (crates/roko-cli/src/graph_execution/)
+         [WorkflowEngine retired #276; contract
+          types in roko-runtime::workflow_contract]
                     │
          ┌──────────▼──────────┐
          │  PipelineStateV2    │  ← pure state machine, no I/O

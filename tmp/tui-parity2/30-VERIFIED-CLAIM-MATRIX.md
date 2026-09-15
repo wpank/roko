@@ -16,7 +16,7 @@ The updated count is **27 verified, 9 partial, and 2 not operational**.
 **2026-09-04 verification closure:** Final inspection confirmed gate streaming (P2.1-P2.3),
 acknowledged commands (P1.1), plan detail fields (P5.1-P5.4), recovery commands (P6.3),
 plan tree and diff evidence (P7.2-P7.3) fully operational and verified.
-The closure count is **35 verified, 1 partial, and 2 not operational**.
+The closure count is **35 verified, 2 partial, and 1 not operational**.
 
 Legend: **V** verified, **P** partial, **N** not operational.
 

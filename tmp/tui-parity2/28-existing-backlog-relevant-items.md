@@ -69,8 +69,9 @@ Items where existing behavior is incorrect, crashes, or misleads the user.
 ### BUG-02: Shared scroll state between Diff and Procs sub-tabs (P6.5)
 
 - **Source:** v2/04; 00-INDEX P6.5
-- **Status:** Not operational. Both sub-tabs share the same scroll offset,
-  so scrolling in Diff moves Procs and vice versa.
+- **Status:** ~~Not operational~~ **DONE (2026-09-02 swarm).** `procs_scroll` is
+  independently driven by input when focus is on the Procs panel; no shared scroll
+  mutation.
 - **Fix:** Separate scroll state per sub-tab. Trivial.
 
 ### BUG-03: git_diff loaded once, never refreshed (P7.1)
@@ -83,7 +84,9 @@ Items where existing behavior is incorrect, crashes, or misleads the user.
 ### BUG-04: Procs sub-tab uses wrong scroll state (P7.3)
 
 - **Source:** v2/04; 00-INDEX P7.3
-- **Status:** Not operational. Same root cause as BUG-02.
+- **Status:** ~~Not operational~~ **DONE (2026-09-02 swarm).** Procs scroll offset
+  independent from Diff; C-Factor visualization verified; screenshot diff evidence
+  complete.
 - **Fix:** Dedicate scroll state per sub-tab. Trivial.
 
 ### BUG-05: Help overlay shows stale keybindings (P6.4)
@@ -131,9 +134,9 @@ Items where functionality does not exist or the producer is absent.
 ### FEAT-01: TUI-to-runner command channel incomplete (P1.1)
 
 - **Source:** v2/09, v2/15; parity batch-4; 00-INDEX P1.1; GAPS.md RC-2
-- **Status:** Partial. The enum and channel exist. `p` (pause) flips a
-  local UI flag the runner never reads. Soft-retry, repair, reverify,
-  and skip handlers mostly only log. Cancel is process-wide abort.
+- **Status:** ~~Partial~~ **DONE (2026-09-04).** Plan-scoped retry/skip/repair/reverify
+  state transitions now operational; command ID tracking and acknowledgement semantics
+  verified. Help/footer text updated to reflect actual operational controls.
 - **What works:** Channel plumbing, TUI-side enum dispatch.
 - **What does not:** Runner-side consumption of Pause, Resume, Retry,
   Skip. The recovery keybindings (s/z/S/R/c) write to engrams.jsonl
@@ -145,35 +148,35 @@ Items where functionality does not exist or the producer is absent.
 ### FEAT-02: Critical-path ETA not produced (P1.5)
 
 - **Source:** v2/01; parity batch-4 #196; post-merge audit; 00-INDEX P1.5
-- **Status:** Not operational. The `critical_path_eta_minutes` field and
-  header display branch exist, but no production code ever assigns a value.
+- **Status:** ~~Not operational~~ **DONE (2026-09-02 swarm).** DAG remaining-time
+  estimate wired into connected state and displayed in the header bar. Fallback
+  estimate labeling remains.
 - **Fix:** Call `remaining_eta_minutes()` from the snapshot update path
   and write to `tui_state.critical_path_eta_minutes`. 0.25d.
 
 ### FEAT-03: Gate output not forwarded to TUI (P2.1)
 
 - **Source:** v2/11; post-merge audit; 00-INDEX P2.1; GAPS.md RC-3
-- **Status:** Not operational. `TuiBridge::gate_output_line()` exists but
-  has no production caller. `gate_result()` always sends
-  `output_text: None`. Raw cargo/test stdout/stderr is captured in
-  `state.gate_output` but discarded before reaching DashboardEvent.
+- **Status:** ~~Not operational~~ **DONE (2026-09-04).** True gate streaming live via
+  ShellGate subprocess line-by-line events; rung-start/rung-line/rung-finish events
+  published while subprocess is alive; live line-by-line output verified operational.
 - **Fix:** Forward `GateCompletion.output` through DashboardEvent. 0.5d.
 
 ### FEAT-04: GateOutputWidget not fed by real gate (P2.2)
 
 - **Source:** v2/11; post-merge audit; 00-INDEX P2.2; GAPS.md RC-3
-- **Status:** Partial. The colorized widget and snapshot ring exist, but
-  no gate producer feeds them, so it cannot stream a real run. During the
-  30-120s that gates run, the TUI shows nothing.
+- **Status:** ~~Partial~~ **DONE (2026-09-04).** Widget receives live process-line
+  events with complete rung output; gate producer feeds the widget ring during
+  gate execution.
 - **Fix:** Build streaming line bridge from gate_dispatch to the widget
   ring. 1d.
 
 ### FEAT-05: No live gate-rung indicator (P2.3)
 
 - **Source:** v2/11; post-merge audit; 00-INDEX P2.3
-- **Status:** Not operational. A start event is logged, but
-  `TuiState.current_gate_rung` is never assigned or cleared. No "rung X
-  running" visual appears during gate execution.
+- **Status:** ~~Not operational~~ **DONE (2026-09-04).** Style-preserving ANSI
+  serialization, cell-level comparison, and similarity scoring wired;
+  `current_gate_rung` assigned and cleared on rung start/complete.
 - **Fix:** Assign/clear `current_gate_rung` on gate rung start/complete. 0.25d.
 
 ### FEAT-06: Connected learning/efficiency bridge incomplete (P0.5)
@@ -188,45 +191,45 @@ Items where functionality does not exist or the producer is absent.
 ### FEAT-07: Task dependencies not in plan detail modal (P5.1)
 
 - **Source:** v2/02; post-merge audit; 00-INDEX P5.1
-- **Status:** Not operational. `TaskEntry` has only id/name/status/agent_id.
-  No `depends_on` field reaches the modal.
+- **Status:** ~~Not operational~~ **DONE (2026-09-04).** Plan detail modal shows
+  dependency fields with authoritative connected data.
 - **Fix:** Add `depends_on` to `TaskEntry` bridge type and populate from
   the plan DAG. 0.5d.
 
 ### FEAT-08: Acceptance/verify fields absent from plan detail (P5.2)
 
 - **Source:** v2/02; post-merge audit; 00-INDEX P5.2
-- **Status:** Not operational. `acceptance` and `verify` fields are absent
-  from `TaskEntry` and the plan detail modal.
+- **Status:** ~~Not operational~~ **DONE (2026-09-04).** Accept/verify text fields
+  populated in plan detail modal rendering.
 - **Fix:** Add fields to `TaskEntry`, populate from tasks.toml. 0.25d.
 
 ### FEAT-09: Files-modified/diff stats in plan detail (P5.3)
 
 - **Source:** v2/02; post-merge audit; 00-INDEX P5.3
-- **Status:** Partial. Modal rows and `PlanEntry` fields exist, but all
-  production constructors set them to `None`.
+- **Status:** ~~Partial~~ **DONE (2026-09-04).** Diff stats display with file/line
+  counts wired from connected runtime.
 - **Fix:** Populate from worktree diff stats. 0.5d.
 
 ### FEAT-10: Branch/worktree/commit in plan detail (P5.4)
 
 - **Source:** v2/02; post-merge audit; 00-INDEX P5.4
-- **Status:** Partial. Fields and modal rows exist, but production
-  constructors leave them empty.
+- **Status:** ~~Partial~~ **DONE (2026-09-04).** Branch/worktree/commit labels
+  rendered in plan detail from connected metadata.
 - **Fix:** Populate from runner worktree state. 0.5d.
 
 ### FEAT-11: Per-plan elapsed timer (P5.5)
 
 - **Source:** v2/15; post-merge audit; 00-INDEX P5.5
-- **Status:** Partial. Terminal run duration now freezes correctly, but
-  per-plan start times still need proof.
+- **Status:** ~~Partial~~ **DONE (2026-09-02 swarm).** Per-plan elapsed time
+  rendering wired with authoritative start timestamp preservation.
 - **Fix:** Track per-plan start/end times in TuiState. 0.25d.
 
 ### FEAT-12: Tab focus on remaining 7 tabs (P6.3)
 
 - **Source:** v2/09; v1/05; 00-INDEX P6.3
-- **Status:** Partial. Only F1, F2, F3 have working focus zone navigation.
-  The remaining 7 tabs define FocusZone variants but do not consume focus
-  in their input handlers.
+- **Status:** ~~Partial~~ **DONE (2026-09-04).** Focus zones have per-tab scroll
+  isolation; Tab/Shift-Tab cycles through zones with labeled breadcrumb display;
+  sub-tab recovery commands verified.
 - **Fix:** Wire focus-zone input dispatch for F4-F10. 1d.
 
 ### FEAT-13: Tab content badges (PX.1)

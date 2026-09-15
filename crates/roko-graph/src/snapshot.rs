@@ -279,15 +279,14 @@ pub struct ExtensionRegistry {
 }
 
 /// Metadata about a registered extension namespace.
+///
+/// Fields are stored at registration time for future owner-based validation
+/// and diagnostic messages; the live `validate_extensions` path currently
+/// reads `CheckpointExtension::required` directly.
 #[derive(Debug, Clone)]
 struct ExtensionMeta {
-    /// Whether the extension is required for a valid restore. Stored for
-    /// future owner-based validation; currently the `CheckpointExtension`
-    /// carries the authoritative `required` flag.
     #[allow(dead_code)]
     required: bool,
-    /// Feature or subsystem that owns this namespace. Stored for diagnostic
-    /// messages when unknown required extensions are encountered.
     #[allow(dead_code)]
     owner: String,
 }

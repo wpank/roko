@@ -33,8 +33,6 @@
 pub mod circuit_breaker;
 pub mod conductor;
 pub mod diagnosis;
-/// Federated conductor hierarchy — L1 turn → L4 fleet (COND-05).
-pub mod federation;
 pub mod health;
 pub mod interventions;
 /// Complex event pattern detection with temporal hysteresis (COND-07).

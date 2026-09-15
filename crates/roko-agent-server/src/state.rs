@@ -753,10 +753,11 @@ pub struct AgentSidecarState {
     started_at: Instant,
     registered_at: u64,
     chain_client: OptionalChainClient,
+    // Held as Arc owner: message_dispatcher clones this at construction;
+    // the field keeps the backend alive for the sidecar lifetime.
     #[allow(dead_code)]
     llm_backend: Option<Arc<dyn LlmBackend>>,
     message_dispatcher: Option<Arc<dyn DispatchLike>>,
-    #[allow(dead_code)]
     knowledge_store: Option<Arc<KnowledgeStore>>,
     dispatch_profile: DispatchProfile,
     predictions: Mutex<Vec<AgentPrediction>>,

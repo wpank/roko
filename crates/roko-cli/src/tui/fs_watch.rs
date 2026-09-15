@@ -40,7 +40,8 @@ pub struct FsWatchHandle {
     _backend: FsWatchBackend,
 }
 
-// Variants hold resources (debouncer, poll thread) that are cleaned up on Drop.
+// RAII guard: variants hold resources (debouncer, poll thread) that are
+// cleaned up on Drop. Stored in `_backend` and never matched on.
 #[allow(dead_code)]
 enum FsWatchBackend {
     Notify(NotifyDebouncer),

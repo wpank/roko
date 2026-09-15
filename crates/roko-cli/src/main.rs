@@ -51,9 +51,7 @@ use octocrab::models::webhook_events::WebhookEventType;
 use roko_agent::process::{cleanup_orphaned_agents, reap_orphaned_children};
 use roko_agent::translate::BackendResponse;
 use roko_cli::agent_spawn::{SpawnAgentSpec, spawn_agent_scoped};
-use roko_cli::resolved_overrides::{
-    DoInput, GlobalCliFlags, ResolvedExecutionOverrides,
-};
+use roko_cli::resolved_overrides::{DoInput, GlobalCliFlags, ResolvedExecutionOverrides};
 use roko_cli::serve_runtime::RokoCliRuntime;
 use roko_cli::tui::App;
 use roko_cli::{
@@ -3895,9 +3893,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             workdir,
             tui,
             enable_terminal,
-        } => {
-            commands::server::cmd_serve(cli, bind, port, workdir, tui, enable_terminal).await
-        }
+        } => commands::server::cmd_serve(cli, bind, port, workdir, tui, enable_terminal).await,
         Command::Acp {
             workdir,
             profile,
@@ -4484,7 +4480,6 @@ fn load_env_file(path: &Path) -> Result<Vec<(String, String)>> {
 // Re-export for crate-internal callers (e.g. do_cmd.rs uses `crate::resolve_mcp_config_with_autodiscovery`).
 pub use commands::mcp::resolve_mcp_config_with_autodiscovery;
 
-
 // -----------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------
@@ -5056,9 +5051,10 @@ mod tests {
         assert!(matches!(cli.command, Some(Command::Inject { .. })));
     }
 
-    // -- inject fail-closed tests (#325) --
-    // No live command transport exists, so all valid inject requests must return
-    // non-zero exit and never write to the substrate.
+    // -- inject file-transport tests (#325, updated for #361) --
+    // With the file-based ControlCommand transport (#361), valid inject requests
+    // now succeed by writing a control.json file. The substrate (engrams.jsonl)
+    // must still NOT be written by the inject path itself.
 
     #[tokio::test]
     async fn inject_fail_closed_directive() {
@@ -5076,8 +5072,13 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            code, EXIT_FAILURE,
-            "inject directive must fail while no transport exists"
+            code, EXIT_SUCCESS,
+            "inject directive succeeds via file-based transport"
+        );
+        // Control file should exist.
+        assert!(
+            roko_dir.join("state/control.json").exists(),
+            "control file should be written"
         );
         // No signal log should be created.
         assert!(
@@ -5100,8 +5101,8 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            code, EXIT_FAILURE,
-            "inject abort must fail while no transport exists"
+            code, EXIT_SUCCESS,
+            "inject abort succeeds via file-based transport"
         );
     }
 
@@ -5119,8 +5120,8 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            code, EXIT_FAILURE,
-            "inject context must fail while no transport exists"
+            code, EXIT_SUCCESS,
+            "inject context succeeds via file-based transport"
         );
     }
 
@@ -5164,8 +5165,8 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            code, EXIT_FAILURE,
-            "inject JSON must fail while no transport exists"
+            code, EXIT_SUCCESS,
+            "inject JSON succeeds via file-based transport"
         );
     }
 

@@ -263,6 +263,7 @@ struct ChatResponse {
 
 #[derive(Deserialize, Default)]
 struct ChatResponseMessage {
+    // Deserialized from Ollama JSON response; only `content` is consumed.
     #[serde(default)]
     #[allow(dead_code)]
     role: String,

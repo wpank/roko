@@ -76,10 +76,10 @@ struct RawServerMessage {
 
 #[derive(Debug, Clone, Deserialize)]
 struct ServerError {
+    // Deserialized from JSON-RPC error responses; not individually read.
     #[allow(dead_code)]
     code: i64,
     message: String,
-    #[allow(dead_code)]
     data: Option<Value>,
 }
 
@@ -329,17 +329,21 @@ impl CursorConnection {
                                         if pending_message.len() >= STREAM_MESSAGE_BATCH_BYTES
                                             || text.contains('\n')
                                         {
-                                            let _ = event_tx.send(CursorEvent::MessageDelta(
-                                                std::mem::take(&mut pending_message),
-                                            )).await;
+                                            let _ = event_tx
+                                                .send(CursorEvent::MessageDelta(std::mem::take(
+                                                    &mut pending_message,
+                                                )))
+                                                .await;
                                         }
                                     }
                                     _ => {
                                         // Flush pending text before other events.
                                         if !pending_message.is_empty() {
-                                            let _ = event_tx.send(CursorEvent::MessageDelta(
-                                                std::mem::take(&mut pending_message),
-                                            )).await;
+                                            let _ = event_tx
+                                                .send(CursorEvent::MessageDelta(std::mem::take(
+                                                    &mut pending_message,
+                                                )))
+                                                .await;
                                         }
                                         let _ = event_tx.send(event).await;
                                     }
@@ -357,9 +361,11 @@ impl CursorConnection {
                             {
                                 // Flush remaining text.
                                 if !pending_message.is_empty() {
-                                    let _ = event_tx.send(CursorEvent::MessageDelta(
-                                        std::mem::take(&mut pending_message),
-                                    )).await;
+                                    let _ = event_tx
+                                        .send(CursorEvent::MessageDelta(std::mem::take(
+                                            &mut pending_message,
+                                        )))
+                                        .await;
                                 }
                                 let _ = turn_done_tx.send(()).await;
                             }
@@ -393,7 +399,9 @@ impl CursorConnection {
 
             // Process exited — flush remaining.
             if !pending_message.is_empty() {
-                let _ = event_tx.send(CursorEvent::MessageDelta(pending_message)).await;
+                let _ = event_tx
+                    .send(CursorEvent::MessageDelta(pending_message))
+                    .await;
             }
         });
 

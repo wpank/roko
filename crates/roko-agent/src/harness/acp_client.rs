@@ -248,10 +248,8 @@ pub(crate) struct RawServerMessage {
 
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct ServerError {
-    #[allow(dead_code)]
     code: i64,
     message: String,
-    #[allow(dead_code)]
     data: Option<serde_json::Value>,
 }
 

@@ -110,6 +110,9 @@ fn is_kimi_model(model: &ModelProfile) -> bool {
     model.slug.starts_with("kimi-")
 }
 
+// Structured response types for OpenAI-compatible vision/image payloads.
+// Kept for future response-parsing parity with the request builder;
+// currently only serialization is exercised.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[allow(dead_code)]
 pub(crate) struct ChatMessage {

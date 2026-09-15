@@ -151,6 +151,18 @@ Current status:
 - [ ] Add a Codex operation-level broker for restrictive built-in operation policy.
 - [ ] Promote FAST or enable auto-merge; both remain explicitly deferred policy decisions.
 
+## Verification note (2026-09-14)
+
+> **Re-verification sweep against main (HEAD 27cdff78e).** All source-implementable items
+> confirmed present. `ImpactAnalysis` struct (cross-crate change-impact scoping, backlog #231)
+> was **not found** as a standalone type — the backlog spec's change-impact functionality is
+> covered by the gate-dispatch and reverse-dependent selection logic in `runner/gate_dispatch.rs`
+> and `graph_execution/` rather than a named `ImpactAnalysis` type. This is not a blocker;
+> backlog #231 is tracked in the implementation status ledger (document 11) as a scoped
+> integration concern rather than a missing struct. Open items are unchanged from the 2026-09-01
+> closure: workspace all-target test pass, representative benchmark repetitions, Codex broker,
+> and FAST promotion policy.
+
 ## Closure status (2026-09-01)
 
 All source-implementable verification items from the dev-audit have been closed:

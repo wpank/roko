@@ -27,7 +27,7 @@ pub struct FileSubstrate {
     index: RwLock<HashMap<ContentHash, Signal>>,
     /// Serializes writes to the log file.
     log_writer: Mutex<File>,
-    /// Human-readable name (kept for Debug / logging).
+    /// Human-readable name stored for future Debug impl / diagnostic logging.
     #[allow(dead_code)]
     name: String,
 }
@@ -57,7 +57,11 @@ impl FileSubstrate {
         // the canonical `signals.jsonl` does not yet exist in this workspace.
         let replay_path = if !log_path.exists() {
             let legacy = root.join("engrams.jsonl");
-            if legacy.exists() { legacy } else { log_path.clone() }
+            if legacy.exists() {
+                legacy
+            } else {
+                log_path.clone()
+            }
         } else {
             log_path.clone()
         };

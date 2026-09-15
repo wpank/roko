@@ -28,6 +28,7 @@ pub use super::graduation::*;
 pub use super::learning::*;
 pub use super::project::*;
 pub use super::provider::*;
+pub use super::retrieval::*;
 pub use super::routing::*;
 pub use super::serve::*;
 pub use super::subscriptions::*;
@@ -184,6 +185,9 @@ pub struct RokoConfig {
     /// Per-repository configuration blocks.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub repos: Vec<RepoConfig>,
+    /// RAG retrieval pipeline settings.
+    #[serde(default)]
+    pub retrieval: RetrievalConfig,
 }
 
 /// Composition strategy for allocating prompt token budget across candidate sections.
@@ -460,6 +464,7 @@ impl Default for RokoConfig {
             dreams: DreamScheduleConfig::default(),
             daimon: DaimonConfig::default(),
             repos: Vec::new(),
+            retrieval: RetrievalConfig::default(),
         }
     }
 }
@@ -1713,7 +1718,6 @@ pub struct ConductorConfig {
     pub phase_timeout_secs: u64,
 
     // ── ContextWindowPressureWatcher tuning (P1-38) ──────────────────────
-
     /// Fallback context window token budget for most models (default 200 000).
     ///
     /// Used by `ContextWindowPressureWatcher` when a model's window size is not

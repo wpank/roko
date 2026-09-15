@@ -1496,6 +1496,22 @@ fn build_schema_tree() -> toml::Value {
         .agent
         .roles
         .insert("_schema_sentinel".to_string(), RoleOverride::default());
+    // Populate Optional/skip_serializing_if agent fields with non-default
+    // values so they appear in the serialized schema tree and are not
+    // stripped by `strip_unknown_fields`.
+    config.agent.command = Some(String::new());
+    config.agent.args = Some(Vec::new());
+    config.agent.timeout_ms = Some(0);
+    config.agent.env = Some(Vec::new());
+    config.agent.data_llm = Some(Default::default());
+    config.agent.extensions = vec![String::new()];
+    config.agent.mcp_config = Some(std::path::PathBuf::new());
+    config.agent.default_agent_id = Some(String::new());
+    config.agent.disabled_providers = vec![String::new()];
+    // Populate Optional/skip_serializing_if GitHubConfig fields so they
+    // appear in the serialized schema tree and are not stripped.
+    config.github.owner = Some(String::new());
+    config.github.repo = Some(String::new());
     config.subscriptions.push(SubscriptionConfig::default());
 
     let mut value =

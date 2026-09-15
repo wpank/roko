@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use alloy::primitives::{Address, U256, keccak256};
+use alloy::primitives::{U256, keccak256};
 use async_trait::async_trait;
 
 use crate::bindings::{BountyMarket, MockERC20, WorkerRegistry};
@@ -219,7 +219,3 @@ fn current_timestamp() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
 }
-
-// Silence unused-import warnings for the single-file fallback.
-#[allow(dead_code)]
-fn _unused(_: Address) {}

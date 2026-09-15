@@ -18,6 +18,8 @@ use roko_core::{Context, Score, Signal};
 /// Sum several scorers element-wise (aggregates evidence).
 pub struct SumScorer {
     scorers: Vec<Box<dyn ScoreFn>>,
+    // Stored via `named()` constructor for future diagnostic use;
+    // the `ScoreFn::name()` trait method returns a `&'static str`.
     #[allow(dead_code)]
     name: String,
 }
@@ -69,6 +71,8 @@ impl ScoreFn for SumScorer {
 /// Multiply several scorers element-wise (scales each axis).
 pub struct MulScorer {
     scorers: Vec<Box<dyn ScoreFn>>,
+    // Stored via `named()` constructor for future diagnostic use;
+    // the `ScoreFn::name()` trait method returns a `&'static str`.
     #[allow(dead_code)]
     name: String,
 }

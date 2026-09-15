@@ -1,3 +1,5 @@
+//! STATUS: WIRED — used by gate failure replan (`build_gate_failure_plan_revision`).
+//!
 //! Cheap enrichment pass for noisy gate failures before retry.
 //!
 //! The caller is expected to provide a low-cost agent (for example a

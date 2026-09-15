@@ -26,9 +26,14 @@ alloy-backend = [
     "roko-chain/alloy-backend",
     "roko-serve/alloy-backend",
 ]
-# PNG snapshot rendering and pixel-level screenshot diff comparison.
-# No heavy image dependencies yet — this gates the API surface and the
-# built-in bitmap rasterizer / text-based diff modules.
+# tui-png: Optional PNG screenshot capture for TUI visual regression testing.
+# Not required for production.
+#
+# Gates two modules (png_renderer, screenshot_diff) that provide a built-in
+# bitmap rasterizer and pixel/text/buffer diff comparison. No heavy image
+# dependencies yet — the current implementation uses a minimal hand-rolled
+# PNG writer. No callers outside the gated modules themselves; tests inside
+# the modules run only when the feature is enabled.
 tui-png = []
 
 [[bin]]

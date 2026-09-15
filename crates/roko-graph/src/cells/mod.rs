@@ -3,6 +3,9 @@
 //! - [`AgentCell`]: wraps LLM agent dispatch (send prompt, get response).
 //! - [`ComposeCell`]: runs prompt assembly using roko-compose templates.
 //! - [`GraduationCell`]: promotes qualifying Bus Pulses to durable Signals.
+//! - [`PlanComposeCell`]: fan-in compose cell for plan topology (enrichers + context -> prompt).
+//! - [`PlanGateCell`]: runs the gate pipeline on task executor output via `SharedGateEvaluator`.
+//! - [`TaskContextCell`]: assembles task metadata and predecessor state for plan execution.
 //! - [`TaskExecutorCell`]: host-dispatched cell for plan-to-graph converted tasks.
 //! - [`PassthroughCell`]: stub cell that passes input through (placeholder for testing).
 //! - **Cognitive loop cells**: 7 typed cells for the cognitive execution cycle.
@@ -13,7 +16,10 @@ pub mod compose;
 pub mod corrigibility;
 pub mod graduation;
 pub mod immune;
+pub mod plan_compose;
+pub mod plan_gate;
 pub mod stubs;
+pub mod task_context;
 pub mod task_executor;
 
 pub use agent::{AgentCell, AgentCellConfig};
@@ -28,12 +34,15 @@ pub use corrigibility::{
     register_corrigibility_cells,
 };
 pub use graduation::GraduationCell;
+pub use plan_compose::PlanComposeCell;
+pub use plan_gate::PlanGateCell;
 pub use immune::{
     ImmuneAssessmentCell, ImmuneCellState, ImmuneContainmentCell, ImmuneEscalationCell,
     ImmuneGraphOutput, ImmunePerceptionCell, ImmunePipelineGraph, ImmuneValidationCell,
     immune_pipeline_graph, register_immune_cells,
 };
 pub use stubs::PassthroughCell;
+pub use task_context::{TaskContextCell, TaskContextConfig};
 pub use task_executor::{
     AttemptReconcileDecision, AttemptReconciliation, GraphTaskEvent, NoopAttemptRecorder,
     PROGRESS_MESSAGE_MAX_BYTES, ProviderAttemptReceipt, ProviderAttemptRecorder,

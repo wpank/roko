@@ -1,5 +1,7 @@
 # Roko v2 Architecture Guide
 
+> **Implementation status (verified 2026-09-15):** This guide reflects the converged production architecture. Graph is the sole execution engine (`PlanEngine::Graph`; `WorkflowEngine` retired by #276; Runner-v2 retained as `--engine legacy`). `roko-serve` exposes ~376 canonical routes (~421 incl. aliases). `roko-gate` provides 19 gates in a 7-rung pipeline. All 48 epics are accepted. See `.roko/GAPS.md` for remaining product/release residuals. Any references to `WorkflowEngine` as a live runtime type reflect the deprecated path; the authoritative types are in `roko-runtime::workflow_contract`.
+
 **Who this is for**: Engineers reading the codebase for the first time. If you
 already know the system well, jump to the section you need using the table of
 contents. If this is your first time here, read the first three sections before
@@ -294,7 +296,7 @@ the top are foundations.
   ┌────────▼───────┐    ┌──────────▼────────┐   ┌───────▼───────┐
   │   roko-fs      │    │   roko-runtime    │   │ roko-learn    │
   │  FileSubstrate │    │  EffectDriver,    │   │ EpisodeLogger,│
-  │  RokoLayout    │    │  WorkflowEngine,  │   │ CascadeRouter,│
+  │  RokoLayout    │    │  workflow_contract│   │ CascadeRouter,│
   │  JSONL storage │    │  PipelineStateV2, │   │ Playbooks,    │
   └────────────────┘    │  ProcessSupervisor│   │ Anomaly,      │
                         │  event_bus        │   │ SkillLibrary  │
@@ -304,7 +306,7 @@ the top are foundations.
        │                           │                    │
 ┌──────▼──────┐  ┌─────────────────▼──────┐  ┌────────▼───────┐
 │ roko-agent  │  │   roko-gate            │  │  roko-neuro    │
-│ 12 providers│  │  7-rung pipeline,      │  │  KnowledgeStore│
+│ 12 providers│  │  19 gates, 7-rung,     │  │  KnowledgeStore│
 │ ToolDisp.,  │  │  AdaptiveThresholds,   │  │  ContextAssemb.│
 │ SafetyLayer,│  │  SPC detectors,        │  │  TierProgress. │
 │ MCP passth. │  │  CompileGate,TestGate, │  │  Admission     │

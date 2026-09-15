@@ -12,6 +12,7 @@ workspace = true
 
 [features]
 default = []
+# Enables on-chain integration via alloy. Requires Rust 1.91+. Not needed for local-only operation.
 # Enables an alloy-backed `AlloyChainClient` + `AlloyChainWallet` for real JSON-RPC
 # endpoints (e.g. mirage-rs, anvil, live testnets). Pulls in alloy's provider +
 # signer + consensus stacks, so leave this off for pure mock/trait consumers.

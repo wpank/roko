@@ -772,6 +772,10 @@ impl StateHub {
     }
 
     /// Replace the current materialized snapshot atomically.
+    ///
+    /// A synthetic [`DashboardEvent::SnapshotRebased`] is emitted so that
+    /// SSE/WS consumers holding a stale cursor learn that the baseline changed
+    /// and can re-fetch the full snapshot.
     pub fn apply_snapshot(&self, snapshot: DashboardSnapshot) {
         let _publish = self
             .publish_lock
@@ -788,6 +792,10 @@ impl StateHub {
             revision,
             ..StateHubSnapshotProvenance::default()
         };
+        self.event_bus.emit(DashboardEvent::SnapshotRebased {
+            revision,
+            source: "apply_snapshot".to_string(),
+        });
     }
 
     fn apply_recovered_snapshot_if_unchanged(
@@ -808,8 +816,20 @@ impl StateHub {
             return false;
         }
         provenance.revision = current.revision.saturating_add(1);
+        let revision = provenance.revision;
+        let source = provenance
+            .source_status
+            .clone()
+            .unwrap_or_else(|| "recovery".to_string());
         let _ = self.snapshot_tx.send(snapshot);
         *current = provenance;
+        // Advance the event-bus cursor so SSE/WS consumers learn about the
+        // baseline replacement.  Must happen while `publish_lock` is held so
+        // the cursor and snapshot stay in sync.
+        self.event_bus.emit(DashboardEvent::SnapshotRebased {
+            revision,
+            source,
+        });
         true
     }
 

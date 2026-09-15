@@ -1,8 +1,8 @@
 [meta]
 plan = "cli-ux-consistency"
 total = 4
-done = 0
-status = "ready"
+done = 4
+status = "complete"
 max_parallel = 2
 skip_enrichment = true
 estimated_total_minutes = 30

@@ -14,7 +14,8 @@ use super::schema::{
     ConductorConfig, CoreRunnerConfig, DaimonConfig, DeployConfig, DreamScheduleConfig,
     FeedAgentsConfig, GatesConfig, GeminiConfig, GitHubConfig, GithubWebhookConfig, LearningConfig,
     PerplexityConfig, PipelineConfig, PrdConfig, ProjectConfig, RelayConfig, ResourcesConfig,
-    RokoConfig, RoleOverride, RoutingConfig, SchedulerConfig, ServeConfig, ServerConfig,
+    RetrievalConfig, RokoConfig, RoleOverride, RoutingConfig, SchedulerConfig, ServeConfig,
+    ServerConfig,
     StateHubConfig, ToolsConfig, TuiConfig, ValidationConfig, WatcherConfig, WebhooksConfig,
 };
 
@@ -133,6 +134,7 @@ fn convert(m: &MoriConfig) -> RokoConfig {
         dreams: DreamScheduleConfig::default(),
         daimon: DaimonConfig::default(),
         repos: Vec::new(),
+        retrieval: RetrievalConfig::default(),
     }
 }
 

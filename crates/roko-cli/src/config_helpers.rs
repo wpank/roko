@@ -286,8 +286,9 @@ pub(crate) fn apply_role_routing_override(
                 })
                 .cloned()
         {
-            // UX34: outcome is persisted to the cascade router's confidence
-            // stats via record_outcome() in record_task_success/failure.
+            // UX34: outcome is persisted to the cascade router via the
+            // RoutingObservationSink's dampened override path when the
+            // FeedbackEvent carries ModelChoiceSource::Override.
             return Some((model, "role_force_backend".to_string()));
         }
     }

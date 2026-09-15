@@ -424,6 +424,19 @@ pub enum DashboardEvent {
         /// Duration of the cascade in milliseconds.
         duration_ms: u64,
     },
+    /// The materialized snapshot was wholesale-replaced (bootstrap or recovery).
+    ///
+    /// This event carries no payload because the full snapshot is already
+    /// installed via the `watch` channel. Its only purpose is to advance the
+    /// event-bus cursor so SSE/WS consumers know their cached state is stale
+    /// and must re-fetch the current snapshot.
+    SnapshotRebased {
+        /// Provenance revision of the new baseline.
+        revision: u64,
+        /// Human-readable source label (e.g. "state-snapshot", "recovery").
+        #[serde(default)]
+        source: String,
+    },
     /// An error occurred.
     Error { message: String },
 }
@@ -1906,6 +1919,10 @@ impl DashboardSnapshot {
                     format!("{functor_type} cascade {status} ({duration_ms}ms)"),
                 );
             }
+            // The snapshot was already replaced via `watch::Sender::send`;
+            // this event only exists to advance the event-bus cursor for
+            // SSE/WS consumers.
+            DashboardEvent::SnapshotRebased { .. } => {}
         }
     }
 

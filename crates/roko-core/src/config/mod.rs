@@ -25,6 +25,7 @@ pub mod presets;
 pub mod project;
 pub mod provenance;
 pub mod provider;
+pub mod retrieval;
 pub mod routing;
 pub mod schema;
 pub mod serve;
@@ -69,7 +70,8 @@ pub use schema::{
     GithubWebhookConfig, GraduationConfig, GraduationPolicy, IterationLoopConfig, JwksProvider,
     LearningConfig, ModelProfile, PerplexityConfig, PipelineBandConfig, PipelineConfig,
     PipelineReviewerMode, PrdConfig, ProjectConfig, ProviderConfig, ProviderRouting, RelayConfig,
-    RepoConfig, ResourcesConfig, ReviewLoopConfig, RewardWeights, RokoConfig, RoleOverride,
+    RepoConfig, ResourcesConfig, RetrievalConfig, RetrievalMode, ReviewLoopConfig, RewardWeights,
+    RokoConfig, RoleOverride,
     RoutingAlgorithm, RoutingConfig, RoutingOverrides, RoutingRewardWeightsConfig, SafetySetting,
     SchedulerConfig, SchedulerCronConfig, ServeAuthConfig, ServeConfig, ServeDeployConfig,
     ServeDeployWebhookConfig, ServerConfig, SpecDriftConfig, StateHubConfig, StrategySpaceConfig,

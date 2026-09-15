@@ -713,10 +713,20 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     for (id, slug, status) in &results {
                         match *status {
                             "generated" | "skipped" => {
-                                tracing::info!(id, slug = slug.as_str(), status, "batch plan generate result");
+                                tracing::info!(
+                                    id,
+                                    slug = slug.as_str(),
+                                    status,
+                                    "batch plan generate result"
+                                );
                             }
                             _ => {
-                                tracing::warn!(id, slug = slug.as_str(), status, "batch plan generate result");
+                                tracing::warn!(
+                                    id,
+                                    slug = slug.as_str(),
+                                    status,
+                                    "batch plan generate result"
+                                );
                             }
                         }
                     }
@@ -2377,8 +2387,10 @@ async fn cmd_plan_run_engine(
         plans_dir.to_path_buf(),
         roko_config.clone(),
     );
-    roko_cli::runner::extension_loader::initialize_extensions(graph_run_config.extension_chain.as_ref())
-        .await?;
+    roko_cli::runner::extension_loader::initialize_extensions(
+        graph_run_config.extension_chain.as_ref(),
+    )
+    .await?;
 
     let roko_config = Arc::new(roko_config);
     let prompt_cache = Arc::new(roko_cli::dispatch::PromptCache::load(workdir));
@@ -2451,15 +2463,13 @@ async fn cmd_plan_run_engine(
 
     let graph_episodes_path = graph_layout.root_episodes_path();
     let graph_feedback_facade = {
-        let mut facade = roko_cli::runtime_feedback::FeedbackFacade::new()
-            .with_sink(std::sync::Arc::new(
+        let mut facade =
+            roko_cli::runtime_feedback::FeedbackFacade::new().with_sink(std::sync::Arc::new(
                 roko_cli::runtime_feedback::EpisodeSink::at(&graph_episodes_path),
             ));
         if let Some(cascade) = &graph_run_config.cascade_router {
             facade = facade.with_sink(std::sync::Arc::new(
-                roko_cli::runtime_feedback::RoutingObservationSink::new(
-                    cascade.clone(),
-                ),
+                roko_cli::runtime_feedback::RoutingObservationSink::new(cascade.clone()),
             ));
         }
 
@@ -2487,9 +2497,8 @@ async fn cmd_plan_run_engine(
         // Runs a five-phase reflective cycle (gamma summary, affect update,
         // calibration check, progress assessment, meta-cognition) after each
         // plan completes. Lightweight and synchronous (no LLM calls).
-        let shared_cortical = std::sync::Arc::new(
-            roko_runtime::heartbeat::CorticalState::default(),
-        );
+        let shared_cortical =
+            std::sync::Arc::new(roko_runtime::heartbeat::CorticalState::default());
         let shared_theta = std::sync::Arc::new(std::sync::Mutex::new(
             roko_runtime::theta_consumer::ThetaConsumer::default(),
         ));
@@ -2522,9 +2531,7 @@ async fn cmd_plan_run_engine(
     //
     // Persists across the plan run, accumulating build/test observations
     // for predictive gate feedback. Mirrors Runner-v2's CodingOracle.
-    let coding_oracle = std::sync::Arc::new(
-        roko_learn::oracles::coding::CodingOracle::new(),
-    );
+    let coding_oracle = std::sync::Arc::new(roko_learn::oracles::coding::CodingOracle::new());
 
     // ── P1-01: GateGamingDetector ────────────────────────────────────
     //
@@ -2532,9 +2539,7 @@ async fn cmd_plan_run_engine(
     // increasing rate while delivering lower-quality outputs. Alerts are
     // appended to a JSONL file on disk.
     let gate_gaming_detector = std::sync::Arc::new(tokio::sync::Mutex::new(
-        roko_learn::GateGamingDetector::new(
-            graph_learn_dir.join("gate-gaming-alerts.jsonl"),
-        ),
+        roko_learn::GateGamingDetector::new(graph_learn_dir.join("gate-gaming-alerts.jsonl")),
     ));
 
     // ── P1-04: HoldoutExperiment ─────────────────────────────────────
@@ -2593,8 +2598,7 @@ async fn cmd_plan_run_engine(
     // interactive terminal, unless the user explicitly opted out with
     // --no-tui, --quiet, or --json. This mirrors the runner-v2 approval
     // TUI logic (line ~470).
-    let launch_tui =
-        !no_tui && !cli.quiet && !cli.json && std::io::stdout().is_terminal();
+    let launch_tui = !no_tui && !cli.quiet && !cli.json && std::io::stdout().is_terminal();
 
     // Keep the full SharedStateHub alive so the TUI can subscribe to the
     // live event stream. Previously this path only extracted sender().
@@ -2609,17 +2613,17 @@ async fn cmd_plan_run_engine(
     // Disabled when the TUI is active — events flow through the dashboard
     // instead of being printed inline.
     let show_progress = !cli.quiet && !cli.json && !launch_tui;
-    let graph_telemetry: Arc<dyn roko_core::TelemetryEventSink> = Arc::new(
-        InlineProgressTelemetrySink {
+    let graph_telemetry: Arc<dyn roko_core::TelemetryEventSink> =
+        Arc::new(InlineProgressTelemetrySink {
             inner: state_hub_sink,
             show_progress,
-        },
-    );
+        });
 
     // Wire graph engine execution into the TUI dashboard event stream.
     // Create separate TUI bridges for the task dispatcher (agent output
     // streaming) and the graph lifecycle bridge (plan/node events).
-    let dispatcher_tui_bridge = roko_cli::runner::tui_bridge::TuiBridge::new(state_hub_sender.clone());
+    let dispatcher_tui_bridge =
+        roko_cli::runner::tui_bridge::TuiBridge::new(state_hub_sender.clone());
     let graph_tui_bridge = roko_cli::runner::graph_tui_bridge::GraphTuiBridge::new(
         roko_cli::runner::tui_bridge::TuiBridge::new(state_hub_sender),
     );
@@ -2796,8 +2800,7 @@ async fn cmd_plan_run_engine(
         } else {
             plan.tasks.meta.max_parallel
         };
-        let max_parallel_usize =
-            usize::try_from(max_parallel.max(1)).unwrap_or(usize::MAX);
+        let max_parallel_usize = usize::try_from(max_parallel.max(1)).unwrap_or(usize::MAX);
         let plan_dir_str = plan.dir.display().to_string();
 
         let (graph, registry) = if rich_topology {
@@ -3090,6 +3093,23 @@ async fn cmd_plan_run_engine(
                 ),
             });
     }
+    // ── Persist cascade router observations (UX34) ─────────────────
+    //
+    // Save learned routing state (confidence stats, LinUCB weights, Pareto
+    // frontier) so that force_backend override outcomes and all other
+    // routing observations survive across runs. Without this, in-memory
+    // learning accumulated during plan execution was lost on exit.
+    if let Some(cascade) = &graph_run_config.cascade_router {
+        let cascade_path = graph_layout.cascade_router_path();
+        if let Err(err) = cascade.save(&cascade_path) {
+            tracing::warn!(
+                path = %cascade_path.display(),
+                error = %err,
+                "failed to persist cascade router state (non-fatal)"
+            );
+        }
+    }
+
     // ── Persist holdout experiment state ────────────────────────────
     //
     // Save holdout state so overfitting detection survives across runs
@@ -3126,11 +3146,9 @@ async fn cmd_plan_run_engine(
             .collect();
         let tasks_completed: usize = per_plan.iter().map(|p| p.tasks_completed).sum();
         let tasks_failed: usize = per_plan.iter().map(|p| p.tasks_failed).sum();
-        let any_budget_exhausted = plans.iter().any(|p| {
-            graph_task_dispatcher
-                .plan_budget_snapshot(&p.id)
-                .exhausted
-        });
+        let any_budget_exhausted = plans
+            .iter()
+            .any(|p| graph_task_dispatcher.plan_budget_snapshot(&p.id).exhausted);
         let (agg_tokens_in, agg_tokens_out, agg_dispatch_count) =
             graph_task_dispatcher.run_aggregate_stats();
         let record = roko_learn::run_metrics::RunMetricsRecord {
@@ -3508,7 +3526,9 @@ depends_on_plan = ["missing-foundation"]
     #[test]
     fn warn_graph_unsupported_flags_does_not_panic() {
         // All flags off (quiet = true suppresses output).
-        warn_graph_unsupported_flags(None, None, None, false, false, false, None, false, false, true);
+        warn_graph_unsupported_flags(
+            None, None, None, false, false, false, None, false, false, true,
+        );
         // All flags on (quiet = true still suppresses).
         warn_graph_unsupported_flags(
             Some("session-id"),

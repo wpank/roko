@@ -44,6 +44,8 @@ pub mod metrics;
 pub mod process;
 pub mod projection;
 pub mod pulse_bus;
+/// Reactive agent lifecycle supervisor -- trigger-based wake/sleep loop.
+pub mod reactive_agent;
 pub mod resource;
 pub mod run_ledger;
 /// Plan-scoped run registry: tracks all runs for a plan with state.
@@ -61,7 +63,9 @@ pub use builtin_lenses_derived::{
 pub use builtin_lenses_health::{
     BudgetLens, DriftLens, ErrorLens, TriggerLens, create_builtin_health_lens,
 };
-pub use builtin_lenses_performance::{EfficiencyLens, LatencyLens, QualityLens, VerifyLens};
+pub use builtin_lenses_performance::{
+    EfficiencyLens, LatencyLens, QualityLens, RagPerformanceLens, VerifyLens,
+};
 pub use cancel::CancelToken;
 pub use connector_runtime::{
     ConnectorRuntime, ConnectorRuntimeStatus, ConnectorSupervisionStatus,
@@ -80,11 +84,11 @@ pub use lens_executor::{
     LensRuntimeStatus, QueuedLensExecutor,
 };
 pub use lifecycle::{
-    Agent, AgentLifecycleState, AgentState, ConfigDrift, DegradationStage, GitOpsConfig,
-    GitOpsRetryPolicy, HealthProbeConfig, HookSpec, LifecycleHooks, LifecycleTransition,
-    LifecycleTransitionReason, MachineLifecycleState, MeshRegistered, NeuroInitialized,
-    ProbeHandler, ProbeSpec, Ready, ResourcesAllocated, RestartBackoff, RoutingConfigured,
-    ToolsLoaded, Unvalidated, Validated,
+    Agent, AgentLifecycleState, AgentProvisioningState, AgentState, ConfigDrift, DegradationStage,
+    GitOpsConfig, GitOpsRetryPolicy, HealthProbeConfig, HookSpec, LifecycleHooks,
+    LifecycleTransition, LifecycleTransitionReason, MachineLifecycleState, MeshRegistered,
+    NeuroInitialized, ProbeHandler, ProbeSpec, Ready, ResourcesAllocated, RestartBackoff,
+    RoutingConfigured, ToolsLoaded, Unvalidated, Validated,
 };
 pub use projection::{RunSummary, RuntimeProjection};
 pub use pulse_bus::{PulseBus, PulseBusReceiver};
@@ -119,6 +123,11 @@ pub use state_snapshot::{
 pub use workflow_contract::{
     CommitOutcome, GateOutcome, Phase, WorkflowConfig, WorkflowOutcome, WorkflowResult,
     WorkflowRunConfig, WorkflowRunReport,
+};
+pub use reactive_agent::{
+    ReactiveAgentConfig, ReactiveAgentHandle, ReactiveAgentStatus, ReactiveAgentSupervisor,
+    ReactiveHandler, ReactiveWakeEvent, TriggerCondition, WakeError,
+    condition_for_any_trigger, condition_for_trigger_name,
 };
 // task_scheduler retired with WorkflowEngine
 pub use telemetry_projection_aggregator::{

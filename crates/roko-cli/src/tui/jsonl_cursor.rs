@@ -85,6 +85,7 @@ impl JsonlCursor {
     }
 
     /// Count of committed lines read since the last reset.
+    #[allow(dead_code)] // used only in tests
     pub fn last_line(&self) -> usize {
         self.last_line
     }
@@ -119,7 +120,7 @@ mod tests {
     #[test]
     fn reads_appended_lines_without_duplicates() {
         let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("engrams.jsonl");
+        let path = dir.path().join("signals.jsonl");
         fs::write(&path, "one\n").expect("seed file");
 
         let mut cursor = JsonlCursor::new(&path);
@@ -211,7 +212,7 @@ mod tests {
     #[test]
     fn waits_for_partial_trailing_line() {
         let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("engrams.jsonl");
+        let path = dir.path().join("signals.jsonl");
         fs::write(&path, "one\npart").expect("seed file");
 
         let mut cursor = JsonlCursor::new(&path);

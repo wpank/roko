@@ -592,6 +592,33 @@ impl ProductionGateRunner for ProductionGateService {
             .clone()
             .map(|t| Arc::new(Mutex::new(t)));
 
+        // Fast-path: if the token is already cancelled before we do any work,
+        // return immediately without spawning any rung execution. This ensures
+        // deterministic `Cancelled` outcome even if `tokio::select!` would
+        // have randomly polled the pipeline branch first.
+        if cancel.is_cancelled() {
+            warn!(
+                plan_id = %request.plan_id,
+                task_id = %request.task_id,
+                "production gate pipeline cancelled (pre-run)"
+            );
+            progress_sink
+                .send(GatePipelineProgress::PipelineCompleted {
+                    outcome: PipelineOutcome::Cancelled,
+                })
+                .await;
+            return Ok(ProductionGateVerdictV1 {
+                schema_version: VERDICT_SCHEMA_VERSION,
+                request_fingerprint: request.request_fingerprint(),
+                workspace_fingerprint: request.workspace_fingerprint.clone(),
+                rung_verdicts: Vec::new(),
+                outcome: PipelineOutcome::Cancelled,
+                mostly_passing: false,
+                total_duration: std::time::Duration::ZERO,
+                adaptive_snapshot: None,
+            });
+        }
+
         let signal = Self::build_signal(&request);
         let ctx = Context::now().with_attr("workdir", request.workspace.to_string_lossy());
         let complexity = Self::plan_complexity(&request);

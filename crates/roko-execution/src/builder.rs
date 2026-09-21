@@ -17,6 +17,8 @@
 //! - [`ObservationBundle`] — `observation.rs` (event publisher)
 //! - [`GuardsBundle`] — `guards.rs` (safety, budget, process supervisor)
 
+use std::any::{Any, TypeId};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -98,6 +100,20 @@ impl FeedbackBundle {
 /// Contains exactly `dispatch`, `prompt`, `feedback`, `extensions`,
 /// `observation`, and `guards`. Each bundle uses the rich, handle-bearing
 /// type from its dedicated module.
+///
+/// # DI facade
+///
+/// [`RuntimeServices`] also acts as a dependency-injection facade. Typed
+/// overrides injected during construction (via [`RuntimeServicesBuilder::with_override`])
+/// can be retrieved with [`RuntimeServices::get_override`]. This lets tests
+/// substitute any typed dependency — knowledge store, cascade router, etc. —
+/// without having to thread the override through every call site.
+///
+/// Production callers can also read common dependencies directly via the
+/// typed getter methods ([`config`](RuntimeServices::config),
+/// [`workdir`](RuntimeServices::workdir),
+/// [`cascade_router`](RuntimeServices::cascade_router),
+/// [`knowledge_store`](RuntimeServices::knowledge_store)).
 #[derive(Debug, Clone)]
 pub struct RuntimeServices {
     /// Provider dispatch: factory, model resolver, rate limiter, health.
@@ -114,6 +130,15 @@ pub struct RuntimeServices {
     pub guards: GuardsBundle,
     /// The profile that was used to construct these services.
     pub profile: RuntimeProfile,
+    /// Validated workspace configuration (None when constructed without config).
+    pub config: Option<Arc<RokoConfig>>,
+    /// Absolute path to the workspace root.
+    pub workdir: Option<PathBuf>,
+    /// Typed dependency overrides registered by the builder or tests.
+    ///
+    /// Values are stored as `Arc<dyn Any + Send + Sync>` keyed by `TypeId`.
+    /// Retrieve with [`RuntimeServices::get_override`].
+    pub(crate) di_overrides: Arc<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>,
 }
 
 impl RuntimeServices {
@@ -134,7 +159,69 @@ impl RuntimeServices {
             guards_has_process_supervisor: self.guards.process_supervisor.is_some(),
             observation_has_event_publisher: self.observation.event_publisher.is_some(),
             observation_telemetry_enabled: self.observation.telemetry_enabled,
+            has_config: self.config.is_some(),
+            has_workdir: self.workdir.is_some(),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // DI facade — typed getters
+    // -----------------------------------------------------------------------
+
+    /// Return the workspace configuration, if one was provided to the builder.
+    ///
+    /// Production paths that construct via [`RuntimeServicesBuilder::from_config`]
+    /// will always have `Some`. Paths constructed with [`RuntimeServicesBuilder::for_test`]
+    /// or the minimal [`RuntimeServicesBuilder::new`] return `None`.
+    #[must_use]
+    pub fn config(&self) -> Option<&Arc<RokoConfig>> {
+        self.config.as_ref()
+    }
+
+    /// Return the workspace root path, if the builder was invoked with a workdir.
+    #[must_use]
+    pub fn workdir(&self) -> Option<&Path> {
+        self.workdir.as_deref()
+    }
+
+    /// Return the cascade router from the dispatch factory, if one was wired.
+    ///
+    /// Convenience shorthand for `self.dispatch.cascade_router.as_ref()`.
+    #[must_use]
+    pub fn cascade_router(&self) -> Option<&Arc<roko_learn::cascade_router::CascadeRouter>> {
+        self.dispatch.cascade_router.as_ref()
+    }
+
+    /// Open or return a cached knowledge store for the workspace.
+    ///
+    /// Returns `None` when no workdir was provided to the builder (common
+    /// in tests using `for_test`).
+    #[must_use]
+    pub fn knowledge_store(&self) -> Option<roko_neuro::KnowledgeStore> {
+        self.workdir.as_deref().map(roko_neuro::KnowledgeStore::for_workdir)
+    }
+
+    /// Retrieve a typed override previously registered via
+    /// [`RuntimeServicesBuilder::with_override`].
+    ///
+    /// Returns `None` if no override of type `T` was registered.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// // In a test:
+    /// let mock_router = Arc::new(my_mock_router);
+    /// let services = RuntimeServicesBuilder::for_test(RuntimeProfile::FullPlan)
+    ///     .with_override(mock_router.clone())
+    ///     .build(workdir.path())
+    ///     .unwrap();
+    /// let router = services.get_override::<Arc<MyMockRouter>>().unwrap();
+    /// ```
+    #[must_use]
+    pub fn get_override<T: Any + Send + Sync>(&self) -> Option<&T> {
+        self.di_overrides
+            .get(&TypeId::of::<T>())
+            .and_then(|boxed| boxed.downcast_ref::<T>())
     }
 }
 
@@ -169,6 +256,10 @@ pub struct RuntimeServicesSummary {
     pub observation_has_event_publisher: bool,
     /// Whether telemetry is enabled.
     pub observation_telemetry_enabled: bool,
+    /// Whether a workspace configuration was provided.
+    pub has_config: bool,
+    /// Whether a workspace root path was provided.
+    pub has_workdir: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -201,6 +292,14 @@ pub enum BuilderError {
 /// Runner-v2 and Graph engines use this builder with their respective
 /// profiles (`FullPlan` / `GraphPlan`) to ensure they share provider
 /// health, rate limiter, cost table, prompt cache, and process supervisor.
+///
+/// # DI overrides
+///
+/// Use [`with_override`](RuntimeServicesBuilder::with_override) to inject any
+/// typed value (e.g. a mock knowledge store, test router, or custom sentinel)
+/// that should be retrievable through
+/// [`RuntimeServices::get_override`]. Overrides are keyed by their `TypeId`;
+/// each type may be registered at most once — the last call wins.
 pub struct RuntimeServicesBuilder {
     profile: RuntimeProfile,
     overrides: DetailedOverrides,
@@ -210,6 +309,8 @@ pub struct RuntimeServicesBuilder {
     observation_bundle: Option<ObservationBundle>,
     extensions_bundle: Option<ExtensionsBundle>,
     budget_ceiling_usd: Option<f64>,
+    /// Typed DI overrides registered via [`with_override`].
+    di_overrides: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
 }
 
 impl RuntimeServicesBuilder {
@@ -226,6 +327,7 @@ impl RuntimeServicesBuilder {
             observation_bundle: None,
             extensions_bundle: None,
             budget_ceiling_usd: None,
+            di_overrides: HashMap::new(),
         }
     }
 
@@ -246,6 +348,7 @@ impl RuntimeServicesBuilder {
             observation_bundle: None,
             extensions_bundle: None,
             budget_ceiling_usd: None,
+            di_overrides: HashMap::new(),
         }
     }
 
@@ -260,6 +363,7 @@ impl RuntimeServicesBuilder {
             observation_bundle: None,
             extensions_bundle: None,
             budget_ceiling_usd: None,
+            di_overrides: HashMap::new(),
         }
     }
 
@@ -298,6 +402,29 @@ impl RuntimeServicesBuilder {
     #[must_use]
     pub fn with_budget_ceiling_usd(mut self, ceiling: f64) -> Self {
         self.budget_ceiling_usd = Some(ceiling);
+        self
+    }
+
+    /// Register a typed dependency override for test injection.
+    ///
+    /// The value is stored under its `TypeId` and can be retrieved from the
+    /// constructed [`RuntimeServices`] via [`RuntimeServices::get_override`].
+    /// Each concrete type may be registered at most once; the last call wins.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let mock = Arc::new(MyMockRouter::new());
+    /// let services = RuntimeServicesBuilder::for_test(RuntimeProfile::FullPlan)
+    ///     .with_override(mock.clone())
+    ///     .build(workdir.path())
+    ///     .unwrap();
+    /// let retrieved = services.get_override::<Arc<MyMockRouter>>().unwrap();
+    /// assert!(Arc::ptr_eq(retrieved, &mock));
+    /// ```
+    #[must_use]
+    pub fn with_override<T: Any + Send + Sync>(mut self, value: T) -> Self {
+        self.di_overrides.insert(TypeId::of::<T>(), Arc::new(value));
         self
     }
 
@@ -398,6 +525,9 @@ impl RuntimeServicesBuilder {
             observation,
             guards,
             profile: self.profile,
+            config: self.config.clone(),
+            workdir: Some(workdir.to_path_buf()),
+            di_overrides: Arc::new(self.di_overrides),
         })
     }
 

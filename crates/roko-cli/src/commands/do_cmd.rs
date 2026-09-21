@@ -364,9 +364,10 @@ pub(crate) async fn cmd_do(
         _ => {}
     }
 
-    // A `do` execution owns the workspace's mutable runtime state for its
-    // complete lifetime (including plan generation and runner dispatch).
-    let _lock = roko_cli::workspace_lock::acquire_workspace_lock(&workdir.join(".roko"))?;
+    // A `do` execution owns the runner slot for its complete lifetime
+    // (including plan generation and runner dispatch).  Use the runner lock
+    // so that read-only commands with shared workspace locks can coexist.
+    let _lock = roko_cli::workspace_lock::acquire_runner_lock(&workdir.join(".roko"))?;
 
     // Route based on resolved route.
     match route {
@@ -620,7 +621,7 @@ async fn run_complex_path(
     // ── Step 1: Create PRD idea ──────────────────────────────────────
     out.step("Step 1/4", "Creating PRD...");
     roko_cli::prd::ensure_dirs(workdir)?;
-    roko_cli::prd::cmd_idea(workdir, prompt)?;
+    roko_cli::prd::cmd_idea(workdir, prompt, false)?;
 
     // ── Step 2: Draft the PRD ────────────────────────────────────────
     out.step("Step 2/4", "Drafting PRD...");
@@ -993,8 +994,7 @@ pub(crate) async fn run_plan_execution(
     });
 
     #[allow(deprecated)] // Runner-v2 removed; this call now returns an error
-    let v2_report =
-        roko_cli::runner::run(plans, &run_config, &state_hub, cancel).await?;
+    let v2_report = roko_cli::runner::run(plans, &run_config, &state_hub, cancel).await?;
 
     // The run-complete summary (task counts, cost, per-plan status, failure
     // details) was already printed by the output sink BEFORE post-plan

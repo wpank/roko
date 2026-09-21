@@ -51,10 +51,14 @@ pub(crate) async fn dispatch_mcp_cmd(cmd: &ConfigMcpCmd, workdir: &Path) -> Resu
                 .find(|s| s.name == *name)
                 .ok_or_else(|| anyhow!("server '{}' not found in {}", name, path.display()))?;
             let custom_timeout = Some(Duration::from_secs(*timeout_secs));
-            let report = roko_agent::mcp::test_mcp_server(server, path.clone(), custom_timeout).await;
+            let report =
+                roko_agent::mcp::test_mcp_server(server, path.clone(), custom_timeout).await;
             println!("MCP test: {} ({})", server.name, path.display());
             println!("  status: {:?}", report.status);
-            println!("  protocol: {}", report.protocol_version.as_deref().unwrap_or("n/a"));
+            println!(
+                "  protocol: {}",
+                report.protocol_version.as_deref().unwrap_or("n/a")
+            );
             println!("  tools: {}", report.tool_count);
             if report.status == roko_agent::mcp::McpTestStatus::Failed {
                 return Err(anyhow!("MCP test failed for server '{}'", name));

@@ -167,11 +167,12 @@ impl SharedAgentFactory {
             .into_iter()
             .collect();
         let model_providers = crate::config_helpers::routing_model_provider_map(&config);
+        let warm_pool_size = config.runner.warm_pool_size;
         let dispatcher = Dispatcher::new(
             cascade_router,
             prompt_assembler,
-            WarmPool::new(2),
-            configured_models,
+            WarmPool::new(warm_pool_size),
+            configured_models.clone(),
         );
         let resolver = ProviderDispatchResolver::new(Arc::clone(&config));
 
@@ -195,12 +196,8 @@ impl SharedAgentFactory {
 
         // Wire statically disabled providers from [routing] config so the
         // cascade router never selects models from excluded providers.
-        let disabled_providers: HashSet<String> = config
-            .routing
-            .disabled_providers
-            .iter()
-            .cloned()
-            .collect();
+        let disabled_providers: HashSet<String> =
+            config.routing.disabled_providers.iter().cloned().collect();
         let dispatcher = if disabled_providers.is_empty() {
             dispatcher
         } else {
@@ -209,6 +206,24 @@ impl SharedAgentFactory {
                 "routing: statically disabled providers"
             );
             dispatcher.with_disabled_providers(disabled_providers)
+        };
+
+        // Wire tool-capability filtering so search-only models (e.g. Perplexity
+        // sonar) are never selected for tasks that require tool use.
+        let tool_capable: HashSet<String> = config.models_supporting_tools().into_iter().collect();
+        let models_without_tools: HashSet<String> = configured_models
+            .iter()
+            .filter(|slug| !tool_capable.contains(*slug))
+            .cloned()
+            .collect();
+        let dispatcher = if models_without_tools.is_empty() {
+            dispatcher
+        } else {
+            tracing::info!(
+                models = ?models_without_tools,
+                "routing: models without tool support will be skipped for tool-requiring tasks"
+            );
+            dispatcher.with_tool_capability_filter(models_without_tools)
         };
 
         Self {
@@ -223,9 +238,7 @@ impl SharedAgentFactory {
             rate_limiter,
             health_registry,
             tool_audit: None,
-            format_bandit: Arc::new(
-                roko_core::tool::bandit::ProfileBandit::with_static_profiles(),
-            ),
+            format_bandit: Arc::new(roko_core::tool::bandit::ProfileBandit::with_static_profiles()),
             // Start with an empty in-memory store. Callers should replace it
             // via `with_error_pattern_store` or `with_error_patterns_from_disk`.
             error_pattern_store: Arc::new(std::sync::RwLock::new(ErrorPatternStore::empty())),
@@ -235,6 +248,15 @@ impl SharedAgentFactory {
     /// Read-only access to the shared dispatcher (for plan/route without acting).
     pub fn dispatcher(&self) -> &Dispatcher {
         &self.dispatcher
+    }
+
+    /// Read-only access to the warm pool held by the shared dispatcher.
+    ///
+    /// Callers use this to check for a pre-warmed agent slot before dispatch
+    /// (recording `was_warm_start = true` in efficiency events) and to return
+    /// the slot to the pool after a successful task completes.
+    pub fn warm_pool(&self) -> &WarmPool {
+        self.dispatcher.warm_pool()
     }
 
     /// Use a caller-owned provider health registry for all subsequent
@@ -358,15 +380,27 @@ impl SharedAgentFactory {
             .iter()
             .cloned()
             .collect();
+        let warm_pool_size = self.config.runner.warm_pool_size;
         let mut dispatcher = Dispatcher::new(
             self.dispatcher.cascade_router_arc(),
             assembler,
-            WarmPool::new(2),
-            configured_models,
+            WarmPool::new(warm_pool_size),
+            configured_models.clone(),
         )
         .with_provider_health(Arc::clone(&self.health_registry), model_providers);
         if !disabled_providers.is_empty() {
             dispatcher = dispatcher.with_disabled_providers(disabled_providers);
+        }
+        // Preserve tool-capability filter across cache updates.
+        let tool_capable: HashSet<String> =
+            self.config.models_supporting_tools().into_iter().collect();
+        let models_without_tools: HashSet<String> = configured_models
+            .iter()
+            .filter(|slug| !tool_capable.contains(*slug))
+            .cloned()
+            .collect();
+        if !models_without_tools.is_empty() {
+            dispatcher = dispatcher.with_tool_capability_filter(models_without_tools);
         }
         self.dispatcher = dispatcher;
     }

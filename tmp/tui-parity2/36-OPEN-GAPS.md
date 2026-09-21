@@ -1,6 +1,6 @@
 # Open UX/TUI gaps after the follow-up pass
 
-**Date:** 2026-09-01 (updated 2026-09-02 swarm)
+**Date:** 2026-09-01 (updated 2026-09-02 swarm; updated 2026-09-14)
 **Purpose:** shortest actionable queue after reconciling source, persisted run data, Mori/Bardo,
 backlog acceptance criteria, and controlled full-frame captures.
 
@@ -66,6 +66,13 @@ The following items from the original gap list are **still open**:
 | P1.6 | Unified semantic transcript | Open |
 | P2.4 | Comparison and assessment | Open |
 | P2.6 | Transcript widget | Open |
+
+**Closed 2026-09-02 (swarm session):**
+
+| ID | Gap | Status | Evidence |
+|---|---|---|---|
+| P5.5 | Per-plan elapsed timer | DONE | Authoritative start timestamp preserved; per-plan elapsed rendering wired |
+| P6.3 | Focus zones / sub-tab recovery commands | DONE | Per-tab scroll isolation, Tab/Shift-Tab cycling with breadcrumb display verified |
 
 **Closed 2026-09-04:**
 

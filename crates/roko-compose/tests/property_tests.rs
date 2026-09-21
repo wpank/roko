@@ -1,8 +1,10 @@
 //! Property-based tests for roko-compose core types.
 
 use proptest::prelude::*;
+use roko_compose::prompt::{
+    CacheLayer, Placement, PromptSection, SectionPriority, estimate_tokens,
+};
 use roko_compose::system_prompt_builder::{SystemPromptBuilder, normalize_for_caching};
-use roko_compose::prompt::{estimate_tokens, CacheLayer, Placement, SectionPriority, PromptSection};
 
 // ─── normalize_for_caching ───────────────────────────────────────────────────
 

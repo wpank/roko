@@ -5,7 +5,9 @@ use std::collections::BTreeMap;
 use roko_core::{
     LensScope, ObservableEvent, ObservableEventKind, TelemetryObserve, TestCount, Verdict,
 };
-use roko_runtime::{EfficiencyLens, LatencyLens, LensPayload, LensSignalEnvelope, QualityLens};
+use roko_runtime::{
+    EfficiencyLens, LatencyLens, LensPayload, LensSignalEnvelope, QualityLens, RagPerformanceLens,
+};
 use serde_json::{Value, json};
 
 fn params(values: &[(&str, Value)]) -> BTreeMap<String, Value> {
@@ -538,4 +540,167 @@ fn constructors_reject_duplicate_all_and_non_table_params() {
     .err()
     .unwrap();
     assert!(unknown.to_string().contains("unknown param: cost_model"));
+}
+
+// ─── RAG-05: RagPerformanceLens ─────────────────────────────────────────────
+
+fn rag_lens(window_size: usize) -> RagPerformanceLens {
+    RagPerformanceLens::new(
+        "rag-perf",
+        LensScope::Global,
+        vec![ObservableEventKind::MemoryLifecycle],
+        params(&[("window_size", json!(window_size))]),
+    )
+    .unwrap()
+}
+
+fn memory_retrieved(query: &str, results: usize, duration_ms: u64) -> ObservableEvent {
+    ObservableEvent::MemoryRetrieved {
+        query: query.into(),
+        results,
+        duration_ms,
+    }
+}
+
+async fn rag_payload(lens: &RagPerformanceLens, event: ObservableEvent) -> LensPayload {
+    let envelope = payload(lens, event).await;
+    envelope.payload
+}
+
+#[tokio::test]
+async fn rag_lens_zero_metrics_when_no_events_observed() {
+    // Constructing a lens and observing an unrelated event returns no Signal.
+    let lens = rag_lens(128);
+    let event = ObservableEvent::MemoryStored {
+        signal: "sig-1".into(),
+        tier: "t0".into(),
+    };
+    let signals = lens.observe(&event).await.unwrap();
+    assert!(
+        signals.is_empty(),
+        "non-MemoryRetrieved event must not produce output"
+    );
+}
+
+#[tokio::test]
+async fn rag_lens_precision_and_miss_rate_complement_to_one() {
+    let lens = rag_lens(128);
+
+    // 2 hits, 1 miss → miss_rate = 1/3, precision = 2/3.
+    let _ = rag_payload(&lens, memory_retrieved("q1", 3, 10)).await;
+    let _ = rag_payload(&lens, memory_retrieved("q2", 1, 20)).await;
+    let p = rag_payload(&lens, memory_retrieved("q3", 0, 5)).await;
+
+    let LensPayload::RagPerformance(metrics) = p else {
+        panic!("expected RagPerformance payload");
+    };
+    assert_eq!(metrics.total_queries, 3);
+    assert_eq!(metrics.queries_with_zero_results, 1);
+    assert!((metrics.miss_rate - 1.0 / 3.0).abs() < 1e-9, "miss_rate mismatch");
+    assert!((metrics.precision - 2.0 / 3.0).abs() < 1e-9, "precision mismatch");
+    assert!(
+        (metrics.miss_rate + metrics.precision - 1.0).abs() < 1e-9,
+        "miss_rate + precision must equal 1.0"
+    );
+}
+
+#[tokio::test]
+async fn rag_lens_p95_latency_computed_over_window() {
+    let lens = rag_lens(128);
+
+    // Feed 10 queries with latencies 10, 20, 30, ..., 100 ms.
+    let mut last_payload = None;
+    for i in 1..=10_u64 {
+        let p = rag_payload(&lens, memory_retrieved("q", 1, i * 10)).await;
+        last_payload = Some(p);
+    }
+
+    let LensPayload::RagPerformance(metrics) = last_payload.unwrap() else {
+        panic!("expected RagPerformance payload");
+    };
+    // Sorted: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100].
+    // p95 nearest-rank index = ceil(95 * 10 / 100) = 10 → value = 100.
+    assert_eq!(metrics.p95_latency_ms, 100, "p95 should be 100ms");
+    // mean = (10+20+...+100) / 10 = 550 / 10 = 55.
+    assert_eq!(metrics.mean_latency_ms, 55, "mean should be 55ms");
+}
+
+#[tokio::test]
+async fn rag_lens_window_eviction_keeps_counts_correct() {
+    // Window size of 3.
+    let lens = rag_lens(3);
+
+    // Three hits (results > 0).
+    let _ = rag_payload(&lens, memory_retrieved("q1", 5, 10)).await;
+    let _ = rag_payload(&lens, memory_retrieved("q2", 5, 20)).await;
+    let _ = rag_payload(&lens, memory_retrieved("q3", 5, 30)).await;
+
+    // Now add a miss — this evicts q1 (a hit) and adds a miss.
+    let p = rag_payload(&lens, memory_retrieved("q4", 0, 40)).await;
+    let LensPayload::RagPerformance(metrics) = p else {
+        panic!("expected RagPerformance payload");
+    };
+    // Window: [q2(hit), q3(hit), q4(miss)].
+    assert_eq!(metrics.total_queries, 3, "window size maintained at 3");
+    assert_eq!(metrics.queries_with_zero_results, 1, "exactly one miss in window");
+    assert!((metrics.miss_rate - 1.0 / 3.0).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn rag_lens_all_misses_gives_precision_zero() {
+    let lens = rag_lens(128);
+    let mut last = None;
+    for _ in 0..5 {
+        last = Some(rag_payload(&lens, memory_retrieved("q", 0, 10)).await);
+    }
+    let LensPayload::RagPerformance(metrics) = last.unwrap() else {
+        panic!("expected RagPerformance payload");
+    };
+    assert_eq!(metrics.queries_with_zero_results, 5);
+    assert!((metrics.miss_rate - 1.0).abs() < 1e-9);
+    assert!((metrics.precision - 0.0).abs() < 1e-9);
+}
+
+#[test]
+fn rag_lens_rejects_invalid_registration() {
+    // Wrong event family.
+    let wrong_family = RagPerformanceLens::new(
+        "rag",
+        LensScope::Global,
+        vec![ObservableEventKind::CellLifecycle],
+        empty_params(),
+    )
+    .err()
+    .unwrap();
+    assert!(
+        wrong_family.to_string().contains("unsupported event-family filter"),
+        "got: {wrong_family}"
+    );
+
+    // Unknown param.
+    let unknown = RagPerformanceLens::new(
+        "rag",
+        LensScope::Global,
+        vec![ObservableEventKind::MemoryLifecycle],
+        params(&[("unknown_param", json!(42))]),
+    )
+    .err()
+    .unwrap();
+    assert!(unknown.to_string().contains("unknown param: unknown_param"));
+}
+
+#[tokio::test]
+async fn rag_lens_signal_envelope_round_trips() {
+    let lens = rag_lens(128);
+    let event = memory_retrieved("round-trip", 3, 15);
+    let signals = lens.observe(&event).await.unwrap();
+    assert_eq!(signals.len(), 1);
+    let envelope = LensSignalEnvelope::from_signal(&signals[0]).unwrap();
+    assert_eq!(envelope.topic, "telemetry.lens.rag_performance.v1");
+    assert_eq!(envelope.source_lens, "rag-perf");
+    let LensPayload::RagPerformance(metrics) = &envelope.payload else {
+        panic!("expected RagPerformance payload");
+    };
+    assert_eq!(metrics.total_queries, 1);
+    assert_eq!(metrics.p95_latency_ms, 15);
 }

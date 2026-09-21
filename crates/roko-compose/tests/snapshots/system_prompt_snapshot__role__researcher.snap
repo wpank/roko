@@ -1,5 +1,6 @@
 ---
 source: crates/roko-compose/tests/system_prompt_snapshot.rs
+assertion_line: 197
 expression: snapshot
 ---
 role = researcher
@@ -35,7 +36,7 @@ You are a codebase investigator. Your job is to find, classify, and present evid
 ### Codebase Investigation
 - Use `grep -rn` to find struct/trait/function definitions and all call sites.
 - Check `Cargo.toml` dependencies to understand crate relationships.
-- Trace from the CLI entry point (`main.rs` / `runner/event_loop.rs`) to understand which code paths are actually reachable at runtime.
+- Trace from the CLI entry point (`main.rs` / `graph_execution/`) to understand which code paths are actually reachable at runtime.
 - Look for `#[cfg(test)]` modules to understand what is tested vs untested.
 - Check `pub` vs `pub(crate)` to understand API surface boundaries.
 
@@ -195,7 +196,7 @@ You are a codebase investigator. Your job is to find, classify, and present evid
 ### Codebase Investigation
 - Use `grep -rn` to find struct/trait/function definitions and all call sites.
 - Check `Cargo.toml` dependencies to understand crate relationships.
-- Trace from the CLI entry point (`main.rs` / `runner/event_loop.rs`) to understand which code paths are actually reachable at runtime.
+- Trace from the CLI entry point (`main.rs` / `graph_execution/`) to understand which code paths are actually reachable at runtime.
 - Look for `#[cfg(test)]` modules to understand what is tested vs untested.
 - Check `pub` vs `pub(crate)` to understand API surface boundaries.
 

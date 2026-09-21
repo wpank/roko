@@ -456,7 +456,18 @@ pub fn build_tool_dispatcher_with_audit(
     resolver: Arc<dyn HandlerResolver>,
     file_audit: Option<Arc<roko_fs::tool_audit::ScrubAuditAdapter>>,
 ) -> Arc<ToolDispatcher> {
-    let layer = current_safety_layer().unwrap_or_else(SafetyLayer::with_defaults);
+    let layer = current_safety_layer().unwrap_or_else(|| {
+        // No scoped safety layer was set by the caller. This typically means the
+        // dispatcher is being built outside a `with_safety_layer` context, which
+        // is allowed but noteworthy — the conservative `with_defaults` posture is
+        // applied rather than a role-specific contract. Callers that want explicit
+        // role enforcement should call `build_tool_dispatcher` inside a
+        // `with_safety_layer` scope or pass an explicit layer via `with_safety`.
+        tracing::debug!(
+            "build_tool_dispatcher: no scoped safety layer; applying SafetyLayer::with_defaults"
+        );
+        SafetyLayer::with_defaults()
+    });
     let mut dispatcher = ToolDispatcher::new(registry, resolver).with_safety(layer);
     if let Some(audit) = file_audit {
         dispatcher = dispatcher.with_file_audit(audit);
@@ -753,6 +764,10 @@ pub struct AgentOptions {
     pub temperament: Option<Temperament>,
     pub command: Option<String>,
     pub timeout_ms: Option<u64>,
+    /// Maximum number of agent turns. When `Some`, overrides the provider's
+    /// built-in default. Currently wired for Claude CLI (`--max-turns`).
+    /// `None` means use the provider default (Theta = 10).
+    pub max_turns: Option<u32>,
     pub system_prompt: Option<String>,
     /// Validated provider-neutral structured messages for a multimodal turn.
     /// HTTP adapters translate these at their final wire boundary. Adapters
@@ -796,23 +811,19 @@ pub struct AgentOptions {
     ///   - crates/roko-cli/src/agent_serve.rs:429
     ///   - crates/roko-cli/src/commands/research.rs:66,264,377
     ///   - crates/roko-cli/src/dispatch_v2.rs:1037
-    ///   - crates/roko-cli/src/runner/event_loop.rs (runner-v2; orchestrate.rs deleted in E12-T07)
     ///   - crates/roko-cli/src/run.rs:2054,2096
     ///   - crates/roko-cli/tests/smoke.rs:260
     ///   - crates/roko-dreams/src/runner.rs:169
     /// - DIVERGENCE:
     ///   - crates/roko-cli/src/run.rs:2784 (unknown roles default `true`; includes `network`)
-    ///   (orchestrate.rs deleted in E12-T07; typed AgentRole now in runner-v2)
     /// - PROPAGATION:
     ///   - crates/roko-agent/src/provider/claude_cli.rs:54
     ///   - crates/roko-agent/src/claude_cli_agent.rs:328
     ///   - crates/roko-cli/src/runner/agent_stream.rs:66,138
-    ///   - crates/roko-cli/src/runner/event_loop.rs:2043
     ///   - crates/roko-cli/src/agent_spawn.rs:59
     ///   - crates/roko-cli/src/dispatch_v2.rs:320
     ///   - crates/roko-cli/src/dispatch_v2.rs:357
     ///   - crates/roko-cli/src/dispatch_v2.rs:728
-    ///   - crates/roko-cli/src/runner/event_loop.rs (runner-v2; orchestrate.rs deleted in E12-T07)
     ///   - crates/roko-cli/src/run.rs:1923,2003
     /// Default MUST be `false`. PE_02 will flip all NEEDS FIX sites.
     pub dangerously_skip_permissions: bool,
@@ -1010,6 +1021,32 @@ pub fn map_provider_error(
         );
     }
 
+    // Billing/credit errors must be checked before the generic 429/rate-limit
+    // block so that quota-exceeded messages that happen to mention 429 are not
+    // misclassified as transient rate limits.
+    if err_lower.contains("402")
+        || err_lower.contains("insufficient_quota")
+        || err_lower.contains("insufficient quota")
+        || err_lower.contains("insufficient funds")
+        || err_lower.contains("billing_not_active")
+        || err_lower.contains("billing not active")
+        || err_lower.contains("account_deactivated")
+        || err_lower.contains("account deactivated")
+        || err_lower.contains("payment required")
+        || (err_lower.contains("quota")
+            && (err_lower.contains("exceeded") || err_lower.contains("exhausted")))
+        || (err_lower.contains("billing")
+            && (err_lower.contains("error") || err_lower.contains("issue")))
+        || (err_lower.contains("credit") && err_lower.contains("balance"))
+    {
+        return format!(
+            "Billing error on provider '{}': insufficient credits or quota exceeded. \
+             This provider will be skipped for the remainder of this run. \
+             Top up your account or switch providers in roko.toml [providers.{}].",
+            provider_name, provider_name
+        );
+    }
+
     if err_lower.contains("429")
         || err_lower.contains("rate_limit")
         || err_lower.contains("too many requests")
@@ -1061,8 +1098,15 @@ pub fn map_provider_error(
 
 #[derive(Debug, Clone)]
 pub enum ProviderError {
-    RateLimit { retry_after_ms: Option<u64> },
+    RateLimit {
+        retry_after_ms: Option<u64>,
+    },
     AuthFailure,
+    /// Billing/credit failure: insufficient funds, quota exceeded, or payment
+    /// required. Unlike transient rate limits, these will not resolve by
+    /// retrying and the provider should be skipped for the remainder of the
+    /// run.
+    InsufficientCredits,
     Timeout,
     ServerError(u16),
     ContentPolicy,
@@ -1079,6 +1123,9 @@ impl fmt::Display for ProviderError {
                 None => f.write_str("rate limited"),
             },
             Self::AuthFailure => f.write_str("authentication failed"),
+            Self::InsufficientCredits => f.write_str(
+                "billing error: insufficient credits or quota exceeded — will not retry",
+            ),
             Self::Timeout => f.write_str("request timed out"),
             Self::ServerError(status) => write!(f, "server error {status}"),
             Self::ContentPolicy => f.write_str("content policy violation"),
@@ -1112,6 +1159,9 @@ pub fn should_retry(error: &ProviderError) -> RetryAction {
             delay_ms: retry_after_ms.unwrap_or(5_000),
         },
         ProviderError::AuthFailure => RetryAction::Skip,
+        // Billing errors (insufficient credits, quota exceeded, payment
+        // required) are permanent for this run — retrying would waste time.
+        ProviderError::InsufficientCredits => RetryAction::Skip,
         ProviderError::Timeout => RetryAction::TryFallback,
         ProviderError::ServerError(_) => RetryAction::TryFallback,
         ProviderError::ContentPolicy => RetryAction::Skip,
@@ -1797,6 +1847,10 @@ mod tests {
         );
         assert_eq!(should_retry(&ProviderError::AuthFailure), RetryAction::Skip);
         assert_eq!(
+            should_retry(&ProviderError::InsufficientCredits),
+            RetryAction::Skip
+        );
+        assert_eq!(
             should_retry(&ProviderError::Timeout),
             RetryAction::TryFallback
         );
@@ -2219,6 +2273,33 @@ mod tests {
         );
         assert!(msg.contains("some unknown error happened"), "got: {msg}");
         assert!(msg.contains("gemini"), "got: {msg}");
+    }
+
+    #[test]
+    fn map_provider_error_402_produces_billing_message() {
+        let msg = map_provider_error(
+            ProviderKind::OpenAiCompat,
+            "openai",
+            Some("OPENAI_API_KEY"),
+            Some("https://api.openai.com/v1"),
+            &"402 Payment Required",
+        );
+        assert!(msg.contains("Billing error"), "got: {msg}");
+        assert!(msg.contains("openai"), "got: {msg}");
+    }
+
+    #[test]
+    fn map_provider_error_insufficient_quota_produces_billing_message() {
+        let msg = map_provider_error(
+            ProviderKind::OpenAiCompat,
+            "openai",
+            Some("OPENAI_API_KEY"),
+            None,
+            &"insufficient_quota: you exceeded your current quota",
+        );
+        assert!(msg.contains("Billing error"), "got: {msg}");
+        assert!(msg.contains("openai"), "got: {msg}");
+        assert!(msg.contains("skipped"), "got: {msg}");
     }
 
     // ─── Cross-PR harness adapter pipeline integration tests ─────────

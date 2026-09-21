@@ -424,6 +424,19 @@ pub enum DashboardEvent {
         /// Duration of the cascade in milliseconds.
         duration_ms: u64,
     },
+    /// The materialized snapshot was wholesale-replaced (bootstrap or recovery).
+    ///
+    /// This event carries no payload because the full snapshot is already
+    /// installed via the `watch` channel. Its only purpose is to advance the
+    /// event-bus cursor so SSE/WS consumers know their cached state is stale
+    /// and must re-fetch the current snapshot.
+    SnapshotRebased {
+        /// Provenance revision of the new baseline.
+        revision: u64,
+        /// Human-readable source label (e.g. "state-snapshot", "recovery").
+        #[serde(default)]
+        source: String,
+    },
     /// An error occurred.
     Error { message: String },
 }
@@ -460,9 +473,12 @@ pub struct AffectSnapshot {
     pub efe_tier: Option<u8>,
 }
 
-/// A single plan's live state.
+/// Lightweight display snapshot of a single plan's state, used by the TUI and
+/// dashboard. For the rich internal executor state (with phase enum, gate
+/// results, assigned agents, etc.), see
+/// `roko_cli::orchestrator::executor::PlanState`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct PlanState {
+pub struct PlanDisplayState {
     /// Plan identifier.
     pub plan_id: String,
     /// Current phase name.
@@ -476,6 +492,9 @@ pub struct PlanState {
     /// Whether the plan is still executing.
     pub active: bool,
 }
+
+/// Backward-compatibility alias. Prefer `PlanDisplayState`.
+pub type PlanState = PlanDisplayState;
 
 /// A single task's live state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1900,6 +1919,10 @@ impl DashboardSnapshot {
                     format!("{functor_type} cascade {status} ({duration_ms}ms)"),
                 );
             }
+            // The snapshot was already replaced via `watch::Sender::send`;
+            // this event only exists to advance the event-bus cursor for
+            // SSE/WS consumers.
+            DashboardEvent::SnapshotRebased { .. } => {}
         }
     }
 
@@ -1972,13 +1995,13 @@ impl DashboardSnapshot {
                     ws.roko_dir(),
                     ws.state_dir(),
                     ws.learn_dir(),
-                    ws.engrams_path(),
+                    ws.signals_path(),
                 )
             } else {
                 let rd = root.join(".roko");
                 let sd = rd.join("state");
                 let ld = rd.join("learn");
-                let ep = rd.join("engrams.jsonl");
+                let ep = rd.join("signals.jsonl");
                 (rd, sd, ld, ep)
             };
 
@@ -4325,8 +4348,9 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
+        // The canonical signal file is signals.jsonl (Workspace::signals_path).
         std::fs::write(
-            roko_dir.join("engrams.jsonl"),
+            roko_dir.join("signals.jsonl"),
             format!(
                 "{}\n",
                 serde_json::json!({

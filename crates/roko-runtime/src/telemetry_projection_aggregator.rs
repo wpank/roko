@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use roko_core::telemetry_observe::{
     CFactorPayload, CostReportPayload, EfficiencyPayload, LatencyPayload, QualityPayload,
+    RagPerformancePayload,
 };
 use roko_core::telemetry_projections::{
     ActiveTasksProjection, AgentVitalityProjection, AgentVitalitySnapshot, CFactorProjection,
@@ -75,6 +76,8 @@ pub enum LensPayload {
     Usage(UsagePayload),
     /// CollectiveIntelligenceLens output.
     CFactor(CFactorPayload),
+    /// RagPerformanceLens output.
+    RagPerformance(RagPerformancePayload),
 }
 
 impl LensPayload {
@@ -93,6 +96,7 @@ impl LensPayload {
             Self::Anomaly(_) => "anomaly",
             Self::Usage(_) => "usage",
             Self::CFactor(_) => "c_factor",
+            Self::RagPerformance(_) => "rag_performance",
         }
     }
 
@@ -111,6 +115,7 @@ impl LensPayload {
             Self::Anomaly(_) => "telemetry.lens.anomaly.v1",
             Self::Usage(_) => "telemetry.lens.usage.v1",
             Self::CFactor(_) => "telemetry.lens.c_factor.v1",
+            Self::RagPerformance(_) => "telemetry.lens.rag_performance.v1",
         }
     }
 }
@@ -379,7 +384,7 @@ impl TelemetryProjectionAggregator {
                 self.apply_c_factor(payload);
                 changed.insert(C_FACTOR);
             }
-            LensPayload::Anomaly(_) | LensPayload::Usage(_) => {}
+            LensPayload::Anomaly(_) | LensPayload::Usage(_) | LensPayload::RagPerformance(_) => {}
         }
 
         changed

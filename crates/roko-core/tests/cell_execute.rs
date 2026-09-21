@@ -8,8 +8,8 @@ use tokio_util::sync::CancellationToken;
 use roko_core::error::{Result, RokoError};
 use roko_core::traits::{Store, Substrate};
 use roko_core::{
-    Body, BusErased, Cell, CellContext, CellVersion, ContentHash, Context, Engram, HdcVector, Kind,
-    MemoryBus, ProtocolId, Query, TypeSchema,
+    Body, BusErased, Cell, CellContext, CellVersion, ContentHash, Context, HdcVector, Kind,
+    MemoryBus, ProtocolId, Query, Signal, TypeSchema,
 };
 
 // ─── TestStore ──────────────────────────────────────────────────────────────
@@ -20,15 +20,15 @@ struct TestStore;
 
 #[async_trait]
 impl Store for TestStore {
-    async fn put(&self, engram: Engram) -> Result<ContentHash> {
-        Ok(engram.id)
+    async fn put(&self, signal: Signal) -> Result<ContentHash> {
+        Ok(signal.id)
     }
 
-    async fn get(&self, _id: &ContentHash) -> Result<Option<Engram>> {
+    async fn get(&self, _id: &ContentHash) -> Result<Option<Signal>> {
         Ok(None)
     }
 
-    async fn query(&self, _q: &Query, _ctx: &Context) -> Result<Vec<Engram>> {
+    async fn query(&self, _q: &Query, _ctx: &Context) -> Result<Vec<Signal>> {
         Ok(Vec::new())
     }
 
@@ -74,7 +74,7 @@ impl Cell for EchoCell {
         Vec::new()
     }
 
-    async fn execute(&self, input: Vec<Engram>, _ctx: &CellContext) -> Result<Vec<Engram>> {
+    async fn execute(&self, input: Vec<Signal>, _ctx: &CellContext) -> Result<Vec<Signal>> {
         Ok(input)
     }
 }
@@ -104,8 +104,8 @@ fn make_context() -> CellContext {
     CellContext::new(bus, store, cancel)
 }
 
-fn test_engram() -> Engram {
-    Engram::builder(Kind::Task)
+fn test_signal() -> Signal {
+    Signal::builder(Kind::Task)
         .body(Body::text("hello"))
         .build()
 }
@@ -115,7 +115,7 @@ fn test_engram() -> Engram {
 #[tokio::test]
 async fn cell_execute_echo_returns_input() {
     let ctx = make_context();
-    let input = vec![test_engram()];
+    let input = vec![test_signal()];
     let input_clone = input.clone();
 
     let cell = EchoCell;

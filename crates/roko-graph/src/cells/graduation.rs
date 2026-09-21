@@ -160,7 +160,7 @@ impl React for GraduationCell {
         }
 
         PolicyOutputs {
-            engrams: graduated,
+            signals: graduated,
             pulses: Vec::new(),
         }
     }
@@ -235,7 +235,7 @@ mod tests {
 
         let outputs = cell.decide_with_pulses(&[], &[graduating, blocked], &ctx);
 
-        assert_eq!(outputs.engrams.len(), 1);
+        assert_eq!(outputs.signals.len(), 1);
         assert!(outputs.pulses.is_empty());
     }
 

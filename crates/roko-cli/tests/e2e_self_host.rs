@@ -155,7 +155,7 @@ fn prd_front_half_offline_smoke() {
 
     // Step 1: prd idea appends to ideas.md.
     prd::ensure_dirs(workdir).unwrap();
-    prd::cmd_idea(workdir, "Wire the self-hosting smoke test").unwrap();
+    prd::cmd_idea(workdir, "Wire the self-hosting smoke test", false).unwrap();
 
     let ideas_path = roko_cli::workspace_paths::ideas_path(workdir);
     let ideas_content = fs::read_to_string(&ideas_path).unwrap();
@@ -237,7 +237,7 @@ depends_on = ["{slug}-T1"]
     // cmd_status writes directly to stdout, so we run it and trust the absence
     // of a panic as proof it succeeds, then separately validate the plans root
     // contains what the status function would read.
-    prd::cmd_status(workdir, Some(&plans_root)).unwrap();
+    prd::cmd_status(workdir, Some(&plans_root), false).unwrap();
 
     // Validate the plans root directly: at least one plan dir with tasks.toml.
     let mut found_plans = 0u32;

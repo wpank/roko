@@ -2529,11 +2529,12 @@ impl RunConfig {
 
         let layout = RokoLayout::for_project(&workdir);
         let router_path = layout.cascade_router_path();
-        let mut model_slugs = roko_config
-            .effective_models()
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>();
+        // Use the API-level slugs (profile.slug, e.g. "gpt-oss-120b") rather
+        // than config key names (e.g. "cerebras-gptoss") so that observations
+        // recorded after dispatch — which carry the real API slug — are matched
+        // correctly against the router's arm list. Config keys are stable for
+        // cascade arm identity, but the observation path uses dispatch slugs.
+        let mut model_slugs = roko_config.model_slugs_for_cascade();
         if model_slugs.is_empty() {
             model_slugs.push(model.clone());
         }

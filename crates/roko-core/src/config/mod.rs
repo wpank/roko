@@ -3,7 +3,6 @@
 //! # Modules
 //!
 //! - [`schema`] -- The unified `RokoConfig` type with hierarchical sections.
-//! - [`compat`] -- Reader for legacy Mori `config.toml` format.
 //! - [`presets`] -- Named presets (minimal / balanced / thorough).
 
 use thiserror::Error;
@@ -12,7 +11,6 @@ pub mod agent;
 pub mod budget;
 pub mod cache;
 pub mod chain;
-pub mod compat;
 pub mod env_registry;
 pub mod execution;
 pub mod gates;
@@ -25,6 +23,7 @@ pub mod presets;
 pub mod project;
 pub mod provenance;
 pub mod provider;
+pub mod retrieval;
 pub mod routing;
 pub mod schema;
 pub mod serve;
@@ -37,7 +36,6 @@ pub mod validation;
 // Re-exports for ergonomic use.
 pub use crate::temperament::Temperament;
 pub use cache::ConfigCache;
-pub use compat::from_mori_toml;
 pub use presets::Preset;
 pub use provenance::{
     ConfigDiagnostic, ConfigProvenance, ConfigSource, FieldProvenance, MergeContext,
@@ -69,14 +67,16 @@ pub use schema::{
     GithubWebhookConfig, GraduationConfig, GraduationPolicy, IterationLoopConfig, JwksProvider,
     LearningConfig, ModelProfile, PerplexityConfig, PipelineBandConfig, PipelineConfig,
     PipelineReviewerMode, PrdConfig, ProjectConfig, ProviderConfig, ProviderRouting, RelayConfig,
-    RepoConfig, ResourcesConfig, ReviewLoopConfig, RewardWeights, RokoConfig, RoleOverride,
-    RoutingAlgorithm, RoutingConfig, RoutingOverrides, RoutingRewardWeightsConfig, SafetySetting,
-    SchedulerConfig, SchedulerCronConfig, ServeAuthConfig, ServeConfig, ServeDeployConfig,
-    ServeDeployWebhookConfig, ServerConfig, SpecDriftConfig, StateHubConfig, StrategySpaceConfig,
-    StuckPatternConfig, SubscriptionConfig, SubscriptionFilterConfig, SubscriptionTrigger,
-    TestFailureBudgetConfig, TimeOverrunConfig, ToolProfileConfig, ToolsConfig, TracingConfig,
-    TuiConfig, ValidationConfig, WatcherConfig, WatcherPathConfig, WatcherThresholds,
-    WebhooksConfig, WorktreeCountConfig, builtin_profiles, resolve_profile,
+    RepoConfig, ResourcesConfig, RetrievalConfig, RetrievalMode, ReviewLoopConfig, RewardWeights,
+    RokoConfig, RoleOverride, RoutingAlgorithm, RoutingConfig, RoutingOverrides,
+    RoutingRewardWeightsConfig, SafetySetting, SchedulerConfig, SchedulerCronConfig,
+    ServeAuthConfig, ServeConfig, ServeDeployConfig, ServeDeployWebhookConfig, ServerConfig,
+    SpecDriftConfig, StateHubConfig, StrategySpaceConfig, StuckPatternConfig, SubscriptionConfig,
+    SubscriptionFilterConfig, SubscriptionTrigger, TaskComplexity, TestFailureBudgetConfig,
+    TimeOverrunConfig, ToolProfileConfig, ToolsConfig, TracingConfig, TuiConfig, ValidationConfig,
+    WatcherConfig,
+    WatcherPathConfig, WatcherThresholds, WebhooksConfig, WorktreeCountConfig, builtin_profiles,
+    resolve_profile,
 };
 pub use serve::GitHubConfig;
 

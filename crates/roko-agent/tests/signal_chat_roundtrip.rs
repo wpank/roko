@@ -2,11 +2,11 @@
 
 use roko_agent::chat_types::{ChatResponse, FinishReason, ResponseMetadata};
 use roko_agent::{ChatRequest, RequestOptions};
-use roko_core::{Body, ChatMessage, Engram, Kind, MessageContent};
+use roko_core::{Body, ChatMessage, Kind, MessageContent, Signal};
 
 #[test]
 fn signal_chat_roundtrip() {
-    let input = Engram::builder(Kind::Prompt)
+    let input = Signal::builder(Kind::Prompt)
         .body(Body::text("Preserve this content"))
         .build();
 

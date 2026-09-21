@@ -1,4 +1,4 @@
-//! STATUS: NOT WIRED -- built but no non-test runtime caller.
+//! STATUS: WIRED — used by cascade router for provider confidence tracking.
 //!
 //! Bayesian confidence updating (AS-07).
 //!

@@ -14,9 +14,9 @@ use crate::pattern_detector::{CompoundPattern, PatternDetector};
 use crate::threshold_learner::{InterventionOutcome, ThresholdLearner};
 use crate::watchers::{
     CompileFailRepeatWatcher, ContextWindowPressureWatcher, CostOverrunWatcher,
-    DiskPressureWatcher, GhostTurnWatcher, IterationLoopWatcher, ReviewLoopWatcher,
-    SpecDriftWatcher, StuckPatternWatcher, TestFailureBudgetWatcher, TimeOverrunWatcher,
-    WorktreeCountWatcher,
+    DiskPressureWatcher, GhostTurnWatcher, IterationLoopWatcher, RetrievalPrecisionWatcher,
+    ReviewLoopWatcher, SpecDriftWatcher, StuckPatternWatcher, TestFailureBudgetWatcher,
+    TimeOverrunWatcher, WorktreeCountWatcher,
 };
 use parking_lot::Mutex;
 use roko_core::{
@@ -107,6 +107,7 @@ fn default_watchers() -> Vec<Box<dyn React>> {
         Box::new(StuckPatternWatcher::default()),
         Box::new(WorktreeCountWatcher::default()),
         Box::new(DiskPressureWatcher::default()),
+        Box::new(RetrievalPrecisionWatcher::default()),
     ]
 }
 
@@ -199,9 +200,7 @@ fn configured_watchers_with_resources(
                 .context_window_pressure
                 .as_ref()
                 .map(|cfg| cfg.warn_threshold)
-                .unwrap_or(
-                    crate::watchers::context_window_pressure::MAX_CONTEXT_USAGE_RATIO,
-                );
+                .unwrap_or(crate::watchers::context_window_pressure::MAX_CONTEXT_USAGE_RATIO);
             ContextWindowPressureWatcher::with_config(
                 max_ratio,
                 std::collections::HashMap::new(),
@@ -217,6 +216,9 @@ fn configured_watchers_with_resources(
             resources.warn_disk_mb,
             resources.min_free_disk_mb,
         )),
+        // RAG-17: retrieval precision watcher — fires when rolling retrieval
+        // precision drops below the default 60 % threshold.
+        Box::new(RetrievalPrecisionWatcher::default()),
     ];
 
     watchers
@@ -936,7 +938,8 @@ mod tests {
     fn watcher_count() {
         let c = Conductor::default();
         // 10 original watchers + WorktreeCountWatcher (E08-T09) + DiskPressureWatcher
-        assert_eq!(c.watchers.len(), 12);
+        // + RetrievalPrecisionWatcher (RAG-17)
+        assert_eq!(c.watchers.len(), 13);
     }
 
     #[test]

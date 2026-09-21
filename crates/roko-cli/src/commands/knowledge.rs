@@ -8,17 +8,27 @@ use sha2::{Digest, Sha256};
 pub(crate) async fn dispatch_knowledge(cli: &Cli, cmd: KnowledgeCmd) -> Result<i32> {
     match cmd {
         KnowledgeCmd::Query { topic, workdir, .. } => {
+            // Read-only search: shared lock so query can coexist with an
+            // active plan runner.
+            let wd = workdir.clone().unwrap_or_else(|| resolve_workdir(cli));
+            let _lock = roko_cli::workspace_lock::acquire_workspace_lock_shared(&wd.join(".roko"))?;
             cmd_neuro(
                 cli,
                 NeuroCmd::Query {
                     topic,
-                    workdir,
+                    workdir: Some(wd),
                     limit: 10,
                 },
             )
             .await
         }
-        KnowledgeCmd::Stats { workdir } => cmd_neuro(cli, NeuroCmd::Stats { workdir }).await,
+        KnowledgeCmd::Stats { workdir } => {
+            // Read-only stats: shared lock so stats can coexist with an
+            // active plan runner.
+            let wd = workdir.clone().unwrap_or_else(|| resolve_workdir(cli));
+            let _lock = roko_cli::workspace_lock::acquire_workspace_lock_shared(&wd.join(".roko"))?;
+            cmd_neuro(cli, NeuroCmd::Stats { workdir: Some(wd) }).await
+        }
         KnowledgeCmd::Gc { workdir, .. } => {
             cmd_neuro(
                 cli,
@@ -312,19 +322,19 @@ pub(crate) async fn cmd_archive(
     // Open the hot substrate.
     let hot = roko_fs::FileSubstrate::open(&roko_dir).await?;
 
-    // Query for old engrams.
+    // Query for old signals.
     use roko_core::{Context, Query, Store};
     let ctx = Context::now();
     let query = Query::all().until(cutoff_ms).limit(batch_size);
     let candidates = hot.query(&query, &ctx).await?;
 
     if candidates.is_empty() {
-        println!("no engrams older than {older_than} found");
+        println!("no signals older than {older_than} found");
         return Ok(EXIT_SUCCESS);
     }
 
     println!(
-        "found {} engram(s) older than {older_than}{}",
+        "found {} signal(s) older than {older_than}{}",
         candidates.len(),
         if dry_run { " (dry run)" } else { "" }
     );
@@ -339,7 +349,7 @@ pub(crate) async fn cmd_archive(
 
     // Confirm destructive operation (skipped in quiet / non-TTY mode).
     let prompt_msg = format!(
-        "Archive {} engram(s) older than {older_than}?",
+        "Archive {} signal(s) older than {older_than}?",
         candidates.len()
     );
     if !confirm_destructive(&prompt_msg, cli.quiet) {
@@ -357,15 +367,15 @@ pub(crate) async fn cmd_archive(
     use roko_core::ColdStore;
     let archived = cold.archive_batch(candidates).await?;
 
-    // Prune archived engrams from the hot store and compact the log so
+    // Prune archived signals from the hot store and compact the log so
     // they are not re-archived on subsequent runs.
     if !candidate_ids.is_empty() {
         let removed = hot.remove_ids(&candidate_ids);
         hot.compact().await?;
-        println!("pruned {removed} engram(s) from hot store");
+        println!("pruned {removed} signal(s) from hot store");
     }
 
-    println!("archived {archived} engram(s) to {}", cold_dir.display());
+    println!("archived {archived} signal(s) to {}", cold_dir.display());
 
     Ok(EXIT_SUCCESS)
 }

@@ -569,11 +569,13 @@ fn roster_row(row: RosterRow<'_>) -> Line<'static> {
                 // P2-30: Agent aging — elapsed time since spawn.
                 Span::styled(
                     format!(" {:>5}", format_elapsed(row.elapsed_secs)),
-                    Style::default().fg(if row.elapsed_secs > 300 {
-                        row.theme.warning
-                    } else {
-                        row.theme.muted
-                    }).bg(row.background),
+                    Style::default()
+                        .fg(if row.elapsed_secs > 300 {
+                            row.theme.warning
+                        } else {
+                            row.theme.muted
+                        })
+                        .bg(row.background),
                 ),
             ]);
         }
@@ -837,14 +839,12 @@ fn render_output_body(
 
     // Build output lines from agent output history (#367) with fallback
     // to the legacy collect path for backward compatibility.
+    //
+    // Priority: (1) structured AgentOutputRecord history → direct semantic
+    // render using pre-classified kind/tool metadata (P2-TUI-9 / TUI-G6);
+    // (2) legacy raw lines with stream protocol records → stream_output parser;
+    // (3) legacy raw lines without stream records → segment renderer.
     let history_records = tui_state.agent_output_history.records_for(selected_id);
-    let collected = if history_records.is_empty() {
-        collect_agent_output_lines(tui_state, view_state.selected)
-    } else {
-        // Convert records back to raw lines for the existing render pipeline.
-        history_records.iter().map(|r| r.text.clone()).collect()
-    };
-    let has_stream_records = collected.iter().any(|l| l.starts_with('\x1e'));
 
     // Agent output search state (#367)
     let search = &tui_state.agent_output_search;
@@ -856,12 +856,20 @@ fn render_output_body(
         search_pattern: search.compiled.clone(),
     };
 
-    let output_lines = if collected.is_empty() {
-        Vec::new()
-    } else if has_stream_records {
-        stream_output::render_output_lines_styled(&collected, theme, &render_opts)
+    let output_lines = if !history_records.is_empty() {
+        // Direct structured render from AgentOutputRecord — uses kind/tool_id/
+        // tool_name metadata directly, with fold/search support (P2-TUI-9).
+        let records: Vec<_> = history_records.iter().cloned().collect();
+        stream_output::render_output_records_styled(&records, theme, &render_opts)
     } else {
-        tui_state.render_agent_output_lines(selected_id, &collected, theme)
+        let collected = collect_agent_output_lines(tui_state, view_state.selected);
+        if collected.is_empty() {
+            Vec::new()
+        } else if collected.iter().any(|l| l.starts_with('\x1e')) {
+            stream_output::render_output_lines_styled(&collected, theme, &render_opts)
+        } else {
+            tui_state.render_agent_output_lines(selected_id, &collected, theme)
+        }
     };
 
     let block = Block::default()

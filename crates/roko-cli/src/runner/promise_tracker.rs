@@ -48,6 +48,7 @@ impl PromiseTracker {
 
     /// Override the minimum promise threshold (default: 0.2).
     #[must_use]
+    #[allow(dead_code)] // used only in tests
     pub fn with_min_promise(mut self, min: f64) -> Self {
         self.min_promise = min;
         self
@@ -56,6 +57,7 @@ impl PromiseTracker {
     /// Override the consecutive low-promise turn count required before
     /// termination (default: 2).
     #[must_use]
+    #[allow(dead_code)] // used only in tests
     pub fn with_consecutive_threshold(mut self, n: u32) -> Self {
         self.consecutive_threshold = n;
         self
@@ -88,12 +90,14 @@ impl PromiseTracker {
 
     /// Current promise score (probability of eventual success).
     #[must_use]
+    #[allow(dead_code)] // used in tests and Terminate variant; exposed for future instrumentation
     pub fn promise(&self) -> f64 {
         self.prm.promise()
     }
 
     /// Current progress score (trajectory delta between last two turns).
     #[must_use]
+    #[allow(dead_code)] // used in tests; exposed for future runner instrumentation
     pub fn progress(&self) -> f64 {
         self.prm.progress()
     }
@@ -103,6 +107,7 @@ impl PromiseTracker {
 ///
 /// Converts the runner's `GateVerdictSummary` list into the PRM's expected
 /// `Verdict` format and extracts error counts from verdict summaries.
+#[allow(dead_code)] // used only in tests
 pub fn snapshot_from_gate_completion(
     rung: u32,
     verdicts: &[super::types::GateVerdictSummary],
@@ -123,10 +128,7 @@ pub fn snapshot_from_gate_completion(
         })
         .collect();
 
-    let error_count = verdicts
-        .iter()
-        .filter(|v| !v.skipped && !v.passed)
-        .count() as u32;
+    let error_count = verdicts.iter().filter(|v| !v.skipped && !v.passed).count() as u32;
 
     TurnSnapshot {
         rung,
@@ -223,26 +225,15 @@ mod tests {
             .with_consecutive_threshold(2);
 
         // Two failing turns.
-        let snap1 = snapshot_from_gate_completion(
-            0,
-            &[make_verdict("compile", false)],
-            200,
-        );
-        let snap2 = snapshot_from_gate_completion(
-            0,
-            &[make_verdict("compile", false)],
-            300,
-        );
+        let snap1 = snapshot_from_gate_completion(0, &[make_verdict("compile", false)], 200);
+        let snap2 = snapshot_from_gate_completion(0, &[make_verdict("compile", false)], 300);
         tracker.record_and_check(snap1);
         tracker.record_and_check(snap2);
 
         // Recovery turn: passing verdicts, rung advancement.
         let snap3 = snapshot_from_gate_completion(
             3,
-            &[
-                make_verdict("compile", true),
-                make_verdict("test", true),
-            ],
+            &[make_verdict("compile", true), make_verdict("test", true)],
             50,
         );
         let d3 = tracker.record_and_check(snap3);

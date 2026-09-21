@@ -26,7 +26,7 @@
 //! - [`rpc`] — JSON-RPC error code mapping via [`RpcError`](rpc::RpcError).
 
 pub mod retry;
-pub mod rpc;
+pub(crate) mod rpc;
 
 use crate::defaults::{
     DEFAULT_RATE_LIMIT_RETRY_ATTEMPTS, DEFAULT_RATE_LIMIT_RETRY_BASE_DELAY_MS,

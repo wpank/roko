@@ -417,6 +417,163 @@ fn highlight_line<'a>(text: &str, base_style: Style, opts: &RenderOptions) -> Li
 }
 
 // ---------------------------------------------------------------------------
+// Structured record renderer (P2-TUI-9 / TUI-G6)
+// ---------------------------------------------------------------------------
+
+/// Convert a slice of structured [`AgentOutputRecord`]s into styled ratatui
+/// [`Line`]s with semantic block rendering.
+///
+/// This is the preferred render path when output is sourced from
+/// [`AgentOutputHistory`] — it uses the pre-classified `kind` and tool
+/// metadata directly instead of re-parsing raw text.
+///
+/// Applies the same visual conventions as [`render_output_lines_styled`]:
+/// - **Tool call**: `▶ tool_name` in DREAM (bold), wrench icon
+/// - **Tool result (success)**: `✓ done` in SAGE, lines prefixed with `│`
+/// - **Tool result (error)**: `✗ error` in EMBER, lines prefixed with `│`
+/// - **Reasoning**: `◐ text` in DIM italic, brain icon
+/// - **Error**: `✗ text` in EMBER bold
+/// - **System**: dim separator line
+/// - **Separators**: thin `─` lines between semantic block transitions
+/// - **Fold/unfold**: controlled via [`RenderOptions::unfolded_tool_ids`]
+/// - **Search highlighting**: splits text into highlighted spans
+#[must_use]
+pub fn render_output_records_styled<'a>(
+    records: &[crate::tui::state::AgentOutputRecord],
+    theme: &Theme,
+    opts: &RenderOptions,
+) -> Vec<Line<'a>> {
+    use crate::tui::state::OutputRecordKind;
+
+    let mut styled: Vec<Line<'a>> = Vec::with_capacity(records.len() * 2);
+    let mut prev_kind: Option<RecordBlockKind> = None;
+
+    for record in records {
+        let cur_kind = RecordBlockKind::from_output_kind(record.kind);
+
+        // Insert a thin separator when crossing between distinct block kinds.
+        if should_insert_separator_rk(prev_kind, cur_kind) {
+            styled.push(render_separator(theme));
+        }
+        prev_kind = Some(cur_kind);
+
+        match record.kind {
+            OutputRecordKind::ToolCall => {
+                // ▶ tool_name  (DREAM, bold)
+                let name = record
+                    .tool_name
+                    .as_deref()
+                    .filter(|n| !n.is_empty())
+                    .unwrap_or("tool");
+                styled.push(Line::from(Span::styled(
+                    format!("\u{25b6} {name}"),
+                    Style::default()
+                        .fg(Theme::DREAM)
+                        .add_modifier(Modifier::BOLD),
+                )));
+            }
+            OutputRecordKind::ToolResult => {
+                // Use the tool_id from the record if available for fold state.
+                let tool_id = record.tool_id.as_deref().unwrap_or("").to_owned();
+                // Treat non-empty error text starting with error keywords as errors.
+                let is_error = detect_error_output(&record.text);
+                render_tool_result(
+                    &mut styled,
+                    &tool_id,
+                    &record.text,
+                    is_error,
+                    opts,
+                    theme,
+                );
+            }
+            OutputRecordKind::Reasoning => {
+                // ◐ reasoning text  (TEXT_DIM, italic)
+                let text = if record.text.is_empty() {
+                    "\u{25d0}".to_owned()
+                } else {
+                    format!("\u{25d0} {}", record.text)
+                };
+                let base_style = Style::default()
+                    .fg(Theme::TEXT_DIM)
+                    .add_modifier(Modifier::ITALIC);
+                styled.push(highlight_line(&text, base_style, opts));
+            }
+            OutputRecordKind::Error => {
+                // ✗ error text  (EMBER, bold)
+                let text = if record.text.is_empty() {
+                    "\u{2717}".to_owned()
+                } else {
+                    format!("\u{2717} {}", record.text)
+                };
+                let base_style = Style::default()
+                    .fg(Theme::EMBER)
+                    .add_modifier(Modifier::BOLD);
+                styled.push(highlight_line(&text, base_style, opts));
+            }
+            OutputRecordKind::System => {
+                // System/boundary lines rendered as dim separators.
+                if record.text.is_empty()
+                    || record.text.trim_start_matches('\u{2500}').trim().is_empty()
+                {
+                    styled.push(Line::from(Span::styled(
+                        "\u{2500}\u{2500}\u{2500}",
+                        Style::default().fg(Theme::SEPARATOR),
+                    )));
+                } else {
+                    styled.push(highlight_line(
+                        &record.text,
+                        Style::default().fg(Theme::TEXT_GHOST),
+                        opts,
+                    ));
+                }
+            }
+            OutputRecordKind::Text => {
+                styled.push(highlight_line(&record.text, theme.text(), opts));
+            }
+        }
+    }
+
+    styled
+}
+
+/// Block kind enum for separator logic in the records render path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecordBlockKind {
+    Tool,
+    Reasoning,
+    Text,
+    System,
+}
+
+impl RecordBlockKind {
+    fn from_output_kind(kind: crate::tui::state::OutputRecordKind) -> Self {
+        use crate::tui::state::OutputRecordKind;
+        match kind {
+            OutputRecordKind::ToolCall | OutputRecordKind::ToolResult => Self::Tool,
+            OutputRecordKind::Reasoning => Self::Reasoning,
+            OutputRecordKind::System => Self::System,
+            OutputRecordKind::Text | OutputRecordKind::Error => Self::Text,
+        }
+    }
+}
+
+/// Separator logic for the structured record render path.
+fn should_insert_separator_rk(prev: Option<RecordBlockKind>, cur: RecordBlockKind) -> bool {
+    match prev {
+        None => false,
+        Some(p) => matches!(
+            (p, cur),
+            (RecordBlockKind::Tool, RecordBlockKind::Text)
+                | (RecordBlockKind::Tool, RecordBlockKind::Reasoning)
+                | (RecordBlockKind::Text, RecordBlockKind::Tool)
+                | (RecordBlockKind::Reasoning, RecordBlockKind::Tool)
+                | (RecordBlockKind::System, RecordBlockKind::Tool)
+                | (RecordBlockKind::Tool, RecordBlockKind::System)
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Widget render entry-point
 // ---------------------------------------------------------------------------
 
@@ -873,5 +1030,200 @@ mod tests {
         assert!(detect_error_output("Traceback (most recent call last):"));
         assert!(!detect_error_output("All tests passed"));
         assert!(!detect_error_output("ok"));
+    }
+
+    // ---------------------------------------------------------------------------
+    // render_output_records_styled tests (P2-TUI-9 / TUI-G6)
+    // ---------------------------------------------------------------------------
+
+    use crate::tui::state::{AgentOutputRecord, OutputRecordKind};
+
+    fn make_record_for_stream(kind: OutputRecordKind, text: &str) -> AgentOutputRecord {
+        AgentOutputRecord {
+            seq: 1,
+            timestamp_ms: 0,
+            role: "assistant".to_string(),
+            kind,
+            text: text.to_string(),
+            redacted: false,
+            tool_id: None,
+            tool_name: None,
+        }
+    }
+
+    fn make_tool_call_record(tool_name: &str, tool_id: &str) -> AgentOutputRecord {
+        AgentOutputRecord {
+            seq: 1,
+            timestamp_ms: 0,
+            role: "assistant".to_string(),
+            kind: OutputRecordKind::ToolCall,
+            text: String::new(),
+            redacted: false,
+            tool_id: Some(tool_id.to_string()),
+            tool_name: Some(tool_name.to_string()),
+        }
+    }
+
+    fn make_tool_result_record(tool_id: &str, output: &str) -> AgentOutputRecord {
+        AgentOutputRecord {
+            seq: 2,
+            timestamp_ms: 0,
+            role: "tool".to_string(),
+            kind: OutputRecordKind::ToolResult,
+            text: output.to_string(),
+            redacted: false,
+            tool_id: Some(tool_id.to_string()),
+            tool_name: None,
+        }
+    }
+
+    #[test]
+    fn records_tool_call_uses_dream_color() {
+        let theme = Theme::dark();
+        let records = vec![make_tool_call_record("bash", "t1")];
+        let rendered = render_output_records_styled(&records, &theme, &RenderOptions::default());
+        assert!(!rendered.is_empty());
+        let span = &rendered[0].spans[0];
+        assert_eq!(span.style.fg, Some(Theme::DREAM));
+        assert!(span.style.add_modifier.contains(Modifier::BOLD));
+        assert!(span.content.contains("bash"));
+        assert!(span.content.starts_with('\u{25b6}'));
+    }
+
+    #[test]
+    fn records_tool_result_success_uses_sage() {
+        let theme = Theme::dark();
+        let records = vec![make_tool_result_record("t1", "all good")];
+        let rendered = render_output_records_styled(&records, &theme, &RenderOptions::default());
+        assert!(!rendered.is_empty());
+        // First rendered line is the status header (✓ done).
+        let status_span = &rendered[0].spans[0];
+        assert_eq!(status_span.style.fg, Some(Theme::SAGE));
+        assert!(status_span.content.contains('\u{2713}'));
+    }
+
+    #[test]
+    fn records_tool_result_error_uses_ember() {
+        let theme = Theme::dark();
+        let records = vec![make_tool_result_record("t2", "ERROR: build failed")];
+        let rendered = render_output_records_styled(&records, &theme, &RenderOptions::default());
+        assert!(!rendered.is_empty());
+        let status_span = &rendered[0].spans[0];
+        assert_eq!(status_span.style.fg, Some(Theme::EMBER));
+        assert!(status_span.content.contains('\u{2717}'));
+    }
+
+    #[test]
+    fn records_reasoning_uses_italic() {
+        let theme = Theme::dark();
+        let records = vec![make_record_for_stream(OutputRecordKind::Reasoning, "thinking...")];
+        let rendered = render_output_records_styled(&records, &theme, &RenderOptions::default());
+        assert!(!rendered.is_empty());
+        assert!(rendered[0].spans.iter().any(|s| s
+            .style
+            .add_modifier
+            .contains(Modifier::ITALIC)));
+        // Reasoning lines are prefixed with ◐.
+        let text: String = rendered[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains('\u{25d0}'));
+    }
+
+    #[test]
+    fn records_error_kind_uses_ember_bold() {
+        let theme = Theme::dark();
+        let records = vec![make_record_for_stream(OutputRecordKind::Error, "compile failed")];
+        let rendered = render_output_records_styled(&records, &theme, &RenderOptions::default());
+        assert!(!rendered.is_empty());
+        let span = &rendered[0].spans[0];
+        assert_eq!(span.style.fg, Some(Theme::EMBER));
+        assert!(span.style.add_modifier.contains(Modifier::BOLD));
+        // Error records are prefixed with ✗.
+        assert!(span.content.starts_with('\u{2717}'));
+    }
+
+    #[test]
+    fn records_separator_inserted_between_text_and_tool() {
+        let theme = Theme::dark();
+        let records = vec![
+            make_record_for_stream(OutputRecordKind::Text, "hello"),
+            make_tool_call_record("grep", "t3"),
+        ];
+        let rendered = render_output_records_styled(&records, &theme, &RenderOptions::default());
+        // text + separator + tool_call = 3 lines
+        assert_eq!(rendered.len(), 3);
+        let sep: String = rendered[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(sep.contains('\u{2500}'));
+    }
+
+    #[test]
+    fn records_no_separator_between_consecutive_text() {
+        let theme = Theme::dark();
+        let records = vec![
+            make_record_for_stream(OutputRecordKind::Text, "hello"),
+            make_record_for_stream(OutputRecordKind::Text, "world"),
+        ];
+        let rendered = render_output_records_styled(&records, &theme, &RenderOptions::default());
+        assert_eq!(rendered.len(), 2);
+    }
+
+    #[test]
+    fn records_tool_result_fold_default() {
+        let theme = Theme::dark();
+        let long_output = (0..10).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let records = vec![make_tool_result_record("t4", &long_output)];
+        let rendered = render_output_records_styled(&records, &theme, &RenderOptions::default());
+        // status + 3 folded body lines + "... N more" + bottom cap
+        assert_eq!(rendered.len(), 1 + TOOL_RESULT_FOLDED_LINES + 1 + 1);
+    }
+
+    #[test]
+    fn records_tool_result_unfold_shows_more() {
+        let theme = Theme::dark();
+        let long_output = (0..10).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let records = vec![make_tool_result_record("t5", &long_output)];
+        let opts = RenderOptions {
+            unfolded_tool_ids: HashSet::from(["t5".to_string()]),
+            ..Default::default()
+        };
+        let rendered = render_output_records_styled(&records, &theme, &opts);
+        // status + all 10 body lines + bottom cap (no truncation since 10 < 50)
+        assert_eq!(rendered.len(), 1 + 10 + 1);
+    }
+
+    #[test]
+    fn records_search_highlighting_applied() {
+        let theme = Theme::dark();
+        let records = vec![make_record_for_stream(OutputRecordKind::Text, "hello world hello")];
+        let opts = RenderOptions {
+            search_pattern: Some(regex::Regex::new("(?i)hello").unwrap()),
+            ..Default::default()
+        };
+        let rendered = render_output_records_styled(&records, &theme, &opts);
+        assert_eq!(rendered.len(), 1);
+        // Should have at least 3 spans (hello + " world " + hello).
+        assert!(
+            rendered[0].spans.len() >= 3,
+            "expected at least 3 spans for search match, got {}",
+            rendered[0].spans.len()
+        );
+    }
+
+    #[test]
+    fn records_mixed_kinds_render_without_panic() {
+        let theme = Theme::dark();
+        let records = vec![
+            make_record_for_stream(OutputRecordKind::Text, "starting"),
+            make_tool_call_record("read_file", "t6"),
+            make_tool_result_record("t6", "file contents here"),
+            make_record_for_stream(OutputRecordKind::Reasoning, "analyzing..."),
+            make_record_for_stream(OutputRecordKind::Error, "ERROR: file missing"),
+            make_record_for_stream(OutputRecordKind::System, ""),
+        ];
+        let rendered = render_output_records_styled(&records, &theme, &RenderOptions::default());
+        assert!(
+            rendered.len() >= 6,
+            "expected at least 6 output lines, got {}",
+            rendered.len()
+        );
     }
 }

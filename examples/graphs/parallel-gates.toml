@@ -31,28 +31,25 @@ diff = "fn main() { println!(\"hello\"); }"
 [[nodes]]
 id = "compile_gate"
 name = "Compile Check"
-cell_type = "gate"
+cell_type = "gate.compile"
 
 [nodes.config]
-gate_type = "compile"
 command = "cargo check"
 
 [[nodes]]
 id = "clippy_gate"
 name = "Clippy Lint"
-cell_type = "gate"
+cell_type = "gate.clippy"
 
 [nodes.config]
-gate_type = "clippy"
 command = "cargo clippy -- -D warnings"
 
 [[nodes]]
 id = "test_gate"
 name = "Test Suite"
-cell_type = "gate"
+cell_type = "gate.test"
 
 [nodes.config]
-gate_type = "test"
 command = "cargo test"
 
 [[nodes]]

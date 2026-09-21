@@ -245,7 +245,7 @@ pub fn run_sample_plan(workdir: &Path) -> Value {
     // full gate/verify/review pipeline with mock responses but still
     // produces valid JSON output with meaningful metrics.
     //
-    // Runner v2 spawns `claude` as a child process. The mock script is
+    // The Graph engine spawns `claude` as a child process. The mock script is
     // configured via `agent.command` in `roko.toml` (set up by
     // `setup_sample_plan_workspace`).
     //
@@ -258,7 +258,6 @@ pub fn run_sample_plan(workdir: &Path) -> Value {
         .arg("plan")
         .arg("run")
         .arg("plans");
-    command.arg("--engine").arg("runner-v2");
     let mut child = command
         // Isolate from user's global config / API keys so the mock
         // agent command from roko.toml is used.

@@ -228,8 +228,14 @@ async fn playbooks(State(state): State<Arc<AppState>>) -> Result<Json<Value>, Ap
             if let Ok(contents) = std::fs::read_to_string(&path) {
                 if let Ok(mut pb) = serde_json::from_str::<Value>(&contents) {
                     // Inject computed success_rate field.
-                    let success = pb.get("success_count").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let failure = pb.get("failure_count").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let success = pb
+                        .get("success_count")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let failure = pb
+                        .get("failure_count")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
                     let total = success + failure;
                     let rate = if total > 0 {
                         Value::from(success as f64 / total as f64)
@@ -367,6 +373,8 @@ async fn model_scorecard(
 // ── helpers ──────────────────────────────────────────────────────────
 
 /// Aggregate efficiency events into task-level cost and timing metrics.
+/// Used in tests; the production handler calls [`build_efficiency_response_with_evidence`] directly.
+#[cfg(test)]
 fn build_efficiency_response(events: &[AgentEfficiencyEvent]) -> EfficiencyResponse {
     build_efficiency_response_with_evidence(events, json!({"state": "not_loaded"}))
 }
@@ -739,7 +747,10 @@ async fn section_outcomes(State(state): State<Arc<AppState>>) -> Result<Json<Val
     let workdir = state.workdir.clone();
 
     let sections = tokio::task::spawn_blocking(move || {
-        let path = workdir.join(".roko").join("learn").join("section-outcomes.jsonl");
+        let path = workdir
+            .join(".roko")
+            .join("learn")
+            .join("section-outcomes.jsonl");
         let text = std::fs::read_to_string(&path).unwrap_or_default();
 
         let mut stats: HashMap<String, (u64, u64, f64)> = HashMap::new();

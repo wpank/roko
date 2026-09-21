@@ -227,6 +227,7 @@ fn tab_badge_color(tab: super::super::tabs::Tab) -> Color {
         Tab::Plans | Tab::Logs => Theme::EMBER,
         Tab::Git => Theme::WARNING,
         Tab::Learning => Theme::DREAM,
+        Tab::Providers => Theme::EMBER,
         _ => Theme::FG_DIM,
     }
 }
@@ -597,6 +598,7 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         (" F8", Theme::SAGE, "market", Tab::Marketplace),
         (" F9", Theme::DREAM, "atelier", Tab::Atelier),
         (" F10", Theme::BONE_DIM, "learn", Tab::Learning),
+        ("  - ", Theme::SAGE, "providers", Tab::Providers),
     ];
 
     // Keep the operational metrics legible instead of reserving a tab strip
@@ -620,16 +622,10 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
             .collect()
     };
 
-    // Compute badge counts for each tab (only shown on inactive tabs).
+    // Compute badge counts for each tab — shown on all tabs, active and inactive.
     let badges: Vec<usize> = fkey_items
         .iter()
-        .map(|(_, _, _, tab)| {
-            if *tab == current_tab {
-                0
-            } else {
-                state.tab_badge(*tab)
-            }
-        })
+        .map(|(_, _, _, tab)| state.tab_badge(*tab))
         .collect();
 
     let fkey_width: u16 = fkey_items
@@ -673,8 +669,14 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
                     .bg(glow)
                     .add_modifier(Modifier::BOLD),
             ));
+            // Build label string with badge count when non-zero
+            let label_text = if badge > 0 {
+                format!(":{label}({badge})")
+            } else {
+                format!(":{label}")
+            };
             fkey_spans.push(Span::styled(
-                format!(":{label}"),
+                label_text,
                 theme
                     .section_header()
                     .bg(Theme::BG_SECONDARY)
@@ -781,9 +783,12 @@ pub fn render_breadcrumb_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState
         Style::default().fg(Theme::ROSE_DIM).bg(Theme::BG),
     ));
 
-    // Tab name
+    // Tab name with dynamic badge count
     let tab = state.active_tab;
-    spans.push(Span::styled(tab.label().to_string(), tab_style));
+    spans.push(Span::styled(
+        state.tab_label_with_badge(tab),
+        tab_style,
+    ));
 
     // Sub-view name (if the tab has multiple sub-views)
     let sub_views = super::super::views::SubView::for_tab(tab);

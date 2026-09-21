@@ -1336,6 +1336,9 @@ pub(crate) fn scope_to_role(scope: &str) -> Role {
 /// let plans = plans::routes()
 ///     .layer(axum::middleware::from_fn(require_permission(Permission::PlanExecute)));
 /// ```
+// Public middleware factory — intended for external callers layering RBAC
+// onto route groups. Not currently called from within roko-serve itself.
+#[allow(dead_code)]
 pub fn require_permission(
     required: Permission,
 ) -> impl Fn(

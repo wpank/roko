@@ -114,8 +114,7 @@ impl CrossSessionCostReport {
         // Compute per-task averages.
         for summary in plans.values_mut() {
             if summary.total_tasks > 0 {
-                summary.avg_cost_per_task =
-                    summary.total_cost_usd / summary.total_tasks as f64;
+                summary.avg_cost_per_task = summary.total_cost_usd / summary.total_tasks as f64;
             }
         }
 

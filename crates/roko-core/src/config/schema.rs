@@ -28,6 +28,7 @@ pub use super::graduation::*;
 pub use super::learning::*;
 pub use super::project::*;
 pub use super::provider::*;
+pub use super::retrieval::*;
 pub use super::routing::*;
 pub use super::serve::*;
 pub use super::subscriptions::*;
@@ -184,6 +185,9 @@ pub struct RokoConfig {
     /// Per-repository configuration blocks.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub repos: Vec<RepoConfig>,
+    /// RAG retrieval pipeline settings.
+    #[serde(default)]
+    pub retrieval: RetrievalConfig,
 }
 
 /// Composition strategy for allocating prompt token budget across candidate sections.
@@ -460,6 +464,7 @@ impl Default for RokoConfig {
             dreams: DreamScheduleConfig::default(),
             daimon: DaimonConfig::default(),
             repos: Vec::new(),
+            retrieval: RetrievalConfig::default(),
         }
     }
 }
@@ -474,7 +479,8 @@ impl Default for RokoConfig {
 /// Callers should merge these *under* user-defined providers so that explicit
 /// `[providers.*]` config always takes precedence.
 #[must_use]
-pub fn synthesize_standard_providers() -> HashMap<String, ProviderConfig> {
+#[allow(dead_code)]
+pub(crate) fn synthesize_standard_providers() -> HashMap<String, ProviderConfig> {
     synthesize_standard_providers_with_env(|key| std::env::var(key).ok())
 }
 
@@ -973,6 +979,30 @@ impl RokoConfig {
         keys
     }
 
+    /// Model slugs that support tool use, filtered by credential availability.
+    ///
+    /// Returns the set of wire slugs for models where `supports_tools == true`
+    /// and the backing provider has valid credentials.  Used by the model
+    /// router to reject search-only models (e.g. Perplexity sonar) for tasks
+    /// that require tool use.
+    #[must_use]
+    pub fn models_supporting_tools(&self) -> Vec<String> {
+        let mut slugs: Vec<String> = self
+            .effective_models()
+            .into_iter()
+            .filter(|(k, profile)| {
+                profile.supports_tools
+                    && !profile.is_embedding_model
+                    && !profile.slug.trim().is_empty()
+                    && self.provider_available_for_model_key(k)
+            })
+            .map(|(_, profile)| profile.slug.clone())
+            .collect();
+        slugs.sort();
+        slugs.dedup();
+        slugs
+    }
+
     /// Backend slugs currently dispatchable by provider credential state.
     ///
     /// Prefer [`Self::model_slugs_for_cascade`] for cascade router
@@ -1074,7 +1104,8 @@ impl RokoConfig {
 
     /// Classify a proposed configuration change.
     #[must_use]
-    pub fn classify_changes(&self, proposed: &Self) -> ConfigChangeReport {
+    #[allow(dead_code)]
+    pub(crate) fn classify_changes(&self, proposed: &Self) -> ConfigChangeReport {
         let mut report = ConfigChangeReport::default();
 
         if self.budget != proposed.budget {
@@ -1474,23 +1505,27 @@ impl RokoConfig {
 // ---- ConfigChangeReport --------------------------------------------------
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ConfigChangeReport {
-    pub hot_reloaded: Vec<&'static str>,
-    pub requires_restart: Vec<&'static str>,
-    pub warnings: Vec<String>,
+#[allow(dead_code)]
+pub(crate) struct ConfigChangeReport {
+    pub(crate) hot_reloaded: Vec<&'static str>,
+    pub(crate) requires_restart: Vec<&'static str>,
+    pub(crate) warnings: Vec<String>,
 }
 
 impl ConfigChangeReport {
     #[must_use]
-    pub fn has_changes(&self) -> bool {
+    #[allow(dead_code)]
+    pub(crate) fn has_changes(&self) -> bool {
         !self.hot_reloaded.is_empty() || !self.requires_restart.is_empty()
     }
     #[must_use]
-    pub fn needs_restart(&self) -> bool {
+    #[allow(dead_code)]
+    pub(crate) fn needs_restart(&self) -> bool {
         !self.requires_restart.is_empty()
     }
     #[must_use]
-    pub fn changed_count(&self) -> usize {
+    #[allow(dead_code)]
+    pub(crate) fn changed_count(&self) -> usize {
         self.hot_reloaded.len() + self.requires_restart.len()
     }
 }
@@ -1516,7 +1551,7 @@ impl fmt::Display for ConfigChangeReport {
 // ---- ValidationWarning ---------------------------------------------------
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ValidationWarning {
+pub(crate) enum ValidationWarning {
     UnknownProvider {
         model: String,
         provider: String,
@@ -1553,7 +1588,7 @@ impl fmt::Display for ValidationWarning {
 }
 
 #[must_use]
-pub fn validate_references(config: &RokoConfig) -> Vec<ValidationWarning> {
+pub(crate) fn validate_references(config: &RokoConfig) -> Vec<ValidationWarning> {
     let providers = config.effective_providers();
     let provider_keys = providers.keys().map(String::as_str).collect::<HashSet<_>>();
     let mut warnings = Vec::new();
@@ -1689,7 +1724,6 @@ pub struct ConductorConfig {
     pub phase_timeout_secs: u64,
 
     // ── ContextWindowPressureWatcher tuning (P1-38) ──────────────────────
-
     /// Fallback context window token budget for most models (default 200 000).
     ///
     /// Used by `ContextWindowPressureWatcher` when a model's window size is not
@@ -2010,7 +2044,7 @@ const fn default_agent_enabled() -> bool {
 /// Accepts `1/true/yes/on` (case-insensitive) as truthy.
 /// Everything else (including empty string) is falsy.
 /// This is the canonical boolean parser for all env var reads.
-pub fn parse_bool_env(s: &str) -> bool {
+pub(crate) fn parse_bool_env(s: &str) -> bool {
     matches!(
         s.trim().to_ascii_lowercase().as_str(),
         "1" | "true" | "yes" | "on"
@@ -2128,10 +2162,10 @@ pub struct ColdStorageConfig {
     /// Whether cold archival is enabled.
     #[serde(default = "ColdStorageConfig::default_enabled")]
     pub enabled: bool,
-    /// Maximum age in days before engrams are archived to cold storage.
+    /// Maximum age in days before signals are archived to cold storage.
     #[serde(default = "ColdStorageConfig::default_max_age_days")]
     pub max_age_days: u32,
-    /// Maximum number of engrams to archive per batch.
+    /// Maximum number of signals to archive per batch.
     #[serde(default = "ColdStorageConfig::default_batch_size")]
     pub batch_size: usize,
     /// Interval in seconds between scheduled cold archival runs (default: 6 hours).
@@ -2273,7 +2307,7 @@ pub struct ResourcesConfig {
 
     /// Rotate `.roko/` JSONL log files when they exceed this size in MB.
     ///
-    /// Applies to `episodes.jsonl`, `engrams.jsonl`, `efficiency.jsonl`,
+    /// Applies to `episodes.jsonl`, `signals.jsonl`, `efficiency.jsonl`,
     /// and other JSONL files in the `learn/` directory. Default: 100 MB.
     #[serde(default = "ResourcesConfig::default_log_rotation_max_mb")]
     pub log_rotation_max_mb: u64,
@@ -3222,6 +3256,70 @@ max_output = 16384
         assert!(cfg.providers.contains_key("claude_cli"));
         assert!(cfg.providers.contains_key("gemini"));
         assert!(cfg.providers.contains_key("perplexity"));
+    }
+
+    #[test]
+    fn glm_example_config() {
+        let example = include_str!("../../../../examples/roko-glm.toml");
+        let cfg = RokoConfig::from_toml(example).expect("parse roko-glm.toml");
+        assert_eq!(cfg.schema_version, CURRENT_SCHEMA_VERSION);
+        let model = cfg.models.get("glm-5-1").expect("glm-5-1 model");
+        assert_eq!(model.provider, "zai");
+        // fallback_model must not reference a model key absent from this config.
+        if let Some(ref fallback) = cfg.agent.fallback_model {
+            assert!(
+                cfg.models.contains_key(fallback.as_str()),
+                "fallback_model '{fallback}' must be defined in [models]"
+            );
+        }
+    }
+
+    #[test]
+    fn ollama_example_config() {
+        let example = include_str!("../../../../examples/roko-ollama.toml");
+        let cfg = RokoConfig::from_toml(example).expect("parse roko-ollama.toml");
+        assert_eq!(cfg.schema_version, CURRENT_SCHEMA_VERSION);
+        assert!(cfg.providers.contains_key("ollama"));
+        // fallback_model must not reference a model key absent from this config.
+        if let Some(ref fallback) = cfg.agent.fallback_model {
+            assert!(
+                cfg.models.contains_key(fallback.as_str()),
+                "fallback_model '{fallback}' must be defined in [models]"
+            );
+        }
+    }
+
+    #[test]
+    fn lmstudio_example_config() {
+        let example = include_str!("../../../../examples/roko-lmstudio.toml");
+        let cfg = RokoConfig::from_toml(example).expect("parse roko-lmstudio.toml");
+        assert_eq!(cfg.schema_version, CURRENT_SCHEMA_VERSION);
+        assert!(cfg.providers.contains_key("lmstudio"));
+    }
+
+    #[test]
+    fn docker_config_parses() {
+        let example = include_str!("../../../../docker/roko.toml");
+        let cfg = RokoConfig::from_toml(example).expect("parse docker/roko.toml");
+        assert_eq!(cfg.schema_version, CURRENT_SCHEMA_VERSION);
+        assert_eq!(cfg.server.port, 6677);
+        // max_concurrent_tasks must use the canonical field name, not max_parallel_tasks.
+        // Verify runner parses without error (deny_unknown_fields would reject stale names).
+        let _ = cfg.runner.max_concurrent_tasks;
+    }
+
+    #[test]
+    fn demo_resources_config_parses() {
+        let example = include_str!("../../../../demo/demo-resources/roko.toml");
+        let cfg = RokoConfig::from_toml(example).expect("parse demo/demo-resources/roko.toml");
+        // auto_plan must be in [prd], not at root level.
+        // A successful parse here proves the section placement is correct.
+        assert!(!cfg.prd.auto_plan);
+        // [[gates.rungs]] must use the current syntax (not the stale [[gate]]).
+        assert!(
+            !cfg.gates.custom_rungs.is_empty(),
+            "demo gate rung must parse"
+        );
     }
 
     #[test]

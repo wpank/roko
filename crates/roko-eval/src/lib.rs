@@ -1427,7 +1427,8 @@ mod tests {
 
     #[test]
     fn legacy_criterion_wraps_failing_verify() {
-        let criterion = BoxedLegacyCriterion::new("mock-fail", Box::new(MockVerify { pass: false }));
+        let criterion =
+            BoxedLegacyCriterion::new("mock-fail", Box::new(MockVerify { pass: false }));
 
         let artifact = EvalArtifactRef::new(".");
         let evidence = EvidenceBag::new();
@@ -1751,10 +1752,7 @@ pub trait OpaqueCriterion: Send + Sync {
     ///
     /// Returns an error if the evidence cannot be downcast to the expected
     /// concrete type, or if evaluation itself fails.
-    async fn evaluate(
-        &self,
-        evidence: &OpaqueEvidence,
-    ) -> anyhow::Result<OpaqueCriterionResult>;
+    async fn evaluate(&self, evidence: &OpaqueEvidence) -> anyhow::Result<OpaqueCriterionResult>;
 }
 
 /// Gathers opaque evidence for subsequent criterion evaluation.
@@ -1831,8 +1829,9 @@ impl OpaqueProfile {
         for criterion in &self.criteria {
             let criterion_result = match criterion.evaluate(evidence).await {
                 Ok(r) => r,
-                Err(e) => OpaqueCriterionResult::fail()
-                    .with_details(format!("criterion error: {e}")),
+                Err(e) => {
+                    OpaqueCriterionResult::fail().with_details(format!("criterion error: {e}"))
+                }
             };
             results.push((criterion.name().to_string(), criterion_result));
         }
@@ -1917,10 +1916,7 @@ impl<G: roko_core::Verify + Send + Sync> OpaqueCriterion for LegacyCriterion<G> 
 
         let payload = serde_json::json!({ "workdir": workdir });
         let signal = roko_core::Signal::builder(roko_core::Kind::Task)
-            .body(
-                roko_core::Body::from_json(&payload)
-                    .unwrap_or_else(|_| roko_core::Body::empty()),
-            )
+            .body(roko_core::Body::from_json(&payload).unwrap_or_else(|_| roko_core::Body::empty()))
             .build();
         let ctx = roko_core::Context::now().with_attr("workdir", workdir);
 
@@ -2130,8 +2126,7 @@ mod opaque_tests {
             }
         }
 
-        let profile = OpaqueProfile::new("error-profile")
-            .with_criterion(Box::new(ErrorCriterion));
+        let profile = OpaqueProfile::new("error-profile").with_criterion(Box::new(ErrorCriterion));
 
         let evidence = OpaqueEvidence::new(());
         let result = profile.evaluate_all(&evidence).await;

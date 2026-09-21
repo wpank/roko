@@ -2,6 +2,8 @@
 
 > Depth for [05-AGENT.md](../../unified/05-AGENT.md). How behavioral state classification and affect-modulated routing emerge from Score and Route Cells rather than hardcoded threshold tables.
 
+> **Implementation status:** The architecture described here is the target design. The current implementation uses an imperative approach via `BehavioralState::classify` called from `crates/roko-daimon/src/lib.rs` (`DaimonState::refresh_behavioral_state`), with threshold-table routing in `crates/roko-daimon/src/policy.rs`. The `BehavioralStateScorer` Score Cell, Bus-based transition Pulses, and learnable thresholds do not yet exist. See GAPS.md for the migration path.
+
 ---
 
 ## 1. The Problem with Threshold Tables

@@ -33,7 +33,7 @@ pub async fn signals(
     State(state): State<Arc<AppState>>,
     Query(q): Query<SignalQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    let path = state.workdir.join(".roko").join("engrams.jsonl");
+    let path = state.workdir.join(".roko").join("signals.jsonl");
     let entries = read_jsonl_entries(&path).await?;
     let cap = q.limit.unwrap_or(MAX_JSONL_RESULTS).min(MAX_JSONL_RESULTS);
     let limited: Vec<Value> = entries

@@ -92,6 +92,12 @@ pub struct PluginManifestFile {
     /// Default sandbox configuration for declarative tools.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<SandboxConfig>,
+    /// Optional SHA-256 checksum of the plugin's WASM binary, hex-encoded.
+    /// When present, the loader re-verifies the on-disk binary before
+    /// executing any hooks. Set during installation; absent for non-WASM
+    /// plugins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wasm_sha256: Option<String>,
 }
 
 /// Plugin metadata section.

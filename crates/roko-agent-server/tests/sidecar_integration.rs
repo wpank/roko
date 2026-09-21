@@ -447,7 +447,7 @@ async fn message_success_returns_response_envelope() {
         body.get("finish_reason").is_some(),
         "should include finish_reason"
     );
-    assert!(body.get("engram_id").is_some(), "should include engram_id");
+    assert!(body.get("signal_id").is_some(), "should include signal_id");
 }
 
 // ---------------------------------------------------------------------------

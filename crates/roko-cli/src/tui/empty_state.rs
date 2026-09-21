@@ -194,6 +194,14 @@ fn empty_content(tab: Tab) -> (&'static str, &'static str, &'static [&'static st
                 "roko plan run plans/",
             ],
         ),
+        Tab::Providers => (
+            "\u{25C8}",
+            "No provider data",
+            &[
+                "Run agents to populate provider telemetry.",
+                "roko config providers list",
+            ],
+        ),
     }
 }
 

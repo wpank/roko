@@ -113,6 +113,8 @@ pub mod prompt_experiment;
 pub mod provider_health;
 /// Provider/model pass-rate outcome telemetry for future routing bandits.
 pub mod provider_model_outcome;
+/// RAG-10: Retrieval outcome JSONL telemetry with gate-pass correlation.
+pub mod retrieval_outcome;
 pub mod quality_judge;
 /// T0 reflex store — condition-action pairs learned from T2 episode promotions.
 pub mod reflex_store;
@@ -138,36 +140,34 @@ pub mod verdict_scorer;
 /// Write-Ahead Log for crash-safe learning state persistence.
 pub mod wal;
 
-/// P4-01: LLM-generated verbal self-reflection after gate failure.
-pub mod verbal_reflection;
-/// P4-05: Learning effectiveness meta-metrics for triple-loop learning.
-pub mod meta_metrics;
-/// P4-06: Cumulative regret tracking for LinUCB router.
-pub mod regret_tracker;
-/// P4-07: Cross-session plan cost aggregation.
-pub mod cross_session_cost;
 /// P4-09: Attention curve fitting pipeline.
 pub mod attention_fit;
-/// P4-16: Trigger outcome learning.
-pub mod trigger_outcome;
-/// P4-17: Persistent tool metrics aggregation store.
-pub mod tool_metrics_store;
-/// P4-18: Adaptive model-specific tool degradation threshold learner.
-pub mod tool_cap_learner;
-/// P4-19: Tool recommendation from efficiency history.
-pub mod tool_recommendation;
+/// P4-07: Cross-session plan cost aggregation.
+pub mod cross_session_cost;
+/// P4-25: Cross-workspace prompt learning transfer.
+pub mod cross_workspace_transfer;
+/// P4-03/P4-04: Experiment CLI creation and automatic wiring.
+pub mod experiment_cli;
 /// P4-20: Generational improvement metrics.
 pub mod generational_metrics;
+/// P4-02: HDC fingerprint similarity search.
+pub mod hdc_search;
+/// P4-05: Learning effectiveness meta-metrics for triple-loop learning.
+pub mod meta_metrics;
 /// P4-21: Plasticity metric and monitoring.
 pub mod plasticity;
 /// P4-23: DSPy-style prompt compiler scaffold.
 pub mod prompt_compiler;
-/// P4-25: Cross-workspace prompt learning transfer.
-pub mod cross_workspace_transfer;
-/// P4-02: HDC fingerprint similarity search.
-pub mod hdc_search;
-/// P4-03/P4-04: Experiment CLI creation and automatic wiring.
-pub mod experiment_cli;
+/// P4-18: Adaptive model-specific tool degradation threshold learner.
+pub mod tool_cap_learner;
+/// P4-17: Persistent tool metrics aggregation store.
+pub mod tool_metrics_store;
+/// P4-19: Tool recommendation from efficiency history.
+pub mod tool_recommendation;
+/// P4-16: Trigger outcome learning.
+pub mod trigger_outcome;
+/// P4-01: LLM-generated verbal self-reflection after gate failure.
+pub mod verbal_reflection;
 
 /// Gate gaming detector — flags rising pass rates paired with falling quality.
 pub mod gate_gaming;

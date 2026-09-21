@@ -396,6 +396,11 @@ mod tests {
         assert!(after_fail.confidence < before_fail.confidence);
     }
 
+    // Without HDC the keyword-only path returns zero hits for a completely
+    // unrelated query, which sets the short-circuit flag.  Under HDC the
+    // vector similarity path may still surface low-score matches for any
+    // non-empty store, so the test uses an empty store in that case.
+    #[cfg(not(feature = "hdc"))]
     #[tokio::test]
     async fn empty_query_sets_short_circuit_hint_without_dropping_input() {
         let temp = tempfile::tempdir().unwrap();
@@ -405,6 +410,31 @@ mod tests {
         let ctx = CrossCutContext {
             step: LoopStep::Sense,
             task_id: "quantum-biology-unrelated".into(),
+            ..CrossCutContext::default()
+        };
+        let input = Signal::builder(Kind::Task)
+            .body(Body::text("quantum biology zebrafish"))
+            .build();
+
+        let output = memory.pre_enrich(vec![input.clone()], &ctx).await.unwrap();
+
+        assert_eq!(output, vec![input]);
+        assert!(memory.should_short_circuit());
+    }
+
+    // HDC variant: an empty store reliably produces zero matches under both
+    // retrieval paths, so the short-circuit flag is set via the store-empty
+    // branch in `should_short_circuit`.
+    #[cfg(feature = "hdc")]
+    #[tokio::test]
+    async fn empty_store_sets_short_circuit_hint_without_dropping_input() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(KnowledgeStore::new(temp.path().join("knowledge.jsonl")));
+        // Intentionally empty — no entries added.
+        let memory = MemoryFunctor::new(store);
+        let ctx = CrossCutContext {
+            step: LoopStep::Sense,
+            task_id: "some-task".into(),
             ..CrossCutContext::default()
         };
         let input = Signal::builder(Kind::Task)

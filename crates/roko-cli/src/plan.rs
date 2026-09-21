@@ -343,7 +343,95 @@ pub fn summarize_plan_info(plan_info: &PlanInfo) -> PlanSummary {
 /// Returns any discovery error reported by [`discover_plans`].
 pub fn summarize_discovered_plans(workdir: &Path) -> Result<Vec<PlanSummary>, DiscoveryError> {
     let plans = discover_plans(&plans_dir(workdir))?;
-    Ok(plans.iter().map(summarize_plan_info).collect())
+    let mut summaries: Vec<PlanSummary> = plans.iter().map(summarize_plan_info).collect();
+    overlay_graph_checkpoint_status(workdir, &mut summaries);
+    Ok(summaries)
+}
+
+/// Overlay Graph Engine checkpoint status onto plan summaries.
+///
+/// The Graph engine writes completion state to
+/// `.roko/state/graph/<plan-id>/checkpoint.json` rather than updating
+/// `tasks.toml`.  This function reads those checkpoints and promotes
+/// `completed` / `tasks_done` / `tasks_failed` / `status` when a terminal
+/// checkpoint is present.
+pub fn overlay_graph_checkpoint_status(workdir: &Path, summaries: &mut [PlanSummary]) {
+    let graph_root = workdir.join(".roko/state/graph");
+    if !graph_root.is_dir() {
+        return;
+    }
+    for summary in summaries.iter_mut() {
+        // Replicate the plan-id sanitisation from graph_checkpoint.rs.
+        let safe_id: String = summary
+            .id
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let manifest_path = graph_root.join(&safe_id).join("checkpoint.json");
+        if !manifest_path.is_file() {
+            continue;
+        }
+        let Ok(bytes) = fs::read(&manifest_path) else {
+            continue;
+        };
+        // Minimal parse: we only need `status` (and optionally node counts).
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            continue;
+        };
+        let Some(status_str) = value.get("status").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        // Compute age suffix from checkpoint updated_at_ms.
+        let age_suffix = value
+            .get("updated_at_ms")
+            .and_then(|v| v.as_u64())
+            .map(|ms| {
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                let age_secs = now_ms.saturating_sub(ms) / 1_000;
+                if age_secs < 60 {
+                    format!(" ({}s ago)", age_secs)
+                } else if age_secs < 3_600 {
+                    format!(" ({}m ago)", age_secs / 60)
+                } else if age_secs < 86_400 {
+                    format!(" ({}h ago)", age_secs / 3_600)
+                } else {
+                    format!(" ({}d ago)", age_secs / 86_400)
+                }
+            })
+            .unwrap_or_default();
+        match status_str {
+            "succeeded" => {
+                summary.completed = true;
+                summary.status = format!("done{age_suffix}");
+                // If tasks.toml showed 0 done, infer all passed.
+                if summary.tasks_done == 0 && summary.task_count > 0 {
+                    summary.tasks_done = summary.task_count;
+                }
+            }
+            "failed" => {
+                summary.status = format!("failed{age_suffix}");
+                // Mark at least one failure if tasks.toml showed 0 failed.
+                if summary.tasks_failed == 0 && summary.task_count > 0 {
+                    summary.tasks_failed = 1;
+                }
+            }
+            "running" => {
+                if summary.status == "ready" || summary.status == "pending" {
+                    summary.status = "running".to_string();
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Find a discovered plan by its stable id or base directory name.

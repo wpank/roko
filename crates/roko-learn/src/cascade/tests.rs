@@ -1608,3 +1608,93 @@ fn feedback_with_unknown_model_is_noop() {
     let stats = cascade.confidence_snapshot();
     assert!(!stats.contains_key("mystery-model-xyz"));
 }
+
+// ── P2-LRN-5: task_category awareness in stages 2-3 ─────────────────────────
+
+/// record_observation must populate category_stats so Stage 2
+/// confidence_scores can apply the per-category pass-rate delta.
+#[test]
+fn record_observation_populates_category_stats() {
+    let cascade = CascadeRouter::new(test_slugs());
+    let mut ctx = default_ctx();
+    ctx.task_category = TaskCategory::Docs;
+
+    // One success for sonnet on Docs.
+    cascade.record_observation(&ctx, "claude-sonnet-4-5", 0.9, true);
+    // One failure for haiku on Docs.
+    cascade.record_observation(&ctx, "claude-haiku-4-5", 0.1, false);
+
+    let cat = cascade.category_stats_snapshot();
+    assert_eq!(
+        cat.get(&("claude-sonnet-4-5".to_string(), "docs".to_string())),
+        Some(&(1, 1)),
+        "sonnet/docs should have 1 trial + 1 success"
+    );
+    assert_eq!(
+        cat.get(&("claude-haiku-4-5".to_string(), "docs".to_string())),
+        Some(&(1, 0)),
+        "haiku/docs should have 1 trial + 0 successes"
+    );
+    // Implementation category must not appear.
+    assert!(
+        cat.get(&(
+            "claude-sonnet-4-5".to_string(),
+            "implementation".to_string()
+        ))
+        .is_none(),
+        "implementation entry must not appear for a Docs observation"
+    );
+}
+
+/// After enough per-category observations Stage 2 should prefer the model
+/// with the better category-specific pass rate over the one with the better
+/// global pass rate, when the task category matches.
+#[test]
+fn stage2_confidence_uses_task_category_delta() {
+    // sonnet and haiku start with the same global pass rate (50% each):
+    // 5 successes out of 10 trials.  For Refactor tasks specifically, haiku
+    // has a 100% pass rate while sonnet has 0%.  After enough category
+    // observations (>= CATEGORY_MIN_TRIALS = 5), the Confidence stage must
+    // prefer haiku for Refactor.
+    let cascade = CascadeRouter::new(vec![
+        "claude-haiku-4-5".to_string(),
+        "claude-sonnet-4-5".to_string(),
+    ]);
+
+    // Build identical global pass rates by alternating success/failure.
+    let mut base_ctx = default_ctx();
+    base_ctx.task_category = TaskCategory::Implementation;
+    for _ in 0..5 {
+        cascade.record_observation(&base_ctx, "claude-haiku-4-5", 0.9, true);
+        cascade.record_observation(&base_ctx, "claude-haiku-4-5", 0.1, false);
+        cascade.record_observation(&base_ctx, "claude-sonnet-4-5", 0.9, true);
+        cascade.record_observation(&base_ctx, "claude-sonnet-4-5", 0.1, false);
+    }
+
+    // Now give haiku a perfect Refactor record and sonnet a zero record.
+    let mut refactor_ctx = default_ctx();
+    refactor_ctx.task_category = TaskCategory::Refactor;
+    for _ in 0..8 {
+        cascade.record_observation(&refactor_ctx, "claude-haiku-4-5", 0.9, true);
+        cascade.record_observation(&refactor_ctx, "claude-sonnet-4-5", 0.1, false);
+    }
+
+    // Force into Confidence stage by bumping to 50 total observations.
+    for _ in 0..10 {
+        cascade.record_observation(&base_ctx, "claude-haiku-4-5", 0.5, true);
+        cascade.record_observation(&base_ctx, "claude-sonnet-4-5", 0.5, true);
+    }
+
+    assert_eq!(
+        cascade.current_stage(),
+        CascadeStage::Confidence,
+        "router should be in Confidence stage"
+    );
+
+    // Route a Refactor task — haiku should win due to the category delta.
+    let result = cascade.route(&refactor_ctx);
+    assert_eq!(
+        result.primary.slug, "claude-haiku-4-5",
+        "Stage 2 should prefer the model with the better Refactor pass rate"
+    );
+}

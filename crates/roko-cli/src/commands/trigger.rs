@@ -168,7 +168,10 @@ fn cmd_show(cli: &Cli, workdir: &Path, name: &str) -> Result<i32> {
                 serde_json::json!({"error": format!("trigger '{name}' not found")})
             );
         } else {
-            tracing::warn!(name, "trigger not found; run `roko trigger list` to see available triggers");
+            tracing::warn!(
+                name,
+                "trigger not found; run `roko trigger list` to see available triggers"
+            );
         }
         return Ok(EXIT_FAILURE);
     }
@@ -285,7 +288,10 @@ async fn cmd_fire(cli: &Cli, workdir: &Path, name: &str, payload_str: &str) -> R
                 serde_json::json!({"error": format!("trigger '{name}' not found")})
             );
         } else {
-            tracing::warn!(name, "trigger not found; run `roko trigger list` to see available triggers");
+            tracing::warn!(
+                name,
+                "trigger not found; run `roko trigger list` to see available triggers"
+            );
         }
         return Ok(EXIT_FAILURE);
     }
@@ -298,7 +304,10 @@ async fn cmd_fire(cli: &Cli, workdir: &Path, name: &str, payload_str: &str) -> R
                 serde_json::json!({"error": format!("trigger '{name}' is disabled")})
             );
         } else {
-            tracing::warn!(name, "trigger is disabled; run `roko trigger enable <name>` to enable it first");
+            tracing::warn!(
+                name,
+                "trigger is disabled; run `roko trigger enable <name>` to enable it first"
+            );
         }
         return Ok(EXIT_FAILURE);
     }
@@ -361,7 +370,10 @@ fn cmd_history(cli: &Cli, workdir: &Path, name: &str, limit: usize) -> Result<i3
                 serde_json::json!({"error": format!("trigger '{name}' not found")})
             );
         } else {
-            tracing::warn!(name, "trigger not found; run `roko trigger list` to see available triggers");
+            tracing::warn!(
+                name,
+                "trigger not found; run `roko trigger list` to see available triggers"
+            );
         }
         return Ok(EXIT_FAILURE);
     }

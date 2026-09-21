@@ -17,6 +17,9 @@ use notify_debouncer_full::{
 };
 
 const DEBOUNCE_WINDOW: Duration = Duration::from_millis(200);
+/// Debounce window for source-file changes before triggering an index rebuild.
+/// 2 seconds gives a burst of saves (e.g. fmt-on-save) time to settle.
+const SOURCE_INDEX_DEBOUNCE: Duration = Duration::from_secs(2);
 const FALLBACK_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const CHANNEL_BOUND: usize = 4;
 const RECURSIVE_WATCH_DIRS: &[&str] = &["state", "plans", "gates"];
@@ -40,7 +43,8 @@ pub struct FsWatchHandle {
     _backend: FsWatchBackend,
 }
 
-// Variants hold resources (debouncer, poll thread) that are cleaned up on Drop.
+// RAII guard: variants hold resources (debouncer, poll thread) that are
+// cleaned up on Drop. Stored in `_backend` and never matched on.
 #[allow(dead_code)]
 enum FsWatchBackend {
     Notify(NotifyDebouncer),
@@ -157,6 +161,211 @@ pub fn watch_roko_dir_with_fallback(workdir: &Path) -> FsWatchHandle {
                 "notify unavailable; falling back to poll watcher"
             );
             spawn_poll_fallback_with_interval(workdir.to_path_buf(), FALLBACK_POLL_INTERVAL)
+        }
+    }
+}
+
+/// Watch `<workdir>/crates/*/src/` for `.rs` file changes and rebuild the
+/// workspace code index automatically.
+///
+/// Fires a 2-second debounce window on every `.rs` change to coalesce burst
+/// saves. The rebuild runs in a background thread so it never blocks the
+/// caller. Failures are logged as warnings but do not stop the watcher.
+///
+/// Returns a [`FsWatchHandle`] whose receiver delivers a [`FsRefresh::Coalesced`]
+/// notification *after* each completed (or failed) rebuild attempt. The caller
+/// can use this to refresh any in-memory index caches.
+///
+/// If `notify` is unavailable the watcher silently skips source watching and
+/// returns a handle that never delivers events.
+pub fn watch_source_dirs_with_index_rebuild(workdir: &Path) -> FsWatchHandle {
+    let crates_dir = workdir.join("crates");
+    if !crates_dir.is_dir() {
+        tracing::debug!(
+            path = %crates_dir.display(),
+            "crates/ directory not found; skipping source-dir index watcher"
+        );
+        // Return a no-op handle: channel that is never sent to.
+        let (_, rx) = mpsc::sync_channel(1);
+        let stop = Arc::new(AtomicBool::new(false));
+        return FsWatchHandle {
+            rx,
+            _backend: FsWatchBackend::Poll(PollerHandle { stop, join: None }),
+        };
+    }
+
+    let workdir_owned = workdir.to_path_buf();
+    let (tx, rx) = mpsc::sync_channel::<FsRefresh>(CHANNEL_BOUND);
+
+    // Build the debounced handler that fires the rebuild.
+    let rebuild_tx = tx.clone();
+    let rebuild_workdir = workdir_owned.clone();
+
+    struct SourceChangeHandler {
+        tx: SyncSender<FsRefresh>,
+        workdir: PathBuf,
+    }
+
+    impl DebounceEventHandler for SourceChangeHandler {
+        fn handle_event(&mut self, result: DebounceEventResult) {
+            // Only act on events that involve at least one .rs file.
+            let has_rs = match &result {
+                Ok(events) => events.iter().any(|ev| {
+                    ev.paths
+                        .iter()
+                        .any(|p| p.extension().is_some_and(|ext| ext == "rs"))
+                }),
+                Err(_) => true, // errors are treated conservatively
+            };
+            if !has_rs {
+                return;
+            }
+
+            if let Err(e) = &result {
+                tracing::warn!(
+                    count = e.len(),
+                    "source-dir watcher debounce error; triggering rebuild anyway"
+                );
+            }
+
+            // Run the rebuild in a dedicated thread to avoid blocking the
+            // debouncer's internal timer thread.
+            let workdir = self.workdir.clone();
+            let tx = self.tx.clone();
+            let _ = thread::Builder::new()
+                .name("index-rebuild-on-src-change".into())
+                .spawn(move || {
+                    rebuild_index_from_workdir(&workdir);
+                    let _ = tx.try_send(FsRefresh::Coalesced);
+                });
+        }
+    }
+
+    let handler = SourceChangeHandler {
+        tx: rebuild_tx,
+        workdir: rebuild_workdir,
+    };
+
+    let debouncer_result: Result<NotifyDebouncer> = new_debouncer_opt(
+        SOURCE_INDEX_DEBOUNCE,
+        None,
+        handler,
+        FileIdMap::new(),
+        notify::Config::default(),
+    )
+    .context("failed to create source-dir debounced watcher");
+
+    match debouncer_result {
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "notify unavailable for source-dir index watcher; index will not auto-rebuild"
+            );
+            // Return a no-op handle.
+            let stop = Arc::new(AtomicBool::new(false));
+            FsWatchHandle {
+                rx,
+                _backend: FsWatchBackend::Poll(PollerHandle { stop, join: None }),
+            }
+        }
+        Ok(mut debouncer) => {
+            // Enumerate `crates/*/src/` directories and watch each recursively.
+            let mut watched = 0usize;
+            if let Ok(entries) = fs::read_dir(&crates_dir) {
+                for entry in entries.flatten() {
+                    let src_dir = entry.path().join("src");
+                    if !src_dir.is_dir() {
+                        continue;
+                    }
+                    match debouncer
+                        .watcher()
+                        .watch(&src_dir, RecursiveMode::Recursive)
+                    {
+                        Ok(()) => {
+                            debouncer
+                                .cache()
+                                .add_root(&src_dir, RecursiveMode::Recursive);
+                            watched += 1;
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                path = %src_dir.display(),
+                                error = %e,
+                                "failed to watch crate src/ directory"
+                            );
+                        }
+                    }
+                }
+            }
+            tracing::debug!(
+                crates_watched = watched,
+                "source-dir index watcher started"
+            );
+            FsWatchHandle {
+                rx,
+                _backend: FsWatchBackend::Notify(debouncer),
+            }
+        }
+    }
+}
+
+/// Rebuild the persistent code index for `workdir`.
+///
+/// Called from the background rebuild thread spawned by the source-dir
+/// watcher.  Errors are logged as warnings; a failed rebuild leaves the
+/// previous (stale) DB in place.
+fn rebuild_index_from_workdir(workdir: &Path) {
+    tracing::info!(
+        workdir = %workdir.display(),
+        "rebuilding code index after source change"
+    );
+
+    // Load in-memory workspace index.
+    let idx = match roko_index::WorkspaceIndex::load(workdir) {
+        Ok(idx) => idx,
+        Err(e) => {
+            tracing::warn!(error = %e, "index rebuild: WorkspaceIndex::load failed");
+            return;
+        }
+    };
+
+    // Materialise file/ranking records.
+    let file_records: Vec<roko_index::FileRecord> = idx
+        .all_source_files()
+        .iter()
+        .map(|sf| roko_index::FileRecord {
+            path: sf.path.clone(),
+            content: sf.content.clone(),
+        })
+        .collect();
+    let rankings: Vec<roko_index::RankingRecord> = idx
+        .all_pagerank_scores()
+        .iter()
+        .map(|(id, &score)| roko_index::RankingRecord {
+            id: id.clone(),
+            score,
+        })
+        .collect();
+
+    // Atomically replace the SQLite DB.
+    match roko_index::IndexStore::build_with_rankings(
+        idx.root(),
+        &idx.all_symbols(),
+        &idx.all_edges(),
+        &file_records,
+        &rankings,
+    ) {
+        Ok(store) => {
+            let stats = idx.stats();
+            tracing::info!(
+                db = %store.db_path().display(),
+                files = stats.indexed_files,
+                symbols = stats.total_symbols,
+                "code index rebuilt successfully"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "index rebuild: IndexStore::build_with_rankings failed");
         }
     }
 }

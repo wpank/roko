@@ -11,7 +11,7 @@ use crate::{Result, Signal, Verdict};
 /// Read-only protocol implemented by event-oriented telemetry Lenses.
 ///
 /// This is deliberately distinct from [`crate::Observe`], the synchronous
-/// environment-observation protocol that returns Engrams. Implementations
+/// environment-observation protocol that returns Signals. Implementations
 /// declare both their event-family filters and scope so a router can avoid
 /// invoking them for irrelevant events.
 #[async_trait]
@@ -581,6 +581,33 @@ pub struct UsagePayload {
     pub trigger_fires: u64,
     pub total_cost_usd: f64,
     pub total_duration_ms: u64,
+}
+
+/// RAG retrieval performance metrics for one sampling window.
+///
+/// Precision is the fraction of queries that returned at least one result
+/// (`results_count > 0` divided by `total_queries`). Miss rate is the
+/// complementary fraction (`queries_with_zero_results / total_queries`).
+/// `p95_latency_ms` is the 95th-percentile retrieval duration from the
+/// buffered `MemoryRetrieved` sample window.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RagPerformancePayload {
+    /// Scope target label (e.g. `"global"` or `"agent:builder"`).
+    pub target: String,
+    /// Window size in milliseconds; `0` when the Lens uses event-count windows.
+    pub interval_ms: u64,
+    /// Total retrieval queries observed in the window.
+    pub total_queries: u64,
+    /// Queries that returned zero results.
+    pub queries_with_zero_results: u64,
+    /// `queries_with_zero_results / total_queries`; `0.0` when `total_queries == 0`.
+    pub miss_rate: f64,
+    /// Fraction of queries that returned one or more results; `1.0 - miss_rate`.
+    pub precision: f64,
+    /// 95th-percentile retrieval latency over the sample window (ms).
+    pub p95_latency_ms: u64,
+    /// Mean retrieval latency over the sample window (ms).
+    pub mean_latency_ms: u64,
 }
 
 /// Collective-intelligence Lens output for one Space interval.

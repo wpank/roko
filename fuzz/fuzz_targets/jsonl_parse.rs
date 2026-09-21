@@ -1,7 +1,7 @@
 //! Fuzz target: JSONL parsing in roko-fs (FileSubstrate line reader).
 //!
 //! Exercises the `serde_json::from_str::<Signal>` path used by
-//! `FileSubstrate` when replaying `.roko/engrams.jsonl` on startup, plus the
+//! `FileSubstrate` when replaying `.roko/signals.jsonl` on startup, plus the
 //! `ClassifiedRecord` path used by `read_classified_jsonl` for transcript
 //! persistence. Both surfaces process untrusted on-disk bytes and must never
 //! panic or allocate unboundedly on adversarial input.

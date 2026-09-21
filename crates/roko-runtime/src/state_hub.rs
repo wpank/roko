@@ -771,7 +771,23 @@ impl StateHub {
         }
     }
 
+    /// Publish a [`CoreEvent`] (= [`RuntimeEvent`]) by translating it to zero
+    /// or more [`DashboardEvent`]s using the canonical bridge mapping.
+    ///
+    /// Delegates to [`publish_batch`] after translation so snapshot updates
+    /// and broadcasts are atomic.
+    pub fn publish_core_event(&self, event: &roko_core::RuntimeEvent) {
+        let events = roko_core::core_event::core_event_to_dashboard_events(event);
+        if !events.is_empty() {
+            self.publish_batch(events);
+        }
+    }
+
     /// Replace the current materialized snapshot atomically.
+    ///
+    /// A synthetic [`DashboardEvent::SnapshotRebased`] is emitted so that
+    /// SSE/WS consumers holding a stale cursor learn that the baseline changed
+    /// and can re-fetch the full snapshot.
     pub fn apply_snapshot(&self, snapshot: DashboardSnapshot) {
         let _publish = self
             .publish_lock
@@ -788,6 +804,10 @@ impl StateHub {
             revision,
             ..StateHubSnapshotProvenance::default()
         };
+        self.event_bus.emit(DashboardEvent::SnapshotRebased {
+            revision,
+            source: "apply_snapshot".to_string(),
+        });
     }
 
     fn apply_recovered_snapshot_if_unchanged(
@@ -808,8 +828,18 @@ impl StateHub {
             return false;
         }
         provenance.revision = current.revision.saturating_add(1);
+        let revision = provenance.revision;
+        let source = provenance
+            .source_status
+            .clone()
+            .unwrap_or_else(|| "recovery".to_string());
         let _ = self.snapshot_tx.send(snapshot);
         *current = provenance;
+        // Advance the event-bus cursor so SSE/WS consumers learn about the
+        // baseline replacement.  Must happen while `publish_lock` is held so
+        // the cursor and snapshot stay in sync.
+        self.event_bus
+            .emit(DashboardEvent::SnapshotRebased { revision, source });
         true
     }
 
@@ -1219,6 +1249,44 @@ impl StateHubSender {
             writer.append(&event);
         }
         self.bus_sender.emit(event)
+    }
+
+    /// Publish a [`CoreEvent`] (= [`RuntimeEvent`]) by translating it to zero
+    /// or more [`DashboardEvent`]s and publishing each one through the hub.
+    ///
+    /// This is the bridge between [`CoreEvent`] producers (Graph engine,
+    /// runner, ACP) and the `DashboardEvent`-consuming StateHub.  Uses the
+    /// canonical mapping from [`roko_core::core_event::core_event_to_dashboard_events`].
+    pub fn publish_core_event(&self, event: &roko_core::RuntimeEvent) {
+        let events = roko_core::core_event::core_event_to_dashboard_events(event);
+        if !events.is_empty() {
+            let _publish = self
+                .publish_lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.snapshot_tx.send_modify(|snap| {
+                for ev in &events {
+                    snap.apply(ev);
+                }
+            });
+            {
+                let mut provenance = self
+                    .provenance
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                provenance.live_events_applied = true;
+                provenance.revision = provenance.revision.saturating_add(1);
+            }
+            for ev in events {
+                if should_persist(&ev)
+                    && let Some(log) = &self.event_log
+                    && let Ok(mut writer) = log.lock()
+                {
+                    writer.append(&ev);
+                }
+                self.bus_sender.emit(ev);
+            }
+        }
     }
 
     /// Replace one projection's current value and advance its version.

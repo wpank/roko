@@ -21,7 +21,7 @@ use crate::cell::{Cell, CellContext, CellVersion, ProtocolId};
 use crate::connector::ConnectorStatus;
 use crate::error::{Result, RokoError};
 use crate::feed::{FeedAccess, FeedKind};
-use crate::{Body, Engram, Kind};
+use crate::{Body, Kind, Signal};
 
 /// Runtime lifecycle state for a feed Cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -409,13 +409,13 @@ impl Cell for FeedCell {
         protocols
     }
 
-    async fn execute(&self, input: Vec<Engram>, _ctx: &CellContext) -> Result<Vec<Engram>> {
+    async fn execute(&self, input: Vec<Signal>, _ctx: &CellContext) -> Result<Vec<Signal>> {
         let query = input
             .first()
             .and_then(|signal| signal.body.as_text().ok())
             .unwrap_or_default();
         let value = self.query(query).await?;
-        let signal = Engram::builder(Kind::Custom("feed.query.result".to_string()))
+        let signal = Signal::builder(Kind::Custom("feed.query.result".to_string()))
             .body(Body::Json(value))
             .tag("feed_id", self.cell_id.clone())
             .build();

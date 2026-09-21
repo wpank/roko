@@ -16,11 +16,11 @@ use roko_agent::openai_agent::OpenAiAgent;
 use roko_agent::provider::cerebras::CerebrasAdapter;
 use roko_agent::provider::{ProviderAdapter, ProviderError};
 use roko_core::agent::ProviderKind;
-use roko_core::{Body, Context, Engram, Kind};
+use roko_core::{Body, Context, Kind, Signal};
 use serde_json::{Value, json};
 
-fn prompt(text: &str) -> Engram {
-    Engram::builder(Kind::Prompt).body(Body::text(text)).build()
+fn prompt(text: &str) -> Signal {
+    Signal::builder(Kind::Prompt).body(Body::text(text)).build()
 }
 
 // -- Error classification tests --

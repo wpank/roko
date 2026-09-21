@@ -5,8 +5,8 @@
 //! member of one or more groups.
 
 use crate::context_provider::{
-    ContextBidder, ContextCandidate, ContextProvider, ContextRequest,
-    ContextSection, ContextScope, ContextSource, ContextPurpose,
+    ContextBidder, ContextCandidate, ContextProvider, ContextPurpose, ContextRequest, ContextScope,
+    ContextSection, ContextSource,
 };
 use crate::prompt::{AttentionBidder, PromptSection, SectionPriority};
 
@@ -58,11 +58,9 @@ impl ContextBidder for GroupContextBidder {
         self.entries
             .iter()
             .map(|entry| {
-                let prompt_section = PromptSection::new(
-                    format!("group:{}", entry.group_id),
-                    entry.content.clone(),
-                )
-                .with_priority(entry.priority);
+                let prompt_section =
+                    PromptSection::new(format!("group:{}", entry.group_id), entry.content.clone())
+                        .with_priority(entry.priority);
 
                 let section = ContextSection::scoped(
                     prompt_section,

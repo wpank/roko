@@ -31,7 +31,7 @@ tiktoken-rs = "0.11.0"
 tokenizers = { version = "0.22.2", default-features = false, features = ["fancy-regex"] }
 
 [features]
-default = []
+default = ["hdc"]
 hdc = ["dep:roko-primitives", "roko-neuro/hdc"]
 
 [dev-dependencies]

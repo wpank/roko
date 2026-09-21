@@ -245,7 +245,7 @@ new_threshold = alpha * observed_pass_rate + (1 - alpha) * old_threshold
 
 Where `alpha = 0.1` (slow learning rate to avoid oscillation). This is predict-publish-correct: the current threshold predicts the pass/fail boundary, the observed pass rate is the outcome, and the EMA update is the correction.
 
-Thresholds persist to `.roko/learn/gate-thresholds.json` and are loaded on startup. The mori-diffs reality doc notes that this loading was not wired in the runner v2 event loop (gap L5) -- thresholds would reset on restart.
+Thresholds persist to `.roko/learn/gate-thresholds.json` and are loaded on startup. The mori-diffs reality doc noted that this loading was not wired in the old runner-v2 event loop (gap L5). **As of 2026-09-10:** adaptive gate thresholds are fully wired — EMA per rung persists to `gate-thresholds.json` with a configurable flush cadence under `[learning]`. The legacy event loop has been deleted; the Graph engine loads thresholds at plan startup.
 
 ---
 

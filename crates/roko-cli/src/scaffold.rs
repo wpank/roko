@@ -88,12 +88,12 @@ fn scaffold_gate(name: &str, output_dir: &Path) -> Result<Vec<PathBuf>> {
         r#"//! {struct_name} — custom gate implementation.
 
 use async_trait::async_trait;
-use roko_core::{{Body, Cell, Context, Signal, Kind, Verdict}};
+use roko_core::{{Cell, Context, Signal, Verdict}};
 use roko_core::traits::Verify;
 
 /// {struct_name} validates signals against custom criteria.
 pub struct {struct_name} {{
-    /// Minimum score threshold for passing the gate.
+    /// Minimum confidence threshold for passing the gate.
     pub threshold: f32,
 }}
 
@@ -117,10 +117,10 @@ impl Cell for {struct_name} {{
 impl Verify for {struct_name} {{
     async fn verify(&self, signal: &Signal, _ctx: &Context) -> Verdict {{
         // TODO: implement your gate logic here.
-        if signal.score >= self.threshold {{
+        if signal.score.confidence >= self.threshold {{
             Verdict::pass("{mod_name}_gate")
         }} else {{
-            Verdict::fail("{mod_name}_gate", "score below threshold")
+            Verdict::fail("{mod_name}_gate", "confidence below threshold")
         }}
     }}
 
@@ -132,18 +132,13 @@ impl Verify for {struct_name} {{
 #[cfg(test)]
 mod tests {{
     use super::*;
-    use roko_core::{{Body, ContentHash, Signal, Kind, Provenance}};
+    use roko_core::{{Body, Kind, Score}};
 
-    fn test_signal(score: f32) -> Signal {{
-        Signal {{
-            hash: ContentHash::from_bytes(b"test"),
-            kind: Kind::Signal,
-            body: Body::Text("test signal".into()),
-            score,
-            provenance: Provenance::default(),
-            parents: vec![],
-            created_ms: 0,
-        }}
+    fn test_signal(confidence: f32) -> Signal {{
+        Signal::builder(Kind::Task)
+            .body(Body::text("test signal"))
+            .score(Score {{ confidence, ..Score::NEUTRAL }})
+            .build()
     }}
 
     #[tokio::test]
@@ -177,7 +172,7 @@ fn scaffold_scorer(name: &str, output_dir: &Path) -> Result<Vec<PathBuf>> {
     let content = format!(
         r#"//! {struct_name} — custom scorer implementation.
 
-use roko_core::{{Cell, Context, Signal, Score as ScoreValue}};
+use roko_core::{{Cell, Context, Score, Signal}};
 use roko_core::traits::Score as ScoreTrait;
 
 /// {struct_name} assigns relevance scores to signals.
@@ -193,15 +188,15 @@ impl Cell for {struct_name} {{
 }}
 
 impl ScoreTrait for {struct_name} {{
-    fn score(&self, signal: &Signal, _ctx: &Context) -> ScoreValue {{
+    fn score(&self, signal: &Signal, _ctx: &Context) -> Score {{
         // TODO: implement your scoring logic here.
-        // Return a ScoreValue with confidence, novelty, utility, etc.
-        ScoreValue {{
-            confidence: signal.score,
+        // Return a Score with confidence, novelty, utility, etc.
+        Score {{
+            confidence: signal.score.confidence,
             novelty: 0.5,
             utility: 0.5,
             reputation: 1.0,
-            ..Default::default()
+            ..Score::NEUTRAL
         }}
     }}
 
@@ -213,18 +208,13 @@ impl ScoreTrait for {struct_name} {{
 #[cfg(test)]
 mod tests {{
     use super::*;
-    use roko_core::{{Body, ContentHash, Signal, Kind, Provenance}};
+    use roko_core::{{Body, Kind}};
 
-    fn test_signal(score: f32) -> Signal {{
-        Signal {{
-            hash: ContentHash::from_bytes(b"test"),
-            kind: Kind::Signal,
-            body: Body::Text("test signal".into()),
-            score,
-            provenance: Provenance::default(),
-            parents: vec![],
-            created_ms: 0,
-        }}
+    fn test_signal(confidence: f32) -> Signal {{
+        Signal::builder(Kind::Task)
+            .body(Body::text("test signal"))
+            .score(Score {{ confidence, ..Score::NEUTRAL }})
+            .build()
     }}
 
     #[test]
@@ -269,7 +259,7 @@ impl Route for {struct_name} {{
     fn select(&self, candidates: &[Signal], _ctx: &Context) -> Option<Selection> {{
         // TODO: implement your routing logic here.
         // Return a Selection identifying the chosen candidate, or None.
-        candidates.first().map(|s| Selection::new(s.hash.clone(), "{mod_name}_router"))
+        candidates.first().map(|s| Selection::new(s.id.clone(), "{mod_name}_router"))
     }}
 
     fn feedback(&self, _outcome: &Outcome) {{
@@ -284,18 +274,12 @@ impl Route for {struct_name} {{
 #[cfg(test)]
 mod tests {{
     use super::*;
-    use roko_core::{{Body, ContentHash, Signal, Kind, Provenance}};
+    use roko_core::{{Body, Kind}};
 
     fn test_signal() -> Signal {{
-        Signal {{
-            hash: ContentHash::from_bytes(b"test"),
-            kind: Kind::Signal,
-            body: Body::Text("test signal".into()),
-            score: 1.0,
-            provenance: Provenance::default(),
-            parents: vec![],
-            created_ms: 0,
-        }}
+        Signal::builder(Kind::Task)
+            .body(Body::text("test signal"))
+            .build()
     }}
 
     #[test]
@@ -360,18 +344,12 @@ impl React for {struct_name} {{
 #[cfg(test)]
 mod tests {{
     use super::*;
-    use roko_core::{{Body, ContentHash, Signal, Kind, Provenance}};
+    use roko_core::{{Body, Kind}};
 
     fn test_signal() -> Signal {{
-        Signal {{
-            hash: ContentHash::from_bytes(b"test"),
-            kind: Kind::Signal,
-            body: Body::Text("test signal".into()),
-            score: 1.0,
-            provenance: Provenance::default(),
-            parents: vec![],
-            created_ms: 0,
-        }}
+        Signal::builder(Kind::Task)
+            .body(Body::text("test signal"))
+            .build()
     }}
 
     #[test]
@@ -401,7 +379,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use roko_core::{{Body, ContentHash, Context, Kind, Query, Result, Signal}};
+use roko_core::{{ContentHash, Context, Query, Result, Signal}};
 use roko_core::traits::Store;
 
 /// {struct_name} stores signals in memory.
@@ -427,9 +405,9 @@ impl Default for {struct_name} {{
 #[async_trait]
 impl Store for {struct_name} {{
     async fn put(&self, signal: Signal) -> Result<ContentHash> {{
-        let hash = signal.hash.clone();
-        self.store.lock().unwrap().insert(hash.clone(), signal);
-        Ok(hash)
+        let id = signal.id.clone();
+        self.store.lock().unwrap().insert(id.clone(), signal);
+        Ok(id)
     }}
 
     async fn get(&self, id: &ContentHash) -> Result<Option<Signal>> {{
@@ -444,7 +422,7 @@ impl Store for {struct_name} {{
     async fn prune(&self, threshold: f32, _ctx: &Context) -> Result<usize> {{
         let mut store = self.store.lock().unwrap();
         let before = store.len();
-        store.retain(|_, e| e.score >= threshold);
+        store.retain(|_, e| e.score.confidence >= threshold);
         Ok(before - store.len())
     }}
 
@@ -460,26 +438,21 @@ impl Store for {struct_name} {{
 #[cfg(test)]
 mod tests {{
     use super::*;
-    use roko_core::Provenance;
+    use roko_core::{{Body, Kind}};
 
     fn test_signal() -> Signal {{
-        Signal {{
-            hash: ContentHash::from_bytes(b"test"),
-            kind: Kind::Signal,
-            body: Body::Text("test signal".into()),
-            score: 1.0,
-            provenance: Provenance::default(),
-            parents: vec![],
-            created_ms: 0,
-        }}
+        Signal::builder(Kind::Task)
+            .body(Body::text("test signal"))
+            .build()
     }}
 
     #[tokio::test]
     async fn put_and_get() {{
         let substrate = {struct_name}::new();
         let signal = test_signal();
-        let hash = substrate.put(signal.clone()).await.unwrap();
-        let retrieved = substrate.get(&hash).await.unwrap();
+        let id = signal.id.clone();
+        substrate.put(signal.clone()).await.unwrap();
+        let retrieved = substrate.get(&id).await.unwrap();
         assert!(retrieved.is_some());
     }}
 
@@ -504,7 +477,7 @@ fn scaffold_composer(name: &str, output_dir: &Path) -> Result<Vec<PathBuf>> {
     let content = format!(
         r#"//! {struct_name} — custom composer implementation.
 
-use roko_core::{{Body, Budget, Cell, Context, ContentHash, Kind, Provenance, Result, Signal}};
+use roko_core::{{Body, Budget, Cell, Context, Kind, Result, Signal}};
 use roko_core::traits::{{Compose, Score as ScoreTrait}};
 
 /// {struct_name} assembles context from signal history.
@@ -534,15 +507,9 @@ impl Compose for {struct_name} {{
             .filter_map(|e| e.body.as_text().ok().map(|s| s.to_string()))
             .collect();
         let combined = parts.join("\n\n");
-        Ok(Signal {{
-            hash: ContentHash::from_bytes(combined.as_bytes()),
-            kind: Kind::Signal,
-            body: Body::Text(combined),
-            score: 1.0,
-            provenance: Provenance::default(),
-            parents: signals.iter().map(|s| s.hash.clone()).collect(),
-            created_ms: 0,
-        }})
+        Ok(Signal::builder(Kind::Task)
+            .body(Body::text(combined))
+            .build())
     }}
 
     fn name(&self) -> &str {{
@@ -553,39 +520,24 @@ impl Compose for {struct_name} {{
 #[cfg(test)]
 mod tests {{
     use super::*;
+    use roko_core::Score;
 
     fn test_signals() -> Vec<Signal> {{
         vec![
-            Signal {{
-                hash: ContentHash::from_bytes(b"a"),
-                kind: Kind::Signal,
-                body: Body::Text("first".into()),
-                score: 1.0,
-                provenance: Provenance::default(),
-                parents: vec![],
-                created_ms: 0,
-            }},
-            Signal {{
-                hash: ContentHash::from_bytes(b"b"),
-                kind: Kind::Signal,
-                body: Body::Text("second".into()),
-                score: 1.0,
-                provenance: Provenance::default(),
-                parents: vec![],
-                created_ms: 0,
-            }},
+            Signal::builder(Kind::Task).body(Body::text("first")).build(),
+            Signal::builder(Kind::Task).body(Body::text("second")).build(),
         ]
     }}
 
-    /// Minimal scorer for testing — returns a default ScoreValue.
+    /// Minimal scorer for testing — returns a default Score.
     struct TestScorer;
     impl Cell for TestScorer {{
         fn cell_id(&self) -> &str {{ "test" }}
         fn cell_name(&self) -> &str {{ "TestScorer" }}
     }}
     impl ScoreTrait for TestScorer {{
-        fn score(&self, _signal: &Signal, _ctx: &Context) -> roko_core::Score {{
-            roko_core::Score::default()
+        fn score(&self, _signal: &Signal, _ctx: &Context) -> Score {{
+            Score::default()
         }}
     }}
 
@@ -660,10 +612,10 @@ impl Cell for {pascal}Verify {{
 #[async_trait]
 impl Verify for {pascal}Verify {{
     async fn verify(&self, signal: &Signal, _ctx: &Context) -> Verdict {{
-        if signal.score > 0.0 {{
+        if signal.score.confidence > 0.0 {{
             Verdict::pass("{snake}_domain_gate")
         }} else {{
-            Verdict::fail("{snake}_domain_gate", "score must be positive")
+            Verdict::fail("{snake}_domain_gate", "confidence must be positive")
         }}
     }}
 
@@ -675,20 +627,15 @@ impl Verify for {pascal}Verify {{
 #[cfg(test)]
 mod tests {{
     use super::*;
-    use roko_core::{{Body, ContentHash, Signal, Kind, Provenance}};
+    use roko_core::{{Body, Kind, Score}};
 
     #[tokio::test]
-    async fn gate_passes_positive_score() {{
+    async fn gate_passes_positive_confidence() {{
         let gate = {pascal}Verify;
-        let signal = Signal {{
-            hash: ContentHash::from_bytes(b"test"),
-            kind: Kind::Signal,
-            body: Body::Text("test".into()),
-            score: 0.5,
-            provenance: Provenance::default(),
-            parents: vec![],
-            created_ms: 0,
-        }};
+        let signal = Signal::builder(Kind::Task)
+            .body(Body::text("test"))
+            .score(Score {{ confidence: 0.5, ..Score::NEUTRAL }})
+            .build();
         let verdict = gate.verify(&signal, &Context::default()).await;
         assert!(verdict.passed);
     }}
@@ -1007,6 +954,76 @@ mod tests {
                 "scaffold produced no files for type: {}",
                 ty
             );
+        }
+    }
+
+    /// Verify the gate scaffold does not contain any legacy Engram field names.
+    #[test]
+    fn scaffold_gate_has_no_stale_identifiers() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = scaffold_gate("my-custom", dir.path()).unwrap();
+        let content = std::fs::read_to_string(&files[0]).unwrap();
+        // Must not use old Engram struct field names
+        assert!(
+            !content.contains("ContentHash::from_bytes"),
+            "stale ContentHash::from_bytes"
+        );
+        assert!(!content.contains("Kind::Signal"), "stale Kind::Signal");
+        assert!(!content.contains("created_ms:"), "stale created_ms field");
+        assert!(!content.contains("parents:"), "stale parents field");
+        assert!(!content.contains("hash:"), "stale hash field");
+    }
+
+    /// Verify the scorer scaffold does not contain any legacy Engram field names.
+    #[test]
+    fn scaffold_scorer_has_no_stale_identifiers() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = scaffold_scorer("relevance", dir.path()).unwrap();
+        let content = std::fs::read_to_string(&files[0]).unwrap();
+        assert!(
+            !content.contains("ContentHash::from_bytes"),
+            "stale ContentHash::from_bytes"
+        );
+        assert!(!content.contains("Kind::Signal"), "stale Kind::Signal");
+        assert!(!content.contains("created_ms:"), "stale created_ms field");
+        assert!(!content.contains("parents:"), "stale parents field");
+    }
+
+    /// Verify no scaffold type produces stale Engram identifiers.
+    #[test]
+    fn no_scaffold_type_has_stale_identifiers() {
+        let dir = tempfile::tempdir().unwrap();
+        let name = "check_thing";
+        for ty in SCAFFOLD_TYPES {
+            let files = scaffold(ty, name, dir.path()).unwrap();
+            for file in &files {
+                let content = std::fs::read_to_string(file).unwrap();
+                assert!(
+                    !content.contains("ContentHash::from_bytes"),
+                    "type `{ty}` uses stale ContentHash::from_bytes in {}",
+                    file.display()
+                );
+                assert!(
+                    !content.contains("Kind::Signal"),
+                    "type `{ty}` uses stale Kind::Signal in {}",
+                    file.display()
+                );
+                assert!(
+                    !content.contains("created_ms:"),
+                    "type `{ty}` uses stale created_ms field in {}",
+                    file.display()
+                );
+                assert!(
+                    !content.contains("\n            parents:"),
+                    "type `{ty}` uses stale parents field in {}",
+                    file.display()
+                );
+                assert!(
+                    !content.contains("Engram"),
+                    "type `{ty}` uses stale Engram name in {}",
+                    file.display()
+                );
+            }
         }
     }
 }

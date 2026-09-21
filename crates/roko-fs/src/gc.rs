@@ -382,9 +382,7 @@ impl GcEngine {
             for (path, _, size) in backups.into_iter().take(to_remove) {
                 report.candidates.push(GcCandidate {
                     path,
-                    reason: format!(
-                        "P3-20: snapshot backup exceeds {KEEP_BACKUPS}-backup limit"
-                    ),
+                    reason: format!("P3-20: snapshot backup exceeds {KEEP_BACKUPS}-backup limit"),
                     size_bytes: size,
                 });
             }

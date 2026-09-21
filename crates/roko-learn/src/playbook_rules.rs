@@ -315,10 +315,7 @@ impl ExtractionConfig {
 
     /// Compute the current contradiction rate from a set of rules.
     pub fn contradiction_rate_from_rules(rules: &[Rule]) -> f64 {
-        let total: u32 = rules
-            .iter()
-            .map(|r| r.validations + r.contradictions)
-            .sum();
+        let total: u32 = rules.iter().map(|r| r.validations + r.contradictions).sum();
         if total == 0 {
             return 0.0;
         }

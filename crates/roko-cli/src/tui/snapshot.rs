@@ -211,7 +211,7 @@ mod tests {
     #[test]
     fn resolve_tabs_none_returns_all() {
         let tabs = resolve_tabs(&None).unwrap();
-        assert_eq!(tabs.len(), 10);
+        assert_eq!(tabs.len(), 11);
     }
 
     #[test]

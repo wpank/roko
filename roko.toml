@@ -16,7 +16,7 @@ temperament = "balanced"
 
 [budget]
 # Explicit nonzero spend ceilings. 0.0 means unlimited (no cap).
-max_plan_usd = 10.0
+max_plan_usd = 50.0
 max_turn_usd = 0.50
 prompt_token_budget = 10000
 
@@ -125,6 +125,50 @@ replan_on_gate_failure = true
 use_lookahead_router = false
 warning_max_entries = 5
 
+[models.cerebras-qwen]
+context_window = 64000
+cost_input_per_m = 0.10
+cost_output_per_m = 0.10
+max_output = 8192
+provider = "cerebras"
+slug = "qwen-3.8-27b"
+supports_thinking = false
+supports_tools = true
+tool_format = "openai_json"
+
+[models.cerebras-gemma]
+context_window = 128000
+cost_input_per_m = 0.10
+cost_output_per_m = 0.10
+max_output = 8192
+provider = "cerebras"
+slug = "gemma-4-31b"
+supports_thinking = false
+supports_tools = true
+tool_format = "openai_json"
+
+[models.cerebras-gptoss]
+context_window = 128000
+cost_input_per_m = 0.50
+cost_output_per_m = 1.50
+max_output = 8192
+provider = "cerebras"
+slug = "gpt-oss-120b"
+supports_thinking = false
+supports_tools = true
+tool_format = "openai_json"
+
+[models.groq-llama70b]
+context_window = 128000
+cost_input_per_m = 0.59
+cost_output_per_m = 0.79
+max_output = 8192
+provider = "groq"
+slug = "llama-3.3-70b-versatile"
+supports_thinking = false
+supports_tools = true
+tool_format = "openai_json"
+
 [models.claude-sonnet]
 context_window = 200000
 max_tools = 32
@@ -138,6 +182,30 @@ max_output = 100000
 provider = "codex_cli"
 slug = "gpt-5.6-sol"
 
+[models.gpt-4o]
+context_window = 128000
+cost_input_per_m = 2.50
+cost_output_per_m = 10.0
+max_output = 16384
+provider = "openai"
+slug = "gpt-4o"
+supports_thinking = false
+supports_tools = true
+supports_vision = true
+tool_format = "openai_json"
+
+[models.gpt-4o-mini]
+context_window = 128000
+cost_input_per_m = 0.15
+cost_output_per_m = 0.60
+max_output = 16384
+provider = "openai"
+slug = "gpt-4o-mini"
+supports_thinking = false
+supports_tools = true
+supports_vision = true
+tool_format = "openai_json"
+
 [models.glm51]
 context_window = 128000
 cost_cache_read_per_m = 0.26
@@ -146,8 +214,8 @@ cost_input_per_m = 1.40
 cost_output_per_m = 4.40
 max_output = 4096
 provider = "zai"
-slug = "glm-5.1"
-supports_thinking = true
+slug = "glm-5v-turbo"
+supports_thinking = false
 supports_tools = true
 
 [models.kimi-k2-5]
@@ -157,7 +225,7 @@ cost_input_per_m = 0.60
 cost_output_per_m = 3.00
 max_output = 65535
 provider = "moonshot"
-slug = "kimi-k2.5"
+slug = "kimi-k2.6"
 supports_thinking = true
 supports_tools = true
 tool_format = "openai_json"
@@ -229,9 +297,24 @@ kind = "claude_cli"
 command = "codex"
 kind = "codex_cli"
 
+[providers.cerebras]
+api_key_env = "CEREBRAS_API_KEY"
+base_url = "https://api.cerebras.ai/v1"
+kind = "openai_compat"
+
+[providers.groq]
+api_key_env = "GROQ_API_KEY"
+base_url = "https://api.groq.com/openai/v1"
+kind = "openai_compat"
+
 [providers.moonshot]
 api_key_env = "MOONSHOT_API_KEY"
 base_url = "https://api.moonshot.ai/v1"
+kind = "openai_compat"
+
+[providers.openai]
+api_key_env = "OPENAI_API_KEY"
+base_url = "https://api.openai.com/v1"
 kind = "openai_compat"
 
 [providers.perplexity]
@@ -264,12 +347,12 @@ worktree_max_age_secs = 86400
 
 [routing]
 algorithm = "linucb"
-complex_task_model = "claude-opus-4-6"
+complex_task_model = "claude-sonnet"
 context_strategy = "mcp_first"
 discount_factor = 0.99
-fast_task_model = "claude-haiku-4-5"
+fast_task_model = "gpt-4o-mini"
 mode = "auto_override"
-standard_task_model = "claude-sonnet-4-6"
+standard_task_model = "gpt-4o"
 
 [routing.weights]
 cost = 0.3
@@ -277,7 +360,7 @@ latency = 0.2
 quality = 0.5
 
 [runner]
-dangerously_skip_permissions = false
+dangerously_skip_permissions = true
 dispatch_max_retries = 5
 plan_timeout_secs = 3600
 sandbox_level = "restrict"

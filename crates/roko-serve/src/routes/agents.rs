@@ -83,6 +83,7 @@ async fn observe_agent_lifecycle(
     Path(id): Path<String>,
     Json(observation): Json<AgentRuntimeObservation>,
 ) -> Result<Json<AgentObservationCommit>, ApiError> {
+    validate_agent_path_segment(&id)?;
     let registered = state
         .discovered_agents
         .read()
@@ -764,6 +765,38 @@ struct AgentManifestCore {
     domain: BTreeMap<String, toml::value::Table>,
 }
 
+/// Validate `id` as a safe agent identifier in a URL path segment.
+///
+/// This is a lightweight check used by handlers that look up agents by ID in
+/// memory (discovered agent map, episode log filtering, etc.) where a
+/// filesystem join does not occur. It blocks the most obvious path-traversal
+/// payloads before they propagate further into the handler.
+///
+/// Handlers that subsequently join the ID onto a filesystem path MUST also call
+/// [`resolve_agent_dir`], which performs the full canonicalisation check.
+fn validate_agent_path_segment(id: &str) -> Result<(), ApiError> {
+    let trimmed = id.trim();
+    if trimmed.is_empty() {
+        return Err(ApiError::bad_request("agent id must not be empty"));
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        return Err(ApiError::bad_request(
+            "agent id must not contain path separators",
+        ));
+    }
+    if trimmed == "." || trimmed == ".." {
+        return Err(ApiError::bad_request("agent id must not be '.' or '..'"));
+    }
+    let candidate = StdPath::new(trimmed);
+    let mut components = candidate.components();
+    match components.next() {
+        Some(Component::Normal(_)) if components.next().is_none() => Ok(()),
+        _ => Err(ApiError::bad_request(
+            "agent id must be a single non-empty path segment",
+        )),
+    }
+}
+
 /// Validate `name` as a single safe filesystem segment under `agents_root`
 /// and return the resolved (still possibly non-existent) directory.
 ///
@@ -881,6 +914,8 @@ async fn start_agent(
     Path(agent_id): Path<String>,
     Json(opts): Json<StartAgentRequest>,
 ) -> Result<Json<StartAgentResponse>, ApiError> {
+    // Validate first — agent_id is used in a filesystem path join below.
+    validate_agent_path_segment(&agent_id)?;
     // 1. Verify agent manifest exists.
     let manifest_path = state
         .workdir
@@ -1021,6 +1056,7 @@ async fn get_agent(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
+    validate_agent_path_segment(&id)?;
     let config = state.load_roko_config();
     let heartbeats = state.heartbeats.read().await.clone();
 
@@ -1182,6 +1218,7 @@ async fn agent_episodes(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
+    validate_agent_path_segment(&id)?;
     let path = state.layout.episodes_path();
     let content = match tokio::fs::read_to_string(&path).await {
         Ok(c) => c,
@@ -1222,6 +1259,7 @@ async fn proxy_agent_logs(
     Path(id): Path<String>,
     Query(query): Query<LogsQuery>,
 ) -> Result<Response, ApiError> {
+    validate_agent_path_segment(&id)?;
     let agent = state
         .discovered_agent(&id)
         .await
@@ -1289,6 +1327,7 @@ async fn send_message(
     Path(agent_id): Path<String>,
     ValidJson(req): ValidJson<SendMessageRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    validate_agent_path_segment(&agent_id)?;
     if let Some(agent) = state.discovered_agent(&agent_id).await {
         if let Some(ws_url) = stream_url_for_agent(&agent) {
             let (run_id, rx) =
@@ -1729,6 +1768,7 @@ async fn issue_token(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
+    validate_agent_path_segment(&id)?;
     let issued = state
         .rotate_agent_token(&id)
         .await
@@ -1742,6 +1782,7 @@ async fn token_status(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
+    validate_agent_path_segment(&id)?;
     let status = state
         .agent_token_status(&id)
         .await
@@ -2199,6 +2240,64 @@ mode = "self_hosted"
         );
 
         let err = get_agent_config(State(state), Path("../escape".to_string()))
+            .await
+            .expect_err("path traversal id should be rejected");
+
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn validate_agent_path_segment_rejects_traversal() {
+        assert!(validate_agent_path_segment("../etc").is_err());
+        assert!(validate_agent_path_segment("..").is_err());
+        assert!(validate_agent_path_segment(".").is_err());
+        assert!(validate_agent_path_segment("foo/bar").is_err());
+        assert!(validate_agent_path_segment("foo\\bar").is_err());
+        assert!(validate_agent_path_segment("").is_err());
+    }
+
+    #[test]
+    fn validate_agent_path_segment_accepts_valid_ids() {
+        assert!(validate_agent_path_segment("my-agent").is_ok());
+        assert!(validate_agent_path_segment("agent_42").is_ok());
+        assert!(validate_agent_path_segment("sam-local-qwen").is_ok());
+        assert!(validate_agent_path_segment("1234567890").is_ok());
+    }
+
+    #[tokio::test]
+    async fn get_agent_rejects_path_traversal_ids() {
+        let tempdir = tempdir().expect("tempdir");
+        let state = Arc::new(
+            AppState::new(
+                tempdir.path().to_path_buf(),
+                Arc::new(NoOpRuntime),
+                RokoConfig::default(),
+                Arc::new(ManualBackend::default()),
+            )
+            .expect("AppState::new"),
+        );
+
+        let err = get_agent(State(state), Path("../escape".to_string()))
+            .await
+            .expect_err("path traversal id should be rejected");
+
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn agent_episodes_rejects_path_traversal_ids() {
+        let tempdir = tempdir().expect("tempdir");
+        let state = Arc::new(
+            AppState::new(
+                tempdir.path().to_path_buf(),
+                Arc::new(NoOpRuntime),
+                RokoConfig::default(),
+                Arc::new(ManualBackend::default()),
+            )
+            .expect("AppState::new"),
+        );
+
+        let err = agent_episodes(State(state), Path("../escape".to_string()))
             .await
             .expect_err("path traversal id should be rejected");
 

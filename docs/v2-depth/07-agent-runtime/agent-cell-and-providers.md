@@ -380,9 +380,11 @@ This means Roko ships with baseline providers and models that work out of the bo
 
 ## 8. Mori-Diffs Reality
 
-The mori-diff at [01-AGENT-DISPATCH.md](../../mori-diffs/01-AGENT-DISPATCH.md) identifies the central gap: **the runner v2 hardcodes Claude CLI as the only agent backend**. The runner's `agent_stream.rs` spawns `claude` directly via `tokio::process::Command`. The runner's `RunConfig` embeds `claude_program: PathBuf`. The stream parser only understands Claude's `stream-json` protocol.
+> **Updated 2026-09-10:** The Runner-v2 event loop has been deleted. The mori-diff gap described below has been resolved.
 
-Meanwhile, `create_agent_for_model()` and the full provider adapter system exist but are only reachable from `orchestrate.rs`, not from the runner event loop. The planned `AgentDispatcher` module (`crates/roko-cli/src/dispatch/`) would bridge this gap, replacing the hardcoded spawn with provider-agnostic dispatch through the adapter layer.
+The mori-diff at [01-AGENT-DISPATCH.md](../../mori-diffs/01-AGENT-DISPATCH.md) identified the central gap: **the runner v2 hardcoded Claude CLI as the only agent backend**. The runner's `agent_stream.rs` spawned `claude` directly via `tokio::process::Command`.
+
+**As of 2026-09-10, this gap is closed.** The Graph engine drives execution through provider-neutral dispatch via `roko-agent`'s 12 provider kinds (AnthropicApi, ClaudeCli, CodexCli, OpenAiCompat, CursorAcp, CursorCli, PerplexityApi, GeminiApi, GeminiCli, CerebrasApi, Hermes, OpenClaw). The `agent_stream.rs` module remains as a legacy subprocess adapter but the Graph engine's `workflow_caller.rs` handles provider-agnostic dispatch. Live MCP passthrough, Anthropic/OpenAI/Gemini/Perplexity/Cerebras tool loops, and shared health/rate-aware selection are all wired.
 
 ---
 

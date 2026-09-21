@@ -1,4 +1,4 @@
-//! STATUS: NOT WIRED -- built but no non-test runtime caller.
+//! STATUS: WIRED — used as oracle gate rung in `gate_dispatch.rs`.
 //!
 //! Lightweight LLM judge for tasks without compilable output.
 //!

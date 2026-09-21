@@ -76,10 +76,10 @@ struct RawServerMessage {
 
 #[derive(Debug, Clone, Deserialize)]
 struct ServerError {
+    // Deserialized from JSON-RPC error responses; not individually read.
     #[allow(dead_code)]
     code: i64,
     message: String,
-    #[allow(dead_code)]
     data: Option<Value>,
 }
 
@@ -231,7 +231,7 @@ struct CursorConnection {
     child: Child,
     stdin: tokio::io::BufWriter<tokio::process::ChildStdin>,
     next_id: AtomicU64,
-    response_rx: mpsc::UnboundedReceiver<(u64, Value)>,
+    response_rx: mpsc::Receiver<(u64, Value)>,
     session_id: Option<String>,
     reader_handle: tokio::task::JoinHandle<()>,
     stderr_handle: Option<tokio::task::JoinHandle<()>>,
@@ -243,8 +243,8 @@ impl CursorConnection {
         command: &str,
         working_dir: &PathBuf,
         model: Option<&str>,
-        event_tx: mpsc::UnboundedSender<CursorEvent>,
-        turn_done_tx: mpsc::UnboundedSender<()>,
+        event_tx: mpsc::Sender<CursorEvent>,
+        turn_done_tx: mpsc::Sender<()>,
         resource_limits: Option<&ResourceLimits>,
         env: &[(String, String)],
     ) -> Result<Self, String> {
@@ -289,7 +289,7 @@ impl CursorConnection {
             .take()
             .ok_or_else(|| "No stdout on cursor child".to_string())?;
 
-        let (resp_tx, resp_rx) = mpsc::unbounded_channel::<(u64, Value)>();
+        let (resp_tx, resp_rx) = mpsc::channel::<(u64, Value)>(64);
 
         // Stderr reader — log and discard.
         let stderr_handle = child.stderr.take().map(|stderr| {
@@ -329,19 +329,23 @@ impl CursorConnection {
                                         if pending_message.len() >= STREAM_MESSAGE_BATCH_BYTES
                                             || text.contains('\n')
                                         {
-                                            let _ = event_tx.send(CursorEvent::MessageDelta(
-                                                std::mem::take(&mut pending_message),
-                                            ));
+                                            let _ = event_tx
+                                                .send(CursorEvent::MessageDelta(std::mem::take(
+                                                    &mut pending_message,
+                                                )))
+                                                .await;
                                         }
                                     }
                                     _ => {
                                         // Flush pending text before other events.
                                         if !pending_message.is_empty() {
-                                            let _ = event_tx.send(CursorEvent::MessageDelta(
-                                                std::mem::take(&mut pending_message),
-                                            ));
+                                            let _ = event_tx
+                                                .send(CursorEvent::MessageDelta(std::mem::take(
+                                                    &mut pending_message,
+                                                )))
+                                                .await;
                                         }
-                                        let _ = event_tx.send(event);
+                                        let _ = event_tx.send(event).await;
                                     }
                                 }
                             }
@@ -357,11 +361,13 @@ impl CursorConnection {
                             {
                                 // Flush remaining text.
                                 if !pending_message.is_empty() {
-                                    let _ = event_tx.send(CursorEvent::MessageDelta(
-                                        std::mem::take(&mut pending_message),
-                                    ));
+                                    let _ = event_tx
+                                        .send(CursorEvent::MessageDelta(std::mem::take(
+                                            &mut pending_message,
+                                        )))
+                                        .await;
                                 }
-                                let _ = turn_done_tx.send(());
+                                let _ = turn_done_tx.send(()).await;
                             }
                             let val = if let Some(err) = msg.error {
                                 let error_msg = if let Some(data) = &err.data {
@@ -379,7 +385,7 @@ impl CursorConnection {
                             } else {
                                 msg.result.unwrap_or(Value::Null)
                             };
-                            let _ = resp_tx.send((id, val));
+                            let _ = resp_tx.send((id, val)).await;
                         }
                     }
                     Err(e) => {
@@ -393,7 +399,9 @@ impl CursorConnection {
 
             // Process exited — flush remaining.
             if !pending_message.is_empty() {
-                let _ = event_tx.send(CursorEvent::MessageDelta(pending_message));
+                let _ = event_tx
+                    .send(CursorEvent::MessageDelta(pending_message))
+                    .await;
             }
         });
 
@@ -651,8 +659,8 @@ impl CursorCliAgent {
     ) -> Result<
         (
             CursorConnection,
-            mpsc::UnboundedReceiver<CursorEvent>,
-            mpsc::UnboundedReceiver<()>,
+            mpsc::Receiver<CursorEvent>,
+            mpsc::Receiver<()>,
         ),
         String,
     > {
@@ -664,8 +672,9 @@ impl CursorCliAgent {
             self.working_dir.display()
         );
 
-        let (event_tx, event_rx) = mpsc::unbounded_channel();
-        let (turn_done_tx, turn_done_rx) = mpsc::unbounded_channel();
+        // Bounded channels prevent unbounded memory growth if the consumer stalls.
+        let (event_tx, event_rx) = mpsc::channel(256);
+        let (turn_done_tx, turn_done_rx) = mpsc::channel(64);
 
         let mut conn = CursorConnection::spawn(
             &self.command,

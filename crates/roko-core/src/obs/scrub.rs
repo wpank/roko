@@ -74,6 +74,9 @@ fn builtin_patterns() -> Vec<ScrubPattern> {
         (r"xoxb-[0-9]+-[A-Za-z0-9]+", "[REDACTED:SLACK_BOT_TOKEN]"),
         // Anthropic / OpenAI API keys: sk-ant-..., sk-proj-..., sk-... (20+ chars)
         (r"sk-[A-Za-z0-9_-]{20,}", REDACTED),
+        // Generic `key-...` API key prefix (Perplexity pplx-..., and similar services that
+        // use a `key-<token>` format with 20+ chars after the prefix).
+        (r"key-[A-Za-z0-9_-]{20,}", "[REDACTED:API_KEY]"),
         // GitHub tokens beyond the PAT shape above.
         (r"gh[pousr]_[A-Za-z0-9_]{16,}", REDACTED),
         // Bearer tokens in authorization headers (value after "Bearer ")
@@ -82,6 +85,12 @@ fn builtin_patterns() -> Vec<ScrubPattern> {
         (r"ANTHROPIC_API_KEY=[^\s]+", REDACTED),
         // Env-var leak: OPENAI_API_KEY=<value>
         (r"OPENAI_API_KEY=[^\s]+", REDACTED),
+        // Env-var leak: PERPLEXITY_API_KEY=<value>
+        (r"PERPLEXITY_API_KEY=[^\s]+", REDACTED),
+        // Env-var leak: CEREBRAS_API_KEY=<value>
+        (r"CEREBRAS_API_KEY=[^\s]+", REDACTED),
+        // Env-var leak: GEMINI_API_KEY=<value>
+        (r"GEMINI_API_KEY=[^\s]+", REDACTED),
     ];
     raw.iter()
         .map(|p| {
@@ -297,8 +306,8 @@ mod tests {
     fn default_has_builtin_patterns() {
         let scrubber = LogScrubber::default();
         assert!(
-            scrubber.pattern_count() >= 8,
-            "should have at least 8 built-in patterns"
+            scrubber.pattern_count() >= 11,
+            "should have at least 11 built-in patterns"
         );
     }
 
@@ -323,6 +332,42 @@ mod tests {
     fn empty_string_stays_empty() {
         let scrubber = LogScrubber::new();
         assert_eq!(scrubber.scrub(""), "");
+    }
+
+    #[test]
+    fn scrubs_key_prefix_api_key() {
+        let scrubber = LogScrubber::new();
+        let input = "using key-abcdefghijklmnopqrstuvwxyz to authenticate";
+        let output = scrubber.scrub(input);
+        assert!(!output.contains("key-abcdefghijklmnopqrstuvwxyz"));
+        assert!(output.contains("[REDACTED:API_KEY]"));
+    }
+
+    #[test]
+    fn scrubs_perplexity_env_var() {
+        let scrubber = LogScrubber::new();
+        let input = "PERPLEXITY_API_KEY=pplx-abcdefghijklmnopqrstuvwxyz";
+        let output = scrubber.scrub(input);
+        assert!(!output.contains("pplx-abcdefghijklmnopqrstuvwxyz"));
+        assert!(output.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn scrubs_cerebras_env_var() {
+        let scrubber = LogScrubber::new();
+        let input = "CEREBRAS_API_KEY=csk-abcdefghijklmnopqrstuvwxyz123456";
+        let output = scrubber.scrub(input);
+        assert!(!output.contains("csk-abcdefghijklmnopqrstuvwxyz"));
+        assert!(output.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn scrubs_gemini_env_var() {
+        let scrubber = LogScrubber::new();
+        let input = "GEMINI_API_KEY=AIzaSyAbcDefGhiJklMnoPqrStuvWxyz-12345";
+        let output = scrubber.scrub(input);
+        assert!(!output.contains("AIzaSyAbcDefGhiJklMnoPqrStuvWxyz-12345"));
+        assert!(output.contains("[REDACTED]"));
     }
 
     #[test]

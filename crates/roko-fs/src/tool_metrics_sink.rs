@@ -16,7 +16,6 @@
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
-use parking_lot::Mutex;
 use roko_core::tool::{MetricsKey, MetricsSink, ToolMetrics};
 use serde::{Deserialize, Serialize};
 
@@ -48,13 +47,17 @@ impl ToolMetricsRecord {
 
 /// JSONL-backed [`MetricsSink`] for persistent tool metrics.
 ///
-/// Writes are synchronized with an in-process mutex to keep concurrent
-/// `record(...)` calls from interleaving bytes.
+/// Each write acquires a per-file advisory lock (`tool_metrics.jsonl.lock`)
+/// via [`fs2::FileExt::lock_exclusive`] before opening, appending, optionally
+/// syncing, and closing the target file.  This prevents concurrent processes
+/// writing to the same workspace file from interleaving bytes.
+///
+/// In-process writes are serialized by the same advisory lock (no separate
+/// `Mutex` is needed).
 #[derive(Debug)]
 pub struct JsonlMetricsSink {
     path: PathBuf,
     fsync: bool,
-    write_lock: Mutex<()>,
 }
 
 impl JsonlMetricsSink {
@@ -64,7 +67,6 @@ impl JsonlMetricsSink {
         Self {
             path: path.into(),
             fsync: true,
-            write_lock: Mutex::new(()),
         }
     }
 
@@ -97,19 +99,30 @@ impl JsonlMetricsSink {
         &self.path
     }
 
-    /// Append one record to disk.
+    /// Append one record to disk under an exclusive per-file advisory lock.
+    ///
+    /// The sequence is:
+    ///   1. create parent directories if missing
+    ///   2. acquire `<path>.lock` (blocking, via `fs2::FileExt::lock_exclusive`)
+    ///   3. open (or create) the target file in append mode
+    ///   4. write the JSON line + newline
+    ///   5. optionally `sync_data` (controlled by [`Self::without_fsync`])
+    ///   6. drop file handle (close)
+    ///   7. drop lock handle (unlock)
     ///
     /// # Errors
     ///
-    /// Returns an error if parent directories cannot be created, the file
-    /// cannot be opened, the record cannot be serialized, or the write fails.
+    /// Returns an error if parent directories cannot be created, the lock or
+    /// file cannot be opened, the record cannot be serialized, or the write fails.
     pub fn append(&self, record: &ToolMetricsRecord) -> io::Result<()> {
-        let _guard = self.write_lock.lock();
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let line = serde_json::to_string(record)
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+        // Acquire exclusive advisory lock before opening the target file so
+        // that concurrent processes cannot interleave bytes.
+        let _lock = crate::log_rotation::lock_jsonl(&self.path)?;
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)

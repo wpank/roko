@@ -1,4 +1,7 @@
 //! Canonical ROSEDUST theme and palette helpers for the TUI.
+// Many palette constants and helper methods are pre-wired for upcoming TUI views (P2-TUI-7 etc.)
+// and not yet called from production render paths.
+#![allow(dead_code)]
 
 use ratatui::style::{Color, Modifier, Style};
 
@@ -61,6 +64,8 @@ impl Theme {
     pub(crate) const DREAM_DEEP: Color = Color::Rgb(40, 40, 72);
     /// Secondary text.
     pub(crate) const TEXT_SOFT: Color = Color::Rgb(200, 184, 196);
+    /// Mid-rose for heartbeat pulse animations (between ROSE_DIM and ROSE).
+    pub(crate) const ROSE_PULSE: Color = Color::Rgb(170, 112, 136);
 
     // -- Backgrounds (ROSEDUST v2 canonical) --
     pub(crate) const BG: Color = Self::VOID;

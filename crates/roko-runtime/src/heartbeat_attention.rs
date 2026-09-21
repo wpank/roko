@@ -1,10 +1,19 @@
-//! STATUS: NOT WIRED -- built but no non-test runtime caller.
-//!
 //! Heartbeat attention auction primitives.
 //!
 //! This module provides a self-contained VCG-style attention auction surface
 //! for heartbeat-driven context allocation. It deliberately avoids depending on
 //! higher-level domain crates so it can stay inside `roko-runtime`.
+//!
+//! # Status
+//!
+//! **Deferred to Cell runtime.** The VCG auction requires each subsystem
+//! (Neuro, Daimon, CodeIntelligence, ...) to submit `ContextCandidate`
+//! bids on every gamma tick, which presupposes a Cell-based composition
+//! pipeline where each Cell produces candidates independently. The current
+//! imperative runner assembles context through `AttentionBidder` variants
+//! in `roko-compose` instead. When the Graph engine gains per-tick Cell
+//! composition, this auction surface should replace the greedy compose
+//! strategy with VCG-optimal allocation.
 
 #![allow(
     clippy::cast_possible_truncation,

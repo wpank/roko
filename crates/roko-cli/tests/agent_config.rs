@@ -35,6 +35,7 @@ default_effort = "high"
     assert_eq!(
         role,
         &RoleOverride {
+            enabled: true,
             role: Some("code_implementer".to_string()),
             model: Some("claude-opus-4-6".to_string()),
             backend: Some("claude".to_string()),

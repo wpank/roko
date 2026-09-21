@@ -1,9 +1,18 @@
 //! Stub cell implementations for graph nodes that don't have real implementations yet.
 //!
-//! These are registered in `default_registry()` so that graphs referencing
-//! cell types like `signal-reader`, `relevance-scorer`, etc. can load and
-//! validate without error. Each stub passes input signals through unchanged
-//! and logs a trace message.
+//! `PassthroughCell` is a generic stub that passes input signals through unchanged
+//! and logs a trace message. It is used for enricher topology cells
+//! (`plan.enricher.*`), the `plan.success-boundary` anchor, and any other graph
+//! nodes that still need a placeholder.
+//!
+//! The following topology cells have real implementations and are **no longer stubs**:
+//! - `plan.task-context` → `TaskContextCell` (see `cells/task_context.rs`)
+//! - `plan.compose` → `PlanComposeCell` (see `cells/plan_compose.rs`)
+//! - `plan.gate` → `PlanGateCell` (see `cells/plan_gate.rs`)
+//!
+//! The legacy cognitive loop names (`signal-reader`, `relevance-scorer`, etc.)
+//! are no longer stubs -- they are registered in `default_registry()` as aliases
+//! for the real typed Cell implementations in `cells::cognitive`.
 
 use std::time::Duration;
 
@@ -57,20 +66,28 @@ impl Cell for PassthroughCell {
         Some(Duration::from_millis(1))
     }
 
-    async fn execute(&self, input: Vec<Signal>, _ctx: &CellContext) -> Result<Vec<Signal>> {
-        tracing::info!(
-            cell = %self.name,
+    async fn execute(&self, input: Vec<Signal>, ctx: &CellContext) -> Result<Vec<Signal>> {
+        tracing::warn!(
+            cell_type = %self.name,
+            node_id = %ctx.cell_id.as_deref().unwrap_or("<unknown>"),
+            run_id = %ctx.run_id.as_deref().unwrap_or("<unknown>"),
             input_count = input.len(),
-            "PassthroughCell '{}' -- {} input signals (stub)",
+            "stub cell executed: '{}' is a PassthroughCell placeholder and has no real \
+             implementation — outputs are identical to inputs. Replace this stub before \
+             production use.",
             self.name,
-            input.len()
         );
         Ok(input)
     }
 }
 
-/// Names of stub cells registered in the default registry for the cognitive loop.
-pub const COGNITIVE_LOOP_STUBS: &[&str] = &[
+/// Legacy cognitive loop alias names.
+///
+/// These names are registered in `default_registry()` as aliases for the real
+/// cognitive Cell implementations (`SenseCell`, `AssessCell`, etc.). They are
+/// no longer `PassthroughCell` stubs -- each delegates to the corresponding
+/// typed Cell from `cells::cognitive`.
+pub const COGNITIVE_LOOP_ALIASES: &[&str] = &[
     "signal-reader",
     "relevance-scorer",
     "system-prompt-builder",

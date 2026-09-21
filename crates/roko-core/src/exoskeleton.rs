@@ -1,5 +1,10 @@
 //! Payload contracts carried by Roko's MCP, A2A, and x402 exoskeleton.
 
+// MCP cell payload/response types and A2A AgentCardV2 are protocol contracts
+// used by the exoskeleton layer; production callers are in roko-serve which
+// does not yet re-import these from roko-core directly.
+#![allow(dead_code)]
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -8,43 +13,43 @@ use crate::{Result, RokoError};
 
 /// Cell input and execution context carried inside an MCP `tools/call` request.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct McpCellPayload {
-    pub input: Value,
-    pub context: Value,
+pub(crate) struct McpCellPayload {
+    pub(crate) input: Value,
+    pub(crate) context: Value,
 }
 
 /// Cell output, persistence candidates, and metrics returned through MCP.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct McpCellResponse {
-    pub output: Value,
+pub(crate) struct McpCellResponse {
+    pub(crate) output: Value,
     #[serde(default)]
-    pub persist: Vec<Value>,
-    pub metrics: Value,
+    pub(crate) persist: Vec<Value>,
+    pub(crate) metrics: Value,
 }
 
 /// A2A agent card extended with Roko capability-discovery metadata.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AgentCardV2 {
-    pub name: String,
-    pub description: String,
+pub(crate) struct AgentCardV2 {
+    pub(crate) name: String,
+    pub(crate) description: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub url: Option<String>,
+    pub(crate) url: Option<String>,
     #[serde(default)]
-    pub capabilities: Vec<String>,
+    pub(crate) capabilities: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hdc_fingerprint: Option<String>,
+    pub(crate) hdc_fingerprint: Option<String>,
     #[serde(default)]
-    pub protocols: Vec<String>,
-    pub version: String,
+    pub(crate) protocols: Vec<String>,
+    pub(crate) version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub vitality: Option<f64>,
+    pub(crate) vitality: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub profile: Option<String>,
+    pub(crate) profile: Option<String>,
 }
 
 impl AgentCardV2 {
     /// Reject malformed cards before publishing them to A2A discovery.
-    pub fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         if self.name.trim().is_empty() {
             return Err(RokoError::invalid("agent card name must not be empty"));
         }
@@ -68,22 +73,22 @@ impl AgentCardV2 {
 /// Addresses and amounts remain strings so the kernel does not depend on a
 /// specific chain SDK or fixed-width integer implementation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PaymentIntent {
-    pub payer: String,
-    pub payee: String,
-    pub max_amount: String,
-    pub denomination: String,
-    pub purpose: String,
+pub(crate) struct PaymentIntent {
+    pub(crate) payer: String,
+    pub(crate) payee: String,
+    pub(crate) max_amount: String,
+    pub(crate) denomination: String,
+    pub(crate) purpose: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expiry: Option<DateTime<Utc>>,
+    pub(crate) expiry: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub budget_ref: Option<String>,
+    pub(crate) budget_ref: Option<String>,
 }
 
 impl PaymentIntent {
     /// Validate the transport-level shape; budget accounting remains the
     /// responsibility of the payment runtime.
-    pub fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         if self.payer.trim().is_empty() || self.payee.trim().is_empty() {
             return Err(RokoError::invalid(
                 "payment payer and payee must not be empty",

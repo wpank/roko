@@ -62,9 +62,9 @@ pub fn render_status_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         ));
     }
 
-    // ── 1b. Active tab indicator ──────────────────────────────────────
+    // ── 1b. Active tab indicator with dynamic badge count ─────────────
     spans.push(Span::styled(
-        format!("\u{25c6} {}", state.active_tab.label()),
+        format!("\u{25c6} {}", state.tab_label_with_badge(state.active_tab)),
         Style::default()
             .fg(Theme::ROSE_BRIGHT)
             .bg(Theme::BG_SECONDARY)
@@ -481,6 +481,10 @@ fn context_key_hints(state: &TuiState, has_failures: bool) -> String {
         Tab::Marketplace | Tab::Atelier | Tab::Learning => {
             hints.push("j/k:scroll");
             hints.push("Enter:expand");
+        }
+        Tab::Providers => {
+            hints.push("j/k:select");
+            hints.push("Enter:detail");
         }
     }
 

@@ -1,7 +1,7 @@
 //! Property-based tests for roko-core kernel types.
 
 use proptest::prelude::*;
-use roko_core::{Body, Datum, Engram, Kind, Pulse, Score, Topic, TopicFilter};
+use roko_core::{Body, Datum, Kind, Pulse, Score, Signal, Topic, TopicFilter};
 
 // ─── Arbitrary strategies ───────────────────────────────────────────────────
 
@@ -45,9 +45,9 @@ fn arb_score() -> impl Strategy<Value = Score> {
         .prop_map(|(c, n, u, r)| Score::new(c, n, u, r))
 }
 
-fn arb_engram() -> impl Strategy<Value = Engram> {
+fn arb_signal() -> impl Strategy<Value = Signal> {
     (arb_kind(), arb_body(), arb_score()).prop_map(|(kind, body, score)| {
-        Engram::builder(kind)
+        Signal::builder(kind)
             .body(body)
             .score(score)
             .created_at_ms(1_000_000)
@@ -107,15 +107,15 @@ proptest! {
 
 proptest! {
     #[test]
-    fn datum_engram_kind_matches(engram in arb_engram()) {
-        let datum = Datum::Engram(&engram);
-        prop_assert_eq!(datum.kind(), &engram.kind);
+    fn datum_signal_kind_matches(signal in arb_signal()) {
+        let datum = Datum::Signal(&signal);
+        prop_assert_eq!(datum.kind(), &signal.kind);
     }
 
     #[test]
-    fn datum_engram_body_matches(engram in arb_engram()) {
-        let datum = Datum::Engram(&engram);
-        prop_assert_eq!(datum.body(), &engram.body);
+    fn datum_signal_body_matches(signal in arb_signal()) {
+        let datum = Datum::Signal(&signal);
+        prop_assert_eq!(datum.body(), &signal.body);
     }
 
     #[test]
@@ -175,12 +175,12 @@ proptest! {
 
 proptest! {
     #[test]
-    fn engram_content_hash_deterministic(kind in arb_kind(), body in arb_body()) {
-        let a = Engram::builder(kind.clone())
+    fn signal_content_hash_deterministic(kind in arb_kind(), body in arb_body()) {
+        let a = Signal::builder(kind.clone())
             .body(body.clone())
             .created_at_ms(1_000)
             .build();
-        let b = Engram::builder(kind)
+        let b = Signal::builder(kind)
             .body(body)
             .created_at_ms(1_000)
             .build();
@@ -188,9 +188,9 @@ proptest! {
     }
 
     #[test]
-    fn engram_serde_roundtrip(engram in arb_engram()) {
-        let json = serde_json::to_string(&engram).expect("serialize");
-        let parsed: Engram = serde_json::from_str(&json).expect("deserialize");
-        prop_assert_eq!(engram, parsed);
+    fn signal_serde_roundtrip(signal in arb_signal()) {
+        let json = serde_json::to_string(&signal).expect("serialize");
+        let parsed: Signal = serde_json::from_str(&json).expect("deserialize");
+        prop_assert_eq!(signal, parsed);
     }
 }

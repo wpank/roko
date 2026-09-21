@@ -7,7 +7,6 @@
 // These lints are suppressed crate-wide because they are pervasive and stylistic
 // across ~100 route modules and ~40K lines of HTTP handler code.
 #![allow(
-    dead_code,
     missing_docs,
     clippy::derivable_impls,
     clippy::large_enum_variant,
@@ -322,6 +321,12 @@ impl ServerBuilder {
         let roko_config = state.load_roko_config();
         validate_bind_safety(&addr, &roko_config.serve)?;
         state.configure_listener_security(&effective_bind, roko_config.serve.auth.enabled);
+        if !roko_config.serve.auth.enabled {
+            tracing::warn!(
+                "roko serve is running WITHOUT authentication. Set [serve.auth] enabled = true in roko.toml to require API keys."
+            );
+        }
+        warn_if_auth_misconfigured(&roko_config.serve.auth);
 
         // Conditionally initialize OTLP tracing export when the feature is
         // enabled and an endpoint is configured.
@@ -820,6 +825,30 @@ fn is_loopback_addr(addr: &str) -> bool {
 ///
 /// Loopback addresses are always allowed. Public addresses require either
 /// authentication or an explicit acknowledgement of the risk.
+/// Emit a startup warning when auth is enabled but no credential is configured.
+///
+/// When `serve.auth.enabled = true` (the default) but no API key is set and no
+/// Privy app ID is configured, every inbound request will be rejected with 401.
+/// This is the safe posture, but it is almost always a misconfiguration that
+/// the operator should know about immediately.
+pub(crate) fn warn_if_auth_misconfigured(auth: &roko_core::config::ServeAuthConfig) {
+    if !auth.enabled {
+        return;
+    }
+    let has_legacy_key = !auth.api_key.is_empty();
+    let has_named_keys = !auth.api_keys.is_empty();
+    let has_privy = auth.privy_app_id.is_some();
+    let has_jwks = !auth.jwks_providers.is_empty();
+    if !has_legacy_key && !has_named_keys && !has_privy && !has_jwks {
+        tracing::warn!(
+            "serve.auth.enabled = true but no API key or JWKS provider is configured. \
+             Every /api/* request will be rejected with 401. \
+             Add an API key via `roko config set-secret api_key <secret>` \
+             or set serve.auth.api_key in roko.toml."
+        );
+    }
+}
+
 pub fn validate_bind_safety(addr: &str, serve: &ServeConfig) -> Result<()> {
     if is_loopback_addr(addr) || serve.auth.enabled {
         return Ok(());
@@ -863,6 +892,7 @@ pub async fn run_server_with_state(state: Arc<AppState>, bind: &str, port: u16) 
             "roko serve is running WITHOUT authentication. Set [serve.auth] enabled = true in roko.toml to require API keys."
         );
     }
+    warn_if_auth_misconfigured(&roko_config.serve.auth);
     if let Err(err) = state.restore_snapshot().await {
         warn!(error = %err, "failed to restore server state snapshot; starting fresh");
     }
@@ -1126,7 +1156,7 @@ fn build_app_state(
 /// - **neuro-store**: the durable knowledge store (`Database` kind)
 ///
 /// Feeds registered:
-/// - **engrams**: `.roko/engrams.jsonl` — raw signal log (`Raw` kind)
+/// - **signals**: `.roko/signals.jsonl` — raw signal log (`Raw` kind)
 /// - **episodes**: `.roko/episodes.jsonl` — agent turn episodes (`Raw` kind)
 /// - **efficiency**: `.roko/learn/efficiency.jsonl` — per-turn metrics (`Derived` kind)
 /// - **knowledge**: neuro knowledge store entries (`Composite` kind)
@@ -1185,15 +1215,15 @@ fn seed_default_registries_inner(state: &AppState) {
     // ── Feeds ─────────────────────────────────────────────────────────
     let mut feeds = state.feeds.blocking_write();
 
-    let engrams_path = layout.engrams_path();
+    let signals_path = layout.signals_path_with_fallback();
     feeds.register(FeedInfo {
         id: String::new(), // assigned by registry
         cell_id: String::new(),
-        name: "engrams".to_string(),
+        name: "signals".to_string(),
         kind: FeedKind::Raw,
         access: FeedAccess::Public,
         agent_id: "system".to_string(),
-        description: "Raw signal log (.roko/engrams.jsonl)".to_string(),
+        description: "Raw signal log (.roko/signals.jsonl)".to_string(),
         schema: None,
         pricing: None,
         created_at: now,
@@ -1246,7 +1276,7 @@ fn seed_default_registries_inner(state: &AppState) {
     info!(
         connectors = connector_count,
         feeds = feed_count,
-        engrams_path = %engrams_path.display(),
+        signals_path = %signals_path.display(),
         episodes_path = %episodes_path.display(),
         efficiency_path = %efficiency_path.display(),
         "seeded default connector and feed registries"
@@ -2325,7 +2355,7 @@ fn emit_lens_observation(state: &AppState, event: roko_core::ObservableEvent) {
 }
 
 /// Periodic cold archival: migrates aged-out signals from the hot substrate
-/// (`.roko/engrams.jsonl` / `FileSubstrate`) to compressed monthly JSONL
+/// (`.roko/signals.jsonl` / `FileSubstrate`) to compressed monthly JSONL
 /// archives in `.roko/cold/`.
 ///
 /// Runs every six hours (default) or at the interval specified by
@@ -2493,12 +2523,13 @@ fn start_block_watcher(_state: Arc<AppState>) -> JoinHandle<()> {
     tokio::spawn(async {})
 }
 
+#[cfg(any(feature = "alloy-backend", test))]
 fn publish_chain_watcher_payload(state: &Arc<AppState>, topic: &str, payload: serde_json::Value) {
     use roko_chain::chain_state::{
         BlockInfo, ChainReorgInfo, ContractEventInfo, RawLogInfo, TxInfo,
     };
     match topic {
-        "chain:block" => {
+        "chain.block" => {
             if let Ok(block) = serde_json::from_value::<BlockInfo>(payload) {
                 state.event_bus.publish(ServerEvent::ChainBlock {
                     number: block.number,
@@ -2514,7 +2545,7 @@ fn publish_chain_watcher_payload(state: &Arc<AppState>, topic: &str, payload: se
                 tokio::spawn(async move { chain_state.push_block(block).await });
             }
         }
-        "chain:tx" => {
+        "chain.tx" => {
             if let Ok(tx) = serde_json::from_value::<TxInfo>(payload) {
                 state.event_bus.publish(ServerEvent::ChainTx {
                     block_number: tx.block_number,
@@ -2530,7 +2561,7 @@ fn publish_chain_watcher_payload(state: &Arc<AppState>, topic: &str, payload: se
                 tokio::spawn(async move { chain_state.push_tx(tx).await });
             }
         }
-        "chain:log" => {
+        "chain.log" => {
             if let Ok(log) = serde_json::from_value::<RawLogInfo>(payload) {
                 let chain_id = state.load_roko_config().chain.chain_id.unwrap_or_default();
                 state.event_bus.publish(ServerEvent::ChainLogObserved {
@@ -2547,7 +2578,7 @@ fn publish_chain_watcher_payload(state: &Arc<AppState>, topic: &str, payload: se
                 });
             }
         }
-        "chain:event" => {
+        "chain.event" => {
             if let Ok(evt) = serde_json::from_value::<ContractEventInfo>(payload) {
                 state.event_bus.publish(ServerEvent::ChainContractEvent {
                     block_number: evt.block_number,
@@ -2562,7 +2593,7 @@ fn publish_chain_watcher_payload(state: &Arc<AppState>, topic: &str, payload: se
                 tokio::spawn(async move { chain_state.push_event(evt).await });
             }
         }
-        "chain:reorg" => {
+        "chain.reorg" => {
             if let Ok(reorg) = serde_json::from_value::<ChainReorgInfo>(payload) {
                 let chain_id = state.load_roko_config().chain.chain_id.unwrap_or_default();
                 state.event_bus.publish(ServerEvent::ChainReorg {
@@ -2583,7 +2614,7 @@ fn start_feed_relay_bridge(state: Arc<AppState>) -> Option<tokio::task::JoinHand
         MAX_DESIRED_ROOMS, RelayClientConfig, RelayClientStatus, TopicHandler, connect,
     };
     use roko_agent_server::registration::{AgentCard, AgentCardEndpoints};
-    use roko_agent_server::state::AgentState;
+    use roko_agent_server::state::AgentSidecarState;
 
     let roko_config = state.load_roko_config();
     let raw_relay_url = roko_config.relay.url.clone()?;
@@ -2606,7 +2637,7 @@ fn start_feed_relay_bridge(state: Arc<AppState>) -> Option<tokio::task::JoinHand
         }
 
         let consumer_id = relay_consumer_id(&workspace_identity);
-        let agent_state = Arc::new(AgentState::new(
+        let agent_state = Arc::new(AgentSidecarState::new(
             consumer_id.clone(),
             None,
             env!("CARGO_PKG_VERSION").to_string(),
@@ -2931,22 +2962,6 @@ fn relay_publisher_id(workspace_identity: &str) -> String {
     format!("roko-serve-publisher-{workspace_identity}")
 }
 
-fn is_exact_relay_room(trigger: &str) -> bool {
-    use roko_core::wire_protocol::RelayEnvelope;
-
-    !trigger.contains(['*', '?'])
-        && RelayEnvelope {
-            seq: 0,
-            ts: 0,
-            room: trigger.to_string(),
-            msg_type: "subscription".to_string(),
-            payload: serde_json::Value::Null,
-            publisher_id: None,
-        }
-        .validate()
-        .is_ok()
-}
-
 fn relay_initial_retry_delay(attempt: u32) -> std::time::Duration {
     let multiplier = 1u32.checked_shl(attempt.min(7)).unwrap_or(u32::MAX);
     std::time::Duration::from_millis(250)
@@ -2961,10 +2976,10 @@ async fn run_feed_relay_publisher(
 ) {
     use roko_agent_server::features::relay_client::{RelayClientConfig, connect};
     use roko_agent_server::registration::{AgentCard, AgentCardEndpoints};
-    use roko_agent_server::state::AgentState;
+    use roko_agent_server::state::AgentSidecarState;
 
     let publisher_id = relay_publisher_id(&workspace_identity);
-    let agent_state = Arc::new(AgentState::new(
+    let agent_state = Arc::new(AgentSidecarState::new(
         publisher_id.clone(),
         None,
         env!("CARGO_PKG_VERSION").to_string(),
@@ -3078,9 +3093,10 @@ mod subscription_relay_bridge_tests {
 
     #[test]
     fn relay_room_subscription_rejects_globs_and_invalid_names() {
-        assert!(is_exact_relay_room("feed:prices"));
-        assert!(!is_exact_relay_room("feed:*"));
-        assert!(!is_exact_relay_room("feed:price?"));
+        use crate::subscription_relay::is_exact_relay_room;
+        assert!(is_exact_relay_room("feed.prices"));
+        assert!(!is_exact_relay_room("feed.*"));
+        assert!(!is_exact_relay_room("feed.price?"));
         assert!(!is_exact_relay_room("feed prices"));
         assert!(!is_exact_relay_room(""));
     }
@@ -3255,13 +3271,6 @@ fn create_deploy_backend(roko_config: &RokoConfig) -> Arc<dyn deploy::DeployBack
     }
 }
 
-/// Wait for ctrl-c then trigger graceful shutdown.
-async fn shutdown_signal(state: Arc<AppState>) {
-    let _ = tokio::signal::ctrl_c().await;
-    info!("received ctrl-c, shutting down");
-    state.shutdown().await;
-}
-
 // ── Optional OTLP tracing export ──────────────────────────────────────────
 
 /// Initialize OTLP tracing export when the `otlp` feature is enabled and
@@ -3299,7 +3308,7 @@ mod tests {
     use super::{
         ServerBuildConfig, ServerBuilder, build_app_state, resolve_bind_with_port_env,
         run_cold_archival_tick, run_server_with_state, serve_api_or_spa_fallback,
-        start_telemetry_producer_bridge,
+        start_telemetry_producer_bridge, warn_if_auth_misconfigured,
     };
 
     use axum::body::{Body, to_bytes};
@@ -4082,5 +4091,45 @@ mod tests {
             msg.contains("PORT env var must be a valid u16"),
             "unexpected error: {msg}"
         );
+    }
+
+    #[test]
+    fn warn_if_auth_misconfigured_passes_when_disabled() {
+        let auth = roko_core::config::ServeAuthConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        // Should not panic — warn_if_auth_misconfigured returns early when disabled.
+        warn_if_auth_misconfigured(&auth);
+    }
+
+    #[test]
+    fn warn_if_auth_misconfigured_passes_when_legacy_key_set() {
+        let auth = roko_core::config::ServeAuthConfig {
+            enabled: true,
+            api_key: "secret".to_string(),
+            ..Default::default()
+        };
+        // Legacy key present — no warning path exercised, function should complete without panic.
+        warn_if_auth_misconfigured(&auth);
+    }
+
+    #[test]
+    fn warn_if_auth_misconfigured_passes_when_named_keys_present() {
+        use roko_core::config::ApiKeyEntry;
+        let auth = roko_core::config::ServeAuthConfig {
+            enabled: true,
+            api_keys: vec![ApiKeyEntry {
+                name: "ci".to_string(),
+                key_hash: "abc".to_string(),
+                scope: "admin".to_string(),
+                created_at: "2024-01-01T00:00:00Z".to_string(),
+                expires_at: None,
+                last_used_at: None,
+                previous_key_hashes: Vec::new(),
+            }],
+            ..Default::default()
+        };
+        warn_if_auth_misconfigured(&auth);
     }
 }

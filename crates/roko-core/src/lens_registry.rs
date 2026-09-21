@@ -279,6 +279,8 @@ pub fn observes_for_block(block: &str) -> Vec<ObservableEventKind> {
         vec![Cell, Graph, Trigger]
     } else if block.contains("collective-intelligence-lens") || block.contains("c-factor-lens") {
         vec![Agent, Signal, Memory]
+    } else if block.contains("rag-performance-lens") {
+        vec![Memory]
     } else {
         vec![All]
     }

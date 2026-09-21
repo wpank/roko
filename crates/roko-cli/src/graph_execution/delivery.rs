@@ -23,6 +23,9 @@ use roko_graph::delivery::{
     CompletionDeliveryState, DELIVERY_EXTENSION_KEY, DeliveryError, DeliveryReceiptStore,
     delivery_extension_value,
 };
+
+#[cfg(test)]
+use roko_graph::delivery::ReleasePolicy;
 use tracing::{debug, info, warn};
 
 use crate::orchestrator::{MergeQueue, MergeRequest};

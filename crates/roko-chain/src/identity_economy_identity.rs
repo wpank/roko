@@ -5,6 +5,8 @@
     clippy::upper_case_acronyms
 )]
 
+//! STATUS: STUB — placeholder for Phase 2+ chain identity/economy integration.
+//!
 //! Phase 2+ identity and marketplace stubs for `docs/14-identity-economy`.
 //!
 //! These types mirror the deferred identity, reputation, marketplace, payment,

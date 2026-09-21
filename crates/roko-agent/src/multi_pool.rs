@@ -3,6 +3,16 @@
 //! Manages multiple [`AgentPool`](super::pool::AgentPool) instances for
 //! concurrent execution, with warm-pool pre-spawning so agents are ready
 //! to accept work without cold-start latency.
+//!
+//! # Relationship to other pools
+//!
+//! See the [pool-architecture table](super::pool) in `pool.rs` for the
+//! overview of all three pool types in the workspace. `MultiAgentPool`
+//! is the full-featured parallel pool with active/warm state tracking and
+//! bulk-kill support. It is currently exercised in unit tests and is the
+//! intended future substrate for production graph dispatch. The production
+//! CLI dispatcher uses the lighter-weight `WarmPool` in `roko-cli` while
+//! the graph engine is the primary execution path.
 
 use std::collections::HashMap;
 use std::sync::Arc;

@@ -3,6 +3,23 @@
 //! Manages a queue of tasks that execute one at a time. If the primary agent
 //! fails, the pool retries with a fallback agent (different model) before
 //! marking the task as failed.
+//!
+//! # Pool architecture overview
+//!
+//! Three distinct "pool" constructs exist in the workspace; each serves a
+//! different layer and purpose:
+//!
+//! | Pool | Crate | Layer | Purpose |
+//! |---|---|---|---|
+//! | [`AgentPool`] | `roko-agent` | Agent | Sequential FIFO queue for one role; primary + optional fallback agent; per-task retry semantics. Used in unit tests; production code uses `WarmPool` in `roko-cli`. |
+//! | `MultiAgentPool` | `roko-agent` | Agent | Parallel multi-role pool: concurrent active instances, pre-spawned warm entries, per-role concurrency caps, bulk kill. Also exercised in unit tests; production code uses `WarmPool`. |
+//! | `WarmPool` | `roko-cli` | Dispatcher | Lightweight per-role LRU container of pre-spawned agent handles. **The production-wired pool** used by the `Dispatcher` facade to reuse agent processes across role transitions and avoid cold-start latency. |
+//!
+//! `AgentPool` and `MultiAgentPool` express the full agent lifecycle contract
+//! (spawn, promote, kill, fallback) and are the intended building blocks for
+//! future production orchestration. `WarmPool` is a handle-only container that
+//! does not own spawning; it stores opaque ids so the dispatcher can correlate
+//! pooled handles without importing the agent type.
 
 use std::collections::VecDeque;
 use std::fmt;

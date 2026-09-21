@@ -10,9 +10,11 @@ use std::collections::{BTreeMap, HashMap};
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Cell, List, ListItem, ListState, Paragraph, Row, Table, Wrap};
+use ratatui::widgets::{
+    Block, Cell, Gauge, List, ListItem, ListState, Paragraph, Row, Table, Wrap,
+};
 
 use super::ViewState;
 use crate::tui::dashboard::{DashboardData, Theme};
@@ -77,6 +79,7 @@ pub(crate) fn render(
         6 => render_cfactor_detail(frame, area, tui_state, theme),
         7 => render_dream_view(frame, area, tui_state, theme),
         8 => render_knowledge_health(frame, area, tui_state, theme),
+        9 => render_daimon_view(frame, area, tui_state, theme),
         _ => {
             let ctx_data = build_context_data(tui_state);
             render_with_context_data(
@@ -1084,10 +1087,7 @@ fn render_signal_dag(
     view_state: &ViewState,
     theme: &Theme,
 ) {
-    let block = Block::bordered().title(Span::styled(
-        " Signal DAG  [↑↓ scroll] ",
-        theme.accent(),
-    ));
+    let block = Block::bordered().title(Span::styled(" Signal DAG  [↑↓ scroll] ", theme.accent()));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -1114,8 +1114,7 @@ fn render_signal_dag(
         .skip(scroll)
         .take(visible_height)
         .map(|(row_idx, dag_row)| {
-            let is_selected = dag_row.signal_index == selected_abs
-                || row_idx == selected_abs;
+            let is_selected = dag_row.signal_index == selected_abs || row_idx == selected_abs;
             let spans: Vec<Span<'_>> = if is_selected {
                 // Highlight the whole line on selection.
                 dag_row
@@ -1162,19 +1161,14 @@ fn render_episode_replay(
     // Use a horizontal split when the terminal is wide enough, otherwise stack.
     let use_horizontal = area.width >= 100;
     let (list_area, detail_area) = if use_horizontal {
-        let chunks = Layout::horizontal([
-            Constraint::Percentage(40),
-            Constraint::Percentage(60),
-        ])
-        .split(area);
+        let chunks = Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
+            .split(area);
         (chunks[0], chunks[1])
     } else {
-        let list_h = (area.height / 3).clamp(6, 14).min(area.height.saturating_sub(4).max(1));
-        let chunks = Layout::vertical([
-            Constraint::Length(list_h),
-            Constraint::Min(0),
-        ])
-        .split(area);
+        let list_h = (area.height / 3)
+            .clamp(6, 14)
+            .min(area.height.saturating_sub(4).max(1));
+        let chunks = Layout::vertical([Constraint::Length(list_h), Constraint::Min(0)]).split(area);
         (chunks[0], chunks[1])
     };
 
@@ -1203,10 +1197,9 @@ fn render_episode_replay(
     frame.render_widget(list_block, list_area);
 
     if tui_state.episodes_cache.is_empty() {
-        let empty =
-            Paragraph::new("No episodes yet \u{2014} agent turns populate the episode log")
-                .style(theme.muted())
-                .wrap(Wrap { trim: false });
+        let empty = Paragraph::new("No episodes yet \u{2014} agent turns populate the episode log")
+            .style(theme.muted())
+            .wrap(Wrap { trim: false });
         frame.render_widget(empty, list_inner);
         // Still render an empty detail panel.
         render_episode_detail_empty(frame, detail_area, detail_focused, theme);
@@ -1294,12 +1287,7 @@ fn render_episode_replay(
 }
 
 /// Render the detail panel when no episode is selected.
-fn render_episode_detail_empty(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    focused: bool,
-    theme: &Theme,
-) {
+fn render_episode_detail_empty(frame: &mut Frame<'_>, area: Rect, focused: bool, theme: &Theme) {
     let border_style = if focused {
         Theme::focused_border_style()
     } else {
@@ -1356,9 +1344,10 @@ fn render_episode_detail(
     let mut lines: Vec<Line<'_>> = Vec::new();
 
     // ── Identity ──────────────────────────────────────────────────────────────
-    lines.push(Line::from(vec![
-        Span::styled("  Metadata", theme.accent_bold()),
-    ]));
+    lines.push(Line::from(vec![Span::styled(
+        "  Metadata",
+        theme.accent_bold(),
+    )]));
     lines.push(Line::default());
 
     let label = theme.label();
@@ -1391,7 +1380,10 @@ fn render_episode_detail(
         kv!("Backend:", truncate(&ep.backend, 40));
     }
     kv!("Started:", ep.started_at.format("%Y-%m-%d %H:%M:%S UTC"));
-    kv!("Completed:", ep.completed_at.format("%Y-%m-%d %H:%M:%S UTC"));
+    kv!(
+        "Completed:",
+        ep.completed_at.format("%Y-%m-%d %H:%M:%S UTC")
+    );
 
     // ── Duration ──────────────────────────────────────────────────────────────
     let wall_ms = (ep.duration_secs.max(0.0) * 1000.0).round() as u64;
@@ -1406,9 +1398,10 @@ fn render_episode_detail(
 
     // ── Outcome ───────────────────────────────────────────────────────────────
     lines.push(Line::default());
-    lines.push(Line::from(vec![
-        Span::styled("  Outcome", theme.accent_bold()),
-    ]));
+    lines.push(Line::from(vec![Span::styled(
+        "  Outcome",
+        theme.accent_bold(),
+    )]));
     lines.push(Line::default());
 
     let (outcome_label, outcome_style) = if ep.success {
@@ -1447,9 +1440,10 @@ fn render_episode_detail(
     // ── Gate verdicts ─────────────────────────────────────────────────────────
     if !ep.gate_verdicts.is_empty() {
         lines.push(Line::default());
-        lines.push(Line::from(vec![
-            Span::styled("  Gates", theme.accent_bold()),
-        ]));
+        lines.push(Line::from(vec![Span::styled(
+            "  Gates",
+            theme.accent_bold(),
+        )]));
         lines.push(Line::default());
         for verdict in &ep.gate_verdicts {
             let (v_label, v_style) = if verdict.passed {
@@ -1472,30 +1466,19 @@ fn render_episode_detail(
 
     // ── Token / cost accounting ───────────────────────────────────────────────
     lines.push(Line::default());
-    lines.push(Line::from(vec![
-        Span::styled("  Tokens & Cost", theme.accent_bold()),
-    ]));
+    lines.push(Line::from(vec![Span::styled(
+        "  Tokens & Cost",
+        theme.accent_bold(),
+    )]));
     lines.push(Line::default());
 
-    kv!(
-        "Input tokens:",
-        format_count(ep.usage.input_tokens)
-    );
-    kv!(
-        "Output tokens:",
-        format_count(ep.usage.output_tokens)
-    );
+    kv!("Input tokens:", format_count(ep.usage.input_tokens));
+    kv!("Output tokens:", format_count(ep.usage.output_tokens));
     if ep.usage.cache_read_tokens > 0 {
-        kv!(
-            "Cache read:",
-            format_count(ep.usage.cache_read_tokens)
-        );
+        kv!("Cache read:", format_count(ep.usage.cache_read_tokens));
     }
     if ep.usage.cache_write_tokens > 0 {
-        kv!(
-            "Cache write:",
-            format_count(ep.usage.cache_write_tokens)
-        );
+        kv!("Cache write:", format_count(ep.usage.cache_write_tokens));
     }
     kv!(
         "Total tokens:",
@@ -1504,7 +1487,8 @@ fn render_episode_detail(
     if ep.usage.cost_usd > 0.0 {
         kv!("Cost:", format!("${:.6}", ep.usage.cost_usd));
     }
-    if ep.usage.cost_usd_without_cache > 0.0 && ep.usage.cost_usd_without_cache != ep.usage.cost_usd {
+    if ep.usage.cost_usd_without_cache > 0.0 && ep.usage.cost_usd_without_cache != ep.usage.cost_usd
+    {
         kv!(
             "Cost (no cache):",
             format!("${:.6}", ep.usage.cost_usd_without_cache)
@@ -1515,9 +1499,10 @@ fn render_episode_detail(
     if let Some(ref fp) = ep.hdc_fingerprint {
         if !fp.is_empty() {
             lines.push(Line::default());
-            lines.push(Line::from(vec![
-                Span::styled("  HDC Fingerprint", theme.accent_bold()),
-            ]));
+            lines.push(Line::from(vec![Span::styled(
+                "  HDC Fingerprint",
+                theme.accent_bold(),
+            )]));
             lines.push(Line::default());
             // Show the fingerprint in 32-char chunks for readability.
             let fp_display = truncate(fp, 64);
@@ -1531,9 +1516,10 @@ fn render_episode_detail(
     // ── Emotional tag ─────────────────────────────────────────────────────────
     if let Some(ref tag) = ep.emotional_tag {
         lines.push(Line::default());
-        lines.push(Line::from(vec![
-            Span::styled("  Affect (PAD)", theme.accent_bold()),
-        ]));
+        lines.push(Line::from(vec![Span::styled(
+            "  Affect (PAD)",
+            theme.accent_bold(),
+        )]));
         lines.push(Line::default());
         kv!("Pleasure:", format!("{:.3}", tag.pad.pleasure));
         kv!("Arousal:", format!("{:.3}", tag.pad.arousal));
@@ -1671,6 +1657,7 @@ fn selected_in_window(selected: usize, scroll: usize, visible_height: usize) -> 
     }
 }
 
+#[allow(dead_code)] // signal lineage depth for tree rendering; pre-wired
 fn signal_depth(signal: &crate::tui::dashboard::SignalSummary) -> usize {
     if signal.lineage.is_empty() {
         usize::from(signal.parent_hash.is_some())
@@ -2229,7 +2216,10 @@ fn render_prompt_stats_panel(
 // ---------------------------------------------------------------------------
 
 /// Render the dream cycle state panel: journal entries, archive summary, and
-/// phase metadata read directly from `.roko/dreams/`.
+/// phase metadata from the pre-loaded [`TuiState::dream_view_cache`].
+///
+/// The cache is refreshed on a 5-second cadence by
+/// [`TuiState::refresh_dream_cache`]; this function no longer reads from disk.
 fn render_dream_view(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme: &Theme) {
     let block = Block::bordered()
         .title(Span::styled(" Dreams ", theme.section_header()))
@@ -2237,23 +2227,13 @@ fn render_dream_view(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, th
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let dream_dir = tui_state.workdir.join(".roko").join("dreams");
-    let journal_path = dream_dir.join("journal.jsonl");
-    let archive_path = dream_dir.join("archive.jsonl");
-
+    let cache = &tui_state.dream_view_cache;
     let mut lines: Vec<Line<'_>> = Vec::new();
 
     // ── Journal ────────────────────────────────────────────────────────────
     lines.push(Line::from(Span::styled("journal", theme.label())));
 
-    let journal_text = if journal_path.exists() {
-        std::fs::read_to_string(&journal_path).unwrap_or_default()
-    } else {
-        String::new()
-    };
-
-    let journal_entries: Vec<&str> = journal_text.lines().collect();
-    if journal_entries.is_empty() {
+    if cache.journal_entry_count == 0 {
         lines.push(Line::from(Span::styled(
             "  (no journal entries yet)",
             theme.muted(),
@@ -2261,31 +2241,22 @@ fn render_dream_view(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, th
     } else {
         lines.push(Line::from(vec![
             Span::styled("  entries: ", theme.muted()),
-            Span::styled(journal_entries.len().to_string(), theme.value()),
+            Span::styled(cache.journal_entry_count.to_string(), theme.value()),
         ]));
         lines.push(Line::from(Span::styled("  recent:", theme.muted())));
-        for raw in journal_entries.iter().rev().take(5) {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(raw) {
-                let cycle_id = val
-                    .get("cycle_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("?");
-                let phase = val.get("phase").and_then(|v| v.as_str()).unwrap_or("?");
-                let summary = val
-                    .get("summary")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+        for entry in &cache.journal_recent {
+            if entry.raw.is_empty() {
                 lines.push(Line::from(vec![
                     Span::styled("    [", theme.muted()),
-                    Span::styled(cycle_id.to_string(), theme.info()),
+                    Span::styled(entry.cycle_id.clone(), theme.info()),
                     Span::styled("] ", theme.muted()),
-                    Span::styled(phase.to_string(), theme.label()),
+                    Span::styled(entry.phase.clone(), theme.label()),
                     Span::styled(": ", theme.muted()),
-                    Span::styled(summary.to_string(), theme.value()),
+                    Span::styled(entry.summary.clone(), theme.value()),
                 ]));
             } else {
                 lines.push(Line::from(Span::styled(
-                    format!("    {raw}"),
+                    format!("    {}", entry.raw),
                     theme.muted(),
                 )));
             }
@@ -2297,14 +2268,7 @@ fn render_dream_view(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, th
     // ── Archive ────────────────────────────────────────────────────────────
     lines.push(Line::from(Span::styled("archive", theme.label())));
 
-    let archive_text = if archive_path.exists() {
-        std::fs::read_to_string(&archive_path).unwrap_or_default()
-    } else {
-        String::new()
-    };
-
-    let archive_entries: Vec<&str> = archive_text.lines().collect();
-    if archive_entries.is_empty() {
+    if cache.archive_entry_count == 0 {
         lines.push(Line::from(Span::styled(
             "  (no archive entries yet)",
             theme.muted(),
@@ -2312,31 +2276,22 @@ fn render_dream_view(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, th
     } else {
         lines.push(Line::from(vec![
             Span::styled("  entries: ", theme.muted()),
-            Span::styled(archive_entries.len().to_string(), theme.value()),
+            Span::styled(cache.archive_entry_count.to_string(), theme.value()),
         ]));
         lines.push(Line::from(Span::styled("  recent:", theme.muted())));
-        for raw in archive_entries.iter().rev().take(5) {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(raw) {
-                let kind = val.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
-                let quality = val
-                    .get("quality_score")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(0.0);
-                let summary = val
-                    .get("summary")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+        for entry in &cache.archive_recent {
+            if entry.raw.is_empty() {
                 lines.push(Line::from(vec![
                     Span::styled("    [", theme.muted()),
-                    Span::styled(kind.to_string(), theme.info()),
+                    Span::styled(entry.kind.clone(), theme.info()),
                     Span::styled("] q=", theme.muted()),
-                    Span::styled(format!("{quality:.2}"), theme.value()),
+                    Span::styled(format!("{:.2}", entry.quality_score), theme.value()),
                     Span::styled(": ", theme.muted()),
-                    Span::styled(summary.to_string(), theme.muted()),
+                    Span::styled(entry.summary.clone(), theme.muted()),
                 ]));
             } else {
                 lines.push(Line::from(Span::styled(
-                    format!("    {raw}"),
+                    format!("    {}", entry.raw),
                     theme.muted(),
                 )));
             }
@@ -2348,7 +2303,7 @@ fn render_dream_view(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, th
     // ── Paths ──────────────────────────────────────────────────────────────
     lines.push(Line::from(vec![
         Span::styled("dir: ", theme.muted()),
-        Span::styled(dream_dir.display().to_string(), theme.metadata()),
+        Span::styled(cache.dream_dir_display.clone(), theme.metadata()),
     ]));
 
     frame.render_widget(
@@ -2766,9 +2721,12 @@ mod tests {
     #[test]
     fn build_dag_rows_dangling_parent_becomes_root() {
         // Signal references a parent that isn't in the slice — treated as root.
-        let signals = vec![
-            make_signal("orphan", Some("missing-parent"), "gate:compile", 5),
-        ];
+        let signals = vec![make_signal(
+            "orphan",
+            Some("missing-parent"),
+            "gate:compile",
+            5,
+        )];
         let theme = crate::tui::theme::Theme::no_color();
         let rows = build_dag_rows(&signals, theme);
         assert_eq!(rows.len(), 1);
@@ -2789,15 +2747,10 @@ mod tests {
 
 /// Render the knowledge health sub-view (sub_tab 8).
 ///
-/// Reads `.roko/knowledge.jsonl` and computes tier distribution, average
-/// balance, anti-knowledge count, and heuristic calibration stats.
-#[allow(clippy::cast_precision_loss)]
-fn render_knowledge_health(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    tui_state: &TuiState,
-    theme: &Theme,
-) {
+/// Uses the pre-loaded [`TuiState::knowledge_health_cache`] (refreshed on a
+/// 5-second cadence by [`TuiState::refresh_knowledge_health_cache`]) instead
+/// of reading `.roko/knowledge.jsonl` directly on every render frame.
+fn render_knowledge_health(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme: &Theme) {
     let block = Block::bordered()
         .title(Span::styled(" Knowledge Health ", theme.accent()))
         .border_style(theme.accent());
@@ -2808,53 +2761,16 @@ fn render_knowledge_health(
         return;
     }
 
-    let knowledge_path = tui_state.workdir.join(".roko").join("knowledge.jsonl");
-    let text = std::fs::read_to_string(&knowledge_path).unwrap_or_default();
-
-    let mut transient = 0_u64;
-    let mut working = 0_u64;
-    let mut consolidated = 0_u64;
-    let mut persistent = 0_u64;
-    let mut anti_knowledge = 0_u64;
-    let mut frozen = 0_u64;
-    let mut total_balance = 0.0_f64;
-    let mut balance_count = 0_u64;
-    let mut calibrated = 0_u64;
-    let mut total = 0_u64;
-
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let Ok(entry) = serde_json::from_str::<serde_json::Value>(trimmed) else {
-            continue;
-        };
-        total += 1;
-        let tier = entry.get("tier").and_then(|v| v.as_str()).unwrap_or("transient");
-        match tier {
-            "transient" => transient += 1,
-            "working" => working += 1,
-            "consolidated" => consolidated += 1,
-            "persistent" => persistent += 1,
-            _ => transient += 1,
-        }
-        if entry.get("anti_knowledge").and_then(|v| v.as_bool()).unwrap_or(false) {
-            anti_knowledge += 1;
-        }
-        if entry.get("frozen").and_then(|v| v.as_bool()).unwrap_or(false) {
-            frozen += 1;
-        }
-        if let Some(balance) = entry.get("balance").and_then(|v| v.as_f64()) {
-            total_balance += balance;
-            balance_count += 1;
-        }
-        if entry.get("heuristic_calibration").and_then(|v| v.as_f64()).is_some() {
-            calibrated += 1;
-        }
-    }
-
-    let avg_balance = if balance_count > 0 { total_balance / balance_count as f64 } else { 0.0 };
+    let c = &tui_state.knowledge_health_cache;
+    let total = c.total;
+    let transient = c.transient;
+    let working = c.working;
+    let consolidated = c.consolidated;
+    let persistent = c.persistent;
+    let anti_knowledge = c.anti_knowledge;
+    let frozen = c.frozen;
+    let avg_balance = c.avg_balance;
+    let calibrated = c.calibrated;
 
     let items = vec![
         ListItem::new(Line::from(vec![
@@ -2885,7 +2801,10 @@ fn render_knowledge_health(
         ])),
         ListItem::new(Line::from(vec![
             Span::styled("Avg balance: ", theme.label()),
-            Span::styled(format!("{avg_balance:.3}"), Style::default().fg(theme.foreground)),
+            Span::styled(
+                format!("{avg_balance:.3}"),
+                Style::default().fg(theme.foreground),
+            ),
         ])),
         ListItem::new(Line::from(vec![
             Span::styled("Calibrated entries: ", theme.label()),
@@ -2898,4 +2817,232 @@ fn render_knowledge_health(
 
     let list = List::new(items);
     frame.render_widget(list, inner);
+}
+
+// ─── P2-TUI-7: Daimon affect view ────────────────────────────────────────────
+
+/// Choose a gauge color for a PAD value in [-1, 1].
+///
+/// Positive values trend toward sage (green), negative toward ember (red),
+/// near-zero values use the neutral dream color.
+fn daimon_pad_color(v: f64) -> Color {
+    if v >= 0.3 {
+        Theme::SAGE
+    } else if v <= -0.3 {
+        Theme::EMBER
+    } else {
+        Theme::DREAM
+    }
+}
+
+/// Choose a color for the behavioral state label.
+fn daimon_state_color(label: &str) -> Color {
+    let l = label.to_ascii_lowercase();
+    if l.contains("flow") || l.contains("engaged") || l.contains("calm") || l.contains("focused") {
+        Theme::SAGE
+    } else if l.contains("stress") || l.contains("struggling") || l.contains("exhaust") {
+        Theme::EMBER
+    } else if l.contains("curious") || l.contains("explore") || l.contains("alert") {
+        Theme::DREAM
+    } else if l.contains("idle") || l.contains("rest") || l.contains("sleep") {
+        Theme::TEXT_DIM
+    } else {
+        Theme::ROSE
+    }
+}
+
+/// Render a single PAD dimension as a horizontal gauge.
+///
+/// The gauge maps [-1.0, 1.0] -> [0.0, 1.0] with 0.5 at the midpoint.
+/// The label shows the dimension name and its raw numeric value.
+fn render_pad_gauge(frame: &mut Frame<'_>, area: Rect, name: &str, value: f64, theme: &Theme) {
+    // Clamp and normalize to [0, 1] for ratatui Gauge.
+    // Maps [-1.0, 1.0] -> [0.0, 1.0] with neutral (0.0) at the midpoint (0.5).
+    let clamped = value.clamp(-1.0, 1.0);
+    // midpoint(clamped, 1.0) == (clamped + 1.0) / 2.0 without overflow risk.
+    let ratio = f64::midpoint(clamped, 1.0).clamp(0.0, 1.0);
+    let color = daimon_pad_color(clamped);
+    let label = format!("{name}: {clamped:+.3}");
+
+    let gauge = Gauge::default()
+        .gauge_style(Style::default().fg(color).bg(Theme::BG_RAISED))
+        .label(label)
+        .ratio(ratio)
+        .block(Block::default().style(Style::default().fg(theme.muted)));
+
+    frame.render_widget(gauge, area);
+}
+
+/// Render the Daimon affect view (sub_tab 9).
+///
+/// Layout:
+///   - Top block: behavioral state label, confidence, cognitive energy, EFE tier
+///   - PAD gauges: Pleasure, Arousal, Dominance (each 1 row tall)
+///   - Somatic markers: recent (label, valence) pairs
+///   - Active biases list
+fn render_daimon_view(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme: &Theme) {
+    let block = Block::bordered()
+        .title(Span::styled(" Daimon Affect State ", theme.accent_bold()))
+        .border_style(theme.accent());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height < 4 || inner.width < 30 {
+        return;
+    }
+
+    let Some(snap) = tui_state.affect.as_ref() else {
+        let msg = Paragraph::new(Line::from(vec![Span::styled(
+            "  No affect data yet. Run a plan to populate Daimon state.",
+            theme.muted(),
+        )]))
+        .wrap(Wrap { trim: true });
+        frame.render_widget(msg, inner);
+        return;
+    };
+
+    // Determine heights for each section.
+    let has_markers = !snap.recent_markers.is_empty();
+    let has_biases = !snap.active_biases.is_empty();
+    let marker_rows = if has_markers {
+        (snap.recent_markers.len().min(5) + 2) as u16 // up to 5 + header + spacer
+    } else {
+        0
+    };
+    let bias_rows: u16 = if has_biases { 3 } else { 0 };
+
+    let sections = Layout::vertical([
+        Constraint::Length(5),           // state header block
+        Constraint::Length(1),           // spacer
+        Constraint::Length(1),           // Pleasure gauge
+        Constraint::Length(1),           // Arousal gauge
+        Constraint::Length(1),           // Dominance gauge
+        Constraint::Length(1),           // spacer
+        Constraint::Length(marker_rows), // somatic markers
+        Constraint::Length(bias_rows),   // active biases
+        Constraint::Min(0),              // remainder
+    ])
+    .split(inner);
+
+    // ── Section 1: state header ───────────────────────────────────────────────
+    {
+        let label = if snap.behavioral_state.is_empty() {
+            "unknown"
+        } else {
+            snap.behavioral_state.as_str()
+        };
+        let label_color = daimon_state_color(label);
+        let conf_pct = (snap.confidence * 100.0).round() as u64;
+        let conf_color = if snap.confidence >= 0.7 {
+            Theme::SAGE
+        } else if snap.confidence >= 0.4 {
+            Theme::WARNING
+        } else {
+            Theme::EMBER
+        };
+
+        let mut lines: Vec<Line<'_>> = vec![
+            Line::from(vec![
+                Span::styled("  State:      ", theme.label()),
+                Span::styled(
+                    label,
+                    Style::default()
+                        .fg(label_color)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("  Confidence: ", theme.label()),
+                Span::styled(format!("{conf_pct}%"), Style::default().fg(conf_color)),
+            ]),
+        ];
+
+        if snap.cognitive_energy > 0.0 || snap.efe_tier.is_some() {
+            let energy_pct = (snap.cognitive_energy * 100.0).round() as u64;
+            let energy_color = if snap.cognitive_energy >= 0.6 {
+                Theme::SAGE
+            } else if snap.cognitive_energy >= 0.3 {
+                Theme::WARNING
+            } else {
+                Theme::EMBER
+            };
+            lines.push(Line::from(vec![
+                Span::styled("  Energy:     ", theme.label()),
+                Span::styled(format!("{energy_pct}%"), Style::default().fg(energy_color)),
+            ]));
+            if let Some(tier) = snap.efe_tier {
+                lines.push(Line::from(vec![
+                    Span::styled("  EFE Tier:   ", theme.label()),
+                    Span::styled(tier.to_string(), Style::default().fg(Theme::DREAM)),
+                ]));
+            }
+        }
+
+        let header = Paragraph::new(lines);
+        frame.render_widget(header, sections[0]);
+    }
+
+    // ── Section 2: spacer (empty) ─────────────────────────────────────────────
+
+    // ── Section 3-5: PAD gauges ───────────────────────────────────────────────
+    render_pad_gauge(frame, sections[2], "Pleasure ", snap.pleasure, theme);
+    render_pad_gauge(frame, sections[3], "Arousal  ", snap.arousal, theme);
+    render_pad_gauge(frame, sections[4], "Dominance", snap.dominance, theme);
+
+    // ── Section 6: spacer ─────────────────────────────────────────────────────
+
+    // ── Section 7: somatic markers ────────────────────────────────────────────
+    if has_markers && marker_rows > 0 {
+        let mut marker_lines: Vec<Line<'_>> = vec![
+            Line::from(vec![Span::styled(
+                "  Somatic Markers (recent):",
+                Style::default()
+                    .fg(Theme::TEXT_DIM)
+                    .add_modifier(Modifier::BOLD),
+            )]),
+            Line::default(),
+        ];
+
+        for (label, valence) in snap.recent_markers.iter().take(5) {
+            let valence_color = if *valence >= 0.2 {
+                Theme::SAGE
+            } else if *valence <= -0.2 {
+                Theme::EMBER
+            } else {
+                Theme::TEXT_DIM
+            };
+            let sign = if *valence >= 0.0 { "+" } else { "" };
+            marker_lines.push(Line::from(vec![
+                Span::styled("    ", Style::default()),
+                Span::styled(
+                    format!("{sign}{valence:.3}"),
+                    Style::default().fg(valence_color),
+                ),
+                Span::styled("  ", Style::default()),
+                Span::styled(label.as_str(), Style::default().fg(theme.foreground)),
+            ]));
+        }
+
+        let markers_para = Paragraph::new(marker_lines);
+        frame.render_widget(markers_para, sections[6]);
+    }
+
+    // ── Section 8: active biases ──────────────────────────────────────────────
+    if has_biases && bias_rows > 0 {
+        let bias_text = snap.active_biases.join("  ");
+        let biases_para = Paragraph::new(vec![
+            Line::from(vec![Span::styled(
+                "  Active Biases:",
+                Style::default()
+                    .fg(Theme::TEXT_DIM)
+                    .add_modifier(Modifier::BOLD),
+            )]),
+            Line::default(),
+            Line::from(vec![
+                Span::styled("    ", Style::default()),
+                Span::styled(bias_text, Style::default().fg(Theme::DREAM)),
+            ]),
+        ]);
+        frame.render_widget(biases_para, sections[7]);
+    }
 }

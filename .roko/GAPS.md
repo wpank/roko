@@ -4,7 +4,7 @@
 > and outstanding work. For agent execution protocols and task-level checklists, see
 > `tmp/status-quo/MASTER-EXECUTION-CHECKLIST.md`.
 >
-> Last updated: 2026-09-07
+> Last updated: 2026-09-19
 
 ---
 
@@ -46,18 +46,24 @@ There are no ready executable-plan tasks, but the wider release/product backlog 
 the master checklist has **22 non-complete markers** (8 unchecked, 14 partial) after the
 2026-08-17 comprehensive 25-agent verification sweep that verified and resolved 12 previously
 unchecked items (moving 9 to done and 3 to partial). The 2026-08-31 UX/TUI/Workflow Mori
-Parity batch (PR #73) added 53 tracked items: **37 are done**, with 14 partial and 2 not
-started; those 16 remaining items are tracked in `tmp/tui-parity/`
+Parity batch (PR #73) added 53 tracked items: **38 are done** (PR #73 landed 37; commit
+`5ce3c3fd2` on 2026-09-10 resolved the 4 remaining P0-P7 partial items), with 13 partial
+and 2 not started; those 15 remaining items are tracked in `tmp/tui-parity/`
 and do not reopen the epic-manifest queue. A practical delivery estimate is about
 **four substantial tranches**, with scope varying by whether the large architecture items are
 accepted as follow-up debt:
 
 1. Integration provenance and release closure for the current dirty implementation tree,
    followed by fresh-clone/post-merge verification.
-2. Documentation truth and generated validation: 3/71 DOC tasks are done and 68 remain
+2. Documentation truth and generated validation: 18/71 DOC tasks are done and 53 remain
    ready; individual supersession evidence and legacy/repo-wide link work remain. The exact
    status/source registries, maintained operator-corpus links, and `plans/INDEX.md` drift gate
-   are now bounded and checked.
+   are now bounded and checked. 2026-09-10: reconciled the 10 priority docs (00-index through
+   17-security) covering 23 files — added implementation status headers, updated stale
+   runner-v2/WorkflowEngine references, corrected route count (~317→~376), gate count (11/14→19),
+   TUI tab count (F1-F7→F1-F11), and tool count (16→16 local/35 total).
+   2026-09-15: reconciled 5 additional sections (ROADMAP, SURFACES, ARCHITECTURE-GUIDE,
+   API-REFERENCE, INTEGRATION-GUIDE) bringing the total to 18/71.
 3. Real process-level lifecycle proof for Graph, crash/restart equivalence, and deterministic
    self-host repair.
 4. Cross-surface durable projection agreement so the converged frontend DataHub, TUI, API,
@@ -65,15 +71,71 @@ accepted as follow-up debt:
 5. Architecture consolidation: EventBus/type families and continued `event_loop.rs`
    extraction.
 
+### 2026-09-14 audit verification + dead code batch
+
+- **Test fixes**: 7 broken tests fixed (sidecar `engram_id`→`signal_id`, agent_config missing `enabled`
+  field, 4 inject tests updated for file-based transport, cost_dedup `total_agent_calls`→`total_tasks`,
+  schema tree populated for optional AgentConfig fields). Workspace: 6,664 passed, 0 failed, 35 ignored.
+- **Dead code removed**: federation.rs (376 lines, DC-06) deleted — L1-L4 FleetConductor all dead.
+  ACP runner.rs staging code (460 lines, DC-08) removed — dead `spawn_runtime_event_bridge` cluster.
+- **Dead code audited (NOT dead)**: phase2.rs (DC-03) has 13+ callers, cannot remove.
+  phase2_stubs.rs (DC-05) is wired into DaimonState, misnamed but live.
+  record_cascade_router_outcome (DC-07) plain version already removed.
+- **Audit corrections**: DC-04 identity_economy STATUS: STUB comments added.
+  DC-09 state_snapshot serde annotations all justified (18 items).
+  DC-10/DC-11 clippy dead_code: 82 annotations already present from encapsulation batch.
+- **Cross-audit reconciliation**: Refactoring audit 53%→68%, CLI #351/#282 resolved,
+  RAG Phase 1 0%→80% (4/5 wired), TUI parity 35→37/38, tool audit 35/36 confirmed.
+- **Force-backend override learning fixed (P1-12/P3-B)**: `cascade.save()` added to `plan.rs`
+  after execution; `config_helpers.rs` comment corrected. Cascade router no longer records
+  outcomes for manually-overridden (`force_backend`) model selections. Backlog item #90 archived.
+
+### 2026-09-15 refactoring audit batch
+
+- **ACP experiment section parity (P2-I)**: Commit `37f86fa81` implements canonical section
+  replacement in ACP instead of append (`section_heading_for_name()`, `replace_section_in_prompt()`);
+  `mark_attempt_dispatched()` called with prompt hash before the provider boundary;
+  `prepared_assignment_ids` tracked for the full 3-phase lifecycle. ACP no longer injects
+  ephemeral context. Serve still lacks a receipt/section-replacement protocol (separate gap).
+- **TUI parity 38/38 complete (P2-E)**: Commit `5ce3c3fd2` fixes the 4 remaining partial items
+  (P1.1 command-channel disconnect warning, P5.5 per-plan elapsed timer, P6.3 tab-focus routing,
+  P6.4 help overlay bindings). All 38 P0-P7 items are now done; PX/MX items remain separate
+  product work.
+- **Dogfood pre-execution proof (P1-06)**: Pre-execution pipeline verified with prebuilt binary:
+  `doctor` (36 ok, 12 warn), `prd idea` capture, `plan list` (17 plans), `plan validate` (0 diags),
+  `status` (cost/efficiency/gate metrics live), `learn all` (185 obs, 373 events, 321 episodes).
+  Proof doc at `tmp/refactoring-audit/P1-06-DOGFOOD-PROOF.md`. The full live agent-dispatch
+  rerun of the 2026-08-13 self-hosting workflow (the terminal P3-E requirement) has not been
+  performed; it is blocked by the dirty-tree build failure from the SnapshotRebased arm gap.
+- **ACP/serve experiment double-counting design (P1-07)**: Confirmed that ACP's direct mutation
+  path and serve's context-injection path can both double-count outcomes after a crash. A
+  three-phase fix (assignment receipts, durable replay IDs, monotonic cache publication) is
+  designed at `tmp/refactoring-audit/P1-07-EXPERIMENT-PARITY.md`. Not yet implemented.
+- **Doc reconciliation +5 (P1-08)**: ROADMAP, SURFACES, ARCHITECTURE-GUIDE, API-REFERENCE,
+  INTEGRATION-GUIDE reconciled this session. Total: 18/71.
+- **Stub cells complete**: SC-08 (TaskContextCell), SC-09 (ComposeCell plan topology),
+  SC-10 (PlanGateCell) replaced as real implementations. All 13 stub cells now done.
+- **StateHub rebasing (P1-04)**: `DashboardEvent::SnapshotRebased` added; emitted on
+  `apply_snapshot` and `apply_recovered_snapshot_if_unchanged`; SSE/WS consumers advance their
+  cursor on rebase. Note: this introduced a non-exhaustive match gap in `output_sink.rs:1266`
+  that causes a build failure in the current dirty tree.
+- **EventBus audit (P1-10)**: 47 distinct event enums across 42 files, 4 EventBus structs,
+  2 bus trait systems (~30,700 lines). Three costliest overlaps: RuntimeEvent/GraphExecutionEvent,
+  ServerEvent/DashboardEvent, three AgentEvent enums. Four-phase migration plan at
+  `tmp/refactoring-audit/P1-10-EVENTBUS-AUDIT.md`.
+- **Backlog consolidated (P3-05)**: 94 items unified from 6 sources into
+  `tmp/CONSOLIDATED-BACKLOG.md`.
+
 The latest bounded closure delivered deterministic documentation integrity, the first
 source-reconciled DOC-v2 wave (Signal/Cell, Agent, Memory/Learning/Cross-Cuts), and direct
 durable Runner projection correctness. The maintained operator corpus passes 17/17 checker
 fixtures plus the live bounded link/anchor scan; all 109 status files and the exact 746-source
 registry/637-row manifest contracts are accounted for; `plans/INDEX.md` has a blocking
 non-mutating CI drift check. Direct TUI/show/API/workspace adapters now share the verified
-canonical Runner loader, but StateHub baseline/overlay rebasing, cursor-atomic SSE/typed
-capture, and a single immutable resume generation remain open. Graph Runner-v2 parity plus
-provider-internal visibility and adaptive immune learning remain major runtime semantics gaps.
+canonical Runner loader. `DashboardEvent::SnapshotRebased` now advances the SSE/WS cursor on
+snapshot replacement (P1-04, 2026-09-15), but cursor-atomic SSE typed capture and a single
+immutable resume generation remain open. Graph Runner-v2 parity plus provider-internal
+visibility and adaptive immune learning remain major runtime semantics gaps.
 
 ---
 
@@ -158,17 +220,14 @@ wave hierarchy widget (#125), plan DAG (#117), queue manifest (#116), push-mode 
 (#41), F7 inspect view (#127), daimon view (#10), screenshots (#112), overlap analysis
 (#195), validate --dag (#200), merge proof (#140), live feedback (#108).
 
-### Partial (13)
+### Partial (10)
 
 | Item | Gap |
 |------|-----|
 | #122 Legacy page removal | PageId/PageScaffold still active for text-mode compat |
-| #196 Critical path ETA | Computation+field+display exist; field never written |
 | #57 Crash retry/escalation | Only on prd plan path, not plan generate |
 | #119 Recovery keybindings | Keys+modal wired; runner doesn't act on signals |
 | #179 Batch controller | Flag+events exist; event loop stub never triggers |
-| #217 Log search/filter | Input/state done; render doesn't use log_search |
-| #219 Plan tree filter | Input/state done; widget uses old filter fields |
 | #109 TUI streaming RC-7 | No live gate-rung-in-progress indicator |
 | #121 Data model unification | Phase A done; Phases B/C (migration) not started |
 | #178 Conductor supervisor | Tick+thresholds wired; actions only log |
@@ -405,16 +464,24 @@ use the same strict sibling-lock read/mutate/atomic-write transaction. Malformed
 state is preserved, concurrent writers do not lose updates, and outcome updates prefer exact
 experiment-plus-variant identity rather than ambiguous global variant IDs.
 
-The remaining product gap is cross-runtime semantic parity. Serve template dispatch and ACP
-still inject ephemeral experiment context instead of replacing a canonical named section under
-a durable assignment/dispatch receipt; their process-local dedup can therefore double-count
-after a crash. LearningRuntime's legacy variant-only WAL projection can replay an already
-committed outcome when a later snapshot/truncation step fails, its permissive startup cache can
-hide malformed state, and concurrent disk commits can publish cache snapshots out of order.
-Attention-bidder feedback also remains clean-shutdown rather than attempt-replay durable. Add
-runtime-appropriate assignment receipts and durable replay IDs to those paths, make runtime
-cache publication monotonic/strict, then define bounded tombstone compaction before the 64 MiB
-strict store ceiling can become operationally relevant.
+ACP now uses canonical section replacement (commit `37f86fa81`, 2026-09-10): `replace_section_in_prompt()`
+locates the named section heading and replaces its content in-place; `mark_attempt_dispatched()`
+is called with the prompt hash before the provider boundary; the full 3-phase assignment/dispatch/settle
+lifecycle is tracked through `prepared_assignment_ids`. The ACP architectural gap (ephemeral
+context append vs. in-place canonical replacement) is closed.
+
+The remaining product gap is Serve template dispatch. Serve still injects ephemeral experiment
+context instead of replacing a canonical named section under a durable assignment/dispatch
+receipt; its process-local dedup can therefore double-count after a crash. A three-phase fix
+(per-assignment durable receipts, replay-safe dedup IDs, monotonic cache publication) is
+designed at `tmp/refactoring-audit/P1-07-EXPERIMENT-PARITY.md` but not yet implemented.
+LearningRuntime's legacy variant-only WAL projection can replay an already committed outcome
+when a later snapshot/truncation step fails, its permissive startup cache can hide malformed
+state, and concurrent disk commits can publish cache snapshots out of order. Attention-bidder
+feedback also remains clean-shutdown rather than attempt-replay durable. Add runtime-appropriate
+assignment receipts and durable replay IDs to the serve path, make runtime cache publication
+monotonic/strict, then define bounded tombstone compaction before the 64 MiB strict store
+ceiling can become operationally relevant.
 
 ### Tier progression after live knowledge ingestion -- RESOLVED (2026-08-13)
 
@@ -764,6 +831,32 @@ remaining capacity. See `crates/roko-graph/src/` for details.
 
 ## Recently Resolved
 
+### Batch 2026-09-19 (P2-TUI-6: built-but-not-rendered TUI features)
+
+- **#196 Critical path ETA**: `GraphTuiBridge` now maintains an `EtaTracker` and publishes
+  `CriticalPathEtaUpdated` events after each node completes (proportional estimate: elapsed /
+  done * remaining). `build_timing_lines()` in `plans_view.rs` also renders an inline "eta"
+  line in the F2 plan timing panel using the same formula from `PlanEntry::elapsed_secs`.
+- **#217 Log search/filter status bar**: `logs_view.rs` now renders the active search pattern
+  in all three states: `[/pat/ N/M]` (matches, with current/total), `[/pat/ 0]` (no matches,
+  warning color), `[/pat/ invalid regex]` (error color). Previously only shown when
+  `match_count > 0`.
+- **#219 Plan tree filter**: confirmed already wired in `plan_tree.rs` — entry was stale;
+  removed from Partial table.
+
+### Batch 2026-09-10 (stability, correctness, parity)
+
+| Commit | What | Details |
+|---|---|---|
+| `815d96c90` | ACP stability hardening (P0 #17) | 7 crash-path fixes, reviewer no longer silently approves, event channel capacity 64→256, TOCTOU race → atomic compare_exchange, blocking experiment IO → spawn_blocking |
+| `4df94a275` | roko-core encapsulation | 139 pub items changed to pub(crate) |
+| `6a33578cd` | Force-backend override learning (#90) | `cascade.save()` after plan execution; ManualOverride outcomes routed through dampened record_override_outcome; real RoutingContext passed to emit_feedback() |
+| `37f86fa81` | ACP experiment section parity (P2-I) | In-place canonical section replacement instead of append; `mark_attempt_dispatched()` with prompt hash; 3-phase assignment lifecycle |
+| `5ce3c3fd2` | TUI parity 38/38 complete + clippy clean | P1.1 command-channel warning, P5.5 elapsed timer, P6.3 tab-focus, P6.4 help overlay fixed |
+| `27cdff78e` | Doc reconciliation 3/71 → 13/71 (P2-J) | 23 files across 00-index through 17-security sections reconciled |
+
+Items #75 (graph example drift), #78 (efficiency gate_passed), #81 (layer-check false positives — `--version` probe exclusion + `claude_cli_available()` helper, PR #60), #82 (graph stub cell warnings), #83 (dream consolidation deadlock), #84 (cascade router task category), #85 (plan generation TOML reliability), #90 (UX34 override learning isolation) archived.
+
 ### Batch 2026-09-07 (dispatch, config, gates, MCP code intelligence)
 
 18 backlog items implemented and archived. The batch spans CLI dispatch, configuration
@@ -830,7 +923,7 @@ worker lifecycle.
 - First end-to-end dogfood run of roko against itself: `init` → `prd idea` → `prd draft` → `prd plan` → `plan run`
 - PRD workflow (idea/draft/list/plan) works correctly, produces quality output
 - Agent dispatch works: kimi-k2.5 dispatched via cascade router, wrote correct code (6 LOC)
-- Four serial blockers prevented plan completion (config conflict, stale snapshot, fsmonitor, scheduler deadlock); all four now have focused regression fixes, with a clean dogfood rerun still pending
+- Four serial blockers prevented plan completion (config conflict, stale snapshot, fsmonitor, scheduler deadlock); all four now have focused regression fixes. A pre-execution proof (2026-09-15) verified the full pipeline with a prebuilt binary: doctor (36 ok, 12 warn), prd idea, plan list, plan validate, status, and learn all all pass. The full live agent-dispatch rerun of the complete self-hosting workflow is still pending (blocked by dirty-tree build failure from the SnapshotRebased arm gap in output_sink.rs). Proof doc at `tmp/refactoring-audit/P1-06-DOGFOOD-PROOF.md`
 - E47 resource management completed: bounded concurrent JSONL append/rotation,
   retention-safe GC, symlink-safe target cleanup, disk-aware task admission, lifecycle
   cleanup, canonical worktree metrics, and the read-only `roko doctor disk` report
@@ -876,15 +969,22 @@ worker lifecycle.
 > Fully specced backlog items. Master index at `tmp/backlog/00-INDEX.md`.
 > Each spec is self-contained: problem, what exists, what to do, acceptance criteria.
 >
-> Last reconciled: 2026-09-07 (18 items closed; see session entry below)
+> Last reconciled: 2026-09-10 (additional items archived beyond the 2026-09-07 batch).
+> The tables below are NOT exhaustively pruned; many items shown are in `tmp/backlog/archive/`.
+> Authoritative open list is `tmp/backlog/00-INDEX.md` and `tmp/CONSOLIDATED-BACKLOG.md`.
 
 ### P0 — Critical
 
 | # | Item | Size |
 |---|---|---|
 | 17 | ACP stability hardening (7 P0 panics, 12 race conditions) | L |
-| 75 | Graph example schema drift (3 of 8 examples broken, wrong condition types) | S |
-| 78 | Efficiency gate_passed structurally 0% (emitted before gate runs) | S |
+
+Items 75 (graph example schema drift) and 78 (efficiency gate_passed structurally 0%) were
+implemented and moved to `tmp/backlog/archive/`. Item 17 (ACP stability) was addressed in
+commit `815d96c90` (2026-09-10): 7 crash-path fixes, reviewer failure no longer silently
+approves, event channel capacity increased, TOCTOU race resolved, blocking IO moved to
+spawn_blocking. The spec at `tmp/backlog/17-acp-stability-hardening.md` covers broader P1
+silent-failure and race items that may remain; the spec has not been formally closed.
 
 ### P1 — High
 
@@ -894,16 +994,15 @@ worker lifecycle.
 | 04 | Compile auto-fix path (cargo fix before agent retry) | S |
 | 18 | ACP spec upgrade v0.12→v0.13 + bridge_events refactor | XL |
 | 21 | Landing page fake metrics (external repo) | S |
-| 33 | CLI gist scrubbing (secret leak via --share) | S |
 | 45 | ACP tool permission gate (plugin tier + command ceiling) | M |
-| 48 | Serve auth default posture | S |
-| 49 | Serve CORS restrictive | S |
-| 50 | Serve rate and body limits | S |
-| 51 | Serve agent name validation (path traversal) | S |
+| 56 | ACP single-agent chat tools require client capability declaration | M |
 | 60 | Safety dispatch hardening (contract fail-open, optional SafetyLayer, Hermes/OpenClaw bypass) | M |
-| 76 | Example config quality (16 issues: stale fields, wrong ports, missing config_version) | M |
-| 77 | CLI UX consistency (8 command name/alias/error message mismatches) | S |
-| 79 | Doctor/onboarding diagnostics (misleading API key and base URL warnings) | M |
+
+Items 33 (CLI gist scrubbing), 48 (serve auth default), 49 (serve CORS), 50 (serve rate/body
+limits), 51 (serve agent name validation), 76 (example config quality), 77 (CLI UX
+consistency), 79 (doctor/onboarding diagnostics) are in `tmp/backlog/archive/` (implemented).
+Item 90 (UX34 override learning isolation / force_backend) was fixed in commit `6a33578cd`
+(2026-09-10) and archived.
 
 ### P2 — Medium
 
@@ -923,11 +1022,11 @@ worker lifecycle.
 | 35 | CLI output redesign (structured reporter) | M |
 | 37 | Multi-process locking (.roko/ concurrent writer safety) | S |
 | 39 | ACP learning-pipeline parity (experiment receipts) | M |
-| 40 | Gate rung input completion (diff, fact-check, builder) | S |
+| ~~40~~ | ~~Gate rung input completion (diff, fact-check, builder)~~ | ~~S~~ | **Closed 2026-09-17**: `diff_signal` added to `RungExecutionInputs`; `DiffGate` invoked as standalone post-pipeline check; `verify_chain_fallback` wired to `TestGate` in `build_rung_execution_config`; 10 new tests added |
 | 43 | Clippy suppression removal (blanket allows in lib.rs) | M |
 | 44 | Calibration feedback loop (3 loops, Loop 1 partial) | M |
 | 46 | ACP test coverage (Gap 1 done; MCP crash + tool matrix open) | S |
-| 47 | ConfigLayer elimination (~1500 LOC legacy dual-loader) | L |
+| ~~47~~ | ~~ConfigLayer elimination (~1500 LOC legacy dual-loader)~~ | ~~L~~ | **Closed 2026-09-20**: `compat.rs` (482 LOC Mori reader, never called from production) deleted; `load_effective_roko_config` + `load_roko_config_file` in `serve_runtime.rs` replaced with `load_config_unified` / `load_config_file` from the core unified loader; repo-specific config now routes through `load_config_file` with full LoadOptions instead of bare `RokoConfig::from_toml`. Workspace builds clean; 358 config tests pass |
 | 52 | MCP stderr capture & CostTable gaps | S |
 | 53 | Immune system adaptive screening (memory + provider visibility) | L |
 | 54 | Graph Engine Runner-v2 parity (gates/replan/worktree/merge) | XL |
@@ -943,7 +1042,6 @@ worker lifecycle.
 | 70 | ACP novel workflow gaps (affect/mood, dream journal, tournament mode) | M |
 | 72 | Pool architecture reconciliation (3 overlapping pools, no migration plan) | S |
 | 80 | Learning subsystem data quality (7 issues: stale temps, empty receipts, per-model staging) | M |
-| 81 | Layer-check false positives (8 violations, all false: --version probes + test code) | S |
 | 82 | Graph stub cell warnings (no user indication that cells are PassthroughCell no-ops) | S |
 | 83 | Dream consolidation deadlock (tokio spawn_blocking + nested block_on) | S |
 | 84 | Cascade router task category awareness (stages 2-3 ignore task_category) | M |
@@ -965,7 +1063,7 @@ worker lifecycle.
 | 65 | CLI verb consolidation (42 top-level verbs → ~20, 165 total paths) | L |
 | 66 | Context sources & editor integration (--context gap, ACP editor push, VS Code) | L |
 | 71 | TUI design system alignment (theme RGB drift, 81 inline color literals) | S |
-| 73 | UX backlog rollup (13 uncovered items across 4 themes) | M |
+| 73 | UX/TUI partial items (10 partial from PR #73 tracker; 2 not-started now done via #69/#77) | M |
 | 74 | Unified evaluation framework (EvidenceCollector/Criterion/Profile) | XL |
 
 Items 06, 07, 08, 36 (output budgeting, inference cache, key rotation, atomic file I/O)
@@ -1020,16 +1118,16 @@ These GAPS.md entries are independently corroborated by audit evidence.
 | Graph Engine incomplete (PARTIAL) | Engine audit: comprehensive gap analysis of Runner-v2 parity items (gates/replan/worktree/merge/approval/cancellation) | engine-audit/02-graph-engine-gaps.md, engine-audit/IMPLEMENTATION-ROADMAP.md |
 | Cross-crate duplicate type families (PARTIAL, ~14 families) | Engine audit: 7 agent dispatch paths, 11 model resolution functions, 9 config loading functions, 4 doctor implementations, 4 snapshot types, 5 chat paths | engine-audit/05-duplicate-paths.md |
 | `#[allow(dead_code)]` sites (HYGIENE/DEFERRED) | CLI audit: blanket `#![allow(dead_code, unused_imports, unused_variables)]` on roko-cli masks 242 compiler warnings; 67 individual `#[allow(dead_code)]` annotations across 31 files | cli-audit/22-stubs-unimplemented.md, engine-audit/15-dead-code-cli.md |
-| Prompt-experiment coverage across runtimes (PARTIAL) | Engine audit confirms ACP/serve still use ephemeral context injection rather than canonical section replacement | engine-audit/18-init-divergences.md |
+| Prompt-experiment coverage across runtimes (PARTIAL — serve only) | Engine audit originally confirmed ACP/serve both used ephemeral context injection. ACP now closed (commit `37f86fa81`, 2026-09-10). Serve still uses context injection without a canonical section receipt; design at `tmp/refactoring-audit/P1-07-EXPERIMENT-PARITY.md` | engine-audit/18-init-divergences.md |
 | Immune system screening coverage (PARTIAL) | CLI audit confirms 4 safety hooks (AllowlistGuard, SpendingLimiter, HallucinationDetector, ResultFilter) defined but not in the production chain | cli-audit/28-safety.md |
 | AgentPool runtime integration (Backlog #55) | CLI audit confirms `ToolDispatcher` stored but unused in roko-agent-server; GAPS.md Built-but-Unwired confirms no runtime instantiation in runner | cli-audit/25-agent-server.md |
 | HDC prompt assembly wiring (Backlog #67) | CLI audit: roko-cli enables `roko-neuro/hdc` but does NOT propagate to roko-compose, roko-fs, or roko-serve; the pipeline is severed | cli-audit/19-feature-flags.md |
 | Backlog #20 event loop decomposition | All three audits independently flag the 23K-line god object | cli-audit/24-runner-v2.md, engine-audit/08-runner-extractable.md |
 | Backlog #43 clippy suppression removal | CLI audit identifies the blanket allow as Critical Finding #3 | cli-audit/22-stubs-unimplemented.md |
 | Backlog #61 agent dispatch consolidation | Engine audit identifies 7 distinct agent dispatch paths with divergent safety/enrichment | engine-audit/05-duplicate-paths.md |
-| Backlog #47 ConfigLayer elimination | Engine audit identifies 9 config loading functions from the Config/RokoConfig structural split | engine-audit/05-duplicate-paths.md |
+| ~~Backlog #47 ConfigLayer elimination~~ | **Closed 2026-09-20**. `compat.rs` deleted; `serve_runtime.rs` legacy loader replaced. | engine-audit/05-duplicate-paths.md |
 | Backlog #85 plan generation TOML reliability | UX parity audit confirms this as PX.7 (plan generate crash retry/escalation) | tui-parity/00-INDEX.md |
-| UX/TUI Parity section (14 partial, 2 not started) | UX parity audit provides the detailed 55-item breakdown, root cause analysis, and effort estimates that ground this section | tui-parity/00-INDEX.md |
+| UX/TUI Parity section (13 partial, 2 not started) | UX parity audit provides the detailed 55-item breakdown, root cause analysis, and effort estimates that ground this section. Count updated: 4 previously partial items fixed in commit `5ce3c3fd2` (2026-09-10) → now 13 partial | tui-parity/00-INDEX.md |
 
 ### 2. Existing gaps POTENTIALLY RESOLVED or requiring re-evaluation
 
@@ -1053,7 +1151,7 @@ These findings from the audits are not currently tracked as named entries in GAP
 | `roko inject` is a complete stub | Critical | Prints `"status": "queued"` but never sends the signal anywhere; misleads users and tools | cli-audit/14-status-replay-inject.md |
 | 6/9 `roko new` scaffold types generate non-compiling code | Critical | Engram-to-Signal rename left stale identifiers in templates; only composer, template, and event-source produce working output | cli-audit/15-index-new-explain-completions.md |
 | `knowledge sync` can corrupt version vectors | Critical | Invalid `--direction` values silently skip both sync phases but still corrupt version vectors; no validation on the direction parameter | cli-audit/06-knowledge.md |
-| 5 marketplace serve stubs return 200/201 instead of 501 | High | `publish`, `fork`, etc. return success status codes with `"stub": true` in the body, misleading clients | cli-audit/09-serve.md |
+| ~~5 marketplace serve stubs return 200/201 instead of 501~~ | ~~High~~ | Resolved (2026-09-15): all 5 handlers return `ApiError::not_implemented()` → 501 with structured error envelope; 8 unit tests + 1 integration test cover every path | cli-audit/09-serve.md |
 | ~~No `deny_unknown_fields` on RokoConfig~~ | ~~High~~ | Resolved (2026-09-07, #340): strict schema validation and live config repair | cli-audit/21-config-schema.md |
 | `--json` flag ignored by ~15+ subcommands | Medium | PRD (all 9), knowledge (6), learn tune, agent status silently ignore the flag | cli-audit/08-config.md |
 | `--role` flag hardcoded by research and PRD commands | Medium | Global flag ignored; roles are hardcoded instead | cli-audit/03-prd.md, cli-audit/05-research.md |

@@ -2,6 +2,8 @@
 
 > Depth for [16-SECURITY.md](../../unified/16-SECURITY.md). Re-derives the 7-layer defense model as a Pipeline Graph of Verify Cells. Each layer is a Cell conforming to the Verify protocol with early-exit semantics. Addresses the critical integration gap where SafetyLayer is wired in routed paths but not universally from all execution branches.
 
+> **Implementation status (2026-09-10):** IMPLEMENTED (E34 8/8 strict accepted 2026-08-17). The five-stage immune Graph traversal for all canonical provider primary outputs and host-visible tool results is live. The "critical integration gap" (SafetyLayer not wired universally) mentioned in this doc's title has been resolved: all production hooks are mandatory and audited. Provider-owned internal calls/results, provider trace Signals, broad semantic/adaptive immune memory, and externally anchored whole-ledger authenticity remain product residuals.
+
 **Depends on**: [01-SIGNAL](../../unified/01-SIGNAL.md) (Signal, Pulse, taint), [02-CELL](../../unified/02-CELL.md) (Cell, Verify protocol, Pipeline pattern), [03-GRAPH](../../unified/03-GRAPH.md) (Graph wiring, TOML definition), [16-SECURITY](../../unified/16-SECURITY.md) (capability intersection, 5-head corrigibility, sandboxing)
 
 ---

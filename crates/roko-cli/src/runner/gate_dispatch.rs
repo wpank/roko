@@ -20,10 +20,14 @@ use roko_core::{
     Verdict, Verify,
 };
 use roko_fs::RokoLayout;
+use roko_gate::diff_gate::DiffPayload;
 use roko_gate::llm_judge_gate::JudgePayload;
-use roko_gate::rung_dispatch::{GatePipelineBuilder, RungExecutionConfig, RungExecutionInputs};
+use roko_gate::rung_dispatch::{
+    GatePipelineBuilder, RungExecutionConfig, RungExecutionInputs, run_diff_gate,
+};
 use roko_gate::rung_for_gate_name;
 use roko_gate::symbol_gate::{SymbolExpectation, SymbolKind, SymbolManifest, Visibility};
+use roko_gate::test_gate::TestGate;
 use roko_gate::verdict_publisher::VerdictPublisher;
 use roko_gate::{GatePayload, PlanComplexity, ShellGate};
 use tokio::process::Command;
@@ -483,10 +487,57 @@ impl AutoFixOutcome {
     }
 }
 
-/// Attempt to auto-fix compile or clippy gate failures using `cargo fix`.
+/// Detect the primary build system from marker files present in `workdir`.
 ///
-/// For "compile" gates: runs `cargo fix --allow-dirty` then `cargo fmt`.
-/// For "clippy" gates: runs `cargo clippy --fix --allow-dirty`.
+/// Returns `None` if `workdir` cannot be read (I/O error) or no known marker
+/// was found. The check is best-effort and non-blocking (uses `std::fs`).
+fn detect_workdir_build_system(workdir: &Path) -> Option<&'static str> {
+    let entries = std::fs::read_dir(workdir).ok()?;
+    let mut has_cargo = false;
+    let mut has_go = false;
+    let mut has_python = false;
+    let mut has_npm = false;
+
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let s = name.to_string_lossy();
+        match s.as_ref() {
+            "Cargo.toml" => has_cargo = true,
+            "go.mod" => has_go = true,
+            "pyproject.toml" | "setup.py" => has_python = true,
+            "package.json" => has_npm = true,
+            _ => {}
+        }
+    }
+
+    // Priority order matches roko-core/src/polyglot.rs POLY_RULES.
+    if has_cargo {
+        Some("cargo")
+    } else if has_go {
+        Some("go")
+    } else if has_python {
+        Some("python")
+    } else if has_npm {
+        Some("npm")
+    } else {
+        None
+    }
+}
+
+/// Attempt to auto-fix gate failures using the build system's formatter / linter.
+///
+/// For Rust (Cargo) projects:
+/// - "compile" gates: runs `cargo fix --allow-dirty` then `cargo fmt`.
+/// - "clippy" gates: runs `cargo clippy --fix --allow-dirty`.
+///
+/// For npm (TypeScript/JavaScript) projects:
+/// - "lint" / "compile" gates: runs `npx eslint --fix .`.
+///
+/// For Go projects:
+/// - "compile" / "lint" / "format" gates: runs `gofmt -w .`.
+///
+/// For Python projects:
+/// - "lint" / "compile" gates: tries `ruff --fix .` first, falls back to `black .`.
 ///
 /// Returns `Ok(AutoFixOutcome)` describing what happened. Returns `Err` only
 /// on internal failures (spawn error, etc).
@@ -497,84 +548,215 @@ pub async fn attempt_auto_fix(
     gate_name: &str,
     error_output: &str,
 ) -> Result<AutoFixOutcome, String> {
-    let classification = roko_gate::classify_gate_failure(gate_name, error_output);
-    if !classification.cargo_fix_candidate {
-        return Ok(AutoFixOutcome::not_candidate(gate_name));
-    }
-
     let raw = raw_gate_name(gate_name);
-    let (program, args): (&str, &[&str]) = if raw.starts_with("compile") {
-        ("cargo", &["fix", "--allow-dirty"])
-    } else if raw.starts_with("clippy") {
-        ("cargo", &["clippy", "--fix", "--allow-dirty"])
-    } else {
-        return Ok(AutoFixOutcome::not_candidate(gate_name));
-    };
+    let classification = roko_gate::classify_gate_failure(gate_name, error_output);
 
-    let command_str = format!("{program} {}", args.join(" "));
+    // ── Cargo path ──────────────────────────────────────────────────────────
+    if classification.cargo_fix_candidate {
+        let (program, args): (&str, &[&str]) = if raw.starts_with("compile") {
+            ("cargo", &["fix", "--allow-dirty"])
+        } else if raw.starts_with("clippy") {
+            ("cargo", &["clippy", "--fix", "--allow-dirty"])
+        } else {
+            return Ok(AutoFixOutcome::not_candidate(gate_name));
+        };
 
-    let _compile_permit = acquire_compile_ownership(
-        workdir,
-        1,
-        Duration::from_secs(300),
-        "auto-fix",
-        gate_name,
-        &command_str,
-    )
-    .await?;
+        let command_str = format!("{program} {}", args.join(" "));
 
-    info!(
-        gate = %gate_name,
-        command = %command_str,
-        "attempting cargo auto-fix before agent retry"
-    );
+        let _compile_permit = acquire_compile_ownership(
+            workdir,
+            1,
+            Duration::from_secs(300),
+            "auto-fix",
+            gate_name,
+            &command_str,
+        )
+        .await?;
 
-    let mut fix_cmd = tokio::process::Command::new(program);
-    fix_cmd
-        .args(args)
-        .current_dir(workdir)
-        .env("CARGO_BUILD_JOBS", cargo_build_jobs());
-    if sccache_available() {
-        fix_cmd.env("RUSTC_WRAPPER", "sccache");
-    }
-    let fix_status = fix_cmd
-        .output()
-        .await
-        .map_err(|e| format!("failed to spawn {program}: {e}"))?;
-
-    if !fix_status.status.success() {
         info!(
             gate = %gate_name,
-            exit_code = ?fix_status.status.code(),
-            "cargo auto-fix exited non-zero — falling through to agent"
+            command = %command_str,
+            "attempting cargo auto-fix before agent retry"
         );
+
+        let mut fix_cmd = tokio::process::Command::new(program);
+        fix_cmd
+            .args(args)
+            .current_dir(workdir)
+            .env("CARGO_BUILD_JOBS", cargo_build_jobs());
+        if sccache_available() {
+            fix_cmd.env("RUSTC_WRAPPER", "sccache");
+        }
+        let fix_status = fix_cmd
+            .output()
+            .await
+            .map_err(|e| format!("failed to spawn {program}: {e}"))?;
+
+        if !fix_status.status.success() {
+            info!(
+                gate = %gate_name,
+                exit_code = ?fix_status.status.code(),
+                "cargo auto-fix exited non-zero — falling through to agent"
+            );
+            return Ok(AutoFixOutcome {
+                gate_name: gate_name.to_string(),
+                was_candidate: true,
+                fix_applied: false,
+                gate_passed_after_fix: false,
+                command: Some(command_str),
+            });
+        }
+
+        // For compile fixes, also run cargo fmt to keep formatting clean.
+        if raw.starts_with("compile") {
+            let _ = tokio::process::Command::new("cargo")
+                .env("CARGO_BUILD_JOBS", cargo_build_jobs())
+                .args(["fmt"])
+                .current_dir(workdir)
+                .output()
+                .await;
+        }
+
+        info!(gate = %gate_name, "cargo auto-fix applied — will retry gate");
         return Ok(AutoFixOutcome {
             gate_name: gate_name.to_string(),
             was_candidate: true,
-            fix_applied: false,
-            gate_passed_after_fix: false,
+            fix_applied: true,
+            gate_passed_after_fix: false, // updated by caller after retry
             command: Some(command_str),
         });
     }
 
-    // For compile fixes, also run cargo fmt to keep formatting clean.
-    if raw.starts_with("compile") {
-        let _ = tokio::process::Command::new("cargo")
-            .env("CARGO_BUILD_JOBS", cargo_build_jobs())
-            .args(["fmt"])
-            .current_dir(workdir)
-            .output()
-            .await;
+    // ── Non-Cargo paths ─────────────────────────────────────────────────────
+    //
+    // Only attempt a non-Cargo fix for gate names that indicate a lint/format
+    // or compile failure — skip test/docs/coverage gates entirely.
+    let is_fixable_gate =
+        raw.starts_with("compile") || raw.starts_with("lint") || raw.starts_with("format");
+    if !is_fixable_gate {
+        return Ok(AutoFixOutcome::not_candidate(gate_name));
     }
 
-    info!(gate = %gate_name, "cargo auto-fix applied — will retry gate");
-    Ok(AutoFixOutcome {
-        gate_name: gate_name.to_string(),
-        was_candidate: true,
-        fix_applied: true,
-        gate_passed_after_fix: false, // updated by caller after retry
-        command: Some(command_str),
-    })
+    let build_system = detect_workdir_build_system(workdir);
+    match build_system {
+        Some("npm") => {
+            // npx eslint --fix . — auto-fixes lint errors for JS/TS.
+            let command_str = "npx eslint --fix .".to_string();
+            info!(
+                gate = %gate_name,
+                command = %command_str,
+                "attempting npm/eslint auto-fix before agent retry"
+            );
+            let fix_status = Command::new("npx")
+                .args(["eslint", "--fix", "."])
+                .current_dir(workdir)
+                .output()
+                .await
+                .map_err(|e| format!("failed to spawn npx: {e}"))?;
+
+            let fix_applied = fix_status.status.success();
+            if !fix_applied {
+                info!(
+                    gate = %gate_name,
+                    exit_code = ?fix_status.status.code(),
+                    "npx eslint --fix exited non-zero — falling through to agent"
+                );
+            } else {
+                info!(gate = %gate_name, "npx eslint auto-fix applied — will retry gate");
+            }
+            Ok(AutoFixOutcome {
+                gate_name: gate_name.to_string(),
+                was_candidate: true,
+                fix_applied,
+                gate_passed_after_fix: false,
+                command: Some(command_str),
+            })
+        }
+
+        Some("go") => {
+            // gofmt -w . — reformats all Go source files in the tree.
+            let command_str = "gofmt -w .".to_string();
+            info!(
+                gate = %gate_name,
+                command = %command_str,
+                "attempting gofmt auto-fix before agent retry"
+            );
+            let fix_status = Command::new("gofmt")
+                .args(["-w", "."])
+                .current_dir(workdir)
+                .output()
+                .await
+                .map_err(|e| format!("failed to spawn gofmt: {e}"))?;
+
+            let fix_applied = fix_status.status.success();
+            if !fix_applied {
+                info!(
+                    gate = %gate_name,
+                    exit_code = ?fix_status.status.code(),
+                    "gofmt exited non-zero — falling through to agent"
+                );
+            } else {
+                info!(gate = %gate_name, "gofmt auto-fix applied — will retry gate");
+            }
+            Ok(AutoFixOutcome {
+                gate_name: gate_name.to_string(),
+                was_candidate: true,
+                fix_applied,
+                gate_passed_after_fix: false,
+                command: Some(command_str),
+            })
+        }
+
+        Some("python") => {
+            // Try ruff --fix first; fall back to black.
+            let command_str = "ruff --fix .".to_string();
+            info!(
+                gate = %gate_name,
+                command = %command_str,
+                "attempting ruff auto-fix before agent retry"
+            );
+            let ruff_status = Command::new("ruff")
+                .args(["--fix", "."])
+                .current_dir(workdir)
+                .output()
+                .await;
+
+            let (fix_applied, used_command) = match ruff_status {
+                Ok(out) if out.status.success() => (true, command_str),
+                _ => {
+                    // ruff not available or failed — try black.
+                    let black_cmd = "black .".to_string();
+                    info!(
+                        gate = %gate_name,
+                        "ruff unavailable or failed, trying black"
+                    );
+                    let black_status = Command::new("black")
+                        .arg(".")
+                        .current_dir(workdir)
+                        .output()
+                        .await;
+                    let applied = matches!(black_status, Ok(out) if out.status.success());
+                    (applied, black_cmd)
+                }
+            };
+
+            if fix_applied {
+                info!(gate = %gate_name, "python auto-fix applied — will retry gate");
+            } else {
+                info!(gate = %gate_name, "python auto-fix failed — falling through to agent");
+            }
+            Ok(AutoFixOutcome {
+                gate_name: gate_name.to_string(),
+                was_candidate: true,
+                fix_applied,
+                gate_passed_after_fix: false,
+                command: Some(used_command),
+            })
+        }
+
+        // Unknown build system or "cargo" without cargo_fix_candidate — no-op.
+        _ => Ok(AutoFixOutcome::not_candidate(gate_name)),
+    }
 }
 
 /// Run a gate rung to completion and return its summary.
@@ -890,14 +1072,17 @@ pub async fn run_gate_once(
 
         let mut verdicts = Vec::new();
         if execute_pipeline {
-            // Fetch the git diff for the LlmJudge gate so it can evaluate the
-            // actual implementation rather than just the task description.
+            // Fetch the git diff once. The diff is used by:
+            //   1. DiffGate (standalone vacuous-impl rejection, post-pipeline)
+            //   2. LlmJudgeGate (rung 6, judges implementation vs. description)
             let diff_text = fetch_git_diff(&workdir_for_run).await;
             let inputs = build_rung_execution_inputs(
                 &gate_target_crates,
                 task_context.as_ref(),
                 diff_text.as_deref(),
             );
+            // Retain the diff signal for the standalone DiffGate pass below.
+            let diff_signal_for_standalone = inputs.diff_signal.clone();
             let config = build_rung_execution_config(
                 &workdir_for_run,
                 timeout_secs,
@@ -954,6 +1139,19 @@ pub async fn run_gate_once(
                 },
                 "canonical gate command span complete"
             );
+
+            // P2-GAT-1 (diff): Run the standalone DiffGate after the canonical
+            // pipeline. This rejects vacuous implementations (empty diffs,
+            // all-todo!(), Ok(()), etc.) that slip through compile/test gates.
+            // The gate is skipped gracefully when no diff is available (e.g.,
+            // the task ran outside a git repository).
+            let standalone_inputs = RungExecutionInputs {
+                diff_signal: diff_signal_for_standalone,
+                ..Default::default()
+            };
+            if let Some(diff_verdict) = run_diff_gate(&ctx, &standalone_inputs).await {
+                verdicts.push(diff_verdict);
+            }
         }
         verdicts.extend(
             run_verify_steps(
@@ -1021,6 +1219,7 @@ pub async fn run_gate_once(
                             task_context.as_ref(),
                             diff_text_retry.as_deref(),
                         );
+                        let diff_signal_retry = inputs_retry.diff_signal.clone();
                         let config_retry = build_rung_execution_config(
                             &workdir,
                             timeout_secs,
@@ -1063,6 +1262,14 @@ pub async fn run_gate_once(
                             retry_verdicts.push(pipeline_retry.verify(&signal, &ctx).await);
                         }
                         drop(compile_permit);
+                        // Standalone DiffGate on the post-fix diff.
+                        let standalone_retry = RungExecutionInputs {
+                            diff_signal: diff_signal_retry,
+                            ..Default::default()
+                        };
+                        if let Some(diff_verdict) = run_diff_gate(&ctx, &standalone_retry).await {
+                            retry_verdicts.push(diff_verdict);
+                        }
                     }
                     retry_verdicts.extend(
                         run_verify_steps(
@@ -1181,7 +1388,7 @@ pub async fn run_gate_once(
 
     // E05-T08: Publish non-skipped verdicts through VerdictPublisher as
     // Kind::GateVerdict signals. The publisher callback (set up by the
-    // caller in event_loop.rs) graduates each Pulse to a Signal and
+    // graph engine host service) graduates each Pulse to a Signal and
     // appends it to engrams.jsonl.
     if let Some(ref publisher) = verdict_publisher {
         let real: Vec<Verdict> = verdicts.iter().filter(|v| !v.skipped).cloned().collect();
@@ -1449,9 +1656,10 @@ pub fn spawn_plan_verify(
 
 /// Build enriched [`RungExecutionInputs`] from available task context.
 ///
-/// E05-T05: Populates real signal fields from the task definition so that
-/// advanced gate rungs (Symbol, FactCheck, LlmJudge) receive genuine inputs
-/// instead of defaulting to `None` and immediately returning skipped stubs.
+/// E05-T05 / P2-GAT-1: Populates real signal fields from the task definition
+/// so that advanced gate rungs (Diff, Symbol, FactCheck, LlmJudge) receive
+/// genuine inputs instead of defaulting to `None` and immediately returning
+/// skipped stubs.
 fn build_rung_execution_inputs(
     target_crates: &[String],
     task_ctx: Option<&GateTaskContext>,
@@ -1459,8 +1667,21 @@ fn build_rung_execution_inputs(
 ) -> RungExecutionInputs {
     let code_intel_hints = target_crates.to_vec();
 
+    // Build diff signal from the post-agent git diff (standalone DiffGate).
+    // When diff_text is available, the DiffGate can reject vacuous
+    // implementations (empty diffs, all-todo!(), Ok(()), etc.). Without a
+    // diff the gate is skipped gracefully.
+    let diff_signal = diff_text.filter(|d| !d.is_empty()).map(|diff| {
+        let payload = DiffPayload::new(diff);
+        SignalBuilder::new(Kind::Task)
+            .body(Body::from_json(&payload).unwrap_or_else(|_| Body::empty()))
+            .provenance(Provenance::trusted("runner"))
+            .build()
+    });
+
     let Some(ctx) = task_ctx else {
         return RungExecutionInputs {
+            diff_signal,
             code_intel_hints,
             ..Default::default()
         };
@@ -1493,6 +1714,11 @@ fn build_rung_execution_inputs(
     };
 
     // Build fact-check signal from acceptance criteria (rung 5).
+    //
+    // The acceptance criteria from the task definition serve as the claims that
+    // the FactCheckGate will verify against real search results. Each criterion
+    // is joined as a newline-separated list so the gate receives all claims in
+    // a single signal body.
     let fact_check_signal = if ctx.acceptance.is_empty() {
         None
     } else {
@@ -1531,6 +1757,7 @@ fn build_rung_execution_inputs(
     };
 
     RungExecutionInputs {
+        diff_signal,
         symbol_signal,
         fact_check_signal,
         llm_judge_signal,
@@ -1539,6 +1766,12 @@ fn build_rung_execution_inputs(
 }
 
 /// Build enriched [`RungExecutionConfig`] from task workdir and verify steps.
+///
+/// P2-GAT-1 (builder rung): Sets `verify_chain_fallback` to `TestGate::cargo()`
+/// so that rung 4's `VerifyChainGate` falls back to the existing test suite
+/// when no plan-specific `verify.sh` script is present, rather than returning
+/// a stub/skipped verdict. This ensures the builder rung always exercises real
+/// test infrastructure when available.
 fn build_rung_execution_config(
     workdir: &Path,
     timeout_secs: u64,
@@ -1575,12 +1808,22 @@ fn build_rung_execution_config(
                     as Arc<dyn roko_gate::fact_check::SearchOracle>
             });
 
+    // Wire a TestGate fallback for the VerifyChainGate (rung 4 / "builder").
+    // Without this, the verify_chain gate returns a stub whenever no
+    // plan-specific verify.sh is present, effectively skipping rung 4 for
+    // the majority of tasks that do not ship a custom oracle script.
+    let verify_chain_fallback: Option<Arc<dyn Verify>> =
+        Some(Arc::new(TestGate::cargo().with_timeout_ms(
+            timeout_secs.saturating_mul(1000).min(900_000), // cap at 15 min
+        )));
+
     RungExecutionConfig {
         source_roots: Some(vec![workdir.to_path_buf()]),
         timeout_ms: Some(timeout_secs.saturating_mul(1000)),
         integration_test_pattern,
         integration_build_system,
         generated_test_artifacts,
+        verify_chain_fallback,
         verdict_publisher,
         fact_check_oracle,
         line_sink,
@@ -3389,5 +3632,97 @@ cargo_fix_enabled = false
         let adapter = default_gate_adapter();
         let debug = format!("{adapter:?}");
         assert!(debug.contains("RunnerProductionGateAdapter"));
+    }
+
+    // ── P2-GAT-1: rung input completion tests ────────────────────────────────
+
+    #[test]
+    fn build_rung_inputs_diff_signal_is_built_from_non_empty_diff_text() {
+        let inputs = build_rung_execution_inputs(&[], None, Some("+fn x() {}\n"));
+        assert!(
+            inputs.diff_signal.is_some(),
+            "non-empty diff_text must produce a diff_signal"
+        );
+    }
+
+    #[test]
+    fn build_rung_inputs_diff_signal_is_absent_when_diff_text_is_empty() {
+        let inputs = build_rung_execution_inputs(&[], None, Some(""));
+        assert!(
+            inputs.diff_signal.is_none(),
+            "empty diff_text must not produce a diff_signal"
+        );
+    }
+
+    #[test]
+    fn build_rung_inputs_diff_signal_is_absent_when_diff_text_is_none() {
+        let inputs = build_rung_execution_inputs(&[], None, None);
+        assert!(
+            inputs.diff_signal.is_none(),
+            "None diff_text must not produce a diff_signal"
+        );
+    }
+
+    #[test]
+    fn build_rung_inputs_diff_signal_body_deserializes_as_diff_payload() {
+        let diff = "+++ b/src/lib.rs\n+pub fn foo() -> i32 { 42 }\n";
+        let inputs = build_rung_execution_inputs(&[], None, Some(diff));
+        let signal = inputs.diff_signal.expect("diff_signal must be set");
+        let payload: roko_gate::diff_gate::DiffPayload = signal
+            .body
+            .as_json()
+            .expect("diff_signal body must deserialize as DiffPayload");
+        assert_eq!(payload.diff, diff);
+    }
+
+    #[test]
+    fn build_rung_inputs_fact_check_signal_is_built_from_acceptance_criteria() {
+        let ctx = GateTaskContext {
+            plan_id: "p1".into(),
+            symbols: Vec::new(),
+            acceptance: vec!["API must not panic".into(), "Latency < 100ms".into()],
+            task_description: None,
+            task_title: "Check".into(),
+            planned_files: Vec::new(),
+        };
+        let inputs = build_rung_execution_inputs(&[], Some(&ctx), None);
+        assert!(
+            inputs.fact_check_signal.is_some(),
+            "non-empty acceptance criteria must produce a fact_check_signal"
+        );
+        let signal = inputs.fact_check_signal.unwrap();
+        let body_text = signal
+            .body
+            .as_text()
+            .expect("fact_check_signal body must be text");
+        assert!(body_text.contains("API must not panic"));
+        assert!(body_text.contains("Latency < 100ms"));
+    }
+
+    #[test]
+    fn build_rung_inputs_fact_check_signal_absent_when_no_acceptance() {
+        let ctx = GateTaskContext {
+            plan_id: "p1".into(),
+            symbols: Vec::new(),
+            acceptance: Vec::new(),
+            task_description: None,
+            task_title: "Check".into(),
+            planned_files: Vec::new(),
+        };
+        let inputs = build_rung_execution_inputs(&[], Some(&ctx), None);
+        assert!(
+            inputs.fact_check_signal.is_none(),
+            "empty acceptance criteria must not produce a fact_check_signal"
+        );
+    }
+
+    #[test]
+    fn build_rung_config_verify_chain_fallback_is_wired() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = build_rung_execution_config(dir.path(), 60, &[], None, None);
+        assert!(
+            config.verify_chain_fallback.is_some(),
+            "builder rung: verify_chain_fallback must be wired to TestGate"
+        );
     }
 }

@@ -121,7 +121,7 @@ pub use chat_types::{ChatRequest, RequestOptions, ResponseFormat, ToolChoice};
 pub use claude_cli_agent::ClaudeCliAgent;
 pub use composition::{AgentComposition, CompositeAgent, MergeStrategy, SkillSelector};
 pub use error::AgentError;
-pub use exec::ExecAgent;
+pub use exec::{CodexOperationPolicy, CodexOperationType, ExecAgent};
 pub use gateway_events::{AggregateStats, GatewayEvent, GatewayEventWriter, GatewayProjection};
 pub use gemini::{
     GeminiCompatAgent, GeminiEmbedAgent, GeminiMetadata, GeminiNativeAgent, GenerateContentRequest,

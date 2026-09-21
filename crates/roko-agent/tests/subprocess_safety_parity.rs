@@ -3,10 +3,10 @@
 use roko_agent::provider::{AgentOptions, create_agent_for_model};
 use roko_agent::{Agent, ExecAgent, SafetyLayer};
 use roko_core::config::schema::RokoConfig;
-use roko_core::{Body, Context, Engram, Kind};
+use roko_core::{Body, Context, Kind, Signal};
 
-fn prompt(text: &str) -> Engram {
-    Engram::builder(Kind::Prompt).body(Body::text(text)).build()
+fn prompt(text: &str) -> Signal {
+    Signal::builder(Kind::Prompt).body(Body::text(text)).build()
 }
 
 #[tokio::test]

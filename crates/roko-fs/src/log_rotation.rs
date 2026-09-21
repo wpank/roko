@@ -1,6 +1,6 @@
 //! Size-based JSONL log rotation for `.roko/` data files.
 //!
-//! When episodes.jsonl, engrams.jsonl, efficiency.jsonl, or other JSONL files
+//! When episodes.jsonl, signals.jsonl, efficiency.jsonl, or other JSONL files
 //! exceed a configurable size threshold, they are atomically renamed to a
 //! timestamped archive and a fresh empty live file is created.
 //!
@@ -412,7 +412,16 @@ fn complete_jsonl_lines(contents: &str) -> Vec<&str> {
         .collect()
 }
 
-fn lock_jsonl(path: &Path) -> std::io::Result<std::fs::File> {
+/// Acquire an exclusive per-file advisory lock for a JSONL path.
+///
+/// Opens (or creates) `<path>.lock` and blocks until the lock is obtained.
+/// The returned file handle must be kept alive for the duration of the
+/// critical section; dropping it releases the lock.
+///
+/// This function is intentionally synchronous and blocking — it is designed
+/// to be called from `spawn_blocking` or other non-async contexts.  Callers
+/// that need async locking should wrap this in `tokio::task::spawn_blocking`.
+pub fn lock_jsonl(path: &Path) -> std::io::Result<std::fs::File> {
     let lock_path = path.with_extension("jsonl.lock");
     let lock = std::fs::OpenOptions::new()
         .create(true)
@@ -490,7 +499,7 @@ mod tests {
     #[tokio::test]
     async fn rotation_preserves_complete_jsonl_lines() {
         let tmp = TempDir::new().expect("tempdir");
-        let path = tmp.path().join("engrams.jsonl");
+        let path = tmp.path().join("signals.jsonl");
 
         let mut data = String::new();
         for i in 0..100 {

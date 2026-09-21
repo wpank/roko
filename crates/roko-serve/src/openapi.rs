@@ -2,6 +2,11 @@
 //!
 //! The document is assembled here so the route handlers can stay focused on
 //! behavior while this module tracks the public HTTP surface.
+// These functions are OpenAPI annotation stubs referenced by #[utoipa::path]
+// macros. They are intentionally empty and never called at runtime — utoipa
+// reads them at compile time to build the OpenAPI document. The blanket
+// dead_code allow is correct and intentional for this file only.
+#![allow(dead_code)]
 #![allow(missing_docs)]
 #![allow(clippy::needless_for_each)]
 
@@ -708,7 +713,12 @@ doc_get_param!(get_arena, "/arenas/{id}", "arenas", "id");
     )
 )]
 fn transition_arena() {}
-doc_get_param!(get_arena_leaderboard, "/arenas/{id}/leaderboard", "arenas", "id");
+doc_get_param!(
+    get_arena_leaderboard,
+    "/arenas/{id}/leaderboard",
+    "arenas",
+    "id"
+);
 doc_get_param!(list_arena_attempts, "/arenas/{id}/attempts", "arenas", "id");
 doc_post_value!(start_arena_attempt, "/arenas/{id}/attempts", "arenas");
 #[utoipa::path(
@@ -770,9 +780,23 @@ fn settle_arena_attempt() {}
 // ── Registries ────────────────────────────────────────────────────────────
 doc_get!(list_passports, "/registries/passports", "registries");
 doc_post_value!(mint_passport, "/registries/passports", "registries");
-doc_get_param!(get_passport, "/registries/passports/{id}", "registries", "id");
-doc_get_param!(passport_history, "/registries/passports/{id}/history", "registries", "id");
-doc_post_value!(transfer_passport, "/registries/passports/{id}/transfer", "registries");
+doc_get_param!(
+    get_passport,
+    "/registries/passports/{id}",
+    "registries",
+    "id"
+);
+doc_get_param!(
+    passport_history,
+    "/registries/passports/{id}/history",
+    "registries",
+    "id"
+);
+doc_post_value!(
+    transfer_passport,
+    "/registries/passports/{id}/transfer",
+    "registries"
+);
 #[utoipa::path(
     put,
     path = "/registries/passports/{id}/metadata",
@@ -787,7 +811,11 @@ doc_post_value!(transfer_passport, "/registries/passports/{id}/transfer", "regis
     )
 )]
 fn update_passport_metadata() {}
-doc_post_value!(add_delegation, "/registries/passports/{id}/delegations", "registries");
+doc_post_value!(
+    add_delegation,
+    "/registries/passports/{id}/delegations",
+    "registries"
+);
 #[utoipa::path(
     delete,
     path = "/registries/passports/{id}/delegations/{delegatee}",
@@ -803,12 +831,37 @@ doc_post_value!(add_delegation, "/registries/passports/{id}/delegations", "regis
     )
 )]
 fn revoke_delegation() {}
-doc_get!(list_registry_knowledge, "/registries/knowledge", "registries");
-doc_post_value!(publish_registry_knowledge, "/registries/knowledge", "registries");
-doc_get_param!(get_registry_knowledge, "/registries/knowledge/{id}", "registries", "id");
-doc_post_value!(validate_registry_knowledge, "/registries/knowledge/{id}/validate", "registries");
-doc_post_value!(challenge_registry_knowledge, "/registries/knowledge/{id}/challenge", "registries");
-doc_post_value!(resolve_knowledge_challenge, "/registries/knowledge/challenges/{id}/resolve", "registries");
+doc_get!(
+    list_registry_knowledge,
+    "/registries/knowledge",
+    "registries"
+);
+doc_post_value!(
+    publish_registry_knowledge,
+    "/registries/knowledge",
+    "registries"
+);
+doc_get_param!(
+    get_registry_knowledge,
+    "/registries/knowledge/{id}",
+    "registries",
+    "id"
+);
+doc_post_value!(
+    validate_registry_knowledge,
+    "/registries/knowledge/{id}/validate",
+    "registries"
+);
+doc_post_value!(
+    challenge_registry_knowledge,
+    "/registries/knowledge/{id}/challenge",
+    "registries"
+);
+doc_post_value!(
+    resolve_knowledge_challenge,
+    "/registries/knowledge/challenges/{id}/resolve",
+    "registries"
+);
 doc_get!(list_registry_events, "/registries/events", "registries");
 doc_get!(registry_stats, "/registries/stats", "registries");
 doc_post_value!(sync_indexer, "/registries/indexer/sync", "registries");
@@ -820,26 +873,66 @@ doc_post_value!(propose_meta_agent, "/meta/agents", "meta");
 doc_get_param!(get_meta_agent, "/meta/agents/{id}", "meta", "id");
 doc_post_value!(validate_meta_agent, "/meta/agents/{id}/validate", "meta");
 doc_post_value!(morph_meta_agent, "/meta/agents/{id}/morph", "meta");
-doc_post_value!(rollback_meta_morph, "/meta/agents/{id}/morph/rollback", "meta");
-doc_post_value!(deactivate_meta_agent, "/meta/agents/{id}/deactivate", "meta");
+doc_post_value!(
+    rollback_meta_morph,
+    "/meta/agents/{id}/morph/rollback",
+    "meta"
+);
+doc_post_value!(
+    deactivate_meta_agent,
+    "/meta/agents/{id}/deactivate",
+    "meta"
+);
 
 // ── Connectors ────────────────────────────────────────────────────────────
 doc_get!(list_connectors, "/connectors", "connectors");
 doc_post_value!(create_connector, "/connectors", "connectors");
 doc_delete!(delete_connector, "/connectors/{name}", "connectors");
-doc_get_param!(connector_health, "/connectors/{name}/health", "connectors", "name");
-doc_post_value!(restart_connector, "/connectors/{name}/restart", "connectors");
+doc_get_param!(
+    connector_health,
+    "/connectors/{name}/health",
+    "connectors",
+    "name"
+);
+doc_post_value!(
+    restart_connector,
+    "/connectors/{name}/restart",
+    "connectors"
+);
 doc_post_value!(query_connector, "/connectors/{name}/query", "connectors");
-doc_post_value!(execute_connector, "/connectors/{name}/execute", "connectors");
+doc_post_value!(
+    execute_connector,
+    "/connectors/{name}/execute",
+    "connectors"
+);
 
 // ── Projections / StateHub ────────────────────────────────────────────────
 doc_get!(projections_catalog, "/projections/catalog", "projections");
 doc_get!(get_telemetry, "/projections/telemetry", "projections");
-doc_get!(stream_telemetry, "/projections/telemetry/stream", "projections");
-doc_get_param!(get_named_projection, "/projections/{name}", "projections", "name");
-doc_get_param!(stream_named_projection, "/projections/{name}/stream", "projections", "name");
+doc_get!(
+    stream_telemetry,
+    "/projections/telemetry/stream",
+    "projections"
+);
+doc_get_param!(
+    get_named_projection,
+    "/projections/{name}",
+    "projections",
+    "name"
+);
+doc_get_param!(
+    stream_named_projection,
+    "/projections/{name}/stream",
+    "projections",
+    "name"
+);
 doc_get!(get_lens_runtimes, "/statehub/lens-runtimes", "projections");
-doc_get_param!(get_lens_runtime, "/statehub/lens-runtimes/{runtime_id}", "projections", "runtime_id");
+doc_get_param!(
+    get_lens_runtime,
+    "/statehub/lens-runtimes/{runtime_id}",
+    "projections",
+    "runtime_id"
+);
 #[utoipa::path(
     post,
     path = "/statehub/lens-runtimes/{runtime_id}/{lens}/reset",
@@ -885,15 +978,30 @@ fn enable_lens_runtime() {}
     )
 )]
 fn disable_lens_runtime() {}
-doc_get_param!(get_statehub_projection, "/statehub/{projection_id}", "projections", "projection_id");
-doc_get_param!(get_statehub_projection_history, "/statehub/{projection_id}/history", "projections", "projection_id");
+doc_get_param!(
+    get_statehub_projection,
+    "/statehub/{projection_id}",
+    "projections",
+    "projection_id"
+);
+doc_get_param!(
+    get_statehub_projection_history,
+    "/statehub/{projection_id}/history",
+    "projections",
+    "projection_id"
+);
 
 // ── Feeds ─────────────────────────────────────────────────────────────────
 doc_get!(list_feeds, "/feeds", "feeds");
 doc_post_value!(create_feed, "/feeds", "feeds");
 doc_get!(get_feed_catalog, "/feeds/catalog", "feeds");
 doc_get!(list_runtime_feeds, "/feeds/runtime", "feeds");
-doc_get_param!(get_runtime_feed_status, "/feeds/runtime/{id}", "feeds", "id");
+doc_get_param!(
+    get_runtime_feed_status,
+    "/feeds/runtime/{id}",
+    "feeds",
+    "id"
+);
 doc_get!(discover_feeds, "/feeds/discover", "feeds");
 doc_get!(search_feeds, "/feeds/search", "feeds");
 doc_get!(feed_health, "/feeds/health", "feeds");
@@ -914,7 +1022,12 @@ doc_get!(list_triggers, "/triggers", "triggers");
 doc_post_value!(create_trigger, "/triggers", "triggers");
 doc_get_param!(get_trigger, "/triggers/{name}", "triggers", "name");
 doc_delete!(delete_trigger, "/triggers/{name}", "triggers");
-doc_get_param!(trigger_history, "/triggers/{name}/history", "triggers", "name");
+doc_get_param!(
+    trigger_history,
+    "/triggers/{name}/history",
+    "triggers",
+    "name"
+);
 doc_post_value!(fire_trigger, "/triggers/{name}/fire", "triggers");
 
 // ── Dreams ────────────────────────────────────────────────────────────────
@@ -942,8 +1055,16 @@ fn update_group() {}
 doc_delete!(delete_group, "/groups/{id}", "groups");
 doc_post_value!(invite_agent_to_group, "/groups/{id}/invite", "groups");
 doc_get_param!(list_invitations, "/groups/{id}/invitations", "groups", "id");
-doc_post_value!(accept_invitation, "/invitations/{invitation_id}/accept", "groups");
-doc_post_value!(reject_invitation, "/invitations/{invitation_id}/reject", "groups");
+doc_post_value!(
+    accept_invitation,
+    "/invitations/{invitation_id}/accept",
+    "groups"
+);
+doc_post_value!(
+    reject_invitation,
+    "/invitations/{invitation_id}/reject",
+    "groups"
+);
 doc_get_param!(list_group_members, "/groups/{id}/members", "groups", "id");
 #[utoipa::path(
     patch,
@@ -977,7 +1098,12 @@ fn update_group_member() {}
     )
 )]
 fn remove_group_member() {}
-doc_get_param!(list_group_knowledge, "/groups/{id}/knowledge", "groups", "id");
+doc_get_param!(
+    list_group_knowledge,
+    "/groups/{id}/knowledge",
+    "groups",
+    "id"
+);
 doc_post_value!(publish_group_knowledge, "/groups/{id}/knowledge", "groups");
 doc_get_param!(list_pheromones, "/groups/{id}/pheromones", "groups", "id");
 doc_post_value!(deposit_pheromone, "/groups/{id}/pheromones", "groups");

@@ -1,6 +1,8 @@
 # TUI Screen Architecture
 
-> Depth for [20-SURFACES.md](../../unified/20-SURFACES.md). Covers the TUI as a Graph of Lens Cells with keyboard-driven routing, the 29 screens across 6 regions, ratatui immediate-mode rendering as the Observe protocol, and the Elm Architecture as a state management pattern.
+> Depth for [20-SURFACES.md](../../unified/20-SURFACES.md). Covers the TUI as a Graph of Lens Cells with keyboard-driven routing, the screens across regions, ratatui immediate-mode rendering as the Observe protocol, and the Elm Architecture as a state management pattern.
+
+> **Implementation status (2026-09-10):** IMPLEMENTED. The ratatui TUI (`roko dashboard`) is wired with F1-F11 tabs (11 tabs: Dashboard, Plans, Agents, Git, Logs, Config, Inspect, and more — see `crates/roko-cli/src/tui/tabs.rs`). The "29 screens across 6 regions" count is from an earlier design; the current tab count is 11. Named surfaces (Workbench/Inbox/Canvas/Minimap/Autonomy) are complete (E37 9/9 contract/backend manifest). Full named-surface TUI rendering and several native runtime sources remain product residuals. The `app/` split refactored the original monolithic TUI into focused modules.
 
 ---
 

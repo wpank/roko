@@ -1,7 +1,7 @@
 //! Block/event feed agent (#6).
 //!
 //! Reads from `state.chain` ring buffers and publishes block data
-//! on `feed:chain:blocks` roughly every 2 seconds.
+//! on `feed.chain.blocks` roughly every 2 seconds.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,7 +26,7 @@ impl FeedAgent for ChainWatcherAgent {
     fn feeds(&self) -> Vec<FeedDescriptor> {
         vec![FeedDescriptor {
             feed_id: "chain-blocks".into(),
-            topic: "feed:chain:blocks".into(),
+            topic: "feed.chain.blocks".into(),
             name: "Chain Blocks".into(),
             description: "Latest block data from the connected chain".into(),
             kind: "raw".into(),
@@ -63,7 +63,7 @@ impl FeedAgent for ChainWatcherAgent {
                         ctx.publish_tick(
                             self.agent_id(),
                             "chain-blocks",
-                            "feed:chain:blocks",
+                            "feed.chain.blocks",
                             payload,
                         );
                     }

@@ -9,7 +9,7 @@
 
 use crate::score::Score as ScoreValue;
 use crate::{
-    Budget, ContentHash, Context, Datum, Engram, Outcome, PolicyOutputs, Pulse, Query, Selection,
+    Budget, ContentHash, Context, Datum, Outcome, PolicyOutputs, Pulse, Query, Selection, Signal,
     TopicFilter, Verdict, error::Result,
 };
 use async_trait::async_trait;
@@ -36,14 +36,14 @@ use roko_primitives::HdcVector;
 #[async_trait]
 pub trait Store: Send + Sync {
     /// Store a signal. Returns its content hash. Idempotent on content.
-    async fn put(&self, signal: Engram) -> Result<ContentHash>;
+    async fn put(&self, signal: Signal) -> Result<ContentHash>;
 
     /// Retrieve a signal by content hash. Does not apply decay.
-    async fn get(&self, id: &ContentHash) -> Result<Option<Engram>>;
+    async fn get(&self, id: &ContentHash) -> Result<Option<Signal>>;
 
     /// Query for signals matching the given filter. Impls may apply decay
     /// when evaluating `min_weight` and when ordering results.
-    async fn query(&self, q: &Query, ctx: &Context) -> Result<Vec<Engram>>;
+    async fn query(&self, q: &Query, ctx: &Context) -> Result<Vec<Signal>>;
 
     /// Query by HDC similarity against a fingerprint, returning ranked matches.
     ///
@@ -104,10 +104,10 @@ pub trait ColdStore: Send + Sync {
     ///
     /// The signal is removed from the hot substrate by the caller after
     /// successful archival.
-    async fn archive(&self, signal: Engram) -> Result<ContentHash>;
+    async fn archive(&self, signal: Signal) -> Result<ContentHash>;
 
     /// Archive a batch of signals. Returns the count of successfully archived.
-    async fn archive_batch(&self, signals: Vec<Engram>) -> Result<usize> {
+    async fn archive_batch(&self, signals: Vec<Signal>) -> Result<usize> {
         let mut count = 0;
         for e in signals {
             self.archive(e).await?;
@@ -120,7 +120,7 @@ pub trait ColdStore: Send + Sync {
     ///
     /// Returns `None` if the signal was never archived or has been purged.
     /// This is a potentially slow operation (decompression, disk reads).
-    async fn thaw(&self, id: &ContentHash) -> Result<Option<Engram>>;
+    async fn thaw(&self, id: &ContentHash) -> Result<Option<Signal>>;
 
     /// Check whether a signal exists in cold storage without fully loading it.
     async fn contains(&self, id: &ContentHash) -> Result<bool> {
@@ -168,25 +168,25 @@ pub trait Score: crate::cell::Cell + Send + Sync {
     /// Score a signal in the given context.
     ///
     /// This is the implementor hook — override this in your scorer impl.
-    fn score(&self, signal: &Engram, ctx: &Context) -> ScoreValue;
+    fn score(&self, signal: &Signal, ctx: &Context) -> ScoreValue;
 
     /// Alias for [`score`](Self::score) — score a persisted signal.
     ///
     /// Provided so callers can be explicit about the input type.
-    fn score_engram(&self, engram: &Engram, ctx: &Context) -> ScoreValue {
-        self.score(engram, ctx)
+    fn score_signal(&self, signal: &Signal, ctx: &Context) -> ScoreValue {
+        self.score(signal, ctx)
     }
 
     /// Score an ephemeral pulse by promoting it to a synthetic signal.
     fn score_pulse(&self, p: &Pulse, ctx: &Context) -> ScoreValue {
-        let synthetic = Engram::from_pulse_synthetic(p);
+        let synthetic = Signal::from_pulse_synthetic(p);
         self.score(&synthetic, ctx)
     }
 
     /// Score either a signal or a pulse via [`Datum`] dispatch.
     fn score_datum(&self, datum: Datum<'_>, ctx: &Context) -> ScoreValue {
         match datum {
-            Datum::Engram(e) => self.score(e, ctx),
+            Datum::Signal(e) => self.score(e, ctx),
             Datum::Pulse(p) => self.score_pulse(p, ctx),
         }
     }
@@ -212,12 +212,12 @@ pub trait Score: crate::cell::Cell + Send + Sync {
 /// a ready future.
 #[async_trait]
 pub trait Verify: crate::cell::Cell + Send + Sync {
-    /// Verify the engram and return a verdict.
-    async fn verify(&self, engram: &Engram, ctx: &Context) -> Verdict;
+    /// Verify the signal and return a verdict.
+    async fn verify(&self, signal: &Signal, ctx: &Context) -> Verdict;
 
-    /// Verify a batch of ephemeral pulses by promoting them to a synthetic engram.
+    /// Verify a batch of ephemeral pulses by promoting them to a synthetic signal.
     async fn verify_stream(&self, pulses: &[Pulse], ctx: &Context) -> Verdict {
-        let synthetic = Engram::from_pulses(pulses);
+        let synthetic = Signal::from_pulses(pulses);
         self.verify(&synthetic, ctx).await
     }
 
@@ -227,7 +227,7 @@ pub trait Verify: crate::cell::Cell + Send + Sync {
 
 // ─── Route ────────────────────────────────────────────────────────────────
 
-/// Selects one engram from many candidates.
+/// Selects one signal from many candidates.
 ///
 /// Routers are the decision-making layer: which model to call, which backend
 /// to use, which gate to run next, which bounty to claim. They learn via
@@ -240,15 +240,15 @@ pub trait Verify: crate::cell::Cell + Send + Sync {
 /// - `CascadeRouter` — multi-stage confidence → UCB
 /// - `WeightedRouter` — softmax over scorers
 pub trait Route: crate::cell::Cell + Send + Sync {
-    /// Select one engram from the candidates. None = no selection made.
+    /// Select one signal from the candidates. None = no selection made.
     ///
     /// This is the implementor hook — override this in your router impl.
-    fn select(&self, candidates: &[Engram], ctx: &Context) -> Option<Selection>;
+    fn select(&self, candidates: &[Signal], ctx: &Context) -> Option<Selection>;
 
-    /// Alias for [`select`](Self::select) — select from persisted engrams.
+    /// Alias for [`select`](Self::select) — select from persisted signals.
     ///
     /// Provided so callers can be explicit about the input type.
-    fn select_engram(&self, candidates: &[Engram], ctx: &Context) -> Option<Selection> {
+    fn select_signal(&self, candidates: &[Signal], ctx: &Context) -> Option<Selection> {
         self.select(candidates, ctx)
     }
 
@@ -268,35 +268,35 @@ pub trait Route: crate::cell::Cell + Send + Sync {
 
 // ─── Compose ──────────────────────────────────────────────────────────────
 
-/// Combines multiple engrams into one new engram under a [`Budget`].
+/// Combines multiple signals into one new signal under a [`Budget`].
 ///
 /// Composers are the assembly layer: prompts from sections, context packs
 /// from fragments, transactions from operations, plans from tasks, bounties
 /// from sub-bounties. Output respects budget constraints (tokens, bytes,
-/// engram count, wall time).
+/// signal count, wall time).
 ///
 /// # Datum-polymorphic input (TM-05)
 ///
 /// The [`compose_datums`](Self::compose_datums) method accepts `&[Datum<'_>]`
-/// so callers can mix persisted engrams and ephemeral pulses in a single
-/// compose call.  The default implementation filters for engrams and
+/// so callers can mix persisted signals and ephemeral pulses in a single
+/// compose call.  The default implementation filters for signals and
 /// delegates to [`compose`](Self::compose), so existing implementations
 /// get the new entry point for free.
 pub trait Compose: crate::cell::Cell + Send + Sync {
-    /// Combine input engrams into a new composed engram.
+    /// Combine input signals into a new composed signal.
     /// The composer may use the scorer to rank/select inputs under budget.
     fn compose(
         &self,
-        engrams: &[Engram],
+        signals: &[Signal],
         budget: &Budget,
         scorer: &dyn Score,
         ctx: &Context,
-    ) -> Result<Engram>;
+    ) -> Result<Signal>;
 
-    /// Compose from a polymorphic mix of engrams and pulses.
+    /// Compose from a polymorphic mix of signals and pulses.
     ///
-    /// The default implementation extracts engrams (converting pulses via
-    /// [`Engram::from_pulse_synthetic`]) and delegates to [`compose`](Self::compose).
+    /// The default implementation extracts signals (converting pulses via
+    /// [`Signal::from_pulse_synthetic`]) and delegates to [`compose`](Self::compose).
     /// Override for pulse-aware composition that treats the two media differently.
     fn compose_datums(
         &self,
@@ -304,15 +304,15 @@ pub trait Compose: crate::cell::Cell + Send + Sync {
         budget: &Budget,
         scorer: &dyn Score,
         ctx: &Context,
-    ) -> Result<Engram> {
-        let engrams: Vec<Engram> = datums
+    ) -> Result<Signal> {
+        let signals: Vec<Signal> = datums
             .iter()
             .map(|d| match d {
-                Datum::Engram(e) => (*e).clone(),
-                Datum::Pulse(p) => Engram::from_pulse_synthetic(p),
+                Datum::Signal(e) => (*e).clone(),
+                Datum::Pulse(p) => Signal::from_pulse_synthetic(p),
             })
             .collect();
-        self.compose(&engrams, budget, scorer, ctx)
+        self.compose(&signals, budget, scorer, ctx)
     }
 
     /// Human-readable name.
@@ -321,41 +321,41 @@ pub trait Compose: crate::cell::Cell + Send + Sync {
 
 // ─── React ────────────────────────────────────────────────────────────────
 
-/// Watches a stream of engrams and emits new engrams in response.
+/// Watches a stream of signals and emits new signals in response.
 ///
 /// Policies are the reactive/behavioral layer: conductor watchers, circuit
 /// breakers, episode logging, pheromone reactions, heartbeat emission,
 /// promotion to chain, sentinel detection. They run continuously over the
-/// engram stream and may produce zero, one, or many output engrams per tick.
+/// signal stream and may produce zero, one, or many output signals per tick.
 ///
 /// # Pulse-aware decisions (TM-06)
 ///
 /// The [`decide_with_pulses`](Self::decide_with_pulses) method accepts both
-/// the persisted engram stream **and** the ephemeral pulse stream, returning
-/// a [`PolicyOutputs`] that can contain both engrams (to persist) and pulses
+/// the persisted signal stream **and** the ephemeral pulse stream, returning
+/// a [`PolicyOutputs`] that can contain both signals (to persist) and pulses
 /// (to publish on the Bus).  The default implementation ignores pulses and
 /// wraps the existing [`decide`](Self::decide) output in `PolicyOutputs`,
 /// so existing implementations get the new entry point for free.
 pub trait React: crate::cell::Cell + Send + Sync {
-    /// Examine the recent engram stream and produce new engrams (interventions).
-    fn decide(&self, stream: &[Engram], ctx: &Context) -> Vec<Engram>;
+    /// Examine the recent signal stream and produce new signals (interventions).
+    fn decide(&self, stream: &[Signal], ctx: &Context) -> Vec<Signal>;
 
-    /// Examine both persisted engrams and ephemeral pulses, returning
-    /// [`PolicyOutputs`] that may contain both engrams and pulses.
+    /// Examine both persisted signals and ephemeral pulses, returning
+    /// [`PolicyOutputs`] that may contain both signals and pulses.
     ///
     /// The default implementation ignores `pulses`, delegates to
-    /// [`decide`](Self::decide), and wraps the resulting engrams in
+    /// [`decide`](Self::decide), and wraps the resulting signals in
     /// `PolicyOutputs` (with an empty pulse list).  Override to produce
     /// pulses or to incorporate the pulse stream into the decision.
     fn decide_with_pulses(
         &self,
-        engrams: &[Engram],
+        signals: &[Signal],
         _pulses: &[Pulse],
         ctx: &Context,
     ) -> PolicyOutputs {
-        let out_engrams = self.decide(engrams, ctx);
+        let out_signals = self.decide(signals, ctx);
         PolicyOutputs {
-            engrams: out_engrams,
+            signals: out_signals,
             pulses: Vec::new(),
         }
     }
@@ -370,7 +370,7 @@ pub trait React: crate::cell::Cell + Send + Sync {
 ///
 /// The Bus is the real-time transport layer that complements the durable
 /// [`Store`]. Pulses flow through the Bus for immediate downstream
-/// reactions; only those worth persisting get promoted to [`Engram`]s and
+/// reactions; only those worth persisting get promoted to [`Signal`]s and
 /// stored in a Store.
 ///
 /// # Sequence numbers
@@ -399,7 +399,7 @@ pub trait Bus: Send + Sync {
 /// Observation protocol — passive data collection from external sources.
 pub trait Observe: crate::cell::Cell {
     /// Collect observations from the environment.
-    fn observe(&self) -> Vec<Engram>;
+    fn observe(&self) -> Vec<Signal>;
 }
 
 // ─── Connect ─────────────────────────────────────────────────────────────

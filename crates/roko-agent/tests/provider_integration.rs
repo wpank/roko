@@ -13,15 +13,15 @@ use roko_agent::provider::{AgentOptions, create_agent_for_model};
 use roko_core::agent::ProviderKind;
 use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
 use roko_core::config::schema::{ModelProfile, ProviderConfig, RokoConfig};
-use roko_core::{Body, Context, Engram, Kind};
+use roko_core::{Body, Context, Kind, Signal};
 use serde_json::Value;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::thread;
 use std::time::Duration;
 
-fn prompt(text: &str) -> Engram {
-    Engram::builder(Kind::Prompt).body(Body::text(text)).build()
+fn prompt(text: &str) -> Signal {
+    Signal::builder(Kind::Prompt).body(Body::text(text)).build()
 }
 
 #[tokio::test]

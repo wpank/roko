@@ -1218,7 +1218,7 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"hello"}}}}'
         assert!(args_text.contains("--effort"));
         assert!(args_text.contains("medium"));
         assert!(args_text.contains("--max-turns"));
-        assert!(args_text.contains("20"));
+        assert!(args_text.contains("10"));
         assert!(args_text.contains("--system-prompt"));
         assert!(!args_text.contains("--append-system-prompt"));
         assert!(args_text.contains("system guidance"));

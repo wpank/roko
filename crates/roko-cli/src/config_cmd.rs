@@ -692,9 +692,7 @@ pub fn cmd_set(workdir: &Path, target: EditTarget, key: &str, value: &str) -> Re
     // Append an audit entry to the config journal so changes can be traced.
     let journal_path = workdir.join(".roko").join("config-journal.jsonl");
     let change = ConfigChange {
-        section: ConfigSection::Other(
-            key.split('.').next().unwrap_or(key).to_string(),
-        ),
+        section: ConfigSection::Other(key.split('.').next().unwrap_or(key).to_string()),
         summary: format!("config set {key} = {value}"),
     };
     if let Err(err) = hot_reload::append_config_journal(&journal_path, &[change], "config-set") {
@@ -797,9 +795,11 @@ fn print_resolved(r: &ResolvedConfig) {
         providers_display.trim(),
         r.sources.providers.tag()
     );
+    let models_display = toml::to_string_pretty(&r.config.models)
+        .unwrap_or_else(|_| format!("{:?}", r.config.models));
     println!(
-        "  models            = {:?} {}",
-        r.config.models,
+        "  models            = {} {}",
+        models_display.trim(),
         r.sources.models.tag()
     );
     println!(
@@ -1293,8 +1293,13 @@ async fn semantic_validate_config(
                 .ok()
                 .is_some_and(|value| !value.trim().is_empty());
             if !is_set {
-                report.api_key_errors.push(format!(
-                    "Provider '{provider_name}' requires env var '{env_name}', but it is not set"
+                // Demoted to warning: a provider with a missing key is
+                // simply skipped at runtime. Only providers actually used
+                // in routing cause failures, and that check happens at
+                // dispatch time, not during static config validation.
+                report.schema_warnings.push(format!(
+                    "Provider '{provider_name}' env var '{env_name}' is not set \
+                     (provider will be unavailable at runtime)"
                 ));
             }
         } else if provider.api_key_env.is_some() {
@@ -2060,13 +2065,19 @@ command = "claude"
 
         let report = semantic_validate_config(&config, &client).await;
 
-        assert_eq!(report.error_count(), 1);
-        assert_eq!(report.warning_count(), 0);
-        assert_eq!(
-            report.api_key_errors,
-            vec![format!(
-                "Provider 'moonshot' requires env var '{env_name}', but it is not set"
-            )]
+        // Missing API key is now a warning (not an error): the provider is
+        // simply unavailable at runtime rather than making config invalid.
+        assert_eq!(report.error_count(), 0);
+        assert_eq!(report.schema_warning_count(), 1);
+        assert!(
+            report.schema_warnings[0].contains("moonshot"),
+            "expected moonshot in warning: {:?}",
+            report.schema_warnings
+        );
+        assert!(
+            report.schema_warnings[0].contains(env_name),
+            "expected env var name in warning: {:?}",
+            report.schema_warnings
         );
     }
 

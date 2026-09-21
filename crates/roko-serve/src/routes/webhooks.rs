@@ -1,7 +1,7 @@
 //! Webhook ingress endpoints.
 //!
 //! GitHub and Slack webhooks are verified, converted into typed
-//! [`roko_core::Signal`]s, persisted through `.roko/engrams.jsonl`, and
+//! [`roko_core::Signal`]s, persisted through `.roko/signals.jsonl`, and
 //! published onto the shared event bus.
 
 use std::sync::Arc;
@@ -182,6 +182,7 @@ impl DeploymentEvent {
     /// The signal kind is derived from [`DeploymentState::signal_kind`] for
     /// `deployment_status` events, or [`signal_kinds::GITHUB_DEPLOYMENT`] for
     /// plain `deployment` events.
+    #[allow(dead_code)]
     pub fn into_signal(self, raw_payload: Value) -> Signal {
         let kind_str = match &self.state {
             Some(state) => state.signal_kind(),
@@ -200,6 +201,7 @@ impl DeploymentEvent {
 ///
 /// GitHub documents three action values for check_suite events.
 /// Unrecognised values are preserved as `Other`.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CheckSuiteAction {
     /// A new check suite was requested (push or PR sync).
@@ -212,6 +214,7 @@ pub enum CheckSuiteAction {
     Other(String),
 }
 
+#[allow(dead_code)]
 impl CheckSuiteAction {
     fn from_str(s: &str) -> Self {
         match s {
@@ -237,6 +240,7 @@ impl CheckSuiteAction {
 ///
 /// Only present on `action=completed` events. Maps GitHub's documented
 /// conclusion strings to typed variants; unknown values are `Other`.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CheckSuiteConclusion {
     Success,
@@ -250,6 +254,7 @@ pub enum CheckSuiteConclusion {
     Other(String),
 }
 
+#[allow(dead_code)]
 impl CheckSuiteConclusion {
     fn from_str(s: &str) -> Self {
         match s {
@@ -289,6 +294,7 @@ impl CheckSuiteConclusion {
 }
 
 /// GitHub App metadata embedded in a check_suite event.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckSuiteApp {
     /// Numeric GitHub App ID.
@@ -305,6 +311,7 @@ pub struct CheckSuiteApp {
 /// The struct exposes typed fields for the attributes that the runner cares about
 /// and a [`to_signal_kind`](CheckSuiteEvent::to_signal_kind) method so callers
 /// can route the event to the appropriate signal kind without re-parsing the JSON.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CheckSuiteEvent {
     /// The lifecycle action that triggered the event.
@@ -320,6 +327,7 @@ pub struct CheckSuiteEvent {
     pub conclusion: Option<CheckSuiteConclusion>,
 }
 
+#[allow(dead_code)]
 impl CheckSuiteEvent {
     /// Parse a `check_suite` webhook payload into a typed event.
     ///

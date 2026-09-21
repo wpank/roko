@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use parking_lot::RwLock;
-use roko_core::{Body, ContentHash, Context, Engram, Query, error::Result, traits::Store};
+use roko_core::{Body, ContentHash, Context, Query, Signal, error::Result, traits::Store};
 use roko_primitives::HdcVector;
 
 use crate::chain::{
@@ -14,7 +14,7 @@ use crate::chain::{
 
 /// Roko-compatible [`Substrate`] backed by mirage's [`HdcIndex`].
 ///
-/// Stores raw `Engram`s keyed by their content hash, alongside an HDC vector
+/// Stores raw `Signal`s keyed by their content hash, alongside an HDC vector
 /// projected from the signal's body. `query()` supports text-based semantic
 /// retrieval via the `text_query` tag key (projects the value into HDC,
 /// returns top-K by similarity).
@@ -27,8 +27,8 @@ pub struct HdcSubstrate {
 }
 
 struct HdcSubstrateState {
-    signals: HashMap<ContentHash, Engram>,
-    /// Maps Engram content hash → HDC index entry id.
+    signals: HashMap<ContentHash, Signal>,
+    /// Maps Signal content hash → HDC index entry id.
     routing: HashMap<ContentHash, InsightId>,
     /// Reverse mapping (used when results come back from the index).
     reverse: HashMap<InsightId, ContentHash>,
@@ -62,7 +62,7 @@ impl HdcSubstrate {
 
     /// Projects a signal body into an HDC vector.
     #[must_use]
-    fn project_signal(signal: &Engram) -> HdcVector {
+    fn project_signal(signal: &Signal) -> HdcVector {
         match &signal.body {
             Body::Text(s) => project_tokens(s),
             Body::Json(v) => project_tokens(&v.to_string()),
@@ -82,7 +82,7 @@ impl HdcSubstrate {
 
 #[async_trait]
 impl Store for HdcSubstrate {
-    async fn put(&self, signal: Engram) -> Result<ContentHash> {
+    async fn put(&self, signal: Signal) -> Result<ContentHash> {
         let hash = signal.content_hash();
         let vector = Self::project_signal(&signal);
         let weight = signal.score.effective().max(0.01);
@@ -96,12 +96,12 @@ impl Store for HdcSubstrate {
         Ok(hash)
     }
 
-    async fn get(&self, id: &ContentHash) -> Result<Option<Engram>> {
+    async fn get(&self, id: &ContentHash) -> Result<Option<Signal>> {
         let st = self.state.read();
         Ok(st.signals.get(id).cloned())
     }
 
-    async fn query(&self, q: &Query, ctx: &Context) -> Result<Vec<Engram>> {
+    async fn query(&self, q: &Query, ctx: &Context) -> Result<Vec<Signal>> {
         let st = self.state.read();
 
         // Semantic search path: look for a `text_query` tag and use it as the
@@ -112,7 +112,7 @@ impl Store for HdcSubstrate {
             .find(|(k, _)| k == "text_query")
             .map(|(_, v)| v.as_str());
 
-        let mut results: Vec<Engram> = if let Some(text) = text_query {
+        let mut results: Vec<Signal> = if let Some(text) = text_query {
             let vec = project_tokens(text);
             let k_cap = q.limit.unwrap_or(50).min(st.signals.len()).max(1);
             st.index
@@ -195,10 +195,10 @@ impl Store for HdcSubstrate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use roko_core::{Body, Context, Engram, Kind, Provenance, Score};
+    use roko_core::{Body, Context, Kind, Provenance, Score, Signal};
 
-    fn signal(kind: Kind, text: &str, author: &str) -> Engram {
-        Engram::builder(kind)
+    fn signal(kind: Kind, text: &str, author: &str) -> Signal {
+        Signal::builder(kind)
             .body(Body::text(text))
             .provenance(Provenance::agent(author))
             .score(Score::new(0.8, 0.5, 1.0, 1.0))
@@ -255,7 +255,7 @@ mod tests {
     #[tokio::test]
     async fn prune_removes_low_weight_signals() {
         let sub = HdcSubstrate::new("hdc-test");
-        let s = Engram::builder(Kind::Insight)
+        let s = Signal::builder(Kind::Insight)
             .body(Body::text("decays fast"))
             .provenance(Provenance::agent("alice"))
             .score(Score::new(0.01, 0.0, 0.0, 0.01))

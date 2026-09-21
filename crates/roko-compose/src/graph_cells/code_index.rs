@@ -139,8 +139,7 @@ impl<P: CodeIndexProvider> roko_graph::Cell for CodeIndexCell<P> {
             let total_tokens: usize = sections.iter().map(|s| s.estimated_tokens()).sum();
             debug!(
                 section_count = sections.len(),
-                total_tokens,
-                "code index enrichment produced sections"
+                total_tokens, "code index enrichment produced sections"
             );
         }
 

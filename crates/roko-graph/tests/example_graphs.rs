@@ -82,12 +82,12 @@ fn task_execution_nodes_present() {
     let graph = load_example("task-execution.toml");
     let expected = [
         ("compose_task", "compose"),
-        ("agent_implement", "agent"),
-        ("compile_gate", "gate"),
-        ("test_gate", "gate"),
+        ("agent_implement", "claude-agent"),
+        ("compile_gate", "gate.compile"),
+        ("test_gate", "gate.test"),
         ("success_report", "compose"),
         ("retry_compose", "compose"),
-        ("retry_agent", "agent"),
+        ("retry_agent", "claude-agent"),
     ];
     for (id, cell_type) in expected {
         let node = graph
@@ -148,10 +148,10 @@ fn conditional_branch_nodes_present() {
     let graph = load_example("conditional-branch.toml");
     let expected = [
         ("compose_prompt", "compose"),
-        ("agent_review", "agent"),
+        ("agent_review", "claude-agent"),
         ("high_quality_path", "compose"),
-        ("medium_quality_path", "agent"),
-        ("low_quality_path", "agent"),
+        ("medium_quality_path", "claude-agent"),
+        ("low_quality_path", "claude-agent"),
         ("notify", "compose"),
     ];
     for (id, cell_type) in expected {

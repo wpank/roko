@@ -42,14 +42,14 @@ impl OperatingFrequency {
     /// Map operating frequency to the default agent turn limit.
     ///
     /// - `Gamma` reactive work does not dispatch an agent.
-    /// - `Theta` deliberative work uses the default 20-turn budget.
-    /// - `Delta` reflective work gets a 50-turn budget.
+    /// - `Theta` deliberative work uses 10 turns (enough for most tasks).
+    /// - `Delta` reflective work gets a 30-turn budget.
     #[must_use]
     pub const fn turn_limit(self) -> u32 {
         match self {
             Self::Gamma => 0,
-            Self::Theta => 20,
-            Self::Delta => 50,
+            Self::Theta => 10,
+            Self::Delta => 30,
         }
     }
 
@@ -568,7 +568,7 @@ mod tests {
     #[test]
     fn turn_limits_match_frequency_bands() {
         assert_eq!(OperatingFrequency::Gamma.turn_limit(), 0);
-        assert_eq!(OperatingFrequency::Theta.turn_limit(), 20);
-        assert_eq!(OperatingFrequency::Delta.turn_limit(), 50);
+        assert_eq!(OperatingFrequency::Theta.turn_limit(), 10);
+        assert_eq!(OperatingFrequency::Delta.turn_limit(), 30);
     }
 }

@@ -530,10 +530,7 @@ impl InferenceGateway {
             self.cascade_router.record_observation(
                 &ctx,
                 &response.model,
-                compute_gateway_reward(
-                    record.cost.actual_cost,
-                    response.latency_ms,
-                ),
+                compute_gateway_reward(record.cost.actual_cost, response.latency_ms),
                 true,
             );
         }

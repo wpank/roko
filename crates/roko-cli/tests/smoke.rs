@@ -15,11 +15,11 @@ use roko_compose::TaskContext;
 use roko_core::agent::ProviderKind;
 use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
 use roko_core::config::schema::{ModelProfile, ProviderConfig};
-use roko_core::{AgentRole, Body, Context, Engram, Kind};
+use roko_core::{AgentRole, Body, Context, Kind, Signal};
 use tempfile::TempDir;
 
-fn prompt(text: &str) -> Engram {
-    Engram::builder(Kind::Prompt).body(Body::text(text)).build()
+fn prompt(text: &str) -> Signal {
+    Signal::builder(Kind::Prompt).body(Body::text(text)).build()
 }
 
 fn claude_model() -> ModelProfile {
@@ -313,6 +313,7 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"mcp-ok"}}}}'
         gemini_safety_settings: Vec::new(),
         cancel_token: None,
         tool_audit: None,
+        max_turns: None,
     };
 
     let agent = ClaudeCliAdapter

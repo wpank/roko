@@ -57,34 +57,34 @@ use super::schema::RokoConfig;
 use super::validation::{InvariantSeverity, validate_invariants, validate_provider_semantics};
 
 /// One in-place schema migration from version N to N+1.
-pub type MigrationFn = fn(&mut toml::Value) -> Result<(), String>;
+pub(crate) type MigrationFn = fn(&mut toml::Value) -> Result<(), String>;
 
 /// A successfully applied migration edge.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MigrationStep {
-    pub from: u32,
-    pub to: u32,
-    pub description: String,
+pub(crate) struct MigrationStep {
+    pub(crate) from: u32,
+    pub(crate) to: u32,
+    pub(crate) description: String,
 }
 
 /// Outcome of attempting to migrate one TOML value.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MigrationReport {
-    pub from_version: u32,
-    pub to_version: u32,
-    pub steps_applied: Vec<MigrationStep>,
-    pub warnings: Vec<String>,
+pub(crate) struct MigrationReport {
+    pub(crate) from_version: u32,
+    pub(crate) to_version: u32,
+    pub(crate) steps_applied: Vec<MigrationStep>,
+    pub(crate) warnings: Vec<String>,
 }
 
 /// Ordered registry of schema migrations.
-pub struct ConfigMigrator {
-    pub migrations: BTreeMap<u32, MigrationFn>,
-    pub target_version: u32,
+pub(crate) struct ConfigMigrator {
+    pub(crate) migrations: BTreeMap<u32, MigrationFn>,
+    pub(crate) target_version: u32,
 }
 
 impl ConfigMigrator {
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let mut migrator = Self {
             migrations: BTreeMap::new(),
             target_version: super::schema::CURRENT_SCHEMA_VERSION,
@@ -93,7 +93,7 @@ impl ConfigMigrator {
         migrator
     }
 
-    pub fn register(&mut self, from_version: u32, migration: MigrationFn) {
+    pub(crate) fn register(&mut self, from_version: u32, migration: MigrationFn) {
         self.migrations.insert(from_version, migration);
     }
 
@@ -102,7 +102,7 @@ impl ConfigMigrator {
     /// The report retains partial progress and warnings when a migration edge
     /// is unavailable or fails. Live loaders reject reports that do not reach
     /// `target_version`; tooling may inspect the partial report directly.
-    pub fn migrate(&self, toml_value: &mut toml::Value) -> MigrationReport {
+    pub(crate) fn migrate(&self, toml_value: &mut toml::Value) -> MigrationReport {
         let from_version = toml_value
             .get("schema_version")
             .and_then(toml::Value::as_integer)
@@ -1496,6 +1496,22 @@ fn build_schema_tree() -> toml::Value {
         .agent
         .roles
         .insert("_schema_sentinel".to_string(), RoleOverride::default());
+    // Populate Optional/skip_serializing_if agent fields with non-default
+    // values so they appear in the serialized schema tree and are not
+    // stripped by `strip_unknown_fields`.
+    config.agent.command = Some(String::new());
+    config.agent.args = Some(Vec::new());
+    config.agent.timeout_ms = Some(0);
+    config.agent.env = Some(Vec::new());
+    config.agent.data_llm = Some(Default::default());
+    config.agent.extensions = vec![String::new()];
+    config.agent.mcp_config = Some(std::path::PathBuf::new());
+    config.agent.default_agent_id = Some(String::new());
+    config.agent.disabled_providers = vec![String::new()];
+    // Populate Optional/skip_serializing_if GitHubConfig fields so they
+    // appear in the serialized schema tree and are not stripped.
+    config.github.owner = Some(String::new());
+    config.github.repo = Some(String::new());
     config.subscriptions.push(SubscriptionConfig::default());
 
     let mut value =

@@ -12,9 +12,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Json;
+use axum::Router;
 use axum::extract::State;
 use axum::routing::{get, post};
-use axum::Router;
 use serde::Deserialize;
 use serde_json::{Value, json};
 

@@ -55,40 +55,36 @@ async fn dream_run(
                 kind: format!("dream_run:{mode}"),
             });
 
-            let result = tokio::task::spawn_blocking(move || {
-                let effort = if mode == "quick" { "low" } else { "medium" };
-                let config = roko_dreams::DreamLoopConfig {
-                    auto_dream: true,
-                    idle_threshold_mins: 0,
-                    min_episodes_for_dream: 0,
-                    schedule: roko_dreams::DreamSchedulePolicy::default(),
-                    agent: roko_dreams::DreamAgentConfig {
-                        command: "cat".to_string(),
-                        args: Vec::new(),
-                        model: None,
-                        bare_mode: true,
-                        effort: effort.to_string(),
-                        fallback_model: None,
-                        timeout_ms: DEFAULT_REQUEST_TIMEOUT_MS,
-                        env: Vec::new(),
-                    },
-                };
-                let mut runner = roko_dreams::DreamRunner::new(workdir, config);
-                runner.consolidate_now()
-            })
-            .await;
+            // Use `consolidate_async` + `tokio::spawn` rather than
+            // `consolidate_now` + `spawn_blocking`.  `consolidate_now` calls
+            // `block_in_place` internally which panics when invoked from a
+            // `spawn_blocking` thread (blocking threads are not async workers
+            // and have no reactor context to yield from).
+            let effort = if mode == "quick" { "low" } else { "medium" };
+            let config = roko_dreams::DreamLoopConfig {
+                auto_dream: true,
+                idle_threshold_mins: 0,
+                min_episodes_for_dream: 0,
+                schedule: roko_dreams::DreamSchedulePolicy::default(),
+                agent: roko_dreams::DreamAgentConfig {
+                    command: "cat".to_string(),
+                    args: Vec::new(),
+                    model: None,
+                    bare_mode: true,
+                    effort: effort.to_string(),
+                    fallback_model: None,
+                    timeout_ms: DEFAULT_REQUEST_TIMEOUT_MS,
+                    env: Vec::new(),
+                },
+            };
+            let mut runner = roko_dreams::DreamRunner::new(workdir, config);
+            let result: Result<roko_dreams::DreamReport, _> = runner.consolidate_async().await;
 
             let success = match result {
-                Ok(Ok(_report)) => true,
-                Ok(Err(err)) => {
-                    bus.publish(ServerEvent::Error {
-                        message: format!("dream run failed: {err}"),
-                    });
-                    false
-                }
+                Ok(_report) => true,
                 Err(err) => {
                     bus.publish(ServerEvent::Error {
-                        message: format!("dream run panicked: {err}"),
+                        message: format!("dream run failed: {err}"),
                     });
                     false
                 }

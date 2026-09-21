@@ -4,6 +4,8 @@
 > metadata. Trust tiers map to capability declarations. The safety hook chain is a Pipeline
 > of Verify Cells gating execution.
 
+> **Implementation status (2026-09-10):** IMPLEMENTED (E32 8/8 manifest). The AgentContract tool policy (role/task allowlists, deny-wins, unknown-roles deny-all) is live. The 16 executable local tools in roko-std are wired. Safety hooks chain through `crates/roko-agent/src/safety/`. The "16 built-in tools" count throughout this doc is accurate for the executable local set; roko-std ships 35 total (16 local + 19 GitHub MCP). Gate count is 19 (not 14 or 16 as some earlier docs stated).
+
 **Parent spec**: [14-TOOLS.md](../../unified/14-TOOLS.md), [02-CELL.md](../../unified/02-CELL.md)
 
 ---

@@ -22,21 +22,20 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/marketplace/fork", post(fork_artifact))
 }
 
+// Phase 2 stub query types: deserialized by axum extractors but fields are
+// not yet consumed because the handlers return not_implemented.
 #[derive(Debug, Default, Deserialize)]
+#[allow(dead_code)]
 struct BrowseQuery {
-    #[allow(dead_code)]
     tab: Option<String>,
-    #[allow(dead_code)]
     kind: Option<String>,
-    #[allow(dead_code)]
     tags: Option<String>,
-    #[allow(dead_code)]
     capabilities: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct SearchQuery {
-    #[allow(dead_code)]
     q: String,
 }
 

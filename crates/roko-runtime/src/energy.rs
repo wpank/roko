@@ -1,10 +1,19 @@
-//! STATUS: NOT WIRED -- built but no non-test runtime caller.
-//!
 //! Cognitive energy model -- metabolic costs for cognitive operations.
 //!
 //! Agents have a finite energy pool that is consumed by operations (LLM calls,
 //! tool invocations, gate runs) and replenished over time. When energy is low,
 //! the system throttles expensive operations and favors cheaper alternatives.
+//!
+//! # Status
+//!
+//! **Superseded by `roko_daimon::CognitiveEnergy`** for runtime use.
+//! The DaimonState implementation provides activity-based depletion with
+//! affect coupling, fatigue tracking, behavioral phase constraints, and
+//! recovery modes (Gamma/Theta/Delta) that are already wired into
+//! dispatch-time modulation via `GraphFeedbackContext`. This module
+//! remains available as a standalone USD-denominated energy model for
+//! contexts that do not carry a DaimonState (e.g., isolated tool loops,
+//! benchmarks).
 //!
 //! # Architecture
 //!

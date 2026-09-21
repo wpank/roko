@@ -21,6 +21,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hmac::{Hmac, Mac};
 use roko_agent::dispatcher::{HandlerResolver, ToolDispatcher};
+use roko_agent::mcp::MCP_PROTOCOL_VERSION;
 use roko_agent::provider::LocalToolRuntime;
 use roko_agent::safety::SafetyLayer;
 use roko_agent::safety::contract::AgentContract;
@@ -218,7 +219,7 @@ async fn handle_mcp(
         "initialize" => json_rpc_ok(
             request_id,
             json!({
-                "protocolVersion": "2025-03-26",
+                "protocolVersion": MCP_PROTOCOL_VERSION,
                 "capabilities": { "tools": { "listChanged": false } },
                 "serverInfo": { "name": "roko-plugin-bridge", "version": env!("CARGO_PKG_VERSION") },
                 "instructions": "Declarative plugin tools execute through Roko's capability, contract, and OS-confinement policies."

@@ -116,7 +116,7 @@ pub async fn experiments_metric(
 
 /// `GET /api/metrics/feedback_latency` — median hours from action to first feedback signal.
 pub async fn feedback_latency(State(state): State<Arc<AppState>>) -> Result<Json<Value>, ApiError> {
-    let path = state.workdir.join(".roko").join("engrams.jsonl");
+    let path = state.workdir.join(".roko").join("signals.jsonl");
     let entries = read_jsonl_entries(&path).await?;
     Ok(Json(build_feedback_latency_response(&entries)))
 }
@@ -347,13 +347,6 @@ struct ModelEfficiencyAggregate {
     total_cost_usd: f64,
     total_episodes: u64,
     successful_episodes: u64,
-}
-
-#[derive(Debug, Default)]
-struct GateRateAggregate {
-    passed_gates: u64,
-    total_gates: u64,
-    samples: Vec<(i64, bool)>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -591,61 +584,6 @@ fn build_model_efficiency_response(
         "data_quality": data_quality,
         "models": rows,
     })
-}
-
-fn build_gate_rate_response(entries: &[Value]) -> Value {
-    let mut by_gate: BTreeMap<String, GateRateAggregate> = BTreeMap::new();
-
-    for entry in entries {
-        let Some(kind) = entry.get("kind").and_then(Value::as_str) else {
-            continue;
-        };
-        if !super::helpers::is_gate_result_kind(kind) {
-            continue;
-        }
-
-        let Some(gate_name) = super::helpers::extract_gate_name(entry) else {
-            continue;
-        };
-        let Some(passed) = super::helpers::extract_gate_passed(entry) else {
-            continue;
-        };
-        let timestamp = super::helpers::entry_timestamp_ms(entry).unwrap_or_default();
-
-        let aggregate = by_gate.entry(gate_name).or_default();
-        aggregate.total_gates += 1;
-        if passed {
-            aggregate.passed_gates += 1;
-        }
-        aggregate.samples.push((timestamp, passed));
-    }
-
-    let mut gates = Vec::new();
-    for (gate, aggregate) in by_gate {
-        let (trend_delta, trend_direction, baseline_rate, recent_rate) =
-            gate_trend(&aggregate.samples);
-        gates.push(json!({
-            "gate": gate,
-            "passed_gates": aggregate.passed_gates,
-            "total_gates": aggregate.total_gates,
-            "gate_rate": ratio(aggregate.passed_gates, aggregate.total_gates),
-            "trend": {
-                "delta": trend_delta,
-                "direction": trend_direction,
-                "baseline_rate": baseline_rate,
-                "recent_rate": recent_rate,
-            },
-        }));
-    }
-
-    gates.sort_by(|a, b| {
-        a.get("gate")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .cmp(b.get("gate").and_then(Value::as_str).unwrap_or(""))
-    });
-
-    json!({ "gates": gates })
 }
 
 fn build_experiment_metrics_response(path: &std::path::Path, store: &ExperimentStore) -> Value {
@@ -898,41 +836,6 @@ fn ancestor_timestamp_inner(
     }
 
     None
-}
-
-fn gate_trend(samples: &[(i64, bool)]) -> (f64, String, f64, f64) {
-    if samples.len() < 2 {
-        return (0.0, "flat".to_string(), 0.0, 0.0);
-    }
-
-    let mut ordered = samples.to_vec();
-    ordered.sort_by_key(|(ts, _)| *ts);
-
-    let split = ordered.len() / 2;
-    if split == 0 || split == ordered.len() {
-        return (0.0, "flat".to_string(), 0.0, 0.0);
-    }
-
-    let baseline = &ordered[..split];
-    let recent = &ordered[split..];
-    let baseline_rate = ratio(
-        baseline.iter().filter(|(_, passed)| *passed).count() as u64,
-        baseline.len() as u64,
-    );
-    let recent_rate = ratio(
-        recent.iter().filter(|(_, passed)| *passed).count() as u64,
-        recent.len() as u64,
-    );
-    let delta = recent_rate - baseline_rate;
-    let direction = if delta > 0.01 {
-        "improving"
-    } else if delta < -0.01 {
-        "declining"
-    } else {
-        "flat"
-    };
-
-    (delta, direction.to_string(), baseline_rate, recent_rate)
 }
 
 fn cascade_stage_for_observations(observations: u64) -> CascadeStage {

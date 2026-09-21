@@ -1783,7 +1783,7 @@ mod tests {
             0.0,
         );
 
-        assert_eq!(cfactor.episode_count, 14);
+        assert_eq!(cfactor.episode_count, 13); // 10 task successes + 1 failure + 1 replan + 1 knowledge
         // 11 of ~13 task episodes pass gates
         assert!(cfactor.components.gate_pass_rate > 0.7 && cfactor.components.gate_pass_rate < 1.0);
         assert!(cfactor.components.first_try_rate > 0.7 && cfactor.components.first_try_rate < 1.0);
@@ -1866,7 +1866,10 @@ mod tests {
     fn computes_turn_taking_equality_from_agent_participation() {
         let mut episodes = Vec::new();
 
-        let mut even_a = episode_at("task-even", 5, 10.0, 1_000, true);
+        // Use distinct task IDs so deduplicate_episodes keeps both episodes.
+        // Dedup key is "{plan_id}:{task_id}:{attempt}"; same task_id under one
+        // plan collapses to a single entry, losing agent diversity.
+        let mut even_a = episode_at("task-even-a", 5, 10.0, 1_000, true);
         even_a.agent_id = "agent-a".to_string();
         even_a.extra.insert(
             "plan_id".to_string(),
@@ -1874,7 +1877,7 @@ mod tests {
         );
         episodes.push(even_a);
 
-        let mut even_b = episode_at("task-even", 4, 10.0, 1_000, true);
+        let mut even_b = episode_at("task-even-b", 4, 10.0, 1_000, true);
         even_b.agent_id = "agent-b".to_string();
         even_b.extra.insert(
             "plan_id".to_string(),

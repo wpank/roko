@@ -65,7 +65,7 @@ mod tests {
     use crate::runtime::NoOpRuntime;
     use crate::state::{AppState, OperationStatus, PlanHandle};
     use roko_core::config::ServeAuthConfig;
-    use roko_core::{Body, Engram, Kind, Provenance, Verdict};
+    use roko_core::{Body, Kind, Provenance, Signal, Verdict};
 
     use super::episodes;
     use super::gates;
@@ -81,7 +81,7 @@ mod tests {
         };
         verdict.duration_ms = duration_ms;
 
-        let signal = Engram::builder(Kind::GateVerdict)
+        let signal = Signal::builder(Kind::GateVerdict)
             .body(
                 Body::from_json(&verdict)
                     .expect("invariant: verdict helper should serialize test payloads"),
@@ -258,7 +258,7 @@ mod tests {
     #[tokio::test]
     async fn gates_history_collection_is_mounted_under_api_grouping() {
         let (dir, state) = test_state();
-        let signals = dir.path().join(".roko").join("engrams.jsonl");
+        let signals = dir.path().join(".roko").join("signals.jsonl");
         tokio::fs::create_dir_all(signals.parent().expect("signals parent"))
             .await
             .expect("create signals dir");
@@ -335,7 +335,7 @@ mod tests {
     #[tokio::test]
     async fn gate_summary_includes_rung_breakdown_under_api_grouping() {
         let (dir, state) = test_state();
-        let signals = dir.path().join(".roko").join("engrams.jsonl");
+        let signals = dir.path().join(".roko").join("signals.jsonl");
         tokio::fs::create_dir_all(signals.parent().expect("signals parent"))
             .await
             .expect("create signals dir");
@@ -652,7 +652,7 @@ mod tests {
     #[tokio::test]
     async fn gate_history_returns_500_for_invalid_jsonl() {
         let (dir, state) = test_state();
-        let signals = dir.path().join(".roko").join("engrams.jsonl");
+        let signals = dir.path().join(".roko").join("signals.jsonl");
         tokio::fs::create_dir_all(signals.parent().expect("signals parent"))
             .await
             .expect("create signals dir");
@@ -670,7 +670,7 @@ mod tests {
     #[tokio::test]
     async fn signals_returns_500_for_invalid_jsonl() {
         let (dir, state) = test_state();
-        let signals_path = dir.path().join(".roko").join("engrams.jsonl");
+        let signals_path = dir.path().join(".roko").join("signals.jsonl");
         tokio::fs::create_dir_all(signals_path.parent().expect("signals parent"))
             .await
             .expect("create signals dir");

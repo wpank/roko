@@ -339,12 +339,7 @@ pub async fn git_checkout_new_branch(workspace: &Path, branch: &str) -> Result<(
 /// matches when the path equals it exactly or starts with it (directory
 /// prefix). Basename matching is used for dot/secret filenames so that
 /// `subdir/.env` is also caught.
-const EXCLUDED_PATTERNS: &[&str] = &[
-    ".env",
-    "credentials.json",
-    "secrets.json",
-    ".roko/",
-];
+const EXCLUDED_PATTERNS: &[&str] = &[".env", "credentials.json", "secrets.json", ".roko/"];
 
 /// Returns true if `path` matches any of the [`EXCLUDED_PATTERNS`].
 fn is_excluded(path: &str) -> bool {
@@ -371,7 +366,11 @@ pub async fn git_commit(workspace: &Path, message: &str) -> Result<()> {
         .context("spawn git diff --name-only HEAD")?;
 
     if !tracked_output.status.success() {
-        return Err(git_error("git diff --name-only HEAD", &tracked_output, None));
+        return Err(git_error(
+            "git diff --name-only HEAD",
+            &tracked_output,
+            None,
+        ));
     }
 
     // Collect untracked files (new files not yet known to git).

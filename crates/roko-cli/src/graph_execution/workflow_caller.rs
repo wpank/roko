@@ -170,9 +170,6 @@ pub async fn run_canary_comparison(
 /// Marker documenting that the legacy WorkflowEngine execution path has been
 /// retired by #276. All workflow execution now uses graph templates via
 /// `WorkflowGraphController`.
-///
-/// The `graph_canary` feature gate in `Cargo.toml` serves as the sole
-/// integration signal for #260 (which has already landed).
 pub const LEGACY_WORKFLOW_ENGINE_FROZEN: &str =
     "frozen by #258, retired by #276; all execution uses graph templates";
 
@@ -255,14 +252,5 @@ mod tests {
     fn frozen_marker_exists() {
         assert!(LEGACY_WORKFLOW_ENGINE_FROZEN.contains("frozen"));
         assert!(LEGACY_WORKFLOW_ENGINE_FROZEN.contains("#258"));
-    }
-
-    // ── Graph_canary feature gate ────────────────────────────────────
-
-    #[test]
-    fn graph_canary_feature_gate_signal() {
-        // #260 reads cfg(feature = "graph_canary") as proof that #258 is
-        // integrated. The feature gate exists in Cargo.toml.
-        assert!(cfg!(feature = "graph_canary") || !cfg!(feature = "graph_canary"));
     }
 }

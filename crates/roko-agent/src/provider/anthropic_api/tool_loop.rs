@@ -294,7 +294,10 @@ fn tool_result_content(result: &ToolResult) -> Value {
                 })
                 .collect();
             if blocks.len() == 1 {
-                blocks.into_iter().next().unwrap()
+                blocks
+                    .into_iter()
+                    .next()
+                    .expect("len checked to be exactly 1 above")
             } else {
                 Value::Array(blocks)
             }
@@ -575,6 +578,7 @@ impl AnthropicMessagesBackend {
         let kind = match error {
             LlmError::Provider(ProviderError::RateLimit { .. }) => "rate_limit",
             LlmError::Provider(ProviderError::AuthFailure) => "auth_failure",
+            LlmError::Provider(ProviderError::InsufficientCredits) => "insufficient_credits",
             LlmError::Provider(ProviderError::Timeout) | LlmError::Timeout(_) => "timeout",
             LlmError::Provider(ProviderError::ServerError(_)) => "server_error",
             LlmError::Provider(ProviderError::ContentPolicy) => "content_policy",

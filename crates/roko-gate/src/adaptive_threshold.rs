@@ -229,7 +229,6 @@ pub struct AdaptiveThresholds {
     // ── Operator-tunable parameters (P1-37) ──────────────────────────────
     // These are set at construction time from [gates] config and are NOT
     // persisted to gate-thresholds.json (they come from roko.toml).
-
     /// EMA decay factor for pass-rate tracking.
     /// Sourced from `[gates] ema_alpha` (default: [`EMA_ALPHA`]).
     #[serde(skip, default = "default_ema_alpha_field")]
@@ -487,8 +486,9 @@ impl AdaptiveThresholds {
         } else if stats.total_observations == 0 {
             stats.ema_pass_rate = value;
         } else {
-            stats.ema_pass_rate =
-                self.ema_alpha.mul_add(value, (1.0 - self.ema_alpha) * stats.ema_pass_rate);
+            stats.ema_pass_rate = self
+                .ema_alpha
+                .mul_add(value, (1.0 - self.ema_alpha) * stats.ema_pass_rate);
         }
 
         stats.total_observations += 1;
@@ -849,7 +849,7 @@ impl AdaptiveThresholds {
 const POISONING_WINDOW: usize = 10;
 
 /// EMA poisoning defense state for one rung.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PoisoningDefense {
     /// Recent observation directions (+1 for pass, -1 for fail).
     recent_directions: Vec<i8>,
@@ -862,6 +862,12 @@ pub struct PoisoningDefense {
     /// Window size for direction analysis.
     #[serde(default = "default_poisoning_window")]
     window: usize,
+}
+
+impl Default for PoisoningDefense {
+    fn default() -> Self {
+        Self::new(POISONING_WINDOW)
+    }
 }
 
 fn default_poisoning_window() -> usize {
@@ -894,8 +900,8 @@ impl PoisoningDefense {
 
         if self.frozen {
             // Check for diversity to unfreeze.
-            let has_both = self.recent_directions.contains(&1)
-                && self.recent_directions.contains(&-1);
+            let has_both =
+                self.recent_directions.contains(&1) && self.recent_directions.contains(&-1);
             if has_both {
                 self.diverse_since_freeze += 1;
             }
@@ -1352,7 +1358,10 @@ mod tests {
         // EMA unchanged after applying config.
         assert!((at.threshold_for(0) - original_ema).abs() < 1e-10);
         // But retry ceiling is now 10.
-        assert_eq!(at.suggested_max_retries(0), at.suggested_max_retries(0).min(10));
+        assert_eq!(
+            at.suggested_max_retries(0),
+            at.suggested_max_retries(0).min(10)
+        );
     }
 
     #[test]

@@ -6,48 +6,52 @@
 //! for wire-level transport. Standard codes follow the JSON-RPC spec; custom
 //! codes in the -32000..-32099 range encode Roko-specific failure categories.
 
+// RPC wire types and constants are used by roko-serve's JSON-RPC path which
+// hasn't been imported into this crate's lib.rs re-export yet.
+#![allow(dead_code)]
+
 use super::RokoError;
 
 /// JSON-RPC error with code, message, and optional structured data.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct RpcError {
+pub(crate) struct RpcError {
     /// Numeric JSON-RPC error code.
-    pub code: i64,
+    pub(crate) code: i64,
     /// Human-readable error message.
-    pub message: String,
+    pub(crate) message: String,
     /// Optional structured error data.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub data: Option<serde_json::Value>,
+    pub(crate) data: Option<serde_json::Value>,
 }
 
 // Standard JSON-RPC 2.0 error codes.
 
 /// Parse error -- invalid JSON was received.
-pub const PARSE_ERROR: i64 = -32700;
+pub(crate) const PARSE_ERROR: i64 = -32700;
 /// Invalid request -- the JSON sent is not a valid request object.
-pub const INVALID_REQUEST: i64 = -32600;
+pub(crate) const INVALID_REQUEST: i64 = -32600;
 /// Method not found -- the method does not exist or is not available.
-pub const METHOD_NOT_FOUND: i64 = -32601;
+pub(crate) const METHOD_NOT_FOUND: i64 = -32601;
 /// Invalid params -- invalid method parameters.
-pub const INVALID_PARAMS: i64 = -32602;
+pub(crate) const INVALID_PARAMS: i64 = -32602;
 /// Internal error -- internal JSON-RPC error.
-pub const INTERNAL_ERROR: i64 = -32603;
+pub(crate) const INTERNAL_ERROR: i64 = -32603;
 
 // Custom Roko error codes (-32000 .. -32099).
 
 /// Agent backend failure (Claude/Codex/etc.).
-pub const AGENT_FAILURE: i64 = -32000;
+pub(crate) const AGENT_FAILURE: i64 = -32000;
 /// Verify verification failure.
-pub const GATE_FAILURE: i64 = -32001;
+pub(crate) const GATE_FAILURE: i64 = -32001;
 /// Operation timed out.
-pub const TIMEOUT: i64 = -32002;
+pub(crate) const TIMEOUT: i64 = -32002;
 /// Budget exceeded.
-pub const BUDGET_EXCEEDED: i64 = -32003;
+pub(crate) const BUDGET_EXCEEDED: i64 = -32003;
 
 impl RpcError {
     /// Create a new RPC error.
     #[must_use]
-    pub fn new(code: i64, message: impl Into<String>) -> Self {
+    pub(crate) fn new(code: i64, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),
@@ -57,7 +61,11 @@ impl RpcError {
 
     /// Create a new RPC error with structured data.
     #[must_use]
-    pub fn with_data(code: i64, message: impl Into<String>, data: serde_json::Value) -> Self {
+    pub(crate) fn with_data(
+        code: i64,
+        message: impl Into<String>,
+        data: serde_json::Value,
+    ) -> Self {
         Self {
             code,
             message: message.into(),
@@ -89,7 +97,7 @@ impl std::error::Error for RpcError {}
 /// | `BudgetExceeded` | -32003 | Budget exceeded |
 /// | everything else | -32603 | Internal error |
 #[must_use]
-pub fn to_rpc_error(error: &RokoError) -> RpcError {
+pub(crate) fn to_rpc_error(error: &RokoError) -> RpcError {
     let (code, message) = match error {
         // Standard: parse error
         RokoError::Json(_) => (PARSE_ERROR, format!("{error}")),

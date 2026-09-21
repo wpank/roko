@@ -7,9 +7,9 @@
 //! ◆ agent      auditor@v1  ·  eid://roko/auditor.v1  (attested)
 //! │ predict    $0.043  ·  12.4s  ·  route: haiku → sonnet
 //! │ gates      secret_scan ✔   cost_ceiling ✔   policy ✔
-//! │ knowledge  loaded 7 engrams (3 agents, 0.91 conf)
+//! │ knowledge  loaded 7 signals (3 agents, 0.91 conf)
 //! │ actual     $0.031  (-28% vs predicted)  ·  routed to haiku
-//! └ deposited  2 new engrams → /infra/payments-svc
+//! └ deposited  2 new signals → /infra/payments-svc
 //! ```
 
 use ratatui::text::Line;
@@ -39,7 +39,7 @@ pub struct RunBlockData {
     /// Gate verdicts: (name, passed).
     pub gate_verdicts: Vec<(String, bool)>,
 
-    /// Knowledge engrams loaded before dispatch.
+    /// Knowledge signals loaded before dispatch.
     pub knowledge_loaded: Option<KnowledgeInfo>,
 
     /// Actual cost in USD.
@@ -52,7 +52,7 @@ pub struct RunBlockData {
     /// Tool calls made during execution.
     pub tool_calls: Vec<ToolCallInfo>,
 
-    /// Knowledge engrams deposited after run.
+    /// Knowledge signals deposited after run.
     pub deposited_count: usize,
     /// Deposit target path.
     pub deposited_path: Option<String>,
@@ -64,7 +64,7 @@ pub struct RunBlockData {
 /// Knowledge query result summary.
 #[derive(Debug, Clone)]
 pub struct KnowledgeInfo {
-    /// Number of engrams loaded.
+    /// Number of signals loaded.
     pub count: usize,
     /// Topic path.
     pub topic: String,
@@ -118,7 +118,7 @@ impl RunBlockData {
         // Knowledge line
         if let Some(ref k) = self.knowledge_loaded {
             let value = format!(
-                "loaded {} engrams from {} ({} agents, {:.2} conf)",
+                "loaded {} signals from {} ({} agents, {:.2} conf)",
                 k.count, k.topic, k.agent_count, k.avg_confidence,
             );
             lines.push(styled::continuation(theme, "knowledge", &value, None));
@@ -182,7 +182,7 @@ impl RunBlockData {
                 theme,
                 "deposited",
                 &format!(
-                    "{} new engram{} {} {}",
+                    "{} new signal{} {} {}",
                     self.deposited_count,
                     if self.deposited_count == 1 { "" } else { "s" },
                     symbols::ARROW,

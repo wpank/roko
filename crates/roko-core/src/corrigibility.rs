@@ -338,9 +338,9 @@ macro_rules! impl_verify_cell {
 
             async fn execute(
                 &self,
-                input: Vec<crate::Engram>,
+                input: Vec<crate::Signal>,
                 _ctx: &crate::CellContext,
-            ) -> crate::Result<Vec<crate::Engram>> {
+            ) -> crate::Result<Vec<crate::Signal>> {
                 execute_verify_cell(self, input)
             }
         }

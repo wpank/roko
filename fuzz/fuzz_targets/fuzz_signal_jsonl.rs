@@ -1,7 +1,7 @@
 //! Fuzz target: Signal (Engram) JSONL line parsing.
 //!
 //! Exercises the `serde_json::from_str::<Signal>` path that every JSONL
-//! reader in the workspace hits when processing `.roko/engrams.jsonl`.
+//! reader in the workspace hits when processing `.roko/signals.jsonl`.
 //! The goal is to find panics, stack overflows, or excessive allocations
 //! on adversarial input rather than expecting successful parsing.
 

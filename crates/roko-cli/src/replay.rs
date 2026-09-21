@@ -7,7 +7,7 @@
 //! The traversal is separated from I/O so that it can be tested with
 //! in-memory fixtures.
 
-use roko_core::{ContentHash, Engram as Signal};
+use roko_core::{ContentHash, Signal};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -347,7 +347,7 @@ pub fn parse_event_filter(value: Option<&str>) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use roko_core::{Body, ContentHash, Engram as Signal, Kind};
+    use roko_core::{Body, ContentHash, Kind, Signal};
 
     /// Build a test signal with a given body text, author, and lineage.
     fn make_signal(body_text: &str, author: &str, lineage: Vec<ContentHash>) -> Signal {

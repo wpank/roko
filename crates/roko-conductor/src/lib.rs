@@ -33,8 +33,6 @@
 pub mod circuit_breaker;
 pub mod conductor;
 pub mod diagnosis;
-/// Federated conductor hierarchy — L1 turn → L4 fleet (COND-05).
-pub mod federation;
 pub mod health;
 pub mod interventions;
 /// Complex event pattern detection with temporal hysteresis (COND-07).
@@ -73,4 +71,8 @@ pub use stuck_detection::{
     StuckDetector, StuckKind, StuckSignal, StuckThresholds,
 };
 pub use threshold_learner::{AdaptiveThreshold, InterventionOutcome, ThresholdLearner};
+pub use watchers::retrieval_precision::{
+    RetrievalPrecisionWatcher, RETRIEVAL_PRECISION_METRIC,
+    WATCHER_NAME as RETRIEVAL_PRECISION_WATCHER_NAME,
+};
 pub use yerkes_dodson::YerkesDodson;

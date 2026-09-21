@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::Utc;
-use roko_core::{Body, Engram, Kind, Result};
+use roko_core::{Body, Kind, Result, Signal};
 use roko_plugin::{EventSource, EventSourceKind, FeedbackCollector, FeedbackSignal, SignalSender};
 use tokio::time::{sleep, timeout};
 use tokio_util::sync::CancellationToken;
@@ -26,7 +26,7 @@ impl EventSource for MockEventSource {
     async fn start(&self, sender: SignalSender, cancel: CancellationToken) -> Result<()> {
         tokio::select! {
             _ = sleep(Duration::from_millis(100)) => {
-                let signal = Engram::builder(Kind::Task)
+                let signal = Signal::builder(Kind::Task)
                     .body(Body::text("mock signal"))
                     .build();
                 sender.send(signal).await.expect("signal should be sent");

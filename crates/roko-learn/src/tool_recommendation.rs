@@ -122,9 +122,7 @@ impl ToolRecommender {
         let mut recommendations: Vec<ToolRecommendation> = self
             .role_tool_stats
             .iter()
-            .filter(|((r, _), stat)| {
-                r == role && stat.total_count >= MIN_USES_FOR_RECOMMENDATION
-            })
+            .filter(|((r, _), stat)| r == role && stat.total_count >= MIN_USES_FOR_RECOMMENDATION)
             .map(|((_, tool_name), stat)| {
                 let success_rate = if stat.total_count == 0 {
                     0.0

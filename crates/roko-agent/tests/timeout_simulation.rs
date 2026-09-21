@@ -13,10 +13,10 @@ use std::time::{Duration, Instant};
 
 use roko_agent::Agent;
 use roko_agent::openai_agent::OpenAiAgent;
-use roko_core::{Body, Context, Engram, Kind};
+use roko_core::{Body, Context, Kind, Signal};
 
-fn prompt(text: &str) -> Engram {
-    Engram::builder(Kind::Prompt).body(Body::text(text)).build()
+fn prompt(text: &str) -> Signal {
+    Signal::builder(Kind::Prompt).body(Body::text(text)).build()
 }
 
 /// Spawn a server that accepts one connection, reads the request headers,

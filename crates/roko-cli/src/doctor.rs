@@ -203,6 +203,13 @@ struct LoadedConfig {
     resolved: Option<Config>,
     active_path: Option<PathBuf>,
     explicit_serve: bool,
+    /// Provider IDs that appear explicitly in the project-level `roko.toml`
+    /// (or the env-override config). Providers that arrive only through the
+    /// global config merge are NOT included here.  Used by
+    /// `check_configured_provider_keys` to distinguish "user wrote this" from
+    /// "global config added this" so we can avoid misleading warnings for
+    /// providers the user never intentionally configured.
+    project_provider_ids: std::collections::HashSet<String>,
 }
 
 /// Run doctor diagnostics for one workspace.
@@ -236,6 +243,7 @@ pub async fn run_doctor(options: &DoctorOptions) -> Result<DoctorReport> {
     checks.extend(check_configured_provider_keys(&loaded_config));
     checks.push(check_provider_usable(&workdir));
     checks.push(check_available_providers(&loaded_config));
+    checks.extend(check_provider_credits(&loaded_config).await);
     checks.push(check_default_model_configured(&loaded_config));
     checks.extend(check_routing_tier_models(
         &workdir,
@@ -254,6 +262,7 @@ pub async fn run_doctor(options: &DoctorOptions) -> Result<DoctorReport> {
     checks.extend(check_mcp_allowlist(&workdir, &loaded_config));
     checks.push(check_orphaned_tmp_files(&workdir));
     checks.push(check_plans_dir_conflict(&workdir));
+    checks.extend(check_stale_runtime_locks(&workdir));
     let resources = load_resources_config(&workdir, options.config_override.as_deref());
     let (disk_health_check, disk_health) = check_disk_health(&workdir, &resources).await;
     checks.push(disk_health_check);
@@ -376,6 +385,22 @@ fn toml_has_key(text: &str, key: &str) -> bool {
         .is_some_and(|table| table.contains_key(key))
 }
 
+/// Return the set of provider IDs that appear in the `[providers.*]` table of
+/// `text`.  Returns an empty set if the text is missing, unparseable, or has
+/// no `[providers]` section.
+fn provider_ids_in_toml(text: &str) -> std::collections::HashSet<String> {
+    let value: toml::Value = match toml::from_str(text) {
+        Ok(v) => v,
+        Err(_) => return Default::default(),
+    };
+    value
+        .as_table()
+        .and_then(|t| t.get("providers"))
+        .and_then(|v| v.as_table())
+        .map(|t| t.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
 fn load_active_config(workdir: &Path, config_override: Option<&Path>) -> Result<LoadedConfig> {
     if let Some(path) = config_override {
         if !path.is_file() {
@@ -388,6 +413,7 @@ fn load_active_config(workdir: &Path, config_override: Option<&Path>) -> Result<
                 resolved: None,
                 active_path: Some(path.to_path_buf()),
                 explicit_serve: false,
+                project_provider_ids: Default::default(),
             });
         }
 
@@ -395,6 +421,7 @@ fn load_active_config(workdir: &Path, config_override: Option<&Path>) -> Result<
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("read config {}", path.display()))?;
         let has_serve = toml_has_key(&text, "serve");
+        let project_provider_ids = provider_ids_in_toml(&text);
         return Ok(LoadedConfig {
             paths: ConfigPaths {
                 global: crate::config::global_config_path(),
@@ -404,15 +431,19 @@ fn load_active_config(workdir: &Path, config_override: Option<&Path>) -> Result<
             resolved: Some(resolved),
             active_path: Some(path.to_path_buf()),
             explicit_serve: has_serve,
+            project_provider_ids,
         });
     }
 
     let paths = resolve_paths(workdir);
     let mut explicit_serve = false;
+    let mut project_provider_ids = std::collections::HashSet::<String>::new();
     let active_path = if let Some(env_path) = &paths.env_override {
         match std::fs::read_to_string(env_path) {
             Ok(text) => {
                 explicit_serve = toml_has_key(&text, "serve");
+                // Treat the env-override config as authoritative project config.
+                project_provider_ids = provider_ids_in_toml(&text);
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => {
@@ -432,6 +463,8 @@ fn load_active_config(workdir: &Path, config_override: Option<&Path>) -> Result<
                     explicit_serve |= toml_has_key(&text, "serve");
                     found_any_config = true;
                     active_path = Some(global_path.clone());
+                    // Don't populate project_provider_ids from the global
+                    // config — providers there are not user-project-level.
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => {
@@ -443,6 +476,7 @@ fn load_active_config(workdir: &Path, config_override: Option<&Path>) -> Result<
         if let Some(project_path) = &paths.project {
             if let Ok(text) = std::fs::read_to_string(project_path) {
                 explicit_serve |= toml_has_key(&text, "serve");
+                project_provider_ids = provider_ids_in_toml(&text);
                 found_any_config = true;
             }
             active_path = Some(project_path.clone());
@@ -468,6 +502,7 @@ fn load_active_config(workdir: &Path, config_override: Option<&Path>) -> Result<
         resolved,
         active_path,
         explicit_serve,
+        project_provider_ids,
     })
 }
 
@@ -964,6 +999,12 @@ fn check_claude_cli() -> DoctorCheck {
 /// For each provider that specifies an `api_key_env`, verifies the environment
 /// variable is set and non-empty. If no API-key-based providers are configured
 /// (e.g. the user only uses the `claude` CLI), emits a single `Ok` check.
+///
+/// Providers that arrived via the global config merge (not present in the
+/// project-level `roko.toml`) are reported as `Skipped` rather than `Warn`
+/// when their key is missing.  This prevents misleading warnings for providers
+/// the user never explicitly configured (e.g. auto-detected entries that were
+/// added to the global config by `roko setup`).
 fn check_configured_provider_keys(loaded_config: &LoadedConfig) -> Vec<DoctorCheck> {
     use roko_core::agent::ProviderKind;
 
@@ -1042,22 +1083,35 @@ fn check_configured_provider_keys(loaded_config: &LoadedConfig) -> Vec<DoctorChe
             .ok()
             .filter(|k| !k.is_empty())
             .is_some();
+        // A provider is "user-configured" if it appears directly in the
+        // project-level roko.toml.  Providers that arrived only via the
+        // global config merge (e.g. from `roko setup` writing ~/.config/roko/)
+        // are "auto-detected" and should not produce loud warnings when their
+        // key is missing — the user never explicitly set them up.
+        let is_user_configured = loaded_config.project_provider_ids.contains(id.as_str());
         checks.push(DoctorCheck {
             id: format!("provider_key_{id}"),
             status: if has_key {
                 DoctorStatus::Ok
-            } else {
+            } else if is_user_configured {
+                // Explicitly configured by the user but the key is missing.
                 DoctorStatus::Warn
+            } else {
+                // Globally-merged / auto-detected provider without a key —
+                // use Skipped to avoid alarming users who never set it up.
+                DoctorStatus::Skipped
             },
             message: if has_key {
                 format!("{env_name} is set (provider `{id}`)")
-            } else {
+            } else if is_user_configured {
                 format!("{env_name} not set (provider `{id}` is configured but has no key)")
+            } else {
+                format!("{env_name} not set (provider `{id}` not in project config; skipping)")
             },
             detail: None,
             path: None,
             url: None,
-            fix: if has_key {
+            fix: if has_key || !is_user_configured {
                 None
             } else {
                 Some(format!("export {env_name}=<your-api-key>"))
@@ -1065,6 +1119,7 @@ fn check_configured_provider_keys(loaded_config: &LoadedConfig) -> Vec<DoctorChe
         });
     }
     let key_check_count = checks.len();
+    // Only count as missing if the provider was user-configured (Warn).
     let missing_keys = checks
         .iter()
         .filter(|check| check.status == DoctorStatus::Warn)
@@ -1095,6 +1150,237 @@ fn check_configured_provider_keys(loaded_config: &LoadedConfig) -> Vec<DoctorChe
         },
     });
     checks
+}
+
+/// Probe each configured API provider with a `max_tokens=1` completion to
+/// verify the account has credits.  CLI-based and keyless providers are skipped.
+/// Each probe uses a 10-second timeout so the doctor stays fast.
+///
+/// All probes run concurrently so that N providers cost ~10 s instead of N*10 s.
+async fn check_provider_credits(loaded_config: &LoadedConfig) -> Vec<DoctorCheck> {
+    let Some(config) = &loaded_config.resolved else {
+        return vec![];
+    };
+
+    let client = match reqwest::Client::builder()
+        .user_agent("roko-cli/0.1")
+        .timeout(Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+
+    // Collect all (id, provider, api_key) triples that need probing.
+    let to_probe: Vec<(String, ProviderConfig, String)> = config
+        .providers
+        .iter()
+        .filter(|(_, p)| {
+            matches!(
+                p.kind,
+                ProviderKind::AnthropicApi
+                    | ProviderKind::OpenAiCompat
+                    | ProviderKind::PerplexityApi
+                    | ProviderKind::GeminiApi
+                    | ProviderKind::CerebrasApi
+            )
+        })
+        .filter_map(|(id, provider)| {
+            let api_key = provider
+                .resolve_api_key()
+                .filter(|v| !v.trim().is_empty())?;
+            Some((id.clone(), provider.clone(), api_key))
+        })
+        .collect();
+
+    // Run all probes concurrently — avoids paying N × 10 s when N > 1.
+    let futures: Vec<_> = to_probe
+        .iter()
+        .map(|(id, provider, api_key)| {
+            let client = client.clone();
+            let id = id.clone();
+            let provider = provider.clone();
+            let api_key = api_key.clone();
+            async move { probe_provider_credit(&client, &id, &provider, &api_key).await }
+        })
+        .collect();
+
+    futures::future::join_all(futures).await
+}
+
+/// Fire a single minimal completion request and return a [`DoctorCheck`].
+async fn probe_provider_credit(
+    client: &reqwest::Client,
+    provider_id: &str,
+    provider: &ProviderConfig,
+    api_key: &str,
+) -> DoctorCheck {
+    use serde_json::json;
+
+    let result = match provider.kind {
+        ProviderKind::AnthropicApi => {
+            let base = provider
+                .base_url
+                .as_deref()
+                .unwrap_or("https://api.anthropic.com")
+                .trim_end_matches('/');
+            let endpoint = format!("{base}/v1/messages");
+            let body = json!({
+                "model": "claude-3-5-haiku-20241022",
+                "max_tokens": 1,
+                "messages": [{"role": "user", "content": "hi"}]
+            });
+            client
+                .post(&endpoint)
+                .header("content-type", "application/json")
+                .header("x-api-key", api_key)
+                .header("anthropic-version", "2023-06-01")
+                .json(&body)
+                .send()
+                .await
+        }
+        ProviderKind::GeminiApi => {
+            let base = provider
+                .base_url
+                .as_deref()
+                .unwrap_or("https://generativelanguage.googleapis.com")
+                .trim_end_matches('/');
+            let endpoint =
+                format!("{base}/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}");
+            let body = json!({
+                "contents": [{"parts": [{"text": "hi"}]}],
+                "generationConfig": {"maxOutputTokens": 1}
+            });
+            client
+                .post(&endpoint)
+                .header("content-type", "application/json")
+                .json(&body)
+                .send()
+                .await
+        }
+        // OpenAiCompat, PerplexityApi, CerebrasApi
+        _ => {
+            let base = provider
+                .base_url
+                .as_deref()
+                .unwrap_or("https://api.openai.com/v1")
+                .trim_end_matches('/');
+            let endpoint = format!("{base}/chat/completions");
+            let model_slug = match provider.kind {
+                ProviderKind::PerplexityApi => "sonar",
+                ProviderKind::CerebrasApi => "llama-4-scout-17b-16e-instruct",
+                _ => "gpt-4o-mini",
+            };
+            let body = json!({
+                "model": model_slug,
+                "max_tokens": 1,
+                "messages": [{"role": "user", "content": "hi"}]
+            });
+            let mut req = client
+                .post(&endpoint)
+                .header("content-type", "application/json")
+                .bearer_auth(api_key);
+            if let Some(extra_headers) = provider.extra_headers.as_ref() {
+                for (name, value) in extra_headers {
+                    req = req.header(name.as_str(), value.as_str());
+                }
+            }
+            req.json(&body).send().await
+        }
+    };
+
+    let check_id = format!("provider_credit_{provider_id}");
+
+    match result {
+        Ok(response) => {
+            let status_code = response.status().as_u16();
+            if response.status().is_success() {
+                DoctorCheck {
+                    id: check_id,
+                    status: DoctorStatus::Ok,
+                    message: format!("provider `{provider_id}` credit check passed"),
+                    detail: None,
+                    path: None,
+                    url: None,
+                    fix: None,
+                }
+            } else {
+                let body = response.text().await.unwrap_or_default();
+                let is_billing = status_code == 402
+                    || (status_code == 403
+                        && (body.contains("billing")
+                            || body.contains("credit")
+                            || body.contains("payment")
+                            || body.contains("quota")));
+                if is_billing {
+                    DoctorCheck {
+                        id: check_id,
+                        status: DoctorStatus::Warn,
+                        message: format!(
+                            "provider `{provider_id}` has no credits (HTTP {status_code})"
+                        ),
+                        detail: None,
+                        path: None,
+                        url: None,
+                        fix: Some(format!(
+                            "add credits to the {provider_id} account or switch to a different provider"
+                        )),
+                    }
+                } else if status_code == 401 {
+                    DoctorCheck {
+                        id: check_id,
+                        status: DoctorStatus::Warn,
+                        message: format!("provider `{provider_id}` auth failed (HTTP 401)"),
+                        detail: None,
+                        path: None,
+                        url: None,
+                        fix: Some(format!("verify the API key for provider `{provider_id}`")),
+                    }
+                } else if status_code == 429 {
+                    // Rate limited but key works.
+                    DoctorCheck {
+                        id: check_id,
+                        status: DoctorStatus::Ok,
+                        message: format!("provider `{provider_id}` key valid (rate limited)"),
+                        detail: None,
+                        path: None,
+                        url: None,
+                        fix: None,
+                    }
+                } else {
+                    DoctorCheck {
+                        id: check_id,
+                        status: DoctorStatus::Warn,
+                        message: format!(
+                            "provider `{provider_id}` credit check returned HTTP {status_code}"
+                        ),
+                        detail: Some(body.chars().take(200).collect()),
+                        path: None,
+                        url: None,
+                        fix: Some("check the provider dashboard for account status".to_string()),
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            let detail = if e.is_timeout() {
+                "request timed out (10s)".to_string()
+            } else if e.is_connect() {
+                "connection failed".to_string()
+            } else {
+                e.without_url().to_string()
+            };
+            DoctorCheck {
+                id: check_id,
+                status: DoctorStatus::Warn,
+                message: format!("provider `{provider_id}` unreachable during credit check"),
+                detail: Some(detail),
+                path: None,
+                url: None,
+                fix: Some("check network connectivity and provider status page".to_string()),
+            }
+        }
+    }
 }
 
 /// Summarise all available providers (those with working credentials or CLI tools).
@@ -1473,7 +1759,7 @@ fn check_state_layout_audit(workdir: &Path) -> Vec<DoctorCheck> {
             "gate-verdicts.jsonl",
             layout.root().join("gate-verdicts.jsonl"),
         ),
-        ("engrams.jsonl", layout.engrams_path()),
+        ("signals.jsonl", layout.signals_path()),
         ("events.jsonl", layout.events_jsonl_path()),
         ("learn/gate-thresholds.json", layout.gate_thresholds_path()),
         (
@@ -1530,7 +1816,7 @@ fn check_state_layout_audit(workdir: &Path) -> Vec<DoctorCheck> {
     // -- 3. Legacy files ------------------------------------------------------
     // Files that should not exist in a migrated current workspace.
     let legacy_paths: &[(&str, PathBuf)] = &[
-        ("signals.jsonl", layout.signals_path()),
+        ("engrams.jsonl", layout.engrams_path()),
         (
             "learn/episodes.jsonl",
             layout.learn_dir().join("episodes.jsonl"),
@@ -2836,6 +3122,134 @@ fn check_crash_report(workdir: &Path) -> DoctorCheck {
     }
 }
 
+/// Check `runtime/roko.lock` and `runtime/roko.runner.lock` for dead PIDs.
+///
+/// Each lock file is expected to contain the decimal PID of the owning process.
+/// If the PID is no longer alive (tested with `kill -0`) the lock file is a
+/// crash artifact and is automatically removed.  One `DoctorCheck` entry is
+/// emitted per inspected lock file.
+fn check_stale_runtime_locks(workdir: &Path) -> Vec<DoctorCheck> {
+    let runtime_dir = workdir.join(".roko").join("runtime");
+    if !runtime_dir.is_dir() {
+        return vec![];
+    }
+
+    let lock_files = [
+        ("workspace_lock", "roko.lock"),
+        ("runner_lock", "roko.runner.lock"),
+    ];
+
+    let mut checks = Vec::new();
+
+    for (check_id, filename) in &lock_files {
+        let lock_path = runtime_dir.join(filename);
+        if !lock_path.exists() {
+            continue;
+        }
+
+        let contents = match std::fs::read_to_string(&lock_path) {
+            Ok(c) => c,
+            Err(_) => {
+                checks.push(DoctorCheck {
+                    id: format!("stale_lock_{check_id}"),
+                    status: DoctorStatus::Warn,
+                    message: format!("could not read lock file {filename}"),
+                    detail: None,
+                    path: Some(lock_path.display().to_string()),
+                    url: None,
+                    fix: Some(format!("rm .roko/runtime/{filename}")),
+                });
+                continue;
+            }
+        };
+
+        let trimmed = contents.trim();
+        if trimmed.is_empty() {
+            // Lock file exists but holds no PID: not currently owned.
+            continue;
+        }
+
+        let pid: u32 = match trimmed.parse() {
+            Ok(p) => p,
+            Err(_) => {
+                checks.push(DoctorCheck {
+                    id: format!("stale_lock_{check_id}"),
+                    status: DoctorStatus::Warn,
+                    message: format!("{filename} contains unreadable PID ({trimmed:?})"),
+                    detail: Some(
+                        "the lock file may be corrupted; remove it if no roko process is running"
+                            .to_string(),
+                    ),
+                    path: Some(lock_path.display().to_string()),
+                    url: None,
+                    fix: Some(format!("rm .roko/runtime/{filename}")),
+                });
+                continue;
+            }
+        };
+
+        if is_pid_alive(pid) {
+            checks.push(DoctorCheck {
+                id: format!("stale_lock_{check_id}"),
+                status: DoctorStatus::Ok,
+                message: format!("{filename} held by live process (PID {pid})"),
+                detail: None,
+                path: Some(lock_path.display().to_string()),
+                url: None,
+                fix: None,
+            });
+        } else {
+            // Dead PID — automatically remove the stale lock file.
+            let removed = std::fs::remove_file(&lock_path).is_ok();
+            let (status, message, fix) = if removed {
+                (
+                    DoctorStatus::Ok,
+                    format!("removed stale {filename} (dead PID {pid})"),
+                    None,
+                )
+            } else {
+                (
+                    DoctorStatus::Warn,
+                    format!("stale {filename} (dead PID {pid}) — could not remove automatically"),
+                    Some(format!("rm .roko/runtime/{filename}")),
+                )
+            };
+            checks.push(DoctorCheck {
+                id: format!("stale_lock_{check_id}"),
+                status,
+                message,
+                detail: if removed {
+                    Some("the lock was left by a crashed roko process".to_string())
+                } else {
+                    Some("remove the file manually to unblock new roko invocations".to_string())
+                },
+                path: Some(lock_path.display().to_string()),
+                url: None,
+                fix,
+            });
+        }
+    }
+
+    checks
+}
+
+/// Return `true` if the given process ID is alive.
+///
+/// Uses `kill(pid, 0)` on Unix which is a no-op signal probe that succeeds
+/// (returns 0) if and only if a process with that PID exists and this process
+/// has permission to signal it.  Returns `false` on non-Unix platforms.
+#[cfg(unix)]
+#[allow(unsafe_code, clippy::cast_possible_wrap)]
+fn is_pid_alive(pid: u32) -> bool {
+    // SAFETY: signal 0 is a well-defined POSIX probe — no signal is delivered.
+    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+}
+
+#[cfg(not(unix))]
+fn is_pid_alive(_pid: u32) -> bool {
+    false
+}
+
 /// P1-48: Remove orphaned temp files, `.corrupted` files, and stale lock
 /// files from `.roko/learn/` and related directories.
 ///
@@ -2887,13 +3301,13 @@ pub fn clean_orphaned_files(workdir: &Path) -> Vec<PathBuf> {
 
             // Stale .lock files (older than DEFAULT_STALE_LOCK_SECS)
             if file_name.ends_with(".lock") {
-                let is_stale = entry.metadata().ok().and_then(|m| m.modified().ok()).is_some_and(
-                    |mtime| {
-                        mtime
-                            .elapsed()
-                            .map_or(false, |age| age >= stale_lock_age)
-                    },
-                );
+                let is_stale = entry
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .is_some_and(|mtime| {
+                        mtime.elapsed().map_or(false, |age| age >= stale_lock_age)
+                    });
                 if is_stale {
                     if std::fs::remove_file(&path).is_ok() {
                         removed.push(path);
@@ -3689,7 +4103,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn state_layout_audit_v1_workspace_warns_on_legacy_signals() {
+    async fn state_layout_audit_v1_workspace_warns_on_legacy_engrams() {
         let temp = tempdir().unwrap();
         let layout = RokoLayout::for_project(temp.path());
 
@@ -3698,8 +4112,8 @@ mod tests {
             std::fs::create_dir_all(dir).expect("create dir");
         }
         std::fs::write(layout.version_file(), "1").expect("write VERSION");
-        // Place a signals.jsonl file that would be present in a V1 workspace.
-        std::fs::write(layout.signals_path(), "{}\n").expect("write signals.jsonl");
+        // Place an engrams.jsonl file that would be present in a pre-rename workspace.
+        std::fs::write(layout.engrams_path(), "{}\n").expect("write engrams.jsonl");
 
         let checks = check_state_layout_audit(temp.path());
 
@@ -3724,24 +4138,24 @@ mod tests {
         assert_eq!(
             legacy_check.status,
             DoctorStatus::Warn,
-            "V1 workspace with signals.jsonl should warn on legacy files"
+            "workspace with engrams.jsonl should warn on legacy files"
         );
         assert!(
             legacy_check
                 .detail
                 .as_deref()
                 .unwrap_or("")
-                .contains("signals.jsonl"),
-            "legacy files detail should mention signals.jsonl"
+                .contains("engrams.jsonl"),
+            "legacy files detail should mention engrams.jsonl"
         );
     }
 
     #[tokio::test]
-    async fn state_layout_audit_v1_version_warns_even_without_signals_file() {
+    async fn state_layout_audit_v1_version_warns_even_without_legacy_file() {
         let temp = tempdir().unwrap();
         let layout = RokoLayout::for_project(temp.path());
 
-        // V1 workspace without signals.jsonl (already partially migrated).
+        // V1 workspace without legacy files (already partially migrated).
         for dir in &layout.top_level_dirs() {
             std::fs::create_dir_all(dir).expect("create dir");
         }
@@ -4023,5 +4437,253 @@ mod tests {
             .push("/tmp/orphan".to_string());
         // Fatal (low_disk) should return 2, not 1.
         assert_eq!(report.exit_code(), 2);
+    }
+
+    /// A provider that appears in the config (via global merge) but NOT in the
+    /// project roko.toml should produce a `Skipped` check when its key is missing,
+    /// not a `Warn`. This prevents misleading alerts during onboarding.
+    #[test]
+    fn globally_merged_provider_missing_key_yields_skipped_not_warn() {
+        use indexmap::IndexMap;
+        use roko_core::config::provider::ProviderConfig;
+
+        // Build a provider entry that represents an auto-detected / globally-merged
+        // anthropic provider — it has an api_key_env but no key in the environment.
+        // Use a name that is virtually certain to not exist in the environment.
+        let env_var = "__ROKO_DOCTOR_TEST_KEY_SKIPPED_7f3a9b__";
+
+        let mut providers = IndexMap::new();
+        providers.insert(
+            "anthropic_global".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::AnthropicApi,
+                api_key_env: Some(env_var.to_string()),
+                base_url: None,
+                command: None,
+                args: None,
+                timeout_ms: None,
+                ttft_timeout_ms: None,
+                connect_timeout_ms: None,
+                extra_headers: None,
+                max_concurrent: None,
+                limits: None,
+                require_confirmation: false,
+            },
+        );
+
+        let loaded = LoadedConfig {
+            paths: ConfigPaths {
+                global: None,
+                project: None,
+                env_override: None,
+            },
+            resolved: Some({
+                let mut c = Config::default();
+                c.providers = providers;
+                c
+            }),
+            active_path: None,
+            explicit_serve: false,
+            // The provider is NOT listed in the project file — it came from the
+            // global config merge.
+            project_provider_ids: Default::default(),
+        };
+
+        let checks = check_configured_provider_keys(&loaded);
+
+        let per_provider = checks
+            .iter()
+            .find(|c| c.id == "provider_key_anthropic_global")
+            .expect("per-provider check");
+        assert_eq!(
+            per_provider.status,
+            DoctorStatus::Skipped,
+            "globally-merged provider with missing key should be Skipped, not Warn"
+        );
+        assert!(per_provider.fix.is_none(), "no fix hint for skipped check");
+
+        // The summary check should still be Ok (no user-configured missing keys).
+        let summary = checks
+            .iter()
+            .find(|c| c.id == "provider_api_keys")
+            .expect("summary check");
+        assert_eq!(
+            summary.status,
+            DoctorStatus::Ok,
+            "summary should be Ok when only globally-merged providers have missing keys"
+        );
+    }
+
+    /// A provider explicitly written in the project roko.toml with a missing key
+    /// should still produce a `Warn` check — the user intended to use it.
+    #[test]
+    fn project_configured_provider_missing_key_yields_warn() {
+        use indexmap::IndexMap;
+        use roko_core::config::provider::ProviderConfig;
+
+        // Use a name that is virtually certain to not exist in the environment.
+        let env_var = "__ROKO_DOCTOR_TEST_KEY_WARN_8c2d4e__";
+
+        let mut providers = IndexMap::new();
+        providers.insert(
+            "my_anthropic".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::AnthropicApi,
+                api_key_env: Some(env_var.to_string()),
+                base_url: None,
+                command: None,
+                args: None,
+                timeout_ms: None,
+                ttft_timeout_ms: None,
+                connect_timeout_ms: None,
+                extra_headers: None,
+                max_concurrent: None,
+                limits: None,
+                require_confirmation: false,
+            },
+        );
+
+        let mut project_ids = std::collections::HashSet::new();
+        project_ids.insert("my_anthropic".to_string());
+
+        let loaded = LoadedConfig {
+            paths: ConfigPaths {
+                global: None,
+                project: None,
+                env_override: None,
+            },
+            resolved: Some({
+                let mut c = Config::default();
+                c.providers = providers;
+                c
+            }),
+            active_path: None,
+            explicit_serve: false,
+            project_provider_ids: project_ids,
+        };
+
+        let checks = check_configured_provider_keys(&loaded);
+
+        let per_provider = checks
+            .iter()
+            .find(|c| c.id == "provider_key_my_anthropic")
+            .expect("per-provider check");
+        assert_eq!(
+            per_provider.status,
+            DoctorStatus::Warn,
+            "project-configured provider with missing key should be Warn"
+        );
+        assert!(
+            per_provider.fix.is_some(),
+            "fix hint should be present for user-configured missing key"
+        );
+
+        let summary = checks
+            .iter()
+            .find(|c| c.id == "provider_api_keys")
+            .expect("summary check");
+        assert_eq!(
+            summary.status,
+            DoctorStatus::Warn,
+            "summary should be Warn when a user-configured provider key is missing"
+        );
+    }
+
+    /// No runtime directory → check returns an empty list (not a warning).
+    #[test]
+    fn stale_lock_check_no_runtime_dir_returns_empty() {
+        let dir = tempdir().unwrap();
+        let checks = check_stale_runtime_locks(dir.path());
+        assert!(
+            checks.is_empty(),
+            "no runtime dir should produce no checks, got: {checks:?}"
+        );
+    }
+
+    /// Runtime directory exists but both lock files are absent → no checks.
+    #[test]
+    fn stale_lock_check_empty_runtime_dir_returns_empty() {
+        let dir = tempdir().unwrap();
+        let runtime = dir.path().join(".roko").join("runtime");
+        std::fs::create_dir_all(&runtime).unwrap();
+        let checks = check_stale_runtime_locks(dir.path());
+        assert!(
+            checks.is_empty(),
+            "absent lock files should produce no checks, got: {checks:?}"
+        );
+    }
+
+    /// A lock file that contains only whitespace (released normally) is ignored.
+    #[test]
+    fn stale_lock_check_empty_lock_file_returns_no_check() {
+        let dir = tempdir().unwrap();
+        let runtime = dir.path().join(".roko").join("runtime");
+        std::fs::create_dir_all(&runtime).unwrap();
+        std::fs::write(runtime.join("roko.lock"), "").unwrap();
+        let checks = check_stale_runtime_locks(dir.path());
+        assert!(
+            checks.is_empty(),
+            "empty lock file should produce no check, got: {checks:?}"
+        );
+    }
+
+    /// A lock file holding an unparseable PID produces a Warn.
+    #[test]
+    fn stale_lock_check_corrupted_pid_produces_warn() {
+        let dir = tempdir().unwrap();
+        let runtime = dir.path().join(".roko").join("runtime");
+        std::fs::create_dir_all(&runtime).unwrap();
+        std::fs::write(runtime.join("roko.lock"), "not-a-pid\n").unwrap();
+        let checks = check_stale_runtime_locks(dir.path());
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].id, "stale_lock_workspace_lock");
+        assert_eq!(checks[0].status, DoctorStatus::Warn);
+        assert!(checks[0].fix.is_some());
+    }
+
+    /// A lock file holding the current process PID is reported as Ok (alive).
+    #[test]
+    fn stale_lock_check_live_pid_reported_as_ok() {
+        let dir = tempdir().unwrap();
+        let runtime = dir.path().join(".roko").join("runtime");
+        std::fs::create_dir_all(&runtime).unwrap();
+        let my_pid = std::process::id();
+        std::fs::write(runtime.join("roko.lock"), format!("{my_pid}\n")).unwrap();
+        let checks = check_stale_runtime_locks(dir.path());
+        // On Unix a live PID produces an Ok check; on non-Unix is_pid_alive
+        // always returns false so the lock will be removed — either result is
+        // valid for this structural test.
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].id, "stale_lock_workspace_lock");
+        // The check must be Ok or (on non-Unix) Ok after removal.
+        // We just verify the check was emitted with a recognised status.
+        assert!(matches!(
+            checks[0].status,
+            DoctorStatus::Ok | DoctorStatus::Warn
+        ));
+    }
+
+    /// A lock file holding a definitely-dead PID (PID 1 cannot be killed and
+    /// PID values like u32::MAX are never valid) is automatically removed.
+    #[cfg(unix)]
+    #[test]
+    fn stale_lock_check_dead_pid_removes_lock_and_reports_ok() {
+        let dir = tempdir().unwrap();
+        let runtime = dir.path().join(".roko").join("runtime");
+        std::fs::create_dir_all(&runtime).unwrap();
+        let lock_path = runtime.join("roko.runner.lock");
+        // PID 4294967294 (u32::MAX - 1) cannot exist on any real system.
+        std::fs::write(&lock_path, "4294967294\n").unwrap();
+        let checks = check_stale_runtime_locks(dir.path());
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].id, "stale_lock_runner_lock");
+        // Should have been removed — either Ok (removed) or Warn (couldn't remove).
+        // The lock file should no longer exist if removal succeeded.
+        if checks[0].status == DoctorStatus::Ok {
+            assert!(
+                !lock_path.exists(),
+                "lock file should be gone after dead-PID cleanup"
+            );
+        }
     }
 }

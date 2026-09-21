@@ -100,6 +100,7 @@ pub mod cell_payloads;
 pub mod cfactor;
 /// Canonical provider-agnostic chat message types.
 pub mod chat_types;
+pub mod cognitive_registry;
 pub mod cognitive_workspace;
 pub mod conductor;
 pub mod config;
@@ -122,6 +123,7 @@ pub mod dispatch_plan;
 pub mod domain_profile;
 /// Canonical single-unit duration parser (`ms`, `s`, `m`, `h`, `d`).
 pub mod duration;
+/// Backward-compatible re-export module — canonical definitions live in [`signal`].
 pub mod engram;
 pub mod error;
 /// Payload contracts carried by MCP, A2A, and x402 transports.
@@ -205,6 +207,8 @@ pub mod provenance;
 pub mod provider_catalog;
 pub mod pulse;
 pub mod query;
+/// P4-22: Quorum sensing for agent group coordination.
+pub mod quorum;
 /// Pure-data DAGs of score operations.
 pub mod recipe;
 /// Atomic TOML recipe persistence.
@@ -213,13 +217,20 @@ pub mod recipe_store;
 pub mod retention;
 /// ULID-based plan-scoped run identifier.
 pub mod run_id;
+/// Canonical shared event taxonomy: [`CoreEvent`] type alias, producer/consumer
+/// map, and convenience factory functions for the most common cross-subsystem
+/// events.  See [`core_event`] for the full taxonomy table.
+pub mod core_event;
+pub use core_event::{CoreEvent, core_event_to_dashboard_events};
 pub mod runtime_event;
 pub mod score;
 pub mod secrets;
 pub mod shutdown;
-/// Signal — the primary type name (re-exports from `engram` module).
+/// Signal — the universal datum type plus marketplace artifact types.
 pub mod signal;
 pub mod signal_kinds;
+/// Shared Server-Sent Events (SSE) line and frame parser (RFC 8895).
+pub mod sse;
 pub mod task;
 pub mod telemetry_observe;
 pub mod telemetry_projections;
@@ -234,13 +245,11 @@ pub mod transcript_store;
 pub mod trigger;
 pub mod usage;
 pub mod verdict;
+/// P4-15: Webhook alerting for critical Inbox items.
+pub mod webhook_alert;
 /// Relay envelopes, room names, recovery, and backpressure contracts.
 pub mod wire_protocol;
 pub mod workspace;
-/// P4-15: Webhook alerting for critical Inbox items.
-pub mod webhook_alert;
-/// P4-22: Quorum sensing for agent group coordination.
-pub mod quorum;
 
 pub use affect::{BehavioralState, DaimonPolicy, EmotionalTag, PadVector};
 pub use agent::{
@@ -270,6 +279,7 @@ pub use chat_types::{
     RequestOptions, ResponseFormat, ResponseMetadata, SessionState, ToolCallFunction,
     ToolCallMessage, ToolChoice, Usage,
 };
+pub use cognitive_registry::CognitiveRegistry;
 pub use cognitive_workspace::{
     COGNITIVE_WORKSPACE_SCHEMA_VERSION, CapabilityGrant, CognitiveWorkspace, ContextPolicyAuditRef,
     ContextRejectionAudit, ContextRejectionAuditReason, ContextScopeAudit, ContextSectionAudit,
@@ -298,7 +308,6 @@ pub use dispatch_plan::{
 };
 pub use domain_profile::{DomainProfile, TypedContext};
 pub use duration::{DurationParseError, parse_duration, parse_duration_ms};
-pub use engram::{Engram, EngramBuilder, GraduationError, HdcFingerprint, SignalStatus};
 pub use error::{Result, RokoError};
 pub use feed::{
     FeedAccess, FeedInfo, FeedKind, FeedPricingConfig, FeedRegistry, FeedRuntimeStatus,
@@ -396,7 +405,10 @@ pub use runtime_event::{
     RuntimeEventPublishDisposition, RuntimeEventPublisher, ToolCallSummary, WorkflowOutcome,
 };
 pub use score::Score;
-pub use signal::{ArtifactKind, ArtifactLineage, ArtifactRef, Signal, SignalBuilder};
+pub use signal::{ArtifactKind, ArtifactLineage, ArtifactRef};
+pub use signal::{
+    Engram, EngramBuilder, GraduationError, HdcFingerprint, Signal, SignalBuilder, SignalStatus,
+};
 pub use signal_kinds::*;
 pub use task::{
     GlobalTaskId, PlanStatus, Task, TaskCategory, TaskComplexityBand, TaskContextWeight,
@@ -423,13 +435,14 @@ pub use lens_registry::{LensConfig, LensRegistration, LensRegistry, parse_scope}
 pub use namespace::{
     Channel, ChannelDirection, CognitiveNamespace, NamespaceAcl, NamespaceRegistry, RateLimitConfig,
 };
+pub use sse::{SseFrame, extract_sse_data, parse_sse_lines, parse_sse_text};
 pub use telemetry_observe::{
     AlertLevel, AnomalyDirection, AnomalyLevel, AnomalyPayload, BudgetAlertPayload, CFactorPayload,
     CostReportPayload, DriftPayload, EfficiencyPayload, ErrorCategory, ErrorPayload,
     LatencyPayload, LensScope, ObservableEvent, ObservableEventKind, PassFailCounts,
-    QualityPayload, TelemetryEventSink, TelemetryObserve, TrendDirection, TrendPayload,
-    UsagePayload, citation_reciprocity, delivery_rate, hdc_diversity, peer_prediction_accuracy,
-    turn_taking_entropy,
+    QualityPayload, RagPerformancePayload, TelemetryEventSink, TelemetryObserve, TrendDirection,
+    TrendPayload, UsagePayload, citation_reciprocity, delivery_rate, hdc_diversity,
+    peer_prediction_accuracy, turn_taking_entropy,
 };
 pub use temperament::Temperament;
 pub use todo_dag::{

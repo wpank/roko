@@ -592,7 +592,7 @@ impl Provenance {
     }
 }
 
-impl crate::engram::Engram {
+impl crate::signal::Signal {
     /// Effective trust-origin taint for this signal.
     #[must_use]
     pub fn effective_taint(&self) -> TrustOriginTaintLevel {

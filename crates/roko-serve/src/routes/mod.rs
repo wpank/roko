@@ -4,6 +4,7 @@
 //! [`build_router`] function assembles them into a single [`axum::Router`]
 //! with CORS and tracing middleware.
 
+mod affect;
 mod agents;
 mod aggregator;
 pub(crate) mod arenas;
@@ -44,7 +45,6 @@ pub(crate) mod registries;
 mod research;
 mod route_permissions;
 mod run;
-mod affect;
 mod runs;
 mod safety;
 mod secrets;
@@ -106,12 +106,14 @@ pub(crate) const DEFAULT_REQUEST_BODY_LIMIT_BYTES: usize = 4 * 1024 * 1024;
 ///
 /// 100 requests per second is generous for legitimate traffic but bounds the
 /// damage of a chatty / runaway client without per-endpoint configuration.
+#[allow(dead_code)]
 pub(crate) const DEFAULT_GLOBAL_RATE_PER_SEC: u32 = 100;
 
 /// Default per-key rate limit (per API key hash or per client IP).
 ///
 /// 30 req/s per caller keeps a single key from dominating the global budget
 /// while still allowing reasonable burst traffic from each caller.
+#[allow(dead_code)]
 pub(crate) const DEFAULT_PER_KEY_RATE_PER_SEC: u32 = 30;
 
 /// In-memory single-bucket rate limiter shared across all requests.
@@ -2464,7 +2466,11 @@ mod tests {
             .body(Body::empty())
             .expect("build health request");
         let resp = app.oneshot(req).await.expect("oneshot");
-        assert_eq!(resp.status(), StatusCode::OK, "GET /api/health must return 200");
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "GET /api/health must return 200"
+        );
 
         let body_bytes = resp
             .into_body()
@@ -2498,7 +2504,11 @@ mod tests {
 
         // Without a key → 401.
         let (status, body) = get_json(&app, "/api/health").await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED, "must reject unauthenticated requests");
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "must reject unauthenticated requests"
+        );
         assert_eq!(body["code"], "unauthorized");
 
         // With the correct key → 200.
@@ -2528,7 +2538,11 @@ mod tests {
             .body(Body::empty())
             .expect("build status request");
         let resp = app.oneshot(req).await.expect("oneshot");
-        assert_eq!(resp.status(), StatusCode::OK, "GET /api/status must return 200");
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "GET /api/status must return 200"
+        );
 
         let body_bytes = resp
             .into_body()

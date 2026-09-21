@@ -26,10 +26,23 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
     match cmd {
         PlanCmd::List { workdir, waves } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            // Read-only: shared lock allows coexistence with plan runners and
+            // other read-only commands while still preventing writes from
+            // observing inconsistent state.
+            let _lock = roko_cli::workspace_lock::acquire_workspace_lock_shared(&wd.join(".roko"))?;
             let summaries =
                 roko_cli::plan::summarize_discovered_plans(&wd).map_err(|e| anyhow!("{e}"))?;
             let executor_state = read_executor_state(&wd);
-            let has_run_state = executor_state.is_some();
+            // A plan has run state if either the legacy executor snapshot
+            // exists OR any graph-engine checkpoint directory is present.
+            let has_graph_checkpoints = {
+                let graph_root = wd.join(".roko/state/graph");
+                graph_root.is_dir()
+                    && std::fs::read_dir(&graph_root)
+                        .map(|mut rd| rd.next().is_some())
+                        .unwrap_or(false)
+            };
+            let has_run_state = executor_state.is_some() || has_graph_checkpoints;
             let state_entries = executor_state.clone().unwrap_or_default();
             let state_map: std::collections::HashMap<String, (usize, usize)> = state_entries
                 .iter()
@@ -109,6 +122,9 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 return Ok(EXIT_SUCCESS);
             }
 
+            let reporter =
+                roko_cli::cli_reporter::CliReporter::from_flags(false, cli.json);
+
             if cli.json {
                 let entries: Vec<serde_json::Value> = summaries
                     .iter()
@@ -148,34 +164,33 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             } else {
                 if summaries.is_empty() {
                     if has_run_state {
-                        println!("no plans found in discovery path");
+                        reporter.note("no plans found in discovery path");
                     } else {
-                        println!("no run state found");
+                        reporter.note("no run state found");
                     }
                 } else {
-                    println!(
-                        "{:<16} {:<40} {:<12} {}",
-                        "ID", "TITLE", "PROGRESS", "STATUS"
-                    );
-                    for summary in &summaries {
-                        println!(
-                            "{:<16} {:<40} {:<12} {}",
-                            summary.id.as_str(),
-                            summary.title.as_str(),
-                            format!("{}/{}", summary.tasks_done, summary.task_count),
-                            summary.status_label()
-                        );
-                    }
+                    let rows: Vec<Vec<String>> = summaries
+                        .iter()
+                        .map(|s| {
+                            vec![
+                                s.id.to_string(),
+                                s.title.to_string(),
+                                format!("{}/{}", s.tasks_done, s.task_count),
+                                s.status_label().to_string(),
+                            ]
+                        })
+                        .collect();
+                    reporter.table(&["ID", "TITLE", "PROGRESS", "STATUS"], &rows);
                     if !has_run_state {
-                        println!("(no run state found — counts from tasks.toml files)");
+                        reporter.note("(no run state found — counts from tasks.toml files)");
                     }
                 }
 
                 for (plan_id, _, _) in &state_entries {
                     if !plan_path_exists(&wd, plan_id) {
-                        println!(
-                            "warning: state references missing plan: {plan_id} (not found in plans/ or .roko/plans/)"
-                        );
+                        reporter.warn(&format!(
+                            "state references missing plan: {plan_id} (not found in plans/ or .roko/plans/)"
+                        ));
                     }
                 }
             }
@@ -183,6 +198,8 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
         }
         PlanCmd::Show { plan_id, workdir } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            // Read-only: shared lock so this can run alongside an active plan runner.
+            let _lock = roko_cli::workspace_lock::acquire_workspace_lock_shared(&wd.join(".roko"))?;
             let plan_id = plan_id
                 .strip_prefix("plans/")
                 .or_else(|| plan_id.strip_prefix("plans\\"))
@@ -343,6 +360,10 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             dag,
         } => {
             let workdir = resolve_workdir(cli);
+            // Read-only lint: shared lock so validation can run alongside an
+            // active plan runner without being blocked.
+            let _lock =
+                roko_cli::workspace_lock::acquire_workspace_lock_shared(&workdir.join(".roko"))?;
             let plans_dir = if dir.is_absolute() {
                 dir.clone()
             } else {
@@ -422,8 +443,15 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
         PlanCmd::Index { check, workdir } => {
             let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
             if check {
+                // Read-only check: shared lock so it can run alongside a plan runner.
+                let _lock = roko_cli::workspace_lock::acquire_workspace_lock_shared(
+                    &workdir.join(".roko"),
+                )?;
                 roko_cli::index::check_plans_index(&workdir)?;
             } else {
+                // Rebuild writes the index: exclusive workspace lock.
+                let _lock =
+                    roko_cli::workspace_lock::acquire_workspace_lock(&workdir.join(".roko"))?;
                 roko_cli::index::rebuild_plans_index(&workdir)?;
             }
             if !cli.quiet {
@@ -451,8 +479,8 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             log_file,
             skip_preflight,
             screenshots,
-            screenshot_interval: _,
-            screenshot_dir: _,
+            screenshot_interval,
+            screenshot_dir,
             batch_size,
             worktree_per_task,
             rich_topology,
@@ -502,18 +530,15 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
 
             // ── Mandatory validation: reject malformed plans before execution ──
             // Runs in both normal and `--dry-run` mode.
-            // Skipped when the user passes --skip-validate (e.g. freshly-generated plans).
-            if !cli.skip_validate {
-                if let Some(exit_code) = validate_before_run(&resolved_plans_dir, &wd) {
-                    return Ok(exit_code);
-                }
-
-                // Cross-plan Graph semantics belong to the exact set selected by
-                // `plan_loader` (one root plan, or the root's immediate plans),
-                // not to the generic validator's recursive file discovery. Run
-                // this preflight before both dry-run and workspace-lock mutation.
-                validate_graph_selected_plans_before_run(engine, &resolved_plans_dir)?;
+            if let Some(exit_code) = validate_before_run(&resolved_plans_dir, &wd) {
+                return Ok(exit_code);
             }
+
+            // Cross-plan Graph semantics belong to the exact set selected by
+            // `plan_loader` (one root plan, or the root's immediate plans),
+            // not to the generic validator's recursive file discovery. Run
+            // this preflight before both dry-run and workspace-lock mutation.
+            validate_graph_selected_plans_before_run(engine, &resolved_plans_dir)?;
 
             // ── Dry-run mode: parse plans + show summary without executing ──
             if dry_run {
@@ -523,8 +548,10 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             validate_graph_execution_options(engine, approval)?;
 
             // Both execution engines mutate shared workspace/runtime state.
-            // Hold one guard across the complete selected engine lifetime.
-            let _lock = roko_cli::workspace_lock::acquire_workspace_lock(layout.root())?;
+            // Use the runner-exclusive lock (roko.runner.lock) so that
+            // read-only commands holding a shared workspace lock (roko.lock)
+            // can coexist with an active plan run without being blocked.
+            let _lock = roko_cli::workspace_lock::acquire_runner_lock(layout.root())?;
 
             // ── Graph Engine path (explicit opt-in) ──
             if matches!(engine, PlanEngine::Graph) {
@@ -538,9 +565,9 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     skip_preflight,
                     force,
                     screenshots,
+                    screenshot_interval,
+                    screenshot_dir.as_deref(),
                     batch_size,
-                    cli.no_replan,
-                    cli.skip_validate,
                     cli.quiet,
                 );
 
@@ -713,10 +740,20 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     for (id, slug, status) in &results {
                         match *status {
                             "generated" | "skipped" => {
-                                tracing::info!(id, slug = slug.as_str(), status, "batch plan generate result");
+                                tracing::info!(
+                                    id,
+                                    slug = slug.as_str(),
+                                    status,
+                                    "batch plan generate result"
+                                );
                             }
                             _ => {
-                                tracing::warn!(id, slug = slug.as_str(), status, "batch plan generate result");
+                                tracing::warn!(
+                                    id,
+                                    slug = slug.as_str(),
+                                    status,
+                                    "batch plan generate result"
+                                );
                             }
                         }
                     }
@@ -1206,8 +1243,18 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             Ok(EXIT_SUCCESS)
         }
 
-        PlanCmd::Status { workdir } => {
+        PlanCmd::Status { plan_dir, workdir } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            // Read-only status inspection: shared lock allows this to run
+            // alongside an active plan runner.
+            let _lock = roko_cli::workspace_lock::acquire_workspace_lock_shared(&wd.join(".roko"))?;
+
+            // When a plan directory is provided, show task-level status for
+            // that specific plan instead of the global runner status.
+            if let Some(raw_plan_dir) = plan_dir {
+                return cmd_plan_dir_status(cli, &wd, &raw_plan_dir).await;
+            }
+
             let status_path = wd.join(".roko").join("state").join("status.json");
             if !status_path.is_file() {
                 if cli.json {
@@ -1288,6 +1335,212 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             .await
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Plan-directory status helper
+// ---------------------------------------------------------------------------
+
+/// Show task-level status for a specific plan directory.
+///
+/// Reads `tasks.toml` in the plan directory and, when executor state is
+/// available, overlays runtime completion counts from the snapshot.
+async fn cmd_plan_dir_status(
+    cli: &Cli,
+    workdir: &std::path::Path,
+    raw_plan_dir: &std::path::Path,
+) -> Result<i32> {
+    // Resolve the plan directory (may be relative to workdir).
+    let plan_dir = if raw_plan_dir.is_absolute() {
+        raw_plan_dir.to_path_buf()
+    } else {
+        workdir.join(raw_plan_dir)
+    };
+
+    // Strip a leading "plans/" prefix from the string form to extract the
+    // plan ID, mirroring how `roko plan show` handles it.
+    let plan_id_raw = plan_dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+    // Locate the tasks.toml inside this plan directory.
+    let tasks_path = plan_dir.join("tasks.toml");
+    if !tasks_path.is_file() {
+        if cli.json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "error": format!("no tasks.toml found in {}", plan_dir.display()),
+                    "hint": "run `roko plan list` to see available plans"
+                })
+            );
+        } else {
+            eprintln!(
+                "error: no tasks.toml found in {}\n  hint: run `roko plan list` to see available plans",
+                plan_dir.display()
+            );
+        }
+        return Ok(EXIT_FAILURE);
+    }
+
+    let tasks_file = roko_cli::task_parser::TasksFile::parse(&tasks_path)
+        .with_context(|| format!("parse {}", tasks_path.display()))?;
+
+    // Build per-plan completion counts from the executor snapshot.
+    let state_map: std::collections::HashMap<String, (usize, usize)> = read_executor_state(workdir)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(id, done, total)| (id, (done, total)))
+        .collect();
+
+    let plan_id_from_toml = tasks_file.meta.plan.as_str();
+    let plan_id = if plan_id_from_toml.is_empty() {
+        plan_id_raw
+    } else {
+        plan_id_from_toml
+    };
+
+    let total_tasks = tasks_file.tasks.len();
+    let done_from_toml = tasks_file
+        .tasks
+        .iter()
+        .filter(|t| {
+            t.status.eq_ignore_ascii_case("done") || t.status.eq_ignore_ascii_case("complete")
+        })
+        .count();
+
+    let (mut done_tasks, total_from_state) = state_map
+        .get(plan_id)
+        .copied()
+        .unwrap_or((done_from_toml, total_tasks));
+
+    let effective_total = if total_from_state > 0 {
+        total_from_state
+    } else {
+        total_tasks
+    };
+
+    // Overlay Graph engine checkpoint status.  The graph engine writes terminal
+    // state to `.roko/state/graph/<safe-plan-id>/checkpoint.json` rather than
+    // updating tasks.toml or the legacy executor snapshot.  Read it here so
+    // that `plan status` reflects the same data as `plan list`.
+    let safe_plan_id: String = plan_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let graph_checkpoint_path = workdir
+        .join(".roko/state/graph")
+        .join(&safe_plan_id)
+        .join("checkpoint.json");
+    let graph_status: Option<String> = std::fs::read(&graph_checkpoint_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|v| {
+            v.get("status")
+                .and_then(|s| s.as_str())
+                .map(|s| s.to_string())
+        });
+
+    let checkpoint_succeeded = graph_status.as_deref() == Some("succeeded");
+    if checkpoint_succeeded && done_tasks == 0 && effective_total > 0 {
+        // The graph engine completed all tasks; tasks.toml wasn't updated.
+        done_tasks = effective_total;
+    }
+
+    // Derive the human-readable status string.
+    let status_str = if let Some(gs) = &graph_status {
+        match gs.as_str() {
+            "succeeded" => "complete",
+            "failed" => "failed",
+            "running" => "running",
+            _ => {
+                if effective_total > 0 && done_tasks == effective_total {
+                    "complete"
+                } else if done_tasks == 0 {
+                    "not started"
+                } else {
+                    "in progress"
+                }
+            }
+        }
+    } else if effective_total > 0 && done_tasks == effective_total {
+        "complete"
+    } else if done_tasks == 0 {
+        "not started"
+    } else {
+        "in progress"
+    };
+
+    if cli.json {
+        let task_entries: Vec<serde_json::Value> = tasks_file
+            .tasks
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "id": t.id,
+                    "title": t.title,
+                    "status": t.status,
+                    "role": t.role,
+                    "tier": t.tier,
+                    "depends_on": t.depends_on,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "plan_id": plan_id,
+                "plan_dir": plan_dir,
+                "tasks_done": done_tasks,
+                "tasks_total": effective_total,
+                "completed": status_str == "complete",
+                "status": status_str,
+                "tasks": task_entries,
+            }))?
+        );
+    } else {
+        println!("plan:            {plan_id}");
+        println!("directory:       {}", plan_dir.display());
+        println!("tasks:           {done_tasks}/{effective_total}");
+        println!("status:          {status_str}");
+        println!();
+        if tasks_file.tasks.is_empty() {
+            println!("  (no tasks)");
+        } else {
+            let id_width = tasks_file
+                .tasks
+                .iter()
+                .map(|t| t.id.len())
+                .max()
+                .unwrap_or(2)
+                .max(2);
+            for task in &tasks_file.tasks {
+                // For display, show "done" for all tasks when the graph
+                // checkpoint reports success but tasks.toml wasn't updated.
+                // When the graph checkpoint succeeded, promote any
+                // pre-execution task status to "done".  The graph engine
+                // does not write back to tasks.toml, so statuses like
+                // "ready", "pending", and "todo" all mean "not yet done
+                // according to the file" even though the run completed.
+                let is_pre_execution_status = task.status.is_empty()
+                    || task.status.eq_ignore_ascii_case("pending")
+                    || task.status.eq_ignore_ascii_case("todo")
+                    || task.status.eq_ignore_ascii_case("ready");
+                let display_status = if checkpoint_succeeded && is_pre_execution_status {
+                    "done"
+                } else {
+                    task.status.as_str()
+                };
+                let title = task.title.as_str();
+                println!("  {:<id_width$}  {:<10}  {title}", task.id, display_status);
+            }
+        }
+    }
+    Ok(EXIT_SUCCESS)
 }
 
 // ---------------------------------------------------------------------------
@@ -1822,17 +2075,28 @@ pub(crate) fn preserve_completed_task_status(
             .filter(|task| task.status.eq_ignore_ascii_case("done"))
             .collect();
 
-        for task in &mut regenerated.tasks {
-            let normalized = normalize_task_title(&task.title);
-            if completed.iter().any(|old| {
-                old.id == task.id
-                    || normalize_task_title(&old.title) == normalized
-                    || normalize_task_title(&old.title).contains(&normalized)
-                    || normalized.contains(&normalize_task_title(&old.title))
-            }) {
-                task.status = "done".to_string();
-            }
-        }
+        let mutations: Vec<roko_cli::task_parser::PlanMutation> = regenerated
+            .tasks
+            .iter()
+            .filter_map(|task| {
+                let normalized = normalize_task_title(&task.title);
+                let already_done = completed.iter().any(|old| {
+                    old.id == task.id
+                        || normalize_task_title(&old.title) == normalized
+                        || normalize_task_title(&old.title).contains(&normalized)
+                        || normalized.contains(&normalize_task_title(&old.title))
+                });
+                if already_done {
+                    Some(roko_cli::task_parser::PlanMutation::MarkTaskDone {
+                        task_id: task.id.clone(),
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        regenerated.apply_mutations(mutations);
 
         regenerated.meta.iteration = old_tasks.meta.iteration.saturating_add(1);
         if regenerated.meta.plan.trim().is_empty() {
@@ -1847,18 +2111,9 @@ pub(crate) fn preserve_completed_task_status(
             .unwrap_or_else(|| "unknown-plan".to_string());
     }
 
-    regenerated.meta.total = regenerated.tasks.len() as u32;
-    regenerated.meta.done = regenerated
-        .tasks
-        .iter()
-        .filter(|task| task.status.eq_ignore_ascii_case("done"))
-        .count() as u32;
-    regenerated.meta.status =
-        if regenerated.meta.total > 0 && regenerated.meta.done == regenerated.meta.total {
-            "complete".to_string()
-        } else {
-            "ready".to_string()
-        };
+    // apply_mutations already calls recount_meta; call it once more to handle
+    // the case where old_tasks was None (no mutations were applied).
+    regenerated.recount_meta();
 
     regenerated
 }
@@ -2114,10 +2369,13 @@ fn validate_graph_execution_options(_engine: PlanEngine, _approval: bool) -> Res
 /// Flags that ARE forwarded to the graph engine (and thus do NOT warn):
 ///   `--model`, `--dangerously-skip-permissions`,
 ///   `--resume-plan`, `--fresh`, `--force-resume`, `--max-retries`,
-///   `--max-tasks`, `--budget-override`, `--no-budget`, `--no-tui`
+///   `--max-tasks`, `--budget-override`, `--no-budget`, `--no-tui`,
+///   `--approval` / `--tui`, `--worktree-per-task`, `--rich-topology`
 ///
-/// `--approval` / `--tui` is rejected as an error by
-/// `validate_graph_execution_options` above, not warned here.
+/// Flags that ARE warned (silently dropped by the Graph Engine):
+///   `--resume` (global session resume), `--effort`, `--skip-preflight`,
+///   `--force`, `--screenshots`, `--screenshot-interval` (non-default),
+///   `--screenshot-dir`, `--batch-size`
 #[allow(clippy::fn_params_excessive_bools)]
 fn warn_graph_unsupported_flags(
     resume_session: Option<&str>,
@@ -2126,9 +2384,9 @@ fn warn_graph_unsupported_flags(
     skip_preflight: bool,
     force: bool,
     screenshots: bool,
+    screenshot_interval: u64,
+    screenshot_dir: Option<&std::path::Path>,
     batch_size: Option<usize>,
-    no_replan: bool,
-    skip_validate: bool,
     quiet: bool,
 ) {
     if quiet {
@@ -2163,22 +2421,32 @@ fn warn_graph_unsupported_flags(
     }
     if screenshots {
         tracing::warn!("--screenshots is not supported with --engine graph and will be ignored");
+        // Warn for companion flags only when --screenshots is set, since they
+        // are only meaningful alongside it.
+        let default_interval: u64 = 60;
+        if screenshot_interval != default_interval {
+            tracing::warn!(
+                screenshot_interval,
+                "--screenshot-interval is not supported with --engine graph and will be ignored"
+            );
+        }
+        if let Some(dir) = screenshot_dir {
+            tracing::warn!(
+                dir = %dir.display(),
+                "--screenshot-dir is not supported with --engine graph and will be ignored"
+            );
+        }
+    } else {
+        // Even without --screenshots, an explicit --screenshot-dir should warn.
+        if let Some(dir) = screenshot_dir {
+            tracing::warn!(
+                dir = %dir.display(),
+                "--screenshot-dir is not supported with --engine graph and will be ignored"
+            );
+        }
     }
     if batch_size.is_some() {
         tracing::warn!("--batch-size is not supported with --engine graph and will be ignored");
-    }
-    if no_replan {
-        tracing::warn!(
-            "--no-replan has no effect with --engine graph; \
-             the Graph engine does not replan on gate failure \
-             (use max_retries in tasks.toml to control retries)"
-        );
-    }
-    if skip_validate {
-        tracing::warn!(
-            "--skip-validate skips tasks.toml structure checks but the Graph engine \
-             always runs its own internal graph validation before execution"
-        );
     }
 }
 
@@ -2330,11 +2598,16 @@ async fn cmd_plan_run_engine(
     no_tui: bool,
 ) -> Result<i32> {
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     use roko_graph::cell::CellContext;
     use roko_graph::cells::{TaskDispatcher, TaskExecutorCell};
     use roko_graph::convert::{PlanTaskInfo, plan_to_graph};
     use roko_graph::engine::GraphEngine;
+
+    use roko_cli::execution_control::{
+        CommandAckReceiver, CommandAckStatus, ExecutionCommandKind, ExecutionCommandSender, ack_for,
+    };
 
     let run_start = std::time::Instant::now();
     let plans = roko_cli::runner::plan_loader::load_plans(plans_dir)?;
@@ -2351,11 +2624,6 @@ async fn cmd_plan_run_engine(
         .into_config();
     roko_core::config::loader::normalize_and_validate_dispatch_models(&mut roko_config)
         .context("validate model configuration before Graph dispatch")?;
-
-    // Note: --no-replan has no meaningful effect in the Graph engine.
-    // The Graph engine uses max_retries (from tasks.toml) for retry control
-    // and does not perform plan-level replanning on gate failure. A warning
-    // is emitted by warn_graph_unsupported_flags before reaching this path.
 
     // Merge CLI flag with config (same logic as runner-v2).
     let dangerously_skip_permissions =
@@ -2377,8 +2645,10 @@ async fn cmd_plan_run_engine(
         plans_dir.to_path_buf(),
         roko_config.clone(),
     );
-    roko_cli::runner::extension_loader::initialize_extensions(graph_run_config.extension_chain.as_ref())
-        .await?;
+    roko_cli::runner::extension_loader::initialize_extensions(
+        graph_run_config.extension_chain.as_ref(),
+    )
+    .await?;
 
     let roko_config = Arc::new(roko_config);
     let prompt_cache = Arc::new(roko_cli::dispatch::PromptCache::load(workdir));
@@ -2428,7 +2698,11 @@ async fn cmd_plan_run_engine(
     let shared_daimon_state: Option<std::sync::Arc<std::sync::Mutex<roko_daimon::DaimonState>>> = {
         let dims_vec = &roko_config.daimon.strategy_space.dimensions;
         if dims_vec.len() == 8 {
-            let dims: [String; 8] = dims_vec.clone().try_into().unwrap();
+            // SAFETY: len == 8 is checked above, so try_into() is infallible here.
+            let dims: [String; 8] = dims_vec
+                .clone()
+                .try_into()
+                .expect("dims_vec has exactly 8 elements (checked above)");
             let def = roko_daimon::StrategySpaceDefinition {
                 domain: roko_config.daimon.strategy_space.domain.clone(),
                 dimensions: dims,
@@ -2447,15 +2721,13 @@ async fn cmd_plan_run_engine(
 
     let graph_episodes_path = graph_layout.root_episodes_path();
     let graph_feedback_facade = {
-        let mut facade = roko_cli::runtime_feedback::FeedbackFacade::new()
-            .with_sink(std::sync::Arc::new(
+        let mut facade =
+            roko_cli::runtime_feedback::FeedbackFacade::new().with_sink(std::sync::Arc::new(
                 roko_cli::runtime_feedback::EpisodeSink::at(&graph_episodes_path),
             ));
         if let Some(cascade) = &graph_run_config.cascade_router {
             facade = facade.with_sink(std::sync::Arc::new(
-                roko_cli::runtime_feedback::RoutingObservationSink::new(
-                    cascade.clone(),
-                ),
+                roko_cli::runtime_feedback::RoutingObservationSink::new(cascade.clone()),
             ));
         }
 
@@ -2478,6 +2750,38 @@ async fn cmd_plan_run_engine(
             ));
         }
 
+        // ── Theta reflection on plan completion ─────────────────────────
+        //
+        // Runs a five-phase reflective cycle (gamma summary, affect update,
+        // calibration check, progress assessment, meta-cognition) after each
+        // plan completes. Lightweight and synchronous (no LLM calls).
+        let shared_cortical =
+            std::sync::Arc::new(roko_runtime::heartbeat::CorticalState::default());
+        let shared_theta = std::sync::Arc::new(std::sync::Mutex::new(
+            roko_runtime::theta_consumer::ThetaConsumer::default(),
+        ));
+        facade = facade.with_sink(std::sync::Arc::new(
+            roko_cli::runtime_feedback::ThetaReflectionSink::new(
+                std::sync::Arc::clone(&shared_theta),
+                std::sync::Arc::clone(&shared_cortical),
+            ),
+        ));
+
+        // ── Delta consolidation on plan completion ──────────────────────
+        //
+        // Tracks episode counts and checks trigger conditions for a dream
+        // consolidation cycle (NREM replay, REM imagination, integration).
+        // Bridges roko_runtime::delta_consumer into the feedback pipeline.
+        let shared_delta = std::sync::Arc::new(std::sync::Mutex::new(
+            roko_runtime::delta_consumer::DeltaConsumer::default(),
+        ));
+        facade = facade.with_sink(std::sync::Arc::new(
+            roko_cli::runtime_feedback::DeltaConsolidationSink::new(
+                std::sync::Arc::clone(&shared_delta),
+                std::sync::Arc::clone(&shared_cortical),
+            ),
+        ));
+
         std::sync::Arc::new(facade)
     };
 
@@ -2485,9 +2789,7 @@ async fn cmd_plan_run_engine(
     //
     // Persists across the plan run, accumulating build/test observations
     // for predictive gate feedback. Mirrors Runner-v2's CodingOracle.
-    let coding_oracle = std::sync::Arc::new(
-        roko_learn::oracles::coding::CodingOracle::new(),
-    );
+    let coding_oracle = std::sync::Arc::new(roko_learn::oracles::coding::CodingOracle::new());
 
     // ── P1-01: GateGamingDetector ────────────────────────────────────
     //
@@ -2495,9 +2797,7 @@ async fn cmd_plan_run_engine(
     // increasing rate while delivering lower-quality outputs. Alerts are
     // appended to a JSONL file on disk.
     let gate_gaming_detector = std::sync::Arc::new(tokio::sync::Mutex::new(
-        roko_learn::GateGamingDetector::new(
-            graph_learn_dir.join("gate-gaming-alerts.jsonl"),
-        ),
+        roko_learn::GateGamingDetector::new(graph_learn_dir.join("gate-gaming-alerts.jsonl")),
     ));
 
     // ── P1-04: HoldoutExperiment ─────────────────────────────────────
@@ -2542,12 +2842,19 @@ async fn cmd_plan_run_engine(
         daimon_state: shared_daimon_state,
         experiment_store_path: Some(graph_learn_dir.join("experiments.json")),
         gate_failures_path: Some(graph_layout.gate_failures_path()),
+        post_gate_reflection_path: Some(graph_learn_dir.join("post-gate-reflections.json")),
         replan_on_gate_failure: roko_config.learning.replan_on_gate_failure,
         coding_oracle: Some(coding_oracle),
         gate_gaming_detector: Some(gate_gaming_detector),
         holdout_experiment: Some(holdout_experiment.clone()),
         shadow_runner: Some(shadow_runner),
         eval_generation_enabled: true,
+        // P2-LRN-6 Loop 1: Gate threshold EMA updates after each task's
+        // verify sequence. Uses the canonical workspace path so the TUI,
+        // serve, and `roko learn gates` all read from the same file.
+        gate_thresholds_path: Some(graph_layout.gate_thresholds_path()),
+        // RAG-10: retrieval outcome JSONL for gate-pass correlation telemetry.
+        retrieval_outcomes_path: Some(graph_learn_dir.join("retrieval-outcomes.jsonl")),
     };
 
     // ── TUI vs inline progress decision ──────────────────────────────
@@ -2556,8 +2863,7 @@ async fn cmd_plan_run_engine(
     // interactive terminal, unless the user explicitly opted out with
     // --no-tui, --quiet, or --json. This mirrors the runner-v2 approval
     // TUI logic (line ~470).
-    let launch_tui =
-        !no_tui && !cli.quiet && !cli.json && std::io::stdout().is_terminal();
+    let launch_tui = !no_tui && !cli.quiet && !cli.json && std::io::stdout().is_terminal();
 
     // Keep the full SharedStateHub alive so the TUI can subscribe to the
     // live event stream. Previously this path only extracted sender().
@@ -2572,19 +2878,33 @@ async fn cmd_plan_run_engine(
     // Disabled when the TUI is active — events flow through the dashboard
     // instead of being printed inline.
     let show_progress = !cli.quiet && !cli.json && !launch_tui;
-    let graph_telemetry: Arc<dyn roko_core::TelemetryEventSink> = Arc::new(
-        InlineProgressTelemetrySink {
+    let graph_telemetry: Arc<dyn roko_core::TelemetryEventSink> =
+        Arc::new(InlineProgressTelemetrySink {
             inner: state_hub_sink,
             show_progress,
-        },
-    );
+        });
 
     // Wire graph engine execution into the TUI dashboard event stream.
     // Create separate TUI bridges for the task dispatcher (agent output
     // streaming) and the graph lifecycle bridge (plan/node events).
-    let dispatcher_tui_bridge = roko_cli::runner::tui_bridge::TuiBridge::new(state_hub_sender.clone());
+    let dispatcher_tui_bridge =
+        roko_cli::runner::tui_bridge::TuiBridge::new(state_hub_sender.clone());
     let graph_tui_bridge = roko_cli::runner::graph_tui_bridge::GraphTuiBridge::new(
         roko_cli::runner::tui_bridge::TuiBridge::new(state_hub_sender),
+    );
+
+    // ── T0 reflex store ───────────────────────────────────────────────
+    //
+    // Open the persisted reflex store so the dispatcher can check for
+    // deterministic condition-action rules before invoking the LLM.
+    // The store is cheap to open (reads one JSONL file); rules are
+    // matched in-memory at sub-millisecond latency.
+    let reflex_store_path = graph_learn_dir.join("reflexes.jsonl");
+    let reflex_store = roko_learn::reflex_store::ReflexStore::open(&reflex_store_path);
+    tracing::debug!(
+        path = %reflex_store_path.display(),
+        rules = reflex_store.len(),
+        "T0 reflex store opened for graph plan run"
     );
 
     let mut dispatcher_builder = roko_cli::graph_task_dispatch::GraphTaskDispatcher::new(
@@ -2600,6 +2920,7 @@ async fn cmd_plan_run_engine(
     .with_cli_model_override(cli_model_override)
     .with_dangerously_skip_permissions(dangerously_skip_permissions)
     .with_feedback(graph_feedback)
+    .with_reflex_store(reflex_store)
     .with_tui_bridge(dispatcher_tui_bridge);
 
     // ── Per-task worktree isolation (opt-in via --worktree-per-task) ──
@@ -2623,6 +2944,24 @@ async fn cmd_plan_run_engine(
 
     let graph_task_dispatcher = Arc::new(dispatcher_builder);
     let task_dispatcher: Arc<dyn TaskDispatcher> = graph_task_dispatcher.clone();
+
+    // ── TUI execution command channel (P2-TUI-3) ─────────────────────
+    //
+    // Create the bi-directional command/ack channel before spawning the TUI
+    // so we can wire both ends: sender+ack_rx go to the TUI, cmd_rx+ack_tx
+    // stay in the async execution path. The run_id "graph-engine" is a
+    // placeholder; per-plan run IDs are substituted when each plan begins.
+    // Using tokio::sync::mpsc directly here because ExecutionCommandSender
+    // wraps a bounded Tokio sender and we need the raw receiver.
+    let (tui_cmd_sender, mut exec_cmd_rx, tui_ack_tx, tui_ack_rx) =
+        ExecutionCommandSender::channel("graph-engine");
+    let tui_ack_receiver = CommandAckReceiver::new(tui_ack_rx);
+
+    // Shared pause flag: set/cleared by Pause/Resume commands from the TUI.
+    // Wired into each CellContext so the task executor cell can check it
+    // between agent turns (cells check this flag between turns; a paused
+    // cell waits until the flag is cleared).
+    let shared_pause_flag: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 
     // ── Spawn interactive TUI thread ─────────────────────────────────
     //
@@ -2656,7 +2995,11 @@ async fn cmd_plan_run_engine(
                     &state_hub_for_tui,
                 )
                 .without_mouse_capture()
-                .with_exit_on_plan_completion();
+                .with_exit_on_plan_completion()
+                // P2-TUI-3: Wire the execution command sender so TUI recovery
+                // keybindings (s=soft-retry, S=repair, c=reverify, F=force-advance,
+                // V=reverify-plan, p=pause/resume) forward commands to this loop.
+                .with_execution_command_sender(tui_cmd_sender, tui_ack_receiver);
                 app.run()
             })
             .context("spawn Graph Engine TUI thread")?;
@@ -2759,8 +3102,7 @@ async fn cmd_plan_run_engine(
         } else {
             plan.tasks.meta.max_parallel
         };
-        let max_parallel_usize =
-            usize::try_from(max_parallel.max(1)).unwrap_or(usize::MAX);
+        let max_parallel_usize = usize::try_from(max_parallel.max(1)).unwrap_or(usize::MAX);
         let plan_dir_str = plan.dir.display().to_string();
 
         let (graph, registry) = if rich_topology {
@@ -2874,7 +3216,11 @@ async fn cmd_plan_run_engine(
         if let Some(replayer) = checkpoint.take_replayer() {
             engine = engine.with_replayer(replayer);
         }
-        let ctx = CellContext::new().with_run_id(run_id);
+        // P2-TUI-3: Wire the shared pause flag into CellContext so cells can
+        // check it between turns and yield when the TUI sends Pause.
+        let ctx = CellContext::new()
+            .with_run_id(run_id.clone())
+            .with_pause_flag(Arc::clone(&shared_pause_flag));
 
         // Validate before running.
         let issues = engine.validate();
@@ -2921,8 +3267,104 @@ async fn cmd_plan_run_engine(
             graph_tui_bridge.node_started(&plan.id, task_id, &info.title);
         }
 
-        match engine.execute(&ctx).await {
-            Ok(output) => {
+        // P2-TUI-3: Use engine.start() instead of engine.execute() so we
+        // can interleave command processing with graph execution. The
+        // FlowHandle's cancel token is wired to Cancel commands from the TUI.
+        let flow_handle = engine.start(ctx);
+        let mut was_cancelled_by_tui = false;
+
+        // ── Command polling loop ─────────────────────────────────────
+        //
+        // Poll TUI commands every 100 ms while the plan is running.
+        // Cancel: requests early termination via FlowHandle.
+        // Pause: sets shared_pause_flag; cells check this between turns.
+        // Resume: clears shared_pause_flag.
+        // Other commands (SoftRetry, Repair, ReverifyGates, etc.) are
+        // post-execution requests; ack them and skip (they are effective
+        // when re-invoked after the plan completes or restarts).
+        loop {
+            if !flow_handle.is_running() {
+                break;
+            }
+            // Non-blocking drain of pending TUI commands.
+            loop {
+                match exec_cmd_rx.try_recv() {
+                    Ok(cmd) => {
+                        let ack_status = match &cmd.kind {
+                            ExecutionCommandKind::Cancel => {
+                                tracing::info!(
+                                    plan_id = %plan.id,
+                                    command_id = %cmd.command_id,
+                                    "TUI cancel: requesting flow cancellation"
+                                );
+                                flow_handle.cancel();
+                                was_cancelled_by_tui = true;
+                                CommandAckStatus::Completed
+                            }
+                            ExecutionCommandKind::Pause => {
+                                shared_pause_flag.store(true, Ordering::Release);
+                                tracing::info!(
+                                    plan_id = %plan.id,
+                                    command_id = %cmd.command_id,
+                                    "TUI pause: execution paused after current task"
+                                );
+                                CommandAckStatus::Completed
+                            }
+                            ExecutionCommandKind::Resume => {
+                                shared_pause_flag.store(false, Ordering::Release);
+                                tracing::info!(
+                                    plan_id = %plan.id,
+                                    command_id = %cmd.command_id,
+                                    "TUI resume: execution resumed"
+                                );
+                                CommandAckStatus::Completed
+                            }
+                            // Post-execution commands: ack as accepted; the TUI
+                            // can re-send after plan completion.
+                            ExecutionCommandKind::SoftRetry
+                            | ExecutionCommandKind::Repair { .. }
+                            | ExecutionCommandKind::ReverifyGates
+                            | ExecutionCommandKind::Skip
+                            | ExecutionCommandKind::Approve { .. }
+                            | ExecutionCommandKind::RejectApproval { .. }
+                            | ExecutionCommandKind::Reset => {
+                                tracing::debug!(
+                                    plan_id = %plan.id,
+                                    command_id = %cmd.command_id,
+                                    kind = %cmd.kind,
+                                    "TUI command queued (post-execution; plan still running)"
+                                );
+                                CommandAckStatus::Accepted
+                            }
+                        };
+                        let ack = ack_for(&cmd, ack_status, None);
+                        let _ = tui_ack_tx.try_send(ack);
+                    }
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
+                }
+            }
+            // Yield for 100 ms before the next command poll so we don't spin.
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+
+        // Collect the final result from the background task.
+        let flow_result = flow_handle.await_completion().await;
+        // Clear any residual pause after the plan exits.
+        shared_pause_flag.store(false, Ordering::Release);
+
+        // Drain any commands that arrived after the flow finished.
+        while let Ok(cmd) = exec_cmd_rx.try_recv() {
+            let ack = ack_for(
+                &cmd,
+                CommandAckStatus::Accepted,
+                Some("plan finished — re-run to apply".into()),
+            );
+            let _ = tui_ack_tx.try_send(ack);
+        }
+
+        match flow_result {
+            Some(output) => {
                 let output_count = output
                     .node_results
                     .iter()
@@ -2930,7 +3372,8 @@ async fn cmd_plan_run_engine(
                     .sum::<usize>();
                 total_output_count += output_count;
                 let budget = graph_task_dispatcher.plan_budget_snapshot(&plan.id);
-                let execution_succeeded = output.success && !budget.dispatch_blocked;
+                let execution_succeeded =
+                    output.success && !budget.dispatch_blocked && !was_cancelled_by_tui;
 
                 // ── Graph TUI bridge: emit per-node completions + PlanCompleted ──
                 roko_cli::runner::graph_tui_bridge::emit_plan_lifecycle(
@@ -2942,7 +3385,13 @@ async fn cmd_plan_run_engine(
                 );
 
                 if !cli.quiet && !cli.json {
-                    if execution_succeeded {
+                    if was_cancelled_by_tui {
+                        tracing::warn!(
+                            plan_id = %plan.id,
+                            node_count = output.node_results.len(),
+                            "plan cancelled by user"
+                        );
+                    } else if execution_succeeded {
                         tracing::info!(
                             plan_id = %plan.id,
                             node_count = output.node_results.len(),
@@ -2995,12 +3444,18 @@ async fn cmd_plan_run_engine(
                 plan_outcomes.insert(plan.id.clone(), execution_succeeded);
                 checkpoint.finish(execution_succeeded)?;
             }
-            Err(e) => {
-                // ── Graph TUI bridge: emit error + PlanCompleted(false) ──
-                graph_tui_bridge.error(&format!("plan '{}' execution failed: {e}", plan.id));
+            None => {
+                // Flow was cancelled before producing a result (e.g. validation
+                // failure inside start(), or the task panicked).
+                let cancelled_msg = if was_cancelled_by_tui {
+                    format!("plan '{}' cancelled by user", plan.id)
+                } else {
+                    format!("plan '{}' execution failed (no output)", plan.id)
+                };
+                graph_tui_bridge.error(&cancelled_msg);
                 graph_tui_bridge.plan_completed(&plan.id, false);
 
-                tracing::error!(plan_id = %plan.id, error = %e, "plan execution failed");
+                tracing::error!(plan_id = %plan.id, "plan execution failed: no output");
                 plan_outcomes.insert(plan.id.clone(), false);
                 all_succeeded = false;
                 checkpoint.finish(false)?;
@@ -3053,6 +3508,23 @@ async fn cmd_plan_run_engine(
                 ),
             });
     }
+    // ── Persist cascade router observations (UX34) ─────────────────
+    //
+    // Save learned routing state (confidence stats, LinUCB weights, Pareto
+    // frontier) so that force_backend override outcomes and all other
+    // routing observations survive across runs. Without this, in-memory
+    // learning accumulated during plan execution was lost on exit.
+    if let Some(cascade) = &graph_run_config.cascade_router {
+        let cascade_path = graph_layout.cascade_router_path();
+        if let Err(err) = cascade.save(&cascade_path) {
+            tracing::warn!(
+                path = %cascade_path.display(),
+                error = %err,
+                "failed to persist cascade router state (non-fatal)"
+            );
+        }
+    }
+
     // ── Persist holdout experiment state ────────────────────────────
     //
     // Save holdout state so overfitting detection survives across runs
@@ -3089,11 +3561,9 @@ async fn cmd_plan_run_engine(
             .collect();
         let tasks_completed: usize = per_plan.iter().map(|p| p.tasks_completed).sum();
         let tasks_failed: usize = per_plan.iter().map(|p| p.tasks_failed).sum();
-        let any_budget_exhausted = plans.iter().any(|p| {
-            graph_task_dispatcher
-                .plan_budget_snapshot(&p.id)
-                .exhausted
-        });
+        let any_budget_exhausted = plans
+            .iter()
+            .any(|p| graph_task_dispatcher.plan_budget_snapshot(&p.id).exhausted);
         let (agg_tokens_in, agg_tokens_out, agg_dispatch_count) =
             graph_task_dispatcher.run_aggregate_stats();
         let record = roko_learn::run_metrics::RunMetricsRecord {
@@ -3135,15 +3605,14 @@ async fn cmd_plan_run_engine(
             }))
             .unwrap_or_default()
         );
-    } else if !cli.quiet && !launch_tui {
-        // Only print the summary line when no TUI was shown — otherwise
-        // the TUI already rendered all progress information interactively.
-        tracing::info!(
-            plan_count,
-            total_tasks,
-            total_output_count,
-            total_cost_usd,
-            "Graph Engine complete"
+    } else if !cli.quiet {
+        // Always print a human-readable summary to stdout so `--no-tui` and
+        // piped invocations produce visible output.  When the TUI was active
+        // the user already saw interactive progress, but one final summary
+        // line is still useful (and harmless) after the terminal is restored.
+        println!(
+            "Graph Engine complete: {} plan(s), {} task(s), ${:.2}",
+            plan_count, total_tasks, total_cost_usd,
         );
     }
 
@@ -3472,7 +3941,7 @@ depends_on_plan = ["missing-foundation"]
     #[test]
     fn warn_graph_unsupported_flags_does_not_panic() {
         // All flags off (quiet = true suppresses output).
-        warn_graph_unsupported_flags(None, None, None, false, false, false, None, false, false, true);
+        warn_graph_unsupported_flags(None, None, None, false, false, false, 60, None, None, true);
         // All flags on (quiet = true still suppresses).
         warn_graph_unsupported_flags(
             Some("session-id"),
@@ -3481,9 +3950,9 @@ depends_on_plan = ["missing-foundation"]
             true,
             true,
             true,
+            30,
+            Some(std::path::Path::new("/tmp/shots")),
             Some(5),
-            true,
-            true,
             true,
         );
         // All flags on, quiet = false (will write to stderr but must not panic).
@@ -3494,9 +3963,22 @@ depends_on_plan = ["missing-foundation"]
             true,
             true,
             true,
+            30,
+            Some(std::path::Path::new("/tmp/shots")),
             Some(5),
-            true,
-            true,
+            false,
+        );
+        // screenshots=false but explicit --screenshot-dir still warns.
+        warn_graph_unsupported_flags(
+            None,
+            None,
+            None,
+            false,
+            false,
+            false,
+            60,
+            Some(std::path::Path::new("/tmp/shots")),
+            None,
             false,
         );
     }

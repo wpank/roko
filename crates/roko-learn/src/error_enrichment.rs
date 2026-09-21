@@ -1,4 +1,4 @@
-//! STATUS: NOT WIRED -- built but no non-test runtime caller.
+//! STATUS: WIRED — used by gate failure replan (`build_gate_failure_plan_revision`).
 //!
 //! Cheap enrichment pass for noisy gate failures before retry.
 //!

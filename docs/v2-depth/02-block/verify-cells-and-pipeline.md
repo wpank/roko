@@ -2,7 +2,7 @@
 
 > Depth for [02-CELL.md](../../unified/02-CELL.md). The 11 gate implementations as Verify Cells, the 7-rung pipeline as a Pipeline Graph, and rung selection as a Route Cell that picks minimum viable verification.
 
-> **Implementation status (2026-08-17):** IMPLEMENTED. All 11 gate implementations exist in `crates/roko-gate/`. The 7-rung pipeline with adaptive EMA thresholds (`gate-thresholds.json`) is wired into runner-v2 via `runner/gate_dispatch.rs`. Rung selection (`build_rung_execution_inputs`) and enriched rung inputs are live. Adaptive thresholds per rung are persisted and applied.
+> **Implementation status (2026-08-17, updated 2026-09-10):** IMPLEMENTED. All 19 gate implementations exist in `crates/roko-gate/` (gate count is 19, not 11 — the doc title is historical; 7-rung pipeline is correct). The 7-rung pipeline with adaptive EMA thresholds (`gate-thresholds.json`) is wired via `runner/gate_dispatch.rs`. Rung selection (`build_rung_execution_inputs`) and enriched rung inputs are live. Adaptive thresholds per rung are persisted and applied. **Note:** "runner-v2" in this doc refers to the legacy event loop; that code has been deleted and the Graph engine now calls `gate_dispatch.rs` directly. The gate dispatch infrastructure is shared and unchanged.
 
 This doc covers the concrete verification machinery. For the four simultaneous roles of the Verify protocol (reward function, relabeling oracle, safety boundary, economic attestation), Goodhart-resistance, Variance Inequality, and meta-verification, see [verify-as-universal-oracle.md](verify-as-universal-oracle.md).
 

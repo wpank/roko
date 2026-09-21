@@ -2,6 +2,7 @@
 # agent, prompt, and provider settings; this file only overrides what
 # the demo needs.
 
+[prd]
 auto_plan = false
 
 [agent]
@@ -9,15 +10,21 @@ command = "echo"
 args = ["demo-stub"]
 timeout_ms = 30000
 
-[[gate]]
-kind = "shell"
-program = "true"
-args = []
-timeout_ms = 10000
+[[gates.rungs]]
+name = "demo-gate"
+command = "true"
+timeout_secs = 10
+required = true
 
-[executor]
+[runner]
 max_concurrent_plans = 1
 max_concurrent_tasks = 2
-max_auto_fix_iterations = 1
-task_timeout_secs = 60
-auto_replan = false
+
+[gates]
+max_iterations = 1
+
+[timeouts]
+task_attempt_secs = 60
+
+[learning]
+replan_on_gate_failure = false

@@ -1,4 +1,4 @@
-//! Adapter that maps runner-v2 events to conductor [`Signal`]s.
+//! Adapter that maps runner events to conductor [`Signal`]s.
 //!
 //! The conductor watchers consume typed [`Signal`] streams (ghost-turn
 //! signals, gate verdicts, cost metrics, plan phases). This module provides

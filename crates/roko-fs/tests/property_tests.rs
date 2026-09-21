@@ -1,7 +1,7 @@
 //! Property-based tests for roko-fs core types.
 
 use proptest::prelude::*;
-use roko_fs::gc::{FsRetentionPolicy, GcReport, GcCandidate};
+use roko_fs::gc::{FsRetentionPolicy, GcCandidate, GcReport};
 use roko_fs::layout::{LayoutVersion, RokoLayout};
 use roko_fs::observability::{MAX_METRIC_CARDINALITY, validate_cardinality, validate_metric_key};
 

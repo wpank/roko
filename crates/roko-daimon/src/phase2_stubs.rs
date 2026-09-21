@@ -440,6 +440,8 @@ pub struct SomaticMarkerFiredEvent {
     pub strategy_param: String,
 }
 
+// Internal bookkeeping for ContrarianTracker window; fields written but struct
+// never exposed outside the tracker.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 struct ContrarianEvent {
@@ -580,6 +582,8 @@ pub trait AffectWeightedQuery {
 ///
 /// An anxious agent (negative pleasure) retrieves confident memories;
 /// an overconfident agent retrieves cautionary memories.
+// Phase 2 integration stub: will be called from retrieval paths once
+// contrarian blending is wired into the live dispatch.
 #[must_use]
 #[allow(dead_code)]
 pub fn contrarian_pad(pad: &PadVector) -> PadVector {
@@ -596,6 +600,8 @@ pub fn contrarian_pad(pad: &PadVector) -> PadVector {
 /// instead of directly calling `query_with_affect`.
 /// If the tracker says we need more contrarian retrievals, replaces some
 /// congruent results with mood-opposite ones.
+// Phase 2 integration stub: primary retrieval entry point once contrarian
+// blending is wired into the live dispatch.
 #[allow(dead_code)]
 pub fn blend_with_contrarian<Q: AffectWeightedQuery>(
     store: &Q,
@@ -944,7 +950,6 @@ impl ErrorPatternTracker {
 }
 
 /// Per-task fatigue state used by the coding-agent integration stubs.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FatigueState {
     /// Consecutive failures recorded for the task.

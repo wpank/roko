@@ -91,13 +91,13 @@ impl DaimonPolicy {
 /// Optional PAD-based emotional metadata attached to a Signal.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EmotionalTag {
-    /// Immediate PAD signal associated with the engram.
+    /// Immediate PAD signal associated with the signal.
     pub pad: PadVector,
     /// Emotional intensity in `[0.0, 1.0]`.
     pub intensity: f32,
     /// Human-readable or machine-generated trigger label.
     pub trigger: String,
-    /// Snapshot of the current PAD state when the engram was created.
+    /// Snapshot of the current PAD state when the signal was created.
     ///
     /// The live runtime does not persist a separate mood/personality layer.
     pub mood_snapshot: PadVector,

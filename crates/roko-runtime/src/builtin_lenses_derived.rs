@@ -1202,6 +1202,15 @@ fn metric_value(payload: &LensPayload, metric: &str) -> Option<f64> {
         },
         LensPayload::Usage(value) => usage_metric_value(value, metric),
         LensPayload::CFactor(value) => c_factor_metric_value(value, metric),
+        LensPayload::RagPerformance(value) => match metric {
+            "total_queries" => Some(value.total_queries as f64),
+            "queries_with_zero_results" => Some(value.queries_with_zero_results as f64),
+            "miss_rate" => Some(value.miss_rate),
+            "precision" => Some(value.precision),
+            "p95_latency_ms" => Some(value.p95_latency_ms as f64),
+            "mean_latency_ms" => Some(value.mean_latency_ms as f64),
+            _ => None,
+        },
     }
 }
 

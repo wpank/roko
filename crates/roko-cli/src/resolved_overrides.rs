@@ -21,24 +21,6 @@ use std::path::PathBuf;
 // Policy enums — each flag resolves to exactly one discriminant
 // ---------------------------------------------------------------------------
 
-/// Whether the user explicitly disabled gate-failure replanning.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReplanPolicy {
-    /// Use the config value (`learning.replan_on_gate_failure`).
-    FromConfig,
-    /// Explicitly disabled via `--no-replan`.
-    DisabledByUser,
-}
-
-/// Whether structural plan validation is skipped.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ValidationPolicy {
-    /// Run full validation.
-    Full,
-    /// Skip structure-only validation; schema/edge/safety validation still runs.
-    SkipStructureOnly,
-}
-
 /// Dry-run / read-only mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DryRunPolicy {
@@ -146,8 +128,6 @@ pub struct GlobalCliFlags<'a> {
     pub resume: Option<&'a str>,
     pub json: bool,
     pub quiet: bool,
-    pub no_replan: bool,
-    pub skip_validate: bool,
     pub headless: bool,
     pub no_serve: bool,
     pub color_enabled: bool,
@@ -272,12 +252,6 @@ pub struct ResolvedExecutionOverrides {
     pub color_enabled: bool,
 
     // ── Policies ────────────────────────────────────────────────────
-    /// Replan policy from `--no-replan`.
-    pub replan: ReplanPolicy,
-
-    /// Validation policy from `--skip-validate`.
-    pub validation: ValidationPolicy,
-
     /// Dry-run policy from `--dry-run` / `--ghost`.
     pub dry_run: DryRunPolicy,
 
@@ -343,16 +317,6 @@ impl ResolvedExecutionOverrides {
             json: flags.json,
             quiet: flags.quiet,
             color_enabled: flags.color_enabled,
-            replan: if flags.no_replan {
-                ReplanPolicy::DisabledByUser
-            } else {
-                ReplanPolicy::FromConfig
-            },
-            validation: if flags.skip_validate {
-                ValidationPolicy::SkipStructureOnly
-            } else {
-                ValidationPolicy::Full
-            },
             dry_run: DryRunPolicy::Execute,
             cascade_policy: CascadePolicy::Enabled,
             serve_policy: if flags.no_serve {
@@ -631,8 +595,6 @@ mod tests {
             resume: None,
             json: false,
             quiet: false,
-            no_replan: false,
-            skip_validate: false,
             headless: false,
             no_serve: false,
             color_enabled: true,
@@ -645,8 +607,6 @@ mod tests {
     fn default_globals_resolve_permissive_policies() {
         let flags = default_flags();
         let r = ResolvedExecutionOverrides::for_do(&flags, &DoInput::default());
-        assert_eq!(r.replan, ReplanPolicy::FromConfig);
-        assert_eq!(r.validation, ValidationPolicy::Full);
         assert_eq!(r.dry_run, DryRunPolicy::Execute);
         assert_eq!(r.interaction_mode, InteractionMode::Interactive);
         assert_eq!(r.cascade_policy, CascadePolicy::Enabled);
@@ -659,22 +619,6 @@ mod tests {
         assert!(!r.force_disk_check);
         assert!(!r.skip_preflight);
         assert!(r.context_paths.is_empty());
-    }
-
-    #[test]
-    fn no_replan_resolves() {
-        let mut flags = default_flags();
-        flags.no_replan = true;
-        let r = ResolvedExecutionOverrides::for_do(&flags, &DoInput::default());
-        assert_eq!(r.replan, ReplanPolicy::DisabledByUser);
-    }
-
-    #[test]
-    fn skip_validate_resolves() {
-        let mut flags = default_flags();
-        flags.skip_validate = true;
-        let r = ResolvedExecutionOverrides::for_plan_run(&flags, &PlanRunInput::default());
-        assert_eq!(r.validation, ValidationPolicy::SkipStructureOnly);
     }
 
     #[test]
@@ -1094,8 +1038,6 @@ mod tests {
             resume: Some("session-42"),
             json: true,
             quiet: true,
-            no_replan: true,
-            skip_validate: true,
             headless: true,
             no_serve: true,
             color_enabled: false,
@@ -1108,8 +1050,6 @@ mod tests {
         assert!(r.json);
         assert!(r.quiet);
         assert!(!r.color_enabled);
-        assert_eq!(r.replan, ReplanPolicy::DisabledByUser);
-        assert_eq!(r.validation, ValidationPolicy::SkipStructureOnly);
         assert_eq!(r.interaction_mode, InteractionMode::Headless);
         assert_eq!(r.serve_policy, ServePolicy::Disabled);
     }
@@ -1376,8 +1316,6 @@ mod tests {
             json: _,
             quiet: _,
             color_enabled: _,
-            replan: _,
-            validation: _,
             dry_run,
             cascade_policy: _,
             serve_policy: _,

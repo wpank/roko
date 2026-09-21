@@ -63,6 +63,7 @@ pub struct RunState {
     /// Typed runtime lifecycle projection updated from runner events.
     pub lifecycle: RunnerLifecycleProjection,
     /// Successfully persisted lifecycle/DAG milestones observed by the scheduler.
+    #[allow(dead_code)] // read in tests; production wiring deferred
     pub(crate) durable_scheduler_milestones: u64,
 
     // ─── Agent ──────────────────────────────────────────────────────
@@ -288,9 +289,9 @@ pub struct RunState {
     /// Cumulative USD cost charged to the reflection cost guard.
     ///
     /// Each post-gate reflection observation records a nominal token cost.
-    /// Once this exceeds `REFLECTION_COST_GUARD_USD` in event_loop.rs,
-    /// new reflections are skipped for the remainder of the run to cap the
-    /// overhead of the reflection loop.
+    /// Once this exceeds `REFLECTION_COST_GUARD_USD`, new reflections are
+    /// skipped for the remainder of the run to cap the overhead of the
+    /// reflection loop.
     pub cumulative_reflection_cost_usd: f64,
 
     // ─── GitHub Sync ─────────────────────────────────────────────────
@@ -1109,6 +1110,7 @@ impl RunState {
     }
 
     /// Stable set of terminal usage events already attributed to the ledger.
+    #[allow(dead_code)] // used in tests and snapshot restore; production caller deferred
     pub(crate) fn accounted_usage_attempts(&self) -> Vec<String> {
         let mut attempts = self
             .accounted_usage_attempts
@@ -1120,6 +1122,7 @@ impl RunState {
     }
 
     /// Restore replay guards alongside the durable per-task usage ledger.
+    #[allow(dead_code)] // called by snapshot restore path; wiring deferred
     pub(crate) fn restore_accounted_usage_attempts(&mut self, attempts: &[String]) {
         self.accounted_usage_attempts = attempts.iter().cloned().collect();
     }

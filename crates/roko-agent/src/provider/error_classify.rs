@@ -52,6 +52,13 @@ pub fn classify_cli_error(status: u16, body: &Value, cli_label: &str) -> Provide
 
     // --- Text-based classification (most specific first) ---
 
+    // Billing/credit errors must be checked before generic rate-limit detection
+    // so that messages containing "quota" + billing indicators are not
+    // misclassified as transient rate limits.
+    if is_billing_message(&lower) {
+        return ProviderError::InsufficientCredits;
+    }
+
     if lower.contains("rate limit") || lower.contains("quota") {
         return ProviderError::RateLimit {
             retry_after_ms: None,
@@ -109,11 +116,39 @@ pub fn classify_cli_error(status: u16, body: &Value, cli_label: &str) -> Provide
 /// `source` tells the function where to look for a `retry_after` value inside
 /// the JSON body. Each provider places it in a different path.
 pub fn classify_http_status(status: u16, body: &Value, source: RetryAfterSource) -> ProviderError {
+    // Extract the error message once so billing checks can inspect it for
+    // every status code that may carry billing-specific payloads.
+    let error_msg = body
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let error_msg_lower = error_msg.to_ascii_lowercase();
+
     match status {
-        429 | 529 => ProviderError::RateLimit {
-            retry_after_ms: extract_retry_after(body, source),
-        },
-        401 | 403 => ProviderError::AuthFailure,
+        // HTTP 402 is always a billing/payment error.
+        402 => ProviderError::InsufficientCredits,
+
+        // 429: distinguish billing-quota exhaustion from transient rate limits.
+        429 | 529 => {
+            if is_billing_message(&error_msg_lower) {
+                ProviderError::InsufficientCredits
+            } else {
+                ProviderError::RateLimit {
+                    retry_after_ms: extract_retry_after(body, source),
+                }
+            }
+        }
+
+        // 403: billing issues vs auth/permission failures.
+        401 => ProviderError::AuthFailure,
+        403 => {
+            if is_billing_message(&error_msg_lower) {
+                ProviderError::InsufficientCredits
+            } else {
+                ProviderError::AuthFailure
+            }
+        }
+
         404 => ProviderError::ModelNotFound,
         408 | 504 => ProviderError::Timeout,
         400 => classify_bad_request(body),
@@ -163,6 +198,48 @@ fn parse_duration_str(s: &str) -> Option<u64> {
     }
 }
 
+/// Returns `true` when the lowercased error message indicates a
+/// billing/credit/quota exhaustion problem rather than a transient rate limit.
+///
+/// The patterns cover the major providers:
+/// - OpenAI: `"insufficient_quota"`, `"billing_not_active"`
+/// - Anthropic: `"credit balance"`, `"account_deactivated"`
+/// - Generic: HTTP 402, `"payment required"`, `"quota exceeded"`, etc.
+pub fn is_billing_message(lower: &str) -> bool {
+    // Exact well-known error codes / phrases.
+    if lower.contains("insufficient_quota")
+        || lower.contains("insufficient quota")
+        || lower.contains("insufficient funds")
+        || lower.contains("insufficient credits")
+        || lower.contains("billing_not_active")
+        || lower.contains("billing not active")
+        || lower.contains("account_deactivated")
+        || lower.contains("account deactivated")
+        || lower.contains("payment required")
+    {
+        return true;
+    }
+
+    // Composite checks: "quota" near an exhaustion verb, or "billing" near an
+    // error indicator, or "credit" near "balance".
+    if lower.contains("quota")
+        && (lower.contains("exceeded") || lower.contains("exhausted") || lower.contains("limit"))
+        && !lower.contains("rate limit")
+    {
+        return true;
+    }
+    if lower.contains("billing")
+        && (lower.contains("error") || lower.contains("issue") || lower.contains("disabled"))
+    {
+        return true;
+    }
+    if lower.contains("credit") && lower.contains("balance") {
+        return true;
+    }
+
+    false
+}
+
 /// Classify HTTP 400 (Bad Request) — usually a context overflow signal.
 fn classify_bad_request(body: &Value) -> ProviderError {
     let msg = body
@@ -200,14 +277,14 @@ mod tests {
     }
 
     #[test]
-    fn cli_quota_from_stderr() {
+    fn cli_quota_exceeded_from_stderr_is_billing() {
+        // "quota exceeded" is a billing/credit issue, not a transient rate
+        // limit. The classification was updated to distinguish these.
         let err = classify_cli_error(1, &json!("quota exceeded"), "CLI");
-        assert!(matches!(
-            err,
-            ProviderError::RateLimit {
-                retry_after_ms: None
-            }
-        ));
+        assert!(
+            matches!(err, ProviderError::InsufficientCredits),
+            "expected InsufficientCredits for 'quota exceeded', got {err:?}"
+        );
     }
 
     #[test]
@@ -419,5 +496,103 @@ mod tests {
         assert_eq!(parse_duration_str("30s"), Some(30_000));
         assert_eq!(parse_duration_str("1.5s"), Some(1500));
         assert_eq!(parse_duration_str("0.5"), Some(500));
+    }
+
+    // ── Billing/credit error classification ────────────────────────────
+
+    #[test]
+    fn http_402_is_insufficient_credits() {
+        let err = classify_http_status(402, &json!(null), RetryAfterSource::None);
+        assert!(
+            matches!(err, ProviderError::InsufficientCredits),
+            "expected InsufficientCredits for 402, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn http_429_with_billing_message_is_insufficient_credits() {
+        let body = json!({ "error": { "message": "insufficient_quota: you have exceeded your billing quota" } });
+        let err = classify_http_status(429, &body, RetryAfterSource::None);
+        assert!(
+            matches!(err, ProviderError::InsufficientCredits),
+            "expected InsufficientCredits for 429+billing, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn http_429_plain_rate_limit_still_works() {
+        let body = json!({ "error": { "message": "too many requests" } });
+        let err = classify_http_status(429, &body, RetryAfterSource::None);
+        assert!(
+            matches!(err, ProviderError::RateLimit { .. }),
+            "expected RateLimit for plain 429, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn http_403_with_billing_disabled_is_insufficient_credits() {
+        let body = json!({ "error": { "message": "billing not active on this account" } });
+        let err = classify_http_status(403, &body, RetryAfterSource::None);
+        assert!(
+            matches!(err, ProviderError::InsufficientCredits),
+            "expected InsufficientCredits for 403+billing, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn http_403_plain_auth_still_works() {
+        let body = json!({ "error": { "message": "forbidden" } });
+        let err = classify_http_status(403, &body, RetryAfterSource::None);
+        assert!(
+            matches!(err, ProviderError::AuthFailure),
+            "expected AuthFailure for plain 403, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn cli_insufficient_quota_from_stderr() {
+        let err = classify_cli_error(1, &json!("insufficient_quota"), "CLI");
+        assert!(
+            matches!(err, ProviderError::InsufficientCredits),
+            "expected InsufficientCredits, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn cli_payment_required_from_stderr() {
+        let err = classify_cli_error(1, &json!("402 payment required"), "CLI");
+        assert!(
+            matches!(err, ProviderError::InsufficientCredits),
+            "expected InsufficientCredits, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn cli_account_deactivated_from_stderr() {
+        let err = classify_cli_error(1, &json!("account_deactivated"), "CLI");
+        assert!(
+            matches!(err, ProviderError::InsufficientCredits),
+            "expected InsufficientCredits, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn is_billing_message_detects_known_patterns() {
+        assert!(is_billing_message("insufficient_quota"));
+        assert!(is_billing_message("you have insufficient credits"));
+        assert!(is_billing_message("billing_not_active"));
+        assert!(is_billing_message("account_deactivated"));
+        assert!(is_billing_message("account deactivated"));
+        assert!(is_billing_message("402 payment required"));
+        assert!(is_billing_message("your quota exceeded the plan limit"));
+        assert!(is_billing_message("credit balance is zero"));
+        assert!(is_billing_message("billing error on your account"));
+    }
+
+    #[test]
+    fn is_billing_message_does_not_trigger_on_rate_limit() {
+        assert!(!is_billing_message("rate limit exceeded"));
+        assert!(!is_billing_message("too many requests"));
+        assert!(!is_billing_message("try again later"));
     }
 }

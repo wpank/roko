@@ -14,8 +14,10 @@ use roko_graph::{CellContext, GraphEngine, GraphOutput, default_registry, loader
 use roko_runtime::{LensExecutor, LensQueueConfig, QueuedLensExecutor, SharedStateHub};
 
 /// Exit code for success.
+#[allow(dead_code)] // used within cmd_graph_run; dead from lib perspective (binary-only entry)
 const EXIT_SUCCESS: i32 = 0;
 /// Exit code for failure.
+#[allow(dead_code)] // used within cmd_graph_validate/show; dead from lib perspective
 const EXIT_FAILURE: i32 = 1;
 
 /// Subcommands for `roko graph`.
@@ -59,6 +61,7 @@ Examples:
 }
 
 /// Dispatch a `roko graph` subcommand.
+#[allow(dead_code)] // entry point from binary (main.rs); unreachable from lib
 pub async fn cmd_graph(cmd: GraphCmd) -> Result<i32> {
     match cmd {
         GraphCmd::Run { path, json, quiet } => cmd_graph_run(&path, json, quiet).await,

@@ -44,8 +44,8 @@ pub mod adapter_keys {
     pub const SERVE_RUNTIME: &str = "serve_runtime";
     /// `roko-serve/src/routes/plans.rs::generate_plan`.
     pub const SERVE_HTTP: &str = "serve_http";
-    /// `runner/event_loop.rs::build_gate_failure_plan_revision` —
-    /// owned by #252/#275, never a direct provider call after migration.
+    /// Gate-failure replan source — triggered by the graph engine when a gate
+    /// fails and `replan_on_gate_failure` is enabled. Owned by #252/#275.
     pub const GATE_REPLAN: &str = "gate_replan";
 }
 

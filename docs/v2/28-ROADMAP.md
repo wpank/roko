@@ -2,6 +2,8 @@
 
 > Phased implementation mapping the unified spec to existing crates. Phase 0 is what works today. Phase 1 upgrades the kernel. Phase 2 builds the Graph engine and Agent runtime. Phase 3 adds autonomy, safety, and the agent economy. Each phase is a Graph of Cells delivering Signals through Bus and Store.
 
+> **Implementation status (verified 2026-09-15):** Phase 0 ~90% IMPLEMENTED; Graph is the sole execution engine (#260 default, #276 retired WorkflowEngine; Runner-v2 retained as `--engine legacy`). Phase 1 remains partial (Pulse/Bus exist as runtime types; kernel-wide protocol convergence is incomplete). Phases 2-3 are not complete. The deprecated rate-oracle vertical was removed on 2026-08-13. `roko-serve` exposes **~376 canonical routes (~421 incl. aliases)** on :6677. `roko-gate` provides a **19-gate, 7-rung pipeline** with adaptive thresholds. All 48 epics are accepted; programme status is tracked in `.roko/GAPS.md`.
+
 **Depends on**: All preceding documents. This document is a delivery plan, not a specification. It cross-references every other document in the unified spec.
 
 ---
@@ -18,7 +20,7 @@ What is already built, working, and wired. This is the foundation the roadmap bu
 | `roko-agent` | Agent specialization: 9-step pipeline, 12 LLM backends (Claude CLI, Anthropic API, OpenAI-compat, Cursor ACP, Perplexity, Gemini API, Gemini CLI, Cerebras, Cursor CLI, Hermes, OpenClaw, Codex CLI), MCP, tool loop, safety, bounded meta-agent lineage/grants and exact role morph policy | Dispatch wired; R04 meta lifecycle primitives wired |
 | `roko-agent-server` | Agent sidecar plus supervised durable relay client with bounded queues, reconnect, cursor restore, replay/snapshot handling, and ACK-after-handler-commit | Wired |
 | `roko-cli::graph_execution` | Plan state machine, task/worktree isolation, parallel executor, merge queue | Wired via Graph engine (sole engine; Runner-v2 retained as `--engine legacy`; WorkflowEngine retired #276) |
-| `roko-gate` | Verify protocol: 11 gates, 7-rung pipeline, adaptive thresholds | Wired, called per-task |
+| `roko-gate` | Verify protocol: 19 gates, 7-rung pipeline, adaptive thresholds | Wired, called per-task |
 | `roko-compose` | Compose protocol: prompt assembly, 9 templates, VCG auction, enrichment | Wired |
 | `roko-learn` | Learning Loops 1+2: episodes, cascade router, experiments, efficiency, bandits | Fully wired |
 | `roko-neuro` | Memory specialization: knowledge store, tiers, HDC fingerprints, distillation | Wired |
@@ -27,7 +29,7 @@ What is already built, working, and wired. This is the foundation the roadmap bu
 | `roko-runtime` | ProcessSupervisor, event bus, cancellation, supervised HTTP JSON connector registry | Wired into PlanRunner and connector control plane |
 | `roko-primitives` | HDC vectors, tier routing | Fully wired |
 | `roko-daimon` | Affect engine, somatic markers, dispatch modulation | Wired per-task |
-| `roko-serve` | ~200 HTTP routes, SSE, WebSocket on :6677; connector lifecycle; durable exact-room relay subscription journal; local arena and meta-agent services | Wired at the scoped R01–R04 boundaries |
+| `roko-serve` | ~376 canonical routes (~421 incl. aliases), SSE, WebSocket on :6677; connector lifecycle; durable exact-room relay subscription journal; local arena and meta-agent services | Wired at the scoped R01–R04 boundaries |
 | `roko-cli` | All CLI commands + ratatui TUI (F1-F10 tabs) | Main entry point |
 | `roko-fs` | FileSubstrate (JSONL), GC, layout | Stable |
 | `roko-std` | 35 catalog entries by default (16 executable local + 19 GitHub MCP); 52 with 17 chain placeholders | Dispatch classes verified; HTTP MCP execution remains unwired |
@@ -45,7 +47,7 @@ The following flows work today via CLI:
 3. **Automatic replan**: Gate failure triggers `build_gate_failure_plan_revision` (Loop 2)
 4. **Auto-plan on publish**: `prd.auto_plan` config triggers plan generation when PRD is published
 5. **Interactive monitoring**: `roko dashboard` TUI with F1-F10 tabs
-6. **HTTP control plane**: `roko serve` exposes ~200 routes for external callers
+6. **HTTP control plane**: `roko serve` exposes ~376 canonical routes (~421 incl. aliases) for external callers
 7. **Agent sidecar**: `roko agent serve` with real LLM dispatch
 8. **GitHub plan workflow**: plan runs open a draft `roko/plan/*` PR, publish terminal
    task results, track failures as issues, and merge only after local regression and

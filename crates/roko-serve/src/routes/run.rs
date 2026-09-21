@@ -379,15 +379,20 @@ async fn handle_surface_event(
             if let Some(handle) = plans.get(run_id.as_str()) {
                 handle.cancel.cancel();
                 tracing::info!(run_id, action, "P1-44: flow control via surface event");
-                Ok(Json(json!({ "ok": true, "action": action, "run_id": run_id })))
+                Ok(Json(
+                    json!({ "ok": true, "action": action, "run_id": run_id }),
+                ))
             } else {
                 drop(plans);
                 Err(ApiError::not_found(format!("run {run_id} not found")))
             }
         }
-        SurfaceEvent::HumanRespond { run_id, cell_id, .. } => {
+        SurfaceEvent::HumanRespond {
+            run_id, cell_id, ..
+        } => {
             tracing::info!(
-                run_id, cell_id,
+                run_id,
+                cell_id,
                 "P1-44: human response received (effect dispatch pending full wiring)"
             );
             Ok(Json(json!({
@@ -400,8 +405,13 @@ async fn handle_surface_event(
         }
         _ => {
             // Accept but log other surface event types as not-yet-wired.
-            tracing::debug!(?event, "P1-44: surface event type accepted but not yet wired");
-            Ok(Json(json!({ "ok": true, "action": "accepted", "wired": false })))
+            tracing::debug!(
+                ?event,
+                "P1-44: surface event type accepted but not yet wired"
+            );
+            Ok(Json(
+                json!({ "ok": true, "action": "accepted", "wired": false }),
+            ))
         }
     }
 }

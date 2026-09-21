@@ -50,9 +50,11 @@ pub struct DefaultPlanGenerator {
     tier_models: HashMap<String, String>,
     /// Whether model escalation is enabled.
     escalation_enabled: bool,
-    /// Model profiles for validation.
+    /// Model profiles for validation (used in validate_raw_output, tested via #[cfg(test)]).
+    #[allow(dead_code)]
     model_profiles: IndexMap<String, ModelProfile>,
-    /// Default model from config.
+    /// Default model from config (used in validate_raw_output, tested via #[cfg(test)]).
+    #[allow(dead_code)]
     default_model: Option<String>,
 }
 
@@ -92,6 +94,7 @@ impl DefaultPlanGenerator {
     /// 5. Validate against plan policy budgets
     ///
     /// Returns the validated TOML string on success, or an error description.
+    #[allow(dead_code)] // used only in tests
     pub(crate) fn validate_raw_output(
         &self,
         raw_output: &str,
@@ -186,6 +189,7 @@ impl DefaultPlanGenerator {
 
     /// Resolve the effective template kind from overrides or PRD metadata.
     #[must_use]
+    #[allow(dead_code)] // used only in tests
     pub(crate) fn resolve_template(
         overrides: &PlanGeneratorOverrides,
         prd_template: Option<&str>,
@@ -228,7 +232,8 @@ impl DefaultPlanGenerator {
 // Internal helpers (extracted from prd.rs for reuse)
 // ---------------------------------------------------------------------------
 
-// Known field sets for validation.
+// Known field sets for validation (used in validate_raw_output / tests).
+#[allow(dead_code)]
 const KNOWN_META_FIELDS: &[&str] = &[
     "plan",
     "iteration",
@@ -240,8 +245,10 @@ const KNOWN_META_FIELDS: &[&str] = &[
     "skip_enrichment",
 ];
 
+#[allow(dead_code)]
 const REQUIRED_META_FIELDS: &[&str] = &["plan", "total", "status"];
 
+#[allow(dead_code)]
 const KNOWN_TASK_FIELDS: &[&str] = &[
     "id",
     "title",
@@ -266,12 +273,16 @@ const KNOWN_TASK_FIELDS: &[&str] = &[
     "gate_rung",
 ];
 
+#[allow(dead_code)]
 const REQUIRED_TASK_FIELDS: &[&str] = &["id", "title", "status", "role", "tier"];
 
+#[allow(dead_code)]
 const KNOWN_VERIFY_FIELDS: &[&str] = &["phase", "command", "fail_msg", "timeout_ms"];
+#[allow(dead_code)]
 const REQUIRED_VERIFY_FIELDS: &[&str] = &["phase", "command"];
 
 /// Common LLM field typos and their corrections.
+#[allow(dead_code)]
 const FIELD_TYPO_CORRECTIONS: &[(&str, &str)] = &[
     ("pha", "phase"),
     ("phas", "phase"),
@@ -286,6 +297,7 @@ const FIELD_TYPO_CORRECTIONS: &[(&str, &str)] = &[
 ];
 
 /// Extract a fenced code block with the given tag from text.
+#[allow(dead_code)] // used only in validate_raw_output (test-only)
 fn extract_fenced_block<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
     let fence_plain = format!("```{tag}");
     let fence_angle = format!("```<{tag}>");
@@ -326,32 +338,73 @@ fn extract_fenced_block<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
 }
 
 /// Fallback: try to extract TOML starting from `[meta]`.
+///
+/// Walks the text line-by-line after the `[meta]` marker, including content
+/// across blank lines as long as lines still look like TOML. Stops at the
+/// first line that is clearly markdown/prose (headings, HR rules, etc.).
+#[allow(dead_code)] // used only in validate_raw_output (test-only)
 fn extract_toml_content_fallback(output: &str) -> Option<&str> {
     let meta_start = output.find("[meta]")?;
-    let line_start = output[..meta_start]
-        .rfind('\n')
-        .map_or(meta_start, |p| p + 1);
-    let task_marker = output[line_start..].find("[[task]]")?;
-    let last_task_end = output[line_start..].rfind("[[task]]")?;
+    // Find the start of the line containing [meta].
+    let line_start = output[..meta_start].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let candidate = &output[line_start..];
+    if !candidate.contains("[[task]]") {
+        return None;
+    }
 
-    // Find the end of the last task block: look for a blank line after the
-    // last [[task]] or end of string.
-    let search_from = line_start + last_task_end;
-    let end = output[search_from..]
-        .find("\n\n")
-        .map_or(output.len(), |p| search_from + p);
+    // Walk lines and find the last one that looks like TOML content.
+    // Stop when we hit lines that are clearly markdown/prose trailing text.
+    let mut last_toml_end: usize = 0; // byte offset into `candidate`
+    let mut saw_blank = false;
+    for line in candidate.lines() {
+        let trimmed = line.trim();
 
-    let candidate = &output[line_start..end];
-    // Require at least both [meta] and [[task]] in the candidate.
-    if candidate.contains("[meta]") && candidate.contains("[[task]]") {
-        Some(candidate)
-    } else {
-        let _ = task_marker;
+        if trimmed.is_empty() {
+            saw_blank = true;
+            // A blank line inside TOML is fine (between sections), so we don't
+            // stop yet — only if the *next* non-blank line looks non-TOML.
+            last_toml_end += line.len() + 1; // +1 for '\n'
+            continue;
+        }
+
+        // Lines that are clearly not TOML — stop here.
+        if trimmed.starts_with("## ")
+            || trimmed.starts_with("---")
+            || trimmed.starts_with("**")
+            || trimmed.starts_with("> ")
+            || trimmed.starts_with("Note:")
+            || trimmed.starts_with("NOTE:")
+        {
+            break;
+        }
+
+        // After a blank line, the next non-blank line must still look like TOML
+        // (contains `=`, starts with `[`, or is a `"""` / `'''` continuation).
+        if saw_blank
+            && !trimmed.contains('=')
+            && !trimmed.starts_with('[')
+            && !trimmed.starts_with('"')
+            && !trimmed.starts_with('\'')
+            && !trimmed.starts_with('#')
+        // TOML comment
+        {
+            break;
+        }
+
+        saw_blank = false;
+        last_toml_end += line.len() + 1;
+    }
+
+    let result = candidate[..last_toml_end].trim();
+    if result.is_empty() || !result.contains("[[task]]") {
         None
+    } else {
+        Some(result)
     }
 }
 
 /// Suggest a correction for a possibly-misspelled field name.
+#[allow(dead_code)] // used only in validate_and_fix_plan_toml (test-only path)
 fn suggest_field_correction(field: &str, known: &[&str]) -> Option<String> {
     // Check explicit typo table first.
     for &(typo, correction) in FIELD_TYPO_CORRECTIONS {
@@ -406,6 +459,7 @@ fn next_tier_model(
 ///
 /// On fixable issues the TOML is patched and repairs are recorded.
 /// On unfixable issues an error is returned.
+#[allow(dead_code)] // used only in validate_raw_output (test-only)
 fn validate_and_fix_plan_toml(
     toml_str: &str,
     slug: &str,
@@ -413,6 +467,15 @@ fn validate_and_fix_plan_toml(
     _default_model: Option<&str>,
     repairs: &mut Vec<String>,
 ) -> Result<String> {
+    // Pre-pass: fix the common LLM mistake of using `name = ` instead of
+    // `plan = ` in the [meta] section. repair_toml leaves it alone because it
+    // is syntactically valid TOML; we catch it here at the semantic level.
+    let toml_str_fixed = crate::task_parser::fix_meta_name_to_plan(toml_str);
+    if toml_str_fixed != toml_str {
+        repairs.push("[meta] field 'name' corrected to 'plan'".to_string());
+    }
+    let toml_str = toml_str_fixed.as_str();
+
     // 1. Parse syntax.
     let mut root: toml::Value =
         toml::from_str(toml_str).map_err(|e| anyhow!("generated plan has invalid TOML: {e}"))?;
@@ -680,6 +743,7 @@ fn validate_and_fix_plan_toml(
 }
 
 /// Infer the crate name from a list of file paths.
+#[allow(dead_code)] // used only in validate_and_fix_plan_toml (test-only path)
 fn infer_crate_from_paths(files: &[String]) -> Option<String> {
     for f in files {
         if let Some(rest) = f.strip_prefix("crates/") {
@@ -692,6 +756,7 @@ fn infer_crate_from_paths(files: &[String]) -> Option<String> {
 }
 
 /// Build a `[[task.verify]]` TOML table value.
+#[allow(dead_code)] // used only in validate_and_fix_plan_toml (test-only path)
 fn make_verify_entry(phase: &str, command: &str, fail_msg: &str) -> toml::Value {
     let mut table = toml::value::Table::new();
     table.insert("phase".to_string(), toml::Value::String(phase.to_string()));

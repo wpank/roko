@@ -414,8 +414,7 @@ mod tests {
         // P3-06: sonnet uses model-aware output tokens (768) instead of fixed 512.
         let output_tokens = model_aware_output_tokens("claude-sonnet-4-6");
         assert_eq!(proj.estimated_output_tokens, output_tokens);
-        let expected =
-            1.0 * 0.003 + output_tokens as f64 * 0.015 / 1_000.0;
+        let expected = 1.0 * 0.003 + output_tokens as f64 * 0.015 / 1_000.0;
         assert!((proj.estimated_cost_usd - expected).abs() < 1e-12);
     }
 

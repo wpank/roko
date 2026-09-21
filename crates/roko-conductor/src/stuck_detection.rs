@@ -977,10 +977,11 @@ impl MetaCognitionAssessment {
         }
     }
 
-    /// Docs-compatible alias for [`Self::to_signal`].
+    /// Backward-compat alias for [`Self::to_signal`].
     ///
     /// Returns `None` if the action is `Continue` or if the assessment
     /// cannot be serialized into JSON for the signal body payload.
+    #[deprecated(note = "use to_signal() instead")]
     #[must_use]
     pub fn to_engram(&self) -> Option<Signal> {
         self.to_signal().and_then(|_| {
@@ -1645,6 +1646,7 @@ mod tests {
 
         let assessment = hook().assess(&history);
         assert!(!assessment.stuck_kinds.is_empty());
+        #[allow(deprecated)]
         let docs_signal = assessment.to_engram().expect("docs-facing signal");
         let runtime_signal = assessment.to_signal().expect("runtime signal");
         assert_eq!(docs_signal.tag("action"), runtime_signal.tag("action"));

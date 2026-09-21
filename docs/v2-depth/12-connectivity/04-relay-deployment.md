@@ -148,7 +148,7 @@ No special permissions needed -- analogous to running an Ethereum RPC node.
 | Expected connections | 100-10,000 |
 | Chain events | From production RPC (mainnet, Base, Arbitrum) |
 | Ring buffer size | 512+ messages per topic (configured higher) |
-| Best for | Marketplace job discovery, shared ISFR feeds, community relays |
+| Best for | Marketplace job discovery, shared feeds, community relays *(ISFR feeds deprecated 2026-08-13)* |
 
 ---
 

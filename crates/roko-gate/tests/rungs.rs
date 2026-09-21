@@ -210,6 +210,9 @@ fn test_integration_ok() {
         signature: None,
     });
     let inputs = RungExecutionInputs {
+        diff_signal: Some(diff_signal(&DiffPayload::new(
+            "+++ b/src/lib.rs\n+pub fn add(a: i32, b: i32) -> i32 { a + b }\n",
+        ))),
         symbol_signal: Some(symbol_signal(&symbol_manifest)),
         fact_check_signal: Some(text_signal(
             "The library shipped stable APIs in April 2024.",

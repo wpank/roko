@@ -43,9 +43,8 @@ use std::time::Duration;
 use parking_lot::RwLock;
 use roko_compose::{
     AttentionBidder, CompositionManifest, CompositionStrategy, ContextChunk, ContextSource,
-    LearningBidder, MultiPatchForager, PromptComposer,
-    PromptSection as CanonicalPromptSection, RoleSystemPromptSpec, SourceForagingProfile,
-    TaskContext,
+    LearningBidder, MultiPatchForager, PromptComposer, PromptSection as CanonicalPromptSection,
+    RoleSystemPromptSpec, SourceForagingProfile, TaskContext,
 };
 use roko_core::config::schema::ConfigCompositionStrategy;
 use roko_core::{AgentRole, Group, GroupId, GroupPheromone};
@@ -161,40 +160,93 @@ pub struct PromptContext {
 
 impl PromptContext {
     /// Construct a `PromptContext` from runner inputs.
+    ///
+    /// When `ctx` carries pre-computed `cached_workspace_map`,
+    /// `cached_workspace_context`, or `cached_cfactor_context` (non-empty),
+    /// those values are used directly — no filesystem I/O is performed for
+    /// those fields.  This avoids blocking the Tokio reactor on repeated
+    /// directory walks and `git` subprocess spawns.
+    ///
+    /// `GraphTaskDispatcher` populates the cache fields via a `OnceLock` so
+    /// the work is done at most once per plan run, on the first dispatch.
     #[must_use]
     pub fn from_task(task: &TaskDef, ctx: &DispatchContext) -> Self {
         let execution_policy = crate::plan_policy::PlanExecutionPolicy::for_environment();
         let bounded_context_only = execution_policy.bounded_context_only;
+
+        // Resolve per-role context limits before loading any sections. Each
+        // role cluster has different information needs; applying role-specific
+        // limits here keeps the run-scoped cache at full size while still
+        // giving individual task dispatches only the context they need.
+        let role_limits = context_limits_for_role(&ctx.role);
+
+        // Use pre-computed run-scoped cache when available; fall back to
+        // on-demand computation (for callers that don't populate the cache,
+        // e.g. tests, runner-v2, or the oneshot path).
+        //
+        // The cache always holds the full-size content (up to the global
+        // constants). After loading we re-apply role-specific limits so that
+        // roles with smaller budgets get a tighter slice without requiring a
+        // separate cache entry per role.
         let workspace_map = if bounded_context_only {
             String::new()
+        } else if !ctx.cached_workspace_map.is_empty() {
+            truncate_to_limit(ctx.cached_workspace_map.clone(), role_limits.workspace_map)
         } else {
-            generate_workspace_map(&ctx.workdir)
+            truncate_to_limit(
+                generate_workspace_map(&ctx.workdir),
+                role_limits.workspace_map,
+            )
         };
         let tasks_toml = if bounded_context_only {
             String::new()
         } else {
-            load_tasks_toml(&ctx.workdir, &ctx.plan_id)
+            truncate_to_limit(
+                load_tasks_toml(&ctx.workdir, &ctx.plan_id),
+                role_limits.tasks_toml,
+            )
         };
-        let prd_excerpt = load_prd_excerpt(&ctx.workdir, &ctx.plan_id);
+        let prd_excerpt = truncate_to_limit(
+            load_prd_excerpt(&ctx.workdir, &ctx.plan_id),
+            role_limits.prd_excerpt,
+        );
         let workspace_context = if bounded_context_only {
             String::new()
+        } else if !ctx.cached_workspace_context.is_empty() {
+            truncate_to_limit(
+                ctx.cached_workspace_context.clone(),
+                role_limits.workspace_context,
+            )
         } else {
-            generate_workspace_context(&ctx.workdir)
+            truncate_to_limit(
+                generate_workspace_context(&ctx.workdir),
+                role_limits.workspace_context,
+            )
         };
         let cfactor_context = if bounded_context_only {
             String::new()
+        } else if !ctx.cached_cfactor_context.is_empty() {
+            ctx.cached_cfactor_context.clone()
         } else {
             generate_cfactor_context(&ctx.workdir)
         };
         let impact_context = declared_impact_context(task, bounded_context_only);
         tracing::debug!(
             plan_id = %ctx.plan_id,
+            role = %ctx.role,
+            workspace_map_limit = role_limits.workspace_map,
+            tasks_toml_limit = role_limits.tasks_toml,
+            prd_excerpt_limit = role_limits.prd_excerpt,
+            workspace_context_limit = role_limits.workspace_context,
             workspace_map_bytes = workspace_map.len(),
             tasks_toml_bytes = tasks_toml.len(),
             prd_excerpt_bytes = prd_excerpt.len(),
             workspace_context_bytes = workspace_context.len(),
             cfactor_context_bytes = cfactor_context.len(),
-            "PromptContext enrichment sizes"
+            workspace_map_from_cache = !ctx.cached_workspace_map.is_empty(),
+            workspace_context_from_cache = !ctx.cached_workspace_context.is_empty(),
+            cfactor_context_from_cache = !ctx.cached_cfactor_context.is_empty(),
+            "PromptContext enrichment sizes (role-scoped)"
         );
         Self {
             plan_id: ctx.plan_id.clone(),
@@ -272,9 +324,147 @@ fn declared_impact_context(task: &TaskDef, bounded_context_only: bool) -> String
 
 // ─── PromptContext enrichment helpers ──────────────────────────────────
 
-const WORKSPACE_MAP_LIMIT: usize = 20_000;
-const TASKS_TOML_LIMIT: usize = 10_000;
+const WORKSPACE_MAP_LIMIT: usize = 6_000;
+const TASKS_TOML_LIMIT: usize = 4_000;
 const PRD_EXCERPT_LIMIT: usize = 2_000;
+
+/// Per-role context size limits for prompt enrichment sections.
+///
+/// Different roles have different information needs:
+/// - `implementer` needs full workspace map and task context to make code changes.
+/// - `researcher` needs larger PRD/knowledge context; workspace map is less useful.
+/// - `strategist` needs larger PRD context to reason about plans; workspace detail less needed.
+/// - `auditor` needs gate/verification context; workspace map less critical.
+/// - All other roles fall back to the defaults matching the global constants above.
+#[derive(Debug, Clone, Copy)]
+pub struct RoleContextLimits {
+    /// Maximum characters for the workspace crate map section.
+    pub workspace_map: usize,
+    /// Maximum characters for tasks.toml content.
+    pub tasks_toml: usize,
+    /// Maximum characters for the PRD excerpt.
+    pub prd_excerpt: usize,
+    /// Maximum characters for the workspace context (git + crate descriptions).
+    pub workspace_context: usize,
+}
+
+impl RoleContextLimits {
+    /// Default limits — matched to the global constants; used by `implementer`
+    /// and any role that benefits from full workspace visibility.
+    pub const fn default_limits() -> Self {
+        Self {
+            workspace_map: WORKSPACE_MAP_LIMIT,         // 6 000
+            tasks_toml: TASKS_TOML_LIMIT,               // 4 000
+            prd_excerpt: PRD_EXCERPT_LIMIT,             // 2 000
+            workspace_context: WORKSPACE_CONTEXT_LIMIT, // 2 000
+        }
+    }
+
+    /// Limits for roles focused on research and knowledge synthesis.
+    ///
+    /// Reduces workspace map (less relevant to broad research) and expands
+    /// PRD excerpt so the full requirements document is visible.
+    pub const fn researcher_limits() -> Self {
+        Self {
+            workspace_map: 2_000,
+            tasks_toml: 2_000,
+            prd_excerpt: 4_000,
+            workspace_context: 1_000,
+        }
+    }
+
+    /// Limits for roles focused on planning and strategy (Strategist, Architect,
+    /// PrePlanner, Scribe, Critic).
+    ///
+    /// Reduces workspace detail and expands PRD/task context so the full
+    /// plan scope is visible when reasoning about decomposition.
+    pub const fn strategist_limits() -> Self {
+        Self {
+            workspace_map: 2_000,
+            tasks_toml: TASKS_TOML_LIMIT, // full task list for planning
+            prd_excerpt: 4_000,
+            workspace_context: 1_000,
+        }
+    }
+
+    /// Limits for roles focused on verification and gate review (Auditor,
+    /// QuickReviewer, DocVerifier, IntegrationTester, TerminalValidator,
+    /// RegressionDetector, CoverageTracker, SnapshotComparator, FullLoopValidator).
+    ///
+    /// Reduces workspace map (less relevant to reviewing) while keeping
+    /// gate/verification context accessible.
+    pub const fn auditor_limits() -> Self {
+        Self {
+            workspace_map: 2_000,
+            tasks_toml: TASKS_TOML_LIMIT, // full task list for context on what was planned
+            prd_excerpt: 3_000,
+            workspace_context: WORKSPACE_CONTEXT_LIMIT,
+        }
+    }
+}
+
+/// Select per-role context limits from the role label string.
+///
+/// Parsing is the same logic as [`parse_role_label`] — falls back to
+/// [`RoleContextLimits::default_limits`] for unrecognised roles so
+/// prompt assembly is never blocked by a missing role mapping.
+fn context_limits_for_role(role: &str) -> RoleContextLimits {
+    match parse_role_label(role) {
+        // Implementer: full workspace map, standard limits.
+        AgentRole::Implementer
+        | AgentRole::AutoFixer
+        | AgentRole::Refactorer
+        | AgentRole::MergeResolver
+        | AgentRole::ErrorDiagnoser
+        | AgentRole::DependencyValidator
+        | AgentRole::PatternExtractor
+        | AgentRole::LifecycleTester
+        | AgentRole::CrossSystemTester => RoleContextLimits::default_limits(),
+
+        // Researcher: larger PRD, smaller workspace map.
+        AgentRole::Researcher => RoleContextLimits::researcher_limits(),
+
+        // Strategist cluster: planning-focused, larger PRD.
+        AgentRole::Strategist
+        | AgentRole::Architect
+        | AgentRole::PrePlanner
+        | AgentRole::Scribe
+        | AgentRole::Critic
+        | AgentRole::SpecDriftDetector
+        | AgentRole::PlanLifecycleManager => RoleContextLimits::strategist_limits(),
+
+        // Auditor cluster: verification-focused, reduced workspace map.
+        AgentRole::Auditor
+        | AgentRole::QuickReviewer
+        | AgentRole::DocVerifier
+        | AgentRole::IntegrationTester
+        | AgentRole::TerminalValidator
+        | AgentRole::RegressionDetector
+        | AgentRole::PerformanceSentinel
+        | AgentRole::CoverageTracker
+        | AgentRole::SnapshotComparator
+        | AgentRole::FullLoopValidator => RoleContextLimits::auditor_limits(),
+
+        // Conductor: meta-orchestrator; use defaults.
+        AgentRole::Conductor => RoleContextLimits::default_limits(),
+
+        // Any future variants not explicitly handled default to implementer
+        // limits so prompt assembly is never blocked by a missing role mapping.
+        _ => RoleContextLimits::default_limits(),
+    }
+}
+
+/// Truncate `s` to `limit` chars, appending `"\n[truncated]"` when clipped.
+///
+/// Returns the string unchanged when it is already within the limit.
+fn truncate_to_limit(s: String, limit: usize) -> String {
+    if s.len() <= limit {
+        return s;
+    }
+    let mut truncated: String = s.chars().take(limit).collect();
+    truncated.push_str("\n[truncated]");
+    truncated
+}
 
 /// Walk `{workdir}/crates/*/src/` and produce an indented file tree.
 ///
@@ -424,7 +614,7 @@ fn load_prd_excerpt(workdir: &Path, plan_id: &str) -> String {
 
 // ─── Workspace context (ported from legacy orchestrator) ───────────────
 
-const WORKSPACE_CONTEXT_LIMIT: usize = 4_000;
+const WORKSPACE_CONTEXT_LIMIT: usize = 2_000;
 const GIT_STATUS_LINE_LIMIT: usize = 40;
 
 /// Build a bounded workspace context string with git state and crate descriptions.
@@ -684,6 +874,27 @@ fn generate_cfactor_context(workdir: &Path) -> String {
     }
 
     out
+}
+
+// ─── Public adapters for run-scoped caching ───────────────────────────────
+//
+// `GraphTaskDispatcher` computes these once per plan run (via `OnceLock`) and
+// stores them on `DispatchContext` so `PromptContext::from_task` never has to
+// call the underlying sync I/O helpers on the Tokio reactor thread.
+
+/// Public adapter — see [`generate_workspace_map`].
+pub fn generate_workspace_map_pub(workdir: &Path) -> String {
+    generate_workspace_map(workdir)
+}
+
+/// Public adapter — see [`generate_workspace_context`].
+pub fn generate_workspace_context_pub(workdir: &Path) -> String {
+    generate_workspace_context(workdir)
+}
+
+/// Public adapter — see [`generate_cfactor_context`].
+pub fn generate_cfactor_context_pub(workdir: &Path) -> String {
+    generate_cfactor_context(workdir)
 }
 
 /// Structured gate feedback injected into retry prompts.
@@ -1353,7 +1564,14 @@ impl PromptAssembler {
     /// Each tuple is `(bidder, section_name, included, gate_passed, cost_usd, tokens)`.
     pub fn update_bidders_with_cost(
         &self,
-        section_costs: &[(roko_compose::AttentionBidder, String, bool, bool, f64, usize)],
+        section_costs: &[(
+            roko_compose::AttentionBidder,
+            String,
+            bool,
+            bool,
+            f64,
+            usize,
+        )],
     ) {
         let mut bidders = self.learning_bidders.write();
         for (bidder_id, section_name, was_included, gate_passed, cost_usd, tokens) in section_costs
@@ -1361,7 +1579,13 @@ impl PromptAssembler {
             bidders
                 .entry(*bidder_id)
                 .or_insert_with(|| LearningBidder::new(*bidder_id, 1.0))
-                .update_with_cost(section_name, *was_included, *gate_passed, *cost_usd, *tokens);
+                .update_with_cost(
+                    section_name,
+                    *was_included,
+                    *gate_passed,
+                    *cost_usd,
+                    *tokens,
+                );
         }
     }
 
@@ -2568,10 +2792,9 @@ fn render_gate_feedback(feedback: &GateFeedback) -> String {
         "# Previous attempt feedback\n\n\
          Your previous attempt FAILED verification. Fix these exact errors before doing anything else.\n\n",
     );
-    let has_structured =
-        !feedback.compile_errors.is_empty()
-            || !feedback.test_failures.is_empty()
-            || !feedback.clippy_warnings.is_empty();
+    let has_structured = !feedback.compile_errors.is_empty()
+        || !feedback.test_failures.is_empty()
+        || !feedback.clippy_warnings.is_empty();
 
     if !feedback.compile_errors.is_empty() {
         buf.push_str("## Compile errors\n");
@@ -2669,6 +2892,9 @@ mod tests {
             routing_bias: None,
             dependency_outputs: Vec::new(),
             error_patterns_context: String::new(),
+            cached_workspace_map: String::new(),
+            cached_workspace_context: String::new(),
+            cached_cfactor_context: String::new(),
         }
     }
 
@@ -3303,6 +3529,119 @@ mod tests {
         assert!(
             !p.system_prompt.is_empty(),
             "system_prompt must not be empty"
+        );
+    }
+
+    // ── Per-role context limit tests ────────────────────────────────────
+
+    #[test]
+    fn truncate_to_limit_leaves_short_string_unchanged() {
+        let s = "hello world".to_string();
+        assert_eq!(truncate_to_limit(s.clone(), 100), s);
+    }
+
+    #[test]
+    fn truncate_to_limit_clips_long_string_and_appends_marker() {
+        let s = "abcdefghij".to_string(); // 10 chars
+        let result = truncate_to_limit(s, 5);
+        assert_eq!(result, "abcde\n[truncated]");
+    }
+
+    #[test]
+    fn truncate_to_limit_exact_boundary_is_not_clipped() {
+        let s = "12345".to_string(); // exactly 5 chars
+        assert_eq!(truncate_to_limit(s.clone(), 5), s);
+    }
+
+    #[test]
+    fn context_limits_for_role_implementer_uses_defaults() {
+        let limits = context_limits_for_role("implementer");
+        assert_eq!(limits.workspace_map, WORKSPACE_MAP_LIMIT);
+        assert_eq!(limits.tasks_toml, TASKS_TOML_LIMIT);
+        assert_eq!(limits.prd_excerpt, PRD_EXCERPT_LIMIT);
+    }
+
+    #[test]
+    fn context_limits_for_role_researcher_reduces_workspace_map() {
+        let limits = context_limits_for_role("researcher");
+        assert!(
+            limits.workspace_map < WORKSPACE_MAP_LIMIT,
+            "researcher should have smaller workspace map than implementer"
+        );
+        assert!(
+            limits.prd_excerpt > PRD_EXCERPT_LIMIT,
+            "researcher should have larger PRD excerpt than implementer"
+        );
+    }
+
+    #[test]
+    fn context_limits_for_role_strategist_reduces_workspace_map() {
+        let limits = context_limits_for_role("strategist");
+        assert!(
+            limits.workspace_map < WORKSPACE_MAP_LIMIT,
+            "strategist should have smaller workspace map than implementer"
+        );
+        assert!(
+            limits.prd_excerpt > PRD_EXCERPT_LIMIT,
+            "strategist should have larger PRD excerpt than implementer"
+        );
+    }
+
+    #[test]
+    fn context_limits_for_role_auditor_reduces_workspace_map() {
+        let limits = context_limits_for_role("auditor");
+        assert!(
+            limits.workspace_map < WORKSPACE_MAP_LIMIT,
+            "auditor should have smaller workspace map than implementer"
+        );
+    }
+
+    #[test]
+    fn context_limits_for_role_unknown_falls_back_to_defaults() {
+        // Unknown roles fall back to implementer (the parse_role_label default).
+        let limits = context_limits_for_role("unknown-custom-role");
+        assert_eq!(limits.workspace_map, WORKSPACE_MAP_LIMIT);
+        assert_eq!(limits.tasks_toml, TASKS_TOML_LIMIT);
+        assert_eq!(limits.prd_excerpt, PRD_EXCERPT_LIMIT);
+    }
+
+    #[test]
+    fn from_task_researcher_gets_smaller_workspace_map_than_implementer() {
+        // Demonstrate that two roles with the same cached map content end up
+        // with different workspace_map sizes inside PromptContext.
+        let big_map = "# Workspace crate map\n".to_string() + &"x".repeat(5_000);
+
+        let mut impl_ctx = ctx();
+        impl_ctx.role = "implementer".to_string();
+        impl_ctx.cached_workspace_map = big_map.clone();
+        let pctx_impl = PromptContext::from_task(&task(), &impl_ctx);
+
+        let mut res_ctx = ctx();
+        res_ctx.role = "researcher".to_string();
+        res_ctx.cached_workspace_map = big_map;
+        let pctx_res = PromptContext::from_task(&task(), &res_ctx);
+
+        assert!(
+            pctx_res.workspace_map.len() < pctx_impl.workspace_map.len(),
+            "researcher workspace_map ({}) should be smaller than implementer ({})",
+            pctx_res.workspace_map.len(),
+            pctx_impl.workspace_map.len()
+        );
+    }
+
+    #[test]
+    fn from_task_researcher_gets_larger_prd_excerpt_than_implementer() {
+        // Build a big PRD that exceeds both the default and researcher limits so
+        // the difference in PRD budget is visible.  We set it directly on the
+        // PromptContext after construction because load_prd_excerpt reads from
+        // disk; we just verify context_limits_for_role returns the right value.
+        let impl_limits = context_limits_for_role("implementer");
+        let res_limits = context_limits_for_role("researcher");
+        assert!(
+            res_limits.prd_excerpt > impl_limits.prd_excerpt,
+            "researcher prd_excerpt limit ({}) should exceed implementer ({})",
+            res_limits.prd_excerpt,
+            impl_limits.prd_excerpt
         );
     }
 }

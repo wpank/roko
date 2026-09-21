@@ -238,7 +238,10 @@ fn apply_decay(value: f64, decay: f64) -> f64 {
 /// Returns a filtered bundle with only items that meet the thresholds,
 /// and an [`ImportResult`] with statistics.
 #[must_use]
-pub fn filter_bundle(bundle: &LearningBundle, options: &ImportOptions) -> (LearningBundle, ImportResult) {
+pub fn filter_bundle(
+    bundle: &LearningBundle,
+    options: &ImportOptions,
+) -> (LearningBundle, ImportResult) {
     let mut result = ImportResult::default();
     let mut filtered = bundle.clone();
 

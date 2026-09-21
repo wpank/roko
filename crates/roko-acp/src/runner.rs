@@ -7,25 +7,18 @@
 //! 4. Emitting ACP session updates (plan entries, tool calls) through the event channel
 
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use roko_agent::claude_cli_agent::build_settings_json;
 use roko_agent::safety::contract::AgentContract;
 use roko_agent::safety::{DispatchSafetyContext, SafetyLayer, SafetyViolation, ViolationSeverity};
 use roko_agent::{Agent as RokoAgent, ClaudeCliAgent};
-use roko_core::RuntimeEvent as RuntimeDriverEvent;
 use roko_core::config::schema::RunnerSandboxLevel;
-use roko_core::foundation::EventConsumer as CoreEventConsumer;
-use roko_core::{
-    Body, Context, Kind, RuntimeEvent as CoreRuntimeEvent, Signal, Verify,
-    WorkflowOutcome as CoreWorkflowOutcome,
-};
+use roko_core::{Body, Context, Kind, Signal, Verify};
 use roko_gate::{
     AdaptiveThresholds, ClippyGate, CompileGate, GatePayload, TestGate,
     parse_structured_review_verdict, review_verdict::ReviewVerdictContext,
 };
-use roko_runtime::event_bus::runtime_event_bus;
 use roko_runtime::workflow_contract::WorkflowRunReport;
 use tokio::process::Command;
 use tokio::sync::mpsc;
@@ -37,7 +30,7 @@ use crate::pipeline::{PipelineAction, PipelineEvent, PipelinePhase, WorkflowTemp
 use crate::session::{CancelToken, SharedWorkflowRun};
 use crate::types::{
     ContentBlock, FileChangeNotification, FileChangeType, PlanEntry, PlanStatus, Priority,
-    StopReason, ToolCallKind, ToolCallStatus, UsageInfo,
+    StopReason, ToolCallKind, ToolCallStatus,
 };
 use crate::workflow::WorkflowRun;
 
@@ -593,68 +586,16 @@ impl std::str::FromStr for AcpWorkflowRoute {
     }
 }
 
-// ---------------------------------------------------------------------------
-// #245: Non-plan service migration adapter (Lane D2)
-// ---------------------------------------------------------------------------
-
-/// Validates an ACP workflow request against the
-/// [`roko_execution::profiles::ProfileMatrix`] before service construction.
-///
-/// #243 landed: `run_with_workflow_engine` now uses `RuntimeServicesBuilder`
-/// and `ServiceFactory::build_with_runtime_services` to share handles.
-/// This adapter remains as the per-session validation entry point.
-///
-/// **Spec constraint (Lane D2):** this adapter does not edit
-/// `commands/plan.rs`, `runner/event_loop.rs`, or any plan-path type.
-pub struct AcpSessionServiceAdapter;
-
-impl AcpSessionServiceAdapter {
-    /// Validate that an ACP workflow request satisfies the profile matrix
-    /// and return a handle for cost settlement correlation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the profile matrix validation fails.
-    pub fn validate_workflow(
-        session_id: &str,
-        workdir: &std::path::Path,
-        model_key: Option<String>,
-        mcp_config: Option<std::path::PathBuf>,
-    ) -> anyhow::Result<roko_execution::NonPlanServiceHandle> {
-        use roko_execution::profiles::RuntimeProfile;
-
-        let exec_overrides = roko_execution::overrides_for_acp(session_id, model_key, mcp_config);
-        let request = roko_execution::NonPlanServiceRequest::new(
-            RuntimeProfile::Workflow,
-            workdir.to_path_buf(),
-            exec_overrides,
-        );
-        let handle = roko_execution::validate_service_request(&request)
-            .map_err(|e| anyhow::anyhow!("ACP session service validation: {e}"))?;
-
-        tracing::debug!(
-            session_id = %session_id,
-            instance_id = %handle.instance_id(),
-            profile = %handle.profile(),
-            required = ?handle.required_bundles(),
-            "validated ACP session service request"
-        );
-
-        Ok(handle)
-    }
-}
-
 /// Options for graph-based workflow execution bridged to ACP protocol.
 ///
 /// #276 retired `WorkflowEngine`. These options configure the graph template
 /// controller that replaced it.
-pub struct WorkflowEngineOptions {
+pub struct GraphEngineOptions {
     pub model_key: String,
     pub input_messages: Vec<roko_core::foundation::ModelInputMessage>,
     pub mcp_config: Option<std::path::PathBuf>,
     pub provenance_card: Option<String>,
-    /// Execution route — retained for compatibility but ignored (#276).
-    #[allow(dead_code)]
+    /// Execution route selector (GraphCanary and ReplayOnly are not yet implemented).
     pub route: AcpWorkflowRoute,
 }
 
@@ -663,7 +604,7 @@ pub async fn run_with_workflow_engine(
     prompt: &str,
     workdir: &Path,
     template: &str,
-    options: WorkflowEngineOptions,
+    options: GraphEngineOptions,
     event_sender: mpsc::Sender<CognitiveEvent>,
 ) -> anyhow::Result<WorkflowRunReport> {
     // Route check: GraphCanary and ReplayOnly are not yet implemented.
@@ -748,465 +689,8 @@ pub async fn run_with_workflow_engine(
     ))
 }
 
-#[allow(dead_code)] // Staging for ACP-to-Graph event wiring (#276)
-struct AcpWorkflowEventConsumer {
-    run_id: Arc<Mutex<Option<String>>>,
-    template: Arc<Mutex<Option<String>>>,
-    provenance_card: Arc<Mutex<Option<String>>>,
-    sender: mpsc::Sender<CognitiveEvent>,
-    /// Total tokens accumulated across all AgentCompleted events in this run.
-    accumulated_tokens: Arc<AtomicU64>,
-}
-
-#[allow(dead_code)] // Staging for ACP-to-Graph event wiring (#276)
-impl AcpWorkflowEventConsumer {
-    fn new(
-        _session_id: String,
-        run_id: Arc<Mutex<Option<String>>>,
-        sender: mpsc::Sender<CognitiveEvent>,
-        provenance_card: Option<String>,
-    ) -> Self {
-        Self {
-            run_id,
-            template: Arc::new(Mutex::new(None)),
-            provenance_card: Arc::new(Mutex::new(provenance_card)),
-            sender,
-            accumulated_tokens: Arc::new(AtomicU64::new(0)),
-        }
-    }
-
-    fn publish(&self, event: CognitiveEvent) {
-        let _ = self.sender.try_send(event);
-    }
-
-    fn publish_provenance_card(&self, run_id: &str) {
-        let Some(card_text) = self
-            .provenance_card
-            .lock()
-            .ok()
-            .and_then(|mut current| current.take())
-        else {
-            return;
-        };
-
-        let tool_call_id = format!("decision-provenance-{run_id}");
-        self.publish(CognitiveEvent::ToolCallStart {
-            tool_call_id: tool_call_id.clone(),
-            title: "Decision provenance".into(),
-            kind: ToolCallKind::Other,
-            locations: None,
-        });
-        self.publish(CognitiveEvent::ToolCallComplete {
-            tool_call_id,
-            status: ToolCallStatus::Completed,
-            content: vec![text_block(card_text)],
-        });
-    }
-}
-
-impl CoreEventConsumer for AcpWorkflowEventConsumer {
-    fn consume(&self, event: &CoreRuntimeEvent) {
-        match event {
-            CoreRuntimeEvent::WorkflowStarted {
-                run_id, template, ..
-            } => {
-                if let Ok(mut current) = self.run_id.lock() {
-                    *current = Some(run_id.clone());
-                }
-                if let Ok(mut current) = self.template.lock() {
-                    *current = Some(template.clone());
-                }
-                self.publish(CognitiveEvent::PlanUpdate {
-                    entries: workflow_plan_entries(template, "implementing"),
-                });
-            }
-            CoreRuntimeEvent::PhaseTransition { run_id, to, .. } => {
-                if self.accepts_run(run_id) {
-                    let template = self
-                        .template
-                        .lock()
-                        .ok()
-                        .and_then(|current| current.clone())
-                        .unwrap_or_else(|| "standard".to_string());
-                    self.publish(CognitiveEvent::PlanUpdate {
-                        entries: workflow_plan_entries(&template, to),
-                    });
-                    if to == "strategizing" {
-                        self.publish_provenance_card(run_id);
-                    }
-                }
-            }
-            CoreRuntimeEvent::AgentOutput { run_id, chunk, .. } => {
-                if self.accepts_run(run_id) {
-                    self.publish(CognitiveEvent::TokenChunk(chunk.clone()));
-                }
-            }
-            CoreRuntimeEvent::AgentCompleted {
-                run_id,
-                tokens_used,
-                ..
-            } => {
-                if self.accepts_run(run_id) {
-                    self.accumulated_tokens
-                        .fetch_add(*tokens_used, Ordering::Relaxed);
-                }
-            }
-            CoreRuntimeEvent::AgentFailed {
-                run_id,
-                agent_id,
-                error,
-            } => {
-                if self.accepts_run(run_id) {
-                    self.publish(CognitiveEvent::ToolCallComplete {
-                        tool_call_id: agent_id.clone(),
-                        status: ToolCallStatus::Failed,
-                        content: vec![text_block(error.clone())],
-                    });
-                }
-            }
-            CoreRuntimeEvent::GateStarted {
-                run_id, gate_name, ..
-            } => {
-                if self.accepts_run(run_id) {
-                    self.publish(CognitiveEvent::ToolCallStart {
-                        tool_call_id: gate_call_id(gate_name),
-                        title: format!("Gate: {gate_name}"),
-                        kind: ToolCallKind::Other,
-                        locations: None,
-                    });
-                }
-            }
-            CoreRuntimeEvent::GatePassed {
-                run_id, gate_name, ..
-            } => {
-                if self.accepts_run(run_id) {
-                    self.publish(CognitiveEvent::ToolCallComplete {
-                        tool_call_id: gate_call_id(gate_name),
-                        status: ToolCallStatus::Completed,
-                        content: vec![text_block(format!("{gate_name} passed"))],
-                    });
-                }
-            }
-            CoreRuntimeEvent::GateFailed {
-                run_id,
-                gate_name,
-                output,
-                ..
-            } => {
-                if self.accepts_run(run_id) {
-                    self.publish(CognitiveEvent::ToolCallComplete {
-                        tool_call_id: gate_call_id(gate_name),
-                        status: ToolCallStatus::Failed,
-                        content: vec![text_block(output.clone())],
-                    });
-                }
-            }
-            CoreRuntimeEvent::InferenceStarted {
-                run_id,
-                request_id,
-                model,
-                agent_id,
-                ..
-            } => {
-                if self.accepts_run(run_id) {
-                    self.publish(CognitiveEvent::ToolCallStart {
-                        tool_call_id: inference_call_id(request_id),
-                        title: format!("Inference: {model} ({agent_id})"),
-                        kind: ToolCallKind::Other,
-                        locations: None,
-                    });
-                }
-            }
-            CoreRuntimeEvent::InferenceCompleted {
-                run_id,
-                request_id,
-                model,
-                input_tokens,
-                output_tokens,
-                cost_usd,
-                duration_ms,
-                ..
-            } => {
-                if self.accepts_run(run_id) {
-                    self.accumulated_tokens
-                        .fetch_add(*input_tokens + *output_tokens, Ordering::Relaxed);
-                    self.publish(CognitiveEvent::ToolCallComplete {
-                        tool_call_id: inference_call_id(request_id),
-                        status: ToolCallStatus::Completed,
-                        content: vec![text_block(format!(
-                            "{model}: {input_tokens} input tokens, {output_tokens} output tokens, ${cost_usd:.4}, {duration_ms}ms"
-                        ))],
-                    });
-                }
-            }
-            CoreRuntimeEvent::InferenceFailed {
-                run_id,
-                request_id,
-                model,
-                error,
-                ..
-            } => {
-                if self.accepts_run(run_id) {
-                    self.publish(CognitiveEvent::ToolCallComplete {
-                        tool_call_id: inference_call_id(request_id),
-                        status: ToolCallStatus::Failed,
-                        content: vec![text_block(format!("{model}: {error}"))],
-                    });
-                }
-            }
-            CoreRuntimeEvent::AgentTrace {
-                run_id, reasoning, ..
-            } => {
-                if self.accepts_run(run_id)
-                    && let Some(reasoning) = reasoning
-                    && !reasoning.trim().is_empty()
-                {
-                    self.publish(CognitiveEvent::ThinkingChunk(reasoning.clone()));
-                }
-            }
-            CoreRuntimeEvent::WorkflowCompleted { run_id, outcome } => {
-                if self.accepts_run(run_id) {
-                    let total_tokens = self.accumulated_tokens.load(Ordering::Relaxed);
-                    let usage = if total_tokens > 0 {
-                        Some(UsageInfo {
-                            total_tokens,
-                            // AgentCompleted only carries a combined token count; we surface
-                            // the full total as output_tokens so downstream cost calculations
-                            // can use it, even though the input/output split is unknown here.
-                            input_tokens: 0,
-                            output_tokens: total_tokens,
-                            thought_tokens: None,
-                            cached_read_tokens: None,
-                            cached_write_tokens: None,
-                        })
-                    } else {
-                        None
-                    };
-                    self.publish(CognitiveEvent::Complete {
-                        stop_reason: stop_reason_for_core_outcome(outcome),
-                        usage,
-                    });
-                }
-            }
-            CoreRuntimeEvent::AgentSpawned { .. }
-            | CoreRuntimeEvent::TaskFailed { .. }
-            | CoreRuntimeEvent::RunStarted { .. }
-            | CoreRuntimeEvent::RunCompleted { .. }
-            | CoreRuntimeEvent::KnowledgeIngested { .. }
-            | CoreRuntimeEvent::KnowledgeConsumed { .. }
-            | CoreRuntimeEvent::FeedbackRecorded { .. }
-            | CoreRuntimeEvent::StateCheckpointed { .. }
-            | CoreRuntimeEvent::InferenceFirstToken { .. }
-            | CoreRuntimeEvent::ToolCallStarted { .. }
-            | CoreRuntimeEvent::ToolCallCompleted { .. }
-            | CoreRuntimeEvent::TaskStarted { .. }
-            | CoreRuntimeEvent::TaskCompleted { .. }
-            | CoreRuntimeEvent::PipelinePhase { .. } => {}
-            // v2 events -- no ACP cognitive mapping yet.
-            CoreRuntimeEvent::WaveStarted { .. }
-            | CoreRuntimeEvent::WaveCompleted { .. }
-            | CoreRuntimeEvent::TaskRetrying { .. }
-            | CoreRuntimeEvent::TaskSkipped { .. }
-            | CoreRuntimeEvent::AgentProgress { .. }
-            | CoreRuntimeEvent::UsageRecorded { .. }
-            | CoreRuntimeEvent::GateRungStarted { .. }
-            | CoreRuntimeEvent::GateRungOutput { .. }
-            | CoreRuntimeEvent::GateRungCompleted { .. }
-            | CoreRuntimeEvent::ApprovalRequested { .. }
-            | CoreRuntimeEvent::ApprovalResolved { .. }
-            | CoreRuntimeEvent::ControlApplied { .. }
-            | CoreRuntimeEvent::BudgetUpdated { .. }
-            | CoreRuntimeEvent::WorkspaceAcquired { .. }
-            | CoreRuntimeEvent::WorkspaceReleased { .. }
-            | CoreRuntimeEvent::MergeQueued { .. }
-            | CoreRuntimeEvent::MergeCompleted { .. }
-            | CoreRuntimeEvent::PublishCompleted { .. }
-            | CoreRuntimeEvent::FeedbackSinkSettled { .. }
-            | CoreRuntimeEvent::FeedbackSinkFailed { .. }
-            | CoreRuntimeEvent::PredictionPublished { .. }
-            | CoreRuntimeEvent::ActualRecorded { .. }
-            | CoreRuntimeEvent::CorrectionApplied { .. }
-            | CoreRuntimeEvent::SequenceGap { .. }
-            | CoreRuntimeEvent::Extension { .. }
-            | CoreRuntimeEvent::Fallthrough { .. } => {}
-        }
-    }
-}
-
-#[allow(dead_code)]
-impl AcpWorkflowEventConsumer {
-    fn accepts_run(&self, run_id: &str) -> bool {
-        self.run_id
-            .lock()
-            .ok()
-            .and_then(|current| current.clone())
-            .is_some_and(|current| current == run_id)
-    }
-}
-
-#[allow(dead_code)] // Staging for ACP-to-Graph event wiring (#276)
-fn spawn_runtime_event_bridge(
-    session_id: String,
-    run_id: Arc<Mutex<Option<String>>>,
-    sender: mpsc::Sender<CognitiveEvent>,
-) -> tokio::task::JoinHandle<()> {
-    let mut receiver = runtime_event_bus::<RuntimeDriverEvent>().subscribe();
-
-    tokio::spawn(async move {
-        loop {
-            match receiver.recv().await {
-                Ok(envelope) => {
-                    let event = envelope.payload;
-                    if matches!(
-                        event,
-                        RuntimeDriverEvent::WorkflowStarted { .. }
-                            | RuntimeDriverEvent::PhaseTransition { .. }
-                            | RuntimeDriverEvent::WorkflowCompleted { .. }
-                            | RuntimeDriverEvent::GateStarted { .. }
-                            | RuntimeDriverEvent::FeedbackRecorded { .. }
-                            | RuntimeDriverEvent::StateCheckpointed { .. }
-                    ) {
-                        continue;
-                    }
-                    let Some(active_run_id) = run_id.lock().ok().and_then(|guard| guard.clone())
-                    else {
-                        continue;
-                    };
-                    if driver_event_run_id(&event) != active_run_id {
-                        continue;
-                    }
-
-                    let core_event = core_runtime_event_from_driver(event);
-                    let consumer = AcpWorkflowEventConsumer::new(
-                        session_id.clone(),
-                        Arc::new(Mutex::new(Some(active_run_id))),
-                        sender.clone(),
-                        None,
-                    );
-                    CoreEventConsumer::consume(&consumer, &core_event);
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-            }
-        }
-    })
-}
-
-#[allow(dead_code)]
-fn workflow_plan_entries(template: &str, phase: &str) -> Vec<PlanEntry> {
-    let has_strategy = template == "full";
-    let has_review = template != "express";
-    let mut entries = Vec::new();
-
-    if has_strategy {
-        entries.push(PlanEntry {
-            content: "Strategy brief".to_string(),
-            priority: Priority::High,
-            status: plan_status(phase, &["strategizing"], &[]),
-        });
-    }
-
-    entries.push(PlanEntry {
-        content: "Implementation".to_string(),
-        priority: Priority::High,
-        status: plan_status(
-            phase,
-            &["implementing", "auto_fixing"],
-            if has_strategy { &["strategizing"] } else { &[] },
-        ),
-    });
-
-    entries.push(PlanEntry {
-        content: "Run gates".to_string(),
-        priority: Priority::Medium,
-        status: plan_status(
-            phase,
-            &["gating"],
-            &["pending", "strategizing", "implementing", "auto_fixing"],
-        ),
-    });
-
-    if has_review {
-        entries.push(PlanEntry {
-            content: "Code review".to_string(),
-            priority: Priority::Medium,
-            status: plan_status(
-                phase,
-                &["reviewing"],
-                &[
-                    "pending",
-                    "strategizing",
-                    "implementing",
-                    "auto_fixing",
-                    "gating",
-                ],
-            ),
-        });
-    }
-
-    entries.push(PlanEntry {
-        content: "Commit changes".to_string(),
-        priority: Priority::Low,
-        status: plan_status(
-            phase,
-            &["committing"],
-            &[
-                "pending",
-                "strategizing",
-                "implementing",
-                "auto_fixing",
-                "gating",
-                "reviewing",
-            ],
-        ),
-    });
-
-    entries
-}
-
-#[allow(dead_code)]
-fn plan_status(phase: &str, active: &[&str], pending: &[&str]) -> PlanStatus {
-    if active.contains(&phase) {
-        PlanStatus::InProgress
-    } else if pending.contains(&phase) {
-        PlanStatus::Pending
-    } else {
-        PlanStatus::Completed
-    }
-}
-
-#[allow(dead_code)]
-fn gate_call_id(gate_name: &str) -> String {
-    format!("gate-{gate_name}")
-}
-
-#[allow(dead_code)]
-fn inference_call_id(request_id: &str) -> String {
-    format!("inference-{request_id}")
-}
-
 fn text_block(text: String) -> ContentBlock {
     ContentBlock::Text { text }
-}
-
-#[allow(dead_code)]
-fn stop_reason_for_core_outcome(outcome: &CoreWorkflowOutcome) -> StopReason {
-    match outcome {
-        CoreWorkflowOutcome::Cancelled => StopReason::Cancelled,
-        CoreWorkflowOutcome::Success { .. } | CoreWorkflowOutcome::Halted { .. } => {
-            StopReason::EndTurn
-        }
-    }
-}
-
-#[allow(dead_code)]
-fn driver_event_run_id(event: &RuntimeDriverEvent) -> &str {
-    event.run_id()
-}
-
-#[allow(dead_code)]
-fn core_runtime_event_from_driver(event: RuntimeDriverEvent) -> CoreRuntimeEvent {
-    event
 }
 
 /// Build a restrictive `SafetyLayer` for an ACP session mode.
@@ -1994,9 +1478,12 @@ async fn run_single_review(
             }
         }
         Err(e) => {
-            warn!(error = %e, "reviewer failed, treating as approved");
-            run.pipeline.step(PipelineEvent::ReviewApproved {
-                summary: "Review skipped (agent error)".into(),
+            warn!(error = %e, "reviewer agent failed; treating as revision-required");
+            run.pipeline.step(PipelineEvent::ReviewRevise {
+                findings: vec![format!(
+                    "Reviewer agent failed and could not complete the review: {e}. \
+                     Manual review required before merging."
+                )],
             })
         }
     }
@@ -2064,7 +1551,9 @@ async fn run_multi_role_review(
             }
         }
         Err(e) => {
-            warn!(error = %e, "architect reviewer failed, continuing");
+            warn!(error = %e, "architect reviewer failed");
+            all_approved = false;
+            all_findings.push(format!("[architect] agent failed: {e}"));
         }
     }
 
@@ -2091,7 +1580,9 @@ async fn run_multi_role_review(
             }
         }
         Err(e) => {
-            warn!(error = %e, "auditor reviewer failed, continuing");
+            warn!(error = %e, "auditor reviewer failed");
+            all_approved = false;
+            all_findings.push(format!("[auditor] agent failed: {e}"));
         }
     }
 

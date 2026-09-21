@@ -159,10 +159,7 @@ impl CostTable {
     ///
     /// Reads model profiles from the given config and updates any pricing
     /// that has changed. Returns the number of models updated.
-    pub fn refresh_from_config(
-        &mut self,
-        config: &roko_core::config::schema::RokoConfig,
-    ) -> usize {
+    pub fn refresh_from_config(&mut self, config: &roko_core::config::schema::RokoConfig) -> usize {
         let mut updated = 0;
         for (slug, profile) in &config.models {
             let pricing = ModelPricing {

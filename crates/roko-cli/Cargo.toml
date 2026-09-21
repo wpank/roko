@@ -21,17 +21,19 @@ chain = ["dep:roko-chain", "roko-std/chain", "roko-agent/chain", "roko-serve/cha
 # persistence, and serve webhook handling.
 hdc = ["roko-compose/hdc", "roko-fs/hdc", "roko-serve/hdc"]
 acp = ["dep:roko-acp"]
-# Graph-based workflow execution path (#258). Existence of this feature
-# in Cargo.toml is the sole integration signal for #260.
-graph_canary = []
 alloy-backend = [
     "chain",
     "roko-chain/alloy-backend",
     "roko-serve/alloy-backend",
 ]
-# PNG snapshot rendering and pixel-level screenshot diff comparison.
-# No heavy image dependencies yet — this gates the API surface and the
-# built-in bitmap rasterizer / text-based diff modules.
+# tui-png: Optional PNG screenshot capture for TUI visual regression testing.
+# Not required for production.
+#
+# Gates two modules (png_renderer, screenshot_diff) that provide a built-in
+# bitmap rasterizer and pixel/text/buffer diff comparison. No heavy image
+# dependencies yet — the current implementation uses a minimal hand-rolled
+# PNG writer. No callers outside the gated modules themselves; tests inside
+# the modules run only when the feature is enabled.
 tui-png = []
 
 [[bin]]

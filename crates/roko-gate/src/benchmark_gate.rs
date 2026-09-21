@@ -32,7 +32,7 @@
 //! silently ignored.
 
 use async_trait::async_trait;
-use roko_core::{Context, Signal, Verify, Verdict};
+use roko_core::{Context, Signal, Verdict, Verify};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io;
@@ -56,7 +56,7 @@ const DEFAULT_BENCH_TIMEOUT_MS: u64 = 600_000;
 #[derive(Debug, Deserialize)]
 struct CriterionMessage {
     reason: String,
-    /// The benchmark function name (e.g. "engram_build").
+    /// The benchmark function name (e.g. "signal_build").
     id: Option<String>,
     /// The "typical" (representative) estimate for this benchmark run.
     typical: Option<CriterionEstimate>,
@@ -120,7 +120,7 @@ impl BenchmarkRegressionGate {
         self
     }
 
-    /// Pass extra arguments to `cargo bench` (e.g. `--bench engram_bench`).
+    /// Pass extra arguments to `cargo bench` (e.g. `--bench signal_bench`).
     #[must_use]
     pub fn with_bench_args(mut self, args: Vec<String>) -> Self {
         self.bench_args = args;
@@ -160,9 +160,15 @@ impl Default for BenchmarkRegressionGate {
 }
 
 impl roko_core::Cell for BenchmarkRegressionGate {
-    fn cell_id(&self) -> &str { "benchmark-gate" }
-    fn cell_name(&self) -> &str { "BenchmarkRegressionGate" }
-    fn protocols(&self) -> Vec<roko_core::ProtocolId> { vec![roko_core::ProtocolId::Verify] }
+    fn cell_id(&self) -> &str {
+        "benchmark-gate"
+    }
+    fn cell_name(&self) -> &str {
+        "BenchmarkRegressionGate"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Verify]
+    }
 }
 
 #[async_trait]
@@ -183,11 +189,8 @@ impl Verify for BenchmarkRegressionGate {
         let bench_output = match bench_output {
             Ok(out) => out,
             Err(e) => {
-                return Verdict::fail(
-                    &self.name,
-                    format!("cargo bench failed: {e}"),
-                )
-                .with_duration(elapsed_ms());
+                return Verdict::fail(&self.name, format!("cargo bench failed: {e}"))
+                    .with_duration(elapsed_ms());
             }
         };
 
@@ -229,8 +232,10 @@ impl Verify for BenchmarkRegressionGate {
             Some(baseline) => {
                 // Compare current results against baseline.
                 let comparisons = compare_results(&baseline, &current, self.threshold_pct);
-                let regressions: Vec<&BenchmarkComparison> =
-                    comparisons.iter().filter(|c| c.change_pct > self.threshold_pct).collect();
+                let regressions: Vec<&BenchmarkComparison> = comparisons
+                    .iter()
+                    .filter(|c| c.change_pct > self.threshold_pct)
+                    .collect();
 
                 if regressions.is_empty() {
                     let detail = format_comparison_summary(&comparisons, self.threshold_pct);
@@ -366,10 +371,7 @@ pub fn compare_results<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
 }
 
 /// Format a one-line failure reason listing regressed benchmarks.
-fn format_regression_reason(
-    regressions: &[&BenchmarkComparison],
-    threshold_pct: f64,
-) -> String {
+fn format_regression_reason(regressions: &[&BenchmarkComparison], threshold_pct: f64) -> String {
     let names: Vec<String> = regressions
         .iter()
         .map(|c| format!("{} (+{:.1}%)", c.name, c.change_pct))
@@ -444,9 +446,7 @@ async fn run_cargo_bench(
                 .status
                 .code()
                 .map_or_else(|| "signal".to_string(), |c| c.to_string());
-            return Err(format!(
-                "exit code {code}\n--- stderr ---\n{stderr}"
-            ));
+            return Err(format!("exit code {code}\n--- stderr ---\n{stderr}"));
         }
 
         // Concatenate both streams — Criterion JSON appears on stdout but
@@ -495,7 +495,10 @@ mod tests {
         let output = r#"{"reason":"benchmark-complete","id":"very_slow","typical":{"estimate":2.0,"unit":"ms"}}"#;
         let results = parse_criterion_json(output);
         let ns = results["very_slow"];
-        assert!((ns - 2_000_000.0).abs() < 1.0, "expected 2000000 ns, got {ns}");
+        assert!(
+            (ns - 2_000_000.0).abs() < 1.0,
+            "expected 2000000 ns, got {ns}"
+        );
     }
 
     #[test]
@@ -560,20 +563,21 @@ not json at all
 
     #[test]
     fn no_regression_within_threshold() {
-        let baseline: HashMap<String, f64> =
-            [("bench_a".to_string(), 100.0), ("bench_b".to_string(), 200.0)]
-                .into_iter()
-                .collect();
+        let baseline: HashMap<String, f64> = [
+            ("bench_a".to_string(), 100.0),
+            ("bench_b".to_string(), 200.0),
+        ]
+        .into_iter()
+        .collect();
         // 5% slower — below the 10% threshold.
-        let current: HashMap<String, f64> =
-            [("bench_a".to_string(), 105.0), ("bench_b".to_string(), 202.0)]
-                .into_iter()
-                .collect();
+        let current: HashMap<String, f64> = [
+            ("bench_a".to_string(), 105.0),
+            ("bench_b".to_string(), 202.0),
+        ]
+        .into_iter()
+        .collect();
         let comparisons = compare_results(&baseline, &current, 10.0);
-        let regressions: Vec<_> = comparisons
-            .iter()
-            .filter(|c| c.change_pct > 10.0)
-            .collect();
+        let regressions: Vec<_> = comparisons.iter().filter(|c| c.change_pct > 10.0).collect();
         assert!(regressions.is_empty(), "expected no regressions");
     }
 
@@ -582,8 +586,7 @@ not json at all
         let baseline: HashMap<String, f64> =
             [("heavy_fn".to_string(), 100.0)].into_iter().collect();
         // 25% slower — well above 10% threshold.
-        let current: HashMap<String, f64> =
-            [("heavy_fn".to_string(), 125.0)].into_iter().collect();
+        let current: HashMap<String, f64> = [("heavy_fn".to_string(), 125.0)].into_iter().collect();
         let comparisons = compare_results(&baseline, &current, 10.0);
         assert_eq!(comparisons.len(), 1);
         assert!((comparisons[0].change_pct - 25.0).abs() < 0.01);
@@ -591,17 +594,15 @@ not json at all
 
     #[test]
     fn improvement_is_not_a_regression() {
-        let baseline: HashMap<String, f64> =
-            [("fast_fn".to_string(), 100.0)].into_iter().collect();
+        let baseline: HashMap<String, f64> = [("fast_fn".to_string(), 100.0)].into_iter().collect();
         // 20% faster.
-        let current: HashMap<String, f64> =
-            [("fast_fn".to_string(), 80.0)].into_iter().collect();
+        let current: HashMap<String, f64> = [("fast_fn".to_string(), 80.0)].into_iter().collect();
         let comparisons = compare_results(&baseline, &current, 10.0);
-        assert!(comparisons[0].change_pct < 0.0, "improvement should be negative");
-        let regressions: Vec<_> = comparisons
-            .iter()
-            .filter(|c| c.change_pct > 10.0)
-            .collect();
+        assert!(
+            comparisons[0].change_pct < 0.0,
+            "improvement should be negative"
+        );
+        let regressions: Vec<_> = comparisons.iter().filter(|c| c.change_pct > 10.0).collect();
         assert!(regressions.is_empty());
     }
 
@@ -617,7 +618,10 @@ not json at all
         .collect();
         let comparisons = compare_results(&baseline, &current, 10.0);
         let new_entry = comparisons.iter().find(|c| c.name == "new_bench").unwrap();
-        assert!((new_entry.change_pct).abs() < 0.01, "new bench change_pct should be 0");
+        assert!(
+            (new_entry.change_pct).abs() < 0.01,
+            "new bench change_pct should be 0"
+        );
     }
 
     #[test]
@@ -679,14 +683,12 @@ not json at all
 
     #[test]
     fn regression_reason_lists_benchmarks() {
-        let regressions = vec![
-            BenchmarkComparison {
-                name: "slow_fn".to_string(),
-                baseline_ns: 100.0,
-                current_ns: 120.0,
-                change_pct: 20.0,
-            },
-        ];
+        let regressions = vec![BenchmarkComparison {
+            name: "slow_fn".to_string(),
+            baseline_ns: 100.0,
+            current_ns: 120.0,
+            change_pct: 20.0,
+        }];
         let refs: Vec<&BenchmarkComparison> = regressions.iter().collect();
         let reason = format_regression_reason(&refs, 10.0);
         assert!(reason.contains("1 benchmark(s)"));
@@ -721,17 +723,13 @@ not json at all
     /// Simulate what verify() does internally without running cargo bench.
     #[test]
     fn end_to_end_regression_detection() {
-        let baseline: HashMap<String, f64> =
-            [("my_fn".to_string(), 100.0)].into_iter().collect();
+        let baseline: HashMap<String, f64> = [("my_fn".to_string(), 100.0)].into_iter().collect();
 
         // 15% regression — above the 10% threshold.
         let current_output = r#"{"reason":"benchmark-complete","id":"my_fn","typical":{"estimate":115.0,"unit":"ns"}}"#;
         let current = parse_criterion_json(current_output);
         let comparisons = compare_results(&baseline, &current, 10.0);
-        let regressions: Vec<_> = comparisons
-            .iter()
-            .filter(|c| c.change_pct > 10.0)
-            .collect();
+        let regressions: Vec<_> = comparisons.iter().filter(|c| c.change_pct > 10.0).collect();
 
         assert_eq!(regressions.len(), 1);
         assert!((regressions[0].change_pct - 15.0).abs() < 0.1);

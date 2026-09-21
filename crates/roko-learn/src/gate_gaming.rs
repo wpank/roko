@@ -398,7 +398,15 @@ mod tests {
         let mut detector = make_detector(&tmp);
         let model = "claude-sonnet-4-6";
 
-        fill_gaming_pattern(&mut detector, model, DEFAULT_WINDOW_SIZE, 0.7, 0.75, 0.7, 0.75);
+        fill_gaming_pattern(
+            &mut detector,
+            model,
+            DEFAULT_WINDOW_SIZE,
+            0.7,
+            0.75,
+            0.7,
+            0.75,
+        );
 
         let alert = detector.detect(model);
         assert!(
@@ -414,7 +422,15 @@ mod tests {
         let model = "gpt-4o";
 
         // Both improve — this is genuine improvement, not gaming.
-        fill_gaming_pattern(&mut detector, model, DEFAULT_WINDOW_SIZE, 0.5, 0.6, 0.75, 0.8);
+        fill_gaming_pattern(
+            &mut detector,
+            model,
+            DEFAULT_WINDOW_SIZE,
+            0.5,
+            0.6,
+            0.75,
+            0.8,
+        );
 
         let alert = detector.detect(model);
         assert!(alert.is_none(), "improvement is not gaming: {alert:?}");
@@ -427,7 +443,15 @@ mod tests {
         let model = "gemini-2.0-flash";
 
         // Pass rate rises only ~10pp (below 15pp threshold), quality falls ~12pp.
-        fill_gaming_pattern(&mut detector, model, DEFAULT_WINDOW_SIZE, 0.6, 0.7, 0.7, 0.58);
+        fill_gaming_pattern(
+            &mut detector,
+            model,
+            DEFAULT_WINDOW_SIZE,
+            0.6,
+            0.7,
+            0.7,
+            0.58,
+        );
 
         let alert = detector.detect(model);
         assert!(
@@ -443,7 +467,15 @@ mod tests {
         let model = "llama-3.3-70b";
 
         // Pass rate rises ~20pp but quality only falls ~5pp (below 10pp threshold).
-        fill_gaming_pattern(&mut detector, model, DEFAULT_WINDOW_SIZE, 0.5, 0.7, 0.7, 0.65);
+        fill_gaming_pattern(
+            &mut detector,
+            model,
+            DEFAULT_WINDOW_SIZE,
+            0.5,
+            0.7,
+            0.7,
+            0.65,
+        );
 
         let alert = detector.detect(model);
         assert!(
@@ -463,7 +495,15 @@ mod tests {
         let model = "suspicious-model-v1";
 
         // Pass rate rises ~30pp, quality falls ~20pp — clearly gaming.
-        fill_gaming_pattern(&mut detector, model, DEFAULT_WINDOW_SIZE, 0.4, 0.75, 0.7, 0.55);
+        fill_gaming_pattern(
+            &mut detector,
+            model,
+            DEFAULT_WINDOW_SIZE,
+            0.4,
+            0.75,
+            0.7,
+            0.55,
+        );
 
         let alert = detector.detect(model).expect("expected gaming alert");
         assert_eq!(alert.model_slug, model);
@@ -525,7 +565,9 @@ mod tests {
             detector.observe(model, gate_passed, 0.55);
         }
 
-        let alert = detector.detect(model).expect("should detect gaming at threshold");
+        let alert = detector
+            .detect(model)
+            .expect("should detect gaming at threshold");
         assert!(alert.pass_rate_delta > PASS_RATE_RISE_THRESHOLD);
         assert!(alert.quality_delta < -QUALITY_FALL_THRESHOLD);
     }
@@ -584,7 +626,15 @@ mod tests {
         let model = "slide-model";
 
         // Fill a full gaming pattern (should trigger).
-        fill_gaming_pattern(&mut detector, model, DEFAULT_WINDOW_SIZE, 0.3, 0.80, 0.65, 0.55);
+        fill_gaming_pattern(
+            &mut detector,
+            model,
+            DEFAULT_WINDOW_SIZE,
+            0.3,
+            0.80,
+            0.65,
+            0.55,
+        );
         assert!(
             detector.detect(model).is_some(),
             "should detect gaming before slide"
@@ -617,7 +667,15 @@ mod tests {
         let mut detector = make_detector(&tmp);
         let model = "jsonl-model";
 
-        fill_gaming_pattern(&mut detector, model, DEFAULT_WINDOW_SIZE, 0.3, 0.80, 0.65, 0.55);
+        fill_gaming_pattern(
+            &mut detector,
+            model,
+            DEFAULT_WINDOW_SIZE,
+            0.3,
+            0.80,
+            0.65,
+            0.55,
+        );
 
         // One final observation triggers detection + write.
         let alert = detector
@@ -625,7 +683,10 @@ mod tests {
             .await
             .expect("io should succeed");
 
-        assert!(alert.is_some(), "expected gaming alert from observe_and_detect");
+        assert!(
+            alert.is_some(),
+            "expected gaming alert from observe_and_detect"
+        );
 
         let alerts = detector
             .read_alerts()

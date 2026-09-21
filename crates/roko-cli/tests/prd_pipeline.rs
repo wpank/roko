@@ -13,7 +13,7 @@ fn prd_idea_creates_ideas_file() {
     roko_cli::prd::ensure_dirs(tmp.path()).unwrap();
 
     // Capture idea
-    roko_cli::prd::cmd_idea(tmp.path(), "test integration idea").unwrap();
+    roko_cli::prd::cmd_idea(tmp.path(), "test integration idea", false).unwrap();
 
     // Verify file exists and contains the idea
     let ideas = tmp.path().join(".roko/prd/ideas.md");
@@ -30,8 +30,8 @@ fn prd_idea_appends_multiple_ideas() {
     let tmp = tempfile::tempdir().unwrap();
     roko_cli::prd::ensure_dirs(tmp.path()).unwrap();
 
-    roko_cli::prd::cmd_idea(tmp.path(), "first idea").unwrap();
-    roko_cli::prd::cmd_idea(tmp.path(), "second idea").unwrap();
+    roko_cli::prd::cmd_idea(tmp.path(), "first idea", false).unwrap();
+    roko_cli::prd::cmd_idea(tmp.path(), "second idea", false).unwrap();
 
     let ideas = tmp.path().join(".roko/prd/ideas.md");
     let content = fs::read_to_string(&ideas).unwrap();

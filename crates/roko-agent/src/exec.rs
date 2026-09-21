@@ -26,6 +26,241 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::time::timeout;
 
+// ── Codex operation policy ───────────────────────────────────────────────────
+
+/// Codex CLI operation types that can be individually allowed or denied.
+///
+/// Codex's built-in file/shell/web operations are not roko tool calls; they
+/// bypass [`crate::dispatcher::ToolDispatcher`] because Codex owns its own
+/// tool loop. This policy type intercepts the JSONL event stream post-execution
+/// to enforce roko's deny/allow list at the operation level.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CodexOperationType {
+    /// Shell/process execution (`command_execution` events).
+    CommandExecution,
+    /// File read/write (`file_change` events).
+    FileChange,
+}
+
+impl CodexOperationType {
+    /// Return the canonical Codex JSONL `item.type` string for this operation.
+    #[must_use]
+    pub fn as_item_type(&self) -> &'static str {
+        match self {
+            Self::CommandExecution => "command_execution",
+            Self::FileChange => "file_change",
+        }
+    }
+
+    /// Attempt to parse a Codex `item.type` string into an operation type.
+    #[must_use]
+    pub fn from_item_type(s: &str) -> Option<Self> {
+        match s {
+            "command_execution" => Some(Self::CommandExecution),
+            "file_change" => Some(Self::FileChange),
+            _ => None,
+        }
+    }
+
+    /// Map roko canonical/provider tool names that correspond to this Codex
+    /// operation type.  Used when deriving a policy from an [`AgentContract`].
+    ///
+    /// [`AgentContract`]: crate::safety::contract::AgentContract
+    fn matches_tool_name(&self, name: &str) -> bool {
+        let lower = name.to_lowercase();
+        match self {
+            Self::CommandExecution => {
+                lower == "bash"
+                    || lower == "shell"
+                    || lower == "command_execution"
+                    || lower == "run_command"
+                    || lower == "execute"
+            }
+            Self::FileChange => {
+                lower == "write_file"
+                    || lower == "edit_file"
+                    || lower == "multi_edit"
+                    || lower == "apply_patch"
+                    || lower == "create_file"
+                    || lower == "file_change"
+                    || lower == "notebook_edit"
+            }
+        }
+    }
+}
+
+/// Pre-execution policy that governs which Codex CLI built-in operations roko
+/// will accept in the response stream.
+///
+/// The broker is fail-closed: any operation type that is not explicitly allowed
+/// (when an allowlist is set) or that is explicitly denied will cause the
+/// entire agent turn to be rejected with a policy-violation error.
+///
+/// # Rationale
+///
+/// Codex runs its own internal tool loop and does not surface individual
+/// tool-call approval points to the roko dispatcher. The only practical
+/// enforcement boundary is the JSONL output stream that Codex emits after
+/// each operation. By scanning that stream before returning a result roko can
+/// detect and reject unauthorised operations even though it cannot prevent
+/// them from executing inside the Codex subprocess.
+///
+/// For stronger pre-execution guarantees consider sandboxing the subprocess
+/// at the OS level (namespaces, Landlock, Apple Sandbox) or using
+/// `--dangerously-bypass-approvals-and-sandbox=false` (the default) so Codex
+/// itself prompts before destructive actions.
+#[derive(Debug, Clone, Default)]
+pub struct CodexOperationPolicy {
+    /// When `Some`, only the listed operation types are permitted.  All others
+    /// are denied regardless of `denied`.
+    pub allowed: Option<Vec<CodexOperationType>>,
+    /// Operations that are always denied, even when `allowed` is `None`.
+    pub denied: Vec<CodexOperationType>,
+}
+
+impl CodexOperationPolicy {
+    /// Build a deny-all policy: every Codex operation type is rejected.
+    #[must_use]
+    pub fn deny_all() -> Self {
+        Self {
+            allowed: Some(Vec::new()),
+            denied: Vec::new(),
+        }
+    }
+
+    /// Build a permissive policy: all operation types are accepted.
+    #[must_use]
+    pub fn allow_all() -> Self {
+        Self::default()
+    }
+
+    /// Derive a policy from an [`AgentContract`].
+    ///
+    /// - If the contract's `allowed_tools` is `Some([])` (explicit deny-all),
+    ///   all Codex operations are denied.
+    /// - If `allowed_tools` is `Some([…])`, only operations whose tool names
+    ///   appear in the allowlist are permitted.
+    /// - `ForbiddenTools` governance rules are always applied as a denylist.
+    ///
+    /// [`AgentContract`]: crate::safety::contract::AgentContract
+    #[must_use]
+    pub fn from_contract(contract: &crate::safety::contract::AgentContract) -> Self {
+        let forbidden = contract.forbidden_tool_names();
+        let denied: Vec<CodexOperationType> = ALL_CODEX_OPERATION_TYPES
+            .iter()
+            .filter(|op| forbidden.iter().any(|name| op.matches_tool_name(name)))
+            .cloned()
+            .collect();
+
+        let allowed = contract.allowed_tools.as_ref().map(|tools| {
+            ALL_CODEX_OPERATION_TYPES
+                .iter()
+                .filter(|op| {
+                    // An operation is allowed when at least one of its
+                    // corresponding tool names appears in the allowlist.
+                    tools.iter().any(|name| op.matches_tool_name(name))
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        });
+
+        Self { allowed, denied }
+    }
+
+    /// Returns `true` when `op` is permitted by this policy.
+    ///
+    /// Deny rules always win over allow rules (fail-closed).
+    #[must_use]
+    pub fn permits(&self, op: &CodexOperationType) -> bool {
+        // Explicit deny wins unconditionally.
+        if self.denied.contains(op) {
+            return false;
+        }
+        // When an allowlist is set, the operation must appear in it.
+        if let Some(ref allowed) = self.allowed {
+            return allowed.contains(op);
+        }
+        true
+    }
+
+    /// Returns `true` when the policy has at least one constraint (i.e. is not
+    /// trivially permissive).
+    #[must_use]
+    pub fn has_constraints(&self) -> bool {
+        !self.denied.is_empty() || self.allowed.is_some()
+    }
+}
+
+const ALL_CODEX_OPERATION_TYPES: &[CodexOperationType] =
+    &[CodexOperationType::CommandExecution, CodexOperationType::FileChange];
+
+// ── JSONL operation broker ───────────────────────────────────────────────────
+
+/// Scan raw Codex JSONL output for operation types that violate `policy`.
+///
+/// Returns `Ok(())` when all observed operations are permitted, or `Err` with
+/// a human-readable description of the first policy violation found.
+///
+/// This is the post-execution enforcement boundary: it cannot prevent Codex
+/// from running the operation, but it will cause the overall agent turn to be
+/// rejected before roko persists or acts on the output.
+fn check_codex_output_against_policy(raw: &str, policy: &CodexOperationPolicy) -> Result<(), String> {
+    if !policy.has_constraints() {
+        return Ok(());
+    }
+
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let event_type = event.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        // Enforce on both item.started (pre-output) and item.completed (post-output).
+        if event_type != "item.started" && event_type != "item.completed" {
+            continue;
+        }
+        let Some(item) = event.get("item") else {
+            continue;
+        };
+        let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        let Some(op) = CodexOperationType::from_item_type(item_type) else {
+            continue;
+        };
+        if !policy.permits(&op) {
+            let detail = match op {
+                CodexOperationType::CommandExecution => {
+                    let cmd = item
+                        .get("command")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("<unknown>");
+                    format!("command_execution denied by policy: {cmd}")
+                }
+                CodexOperationType::FileChange => {
+                    let paths: Vec<&str> = item
+                        .get("changes")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|c| c.get("path").and_then(|v| v.as_str()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if paths.is_empty() {
+                        "file_change denied by policy".to_string()
+                    } else {
+                        format!("file_change denied by policy: {}", paths.join(", "))
+                    }
+                }
+            };
+            return Err(detail);
+        }
+    }
+    Ok(())
+}
+
 /// An agent that spawns a subprocess, pipes the input's text body to stdin,
 /// and captures stdout as the output.
 ///
@@ -54,6 +289,13 @@ pub struct ExecAgent {
     /// When true, parse stdout as Codex CLI JSONL and extract `agent_message`
     /// text fields instead of returning raw JSONL.
     extract_codex_jsonl: bool,
+    /// Optional operation-level policy broker for Codex CLI JSONL output.
+    ///
+    /// When set, each Codex operation event in the output stream is checked
+    /// against this policy before the agent turn is accepted. Any denied
+    /// operation causes the turn to fail with a policy-violation error.
+    /// Only meaningful when `extract_codex_jsonl` is `true`.
+    codex_operation_policy: Option<CodexOperationPolicy>,
 }
 
 impl ExecAgent {
@@ -74,6 +316,7 @@ impl ExecAgent {
             name,
             stdin_prefix: None,
             extract_codex_jsonl: false,
+            codex_operation_policy: None,
         }
     }
 
@@ -155,6 +398,21 @@ impl ExecAgent {
     #[must_use]
     pub const fn with_extract_codex_jsonl(mut self, extract: bool) -> Self {
         self.extract_codex_jsonl = extract;
+        self
+    }
+
+    /// Attach a Codex operation policy broker.
+    ///
+    /// When set and `extract_codex_jsonl` is enabled, the raw JSONL output is
+    /// scanned for `command_execution` and `file_change` operation events.
+    /// Any operation that violates the policy causes the entire agent turn to
+    /// be rejected before the output is returned to the caller (fail-closed).
+    ///
+    /// Use [`CodexOperationPolicy::from_contract`] to derive a policy from an
+    /// [`AgentContract`](crate::safety::contract::AgentContract).
+    #[must_use]
+    pub fn with_codex_operation_policy(mut self, policy: CodexOperationPolicy) -> Self {
+        self.codex_operation_policy = Some(policy);
         self
     }
 }
@@ -395,6 +653,29 @@ impl Agent for ExecAgent {
         let elapsed_secs = started.elapsed().as_secs();
 
         let raw_stdout = stdout_handle.await.unwrap_or_default();
+
+        // ── Codex operation policy broker ────────────────────────────────────
+        // Scan the raw JSONL before extracting text.  This is the primary
+        // enforcement boundary for Codex built-in operations (command_execution,
+        // file_change) that bypass the roko ToolDispatcher.  Fail-closed: any
+        // denied or unrecognised-in-policy operation rejects the whole turn.
+        if self.extract_codex_jsonl {
+            if let Some(ref policy) = self.codex_operation_policy {
+                if let Err(violation) = check_codex_output_against_policy(&raw_stdout, policy) {
+                    tracing::warn!(
+                        agent = %self.name,
+                        %violation,
+                        "Codex operation denied by policy broker"
+                    );
+                    return self.failure_signal(
+                        input,
+                        &format!("Codex operation policy violation: {violation}"),
+                        started,
+                    );
+                }
+            }
+        }
+
         let stdout = if self.extract_codex_jsonl {
             let extracted = extract_codex_text(&raw_stdout);
             self.scrub_text(&extracted)

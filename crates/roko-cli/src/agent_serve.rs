@@ -473,7 +473,11 @@ fn resolve_bearer_auth(args: &AgentServeArgs) -> Result<Option<BearerAuth>> {
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("read token file {}", path.display()))?;
         // Strip trailing newlines but preserve internal whitespace.
-        Some(raw.trim_end_matches('\n').trim_end_matches('\r').to_string())
+        Some(
+            raw.trim_end_matches('\n')
+                .trim_end_matches('\r')
+                .to_string(),
+        )
     } else {
         None
     };
@@ -1119,8 +1123,6 @@ pub async fn run(
                         resume: None,
                         json: false,
                         quiet: false,
-                        no_replan: false,
-                        skip_validate: false,
                         headless: false,
                         no_serve: false,
                         color_enabled: true,
@@ -2012,7 +2014,7 @@ pub(crate) async fn run_agent_create(
 ///
 /// Phases:
 ///   1. Verify and stop the recorded sidecar process; wait for exit.
-///   2. Stage canonical backup (engrams, episodes, knowledge).
+///   2. Stage canonical backup (signals, episodes, knowledge).
 ///   3. Remove runtime registry entry from agents.json.
 ///   4. Clean agent-owned transient state.
 ///   5. Write DELETED marker (only on full success).
@@ -2802,8 +2804,6 @@ generation = 0
                 resume: None,
                 json: false,
                 quiet: false,
-                no_replan: false,
-                skip_validate: false,
                 headless: false,
                 no_serve: false,
                 color_enabled: true,
@@ -2827,8 +2827,6 @@ generation = 0
                 resume: None,
                 json: false,
                 quiet: false,
-                no_replan: false,
-                skip_validate: false,
                 headless: false,
                 no_serve: false,
                 color_enabled: true,

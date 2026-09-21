@@ -6,9 +6,9 @@
 use std::sync::Arc;
 
 use axum::Json;
+use axum::Router;
 use axum::extract::State;
 use axum::routing::get;
-use axum::Router;
 use serde::Serialize;
 
 use crate::state::AppState;
@@ -40,10 +40,12 @@ struct QuarantineEntrySummary {
     incident_links: usize,
 }
 
-async fn quarantine_handler(
-    State(state): State<Arc<AppState>>,
-) -> Json<QuarantineResponse> {
-    let vault_path = state.workdir.join(".roko").join("immune").join("quarantine.json");
+async fn quarantine_handler(State(state): State<Arc<AppState>>) -> Json<QuarantineResponse> {
+    let vault_path = state
+        .workdir
+        .join(".roko")
+        .join("immune")
+        .join("quarantine.json");
     let vault = roko_core::immune::QuarantineVault::load(&vault_path).unwrap_or_default();
     let stats = vault.stats();
 
@@ -84,10 +86,12 @@ struct IncidentSummary {
     linked_at: String,
 }
 
-async fn incidents_handler(
-    State(state): State<Arc<AppState>>,
-) -> Json<IncidentsResponse> {
-    let vault_path = state.workdir.join(".roko").join("immune").join("quarantine.json");
+async fn incidents_handler(State(state): State<Arc<AppState>>) -> Json<IncidentsResponse> {
+    let vault_path = state
+        .workdir
+        .join(".roko")
+        .join("immune")
+        .join("quarantine.json");
     let vault = roko_core::immune::QuarantineVault::load(&vault_path).unwrap_or_default();
 
     let mut incidents = Vec::new();

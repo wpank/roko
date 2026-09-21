@@ -248,10 +248,8 @@ pub(crate) struct RawServerMessage {
 
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct ServerError {
-    #[allow(dead_code)]
     code: i64,
     message: String,
-    #[allow(dead_code)]
     data: Option<serde_json::Value>,
 }
 
@@ -681,7 +679,7 @@ impl AcpStdioClient {
         if let Some(ref key) = opts.session_key {
             params
                 .as_object_mut()
-                .unwrap()
+                .expect("params was constructed as a JSON object literal")
                 .insert("sessionKey".into(), serde_json::Value::String(key.clone()));
         }
 
@@ -689,7 +687,7 @@ impl AcpStdioClient {
         if opts.reset {
             params
                 .as_object_mut()
-                .unwrap()
+                .expect("params was constructed as a JSON object literal")
                 .insert("reset".into(), serde_json::Value::Bool(true));
         }
 

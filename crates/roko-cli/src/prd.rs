@@ -180,6 +180,8 @@ fn preserve_completed_task_status(
     mut regenerated: TasksFile,
     plan_dir: &Path,
 ) -> TasksFile {
+    use crate::task_parser::PlanMutation;
+
     if let Some(old_tasks) = old_tasks {
         let completed: Vec<&crate::task_parser::TaskDef> = old_tasks
             .tasks
@@ -187,18 +189,29 @@ fn preserve_completed_task_status(
             .filter(|task| task.status.eq_ignore_ascii_case("done"))
             .collect();
 
-        for task in &mut regenerated.tasks {
-            let normalized = normalize_task_title(&task.title);
-            if completed.iter().any(|old| {
-                let old_title = normalize_task_title(&old.title);
-                old.id == task.id
-                    || old_title == normalized
-                    || old_title.contains(&normalized)
-                    || normalized.contains(&old_title)
-            }) {
-                task.status = "done".to_string();
-            }
-        }
+        let mutations: Vec<PlanMutation> = regenerated
+            .tasks
+            .iter()
+            .filter_map(|task| {
+                let normalized = normalize_task_title(&task.title);
+                let already_done = completed.iter().any(|old| {
+                    let old_title = normalize_task_title(&old.title);
+                    old.id == task.id
+                        || old_title == normalized
+                        || old_title.contains(&normalized)
+                        || normalized.contains(&old_title)
+                });
+                if already_done {
+                    Some(PlanMutation::MarkTaskDone {
+                        task_id: task.id.clone(),
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        regenerated.apply_mutations(mutations);
 
         regenerated.meta.iteration = old_tasks.meta.iteration.saturating_add(1);
         if regenerated.meta.plan.trim().is_empty() {
@@ -213,18 +226,9 @@ fn preserve_completed_task_status(
             .unwrap_or_else(|| "unknown-plan".to_string());
     }
 
-    regenerated.meta.total = regenerated.tasks.len() as u32;
-    regenerated.meta.done = regenerated
-        .tasks
-        .iter()
-        .filter(|task| task.status.eq_ignore_ascii_case("done"))
-        .count() as u32;
-    regenerated.meta.status =
-        if regenerated.meta.total > 0 && regenerated.meta.done == regenerated.meta.total {
-            "complete".to_string()
-        } else {
-            "ready".to_string()
-        };
+    // apply_mutations already calls recount_meta; call it once more to handle
+    // the case where old_tasks was None (no mutations were applied).
+    regenerated.recount_meta();
 
     regenerated
 }
@@ -657,7 +661,7 @@ fn read_prd_entry(path: &Path) -> PrdEntry {
 // ─── Public command handlers ───────────────────────────────────────
 
 /// `roko prd idea "text"` — append to ideas.md.
-pub fn cmd_idea(workdir: &Path, text: &str) -> Result<()> {
+pub fn cmd_idea(workdir: &Path, text: &str, json: bool) -> Result<()> {
     ensure_dirs(workdir)?;
     let path = ideas_path(workdir);
     let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M");
@@ -668,16 +672,75 @@ pub fn cmd_idea(workdir: &Path, text: &str) -> Result<()> {
         .open(&path)
         .with_context(|| format!("open {}", path.display()))?;
     std::io::Write::write_all(&mut file, entry.as_bytes())?;
-    println!("💡 Captured: {text}");
+    if json {
+        let payload = serde_json::json!({
+            "status": "captured",
+            "text": text,
+            "timestamp": timestamp.to_string(),
+            "path": path.display().to_string(),
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+    } else {
+        println!("💡 Captured: {text}");
+    }
     Ok(())
 }
 
 /// `roko prd list` — list all PRDs, drafts, and ideas.
-pub fn cmd_list(workdir: &Path) -> Result<()> {
+pub fn cmd_list(workdir: &Path, json: bool) -> Result<()> {
     ensure_dirs(workdir)?;
 
-    println!("═══ Published PRDs ═══");
     let published = list_md_files(&published_dir(workdir));
+    let drafts = list_md_files(&drafts_dir(workdir));
+    let ideas_file = ideas_path(workdir);
+    let ideas_content = std::fs::read_to_string(&ideas_file).unwrap_or_default();
+    let ideas_lines: Vec<&str> = ideas_content
+        .lines()
+        .filter(|l| l.starts_with("- "))
+        .collect();
+
+    if json {
+        #[derive(serde::Serialize)]
+        struct PrdRow {
+            slug: String,
+            title: String,
+            status: String,
+            coverage: f64,
+        }
+        let published_rows: Vec<PrdRow> = published
+            .iter()
+            .map(|p| {
+                let e = read_prd_entry(p);
+                PrdRow {
+                    slug: e.slug,
+                    title: e.title,
+                    status: e.status,
+                    coverage: e.coverage,
+                }
+            })
+            .collect();
+        let draft_rows: Vec<PrdRow> = drafts
+            .iter()
+            .map(|p| {
+                let e = read_prd_entry(p);
+                PrdRow {
+                    slug: e.slug,
+                    title: e.title,
+                    status: e.status,
+                    coverage: e.coverage,
+                }
+            })
+            .collect();
+        let payload = serde_json::json!({
+            "published": published_rows,
+            "drafts": draft_rows,
+            "ideas": ideas_lines,
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+        return Ok(());
+    }
+
+    println!("═══ Published PRDs ═══");
     if published.is_empty() {
         println!("  (none)");
     } else {
@@ -694,7 +757,6 @@ pub fn cmd_list(workdir: &Path) -> Result<()> {
 
     println!();
     println!("═══ Drafts ═══");
-    let drafts = list_md_files(&drafts_dir(workdir));
     if drafts.is_empty() {
         println!("  (none)");
     } else {
@@ -705,16 +767,9 @@ pub fn cmd_list(workdir: &Path) -> Result<()> {
     }
 
     println!();
-    let ideas = ideas_path(workdir);
-    let idea_count = std::fs::read_to_string(&ideas)
-        .unwrap_or_default()
-        .lines()
-        .filter(|l| l.starts_with("- "))
-        .count();
+    let idea_count = ideas_lines.len();
     println!("═══ Ideas ({idea_count} captured) ═══");
     // Show last 5 ideas
-    let content = std::fs::read_to_string(&ideas).unwrap_or_default();
-    let ideas_lines: Vec<&str> = content.lines().filter(|l| l.starts_with("- ")).collect();
     let start = ideas_lines.len().saturating_sub(5);
     for line in &ideas_lines[start..] {
         println!("  {line}");
@@ -758,19 +813,8 @@ pub fn cmd_list(workdir: &Path) -> Result<()> {
 }
 
 /// `roko prd status` — coverage report.
-pub fn cmd_status(workdir: &Path, plans_dir: Option<&Path>) -> Result<()> {
+pub fn cmd_status(workdir: &Path, plans_dir: Option<&Path>, json: bool) -> Result<()> {
     ensure_dirs(workdir)?;
-
-    println!("══��� PRD Coverage Report ═══");
-    println!();
-    println!(
-        "{:<35} {:<12} {:<6} {:<6} {:<8}",
-        "PRD", "Status", "Plans", "Tasks", "Done"
-    );
-    println!(
-        "{:<35} {:<12} {:<6} {:<6} {:<8}",
-        "───", "──────", "─────", "─────", "────"
-    );
 
     let all_prds: Vec<PathBuf> = list_md_files(&published_dir(workdir))
         .into_iter()
@@ -854,6 +898,77 @@ pub fn cmd_status(workdir: &Path, plans_dir: Option<&Path>) -> Result<()> {
         total_done = total_done.saturating_add(stats.done);
     }
 
+    // Unlinked plans: plans that have no matching PRD.
+    let mut unlinked: Vec<&String> = plan_stats
+        .keys()
+        .filter(|name| !matched_plan_names.contains(*name))
+        .collect();
+
+    let coverage_pct = if total_tasks > 0 {
+        f64::from(total_done) / f64::from(total_tasks) * 100.0
+    } else {
+        0.0
+    };
+
+    if json {
+        #[derive(serde::Serialize)]
+        struct PrdStatusRow {
+            slug: String,
+            title: String,
+            status: String,
+            coverage: f64,
+            linked_plans: Vec<String>,
+            tasks: u32,
+            done: u32,
+        }
+        let rows: Vec<PrdStatusRow> = all_prds
+            .iter()
+            .map(|path| {
+                let entry = read_prd_entry(path);
+                let plans = linked_plans.get(&entry.slug).cloned().unwrap_or_default();
+                let (slug_tasks, slug_done) = plans.iter().fold((0u32, 0u32), |(t, d), pn| {
+                    if let Some(s) = plan_stats.get(pn) {
+                        (t.saturating_add(s.tasks), d.saturating_add(s.done))
+                    } else {
+                        (t, d)
+                    }
+                });
+                PrdStatusRow {
+                    slug: entry.slug,
+                    title: entry.title,
+                    status: entry.status,
+                    coverage: entry.coverage,
+                    linked_plans: plans,
+                    tasks: slug_tasks,
+                    done: slug_done,
+                }
+            })
+            .collect();
+        unlinked.sort();
+        let payload = serde_json::json!({
+            "prds": rows,
+            "total_plans": total_plans,
+            "total_tasks": total_tasks,
+            "total_done": total_done,
+            "coverage_pct": coverage_pct,
+            "linked_plan_count": matched_plan_names.len(),
+            "unlinked_plans": unlinked,
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+        return Ok(());
+    }
+
+    println!("═══ PRD Coverage Report ═══");
+    println!();
+    println!(
+        "{:<35} {:<12} {:<6} {:<6} {:<8}",
+        "PRD", "Status", "Plans", "Tasks", "Done"
+    );
+    println!(
+        "{:<35} {:<12} {:<6} {:<6} {:<8}",
+        "───", "──────", "─────", "─────", "────"
+    );
+
     for path in &all_prds {
         let entry = read_prd_entry(path);
         if let Some(plans) = linked_plans.get(&entry.slug) {
@@ -885,12 +1000,6 @@ pub fn cmd_status(workdir: &Path, plans_dir: Option<&Path>) -> Result<()> {
         println!("  (no PRDs yet — run `roko prd draft new \"title\"`)");
     }
 
-    // Unlinked plans: plans that have no matching PRD.
-    let unlinked: Vec<&String> = plan_stats
-        .keys()
-        .filter(|name| !matched_plan_names.contains(*name))
-        .collect();
-
     println!();
     println!(
         "Linked: {}  Unlinked: {}",
@@ -898,9 +1007,8 @@ pub fn cmd_status(workdir: &Path, plans_dir: Option<&Path>) -> Result<()> {
         unlinked.len()
     );
     if !unlinked.is_empty() {
-        let mut sorted = unlinked.clone();
-        sorted.sort();
-        for name in &sorted {
+        unlinked.sort();
+        for name in &unlinked {
             println!("  Unlinked plan: {name}");
         }
     }
@@ -908,12 +1016,7 @@ pub fn cmd_status(workdir: &Path, plans_dir: Option<&Path>) -> Result<()> {
     println!();
     println!(
         "Plans: {total_plans}  Tasks: {total_tasks}  Done: {total_done}  \
-         Coverage: {:.0}%",
-        if total_tasks > 0 {
-            f64::from(total_done) / f64::from(total_tasks) * 100.0
-        } else {
-            0.0
-        }
+         Coverage: {coverage_pct:.0}%",
     );
 
     Ok(())
@@ -1292,13 +1395,15 @@ async fn generate_plan_from_prd_with_outcome(
              1. Output a fenced block tagged `toml` containing the tasks.toml content.\n\
              2. Optionally output a fenced block tagged `plan.md` containing the plan narrative.\n\n\
              TOML quality checklist (every task MUST pass all of these):\n\
-             - `meta.plan` matches the slug exactly: {slug}\n\
+             - `meta.plan` matches the slug exactly: {slug} (use `plan =`, NOT `name =`)\n\
              - Every task has `id`, `title`, `description`, `status = \"ready\"`, `role`, and `tier`\n\
              - `files` lists only real paths that exist in the codebase (no placeholders)\n\
              - `depends_on` only references task ids defined in this same plan\n\
              - No `model_hint` field (the runtime selects the model automatically)\n\
              - No `mcp_servers` field unless the task genuinely requires an MCP server\n\
-             - Every `[[task.verify]]` entry has `phase` and `command`\n\n\
+             - Every `[[task.verify]]` entry has `phase` and `command`\n\
+             - Output ONLY a fenced ```toml block followed optionally by a fenced \
+               ```plan.md block — no prose, no explanation outside those blocks\n\n\
              {template_guidance}\n\
              PRD content:\n{trimmed_content}{prd_context_suffix}",
             slug = slug,
@@ -1367,7 +1472,8 @@ async fn generate_plan_from_prd_with_outcome(
                 ));
             }
 
-            // Non-retriable errors: fail with classified message.
+            // Non-retriable errors (model not found, context overflow): fail
+            // immediately because a retry will hit the same permanent error.
             if !crash_class.is_retriable() {
                 let preview = &output[..output.len().min(500)];
                 return Err(anyhow!(
@@ -1377,19 +1483,29 @@ async fn generate_plan_from_prd_with_outcome(
                 ));
             }
 
-            // Retriable errors (rate limit, network): retry up to 3 times.
-            let max_crash_retries = 3u32;
+            // Retriable errors (rate limit, network, unknown): retry with
+            // exponential back-off. Unknown crashes (signal/OOM/transient)
+            // get 2 attempts; rate-limit / network get 3.
+            let max_crash_retries: u32 = if matches!(crash_class, AgentCrashClass::Unknown) {
+                2
+            } else {
+                3
+            };
             let mut last_exit_code = exit_code;
             let mut last_output = output;
 
             for attempt in 1..=max_crash_retries {
                 let retry_class = classify_agent_crash(&last_output);
+                // Exponential back-off: 1 s, 2 s, 4 s …
+                let backoff_secs = 1u64 << (attempt - 1).min(3);
                 eprintln!(
-                    "  plan generation agent {} (attempt {}/{}) \u{2014} retrying\u{2026}",
+                    "  plan generation agent {} (attempt {}/{}) \u{2014} \
+                     waiting {backoff_secs}s then retrying\u{2026}",
                     retry_class.recovery_hint(),
                     attempt,
                     max_crash_retries + 1,
                 );
+                tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
                 let retry_result = run_agent_capture_silent(AgentExecOpts {
                     prompt: &task_prompt,
                     workdir: workdir_ref,
@@ -2446,8 +2562,12 @@ fn validate_and_fix_generated_plan(
     _models: &IndexMap<String, roko_core::config::schema::ModelProfile>,
     _default_model: Option<&str>,
 ) -> Result<String> {
-    // 0. Deterministic repair before parsing
+    // 0. Deterministic repair before parsing.
     let repaired = crate::task_parser::repair_toml(toml_str);
+    // Also fix the common LLM mistake of using `name = ` instead of `plan = `
+    // in the [meta] section. repair_toml leaves it alone because it parses
+    // fine as TOML; we catch it here at the semantic level.
+    let repaired = crate::task_parser::fix_meta_name_to_plan(&repaired);
     if repaired != toml_str {
         tracing::info!("prd plan: applied deterministic TOML repair");
     }
@@ -3307,8 +3427,8 @@ mod tests {
     fn idea_appends() {
         let tmp = tempfile::tempdir().unwrap();
         ensure_dirs(tmp.path()).unwrap();
-        cmd_idea(tmp.path(), "test idea 1").unwrap();
-        cmd_idea(tmp.path(), "test idea 2").unwrap();
+        cmd_idea(tmp.path(), "test idea 1", false).unwrap();
+        cmd_idea(tmp.path(), "test idea 2", false).unwrap();
         let content = std::fs::read_to_string(ideas_path(tmp.path())).unwrap();
         assert!(content.contains("test idea 1"));
         assert!(content.contains("test idea 2"));
@@ -3319,7 +3439,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         ensure_dirs(tmp.path()).unwrap();
         // Should not panic
-        cmd_list(tmp.path()).unwrap();
+        cmd_list(tmp.path(), false).unwrap();
     }
 
     #[tokio::test]

@@ -312,8 +312,39 @@ pub static BUILTIN_PRICING: &[(&str, ModelPricing)] = &[
             tokenizer_ratio: 0.98,
         },
     ),
-    // OpenAI — gpt-5.2/5.4 rates match cost_table.rs; gpt-5.5 aligns with the
-    // gpt-5 rate in roko-compose/src/enrichment/estimate.rs.
+    // OpenAI — rates from the OpenAI pricing page; gpt-5.2/5.4 rates match
+    // cost_table.rs; gpt-5.5 aligns with the gpt-5 rate in
+    // roko-compose/src/enrichment/estimate.rs.
+    (
+        "gpt-4o",
+        ModelPricing {
+            input_per_m: 2.50,
+            output_per_m: 10.00,
+            cache_read_per_m: 1.25,
+            cache_write_per_m: 3.13,
+            tokenizer_ratio: 1.0,
+        },
+    ),
+    (
+        "o3",
+        ModelPricing {
+            input_per_m: 10.00,
+            output_per_m: 40.00,
+            cache_read_per_m: 2.50,
+            cache_write_per_m: 12.50,
+            tokenizer_ratio: 1.0,
+        },
+    ),
+    (
+        "o4-mini",
+        ModelPricing {
+            input_per_m: 1.10,
+            output_per_m: 4.40,
+            cache_read_per_m: 0.275,
+            cache_write_per_m: 1.375,
+            tokenizer_ratio: 1.0,
+        },
+    ),
     (
         "gpt-5.2",
         ModelPricing {
@@ -397,6 +428,28 @@ pub static BUILTIN_PRICING: &[(&str, ModelPricing)] = &[
             output_per_m: 15.00,
             cache_read_per_m: 1.50,
             cache_write_per_m: 3.75,
+            tokenizer_ratio: 1.0,
+        },
+    ),
+    // Google Gemini — rates from the Google AI pricing page (pay-as-you-go,
+    // ≤200 K token prompts).  Cache-write derived (input * 1.25).
+    (
+        "gemini-2.5-pro",
+        ModelPricing {
+            input_per_m: 1.25,
+            output_per_m: 10.00,
+            cache_read_per_m: 0.31,
+            cache_write_per_m: 1.56,
+            tokenizer_ratio: 1.0,
+        },
+    ),
+    (
+        "gemini-2.5-flash",
+        ModelPricing {
+            input_per_m: 0.30,
+            output_per_m: 2.50,
+            cache_read_per_m: 0.075,
+            cache_write_per_m: 0.375,
             tokenizer_ratio: 1.0,
         },
     ),
@@ -737,23 +790,50 @@ mod tests {
     #[test]
     fn pricing_rows_cover_learning_cost_table_models() {
         // Rows the learning-layer cost tables already knew about, plus the
-        // codex / sonar rows added for the efficiency pipeline.
+        // codex / sonar rows added for the efficiency pipeline, plus the
+        // Anthropic / Gemini / GPT-4o rows added by P2-MCP-1.
         for slug in [
+            // Anthropic
+            "claude-opus-4-6",
+            "claude-sonnet-4-6",
+            "claude-haiku-4-5",
+            // Z.AI GLM
             "glm-5.1",
             "glm-5",
+            // Moonshot Kimi
             "kimi-k2.5",
+            // OpenAI
+            "gpt-4o",
+            "o3",
+            "o4-mini",
             "gpt-5.2",
             "gpt-5.4",
             "gpt-5.4-mini",
             "gpt-5.5",
             "gpt-5.6-sol",
             "codex-mini",
+            // Perplexity
             "sonar",
             "sonar-pro",
+            // Google Gemini
+            "gemini-2.5-pro",
+            "gemini-2.5-flash",
         ] {
             assert!(
                 builtin_pricing(slug).is_some(),
                 "{slug} missing from BUILTIN_PRICING"
+            );
+        }
+    }
+
+    #[test]
+    fn all_builtin_models_have_pricing() {
+        // Every model in BUILTIN_MODELS must have a pricing entry.
+        for model in BUILTIN_MODELS {
+            assert!(
+                builtin_pricing(model.slug).is_some(),
+                "{} in BUILTIN_MODELS but missing from BUILTIN_PRICING",
+                model.slug
             );
         }
     }

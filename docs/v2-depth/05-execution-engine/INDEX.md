@@ -2,6 +2,8 @@
 
 Depth for [05-EXECUTION-ENGINE.md](../../unified/05-EXECUTION-ENGINE.md)
 
+> **Implementation status (2026-09-10):** The Graph engine (`roko-graph`) is the sole execution engine. The cognitive loop as a Hot Graph (described in `cognitive-loop-as-graph.md`) is the architectural target — the 7-Cell loop, Gamma/Theta/Delta nested timescales, and T0 short-circuit as a conditional edge are design targets. The Graph engine currently runs plans as standard Flows; Hot Graph per-agent execution is future work. Resilience patterns (`resilience-and-numerics.md`) describe the algebraic retry model and circuit breaker logic, which are implemented in `roko-conductor`.
+
 ---
 
 ## Source docs (3)

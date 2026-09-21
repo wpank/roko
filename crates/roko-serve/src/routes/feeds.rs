@@ -188,7 +188,12 @@ async fn create_feed(
 
     let mut reg = state.feeds.write().await;
     let id = reg.register(info);
-    let feed = reg.get(&id).expect("just registered").clone();
+    let feed = reg
+        .get(&id)
+        .ok_or_else(|| {
+            ApiError::internal("feed registry invariant violated: registered id not found")
+        })?
+        .clone();
 
     Ok((StatusCode::CREATED, Json(CreateFeedResponse { id, feed })))
 }

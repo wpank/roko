@@ -20,6 +20,7 @@ use crate::translate::{BackendResponse, RenderedTools, SessionState, convert_ima
 use crate::usage::Usage;
 use roko_core::agent::ProviderKind;
 use roko_core::defaults::{DEFAULT_PROVIDER_RPM, DEFAULT_REQUEST_TIMEOUT_MS};
+use roko_core::sse::extract_sse_data;
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 
@@ -303,6 +304,7 @@ impl OpenAiCompatLlmBackend {
         let kind = match error {
             LlmError::Provider(ProviderError::RateLimit { .. }) => "rate_limit",
             LlmError::Provider(ProviderError::AuthFailure) => "auth_failure",
+            LlmError::Provider(ProviderError::InsufficientCredits) => "insufficient_credits",
             LlmError::Provider(ProviderError::Timeout) | LlmError::Timeout(_) => "timeout",
             LlmError::Provider(ProviderError::ServerError(_)) => "server_error",
             LlmError::Provider(ProviderError::ContentPolicy) => "content_policy",
@@ -432,14 +434,13 @@ impl OpenAiCompatLlmBackend {
     }
 
     fn capture_stream_metadata(line: &[u8], metadata: &mut StreamResponseMetadata) {
-        let line = String::from_utf8_lossy(line);
-        let line = line.trim_end_matches(['\r', '\n']);
-        let Some(line) = line.strip_prefix("data:").map(str::trim_start) else {
+        let raw = String::from_utf8_lossy(line);
+        let trimmed = raw.trim_end_matches(['\r', '\n']);
+        // extract_sse_data strips "data:" with RFC 8895-correct whitespace and
+        // returns None for non-data: lines and the [DONE] sentinel.
+        let Some(line) = extract_sse_data(trimmed) else {
             return;
         };
-        if line == "[DONE]" {
-            return;
-        }
 
         let Ok(json) = serde_json::from_str::<Value>(line) else {
             return;

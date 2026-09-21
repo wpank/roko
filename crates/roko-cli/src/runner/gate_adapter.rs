@@ -15,9 +15,7 @@ use tracing::error;
 use crate::task_parser::VerifyStep;
 
 use super::gate_dispatch::{GateTaskContext, failed_gate_completion};
-use super::types::{
-    GateCompletion, GateEffectRef, GateVerdictSummary, RunnerFailureKind,
-};
+use super::types::{GateCompletion, GateEffectRef, GateVerdictSummary, RunnerFailureKind};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // RunnerProductionGateAdapter (#275)
@@ -39,8 +37,8 @@ use super::types::{
 ///
 /// 1. `run_gate_once` -- delegates to `Self::run` instead of inline rung execution.
 /// 2. `spawn_gate` worker body -- the spawned task calls `Self::run`.
-/// 3. Preflight spawn branch in `event_loop.rs` -- injects the same shared service.
-/// 4. Normal/plan-verify spawn branch in `event_loop.rs` -- injects the same shared service.
+/// 3. Preflight spawn branch -- injects the same shared service.
+/// 4. Normal/plan-verify spawn branch -- injects the same shared service.
 pub struct RunnerProductionGateAdapter {
     /// The injected shared gate service.
     service: Arc<dyn roko_gate::production_service::ProductionGateRunner>,

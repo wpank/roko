@@ -37,10 +37,12 @@ pub mod tier;
 /// and adversarial distance computation (TA-14).
 pub mod tropical;
 
-/// P4-26: Locality-Sensitive Hashing index for sub-linear HDC similarity search.
-pub mod lsh;
 /// P4-27: HDC fingerprint migration framework for version upgrades.
 pub mod hdc_migration;
+/// RAG-07: HNSW-style ANN index for dense f32 vectors (brute-force cosine search).
+pub mod hnsw;
+/// P4-26: Locality-Sensitive Hashing index for sub-linear HDC similarity search.
+pub mod lsh;
 
 pub use codebook::{
     Codebook, CodingCodebook, PatternStore, RESONANCE_THRESHOLD, ResonanceResult, StoredPattern,

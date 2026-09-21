@@ -1,6 +1,7 @@
-//! STATUS: NOT WIRED -- built but no non-test runtime caller.
-//!
 //! Theta reflective loop consumer (BEAT-01).
+//!
+//! Wired into the plan-completion feedback pipeline via
+//! `ThetaReflectionSink` in `roko_cli::runtime_feedback::plan_completion`.
 //!
 
 #![allow(

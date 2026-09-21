@@ -52,7 +52,10 @@ pub fn load_plan(dir: &Path) -> Result<Plan> {
     let content = match std::fs::read_to_string(&tasks_path) {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            bail!("No tasks.toml found in {}.\n  hint: run `roko plan generate` to create a plan, or check that the path points to a valid plan directory", dir.display());
+            bail!(
+                "No tasks.toml found in {}.\n  hint: run `roko plan generate` to create a plan, or check that the path points to a valid plan directory",
+                dir.display()
+            );
         }
         Err(e) => {
             return Err(anyhow::Error::new(e).context(format!("read {}", tasks_path.display())));
@@ -156,7 +159,10 @@ pub fn load_plans(dir: &Path) -> Result<Vec<Plan>> {
     }
 
     if plans.is_empty() {
-        bail!("No plans found in {}.\n  hint: run `roko plan list` to check available plans, or `roko plan generate` to create one", dir.display());
+        bail!(
+            "No plans found in {}.\n  hint: run `roko plan list` to check available plans, or `roko plan generate` to create one",
+            dir.display()
+        );
     }
 
     // Sort by name for deterministic ordering.

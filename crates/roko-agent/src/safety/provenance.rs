@@ -336,10 +336,7 @@ impl CustodyLogger {
     ///
     /// Returns an error if the log cannot be read or written.
     pub fn log_chained(&self, custody: &mut Custody) -> std::io::Result<()> {
-        let prev_hash = self
-            .read_all()?
-            .last()
-            .and_then(|last| last.hash.clone());
+        let prev_hash = self.read_all()?.last().and_then(|last| last.hash.clone());
         custody.seal(prev_hash);
         self.log(custody)
     }

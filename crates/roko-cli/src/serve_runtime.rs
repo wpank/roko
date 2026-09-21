@@ -652,38 +652,28 @@ fn load_effective_roko_config(
     workdir: &Path,
     repo_registry: &RepoRegistry,
 ) -> anyhow::Result<RokoConfig> {
-    let mut config = if let Some(config) = load_roko_config_file(&workdir.join("roko.toml"))? {
-        config
-    } else if let Some(config) = repo_roko_config_for_workdir(workdir, repo_registry) {
-        config
-    } else {
-        load_roko_config_file(&RokoLayout::for_project(workdir).roko_toml_path())?
-            .unwrap_or_default()
-    };
+    use roko_core::config::loader::{LoadOptions, load_config_file, load_config_unified};
 
-    roko_core::config::loader::merge_global_into(&mut config)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    config.apply_process_env();
-    Ok(config)
+    // If workdir matches a configured repo entry, load that repo's roko.toml
+    // directly via the unified loader (which applies global merge and env overrides).
+    if let Some(repo_config) = repo_roko_config_for_workdir_path(workdir, repo_registry) {
+        return load_config_file(&repo_config, &LoadOptions::default())
+            .map_err(|e| anyhow::anyhow!("{e}"));
+    }
+
+    // Standard path: unified loader applies ancestor walk, ROKO_CONFIG env,
+    // global merge, named env overrides, and hierarchical ROKO__* overrides.
+    load_config_unified(workdir).map_err(|e| anyhow::anyhow!("{e}"))
 }
 
-fn load_roko_config_file(path: &Path) -> anyhow::Result<Option<RokoConfig>> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => {
-            return Err(anyhow::Error::new(e).context(format!("read {}", path.display())));
-        }
-    };
-    let config =
-        RokoConfig::from_toml(&text).with_context(|| format!("parse {}", path.display()))?;
-    Ok(Some(config))
-}
-
-fn repo_roko_config_for_workdir(
+/// Return the roko.toml path for the repo entry that owns `workdir`, if any.
+///
+/// Used by `load_effective_roko_config` to route per-repo config loading
+/// through the unified loader rather than a bare file read.
+fn repo_roko_config_for_workdir_path(
     workdir: &Path,
     repo_registry: &RepoRegistry,
-) -> Option<RokoConfig> {
+) -> Option<PathBuf> {
     let canonical_workdir = workdir
         .canonicalize()
         .unwrap_or_else(|_| workdir.to_path_buf());
@@ -691,7 +681,7 @@ fn repo_roko_config_for_workdir(
         .repos()
         .iter()
         .find(|entry| canonical_workdir == entry.root || canonical_workdir.starts_with(&entry.root))
-        .and_then(|entry| entry.roko_config.clone())
+        .and_then(|entry| entry.roko_config_path.clone())
 }
 
 fn build_runner_config(

@@ -81,7 +81,9 @@ fn init_git_repo(dir: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Response body for `POST /api/workspaces`.
+/// Response body for `POST /api/workspaces`. The handler currently returns
+/// an inline JSON value; this struct is kept for future typed response use.
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 pub struct CreateWorkspaceResponse {
     pub id: String,

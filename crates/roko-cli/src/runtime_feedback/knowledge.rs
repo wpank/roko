@@ -227,7 +227,11 @@ impl KnowledgeIngestionSink {
         }
         let line = serde_json::to_string(candidate)?;
         let bytes = format!("{line}\n");
-        let file = guard.as_mut().unwrap();
+        // SAFETY: guard was None above and was assigned Some, or was already Some;
+        // either way it is guaranteed Some here.
+        let file = guard
+            .as_mut()
+            .expect("file handle was just initialized above");
         file.write_all(bytes.as_bytes()).await?;
         file.flush().await?;
         Ok(())

@@ -2098,6 +2098,12 @@ fn is_rate_limit_message(message: &str) -> bool {
 /// Classify provider-facing error text for circuit-breaker outcome recording.
 pub(crate) fn provider_error_kind(message: &str) -> &'static str {
     let lower = message.to_ascii_lowercase();
+    // Billing/credit errors must be checked before the generic rate-limit
+    // classifier so that messages containing "quota" + billing indicators
+    // are not misclassified as transient rate limits.
+    if crate::provider::error_classify::is_billing_message(&lower) {
+        return "insufficient_credits";
+    }
     if is_rate_limit_message(&lower) {
         "rate_limit"
     } else if lower.contains("timeout") || lower.contains("timed out") {

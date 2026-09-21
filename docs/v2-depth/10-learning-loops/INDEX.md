@@ -2,6 +2,8 @@
 
 Depth for [07-LEARNING.md](../../unified/07-LEARNING.md)
 
+> **Implementation status (2026-09-10):** SUBSTANTIALLY IMPLEMENTED. All of E25 (10/10 advanced learning loops) is accepted: HDC consolidation, hindsight adjustments, c-factor governance, significance/early stopping, Variance Inequality, autocatalytic metrics, and when/then playbook enrichment are wired into runner dispatch/completion. Episodes, playbooks, adaptive gate thresholds (EMA per rung), cascade router persistence, efficiency events, provider health and Pareto pruning, and experiment assignment are all live. ACP/serve experiment injection still needs canonical-section/receipt parity with the runner protocol. See `CLAUDE.md` for current status of each loop.
+
 ---
 
 ## Source docs (23)

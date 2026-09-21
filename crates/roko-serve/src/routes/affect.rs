@@ -6,9 +6,9 @@
 use std::sync::Arc;
 
 use axum::Json;
+use axum::Router;
 use axum::extract::State;
 use axum::routing::get;
-use axum::Router;
 use serde::Serialize;
 
 use crate::state::AppState;
@@ -33,9 +33,7 @@ struct AffectStateResponse {
     updated_at: String,
 }
 
-async fn affect_state_handler(
-    State(state): State<Arc<AppState>>,
-) -> Json<AffectStateResponse> {
+async fn affect_state_handler(State(state): State<Arc<AppState>>) -> Json<AffectStateResponse> {
     let engine = state.affect_engine.lock().await;
     let affect = &engine.state;
     let response = AffectStateResponse {

@@ -99,6 +99,7 @@ pub struct MergeProducer {
     pub effect: GateEffectRef,
     pub handle: JoinHandle<()>,
     pub start: oneshot::Sender<()>,
+    #[allow(dead_code)] // accessed in test code only
     pub(crate) resolution: MergeResolution,
 }
 
@@ -109,6 +110,7 @@ pub struct MergeResolution {
 }
 
 impl MergeResolution {
+    #[allow(dead_code)] // production caller not yet connected
     pub(crate) fn fail(self, queue: &MergeQueue, reason: &str) -> bool {
         queue.mark_failed_exact(&self.plan_id, self.reservation, reason)
     }

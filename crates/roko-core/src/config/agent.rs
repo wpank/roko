@@ -105,6 +105,26 @@ pub struct AgentConfig {
     /// ```
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_agent_id: Option<String>,
+
+    /// Provider IDs to unconditionally exclude from routing without removing
+    /// their API keys.
+    ///
+    /// Entries match against the provider ID as defined in
+    /// `[providers.<id>]` sections (e.g. `"openai"`, `"anthropic"`).
+    /// Models backed by a listed provider are filtered out before the cascade
+    /// router evaluates health or scoring, so the exclusion takes effect even
+    /// when the provider's circuit breaker is closed.
+    ///
+    /// This is an operator-level override intended for temporarily disabling
+    /// a misbehaving provider while preserving its credentials.  An empty
+    /// list (the default) disables the filter.
+    ///
+    /// ```toml
+    /// [agent]
+    /// disabled_providers = ["openai", "perplexity"]
+    /// ```
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled_providers: Vec<String>,
 }
 
 /// Agent execution mode controlling lifecycle.
@@ -160,6 +180,7 @@ impl Default for AgentConfig {
             extensions: Vec::new(),
             mcp_config: None,
             default_agent_id: None,
+            disabled_providers: Vec::new(),
         }
     }
 }

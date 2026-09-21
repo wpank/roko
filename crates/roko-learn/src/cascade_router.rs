@@ -38,6 +38,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::active_inference::{BeliefState, select_tier as select_tier_with_belief};
+use crate::bayesian_confidence::BayesianConfidenceUpdater;
 // Re-export public types from cascade submodules so that
 // `crate::cascade_router::CascadeRouter` etc. still works for downstream crates.
 pub use crate::cascade::helpers::slug_family;
@@ -73,13 +74,13 @@ use crate::cascade::types::{
 use crate::cfactor::{AgentDispatchBias, CFactor};
 use crate::latency::LatencyTracker;
 use crate::model_experiment::ModelExperimentStore;
-use crate::verdict_scorer::{VerdictHistory, VerdictRecord};
 use crate::model_router::{
     CONTEXT_DIM, CandidateArmScore, LinUCBRouter, RoutingContext, compute_routing_reward_v2,
 };
 use crate::pareto::{ModelObservation, compute_pareto_frontier};
 use crate::provider_health::ProviderHealthRegistry;
 use crate::routing_log::{CandidateEntry, RoutingDecisionLog, RoutingDecisionMeta, RoutingLogger};
+use crate::verdict_scorer::{VerdictHistory, VerdictRecord};
 
 // ─── CascadeRouter ──────────────────────────────────────────────────────────
 
@@ -332,9 +333,9 @@ impl CascadeRouter {
         if self.disabled_providers.is_empty() {
             return false;
         }
-        model_providers
-            .get(slug)
-            .map_or(false, |pid| self.disabled_providers.iter().any(|d| d == pid))
+        model_providers.get(slug).map_or(false, |pid| {
+            self.disabled_providers.iter().any(|d| d == pid)
+        })
     }
 
     /// Record a gate verdict outcome for verdict-quality routing.
@@ -1318,6 +1319,10 @@ impl CascadeRouter {
     }
 
     /// Record an observation (updates both confidence stats and `LinUCB`).
+    ///
+    /// Also updates per-category stats from `ctx.task_category` so that Stage 2
+    /// confidence scoring benefits from `category_pass_rate_delta` without
+    /// requiring callers to make a separate `record_category_outcome` call.
     pub fn record_observation(
         &self,
         ctx: &RoutingContext,
@@ -1328,6 +1333,10 @@ impl CascadeRouter {
         let Some(model_idx) = self.model_index_for_slug(model_slug) else {
             return;
         };
+        // P2-LRN-5: update category_stats so Stage 2 confidence_scores can
+        // apply the per-category pass-rate delta even when the caller doesn't
+        // invoke record_category_outcome separately.
+        self.record_category_outcome(model_slug, ctx.task_category, success);
         self.observe_internal(&ctx.to_features(), model_idx, reward, success, None, None);
     }
 
@@ -1381,6 +1390,9 @@ impl CascadeRouter {
             return false;
         };
 
+        // P2-LRN-5: keep category_stats in sync for Stage 2 delta scoring.
+        self.record_category_outcome(model_slug, ctx.task_category, success);
+
         let perplexity = PerplexityObservationTotals {
             citation_count: observation.citation_count,
             search_latency_ms: observation.search_latency_ms,
@@ -1413,6 +1425,9 @@ impl CascadeRouter {
         let Some(model_idx) = self.model_index_for_slug(model_slug) else {
             return false;
         };
+
+        // P2-LRN-5: keep category_stats in sync for Stage 2 delta scoring.
+        self.record_category_outcome(model_slug, ctx.task_category, success);
 
         let gemini = GeminiObservationTotals {
             thinking_tokens: observation.thinking_tokens.unwrap_or(0),
@@ -1664,6 +1679,10 @@ impl CascadeRouter {
         } else {
             0.0
         };
+
+        // P2-LRN-5: keep category_stats in sync with confidence_stats so the
+        // Stage 2 category delta reflects shadow outcomes too.
+        self.record_category_outcome(free_model, ctx.task_category, passed);
 
         self.observe_internal(
             &ctx.to_features_for_model(Some(free_model)),
@@ -2051,6 +2070,24 @@ impl CascadeRouter {
         };
         log.append(&record)?;
         Ok(record)
+    }
+
+    /// Snapshot of per-(model, category) trial/success counts.
+    ///
+    /// Returns a map of `(model_slug, category_label) -> (trials, successes)`.
+    /// Used for testing and introspection of the Stage 2 category-aware scoring.
+    #[cfg(test)]
+    pub fn category_stats_snapshot(&self) -> HashMap<(String, String), (u64, u64)> {
+        self.category_stats
+            .lock()
+            .iter()
+            .map(|((slug, cat), stats)| {
+                (
+                    (slug.clone(), cat.label().to_string()),
+                    (stats.trials, stats.successes),
+                )
+            })
+            .collect()
     }
 
     /// Snapshot of richer per-model observations used by learning loops.
@@ -2706,9 +2743,51 @@ impl CascadeRouter {
         }
     }
 
+    /// Apply a Bayesian confidence nudge to a UCB score list in place.
+    ///
+    /// For each candidate, a `BayesianConfidenceUpdater` is seeded with the
+    /// model's empirical `(trials, successes)` from the confidence stage, and the
+    /// posterior mean is used to compute a signed nudge:
+    ///
+    /// ```text
+    /// nudge = BAYESIAN_NUDGE_WEIGHT * (posterior_mean - 0.5)
+    /// adjusted_score = ucb_score + nudge
+    /// ```
+    ///
+    /// The nudge is positive for models with above-average pass rates and
+    /// negative for below-average ones, with magnitude proportional to sample
+    /// count (the Beta posterior mean shrinks toward 0.5 for sparse data,
+    /// keeping the nudge near zero until evidence accumulates).
+    ///
+    /// The weight (0.05) is intentionally small so the Bayesian signal
+    /// complements rather than overrides the LinUCB exploration bonus.
+    fn apply_bayesian_nudge(&self, scores: &mut [(String, f64)]) {
+        const BAYESIAN_NUDGE_WEIGHT: f64 = 0.05;
+
+        let stats = self.confidence_stats.lock();
+        for (slug, score) in scores.iter_mut() {
+            let (trials, successes) = stats
+                .get(slug)
+                .map(|s| (s.trials, s.successes))
+                .unwrap_or((0, 0));
+
+            // Seed the updater from observed counts.  With zero observations
+            // the prior is Beta(1,1) → posterior mean = 0.5, nudge = 0.0.
+            let mut updater = BayesianConfidenceUpdater::uniform();
+            if trials > 0 {
+                let failures = trials.saturating_sub(successes);
+                updater.observe_batch(successes, failures);
+            }
+
+            let nudge = BAYESIAN_NUDGE_WEIGHT * (updater.confidence() - 0.5);
+            *score += nudge;
+        }
+    }
+
     fn select_ucb_model(&self, ctx: &RoutingContext, candidates: &[String]) -> ModelSpec {
         let frontier = self.current_pareto_frontier();
         let mut scores = self.ucb_scores(ctx, candidates, frontier.as_deref());
+        self.apply_bayesian_nudge(&mut scores);
         self.apply_verdict_blend(&mut scores);
         let best_slug = select_with_hysteresis(&scores, ctx.previous_model.as_deref());
         ModelSpec::from_slug(best_slug)

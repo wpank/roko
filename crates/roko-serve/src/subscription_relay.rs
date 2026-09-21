@@ -316,6 +316,7 @@ impl SubscriptionRelayRuntime {
         self.set_connection(status.into()).await;
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn set_unsupported_triggers(&self, mut triggers: Vec<String>) {
         triggers.sort();
         triggers.dedup();
@@ -1423,13 +1424,13 @@ mod tests {
         runtime
             .bind_stream(
                 &relay_origin_hash("ws://relay.test"),
-                &["feed:prices".to_string()],
+                &["feed.prices".to_string()],
             )
             .await
             .expect("bind relay stream");
         let mut subscription = Subscription::from_config(SubscriptionConfig {
             template: "worker".to_string(),
-            trigger: "feed:prices".to_string(),
+            trigger: "feed.prices".to_string(),
             ..SubscriptionConfig::default()
         });
         subscription.id = "prices-worker".to_string();
@@ -1450,7 +1451,7 @@ mod tests {
         let (runtime, handler, executor) = make_handler(dir.path(), false).await;
         handler
             .on_topic_message(
-                "feed:prices",
+                "feed.prices",
                 "tick",
                 serde_json::json!({"price": 7}),
                 None,
@@ -1470,7 +1471,7 @@ mod tests {
         );
         restarted
             .on_topic_message(
-                "feed:prices",
+                "feed.prices",
                 "tick",
                 serde_json::json!({"price": 7}),
                 None,
@@ -1480,12 +1481,12 @@ mod tests {
             .expect("duplicate is already durable");
         assert_eq!(restarted_executor.calls.load(Ordering::SeqCst), 0);
         let status = runtime.status().await;
-        assert_eq!(status.room_cursors.get("feed:prices"), Some(&11));
+        assert_eq!(status.room_cursors.get("feed.prices"), Some(&11));
         assert_eq!(
             status
                 .subscription_cursors
                 .get("prices-worker")
-                .and_then(|rooms| rooms.get("feed:prices")),
+                .and_then(|rooms| rooms.get("feed.prices")),
             Some(&11)
         );
     }
@@ -1496,7 +1497,7 @@ mod tests {
         let (runtime, handler, executor) = make_handler(dir.path(), true).await;
         let error = handler
             .on_topic_message(
-                "feed:prices",
+                "feed.prices",
                 "tick",
                 serde_json::json!({"price": 9}),
                 None,
@@ -1539,7 +1540,7 @@ mod tests {
         let (runtime, handler, _) = make_handler(dir.path(), false).await;
         let snapshot = SnapshotMessage {
             seq: 71,
-            state: serde_json::json!({"rooms": ["feed:prices"]}),
+            state: serde_json::json!({"rooms": ["feed.prices"]}),
         };
         assert_eq!(
             handler
@@ -1566,7 +1567,7 @@ mod tests {
         runtime
             .bind_stream(
                 &relay_origin_hash("ws://relay.test"),
-                &["feed:prices".to_string()],
+                &["feed.prices".to_string()],
             )
             .await
             .expect("bind relay stream");
@@ -1575,7 +1576,7 @@ mod tests {
             .map(|id| {
                 let mut subscription = Subscription::from_config(SubscriptionConfig {
                     template: id.to_string(),
-                    trigger: "feed:prices".to_string(),
+                    trigger: "feed.prices".to_string(),
                     ..SubscriptionConfig::default()
                 });
                 subscription.id = id.to_string();
@@ -1594,7 +1595,7 @@ mod tests {
         );
         handler
             .on_topic_message(
-                "feed:prices",
+                "feed.prices",
                 "tick",
                 serde_json::json!({"price": 11}),
                 None,
@@ -1622,14 +1623,14 @@ mod tests {
         journal
             .bind_stream(
                 &relay_origin_hash("ws://relay.test"),
-                &["feed:prices".to_string()],
+                &["feed.prices".to_string()],
             )
             .await
             .expect("bind relay stream");
         journal
             .begin_message(
                 8,
-                "feed:prices",
+                "feed.prices",
                 "tick",
                 &"ef".repeat(32),
                 None,
@@ -1640,7 +1641,7 @@ mod tests {
         let error = journal
             .begin_message(
                 8,
-                "feed:prices",
+                "feed.prices",
                 "tick",
                 &"ef".repeat(32),
                 None,
@@ -1671,13 +1672,13 @@ mod tests {
         runtime
             .bind_stream(
                 &relay_origin_hash("ws://relay.test"),
-                &["feed:prices".to_string()],
+                &["feed.prices".to_string()],
             )
             .await
             .expect("bind relay stream");
         let mut subscription = Subscription::from_config(SubscriptionConfig {
             template: "worker".to_string(),
-            trigger: "feed:prices".to_string(),
+            trigger: "feed.prices".to_string(),
             concurrency_limit: 1,
             debounce_ms: 60_000,
             ..SubscriptionConfig::default()
@@ -1696,7 +1697,7 @@ mod tests {
         );
         handler
             .on_topic_message(
-                "feed:prices",
+                "feed.prices",
                 "tick",
                 serde_json::json!({"price": 1}),
                 None,
@@ -1706,7 +1707,7 @@ mod tests {
             .expect("first dispatch");
         handler
             .on_topic_message(
-                "feed:prices",
+                "feed.prices",
                 "tick",
                 serde_json::json!({"price": 2}),
                 None,
@@ -1736,7 +1737,7 @@ mod tests {
         for seq in [1, 2] {
             handler
                 .on_topic_message(
-                    "feed:prices",
+                    "feed.prices",
                     "tick",
                     serde_json::json!({"price": 13}),
                     Some("publisher-a"),
@@ -1763,7 +1764,7 @@ mod tests {
         let (_runtime, handler, executor) = make_handler(dir.path(), false).await;
         handler
             .on_topic_message(
-                "feed:prices",
+                "feed.prices",
                 "tick",
                 serde_json::json!({"price": 21}),
                 Some("publisher-a"),
@@ -1773,7 +1774,7 @@ mod tests {
             .expect("initial message");
         let error = handler
             .on_topic_message(
-                "feed:prices",
+                "feed.prices",
                 "correction",
                 serde_json::json!({"price": 21}),
                 Some("publisher-b"),
@@ -1791,7 +1792,7 @@ mod tests {
         let (_runtime, handler, executor) = make_handler(dir.path(), false).await;
         handler
             .on_topic_message(
-                "feed:prices",
+                "feed.prices",
                 "tick",
                 serde_json::json!({"price": 34}),
                 Some("market-source"),
@@ -1815,20 +1816,20 @@ mod tests {
         runtime
             .bind_stream(
                 &relay_origin_hash("ws://relay.test"),
-                &["feed:prices".to_string()],
+                &["feed.prices".to_string()],
             )
             .await
             .expect("bind relay stream");
-        let exact = test_subscription("exact", "feed:prices");
-        let wildcard = test_subscription("wildcard", "feed:*");
-        let mut cron = test_subscription("cron", "feed:prices");
+        let exact = test_subscription("exact", "feed.prices");
+        let wildcard = test_subscription("wildcard", "feed.*");
+        let mut cron = test_subscription("cron", "feed.prices");
         cron.trigger_config = Some(SubscriptionTrigger::Cron {
             schedule: "0 * * * *".to_string(),
         });
         let registry = SubscriptionRegistry::with_subscriptions(vec![exact, wildcard, cron]);
         let plan = remote_subscription_plan(&registry, 64);
-        assert_eq!(plan.rooms, vec!["feed:prices"]);
-        assert_eq!(plan.unsupported_triggers, vec!["wildcard:feed:*"]);
+        assert_eq!(plan.rooms, vec!["feed.prices"]);
+        assert_eq!(plan.unsupported_triggers, vec!["wildcard:feed.*"]);
 
         let executor = Arc::new(FakeExecutor {
             calls: AtomicUsize::new(0),
@@ -1838,7 +1839,7 @@ mod tests {
         let handler = ServeTopicHandler::with_executor(runtime, registry, executor.clone());
         handler
             .on_topic_message(
-                "feed:prices",
+                "feed.prices",
                 "tick",
                 serde_json::json!({"price": 55}),
                 None,
@@ -1858,11 +1859,11 @@ mod tests {
         runtime
             .bind_stream(
                 &relay_origin_hash("ws://relay.test"),
-                &["feed:prices".to_string()],
+                &["feed.prices".to_string()],
             )
             .await
             .expect("bind relay stream");
-        let mut subscription = test_subscription("blocking", "feed:prices");
+        let mut subscription = test_subscription("blocking", "feed.prices");
         subscription.concurrency_limit = 1;
         let registry = SubscriptionRegistry::with_subscriptions(vec![subscription.clone()]);
         let executor = Arc::new(BlockingExecutor {
@@ -1878,7 +1879,7 @@ mod tests {
         let task = tokio::spawn(async move {
             task_handler
                 .on_topic_message(
-                    "feed:prices",
+                    "feed.prices",
                     "tick",
                     serde_json::json!({"price": 89}),
                     None,
@@ -1902,7 +1903,7 @@ mod tests {
         let (runtime, handler, _) = make_handler(dir.path(), false).await;
         handler
             .on_topic_message(
-                "feed:prices",
+                "feed.prices",
                 "tick",
                 serde_json::json!({"price": 144}),
                 None,
@@ -1910,7 +1911,7 @@ mod tests {
             )
             .await
             .expect("advance cursor");
-        let proposed = vec!["feed:news".to_string(), "feed:prices".to_string()];
+        let proposed = vec!["feed.news".to_string(), "feed.prices".to_string()];
         let error = runtime
             .guard_stream_change(&relay_origin_hash("ws://relay.test"), &proposed)
             .await
@@ -1920,7 +1921,7 @@ mod tests {
         assert_eq!(status.global_cursor, 9);
         assert_eq!(
             status.stream_binding.expect("binding").rooms,
-            vec!["feed:prices"]
+            vec!["feed.prices"]
         );
         assert!(status.reconciliation_required.is_some());
     }
@@ -1931,26 +1932,26 @@ mod tests {
         let runtime = SubscriptionRelayRuntime::open(dir.path(), true).expect("runtime");
         let origin = relay_origin_hash("ws://relay.test");
         runtime
-            .bind_stream(&origin, &["feed:prices".to_string()])
+            .bind_stream(&origin, &["feed.prices".to_string()])
             .await
             .expect("initial binding");
         runtime
             .bind_stream(
                 &origin,
-                &["feed:news".to_string(), "feed:prices".to_string()],
+                &["feed.news".to_string(), "feed.prices".to_string()],
             )
             .await
             .expect("safe zero-cursor rebind");
         let binding = runtime.status().await.stream_binding.expect("binding");
         assert_eq!(binding.generation, 2);
-        assert_eq!(binding.rooms, vec!["feed:news", "feed:prices"]);
+        assert_eq!(binding.rooms, vec!["feed.news", "feed.prices"]);
     }
 
     #[tokio::test]
     async fn relay_origin_change_requires_reconciliation_even_at_zero_cursor() {
         let dir = tempdir().expect("tempdir");
         let runtime = SubscriptionRelayRuntime::open(dir.path(), true).expect("runtime");
-        let rooms = vec!["feed:prices".to_string()];
+        let rooms = vec!["feed.prices".to_string()];
         runtime
             .bind_stream(&relay_origin_hash("ws://relay-a.test"), &rooms)
             .await
@@ -1973,13 +1974,13 @@ mod tests {
     #[tokio::test]
     async fn capacity_and_unsupported_diagnostics_exist_before_connect() {
         let mut subscriptions = (0..65)
-            .map(|index| test_subscription(&format!("exact-{index}"), &format!("feed:{index}")))
+            .map(|index| test_subscription(&format!("exact-{index}"), &format!("feed.{index}")))
             .collect::<Vec<_>>();
-        subscriptions.push(test_subscription("wild", "feed:*"));
+        subscriptions.push(test_subscription("wild", "feed.*"));
         let registry = SubscriptionRegistry::with_subscriptions(subscriptions);
         let plan = remote_subscription_plan(&registry, 64);
         assert_eq!(plan.capacity_rejected_rooms.len(), 65);
-        assert_eq!(plan.unsupported_triggers, vec!["wild:feed:*"]);
+        assert_eq!(plan.unsupported_triggers, vec!["wild:feed.*"]);
 
         let dir = tempdir().expect("tempdir");
         let runtime = SubscriptionRelayRuntime::open(dir.path(), true).expect("runtime");
@@ -1991,7 +1992,7 @@ mod tests {
             .await;
         let status = runtime.status().await;
         assert_eq!(status.capacity_rejected_rooms.len(), 65);
-        assert_eq!(status.unsupported_triggers, vec!["wild:feed:*"]);
+        assert_eq!(status.unsupported_triggers, vec!["wild:feed.*"]);
     }
 
     #[tokio::test]
@@ -2000,7 +2001,7 @@ mod tests {
         let (runtime, handler, _) = make_handler(dir.path(), false).await;
         handler
             .on_topic_message(
-                "feed:prices",
+                "feed.prices",
                 "tick",
                 serde_json::json!({"price": 233}),
                 None,
@@ -2034,7 +2035,7 @@ mod tests {
         journal
             .bind_stream(
                 &relay_origin_hash("ws://relay.test"),
-                &["feed:news".to_string(), "feed:prices".to_string()],
+                &["feed.news".to_string(), "feed.prices".to_string()],
             )
             .await
             .expect("bind stream");
@@ -2044,7 +2045,7 @@ mod tests {
             .subscription_cursors
             .entry("prices-worker".to_string())
             .or_default()
-            .insert("feed:news".to_string(), 5);
+            .insert("feed.news".to_string(), 5);
         refresh_integrity(&mut state).expect("refresh checksum");
         std::fs::write(
             &path,
@@ -2078,7 +2079,7 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let path = journal_path(dir.path());
         let mut state = JournalFile::default();
-        let rooms = vec!["feed:prices".to_string()];
+        let rooms = vec!["feed.prices".to_string()];
         state.stream_binding = Some(RelayStreamBinding {
             origin_hash: relay_origin_hash("ws://relay.test"),
             room_set_hash: room_set_hash(&rooms).expect("room set hash"),
@@ -2087,7 +2088,7 @@ mod tests {
         });
         state.entries.push_back(JournalEntry {
             seq: 5,
-            room: "feed:prices".to_string(),
+            room: "feed.prices".to_string(),
             msg_type: "tick".to_string(),
             payload_hash: "cd".repeat(32),
             publisher_id: None,

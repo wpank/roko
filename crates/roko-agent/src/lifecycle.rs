@@ -233,7 +233,8 @@ pub struct NeuroConfig {
     /// Filesystem path for the knowledge store.
     pub path: String,
     /// Maximum active Signal count.
-    pub max_engrams: u64,
+    #[serde(alias = "max_engrams")]
+    pub max_signals: u64,
     /// Decay model name.
     pub decay_model: String,
     /// Tier-specific decay multipliers.
@@ -246,7 +247,7 @@ impl Default for NeuroConfig {
     fn default() -> Self {
         Self {
             path: ".roko/neuro/".into(),
-            max_engrams: 50_000,
+            max_signals: 50_000,
             decay_model: "ebbinghaus".into(),
             tiers: TierConfig::default(),
             demurrage: Some(DemurrageConfig::default()),
@@ -581,7 +582,7 @@ pub struct ProvisioningReady;
 
 /// Provisioning state accumulated while resolving an agent manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct AgentState {
+pub struct AgentProvisioningState {
     /// Allocated resource labels.
     pub resources: Vec<String>,
     /// Whether Neuro initialization completed.
@@ -594,11 +595,14 @@ pub struct AgentState {
     pub mesh_registered: bool,
 }
 
+/// Backward-compatible alias for [`AgentProvisioningState`].
+pub type AgentState = AgentProvisioningState;
+
 /// Type-state provisioning wrapper for agent creation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProvisioningAgent<S> {
     manifest: AgentExtendedManifest,
-    state: AgentState,
+    state: AgentProvisioningState,
     stage: PhantomData<S>,
 }
 
@@ -607,7 +611,7 @@ impl ProvisioningAgent<Unvalidated> {
     pub fn new(manifest: AgentExtendedManifest) -> Self {
         Self {
             manifest,
-            state: AgentState::default(),
+            state: AgentProvisioningState::default(),
             stage: PhantomData,
         }
     }
@@ -627,7 +631,7 @@ impl ProvisioningAgent<Validated> {
     ) -> ProvisioningAgent<ResourcesAllocated> {
         ProvisioningAgent {
             manifest: self.manifest,
-            state: AgentState {
+            state: AgentProvisioningState {
                 resources: {
                     let mut resources = self.state.resources;
                     resources.push(resource.into());
@@ -645,7 +649,7 @@ impl ProvisioningAgent<ResourcesAllocated> {
     pub fn init_neuro(self) -> ProvisioningAgent<NeuroInitialized> {
         ProvisioningAgent {
             manifest: self.manifest,
-            state: AgentState {
+            state: AgentProvisioningState {
                 neuro_initialized: true,
                 ..self.state
             },
@@ -659,7 +663,7 @@ impl ProvisioningAgent<NeuroInitialized> {
     pub fn configure_routing(self) -> ProvisioningAgent<RoutingConfigured> {
         ProvisioningAgent {
             manifest: self.manifest,
-            state: AgentState {
+            state: AgentProvisioningState {
                 routing_configured: true,
                 ..self.state
             },
@@ -678,7 +682,7 @@ impl ProvisioningAgent<RoutingConfigured> {
             .unwrap_or_else(|| "standard".into());
         ProvisioningAgent {
             manifest: self.manifest,
-            state: AgentState {
+            state: AgentProvisioningState {
                 tool_profile: Some(profile),
                 ..self.state
             },
@@ -693,7 +697,7 @@ impl ProvisioningAgent<ToolsLoaded> {
         let mesh_registered = self.manifest.mesh.as_ref().is_some_and(|mesh| mesh.enabled);
         ProvisioningAgent {
             manifest: self.manifest,
-            state: AgentState {
+            state: AgentProvisioningState {
                 mesh_registered,
                 ..self.state
             },
@@ -716,7 +720,7 @@ impl ProvisioningAgent<ProvisioningReady> {
     }
 
     /// Return the accumulated provisioning state.
-    pub const fn state(&self) -> &AgentState {
+    pub const fn state(&self) -> &AgentProvisioningState {
         &self.state
     }
 
@@ -1526,14 +1530,21 @@ pub struct RunningAgent {
     /// Human-readable running agent name.
     pub name: String,
     /// Provisioned runtime state.
-    pub state: AgentState,
+    pub state: AgentProvisioningState,
     /// Unix timestamp when the running record was created.
     pub started_at: u64,
 }
 
-/// Top-level agent configuration matching the documented `roko.toml` sections.
+/// Per-agent manifest configuration for a deployed agent sidecar process.
+///
+/// This describes the top-level `roko.toml` sections owned by an individual
+/// agent (agent identity, inference settings, neuro store path, mesh config,
+/// tool profile, budget, and heartbeat). It is the configuration document
+/// loaded by `roko agent start` and the sidecar server, and is distinct from
+/// `roko_core::config::AgentConfig` which describes global model/role/routing
+/// defaults that affect all agents in the workspace.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct AgentConfig {
+pub struct AgentManifestConfig {
     /// Agent section.
     pub agent: AgentSection,
     /// Inference section.
@@ -1549,6 +1560,9 @@ pub struct AgentConfig {
     /// Heartbeat section.
     pub heartbeat: HeartbeatConfig,
 }
+
+/// Backward-compatibility alias. Prefer `AgentManifestConfig`.
+pub type AgentConfig = AgentManifestConfig;
 
 /// Agent identity and operator-authored intent section.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1649,8 +1663,8 @@ pub enum LifecycleConfigError {
 
 /// Validate a proposed config change against hot-reload constraints.
 pub fn validate_config_change(
-    current: &AgentConfig,
-    proposed: &AgentConfig,
+    current: &AgentManifestConfig,
+    proposed: &AgentManifestConfig,
 ) -> Result<Vec<ConfigWarning>, LifecycleConfigError> {
     let mut warnings = Vec::new();
     if proposed.budget.max_daily_inference_usd > current.budget.max_daily_inference_usd {
@@ -1950,11 +1964,14 @@ pub struct BackupManifest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct BackupStats {
     /// Total Signals in the archive.
-    pub total_engrams: u64,
+    #[serde(alias = "total_engrams")]
+    pub total_signals: u64,
     /// Count by knowledge type.
-    pub engrams_by_type: HashMap<SignalKind, u64>,
+    #[serde(alias = "engrams_by_type")]
+    pub signals_by_type: HashMap<SignalKind, u64>,
     /// Count by knowledge tier.
-    pub engrams_by_tier: HashMap<KnowledgeTier, u64>,
+    #[serde(alias = "engrams_by_tier")]
+    pub signals_by_tier: HashMap<KnowledgeTier, u64>,
     /// Average confidence.
     pub average_confidence: f64,
     /// Median confidence.
@@ -1969,7 +1986,8 @@ pub struct BackupArchive {
     /// Manifest metadata.
     pub manifest: BackupManifest,
     /// Backed-up Signals.
-    pub engrams: Vec<BackupSignal>,
+    #[serde(alias = "engrams")]
+    pub signals: Vec<BackupSignal>,
     /// Optional playbook snapshot.
     pub playbook_md: Option<String>,
     /// Archive checksum.
@@ -2001,7 +2019,7 @@ pub enum BackupError {
 ///
 /// 1. **Parse**: the file must be valid JSON conforming to [`BackupArchive`].
 /// 2. **Integrity**: when the archive carries a `checksum` field, the
-///    computed checksum of the serialized manifest + engrams must match.
+///    computed checksum of the serialized manifest + signals must match.
 /// 3. **Schema**: the manifest `version` must be 1 (forward-compatible
 ///    callers can extend this check later).
 ///
@@ -2014,12 +2032,12 @@ pub fn verify_backup(path: &Path) -> Result<BackupManifest, BackupError> {
 
     // When a checksum is present, recompute and verify.
     if let Some(expected) = &archive.checksum {
-        // The checksum covers the canonical JSON of manifest + engrams
+        // The checksum covers the canonical JSON of manifest + signals
         // (excluding the checksum field itself) so that the archive is
         // self-verifiable.
         let canonical = serde_json::json!({
             "manifest": archive.manifest,
-            "engrams": archive.engrams,
+            "signals": archive.signals,
             "playbook_md": archive.playbook_md,
         });
         let computed = fnv1a_hex(canonical.to_string().as_bytes());
@@ -2063,7 +2081,8 @@ pub struct RestoreConfig {
     /// Minimum source confidence accepted.
     pub min_confidence: f64,
     /// Optional maximum Signal count.
-    pub max_engrams: Option<usize>,
+    #[serde(alias = "max_engrams")]
+    pub max_signals: Option<usize>,
     /// Source-to-target generation distance.
     pub generation: u32,
     /// Per-generation confidence retention rate.
@@ -2077,7 +2096,7 @@ impl Default for RestoreConfig {
         Self {
             type_filter: TypeFilter::All,
             min_confidence: 0.0,
-            max_engrams: None,
+            max_signals: None,
             generation: 1,
             confidence_decay: 0.85,
             validate: false,
@@ -2109,7 +2128,8 @@ impl TypeFilter {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QuarantinedSignal {
     /// Backed-up Signal.
-    pub engram: BackupSignal,
+    #[serde(alias = "engram")]
+    pub signal: BackupSignal,
     /// Confidence before restore decay.
     pub original_confidence: f64,
     /// Confidence after restore decay.
@@ -2164,13 +2184,14 @@ pub struct RestoreReport {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct NeuroStore {
     /// Stored Signals.
-    pub engrams: Vec<BackupSignal>,
+    #[serde(alias = "engrams")]
+    pub signals: Vec<BackupSignal>,
 }
 
 impl NeuroStore {
     /// Insert a restored or shared Signal.
-    pub fn insert(&mut self, engram: BackupSignal) {
-        self.engrams.push(engram);
+    pub fn insert(&mut self, signal: BackupSignal) {
+        self.signals.push(signal);
     }
 }
 
@@ -2186,18 +2207,18 @@ pub fn restore_confidence(original_confidence: f64, generation: u32, decay_rate:
 
 /// Load backup Signals into quarantine according to restore filters.
 pub fn quarantine_backup(backup: &BackupArchive, config: &RestoreConfig) -> Vec<QuarantinedSignal> {
-    let limit = config.max_engrams.unwrap_or(usize::MAX);
+    let limit = config.max_signals.unwrap_or(usize::MAX);
     backup
-        .engrams
+        .signals
         .iter()
-        .filter(|engram| config.type_filter.accepts(&engram.kind))
-        .filter(|engram| engram.score.confidence >= config.min_confidence)
+        .filter(|signal| config.type_filter.accepts(&signal.kind))
+        .filter(|signal| signal.score.confidence >= config.min_confidence)
         .take(limit)
-        .map(|engram| QuarantinedSignal {
-            engram: engram.clone(),
-            original_confidence: engram.score.confidence,
+        .map(|signal| QuarantinedSignal {
+            signal: signal.clone(),
+            original_confidence: signal.score.confidence,
             decayed_confidence: restore_confidence(
-                engram.score.confidence,
+                signal.score.confidence,
                 config.generation,
                 config.confidence_decay,
             ),
@@ -2212,7 +2233,7 @@ pub fn quarantine_backup(backup: &BackupArchive, config: &RestoreConfig) -> Vec<
 }
 
 /// Adopt quarantined Signals into an in-memory Neuro store.
-pub fn adopt_engrams(neuro: &mut NeuroStore, quarantined: Vec<QuarantinedSignal>) -> RestoreReport {
+pub fn adopt_signals(neuro: &mut NeuroStore, quarantined: Vec<QuarantinedSignal>) -> RestoreReport {
     let mut report = RestoreReport {
         processed: u64::try_from(quarantined.len()).unwrap_or(u64::MAX),
         quarantined: u64::try_from(quarantined.len()).unwrap_or(u64::MAX),
@@ -2225,24 +2246,24 @@ pub fn adopt_engrams(neuro: &mut NeuroStore, quarantined: Vec<QuarantinedSignal>
             continue;
         }
 
-        let mut engram = item.engram;
-        engram.score.confidence = item.decayed_confidence;
-        engram.tier = tier_from_confidence(item.decayed_confidence);
-        engram.provenance.push(ProvenanceEntry::Restored {
+        let mut signal = item.signal;
+        signal.score.confidence = item.decayed_confidence;
+        signal.tier = tier_from_confidence(item.decayed_confidence);
+        signal.provenance.push(ProvenanceEntry::Restored {
             source_agent: item.provenance_tag.source_agent,
             generation: item.provenance_tag.source_generation,
             timestamp: item.provenance_tag.restore_timestamp,
         });
-        engram.decay = DecayState {
+        signal.decay = DecayState {
             model: DecayModel::Ebbinghaus {
                 strength: item.decayed_confidence,
-                scale_ms: default_scale_for_kind(engram.kind),
+                scale_ms: default_scale_for_kind(signal.kind),
             },
             effective_confidence: item.decayed_confidence,
             ticks_since_access: 0,
-            tier_multiplier: tier_multiplier(engram.tier),
+            tier_multiplier: tier_multiplier(signal.tier),
         };
-        neuro.insert(engram);
+        neuro.insert(signal);
         report.adopted = report.adopted.saturating_add(1);
     }
 
@@ -2273,7 +2294,7 @@ pub struct RetrievalContext {
 }
 
 /// Update Signal strength after successful retrieval.
-pub fn apply_testing_effect(engram: &mut BackupSignal, retrieval_context: &RetrievalContext) {
+pub fn apply_testing_effect(signal: &mut BackupSignal, retrieval_context: &RetrievalContext) {
     let base_increase = 0.05;
     let gate_bonus = if retrieval_context.gate_passed {
         0.03
@@ -2283,12 +2304,12 @@ pub fn apply_testing_effect(engram: &mut BackupSignal, retrieval_context: &Retri
     let diversity_bonus = retrieval_context.context_diversity.clamp(0.0, 1.0) * 0.02;
     let total_increase = base_increase + gate_bonus + diversity_bonus;
 
-    if let DecayModel::Ebbinghaus { strength, .. } = &mut engram.decay.model {
+    if let DecayModel::Ebbinghaus { strength, .. } = &mut signal.decay.model {
         *strength = (*strength + total_increase).min(10.0);
     }
-    engram.decay.ticks_since_access = 0;
-    engram.retrieval_count = engram.retrieval_count.saturating_add(1);
-    engram.last_accessed_at = retrieval_context.timestamp;
+    signal.decay.ticks_since_access = 0;
+    signal.retrieval_count = signal.retrieval_count.saturating_add(1);
+    signal.last_accessed_at = retrieval_context.timestamp;
 }
 
 /// Compute current retention under Ebbinghaus decay.
@@ -2301,29 +2322,29 @@ pub fn ebbinghaus_retention(time_since_access_ms: u64, strength: f64, scale_ms: 
 }
 
 /// Compute effective confidence for a backed-up Signal.
-pub fn effective_confidence(engram: &BackupSignal) -> f64 {
+pub fn effective_confidence(signal: &BackupSignal) -> f64 {
     const TICK_DURATION_MS: f64 = 1_000.0;
-    match engram.decay.model {
-        DecayModel::None => engram.score.confidence,
+    match signal.decay.model {
+        DecayModel::None => signal.score.confidence,
         DecayModel::HalfLife { half_life_ms } => {
             if half_life_ms == 0 {
                 return 0.0;
             }
-            let t = engram.decay.ticks_since_access as f64 * TICK_DURATION_MS;
-            engram.score.confidence * 0.5_f64.powf(t / half_life_ms as f64)
+            let t = signal.decay.ticks_since_access as f64 * TICK_DURATION_MS;
+            signal.score.confidence * 0.5_f64.powf(t / half_life_ms as f64)
         }
         DecayModel::Ttl { expires_at } => {
             if now_secs() > expires_at {
                 0.0
             } else {
-                engram.score.confidence
+                signal.score.confidence
             }
         }
         DecayModel::Ebbinghaus { strength, scale_ms } => {
-            let t = engram.decay.ticks_since_access as f64 * TICK_DURATION_MS;
-            engram.score.confidence
+            let t = signal.decay.ticks_since_access as f64 * TICK_DURATION_MS;
+            signal.score.confidence
                 * ebbinghaus_retention(t as u64, strength, scale_ms)
-                * engram.decay.tier_multiplier
+                * signal.decay.tier_multiplier
         }
     }
     .clamp(0.0, 1.0)
@@ -2398,30 +2419,30 @@ pub struct DemurrageReport {
 
 /// Apply knowledge demurrage to one Signal.
 pub fn apply_demurrage(
-    engram: &BackupSignal,
+    signal: &BackupSignal,
     config: &DemurrageConfig,
     current_iteration: u64,
 ) -> BackupSignal {
-    if engram.tier == KnowledgeTier::Archived || config.validation_interval == 0 {
-        return engram.clone();
+    if signal.tier == KnowledgeTier::Archived || config.validation_interval == 0 {
+        return signal.clone();
     }
 
     let intervals =
-        current_iteration.saturating_sub(engram.last_accessed_at) / config.validation_interval;
+        current_iteration.saturating_sub(signal.last_accessed_at) / config.validation_interval;
     if intervals == 0 {
-        return engram.clone();
+        return signal.clone();
     }
 
-    let domain = engram.tags.first().map(String::as_str).unwrap_or("default");
+    let domain = signal.tags.first().map(String::as_str).unwrap_or("default");
     let domain_multiplier = config
         .domain_multipliers
         .get(domain)
         .copied()
         .unwrap_or(1.0);
     let total_decay = config.decay_per_interval * domain_multiplier * intervals as f64;
-    let new_confidence = (engram.score.confidence - total_decay).max(0.0);
+    let new_confidence = (signal.score.confidence - total_decay).max(0.0);
 
-    let mut updated = engram.clone();
+    let mut updated = signal.clone();
     updated.score.confidence = new_confidence;
     if new_confidence < config.archive_threshold {
         updated.tier = KnowledgeTier::Archived;
@@ -2431,28 +2452,28 @@ pub fn apply_demurrage(
 
 /// Apply knowledge demurrage to all active Signals.
 pub fn apply_demurrage_to_all(
-    engrams: &[BackupSignal],
+    signals: &[BackupSignal],
     config: &DemurrageConfig,
     current_iteration: u64,
 ) -> (Vec<BackupSignal>, DemurrageReport) {
     let mut report = DemurrageReport {
-        entries_processed: u32::try_from(engrams.len()).unwrap_or(u32::MAX),
+        entries_processed: u32::try_from(signals.len()).unwrap_or(u32::MAX),
         ..DemurrageReport::default()
     };
-    let mut updated = Vec::with_capacity(engrams.len());
+    let mut updated = Vec::with_capacity(signals.len());
 
-    for engram in engrams {
-        let next = apply_demurrage(engram, config, current_iteration);
-        if next.tier == KnowledgeTier::Archived && engram.tier != KnowledgeTier::Archived {
+    for signal in signals {
+        let next = apply_demurrage(signal, config, current_iteration);
+        if next.tier == KnowledgeTier::Archived && signal.tier != KnowledgeTier::Archived {
             report.entries_archived = report.entries_archived.saturating_add(1);
         }
-        report.total_confidence_lost += engram.score.confidence - next.score.confidence;
+        report.total_confidence_lost += signal.score.confidence - next.score.confidence;
         updated.push(next);
     }
 
     let total_confidence = updated
         .iter()
-        .map(|engram| engram.score.confidence)
+        .map(|signal| signal.score.confidence)
         .sum::<f64>();
     report.average_confidence_after = if updated.is_empty() {
         0.0
@@ -2521,7 +2542,8 @@ pub struct SyncDelta {
     /// Source agent ID.
     pub source_agent: String,
     /// Signals to sync.
-    pub engrams: Vec<SharedSignal>,
+    #[serde(alias = "engrams")]
+    pub signals: Vec<SharedSignal>,
     /// Source agent version vector.
     pub version_vector: VersionVector,
     /// Sync timestamp.
@@ -2532,7 +2554,8 @@ pub struct SyncDelta {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SharedSignal {
     /// Signal content and metadata.
-    pub engram: BackupSignal,
+    #[serde(alias = "engram")]
+    pub signal: BackupSignal,
     /// Monotonic sequence number per source agent.
     pub seq: u64,
     /// Agent that shared this Signal.
@@ -2603,7 +2626,7 @@ pub struct MeshReceiveReport {
 }
 
 /// Process incoming Mesh Signals through rate-limit, discount, and adoption.
-pub fn process_mesh_engrams(
+pub fn process_mesh_signals(
     neuro: &mut NeuroStore,
     incoming: Vec<SharedSignal>,
     config: &MeshReceiveConfig,
@@ -2617,15 +2640,15 @@ pub fn process_mesh_engrams(
         }
 
         report.received_this_hour = report.received_this_hour.saturating_add(1);
-        let mut engram = shared.engram;
-        engram.score.confidence =
-            (engram.score.confidence * config.received_confidence_discount).clamp(0.0, 1.0);
-        engram.provenance.push(ProvenanceEntry::MeshReceived {
+        let mut signal = shared.signal;
+        signal.score.confidence =
+            (signal.score.confidence * config.received_confidence_discount).clamp(0.0, 1.0);
+        signal.provenance.push(ProvenanceEntry::MeshReceived {
             from_agent: shared.shared_by,
             via_collective: config.collective_id.clone(),
             timestamp: shared.shared_at,
         });
-        neuro.insert(engram);
+        neuro.insert(signal);
         report.adopted = report.adopted.saturating_add(1);
     }
 
@@ -3021,7 +3044,7 @@ impl DemurrageCycle {
     /// Returns `Some(report)` when demurrage was applied, `None` otherwise.
     pub fn tick(
         &mut self,
-        engrams: &[BackupSignal],
+        signals: &[BackupSignal],
     ) -> Option<(Vec<BackupSignal>, DemurrageReport)> {
         self.iteration += 1;
 
@@ -3035,7 +3058,7 @@ impl DemurrageCycle {
             return None;
         }
 
-        let (updated, report) = apply_demurrage_to_all(engrams, &self.config, self.iteration);
+        let (updated, report) = apply_demurrage_to_all(signals, &self.config, self.iteration);
         self.last_demurrage_at = self.iteration;
         self.total_archived += u64::from(report.entries_archived);
         self.total_confidence_lost += report.total_confidence_lost;
@@ -3069,7 +3092,7 @@ fn now_secs() -> u64 {
 mod tests {
     use super::*;
 
-    fn sample_engram(confidence: f64) -> BackupSignal {
+    fn sample_signal(confidence: f64) -> BackupSignal {
         BackupSignal {
             hash: "hash".into(),
             kind: SignalKind::Insight,
@@ -3104,8 +3127,8 @@ mod tests {
 
     #[test]
     fn demurrage_archives_low_confidence_entries() {
-        let engram = sample_engram(0.11);
-        let updated = apply_demurrage(&engram, &DemurrageConfig::default(), 250);
+        let signal = sample_signal(0.11);
+        let updated = apply_demurrage(&signal, &DemurrageConfig::default(), 250);
         assert_eq!(updated.tier, KnowledgeTier::Archived);
     }
 
@@ -3121,20 +3144,20 @@ mod tests {
                 generation: Some(0),
                 stats: BackupStats::default(),
             },
-            engrams: vec![sample_engram(0.9)],
+            signals: vec![sample_signal(0.9)],
             playbook_md: None,
             checksum: None,
         };
         let quarantined = quarantine_backup(&archive, &RestoreConfig::default());
         let mut neuro = NeuroStore::default();
-        let report = adopt_engrams(&mut neuro, quarantined);
+        let report = adopt_signals(&mut neuro, quarantined);
         assert_eq!(report.adopted, 1);
-        assert!(neuro.engrams[0].score.confidence < 0.9);
+        assert!(neuro.signals[0].score.confidence < 0.9);
     }
 
     #[test]
     fn config_validation_requires_restart_for_neuro_path() {
-        let current = AgentConfig::default();
+        let current = AgentManifestConfig::default();
         let mut proposed = current.clone();
         proposed.neuro.path = ".roko/other-neuro/".into();
         assert!(matches!(
@@ -3372,13 +3395,13 @@ mod tests {
             validation_interval: 5,
             ..DemurrageConfig::default()
         };
-        let engrams = vec![sample_engram(0.5)];
+        let signals = vec![sample_signal(0.5)];
         let mut cycle = DemurrageCycle::new(config);
 
         for _ in 0..4 {
-            assert!(cycle.tick(&engrams).is_none());
+            assert!(cycle.tick(&signals).is_none());
         }
-        let result = cycle.tick(&engrams);
+        let result = cycle.tick(&signals);
         assert!(result.is_some());
     }
 
@@ -3390,12 +3413,12 @@ mod tests {
             archive_threshold: 0.1,
             ..DemurrageConfig::default()
         };
-        let engrams = vec![sample_engram(0.2)];
+        let signals = vec![sample_signal(0.2)];
         let mut cycle = DemurrageCycle::new(config);
 
-        let (updated, _report) = cycle.tick(&engrams).unwrap();
+        let (updated, _report) = cycle.tick(&signals).unwrap();
         assert!(cycle.total_confidence_lost > 0.0);
-        // With 0.5 decay and 0.2 confidence, the engram should be archived.
+        // With 0.5 decay and 0.2 confidence, the signal should be archived.
         assert_eq!(updated[0].tier, KnowledgeTier::Archived);
         assert_eq!(cycle.total_archived, 1);
     }

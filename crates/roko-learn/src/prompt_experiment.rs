@@ -738,6 +738,26 @@ impl ExperimentStore {
 
     /// Assign a variant for a given prompt section, if an active experiment exists.
     ///
+    /// Returns `(variant_id, section_name, variant_content)` so callers can
+    /// perform canonical section replacement rather than appending.
+    pub fn assign_variant_with_section(
+        &self,
+        experiment_name: &str,
+    ) -> Option<(String, String, String)> {
+        let experiment = self
+            .experiments
+            .values()
+            .find(|e| e.experiment_id == experiment_name || e.section_name == experiment_name)?;
+        let variant = experiment.assign_variant()?;
+        Some((
+            variant.id.clone(),
+            experiment.section_name.clone(),
+            variant.content.clone(),
+        ))
+    }
+
+    /// Assign a variant for a given prompt section, if an active experiment exists.
+    ///
     /// Returns `(variant_id, variant_content)` or `None` if no experiment.
     pub fn assign_variant_for_section(&self, section_name: &str) -> Option<(String, String)> {
         self.assign_variant(section_name)
@@ -1485,6 +1505,81 @@ impl ExperimentStore {
         exp.winner_id = Some(winner_id.clone());
         exp.archive = Some(exp.build_archive());
         Ok(winner_id)
+    }
+
+    // ── RAG-11: Retrieval strategy A/B experiment helpers ────────────────
+
+    /// Canonical experiment id used for retrieval strategy A/B experiments.
+    pub const RETRIEVAL_STRATEGY_EXPERIMENT_ID: &'static str = "retrieval-strategy";
+
+    /// Ensure a retrieval-strategy experiment is registered in the store.
+    ///
+    /// The three arms are `"keyword"`, `"hdc-only"`, and `"hybrid"`, matching
+    /// the constants in `roko_learn::retrieval_outcome`. Calling this on a store
+    /// that already contains the experiment is a no-op.
+    pub fn ensure_retrieval_strategy_experiment(&mut self) {
+        use crate::retrieval_outcome::{STRATEGY_HDC_ONLY, STRATEGY_HYBRID, STRATEGY_KEYWORD};
+
+        if self
+            .experiments
+            .contains_key(Self::RETRIEVAL_STRATEGY_EXPERIMENT_ID)
+        {
+            return;
+        }
+
+        let make_variant = |id: &str| PromptVariant {
+            id: id.to_string(),
+            name: id.to_string(),
+            section_name: Self::RETRIEVAL_STRATEGY_EXPERIMENT_ID.to_string(),
+            content: id.to_string(),
+            slug: None,
+            active: true,
+        };
+
+        let variants = vec![
+            make_variant(STRATEGY_KEYWORD),
+            make_variant(STRATEGY_HDC_ONLY),
+            make_variant(STRATEGY_HYBRID),
+        ];
+
+        let mut exp = PromptExperiment::new(
+            Self::RETRIEVAL_STRATEGY_EXPERIMENT_ID,
+            Self::RETRIEVAL_STRATEGY_EXPERIMENT_ID,
+            variants,
+        );
+        // Lower the min-trials threshold so the experiment can converge on
+        // small workspaces with fewer than the default 10 tasks per arm.
+        exp.min_trials_per_variant = 5;
+        self.register(exp);
+    }
+
+    /// Assign a retrieval strategy for the next task dispatch.
+    ///
+    /// Returns the winning or UCB1-selected strategy name, or `None` when
+    /// no retrieval-strategy experiment is registered.
+    ///
+    /// Callers that want the bandit to learn should later call
+    /// [`Self::record_retrieval_outcome`] with the gate result.
+    #[must_use]
+    pub fn assign_retrieval_strategy(&self) -> Option<String> {
+        let exp = self
+            .experiments
+            .get(Self::RETRIEVAL_STRATEGY_EXPERIMENT_ID)?;
+        let variant = exp.assign_variant()?;
+        Some(variant.id.clone())
+    }
+
+    /// Record a gate-pass outcome for the retrieval strategy experiment.
+    ///
+    /// `strategy` must match one of the three arm ids registered by
+    /// [`Self::ensure_retrieval_strategy_experiment`].  Unknown strategies
+    /// are silently ignored (best-effort, non-critical path).
+    pub fn record_retrieval_outcome(&mut self, strategy: &str, gate_passed: bool) {
+        self.record_outcome_for_experiment(
+            Self::RETRIEVAL_STRATEGY_EXPERIMENT_ID,
+            strategy,
+            gate_passed,
+        );
     }
 }
 

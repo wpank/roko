@@ -7,7 +7,7 @@
 //! # Naming note
 //!
 //! An `Observe` trait already exists in `roko_core::traits` (re-exported from
-//! `lib.rs`) with a different signature (`fn observe(&self) -> Vec<Engram>`).
+//! `lib.rs`) with a different signature (`fn observe(&self) -> Vec<Signal>`).
 //! This module intentionally uses the distinct name **`TelemetryObserve`** to
 //! avoid any collision with that trait.
 

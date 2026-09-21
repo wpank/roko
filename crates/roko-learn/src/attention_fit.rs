@@ -98,10 +98,7 @@ impl AttentionCurveCollection {
         // Group by model.
         let mut by_model: HashMap<String, Vec<&AttentionObservation>> = HashMap::new();
         for obs in observations {
-            by_model
-                .entry(obs.model.clone())
-                .or_default()
-                .push(obs);
+            by_model.entry(obs.model.clone()).or_default().push(obs);
         }
 
         for (model, model_obs) in &by_model {
@@ -162,13 +159,7 @@ fn fit_single_model(model: &str, observations: &[&AttentionObservation]) -> Posi
 
     let rates: Vec<f64> = bins
         .iter()
-        .map(|(s, t)| {
-            if *t == 0 {
-                0.5
-            } else {
-                *s as f64 / *t as f64
-            }
-        })
+        .map(|(s, t)| if *t == 0 { 0.5 } else { *s as f64 / *t as f64 })
         .collect();
 
     // Estimate primacy from first bin, recency from last bin, valley from middle.
@@ -231,8 +222,14 @@ mod tests {
         let middle = curve.attention_at(0.5);
         let end = curve.attention_at(1.0);
 
-        assert!(start > middle, "start ({start}) should be higher than middle ({middle})");
-        assert!(end > middle, "end ({end}) should be higher than middle ({middle})");
+        assert!(
+            start > middle,
+            "start ({start}) should be higher than middle ({middle})"
+        );
+        assert!(
+            end > middle,
+            "end ({end}) should be higher than middle ({middle})"
+        );
     }
 
     #[test]

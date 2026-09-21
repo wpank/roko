@@ -13,6 +13,10 @@
 //! 1. Add an `EnvVarSpec` entry to the appropriate category function below.
 //! 2. Run the source-comparison check to confirm the literal is covered.
 
+// Registry helpers are called from CLI commands that aren't yet wired into a
+// single compilation path; suppress until the config env command is hooked up.
+#![allow(dead_code)]
+
 use serde::Serialize;
 use std::fmt;
 
@@ -23,7 +27,7 @@ use std::fmt;
 /// How the variable's value should be treated in output.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Sensitivity {
+pub(crate) enum Sensitivity {
     /// Safe to display.
     Public,
     /// Must be redacted in output — show set/unset only.
@@ -33,7 +37,7 @@ pub enum Sensitivity {
 /// Lifecycle stability.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Stability {
+pub(crate) enum Stability {
     /// Supported, documented, semver-protected.
     Stable,
     /// Works but may change or be removed.
@@ -53,7 +57,7 @@ pub enum Stability {
 /// What kind of value the variable expects.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ValueType {
+pub(crate) enum ValueType {
     /// Strict boolean: `1/true/yes/on` or `0/false/no/off`.
     Bool,
     /// Presence-only (any value activates).
@@ -83,7 +87,7 @@ pub enum ValueType {
 /// Functional scope of the variable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Scope {
+pub(crate) enum Scope {
     /// Affects the CLI process.
     Cli,
     /// Affects the HTTP server (`roko serve`).
@@ -112,27 +116,27 @@ pub enum Scope {
 
 /// One registered environment variable.
 #[derive(Clone, Debug, Serialize)]
-pub struct EnvVarSpec {
+pub(crate) struct EnvVarSpec {
     /// Canonical variable name (e.g. `ROKO_MODEL`).
-    pub name: &'static str,
+    pub(crate) name: &'static str,
     /// Owning subsystem (for grouping in output).
-    pub owner: &'static str,
+    pub(crate) owner: &'static str,
     /// Short description.
-    pub purpose: &'static str,
+    pub(crate) purpose: &'static str,
     /// Expected value shape.
-    pub value_type: ValueType,
+    pub(crate) value_type: ValueType,
     /// Human-readable default (empty string if required / no default).
-    pub default: &'static str,
+    pub(crate) default: &'static str,
     /// Precedence note (e.g. "CLI --model flag > env > config").
-    pub precedence: &'static str,
+    pub(crate) precedence: &'static str,
     /// Functional scope.
-    pub scope: Scope,
+    pub(crate) scope: Scope,
     /// Whether the value is secret.
-    pub sensitivity: Sensitivity,
+    pub(crate) sensitivity: Sensitivity,
     /// Lifecycle stability.
-    pub stability: Stability,
+    pub(crate) stability: Stability,
     /// If deprecated, the canonical replacement name.
-    pub replacement: Option<&'static str>,
+    pub(crate) replacement: Option<&'static str>,
 }
 
 impl fmt::Display for EnvVarSpec {
@@ -161,7 +165,7 @@ impl fmt::Display for EnvVarSpec {
 ///
 /// The order is deterministic: grouped by owner/category, alphabetical within.
 #[must_use]
-pub fn env_registry() -> Vec<EnvVarSpec> {
+pub(crate) fn env_registry() -> Vec<EnvVarSpec> {
     let mut specs = Vec::with_capacity(128);
     specs.extend(cli_overrides());
     specs.extend(logging_diagnostics());
@@ -1668,18 +1672,18 @@ fn test_only() -> Vec<EnvVarSpec> {
 /// Falsy: everything else including empty string and absent.
 ///
 /// Re-exports [`crate::config::schema::parse_bool_env`] for convenience.
-pub fn parse_bool_env(s: &str) -> bool {
+pub(crate) fn parse_bool_env(s: &str) -> bool {
     crate::config::schema::parse_bool_env(s)
 }
 
 /// Read a boolean env var by name. Returns `None` when absent,
 /// `Some(bool)` when present.
-pub fn read_bool_env(name: &str) -> Option<bool> {
+pub(crate) fn read_bool_env(name: &str) -> Option<bool> {
     std::env::var(name).ok().map(|v| parse_bool_env(&v))
 }
 
 /// Parse a string as an unsigned integer, returning an error message on failure.
-pub fn parse_uint_env(s: &str) -> Result<u64, String> {
+pub(crate) fn parse_uint_env(s: &str) -> Result<u64, String> {
     let trimmed = s.trim();
     if trimmed.is_empty() {
         return Err("empty value".to_string());
@@ -1690,12 +1694,12 @@ pub fn parse_uint_env(s: &str) -> Result<u64, String> {
 }
 
 /// Read an unsigned integer env var by name.
-pub fn read_uint_env(name: &str) -> Option<Result<u64, String>> {
+pub(crate) fn read_uint_env(name: &str) -> Option<Result<u64, String>> {
     std::env::var(name).ok().map(|v| parse_uint_env(&v))
 }
 
 /// Parse a string as a valid URL, returning an error message on failure.
-pub fn parse_url_env(s: &str) -> Result<String, String> {
+pub(crate) fn parse_url_env(s: &str) -> Result<String, String> {
     let trimmed = s.trim();
     if trimmed.is_empty() {
         return Err("empty URL".to_string());
@@ -1715,13 +1719,13 @@ pub fn parse_url_env(s: &str) -> Result<String, String> {
 }
 
 /// Parse a string as a duration in seconds.
-pub fn parse_duration_secs_env(s: &str) -> Result<u64, String> {
+pub(crate) fn parse_duration_secs_env(s: &str) -> Result<u64, String> {
     parse_uint_env(s)
 }
 
 /// Parse a comma-separated list env var into a `Vec<String>`.
 /// Empty items are removed; whitespace around items is trimmed.
-pub fn parse_list_env(s: &str) -> Vec<String> {
+pub(crate) fn parse_list_env(s: &str) -> Vec<String> {
     s.split(',')
         .map(|item| item.trim().to_string())
         .filter(|item| !item.is_empty())
@@ -1730,7 +1734,7 @@ pub fn parse_list_env(s: &str) -> Vec<String> {
 
 /// Parse an enum-style env var: returns the lowercase-trimmed value for
 /// caller-side matching.
-pub fn parse_enum_env(s: &str) -> Result<String, String> {
+pub(crate) fn parse_enum_env(s: &str) -> Result<String, String> {
     let trimmed = s.trim();
     if trimmed.is_empty() {
         return Err("empty enum value".to_string());
@@ -1744,13 +1748,13 @@ pub fn parse_enum_env(s: &str) -> Result<String, String> {
 
 /// Result of resolving an env var that may have a deprecated alias.
 #[derive(Debug, Clone)]
-pub struct ResolvedEnvVar {
+pub(crate) struct ResolvedEnvVar {
     /// The value that should be used.
-    pub value: String,
+    pub(crate) value: String,
     /// The actual variable name that supplied the value.
-    pub source_name: &'static str,
+    pub(crate) source_name: &'static str,
     /// If a deprecated alias was read, this contains a warning message.
-    pub deprecation_warning: Option<String>,
+    pub(crate) deprecation_warning: Option<String>,
 }
 
 /// Resolve an env var with a single deprecated alias fallback.
@@ -1759,7 +1763,7 @@ pub struct ResolvedEnvVar {
 /// When both are set, the canonical value wins and a warning names both.
 /// When only the deprecated alias is set, its value is used with a deprecation
 /// warning.
-pub fn resolve_with_fallback(
+pub(crate) fn resolve_with_fallback(
     canonical: &'static str,
     deprecated_alias: &'static str,
 ) -> Option<ResolvedEnvVar> {
@@ -1805,7 +1809,7 @@ pub fn resolve_with_fallback(
 }
 
 /// Resolve the serve URL: `ROKO_SERVE_URL` > `ROKO_SERVER_URL` > default.
-pub fn resolve_serve_url() -> ResolvedEnvVar {
+pub(crate) fn resolve_serve_url() -> ResolvedEnvVar {
     resolve_with_fallback("ROKO_SERVE_URL", "ROKO_SERVER_URL").unwrap_or(ResolvedEnvVar {
         value: "http://localhost:6677".to_string(),
         source_name: "ROKO_SERVE_URL",
@@ -1815,7 +1819,7 @@ pub fn resolve_serve_url() -> ResolvedEnvVar {
 
 /// Resolve the MCP scripts directory: `ROKO_MCP_SCRIPTS_DIR` > `ROKO_SCRIPTS_DIR`.
 /// Returns `None` when neither is set.
-pub fn resolve_mcp_scripts_dir() -> Option<ResolvedEnvVar> {
+pub(crate) fn resolve_mcp_scripts_dir() -> Option<ResolvedEnvVar> {
     resolve_with_fallback("ROKO_MCP_SCRIPTS_DIR", "ROKO_SCRIPTS_DIR")
 }
 
@@ -1827,7 +1831,7 @@ pub fn resolve_mcp_scripts_dir() -> Option<ResolvedEnvVar> {
 /// When `ROKO_VERBOSE` or `ROKO_DEBUG` are set without `ROKO_LOG`, they are
 /// treated as `ROKO_LOG=debug` equivalents with a deprecation warning.
 /// An explicit `ROKO_LOG` always wins.
-pub fn resolve_log_filter() -> ResolvedEnvVar {
+pub(crate) fn resolve_log_filter() -> ResolvedEnvVar {
     // Explicit ROKO_LOG always wins.
     if let Ok(val) = std::env::var("ROKO_LOG") {
         let trimmed = val.trim().to_string();
@@ -1909,24 +1913,24 @@ pub fn resolve_log_filter() -> ResolvedEnvVar {
 // ---------------------------------------------------------------------------
 
 /// Look up a spec by exact variable name.
-pub fn lookup_spec(name: &str) -> Option<EnvVarSpec> {
+pub(crate) fn lookup_spec(name: &str) -> Option<EnvVarSpec> {
     env_registry().into_iter().find(|s| s.name == name)
 }
 
 /// Check whether a variable name is registered (exact match).
-pub fn is_registered(name: &str) -> bool {
+pub(crate) fn is_registered(name: &str) -> bool {
     env_registry().iter().any(|s| s.name == name)
 }
 
 /// Return all registered variable names in registry order.
-pub fn registry_names() -> Vec<&'static str> {
+pub(crate) fn registry_names() -> Vec<&'static str> {
     env_registry().iter().map(|s| s.name).collect()
 }
 
 /// Return only the operator-facing (non-internal) variable specs.
 ///
 /// Excludes `TestOnly`, `DemoOnly`, and `BuildTime` stability classes.
-pub fn operator_facing_registry() -> Vec<EnvVarSpec> {
+pub(crate) fn operator_facing_registry() -> Vec<EnvVarSpec> {
     env_registry()
         .into_iter()
         .filter(|s| {
@@ -1939,7 +1943,7 @@ pub fn operator_facing_registry() -> Vec<EnvVarSpec> {
 }
 
 /// Emit a deprecation warning to stderr if `spec` is deprecated.
-pub fn warn_if_deprecated(spec: &EnvVarSpec) {
+pub(crate) fn warn_if_deprecated(spec: &EnvVarSpec) {
     if spec.stability == Stability::Deprecated {
         let replacement_msg = spec
             .replacement

@@ -154,7 +154,6 @@ pub struct GatesConfig {
     pub max_rung: Option<u8>,
 
     // ── Adaptive threshold tuning ─────────────────────────────────────────
-
     /// EMA decay factor for pass-rate tracking.
     ///
     /// Controls how quickly the exponential moving average adapts to new
@@ -186,7 +185,6 @@ pub struct GatesConfig {
     pub convergence_min_observations: u64,
 
     // ── Review cycle cap ──────────────────────────────────────────────
-
     /// Maximum consecutive gate-failure review cycles before the task is
     /// force-accepted. Prevents infinite REVISE loops that consume tokens
     /// with diminishing returns. Default: 3.

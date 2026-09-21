@@ -626,7 +626,13 @@ async fn apply_preset(
                     "preset 'model' requires a non-empty 'model' field",
                 ));
             }
-            ("model", vec![PresetEdit { key: "agent.default_model".into(), value: model }])
+            (
+                "model",
+                vec![PresetEdit {
+                    key: "agent.default_model".into(),
+                    value: model,
+                }],
+            )
         }
     };
 
@@ -669,17 +675,32 @@ async fn apply_preset(
 
 fn preset_gates_edits() -> Vec<PresetEdit> {
     vec![
-        PresetEdit { key: "gates.clippy_enabled".into(), value: "true".into() },
-        PresetEdit { key: "gates.skip_tests".into(), value: "false".into() },
-        PresetEdit { key: "gates.max_iterations".into(), value: "2".into() },
+        PresetEdit {
+            key: "gates.clippy_enabled".into(),
+            value: "true".into(),
+        },
+        PresetEdit {
+            key: "gates.skip_tests".into(),
+            value: "false".into(),
+        },
+        PresetEdit {
+            key: "gates.max_iterations".into(),
+            value: "2".into(),
+        },
     ]
 }
 
 fn preset_routing_edits(config: &RokoConfig) -> Vec<PresetEdit> {
     let r = &config.routing;
     vec![
-        PresetEdit { key: "routing.mode".into(), value: r.mode.clone() },
-        PresetEdit { key: "routing.fast_task_model".into(), value: r.fast_task_model.clone() },
+        PresetEdit {
+            key: "routing.mode".into(),
+            value: r.mode.clone(),
+        },
+        PresetEdit {
+            key: "routing.fast_task_model".into(),
+            value: r.fast_task_model.clone(),
+        },
         PresetEdit {
             key: "routing.standard_task_model".into(),
             value: r.standard_task_model.clone(),
@@ -709,9 +730,18 @@ fn preset_routing_edits(config: &RokoConfig) -> Vec<PresetEdit> {
 
 fn preset_budget_edits() -> Vec<PresetEdit> {
     vec![
-        PresetEdit { key: "budget.max_plan_usd".into(), value: "10.0".into() },
-        PresetEdit { key: "budget.max_turn_usd".into(), value: "1.0".into() },
-        PresetEdit { key: "budget.prompt_token_budget".into(), value: "20000".into() },
+        PresetEdit {
+            key: "budget.max_plan_usd".into(),
+            value: "10.0".into(),
+        },
+        PresetEdit {
+            key: "budget.max_turn_usd".into(),
+            value: "1.0".into(),
+        },
+        PresetEdit {
+            key: "budget.prompt_token_budget".into(),
+            value: "20000".into(),
+        },
     ]
 }
 
@@ -789,7 +819,10 @@ fn set_toml_dotpath(root: &mut toml::Value, key: &str, val: toml::Value) -> Resu
         // Ensure intermediate table exists before descending.
         if !current.as_table().is_some_and(|t| t.contains_key(*part)) {
             if let Some(table) = current.as_table_mut() {
-                table.insert((*part).to_string(), toml::Value::Table(toml::map::Map::new()));
+                table.insert(
+                    (*part).to_string(),
+                    toml::Value::Table(toml::map::Map::new()),
+                );
             }
         }
         current = current

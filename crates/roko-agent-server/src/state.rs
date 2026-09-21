@@ -743,7 +743,7 @@ impl Default for DispatchProfile {
 }
 
 /// Shared state for agent-server routes.
-pub struct AgentState {
+pub struct AgentSidecarState {
     agent_id: String,
     owner: Option<String>,
     version: String,
@@ -753,10 +753,11 @@ pub struct AgentState {
     started_at: Instant,
     registered_at: u64,
     chain_client: OptionalChainClient,
+    // Held as Arc owner: message_dispatcher clones this at construction;
+    // the field keeps the backend alive for the sidecar lifetime.
     #[allow(dead_code)]
     llm_backend: Option<Arc<dyn LlmBackend>>,
     message_dispatcher: Option<Arc<dyn DispatchLike>>,
-    #[allow(dead_code)]
     knowledge_store: Option<Arc<KnowledgeStore>>,
     dispatch_profile: DispatchProfile,
     predictions: Mutex<Vec<AgentPrediction>>,
@@ -768,7 +769,10 @@ pub struct AgentState {
     state_store: Option<Arc<dyn AgentStateStore>>,
 }
 
-impl AgentState {
+/// Backward-compatible alias for [`AgentSidecarState`].
+pub type AgentState = AgentSidecarState;
+
+impl AgentSidecarState {
     /// Build a new shared state instance.
     #[must_use]
     pub fn new(

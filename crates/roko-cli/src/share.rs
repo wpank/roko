@@ -15,6 +15,9 @@
 //!   GitHub/Slack tokens, Bearer headers, env-var leaks).
 //! - A secondary pass that redacts long hex (≥32 chars) and base64 (≥32 chars)
 //!   strings that are characteristic of raw secrets.
+//! - Literal values loaded from `~/.roko/.env` and `.roko/.env` at first call,
+//!   so that secrets stored in the operator env files are always redacted even
+//!   when the pattern-based rules do not recognise their prefix.
 //!
 //! # Dead-code note
 //!
@@ -48,7 +51,10 @@ pub struct ShareResult {
 /// Scrub a string using built-in secret patterns and long-string heuristics.
 ///
 /// Applies two passes:
-/// 1. [`LogScrubber`] — redacts known secret patterns (API keys, tokens, etc.).
+/// 1. [`LogScrubber`] — redacts known secret patterns (API keys, tokens, etc.)
+///    **plus** any literal values loaded from `~/.roko/.env` and `.roko/.env` at
+///    first call, so that secrets added via `roko config set-secret` are always
+///    redacted even when the pattern-based rules do not recognise their prefix.
 /// 2. A secondary pass that redacts long hex (≥ 32 chars) and long base64
 ///    (≥ 32 chars) strings that are likely raw secrets.
 ///
@@ -58,9 +64,55 @@ pub struct ShareResult {
 /// apply the same scrubbing before persisting a [`RunTranscript`].
 pub(crate) fn scrub_share_text(text: &str) -> String {
     static SCRUBBER: OnceLock<LogScrubber> = OnceLock::new();
-    let scrubber = SCRUBBER.get_or_init(LogScrubber::new);
+    let scrubber = SCRUBBER.get_or_init(build_share_scrubber);
     let redacted = scrubber.scrub(text);
     scrub_long_secret_like_strings(&redacted)
+}
+
+/// Build the static [`LogScrubber`] used by [`scrub_share_text`].
+///
+/// Starts with built-in patterns and then adds literal redaction rules for
+/// every key=value pair found in:
+/// - `~/.roko/.env` (global operator secrets, lower priority)
+/// - `.roko/.env` relative to the current working directory (project-local
+///   secrets, higher priority)
+///
+/// Values shorter than 8 characters are skipped to avoid false-positive
+/// redactions of short non-secret strings.
+fn build_share_scrubber() -> LogScrubber {
+    let scrubber = LogScrubber::new();
+    // Load global ~/.roko/.env
+    if let Some(home) = std::env::var_os("HOME") {
+        let path = std::path::PathBuf::from(home).join(".roko").join(".env");
+        load_env_file_into_scrubber(&scrubber, &path);
+    }
+    // Load project-local .roko/.env (relative to cwd at call time)
+    let local = std::path::PathBuf::from(".roko").join(".env");
+    load_env_file_into_scrubber(&scrubber, &local);
+    scrubber
+}
+
+/// Parse a `.env` file with [`dotenvy`] and register each value as a literal
+/// redaction on `scrubber`.  Silently ignores missing or unreadable files.
+fn load_env_file_into_scrubber(scrubber: &LogScrubber, path: &std::path::Path) {
+    if !path.is_file() {
+        return;
+    }
+    let iter = match dotenvy::from_path_iter(path) {
+        Ok(it) => it,
+        Err(_) => return,
+    };
+    for entry in iter {
+        let (name, value) = match entry {
+            Ok(pair) => pair,
+            Err(_) => continue,
+        };
+        // Skip short values to avoid false-positive redactions.
+        if value.len() < 8 {
+            continue;
+        }
+        let _ = scrubber.add_literal_value(&value, &name);
+    }
 }
 
 /// Redact long hex (≥ 32 contiguous hex chars) and long base64 (≥ 32 chars)
@@ -376,5 +428,92 @@ mod tests {
             "output long hex leaked"
         );
         assert!(md.contains("[REDACTED]"), "no redaction marker found");
+    }
+
+    #[test]
+    fn scrub_share_text_redacts_key_prefix_api_key() {
+        // `key-...` API keys (20+ chars) must be redacted.
+        let scrubbed =
+            scrub_share_text("using key-abcdefghijklmnopqrstuvwxyz in Authorization header");
+        assert!(
+            !scrubbed.contains("key-abcdefghijklmnopqrstuvwxyz"),
+            "key- API key leaked"
+        );
+        // The key- pattern emits [REDACTED:API_KEY]; accept any REDACTED marker.
+        assert!(
+            scrubbed.contains("[REDACTED"),
+            "no redaction marker in: {scrubbed}"
+        );
+    }
+
+    #[test]
+    fn scrub_share_text_redacts_perplexity_env_var() {
+        let scrubbed = scrub_share_text("set PERPLEXITY_API_KEY=pplx-abc123xyzlongvalue0000");
+        assert!(
+            !scrubbed.contains("pplx-abc123xyzlongvalue0000"),
+            "Perplexity key leaked"
+        );
+        assert!(scrubbed.contains("[REDACTED]"), "no redaction marker");
+    }
+
+    #[test]
+    fn scrub_share_text_redacts_cerebras_env_var() {
+        let scrubbed = scrub_share_text("CEREBRAS_API_KEY=csk-abcdefghijklmnopqrst123456");
+        assert!(
+            !scrubbed.contains("csk-abcdefghijklmnopqrst123456"),
+            "Cerebras key leaked"
+        );
+        assert!(scrubbed.contains("[REDACTED]"), "no redaction marker");
+    }
+
+    #[test]
+    fn scrub_share_text_redacts_gemini_env_var() {
+        let scrubbed = scrub_share_text("export GEMINI_API_KEY=AIzaSyAbcDefGhiJklMnoPqrStuvWxyz");
+        assert!(
+            !scrubbed.contains("AIzaSyAbcDefGhiJklMnoPqrStuvWxyz"),
+            "Gemini key leaked"
+        );
+        assert!(scrubbed.contains("[REDACTED]"), "no redaction marker");
+    }
+
+    /// Test that `load_env_file_into_scrubber` correctly adds literal values
+    /// from a `.env`-format file into a [`LogScrubber`].
+    #[test]
+    fn load_env_file_into_scrubber_redacts_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_path = dir.path().join(".env");
+        std::fs::write(
+            &env_path,
+            "MY_SECRET=super-secret-value-xyz\nSHORT=hi\nANOTHER_KEY=long-key-value-9999\n",
+        )
+        .unwrap();
+
+        let scrubber = LogScrubber::new();
+        load_env_file_into_scrubber(&scrubber, &env_path);
+
+        // Long values (>= 8 chars) must be redacted.
+        let out = scrubber.scrub("leaked super-secret-value-xyz here");
+        assert!(!out.contains("super-secret-value-xyz"), "long value leaked");
+        assert!(out.contains("[REDACTED:MY_SECRET]"), "named tag missing");
+
+        let out2 = scrubber.scrub("key long-key-value-9999 used");
+        assert!(!out2.contains("long-key-value-9999"), "second value leaked");
+
+        // Short values must NOT trigger redaction (too short, high false-positive risk).
+        let out3 = scrubber.scrub("value hi found");
+        assert!(out3.contains("hi"), "short value should not be redacted");
+    }
+
+    /// Test that `load_env_file_into_scrubber` is a no-op for missing files.
+    #[test]
+    fn load_env_file_into_scrubber_missing_file_is_noop() {
+        let scrubber = LogScrubber::new();
+        let baseline = scrubber.pattern_count();
+        load_env_file_into_scrubber(&scrubber, std::path::Path::new("/nonexistent/.env"));
+        assert_eq!(
+            scrubber.pattern_count(),
+            baseline,
+            "missing file should not add patterns"
+        );
     }
 }

@@ -2,6 +2,8 @@
 
 > Depth for [26-cognitive-immune-system.md](../../docs/00-architecture/26-cognitive-immune-system.md). Redesigns the five defense layers as a Graph pipeline of Cells. Taint propagation as a monotonic lattice-join React Cell. Anomaly detection as a Lens Cell. Quarantine as a Store partition. Immune memory as a Memory specialization that never forgets attacks.
 
+> **Implementation status (2026-09-10):** SUBSTANTIALLY IMPLEMENTED (E34 8/8 strict accepted). The five-layer immune Graph, trust-origin IFC taint lattice/TaintTracker, five-head corrigibility ordering, five-level sandbox policy, exact capability wrappers, persistent quarantine (transitive incident handling), mandatory audited production hooks, universal host-visible tool-result screening, canonical-workspace controls, verified output attestations, bounded evidence/checkpoints, provider isolation, tool cooldown/isolation, and linked incidents are all live. Provider-owned internals (internal call screening), trace Signals through the immune pipeline, adaptive immune memory, and externally anchored whole-ledger authenticity remain broader product scope. See `CLAUDE.md` and `.roko/GAPS.md` for detail.
+
 **Depends on**: [01-SIGNAL](../../unified/01-SIGNAL.md) (Signal, Kind, taint, provenance), [02-CELL](../../unified/02-CELL.md) (Cell, React protocol, Lens, Verify protocol), [03-GRAPH](../../unified/03-GRAPH.md) (Graph wiring), [04-SPECIALIZATIONS](../../unified/04-SPECIALIZATIONS.md) (Store partitions, Memory), [17-SECURITY-MODEL](../../unified/17-SECURITY-MODEL.md) (capability intersection, fail-closed)
 
 ---

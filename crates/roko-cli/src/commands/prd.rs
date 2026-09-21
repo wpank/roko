@@ -305,6 +305,9 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
         roko_core::config::loader::load_config_unified(&workdir).unwrap_or_default();
     let resume_session = cli.resume.as_deref();
     let agent_command = command_from_config(&workdir).unwrap_or_else(|| "claude".to_string());
+    // P2-FLG-2: Honor the global --role override; each subcommand has a sensible
+    // per-operation default ("scribe", "strategist") but an explicit --role wins.
+    let cli_role = cli.role.as_deref();
     let _workspace_lock = matches!(
         &cmd,
         PrdCmd::Idea { .. }
@@ -322,18 +325,20 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
     match cmd {
         PrdCmd::Idea { text } => {
             let joined = text.join(" ");
-            roko_cli::prd::cmd_idea(&workdir, &joined)?;
-            crate::commands::util::print_next_step_hint(
-                "Next: roko develop 'your idea' or roko prd draft new <slug>",
-            );
+            roko_cli::prd::cmd_idea(&workdir, &joined, cli.json)?;
+            if !cli.json {
+                crate::commands::util::print_next_step_hint(
+                    "Next: roko develop 'your idea' or roko prd draft new <slug>",
+                );
+            }
             Ok(0)
         }
         PrdCmd::List => {
-            roko_cli::prd::cmd_list(&workdir)?;
+            roko_cli::prd::cmd_list(&workdir, cli.json)?;
             Ok(0)
         }
         PrdCmd::Status => {
-            roko_cli::prd::cmd_status(&workdir, None)?;
+            roko_cli::prd::cmd_status(&workdir, None, cli.json)?;
             Ok(0)
         }
         PrdCmd::Draft { cmd: draft_cmd } => match draft_cmd {
@@ -486,7 +491,7 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
                     system_prompt: Some(&system),
                     resume_session,
                     env_vars: &gw.vars,
-                    role: Some("scribe"),
+                    role: Some(cli_role.unwrap_or("scribe")),
                     allowed_tools: Some("Read,Grep,Glob"),
                 })
                 .await?;
@@ -528,7 +533,9 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
                         println!("📄 Draft written to {}", target.display());
                     } else {
                         let _ = std::fs::remove_file(&target);
-                        tracing::warn!("agent output did not contain a substantive PRD; no draft created");
+                        tracing::warn!(
+                            "agent output did not contain a substantive PRD; no draft created"
+                        );
                     }
                 } else if exit_code != 0 {
                     let _ = std::fs::remove_file(&target);
@@ -744,7 +751,7 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
                     system_prompt: Some(&system),
                     resume_session,
                     env_vars: &gw.vars,
-                    role: Some("scribe"),
+                    role: Some(cli_role.unwrap_or("scribe")),
                     allowed_tools: Some("Read,Grep,Glob"),
                 })
                 .await?;
@@ -906,7 +913,7 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
                 system_prompt: Some(&system),
                 resume_session,
                 env_vars: &gw.vars,
-                role: Some("strategist"),
+                role: Some(cli_role.unwrap_or("strategist")),
                 allowed_tools: Some("Read,Grep,Glob"),
             })
             .await?;

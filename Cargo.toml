@@ -42,8 +42,6 @@ members = [
     # Standalone MCP servers used by agents via --mcp-config.
     "crates/roko-mcp-stdio",
     "crates/roko-mcp-github",
-    "crates/roko-mcp-slack",
-    "crates/roko-mcp-scripts",
     "crates/roko-mcp-code",
 
     # Roko CLI: minimal user-facing binary that wires the universal loop
@@ -89,6 +87,9 @@ members = [
     # gives every execution surface (CLI, serve, ACP) explicit safety,
     # budget, routing, and feedback guarantees.
     "crates/roko-execution",
+
+    # Demo / benchmark crates
+    "demo/speed-test",
 ]
 default-members = [
     # Ordinary root builds target the main CLI plus the MCP servers we ship.

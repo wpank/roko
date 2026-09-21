@@ -57,7 +57,7 @@ fn sub_label<'a>(text: &'static str, theme: &Theme) -> Line<'a> {
 }
 
 fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
-    let mut lines = Vec::with_capacity(180);
+    let mut lines = Vec::with_capacity(200);
 
     lines.push(Line::from(Span::styled(
         "roko dashboard keybindings",
@@ -80,11 +80,11 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
         theme.muted(),
     )));
     lines.push(Line::from(Span::styled(
-        "                F9 Atelier    F10 Learning",
+        "                F9 Atelier    F10 Learning  -  Providers",
         theme.muted(),
     )));
     lines.push(kb(
-        "1-9 / 0",
+        "1-9 / 0 / -",
         "switch tabs (except Agents/Logs/Plans)",
         theme,
     ));
@@ -114,11 +114,11 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
     lines.push(kb("Enter", "open plan detail modal", theme));
     lines.push(kb("Esc", "close plan detail", theme));
     lines.push(kb("w", "wave overview modal", theme));
-    lines.push(kb("p", "pause/resume pipeline", theme));
+    lines.push(kb("p", "pause/resume pipeline (wired to executor)", theme));
     lines.push(kb("i", "inject directive to agent", theme));
     lines.push(kb("y", "approve pending command", theme));
     lines.push(kb("`", "cycle agent role tabs", theme));
-    lines.push(sub_label("Sub-tab shortcuts:", theme));
+    lines.push(sub_label("Right-panel sub-tab shortcuts:", theme));
     lines.push(kb("a", "Agents panel", theme));
     lines.push(kb("o", "Output panel", theme));
     lines.push(kb("d", "Diff panel", theme));
@@ -127,6 +127,8 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
     lines.push(kb("m", "MCP / Context panel", theme));
     lines.push(kb("L", "Learning panel", theme));
     lines.push(kb("P", "Processes panel", theme));
+    lines.push(kb("C", "Conductor panel", theme));
+    lines.push(kb("I", "Inbox panel", theme));
     lines.push(Line::from(""));
 
     // ── Plans (F2) ───────────────────────────────────────────────────
@@ -145,16 +147,19 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
     lines.push(kb("o / q", "queue overview modal", theme));
     lines.push(kb("t", "task picker modal", theme));
     lines.push(kb("/", "filter plan tree", theme));
-    lines.push(sub_label("Recovery:", theme));
+    lines.push(sub_label(
+        "Recovery (sends live command to executor when connected):",
+        theme,
+    ));
     lines.push(kb("s", "soft-retry failed tasks", theme));
-    lines.push(kb("z", "diagnose selected task", theme));
+    lines.push(kb("z", "diagnose selected task (modal)", theme));
     lines.push(kb("d", "diagnose plan (confirm)", theme));
     lines.push(kb("S", "repair with error context", theme));
     lines.push(kb("c", "re-verify gates only", theme));
     lines.push(kb("V", "re-verify plan", theme));
-    lines.push(kb("F", "force-advance", theme));
+    lines.push(kb("F", "force-advance past current task", theme));
     lines.push(kb("R", "restart plan (confirm)", theme));
-    lines.push(kb("m", "merge plan (confirm)", theme));
+    lines.push(kb("m", "merge plan branch (confirm)", theme));
     lines.push(kb("M", "merge all completed (confirm)", theme));
     lines.push(Line::from(""));
 
@@ -165,18 +170,28 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
     lines.push(kb("Home/End", "jump to top/bottom", theme));
     lines.push(kb("G", "resume auto-scroll (tail)", theme));
     lines.push(kb("`", "cycle agent role tabs", theme));
-    lines.push(kb("1-7", "switch agent role tab directly", theme));
+    lines.push(kb(
+        "1-7",
+        "switch agent role tab directly (not 1-9, those switch top tabs)",
+        theme,
+    ));
     lines.push(kb("a", "approve pending command", theme));
     lines.push(kb("A", "approve all pending", theme));
     lines.push(kb("x", "reject pending command", theme));
+    lines.push(kb("X", "cancel selected agent's task (skip)", theme));
     lines.push(kb("i", "inject directive to agent", theme));
     lines.push(kb("g", "toggle agent pane grouping", theme));
     lines.push(kb("t", "toggle agent topology", theme));
+    lines.push(sub_label("Agent output search:", theme));
+    lines.push(kb("/", "enter search mode", theme));
+    lines.push(kb("n / N", "next / prev search match", theme));
+    lines.push(kb("f", "fold/unfold nearest tool result", theme));
     lines.push(Line::from(""));
 
     // ── Git (F4) ─────────────────────────────────────────────────────
     lines.extend(section("Git (F4)", theme));
-    lines.push(kb("j/k Up/Dn", "scroll branch/commit list", theme));
+    lines.push(kb("Tab", "cycle focus: Branches ↔ Detail", theme));
+    lines.push(kb("j/k Up/Dn", "scroll focused panel", theme));
     lines.push(kb("PgUp/PgDn", "page scroll", theme));
     lines.push(kb("Home/End", "jump to top/bottom", theme));
     lines.push(kb("h/l Left/Rt", "drill out/in", theme));
@@ -185,7 +200,8 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
 
     // ── Logs (F5) ────────────────────────────────────────────────────
     lines.extend(section("Logs (F5)", theme));
-    lines.push(kb("j/k Up/Dn", "scroll log list", theme));
+    lines.push(kb("Tab", "cycle focus: Log list ↔ Detail", theme));
+    lines.push(kb("j/k Up/Dn", "scroll focused panel", theme));
     lines.push(kb("PgUp/PgDn", "page scroll", theme));
     lines.push(kb("Home", "jump to top", theme));
     lines.push(kb("End / G", "jump to bottom (resume auto-tail)", theme));
@@ -213,7 +229,8 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
 
     // ── Inspect (F7) ─────────────────────────────────────────────────
     lines.extend(section("Inspect (F7)", theme));
-    lines.push(kb("j/k Up/Dn", "scroll signal tree", theme));
+    lines.push(kb("Tab", "cycle focus: Tree ↔ Detail", theme));
+    lines.push(kb("j/k Up/Dn", "scroll focused panel", theme));
     lines.push(kb("PgUp/PgDn", "page scroll", theme));
     lines.push(kb("Home/End", "jump to top/bottom", theme));
     lines.push(kb("h/l Left/Rt", "drill out/in", theme));
@@ -223,7 +240,8 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
 
     // ── Marketplace (F8) ─────────────────────────────────────────────
     lines.extend(section("Marketplace (F8)", theme));
-    lines.push(kb("j/k Up/Dn", "scroll job list", theme));
+    lines.push(kb("Tab", "cycle focus: Jobs ↔ Detail", theme));
+    lines.push(kb("j/k Up/Dn", "scroll focused panel", theme));
     lines.push(kb("Home/End", "jump to top/bottom", theme));
     lines.push(kb("Enter", "expand job detail", theme));
     lines.push(kb("n", "new job form", theme));
@@ -233,7 +251,8 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
 
     // ── Atelier (F9) ─────────────────────────────────────────────────
     lines.extend(section("Atelier (F9)", theme));
-    lines.push(kb("j/k Up/Dn", "scroll artifact list", theme));
+    lines.push(kb("Tab", "cycle focus: PRDs ↔ Detail", theme));
+    lines.push(kb("j/k Up/Dn", "scroll focused panel", theme));
     lines.push(kb("Home/End", "jump to top/bottom", theme));
     lines.push(kb("Enter", "expand artifact detail", theme));
     lines.push(kb("r", "refresh", theme));
@@ -241,7 +260,16 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
 
     // ── Learning (F10) ───────────────────────────────────────────────
     lines.extend(section("Learning (F10)", theme));
-    lines.push(kb("j/k Up/Dn", "scroll metrics list", theme));
+    lines.push(kb("Tab", "cycle focus: Metrics ↔ Detail", theme));
+    lines.push(kb("j/k Up/Dn", "scroll focused panel", theme));
+    lines.push(kb("Home/End", "jump to top/bottom", theme));
+    lines.push(kb("r", "refresh", theme));
+    lines.push(Line::from(""));
+
+    // ── Providers (-) ─────────────────────────────────────────────────
+    lines.extend(section("Providers (- key)", theme));
+    lines.push(kb("Tab", "cycle focus: List ↔ Detail", theme));
+    lines.push(kb("j/k Up/Dn", "scroll focused panel", theme));
     lines.push(kb("Home/End", "jump to top/bottom", theme));
     lines.push(kb("r", "refresh", theme));
     lines.push(Line::from(""));

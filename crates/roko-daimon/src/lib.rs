@@ -49,10 +49,9 @@ pub use self::phase2_stubs::{
     ContagionTrigger, ContrarianConfig, ContrarianTracker, CrateConfidence, CrateFatigueSuggestion,
     DimensionDef, DimensionSource, DimensionWeights, DomainRegistration, EfficiencyEvent,
     EmotionalProvenance, ErrorPatternTracker, FatigueAction, FatigueDetector, FatigueState,
-    ResourcePressure,
-    ScoredEntry, SomaticField, SomaticMarkerFiredEvent, StrategyTransferMapper, TierBias,
-    TierThresholds, ValidationArc, adjusted_thresholds, contagion, contagion_susceptibility,
-    fatigue_response, pad_cosine_similarity,
+    ResourcePressure, ScoredEntry, SomaticField, SomaticMarkerFiredEvent, StrategyTransferMapper,
+    TierBias, TierThresholds, ValidationArc, adjusted_thresholds, contagion,
+    contagion_susceptibility, fatigue_response, pad_cosine_similarity,
 };
 pub use self::somatic_ta::{
     IitPhiMetric, MutualInfoMatrix, SomaticOracleContext, SomaticRetrieval, SomaticRetrievalConfig,
@@ -2026,8 +2025,7 @@ impl AppraisalResult {
                 let phase = VitalityPhase::from_vitality(*vitality);
                 let phase_pad = phase.pad_baseline();
                 // Blend Stochastic Dread intensity with the outcome quality.
-                let dread_intensity =
-                    MortalityEmotion::StochasticDread.intensity(0.0, 24.0, 0.0);
+                let dread_intensity = MortalityEmotion::StochasticDread.intensity(0.0, 24.0, 0.0);
                 let life_quality = (*total_episodes as f64).sqrt().min(10.0) / 10.0;
                 Self {
                     desirability: phase_pad.pleasure - dread_intensity * 0.3

@@ -42,7 +42,8 @@ pub(crate) struct GitWatchHandle {
     _backend: GitWatchBackend,
 }
 
-// Variants hold resources (debouncer, poll thread) that are cleaned up on Drop.
+// RAII guard: variants hold resources (debouncer, poll thread) that are
+// cleaned up on Drop. Stored in `_backend` and never matched on.
 #[allow(dead_code)]
 enum GitWatchBackend {
     Notify(NotifyDebouncer),

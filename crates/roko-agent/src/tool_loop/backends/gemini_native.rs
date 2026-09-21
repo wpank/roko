@@ -98,6 +98,7 @@ impl GeminiNativeBackend {
         let kind = match error {
             LlmError::Provider(ProviderError::RateLimit { .. }) => "rate_limit",
             LlmError::Provider(ProviderError::AuthFailure) => "auth_failure",
+            LlmError::Provider(ProviderError::InsufficientCredits) => "insufficient_credits",
             LlmError::Provider(ProviderError::Timeout) | LlmError::Timeout(_) => "timeout",
             LlmError::Provider(ProviderError::ServerError(_)) => "server_error",
             LlmError::Provider(ProviderError::ContentPolicy) => "content_policy",

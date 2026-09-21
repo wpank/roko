@@ -361,9 +361,9 @@ impl ActivationCondition {
     /// Check whether this condition is satisfied by the given context.
     pub fn matches(&self, model: &str, task_type: &str, domain: &str, language: &str) -> bool {
         match self {
-            Self::ModelFamily(family) => {
-                model.to_ascii_lowercase().contains(&family.to_ascii_lowercase())
-            }
+            Self::ModelFamily(family) => model
+                .to_ascii_lowercase()
+                .contains(&family.to_ascii_lowercase()),
             Self::TaskType(ty) => task_type.eq_ignore_ascii_case(ty),
             Self::DomainTag(tag) => domain.eq_ignore_ascii_case(tag),
             Self::Language(lang) => language.eq_ignore_ascii_case(lang),
@@ -1581,9 +1581,9 @@ pub use lifecycle::{
     RuntimeEpisodeObservation, RuntimeKnowledgeLifecycle,
 };
 pub use sync_protocol::{
-    MeshLayout, PeerCursorV1, ReceiveResult, SendResult, SyncEntryV1, SyncEnvelopeV1,
-    compute_envelope_checksum, load_peer_cursor, receive_sync, send_sync, validate_peer_name,
-    verify_envelope_checksum,
+    MeshLayout, PeerCursorV1, ReceiveResult, SendResult, SyncDirection, SyncEntryV1,
+    SyncEnvelopeV1, compute_envelope_checksum, load_peer_cursor, receive_sync, send_sync,
+    validate_peer_name, validate_sync_direction, verify_envelope_checksum,
 };
 pub use temporal::{
     AllenRelation, KnowledgeEpoch, TemporalIndex, TemporalInterval, TemporalRelation,

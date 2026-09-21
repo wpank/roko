@@ -2,6 +2,8 @@
 
 > Five named surfaces -- Workbench, Agent Inbox, Generative Canvas, Stigmergy Minimap, Autonomy Slider -- define protocol-level data contracts between system and user. Surfaces are projections from the StateHub plus interaction contracts. CLI, TUI, Dashboard, and Visual Editor parity is the target architecture; it is not yet fully rendered. Third parties can build surfaces consuming the same projections.
 
+> **Implementation status (E37, verified 2026-09-15): PARTIAL — contract/backend tranche complete (9/9); rendering partial.** Typed Workbench, Inbox, Canvas, Minimap, and Autonomy projections; Inbox and autonomy events; 12 object types; five StateHub-backed HTTP routes; OpenAPI discovery; and the legacy-tab compatibility mapping are implemented. Full rendering remains open: the ten legacy TUI tabs do not yet render every named surface, SurfaceEvents are not a command-ingress API, no production Inbox publisher/action consumer or live AutonomyConfig store exists, Workbench human input has no live source, Canvas graph identity comes from dashboard plan IDs, and Minimap coordinates use a deterministic layout rather than HDC. OpenAPI response bodies remain generic JSON schemas, and unresolved Inbox receipt timestamps are recomputed during replay.
+
 **Depends on**: [01-SIGNAL](01-SIGNAL.md) (Signal/Pulse, Bus), [02-CELL](02-CELL.md) (Cell protocol), [03-GRAPH](03-GRAPH.md) (Graph composition), [05-AGENT](05-AGENT.md) (vitality, CorticalState), [15-TELEMETRY](15-TELEMETRY.md) (StateHub, Lenses, c-factor, 7 core projections), [16-SECURITY](16-SECURITY.md) (autonomy levels 0-4, CaMeL), [19-CONFIG](19-CONFIG.md) (TOML schemas, domain profiles)
 
 ---
